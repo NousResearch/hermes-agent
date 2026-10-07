@@ -7,7 +7,7 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { toChatMessages } from '@/lib/chat-messages'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import type { SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessagesResponse } from '@/types/rabbit'
 
 import { setApiRequestConnection, setApiRequestLocalMode, setApiRequestProfile } from './client'
 import { getLatestSessionMessages, LATEST_SESSION_MESSAGES_LIMIT } from './sessions'
@@ -28,7 +28,7 @@ describe('session transcript pagination ownership', () => {
   beforeEach(() => {
     api.mockReset()
     $transcriptTailBySessionId.set({})
-    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+    Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { api } })
     setApiRequestProfile('default')
     setApiRequestLocalMode(true)
   })
@@ -37,7 +37,7 @@ describe('session transcript pagination ownership', () => {
     setApiRequestLocalMode(false)
     setApiRequestConnection(null)
     setApiRequestProfile(null)
-    Reflect.deleteProperty(window, 'hermesDesktop')
+    Reflect.deleteProperty(window, 'rabbitDesktop')
   })
 
   it.each(['local', null])(

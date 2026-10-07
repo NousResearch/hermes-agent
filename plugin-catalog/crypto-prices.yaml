@@ -6,7 +6,7 @@ maintainer: cruzlxyz
 tier: community
 category: desktop
 version: "0.1.0"
-requires_hermes: ">=0.21.3"
+requires_rabbit: ">=0.21.3"
 docs_url: https://github.com/cruzlxyz/crypto-prices#readme
 platforms: []
 capabilities:

@@ -1,6 +1,6 @@
 """Stdlib-only filesystem primitives PM needs before it can replace the caller's interpreter.
 
-Boot-time dependency selection (``hermes_cli.runtime_state``) imports these, so nothing here
+Boot-time dependency selection (``rabbit_cli.runtime_state``) imports these, so nothing here
 may import a dependency or another PM module.
 """
 from __future__ import annotations
@@ -90,7 +90,7 @@ def remove_tree(path: Path) -> None:
     Windows refuses to unlink read-only files (PortableGit ships ``etc/hosts`` read-only), and no
     retry clears that bit. Every other failure, and every POSIX failure, raises as plain rmtree
     would: a POSIX permission error is about the parent directory, and chmodding the path there
-    would follow a symlink out of the tree. Lives here, not in ``hermes_cli``: PM installs run
+    would follow a symlink out of the tree. Lives here, not in ``rabbit_cli``: PM installs run
     before the rest of the tree exists (the Docker toolchain stage copies only ``pm/``).
     """
     def _retry_writable(func, failed, error):

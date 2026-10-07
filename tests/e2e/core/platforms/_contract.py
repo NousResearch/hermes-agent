@@ -2,7 +2,7 @@
 
 Each scenario takes a running ``Rig`` (gateway child + stand-in driver + fake LLM director) and
 asserts user-visible outcomes at the stand-in (what a human in the chat now sees), the next wire
-request Hermes sent the model, or persisted state (state.db). Tokens ``[in:<id>]`` tie every inbound
+request Rabbit sent the model, or persisted state (state.db). Tokens ``[in:<id>]`` tie every inbound
 to the model turns it started, so duplicate or dropped turns are counted, never guessed.
 
 Negative claims ("no second reply", "no turn for the unmentioned message") are settled by a BARRIER:

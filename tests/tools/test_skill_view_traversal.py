@@ -1,7 +1,7 @@
 """Tests for path traversal prevention in skill_view.
 
 Regression tests for issue #220: skill_view file_path parameter allowed
-reading arbitrary files (e.g., ~/.hermes/.env) via path traversal.
+reading arbitrary files (e.g., ~/.rabbit/.env) via path traversal.
 """
 
 import json

@@ -20,8 +20,8 @@ out = Path(args.output).resolve()
 out.mkdir(parents=True, exist_ok=False)
 home = Path(tempfile.mkdtemp(prefix='history-'+tag+'-', dir=out))
 os.environ['HOME'] = str(home)
-os.environ['HERMES_HOME'] = str(home)
-from hermes_state import SessionDB
+os.environ['RABBIT_HOME'] = str(home)
+from rabbit_state import SessionDB
 from websockets.sync.client import connect
 
 items = [{'type': 'message', 'role': 'assistant', 'phase': 'final_answer', 'content': [{'type': 'output_text', 'text': 'HISTORY_SIDECAR_REPLY'}]}]
@@ -34,15 +34,15 @@ with SessionDB(db_path=home/'state.db') as db:
     db.append_message('history-control', 'user', 'CONTROL_USER')
     db.append_message('history-control', 'assistant', 'CONTROL_REPLY')
 env = {k: v for k, v in os.environ.items() if k in ['PATH', 'HOME', 'LANG', 'USER', 'VIRTUAL_ENV']}
-env.update(HOME=str(home), HERMES_HOME=str(home), HERMES_DASHBOARD_SESSION_TOKEN='history-fixture-token', PYTHONPATH=repo, HERMES_NONINTERACTIVE='1')
-cmd=[sys.executable, '-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(args.port), '--isolated']
+env.update(HOME=str(home), RABBIT_HOME=str(home), RABBIT_DASHBOARD_SESSION_TOKEN='history-fixture-token', PYTHONPATH=repo, RABBIT_NONINTERACTIVE='1')
+cmd=[sys.executable, '-m', 'rabbit_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(args.port), '--isolated']
 log=open(out/(tag+'-serve.log'),'w',encoding='utf-8')
 p=subprocess.Popen(cmd,cwd=repo,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT)
 frames=[]
 try:
     for _ in range(120):
         try:
-            req=urllib.request.Request(f'http://127.0.0.1:{args.port}/api/status',headers={'X-Hermes-Token':'history-fixture-token'})
+            req=urllib.request.Request(f'http://127.0.0.1:{args.port}/api/status',headers={'X-Rabbit-Token':'history-fixture-token'})
             status=json.load(urllib.request.urlopen(req,timeout=2));break
         except Exception:
             if p.poll() is not None: raise RuntimeError('serve exited')

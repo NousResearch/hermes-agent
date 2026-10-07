@@ -88,8 +88,8 @@ def prepare(args) -> None:
     values["bootstrap-python"] = sys.executable
     file_commands("GITHUB_OUTPUT", values)
     file_commands("GITHUB_ENV", {
-        "HERMES_HOME": home,
-        "HERMES_RUNTIME_DIR": home / "tools",
+        "RABBIT_HOME": home,
+        "RABBIT_RUNTIME_DIR": home / "tools",
         "PYTHONUTF8": "1",
     })
 
@@ -167,7 +167,7 @@ def install(args) -> None:
         path.insert(0, str(python.parent))
         outputs["python-path"] = str(python)
         exported.update({
-            "HERMES_PYTHON": python,
+            "RABBIT_PYTHON": python,
         })
         outputs["uv-cache-path"] = str(uv_cache_dir())
     if "npm" in names:
@@ -213,7 +213,7 @@ def dependencies(args) -> None:
     python = bindir / ("python.exe" if os.name == "nt" else "python")
     python3_alias(python)
     file_commands("GITHUB_ENV", {
-        "HERMES_PYTHON": python,
+        "RABBIT_PYTHON": python,
         "VIRTUAL_ENV": venv,
         "PYTHONPATH": project,
     })
@@ -234,8 +234,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.toolchain == "node" and (args.extras is not None or args.test_environment):
         parser.error("Python dependencies require the python or all toolchain")
-    os.environ["HERMES_HOME"] = str(args.home.resolve())
-    os.environ["HERMES_RUNTIME_DIR"] = str(args.home.resolve() / "tools")
+    os.environ["RABBIT_HOME"] = str(args.home.resolve())
+    os.environ["RABBIT_RUNTIME_DIR"] = str(args.home.resolve() / "tools")
     phases[args.phase](args)
 
 

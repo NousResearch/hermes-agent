@@ -1,7 +1,7 @@
 """Tests for Kanban task file attachments (#35338).
 
 Covers three layers:
-  * ``hermes_cli.kanban_db`` accessors (add/list/get/delete + path helpers)
+  * ``rabbit_cli.kanban_db`` accessors (add/list/get/delete + path helpers)
   * the dashboard REST surface (upload / list / download / delete)
   * worker-context surfacing so a kanban worker sees the absolute paths
 
@@ -20,8 +20,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ def _load_plugin_router():
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
     spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_attach_test", plugin_file,
+        "rabbit_dashboard_plugin_kanban_attach_test", plugin_file,
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -45,9 +45,9 @@ def _load_plugin_router():
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -155,7 +155,7 @@ def test_attachments_root_is_per_board(kanban_home, monkeypatch):
     default_root = kb.attachments_root(board="default")
     assert default_root.name == "attachments"
     # a named board nests under its board dir
-    monkeypatch.delenv("HERMES_KANBAN_ATTACHMENTS_ROOT", raising=False)
+    monkeypatch.delenv("RABBIT_KANBAN_ATTACHMENTS_ROOT", raising=False)
     named = kb.attachments_root(board="default")
     assert named == default_root
 
@@ -284,12 +284,12 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# CLI — hermes kanban attach / attachments / attach-rm
+# CLI — rabbit kanban attach / attachments / attach-rm
 # ---------------------------------------------------------------------------
 
 
 def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
-    from hermes_cli.kanban import run_slash
+    from rabbit_cli.kanban import run_slash
 
     conn = kbc.connect()
     try:

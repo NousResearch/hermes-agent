@@ -20,14 +20,14 @@ for name, source in inputs["resources"].items():
     resource = repo / name
     assert resource.is_symlink(), resource
     assert resource.samefile(source), (resource, source)
-for name, key in (("tui", "HERMES_TUI_DIR"), ("web", "HERMES_WEB_DIST")):
+for name, key in (("tui", "RABBIT_TUI_DIR"), ("web", "RABBIT_WEB_DIST")):
     resource = Path(command_map["env"][key])
     assert resource.is_symlink(), resource
     assert resource.samefile(inputs["frontends"][name])
 assert not (repo / "run_agent.py").exists(), "installed Python code must not be copied"
 assert not list(repo.glob("*.dist-info")), "Nix keeps the uv2nix wheel's metadata"
-assert command_map["env"]["HERMES_PYTHON"] == inputs["python"]
-assert command_map["env"]["HERMES_INSTALL_ROOT"] == str(repo)
+assert command_map["env"]["RABBIT_PYTHON"] == inputs["python"]
+assert command_map["env"]["RABBIT_INSTALL_ROOT"] == str(repo)
 stamp = json.loads((repo / "install-stamp.json").read_text())
 assert stamp["pmRuntime"] == inputs["pm_runtime"]
 assert (Path(inputs["pm_runtime"]) / "pm-runtime.json").is_file()
@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as temporary:
         "print(json.dumps(observed), flush=True)\n"
         "os._exit(0)\n"
     )
-    env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+    env = {"HOME": str(home), "RABBIT_HOME": str(home / ".rabbit"),
            "PATH": os.defpath, "LANG": "C.UTF-8", "TZ": "UTC"}
     for name, entry in entries.items():
         command = command_map["commands"][name]
@@ -62,11 +62,11 @@ with tempfile.TemporaryDirectory() as temporary:
         observed = json.loads(result.stdout)
         for key, value in command_map["env"].items():
             assert observed[key] == value, (name, key, observed.get(key), value)
-        assert observed["HERMES_BIN"] == str(package / "bin/hermes")
+        assert observed["RABBIT_BIN"] == str(package / "bin/rabbit")
         print(f"PASS: {name} imports from a clean cwd and receives the shared environment")
 
     # These public interfaces parse --help without starting an agent session.
-    for name in ("hermes", "hermes-acp"):
+    for name in ("rabbit", "rabbit-acp"):
         subprocess.run([str(package / "bin" / name), "--help"], cwd=home, env=env,
                        check=True, timeout=60, stdout=subprocess.DEVNULL)
         print(f"PASS: {name} --help")

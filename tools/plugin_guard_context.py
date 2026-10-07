@@ -38,7 +38,7 @@ _PROSE_KEEPS_FULL_SEVERITY_IDS = {
     "context_exfil", "send_to_url", "md_image_exfil", "md_link_exfil", "ssh_backdoor",
     "curl_pipe_shell", "wget_pipe_shell", "curl_pipe_python",
     "agent_config_mod", "agent_config_mod_shell", "agent_config_contract", "agent_config_ref",
-    "hermes_config_mod", "hermes_config_mod_shell", "hermes_config_ref",
+    "rabbit_config_mod", "rabbit_config_mod_shell", "rabbit_config_ref",
     "other_agent_config_mod", "other_agent_config_mod_shell", "other_agent_config_ref",
 }
 # Agent instruction surfaces inside a plugin — a bundled skill tree and the post-install note
@@ -84,12 +84,12 @@ def prose_cap(finding: Finding) -> Optional[str]:
 # ── (1b) language-pack catalogs ─────────────────────────────────────────────────────────────
 # ``locales/<lang>[.tui|.desktop].yaml`` in a ``provides_locales`` plugin is user-facing UI text
 # the loader reads as string leaves and shows to a human; nothing in it is executed or edits a
-# file, so the agent-config/hermes-config family steps down like any other prose (the bundled
+# file, so the agent-config/rabbit-config family steps down like any other prose (the bundled
 # ``en.yaml`` itself matches ``updating: "... AGENTS.md"``). Injection shapes and leaked keys
 # keep full severity: a pack can still carry model-directed text.
 _CATALOG_STEPS_DOWN_IDS = {
     "agent_config_mod", "agent_config_mod_shell", "agent_config_contract", "agent_config_ref",
-    "hermes_config_mod", "hermes_config_mod_shell", "hermes_config_ref",
+    "rabbit_config_mod", "rabbit_config_mod_shell", "rabbit_config_ref",
     "other_agent_config_mod", "other_agent_config_mod_shell", "other_agent_config_ref",
 }
 _LOCALE_CATALOG_SUFFIXES = {".yaml", ".yml"}
@@ -109,15 +109,15 @@ def catalog_cap(finding: Finding) -> Optional[str]:
 
 
 # A README "Uninstall" section removing the plugin's OWN install directory
-# (``rm -rf "$HOME/.hermes/plugins/<name>"``, ``rm -rf ~/.hermes/plugins/<name>`` before a reinstall
+# (``rm -rf "$HOME/.rabbit/plugins/<name>"``, ``rm -rf ~/.rabbit/plugins/<name>`` before a reinstall
 # ``cp``) is the one destructive shape that is harmless by construction: one ``rm``, one argument
-# rooted at ``$HOME``/``${HOME}``/``~`` + ``/.hermes/plugins/`` or ``skills/``
+# rooted at ``$HOME``/``${HOME}``/``~`` + ``/.rabbit/plugins/`` or ``skills/``
 # with a plain leaf — no glob, no ``..``, nothing chained. It lands at medium (a note). Any
-# wider target (``$HOME``, ``$HOME/.hermes``, ``$HOME/.hermes/plugins/*``) only gets the
+# wider target (``$HOME``, ``$HOME/.rabbit``, ``$HOME/.rabbit/plugins/*``) only gets the
 # generic prose step (high, caution) and the same line in a ``.sh`` stays critical (#115353).
 _SELF_UNINSTALL_RM = re.compile(
     r'^(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    r'(?P<q>["\']?)(?:\$HOME|\$\{HOME\}|~)/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
+    r'(?P<q>["\']?)(?:\$HOME|\$\{HOME\}|~)/\.rabbit/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
     r'\s*(?:#.*)?$'
 )
 

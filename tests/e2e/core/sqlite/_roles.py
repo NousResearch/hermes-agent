@@ -1,7 +1,7 @@
 """Child-process roles for the SQLite torture chamber.
 
 Run as ``python _roles.py <role> <json-args>``. Every role is a real OS process that opens the shared
-``state.db`` through the production ``SessionDB`` (or, for the non-hermes opener, a bare ``sqlite3``
+``state.db`` through the production ``SessionDB`` (or, for the non-rabbit opener, a bare ``sqlite3``
 connection) and reports through append-only files, so a ``kill -9`` loses nothing it already reported:
 
 * ``<name>.journal`` — writers: ``I <tok> <sid> <nrows>`` before an append, ``A <tok>`` once it returned.
@@ -10,8 +10,8 @@ connection) and reports through append-only files, so a ``kill -9`` loses nothin
 Tokens are single FTS words (``TK`` + alnum) so the test can look every acknowledged append up by content,
 through ``messages`` and through the FTS indexes.
 
-Journal-mode seam: with ``HERMES_E2E_SQLITE_VERSION_PIN`` set, the production version probe
-``hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
+Journal-mode seam: with ``RABBIT_E2E_SQLITE_VERSION_PIN`` set, the production version probe
+``rabbit_state_wal.is_sqlite_wal_reset_vulnerable()`` reports that SQLite version instead of the linked one;
 the real range predicate and ``apply_wal_with_fallback`` then decide the journal mode as they would there.
 """
 
@@ -57,23 +57,23 @@ class Out:
 
 
 def _apply_sqlite_version_pin() -> None:
-    pin = os.environ.get("HERMES_E2E_SQLITE_VERSION_PIN")
+    pin = os.environ.get("RABBIT_E2E_SQLITE_VERSION_PIN")
     if not pin:
         return
-    import hermes_state_wal
+    import rabbit_state_wal
 
     pinned = tuple(int(p) for p in pin.split("."))
-    probe = hermes_state_wal.is_sqlite_wal_reset_vulnerable
+    probe = rabbit_state_wal.is_sqlite_wal_reset_vulnerable
 
     def is_sqlite_wal_reset_vulnerable(version_info=None):
         return probe(pinned if version_info is None else version_info)
 
-    hermes_state_wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
+    rabbit_state_wal.is_sqlite_wal_reset_vulnerable = is_sqlite_wal_reset_vulnerable
 
 
 def _patient(a: dict, out: Out, op: str, fn, *, deadline: float = 90.0):
     """Run ``fn()``; in the DELETE arm (``busy_ok``) a SQLITE_BUSY refusal is reported as a ``busy`` event and
-    retried. DELETE mode is documented to block readers on writes (hermes_state_wal), so a busy read/open is an
+    retried. DELETE mode is documented to block readers on writes (rabbit_state_wal), so a busy read/open is an
     availability event there, never an integrity one. In the WAL arm it propagates and fails the role."""
     end = time.monotonic() + deadline
     while True:
@@ -95,7 +95,7 @@ def _fd_count() -> int:
 
 
 def _stray_close(db_path: Path) -> None:
-    """What a plugin, a tool read of ~/.hermes or a header probe does: open + close the live files in THIS
+    """What a plugin, a tool read of ~/.rabbit or a header probe does: open + close the live files in THIS
     process. POSIX drops every lock this process holds on the inode (sqlite.org/howtocorrupt.html §2.2)."""
     for suffix in ("", "-shm", "-wal"):
         try:
@@ -110,7 +110,7 @@ def _stopping(stop_file: Path) -> bool:
 
 def role_writer(a: dict, out: Out) -> int:
     """Long-lived writer (gateway- or TUI-like): appends until told to stop, journaling intent + ack."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
     tag = a["tag"]
@@ -162,7 +162,7 @@ def role_writer(a: dict, out: Out) -> int:
 def role_reader(a: dict, out: Out) -> int:
     """Dashboard-like reader: opens a writable SessionDB at startup and polls until stopped. Reports any
     per-session count that went DOWN (no compaction runs in this chamber) and its fd count per pass."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path, stop_file = Path(a["db"]), Path(a["stop"])
     db = _patient(a, out, "open", lambda: SessionDB(db_path=db_path))
@@ -195,16 +195,16 @@ def role_reader(a: dict, out: Out) -> int:
 
 
 def role_churn(a: dict, out: Out) -> int:
-    """`hermes sessions list` / doctor / cron-guard shape: open, read, close — ``iterations`` times in one
+    """`rabbit sessions list` / doctor / cron-guard shape: open, read, close — ``iterations`` times in one
     process, alternating the production SessionDB with a bare sqlite3 opener (sqlite3 shell, backup tool).
     The fd count must not grow with the number of cycles."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path = Path(a["db"])
     start_fds = _fd_count()
     fds_after_warmup = None
 
-    def _hermes_cycle() -> None:
+    def _rabbit_cycle() -> None:
         db = SessionDB(db_path=db_path)
         try:
             db.message_count()
@@ -220,7 +220,7 @@ def role_churn(a: dict, out: Out) -> int:
 
     try:
         for i in range(int(a["iterations"])):
-            _patient(a, out, "churn", _raw_cycle if i % 2 else _hermes_cycle)
+            _patient(a, out, "churn", _raw_cycle if i % 2 else _rabbit_cycle)
             if i == 3:
                 fds_after_warmup = _fd_count()
     except BaseException as exc:
@@ -242,7 +242,7 @@ def role_opener(a: dict, out: Out) -> int:
                 return conn.execute("SELECT count(*) FROM messages").fetchone()[0]
             finally:
                 conn.close()
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(db_path=db_path)
         try:
             return db.message_count()
@@ -272,7 +272,7 @@ def _raw_count(db_path: Path) -> int:
 
 def role_fts(a: dict, out: Out) -> int:
     """Maintenance pass: full FTS rebuild + optimize through SessionDB (cross-process admission)."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = _patient(a, out, "open", lambda: SessionDB(db_path=Path(a["db"])))
     out.report(event="ready")
@@ -289,7 +289,7 @@ def role_fts(a: dict, out: Out) -> int:
 
 def role_repair(a: dict, out: Out) -> int:
     """`repair_state_db_schema` as the CLI/doctor/startup recovery calls it."""
-    from hermes_state_repair import repair_state_db_schema
+    from rabbit_state_repair import repair_state_db_schema
 
     db_path = Path(a["db"])
     try:
@@ -313,7 +313,7 @@ def role_agent(a: dict, out: Out) -> int:
     slash command does, and journals ``C <kept bases…>``. ``resume`` reloads history from state.db first
     (a fresh process resuming the session)."""
     from agent.conversation_compression_manual import compress_now, parse_compress_args
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from run_agent import AIAgent
 
     stop_file = Path(a["stop"])
@@ -355,12 +355,12 @@ def role_agent(a: dict, out: Out) -> int:
 
 
 def role_cli(a: dict, out: Out) -> int:
-    """``hermes <argv>``: ``hermes_cli.main`` run as ``__main__``, i.e. ``python -m hermes_cli.main <argv>``."""
+    """``rabbit <argv>``: ``rabbit_cli.main`` run as ``__main__``, i.e. ``python -m rabbit_cli.main <argv>``."""
     import runpy
 
-    sys.argv = ["hermes", *a["argv"]]
+    sys.argv = ["rabbit", *a["argv"]]
     try:
-        runpy.run_module("hermes_cli.main", run_name="__main__", alter_sys=True)
+        runpy.run_module("rabbit_cli.main", run_name="__main__", alter_sys=True)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
     return 0

@@ -5,7 +5,7 @@
  * A few switches aren't: they decide whether a tool is in the model's schema at
  * all (`react_to_message`, `tip`, `tour`), and that decision is made where the
  * agent runs. So the value has to travel to whichever gateway the app is
- * actually talking to — local, SSH, plain URL, or cloud — which is why this is
+ * actually talking to — local, SSH, or plain URL — which is why this is
  * `config.set` on the live connection and not an env var on some process.
  *
  * Two moments matter, and shipping only the first is why the reactions toggle

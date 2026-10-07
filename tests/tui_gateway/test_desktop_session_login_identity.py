@@ -14,7 +14,7 @@ identity-less: nothing is inferred and nothing is stamped.
 
 from __future__ import annotations
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 

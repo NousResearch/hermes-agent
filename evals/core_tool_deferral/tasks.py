@@ -8,7 +8,7 @@ Covers all 18 deferred tools:
 plus an eager-surface control and a false-discovery distractor.
 
 Each task: id, prompt, fixtures(workspace), grade(ctx) -> (score 0..1, notes).
-ctx keys: workspace, hermes_home, events (desktop emit records),
+ctx keys: workspace, rabbit_home, events (desktop emit records),
 callback_log (agent-callback invocations), tool_counts, messages,
 final_answer, todo_dump.
 """
@@ -48,9 +48,9 @@ def _called(ctx, name):
 
 
 def _grep_home(ctx, needle):
-    """Binary-safe grep of the entire HERMES_HOME tree (sqlite included)."""
+    """Binary-safe grep of the entire RABBIT_HOME tree (sqlite included)."""
     nb = needle.encode()
-    for root, _dirs, files in os.walk(ctx["hermes_home"]):
+    for root, _dirs, files in os.walk(ctx["rabbit_home"]):
         for fn in files:
             try:
                 with open(os.path.join(root, fn), "rb") as f:

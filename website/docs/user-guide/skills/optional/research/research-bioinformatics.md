@@ -14,10 +14,9 @@ Gateway to 400+ genomics and computational biology skills.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/research/bioinformatics` |
+| Source | Optional — install with `rabbit skills install official/research/bioinformatics` |
 | Path | `optional-skills/research/bioinformatics` |
 | Version | `1.0.0` |
-| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `bioinformatics`, `genomics`, `sequencing`, `biology`, `research`, `science` |
@@ -25,7 +24,7 @@ Gateway to 400+ genomics and computational biology skills.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Bioinformatics Skills Gateway
@@ -50,20 +49,20 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
 2. Clone the relevant repo (shallow clone to save time):
    ```bash
    # bioSkills (reference material)
-   git clone --depth 1 https://github.com/GPTomics/bioSkills.git ~/.hermes/cache/scratch/bioSkills
+   git clone --depth 1 https://github.com/GPTomics/bioSkills.git ~/.rabbit/cache/scratch/bioSkills
 
    # ClawBio (runnable pipelines)
-   git clone --depth 1 https://github.com/ClawBio/ClawBio.git ~/.hermes/cache/scratch/ClawBio
+   git clone --depth 1 https://github.com/ClawBio/ClawBio.git ~/.rabbit/cache/scratch/ClawBio
    ```
 3. Read the specific skill:
    ```bash
    # bioSkills — each skill is at: <category>/<skill-name>/SKILL.md
-   cat ~/.hermes/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
+   cat ~/.rabbit/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
 
    # ClawBio — each skill is at: skills/<skill-name>/
-   cat ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
+   cat ~/.rabbit/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
    ```
-4. Follow the fetched skill as reference material. These are NOT Hermes-format skills — treat them as expert domain guides. They contain correct parameters, proper tool flags, and validated pipelines.
+4. Follow the fetched skill as reference material. These are NOT Rabbit-format skills — treat them as expert domain guides. They contain correct parameters, proper tool flags, and validated pipelines.
 
 ## Skill Index by Domain
 
@@ -246,7 +245,7 @@ conda install -c bioconda samtools bcftools blast minimap2 bedtools fastp kraken
 
 ## Pitfalls
 
-- The fetched skills are NOT in Hermes SKILL.md format. They use their own structure (bioSkills: code pattern cookbooks; ClawBio: README + Python scripts). Read them as expert reference material.
+- The fetched skills are NOT in Rabbit SKILL.md format. They use their own structure (bioSkills: code pattern cookbooks; ClawBio: README + Python scripts). Read them as expert reference material.
 - bioSkills are reference guides — they show correct parameters and code patterns but aren't executable pipelines.
 - ClawBio skills are executable — many have `--demo` flags and can be run directly.
 - Both repos assume bioinformatics tools are installed. Check prerequisites before running pipelines.

@@ -2,7 +2,7 @@
 """Hard A/B evaluation for core-toolset changes: baseline vs fixes.
 
 Runs a battery of error-inducing tasks (each derived from a waste class
-measured in the production session DB) through `hermes chat` twice — once per
+measured in the production session DB) through `rabbit chat` twice — once per
 arm — and scores every run from its NeMo Relay ATOF trace plus wall clock:
 
   - llm_calls (turns), tool_calls, tool_errors, retry_after_error
@@ -18,15 +18,15 @@ Usage:
 
 Environment:
   ABEVAL_ROOT    working/results root   (default: ./abeval-workspace)
-  ABEVAL_HOME    HERMES_HOME for runs   (default: $ABEVAL_ROOT/home)
-                 Must be a configured Hermes home with credentials for the
+  ABEVAL_HOME    RABBIT_HOME for runs   (default: $ABEVAL_ROOT/home)
+                 Must be a configured Rabbit home with credentials for the
                  models under test. See README.md for a minimal setup.
 
 Results append to $ABEVAL_ROOT/results/<model>/<arm>/meta.jsonl (resume-safe:
 completed run_ids are skipped). ATOF traces land beside the meta file.
 
 This is the harness used for the August 2026 core-toolset performance batch
-(tracker: NousResearch/hermes-agent#77056).
+(tracker: seven0070/Rabbit-#77056).
 """
 import json
 import os
@@ -191,14 +191,14 @@ mode = "overwrite"
             env = dict(os.environ)
             env.update({
                 "PYTHONPATH": pythonpath,
-                "HERMES_HOME": str(HOME),
-                "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
+                "RABBIT_HOME": str(HOME),
+                "RABBIT_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
             q = TASKS[name].replace("{WORK}", str(work))
             t0 = time.time()
             try:
                 p = subprocess.run(
-                    [sys.executable, "-m", "hermes_cli.main", "chat", "--query", q,
+                    [sys.executable, "-m", "rabbit_cli.main", "chat", "--query", q,
                      "--quiet", "--max-turns", "30", "--accept-hooks", "--model", model],
                     cwd=work, env=env, capture_output=True, text=True,
                     encoding="utf-8", errors="replace", timeout=600)

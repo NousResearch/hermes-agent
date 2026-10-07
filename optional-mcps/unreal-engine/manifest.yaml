@@ -8,8 +8,8 @@ source: https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unre
 
 # Epic's official "Unreal MCP" plugin (internal id ModelContextProtocol)
 # embeds an MCP server inside the running Unreal Editor process and serves it
-# over local HTTP. There is nothing to install on the Hermes side — the user
-# enables the plugin in-editor and the server binds to 127.0.0.1. Hermes's
+# over local HTTP. There is nothing to install on the Rabbit side — the user
+# enables the plugin in-editor and the server binds to 127.0.0.1. Rabbit's
 # MCP client just connects to the URL.
 #
 # Default bind is http://127.0.0.1:8000/mcp (port + path are configurable in
@@ -34,7 +34,7 @@ auth:
 
 post_install: |
   This entry connects to Epic's official Unreal MCP plugin, which runs INSIDE
-  the Unreal Editor. Before Hermes can connect:
+  the Unreal Editor. Before Rabbit can connect:
 
     1. Open your project in Unreal Editor 5.8+.
     2. Edit > Plugins, search "Unreal MCP", enable it, restart the editor
@@ -43,7 +43,7 @@ post_install: |
        "Auto Start Server" (or run `ModelContextProtocol.StartServer` in the
        editor console). It binds to http://127.0.0.1:8000/mcp by default.
 
-  Start Hermes AFTER the editor's server is running so the tools are probed.
+  Start Rabbit AFTER the editor's server is running so the tools are probed.
   If you changed the port or URL path in Editor Preferences, update the url in
   mcp_servers.unreal-engine to match.
 
@@ -51,4 +51,4 @@ post_install: |
   on the engine game thread — avoid issuing overlapping calls.
 
   Re-run the tool checklist any time with:
-    hermes mcp configure unreal-engine
+    rabbit mcp configure unreal-engine

@@ -34,14 +34,14 @@ def container_task_id(monkeypatch):
 
 def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
     """Checkpoint lookup must use the same cwd as a relative file mutation."""
-    process_cwd = tmp_path / "opt" / "hermes"
+    process_cwd = tmp_path / "opt" / "rabbit"
     workspace_cwd = tmp_path / "opt" / "data" / "workspace"
     process_cwd.mkdir(parents=True)
     workspace_cwd.mkdir(parents=True)
 
     # Both directories contain content so checkpointing the wrong one would
     # still succeed and remain observable as the regression did in Docker.
-    (process_cwd / "pyproject.toml").write_text("[project]\nname = 'hermes'\n")
+    (process_cwd / "pyproject.toml").write_text("[project]\nname = 'rabbit'\n")
     (workspace_cwd / "pyproject.toml").write_text("[project]\nname = 'workspace'\n")
     (workspace_cwd / "existing.txt").write_text("before\n")
 
@@ -102,7 +102,7 @@ async def test_container_session_refuses_host_rollback_on_every_surface(tmp_path
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from rabbit_cli.cli_commands_mixin import CLICommandsMixin
     from tui_gateway import server
 
     host_dir = tmp_path / "workspace" / "project"

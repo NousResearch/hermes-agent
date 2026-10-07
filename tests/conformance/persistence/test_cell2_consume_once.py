@@ -3,7 +3,7 @@
 Contract clause (arXiv:2608.03836): a parked handoff is claimed by exactly
 one consumer, no matter how many independent processes race for it. This is
 the cell the paper found failing at saturation 1.0 in 36/40 cells across
-deployed frameworks; Hermes' ``claim_handoff`` ships the paper's own repair
+deployed frameworks; Rabbit' ``claim_handoff`` ships the paper's own repair
 shape (single UPDATE with a state predicate, rowcount-checked), which the
 tracking-issue probe confirmed. This cell pins it permanently.
 
@@ -23,7 +23,7 @@ from tests.conformance.persistence._harness import (
 CLAIMANT = r"""
 import sys, time
 from pathlib import Path
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 db_path = Path({db_path!r})
 barrier = Path({barrier!r})
@@ -48,7 +48,7 @@ N_CLAIMANTS = 8
 
 
 def test_exactly_one_claimant_wins(tmp_path):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path = tmp_path / "state.db"
     barrier = tmp_path / "go"

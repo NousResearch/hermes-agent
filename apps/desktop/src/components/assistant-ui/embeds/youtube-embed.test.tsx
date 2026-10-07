@@ -12,7 +12,7 @@ const descriptor = detectEmbed('https://www.youtube.com/watch?v=M7lc1UVf-VE&t=42
 describe('YouTubeEmbedRenderer', () => {
   it('embeds directly with its own origin on an http renderer, never asking for the host', () => {
     const getEmbedHostOrigin = vi.fn()
-    window.hermesDesktop = { ...window.hermesDesktop, getEmbedHostOrigin }
+    window.rabbitDesktop = { ...window.rabbitDesktop, getEmbedHostOrigin }
 
     const { container } = render(<YouTubeEmbedRenderer descriptor={descriptor} />)
     const src = new URL(container.querySelector('iframe')!.src)

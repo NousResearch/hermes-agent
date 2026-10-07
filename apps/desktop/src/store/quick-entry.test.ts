@@ -419,7 +419,7 @@ describe('quickComposerReducer', () => {
     const timeoutEvent = quickEntryResultEvent(timeout, 7)
 
     expect(timeoutEvent).toEqual({
-      message: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+      message: 'Rabbit has not confirmed the prompt yet — it may still be delivered.',
       submitId: 7,
       type: 'submit-unknown'
     })

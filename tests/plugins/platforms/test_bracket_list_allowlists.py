@@ -1,6 +1,6 @@
 """Allowlists stored as a JSON-list *string* are honoured by every platform gate (issue #76457).
 
-Configs written by ``hermes config set KEY '["-100","-200"]'`` before the writer learned
+Configs written by ``rabbit config set KEY '["-100","-200"]'`` before the writer learned
 to emit YAML lists hold the literal ``'["-100","-200"]'`` as a string. The Telegram gate
 already decodes that shape (``gateway/platforms/_shared.py::decode_json_list_literal``);
 the Discord / WhatsApp / DingTalk gates comma-split it into one bogus entry that matches

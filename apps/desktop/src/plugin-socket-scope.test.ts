@@ -1,23 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesConnection } from '@/global'
+import type { RabbitConnection } from '@/global'
 
 // pluginSocket must dial the ACTIVE gateway's backend — resolved through the
 // same (connectionId, profile) source of truth ensureGatewayProfile /
 // ensureGatewayAgent maintain for $connection — not the unscoped primary
-// (#73044). Exercises the REAL hermes + store/gateway + store/profile chain:
+// (#73044). Exercises the REAL rabbit + store/gateway + store/profile chain:
 //  1. A profile switch routes the plugin socket to the pooled profile backend
 //     (getConnection(profile), like pluginRest's profileScoped()).
 //  2. A registry-agent activation routes it to the agent's SOURCE connection
 //     (getConnectionFor), not the local pool — the post-#87600 shape.
 
-vi.mock('@/hermes', async importOriginal => {
+vi.mock('@/rabbit', async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>()
 
   return {
     ...actual,
     // Stub only the socket class so gateway activations don't dial real WS.
-    HermesGateway: class {
+    RabbitGateway: class {
       connectionState = 'closed'
       connect = async (_wsUrl: string): Promise<void> => {
         this.connectionState = 'open'
@@ -33,13 +33,13 @@ vi.mock('@/hermes', async importOriginal => {
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
-const { pluginSocket, setApiRequestConnection, setApiRequestProfile } = await import('@/hermes')
+const { pluginSocket, setApiRequestConnection, setApiRequestProfile } = await import('@/rabbit')
 const { closeSecondaryGateways, configureGatewayRegistry, setPrimaryGateway } = await import('@/store/gateway')
 const { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } = await import('@/store/profile')
 
 // authMode 'oauth' makes pluginSocket stop after resolving the connection
 // (polling fallback), so the assertions cover resolution without a WS dial.
-const conn = (over: Partial<HermesConnection> = {}): HermesConnection =>
+const conn = (over: Partial<RabbitConnection> = {}): RabbitConnection =>
   ({
     authMode: 'oauth',
     baseUrl: 'https://pool.invalid',
@@ -47,7 +47,7 @@ const conn = (over: Partial<HermesConnection> = {}): HermesConnection =>
     token: 'fake-test-token',
     wsUrl: 'wss://pool.invalid/api/ws?token=fake-test-token',
     ...over
-  }) as HermesConnection
+  }) as RabbitConnection
 
 let getConnection: ReturnType<typeof vi.fn>
 let getConnectionFor: ReturnType<typeof vi.fn>
@@ -57,7 +57,7 @@ beforeEach(() => {
   getConnectionFor = vi.fn(async ({ profile }: { connectionId?: null | string; profile?: null | string }) =>
     conn({ baseUrl: 'https://homelab.invalid', profile: profile ?? 'default' })
   )
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'rabbitDesktop', {
     configurable: true,
     value: {
       getConnection,
@@ -76,7 +76,7 @@ afterEach(() => {
   $activeGatewayProfile.set('default')
   setApiRequestProfile(null)
   setApiRequestConnection(null)
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  Reflect.deleteProperty(window, 'rabbitDesktop')
   vi.restoreAllMocks()
 })
 

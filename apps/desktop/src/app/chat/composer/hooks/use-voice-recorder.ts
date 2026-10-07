@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
+import { type ResolvedOwner, resolveOwnerNow } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { syncSttLease, VOICE_INPUT_LEASE } from '@/lib/stt-lease'
 import { recordFeatureUse } from '@/store/desktop-metrics'

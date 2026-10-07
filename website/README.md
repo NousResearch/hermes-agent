@@ -3,7 +3,7 @@
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
 > **Reading the docs on GitHub?** The Markdown under `docs/` is authored for the rendered site at
-> <https://hermes-agent.nousresearch.com/docs/>. Cross-page links are relative Markdown paths, so they
+> <https://github.com/seven0070/Rabbit-/tree/main/website/docs/>. Cross-page links are relative Markdown paths, so they
 > follow through on GitHub's file viewer too. Every page on the site has an **Edit this page** link
 > that opens the source file here.
 

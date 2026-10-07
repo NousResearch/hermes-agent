@@ -26,11 +26,11 @@ _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromi
 
 def profile_dir() -> Path:
     """User-data-dir the bot's browser uses on this profile's screen. ``AGENT_BROWSER_PROFILE`` pins your own:
-    ``~`` expands, and a relative path is anchored at this profile's HERMES_HOME (where the rest of the screen's
-    state lives), so ``pin`` means ``<HERMES_HOME>/pin`` and two profiles never share one jar by accident."""
+    ``~`` expands, and a relative path is anchored at this profile's RABBIT_HOME (where the rest of the screen's
+    state lives), so ``pin`` means ``<RABBIT_HOME>/pin`` and two profiles never share one jar by accident."""
     override = os.path.expanduser(os.environ.get("AGENT_BROWSER_PROFILE", "").strip())
     if override:
-        return Path(override) if os.path.isabs(override) else runtime.get_hermes_home() / override
+        return Path(override) if os.path.isabs(override) else runtime.get_rabbit_home() / override
     return runtime.state_dir() / "browser-profile"
 
 
@@ -53,7 +53,7 @@ def executable() -> Optional[str]:
 
 
 def _managed_executable() -> Optional[str]:
-    from hermes_cli.browser_runtime import chromium_executable
+    from rabbit_cli.browser_runtime import chromium_executable
 
     exe = chromium_executable(allow_override=False)
     return exe if exe and os.access(exe, os.X_OK) and not _is_headless_shell(exe) else None
@@ -106,7 +106,7 @@ def dock_argv(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = 
 
 def dock_exec_line(exe: str, user_data_dir: str, *, sandbox_bypass: Optional[bool] = None) -> str:
     """The ``Exec=`` line of the dock's ``.desktop`` entry. Every argument is double-quoted per the
-    Desktop Entry spec (a browser under ``/opt/Google Chrome/`` or a profile under a spaced HERMES_HOME
+    Desktop Entry spec (a browser under ``/opt/Google Chrome/`` or a profile under a spaced RABBIT_HOME
     otherwise splits into garbage): inside the quotes ``" ` $ \\`` are backslash-escaped, and because the
     value is itself a string field, each of those backslashes is escaped once more."""
     def quote(arg: str) -> str:

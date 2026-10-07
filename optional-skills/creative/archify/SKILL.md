@@ -6,7 +6,7 @@ author: tt-a1i
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [diagram, architecture, workflow, sequence, dataflow, state-machine, mermaid, html, svg]
     category: creative
     related_skills: [architecture-diagram, excalidraw, concept-diagrams]
@@ -20,7 +20,7 @@ metadata:
 > **Catalog stub.** This entry is maintained upstream at
 > [tt-a1i/archify](https://github.com/tt-a1i/archify): the project ships a
 > self-contained skill directory (`archify/`) with the Node CLI, schemas,
-> renderers, examples and references. `hermes skills install
+> renderers, examples and references. `rabbit skills install
 > official/creative/archify` pulls the current tree live from that repo
 > (quarantined and scanned like any hub install) — this directory holds only
 > the catalog metadata, so the vendored copy can never go stale.

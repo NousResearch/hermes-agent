@@ -1,7 +1,7 @@
-import { type GatewayEvent } from '@hermes/shared'
+import { type GatewayEvent } from '@rabbit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { HermesGateway } from '@/api/client'
+import { RabbitGateway } from '@/api/client'
 
 import {
   activeGateway,
@@ -33,7 +33,7 @@ const history: SequencedEvent[] = []
 const onEvent = vi.fn<(event: GatewayEvent) => void>()
 const onActiveRouteChanged = vi.fn()
 const ambient = vi.fn<() => Promise<never>>()
-let primary: HermesGateway
+let primary: RabbitGateway
 
 class NetworkSocket extends EventTarget {
   static readonly CONNECTING = 0
@@ -134,7 +134,7 @@ beforeEach(async () => {
   sockets.length = 0
   history.length = 0
   vi.clearAllMocks()
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
     getConnectionFor: vi.fn(async () => ({
       ...owner,
       authMode: 'token',
@@ -150,7 +150,7 @@ beforeEach(async () => {
     onEvent,
     onActiveRouteChanged
   })
-  primary = new HermesGateway()
+  primary = new RabbitGateway()
   const connected = primary.connect('wss://h2-local.invalid/api/ws')
   await vi.advanceTimersByTimeAsync(1)
   await connected
@@ -164,7 +164,7 @@ afterEach(() => {
   primary.close()
   setPrimaryGateway(null)
   setPrimaryGatewayConnectionId(null)
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
@@ -289,7 +289,7 @@ describe('background remote turn reconnect', () => {
       } else if (cleanup === 'prune') {
         pruneSecondaryGateways(new Set())
       } else {
-        vi.mocked(window.hermesDesktop!.getConnectionFor!).mockRejectedValueOnce(
+        vi.mocked(window.rabbitDesktop!.getConnectionFor!).mockRejectedValueOnce(
           new Error(`No connection with id "${owner.connectionId}"`)
         )
       }

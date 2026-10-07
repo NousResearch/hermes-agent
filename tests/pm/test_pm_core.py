@@ -65,9 +65,9 @@ def pm_env(tmp_path, served, monkeypatch):
     docroot, base_url = served
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(runtime))
+    monkeypatch.delenv("RABBIT_DISABLE_LAZY_INSTALLS", raising=False)
     # Policy is pinned open here; the disabled-path tests pin it closed.
     import importlib
 
@@ -648,8 +648,8 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
     shutil.copy2(Path(sys._base_executable).resolve(), binary)
     subprocess.run(
         ["codesign", "--force", "--sign", "-", "--timestamp=none",
-         "--identifier", "test.hermes.downloaded", "--requirements",
-         '=designated => identifier "test.hermes.downloaded"', str(binary)],
+         "--identifier", "test.rabbit.downloaded", "--requirements",
+         '=designated => identifier "test.rabbit.downloaded"', str(binary)],
         check=True, capture_output=True, timeout=30,
     )
     python.stage(Store(tmp_path / "store"), staged, "fixture", current_target())
@@ -658,12 +658,12 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
                    check=True, capture_output=True, timeout=30)
     identity = subprocess.run(["codesign", "-d", "-r-", str(binary)],
                               check=True, capture_output=True, text=True, timeout=30)
-    assert 'designated => identifier "com.nousresearch.hermes.managed-python"' in identity.stdout + identity.stderr
+    assert 'designated => identifier "com.seven0070.rabbit.managed-python"' in identity.stdout + identity.stderr
 
 
 @pytest.mark.platforms("not macos")
 def test_python_package_does_not_sign_non_macos_runtime(monkeypatch, tmp_path):
-    import hermes_cli.macos_signing as signing
+    import rabbit_cli.macos_signing as signing
 
     monkeypatch.setattr(
         signing.subprocess,
@@ -772,7 +772,7 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("rabbit_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
 
     assert not (staged / "vcruntime140_1.dll").exists()
@@ -786,7 +786,7 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
     staged.mkdir()
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("rabbit_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()
@@ -895,7 +895,7 @@ def test_store_path_dirs_include_node_npm_when_installed(tmp_path, monkeypatch):
     from pm.lock import Facts, Lockfile
 
     runtime = tmp_path / "runtime"
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(runtime))
     lock_dir = tmp_path / "repo-lock"
     lock_dir.mkdir()
     lockfile_path = lock_dir / "lock.json"

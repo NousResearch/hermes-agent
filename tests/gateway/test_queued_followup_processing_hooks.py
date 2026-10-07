@@ -127,7 +127,7 @@ def _install_fake_agent(monkeypatch, tmp_path, agent_cls):
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
@@ -142,7 +142,7 @@ async def test_queue_terminal_presentation_belongs_to_last_turn(monkeypatch, tmp
     _TwoTurnAgent.calls = []
     _install_fake_agent(monkeypatch, tmp_path, _TwoTurnAgent)
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     adapter = HookRecordingAdapter()
     runner = _make_runner(adapter)
     adapter._pending_messages[SESSION_KEY] = MessageEvent(

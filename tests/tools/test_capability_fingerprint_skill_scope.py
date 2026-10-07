@@ -19,7 +19,7 @@ from tools import bot_mode_probe
 
 @pytest.fixture
 def home(tmp_path):
-    h = tmp_path / ".hermes"
+    h = tmp_path / ".rabbit"
     h.mkdir()
     return h
 

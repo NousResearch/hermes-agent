@@ -31,6 +31,6 @@ describe('$titlebarAppActionsSide', () => {
   it('persists left', () => {
     setTitlebarAppActionsSide('left')
     expect($titlebarAppActionsSide.get()).toBe('left')
-    expect(window.localStorage.getItem('hermes.desktop.titlebarAppActions')).toBe('left')
+    expect(window.localStorage.getItem('rabbit.desktop.titlebarAppActions')).toBe('left')
   })
 })

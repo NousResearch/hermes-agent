@@ -1,7 +1,7 @@
 """Multiplex isolation for the lark_oapi WS client (issue #73779).
 
 ``lark_oapi.ws.client`` keeps the loop used by ``Client.start()`` in a
-module-level global and Hermes monkey-patches ``websockets.connect`` on the
+module-level global and Rabbit monkey-patches ``websockets.connect`` on the
 shared module. With N profile WS threads the globals were last-write-wins:
 "Future attached to a different loop" crashes or a client bound to a
 sibling's loop that never hears anything again.

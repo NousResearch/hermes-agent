@@ -59,7 +59,7 @@ def _make_gateway_agent(session_db):
     # The multiplexed profile scope would resolve the active profile name to
     # the route's profile (e.g. "orion"); pin it so the row + origin_json
     # carry the profile deterministically.
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="orion"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="orion"):
         agent._ensure_db_session()
     return agent
 
@@ -67,7 +67,7 @@ def _make_gateway_agent(session_db):
 class TestEnsureDbSessionPersistsRoutingIdentity:
     def test_lazy_creation_writes_session_key_and_chat_identity(self):
         """First-created row must carry gateway routing metadata (not identity-less)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -97,7 +97,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
 
     def test_row_recoverable_by_peer_lookup(self):
         """find_latest_gateway_session_for_peer must find the lazily-created row."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -116,7 +116,7 @@ class TestEnsureDbSessionPersistsRoutingIdentity:
 
     def test_cli_session_stays_identity_less(self):
         """A plain CLI agent (no gateway fields) keeps the old shape — no origin_json."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")

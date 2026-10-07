@@ -42,11 +42,11 @@ async def test_a_profile_key_never_reaches_another_profiles_responses(tmp_path, 
     from gateway.platforms import api_server as api
     from gateway.platforms.api_server import APIServerAdapter
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     for name, key in (("alice", ALICE), ("bob", BOB)):
         (home / "profiles" / name).mkdir(parents=True)
         (home / "profiles" / name / ".env").write_text(f"API_SERVER_KEY={key}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": DEFAULT}))
     adapter.gateway_runner = type("_Runner", (), {"config": GatewayConfig(multiplex_profiles=True)})()

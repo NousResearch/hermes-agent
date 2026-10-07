@@ -3,7 +3,7 @@
  *
  * Why this exists
  * ───────────────
- * Hermes desktop can request a "repair" of its bundled backend when the
+ * Rabbit desktop can request a "repair" of its bundled backend when the
  * renderer observes a transient backend failure (see issue #74874). The
  * classic failure fingerprint:
  *
@@ -11,7 +11,7 @@
  *      import, MCP discovery, a long-running agent turn).
  *   2. The renderer's WebSocket can't deliver the `gateway.ready` frame
  *      in time and treats the socket as dead.
- *   3. Renderer calls `hermes:bootstrap:repair`.
+ *   3. Renderer calls `rabbit:bootstrap:repair`.
  *   4. Bootstrap unconditionally force-reinstalls the venv, restarting
  *      the backend — which stalls again for the same reason.
  *   5. Renderer reports dead backend → another repair → infinite loop.

@@ -8,7 +8,7 @@ interface ChatOnboardingWindowOptions {
 }
 
 export function registerChatOnboardingWindow({ enabled, mainWindow }: ChatOnboardingWindowOptions): void {
-  ipcMain.on('hermes:chat-onboarding:grow', (event, request: GrowRequest) => {
+  ipcMain.on('rabbit:chat-onboarding:grow', (event, request: GrowRequest) => {
     const win = mainWindow()
 
     if (!enabled || !win || win.isDestroyed() || event.sender !== win.webContents) {
@@ -28,7 +28,7 @@ export function registerChatOnboardingWindow({ enabled, mainWindow }: ChatOnboar
     )
   })
 
-  ipcMain.on('hermes:chat-onboarding:solo-boot', event => {
+  ipcMain.on('rabbit:chat-onboarding:solo-boot', event => {
     const win = mainWindow()
 
     if (!enabled || !win || win.isDestroyed() || event.sender !== win.webContents) {

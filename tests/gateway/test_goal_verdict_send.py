@@ -21,13 +21,13 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
-    from hermes_cli import goals
+    from rabbit_cli import goals
 
     goals._DB_CACHE.clear()
     # Pre-warm the SessionDB cache from this SYNC context. The tests call
@@ -86,7 +86,7 @@ def _make_runner_with_adapter(session_id: str = None):
     src = _make_source()
     # Default to a unique session_id so parallel runs
     # don't see each other's GoalManager state (DEFAULT_DB_PATH gets frozen at
-    # module-import time, defeating per-test HERMES_HOME monkeypatches).
+    # module-import time, defeating per-test RABBIT_HOME monkeypatches).
     session_entry = SessionEntry(
         session_key=build_session_key(src),
         session_id=session_id or f"goal-sess-{uuid.uuid4().hex[:8]}",
@@ -118,19 +118,19 @@ async def _drain_until(condition, timeout=5.0):
 
 
 @pytest.mark.asyncio
-async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
+async def test_goal_verdict_continue_enqueues_continuation(rabbit_home):
     """When the judge says continue, both the 'continuing' status and the
     continuation-prompt event must be delivered. The continuation prompt is
     routed through the adapter's pending-messages FIFO so the goal loop
     proceeds on the next turn."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()
 
-    from hermes_cli.goals import GoalManager
+    from rabbit_cli.goals import GoalManager
 
     mgr = GoalManager(session_entry.session_id)
     mgr.set("polish the docs")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False, None, False)):
+    with patch("rabbit_cli.goals.judge_goal", return_value=("continue", "still needs work", False, None, False)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
@@ -146,19 +146,19 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
 
 
 @pytest.mark.asyncio
-async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
+async def test_goal_verdict_budget_exhausted_sends_pause(rabbit_home):
     """When the budget is exhausted, a '⏸ Goal paused' message must be sent
     and no further continuation enqueued."""
     runner, adapter, session_entry, src = _make_runner_with_adapter()
 
-    from hermes_cli.goals import GoalManager, save_goal
+    from rabbit_cli.goals import GoalManager, save_goal
 
     mgr = GoalManager(session_entry.session_id, default_max_turns=2)
     state = mgr.set("tiny goal", max_turns=2)
     state.turns_used = 2
     save_goal(session_entry.session_id, state)
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "keep going", False, None, False)):
+    with patch("rabbit_cli.goals.judge_goal", return_value=("continue", "keep going", False, None, False)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,

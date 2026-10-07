@@ -2,7 +2,7 @@
 session can't call (Blank Slate audit, Aug 2026).
 
 Covers:
-  * HERMES_AGENT_HELP_GUIDANCE degrades to the docs-only variant when the
+  * RABBIT_AGENT_HELP_GUIDANCE degrades to the docs-only variant when the
     skill tools aren't loaded.
   * execution_guidance_text() never names a web tool, and drops the
     terminal/execute_code/read_file/search_files lines the session's toolset
@@ -66,48 +66,48 @@ class TestEssentialSkillsUndisableable:
         import agent.skill_utils as su
         cfg = tmp_path / "config.yaml"
         cfg.write_text(
-            "skills:\n  disabled:\n    - hermes-agent\n    - some-other-skill\n",
+            "skills:\n  disabled:\n    - rabbit-agent\n    - some-other-skill\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(su, "get_config_path", lambda: cfg)
         su._RAW_CONFIG_CACHE.clear()
         disabled = su.get_disabled_skill_names(platform="cli")
-        assert "hermes-agent" not in disabled
+        assert "rabbit-agent" not in disabled
         assert "some-other-skill" in disabled
 
     def test_cli_side_reader_strips_essential(self):
-        from hermes_cli.skills_config import get_disabled_skills
-        cfg = {"skills": {"disabled": ["hermes-agent", "other"]}}
+        from rabbit_cli.skills_config import get_disabled_skills
+        cfg = {"skills": {"disabled": ["rabbit-agent", "other"]}}
         disabled = get_disabled_skills(cfg)
-        assert "hermes-agent" not in disabled
+        assert "rabbit-agent" not in disabled
         assert "other" in disabled
 
     def test_cli_side_writer_strips_essential(self, monkeypatch):
-        import hermes_cli.skills_config as sc
+        import rabbit_cli.skills_config as sc
         saved = {}
         monkeypatch.setattr(sc, "save_config", lambda cfg: saved.update(cfg))
         cfg = {}
-        sc.save_disabled_skills(cfg, {"hermes-agent", "other"})
+        sc.save_disabled_skills(cfg, {"rabbit-agent", "other"})
         assert cfg["skills"]["disabled"] == ["other"]
 
     def test_skill_manage_delete_refused(self):
         from tools.skill_manager_guards import _pinned_guard
-        msg = _pinned_guard("hermes-agent")
+        msg = _pinned_guard("rabbit-agent")
         assert msg is not None
 
 
 class TestEssentialOnlySync:
     def test_opted_out_sync_seeds_only_essential(self, monkeypatch, tmp_path):
-        """A profile with .no-bundled-skills still gets the hermes-agent skill."""
+        """A profile with .no-bundled-skills still gets the rabbit-agent skill."""
         import tools.skills_sync as ss
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir()
         (home / ss.NO_BUNDLED_SKILLS_MARKER).write_text("", encoding="utf-8")
 
         bundled = tmp_path / "bundled"
         for cat, name in [
-            ("autonomous-ai-agents", "hermes-agent"),
+            ("autonomous-ai-agents", "rabbit-agent"),
             ("media", "gif-search"),
         ]:
             d = bundled / cat / name
@@ -117,13 +117,13 @@ class TestEssentialOnlySync:
                 encoding="utf-8",
             )
 
-        monkeypatch.setattr(ss, "_hermes_home", lambda: home)
+        monkeypatch.setattr(ss, "_rabbit_home", lambda: home)
         monkeypatch.setattr(ss, "_get_bundled_dir", lambda: bundled)
         monkeypatch.setattr(ss, "_build_external_skill_index", lambda: set())
 
         result = ss.sync_skills(quiet=True)
 
         assert result["skipped_opt_out"] is True
-        assert result["copied"] == ["hermes-agent"]
-        assert (home / "skills" / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+        assert result["copied"] == ["rabbit-agent"]
+        assert (home / "skills" / "autonomous-ai-agents" / "rabbit-agent" / "SKILL.md").exists()
         assert not (home / "skills" / "media").exists()

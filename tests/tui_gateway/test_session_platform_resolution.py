@@ -1,6 +1,6 @@
 """Platform/source tagging for the desktop chat surface.
 
-The desktop app's chat panel uses ``hermes serve`` (the ``tui_gateway``
+The desktop app's chat panel uses ``rabbit serve`` (the ``tui_gateway``
 backend), so every chat session historically got ``platform="tui"`` stamped
 on it — even though the user is in a graphical chat surface, not a
 terminal. That mis-tag is why the agent suggested TUI-only slash commands
@@ -9,8 +9,8 @@ terminal. That mis-tag is why the agent suggested TUI-only slash commands
 These tests pin the env-var matrix that resolves the session platform at
 ``tui_gateway`` session-creation time:
 
-  HERMES_DESKTOP=1, HERMES_DESKTOP_TERMINAL unset  -> platform="desktop"
-  HERMES_DESKTOP=1, HERMES_DESKTOP_TERMINAL=1     -> platform="tui"  (embedded pane)
+  RABBIT_DESKTOP=1, RABBIT_DESKTOP_TERMINAL unset  -> platform="desktop"
+  RABBIT_DESKTOP=1, RABBIT_DESKTOP_TERMINAL=1     -> platform="tui"  (embedded pane)
   neither set                                      -> platform="tui"  (standalone)
 
 The resolver helper is import-safe (no heavy module side effects) so it
@@ -34,8 +34,8 @@ def _reload_resolver():
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    monkeypatch.delenv("RABBIT_DESKTOP", raising=False)
+    monkeypatch.delenv("RABBIT_DESKTOP_TERMINAL", raising=False)
     return monkeypatch
 
 
@@ -45,7 +45,7 @@ class TestResolveSessionPlatform:
         assert _srv._resolve_session_platform() == "tui"
 
     def test_desktop_chat_backend_gets_desktop_tag(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
+        clean_env.setenv("RABBIT_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._resolve_session_platform() == "desktop"
 
@@ -55,8 +55,8 @@ class TestResolveSessionPlatform:
     def test_embedded_terminal_overrides_desktop_when_both_set(self, clean_env):
         """The terminal-pane qualifier must short-circuit the desktop-backend
         marker. An embedded TUI is a TUI, not a desktop chat surface."""
-        clean_env.setenv("HERMES_DESKTOP", "1")
-        clean_env.setenv("HERMES_DESKTOP_TERMINAL", "true")
+        clean_env.setenv("RABBIT_DESKTOP", "1")
+        clean_env.setenv("RABBIT_DESKTOP_TERMINAL", "true")
         _srv = _reload_resolver()
         assert _srv._resolve_session_platform() == "tui"
 
@@ -75,14 +75,14 @@ class TestResolveSessionSource:
 class TestResolveAgentPlatform:
 
     def test_missing_source_falls_back_to_env_resolved_platform(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
+        clean_env.setenv("RABBIT_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._resolve_agent_platform(None) == "desktop"
 
 
 class TestSessionSourceFallback:
     def test_session_source_uses_existing_session_value(self, clean_env):
-        clean_env.setenv("HERMES_DESKTOP", "1")
+        clean_env.setenv("RABBIT_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._session_source({"source": "telegram"}) == "telegram"
 

@@ -1,11 +1,11 @@
 name: web-octen
-repo: https://github.com/Octen-Team/hermes-octen-plugin
+repo: https://github.com/Octen-Team/rabbit-octen-plugin
 sha: 3af8a3fe200d93934c823485f66c3375a4508474
 description: Octen web search with query-focused highlights and page extraction.
 maintainer: Octen-Team
 tier: community
 category: web
-docs_url: https://github.com/Octen-Team/hermes-octen-plugin#readme
+docs_url: https://github.com/Octen-Team/rabbit-octen-plugin#readme
 capabilities:
   provides_tools: []
   provides_hooks: []

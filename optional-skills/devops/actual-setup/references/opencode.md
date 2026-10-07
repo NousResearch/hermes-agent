@@ -10,7 +10,7 @@ matches a credential **id** in `~/.local/share/opencode/auth.json`. So put the
 key in auth.json and NOTHING sensitive goes in opencode.json. This is more robust
 than `options.apiKey: "{env:...}"` with the var name, because `{env:...}` only resolves
 if the var is exported in the shell OpenCode launches from — and the Actual key
-is typically only in `~/.hermes/.env`, not a shell profile, so the env form
+is typically only in `~/.rabbit/.env`, not a shell profile, so the env form
 breaks outside an inheriting terminal.
 
 ### 1. Add the credential to auth.json
@@ -68,14 +68,14 @@ auth.json by id match.
 ```bash
 opencode run -m actual/glm-5.2-nvfp4 "Reply with exactly this text: OPENCODE_ACTUAL_OK"
 ```
-OpenCode DOES use the `provider/model` slash form on the CLI (unlike Hermes,
+OpenCode DOES use the `provider/model` slash form on the CLI (unlike Rabbit,
 where the slash form 404s custom providers). Expect the exact reply. Run a second
 reasoning check (e.g. "What is 17 * 23?") since GLM-5.2 is a reasoning model.
 
 ## Why no reasoning_effort trap here
 
 The Actual relay rejects `reasoning_effort: xhigh` with an HTTP 400 (see the
-`hermes-custom-providers` skill, pitfall 2). Hermes hits this because it forwards
+`rabbit-custom-providers` skill, pitfall 2). Rabbit hits this because it forwards
 its global `agent.reasoning_effort`. OpenCode's ai-sdk does NOT send that param,
 so Actual + OpenCode works with zero reasoning config. No `reasoning_overrides`
 equivalent needed.

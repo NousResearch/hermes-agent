@@ -1,4 +1,4 @@
-"""Render Hermes' prior transcript as a one-shot seed for a FRESH codex app-server thread.
+"""Render Rabbit' prior transcript as a one-shot seed for a FRESH codex app-server thread.
 
 A codex thread is the model-side continuity store, so a thread that codex hands back via
 ``thread/resume`` already knows the conversation. A thread started from scratch does not: a session
@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 MAX_HISTORY_SEED_CHARS = 32_000
 _TOOL_RESULT_PREVIEW_CHARS = 400
 
-_HEADER = ("Prior conversation from this Hermes session (the thread you are continuing was started fresh; "
+_HEADER = ("Prior conversation from this Rabbit session (the thread you are continuing was started fresh; "
            "treat these turns as already having happened):")
 
 

@@ -17,7 +17,7 @@ Parallel 4-agent cleanup of recent code changes.
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/simplify-code` |
 | Version | `1.1.0` |
-| Author | Hermes Agent (inspired by Claude Code /simplify) |
+| Author | Rabbit Agent (inspired by Claude Code /simplify) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `cleanup`, `refactor`, `delegation`, `subagent`, `parallel`, `simplify` |
@@ -26,7 +26,7 @@ Parallel 4-agent cleanup of recent code changes.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Simplify Code — Parallel Review & Cleanup
@@ -259,7 +259,7 @@ Wait for all four to return (batch mode returns them together).
   note, not folded into cleanup fixes. Correctness review is a different
   pass with different verification standards.
 - **Respect project conventions.** If the repo has AGENTS.md / CLAUDE.md /
-  HERMES.md or a linter config, fold those rules into the reviewer prompts so
+  RABBIT.md or a linter config, fold those rules into the reviewer prompts so
   suggestions match house style instead of fighting it.
 - **Large diffs blow context.** If the diff is huge, scope it down before
   delegating — four subagents each carrying a 5000-line diff is expensive and

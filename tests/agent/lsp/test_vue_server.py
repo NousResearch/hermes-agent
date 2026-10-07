@@ -1,8 +1,8 @@
 """Tests for the Vue server registration.
 
 ``@vue/language-server`` 3.x only works behind a client-hosted tsserver tunnel
-(``tsserver/request`` notifications) that Hermes's generic client does not
-run, so it never publishes diagnostics.  Hermes pins the self-hosting 2.x line
+(``tsserver/request`` notifications) that Rabbit's generic client does not
+run, so it never publishes diagnostics.  Rabbit pins the self-hosting 2.x line
 and starts it with ``vue.hybridMode`` off plus an explicit JS TypeScript SDK.
 """
 from __future__ import annotations
@@ -16,8 +16,8 @@ from agent.lsp.servers import ServerContext, find_server_for_file
 
 
 def _stage(tmp_path, monkeypatch, vue_version: str, *, js_sdk: bool):
-    """Fake ``<HERMES_HOME>/lsp`` tree: a staged launcher, the Vue package, optionally a JS TypeScript SDK."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    """Fake ``<RABBIT_HOME>/lsp`` tree: a staged launcher, the Vue package, optionally a JS TypeScript SDK."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     node_modules = tmp_path / "lsp" / "node_modules"
     pkg = node_modules / "@vue" / "language-server"
     (pkg / "bin").mkdir(parents=True)

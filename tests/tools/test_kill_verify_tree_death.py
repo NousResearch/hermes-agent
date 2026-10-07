@@ -110,7 +110,7 @@ def test_escalated_kill_of_sigterm_ignoring_child_reports_killed(tmp_path, monke
     """The #115490 scenario itself: a child that ignores SIGTERM is SIGKILLed after the grace
     window, and the verification must give the kernel a moment to reap it — poll() right
     after kill() still says alive, which turned every escalated kill into 'Kill incomplete'."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", staticmethod(lambda: 0.2))
     monkeypatch.setattr(ProcessRegistry, "_write_checkpoint", lambda self: None)
     reg = ProcessRegistry()
@@ -141,7 +141,7 @@ def test_kill_reaps_children_spawned_during_the_grace_window(tmp_path, monkeypat
         except psutil.NoSuchProcess:
             return False
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds", staticmethod(lambda: 1.5))
     monkeypatch.setattr(ProcessRegistry, "_write_checkpoint", lambda self: None)
     started, pid_file = tmp_path / "started", tmp_path / "late_pids"

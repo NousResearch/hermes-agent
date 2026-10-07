@@ -61,7 +61,7 @@ def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
     (home / "config.yaml").write_text(
         f"checkpoints:\n  enabled: {str(enabled).lower()}\n", encoding="utf-8"
     )
-    monkeypatch.setattr(gateway_run, "_hermes_home", home, raising=False)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", home, raising=False)
     monkeypatch.setattr(cpm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
 
 # ---------------------------------------------------------------------------

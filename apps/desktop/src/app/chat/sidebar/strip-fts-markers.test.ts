@@ -1,5 +1,5 @@
 // Regression: the backend's session-search FTS layer wraps matched terms in
-// literal '>>>' / '<<<' snippet() delimiters (hermes_state_search.py). The
+// literal '>>>' / '<<<' snippet() delimiters (rabbit_state_search.py). The
 // sidebar paints the snippet as plain text, so an unstripped marker renders
 // rows titled ">>>foo<<<" (Aug 2026 desktop audit).
 import { describe, expect, it } from 'vitest'

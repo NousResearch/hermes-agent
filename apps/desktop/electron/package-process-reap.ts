@@ -10,7 +10,7 @@ export interface RunningProcess {
   pid: number
   /**
    * Parent pid (Win32_Process.ParentProcessId), or null when unavailable.
-   * Descendants of a live Hermes runtime process are protected too — see
+   * Descendants of a live Rabbit runtime process are protected too — see
    * reapPackageRootedProcesses.
    */
   parentPid: number | null
@@ -20,7 +20,7 @@ export interface RunningProcess {
    */
   path: string | null
   /**
-   * Full command line, or null when it cannot be read. A live Hermes runtime
+   * Full command line, or null when it cannot be read. A live Rabbit runtime
    * process is identified by its command line and never reaped — see
    * protectedRuntimePids. An UNREADABLE command line is conservatively
    * skipped as well: the cost of missing one pinner is the bug we already
@@ -71,7 +71,7 @@ export interface ReapOutcome {
 function isSharedRuntime(imagePath: string): boolean {
   const image = imagePath.replace(/^.*[\\/]/, '').toLowerCase()
 
-  return /^(?:pythonw?(?:[0-9.]+)?|node|hermes(?:-agent|-acp)?)(?:\.exe|\.cmd)?$/.test(image)
+  return /^(?:pythonw?(?:[0-9.]+)?|node|rabbit(?:-agent|-acp)?)(?:\.exe|\.cmd)?$/.test(image)
 }
 
 /**
@@ -137,7 +137,7 @@ export function listWindowsProcesses(
  * Windows paths are case-insensitive, so the compare is too. The separator
  * check is what keeps the prefix honest: a bare startsWith would match a
  * sibling directory whose name merely begins with a root
- * (`...\HermesBundled_0.21` vs `...\HermesBundled_0.21.20`), and killing
+ * (`...\RabbitBundled_0.21` vs `...\RabbitBundled_0.21.20`), and killing
  * another package's processes is a far worse bug than the one being fixed.
  */
 export function isUnderInstallRoot(
@@ -272,7 +272,7 @@ export function reapPackageRootedProcesses(deps: ReapPackageRootedProcessesDeps)
     }
 
     // Conservative skip: an unreadable command line cannot prove the process
-    // is not a live Hermes runtime, so it is never a candidate.
+    // is not a live Rabbit runtime, so it is never a candidate.
     if (typeof candidate.commandLine !== 'string' || candidate.commandLine.trim() === '') {
       continue
     }

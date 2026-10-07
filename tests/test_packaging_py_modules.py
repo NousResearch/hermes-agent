@@ -1,10 +1,10 @@
 """Packaging invariant: every root-level module that packaged code imports ships in the wheel.
 
 ``packages.find`` only sees directories with ``__init__.py``; root single-file modules
-(``run_agent``, ``hermes_state``, ``toolsets``...) reach the wheel through
+(``run_agent``, ``rabbit_state``, ``toolsets``...) reach the wheel through
 ``setup.py::_root_py_modules()``, which derives the list from the tree at build time. A
 static list drifted every time the root layout changed and broke installed wheels with
-``ModuleNotFoundError`` on ``import hermes_state``. This test pins the two halves of that
+``ModuleNotFoundError`` on ``import rabbit_state``. This test pins the two halves of that
 contract: the derived list covers every root module packaged code can import, and the
 helper stays the single source (no static ``py-modules`` creeping back into pyproject).
 """
@@ -17,11 +17,11 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("agent", "tools", "hermes_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
+PACKAGES = ("agent", "tools", "rabbit_cli", "gateway", "tui_gateway", "cron", "acp_adapter", "plugins", "providers")
 
 
 def _root_py_modules() -> set[str]:
-    spec = importlib.util.spec_from_file_location("_hermes_setup_py", REPO_ROOT / "setup.py")
+    spec = importlib.util.spec_from_file_location("_rabbit_setup_py", REPO_ROOT / "setup.py")
     mod = importlib.util.module_from_spec(spec)
     saved = sys.argv
     sys.argv = ["setup.py", "--name"]  # setup() must not try to build anything on import
@@ -72,4 +72,4 @@ def test_every_root_module_imported_by_packaged_code_is_shipped():
     missing = {f: sorted(n for n in names if n not in shipped) for f, names in _imported_root_names(paths).items()}
     missing = {f: v for f, v in missing.items() if v}
     assert not missing, f"packaged code imports root modules the wheel would not ship: {missing}"
-    assert "hermes_state" in shipped and "setup" not in shipped
+    assert "rabbit_state" in shipped and "setup" not in shipped

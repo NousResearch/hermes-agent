@@ -138,7 +138,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
 
 
 def unknown_platform_error(platform_name: str) -> str:
-    from hermes_cli.left_core_migration import platform_install_hint
+    from rabbit_cli.left_core_migration import platform_install_hint
     return f"Unknown or unregistered plugin platform: {platform_name}{platform_install_hint(platform_name)}"
 
 

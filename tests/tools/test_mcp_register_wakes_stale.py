@@ -12,7 +12,7 @@ import pytest
 
 @pytest.mark.no_isolate
 def test_register_wakes_stale_cached_server(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools import mcp_tool_discovery as _mcp_discovery

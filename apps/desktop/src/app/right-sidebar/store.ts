@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
 
-const TAKEOVER_KEY = 'hermes.desktop.terminalTakeover'
+const TAKEOVER_KEY = 'rabbit.desktop.terminalTakeover'
 
 // Simple mode rests the terminal closed without touching this preference; ⌃`
 // still brings it up for the session.
@@ -23,8 +23,8 @@ export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(ac
 export const $terminalInjection = atom<null | string>(null)
 
 /** Open the terminal pane and run a command in it. Used to disconnect external
- *  (CLI-managed) providers, which Hermes can't clear via the API — the user
- *  sees exactly what runs instead of Hermes silently deleting their creds. */
+ *  (CLI-managed) providers, which Rabbit can't clear via the API — the user
+ *  sees exactly what runs instead of Rabbit silently deleting their creds. */
 export const runInTerminal = (command: string) => {
   const trimmed = command.trim()
 

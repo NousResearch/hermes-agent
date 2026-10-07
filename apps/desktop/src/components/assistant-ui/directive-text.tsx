@@ -26,8 +26,8 @@ import {
   WIRE_REFERENCE_KINDS
 } from './reference-kinds'
 
-const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
-type HermesRefType = (typeof HERMES_REF_TYPES)[number]
+const RABBIT_REF_TYPES = WIRE_REFERENCE_KINDS
+type RabbitRefType = (typeof RABBIT_REF_TYPES)[number]
 
 /** Icon glyphs come from the shared reference vocabulary, so the popover row
  *  and the chip can never drift apart. */
@@ -127,7 +127,7 @@ const DirectiveIcon: FC<{ type: string; className?: string }> = ({ type, classNa
  */
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
-const HERMES_DIRECTIVE_RE = referenceRe()
+const RABBIT_DIRECTIVE_RE = referenceRe()
 
 // A skill referenced in a sent message — either the invocation that opens it
 // (`/work fix the leak`, which is all a skill turn ever renders as) or one
@@ -178,7 +178,7 @@ export function formatRefValue(value: string): string {
   return value
 }
 
-export const hermesDirectiveFormatter: Unstable_DirectiveFormatter = {
+export const rabbitDirectiveFormatter: Unstable_DirectiveFormatter = {
   serialize(item: Unstable_TriggerItem): string {
     const metadata = item.metadata as { rawText?: unknown; insertId?: unknown } | undefined
     const rawText = typeof metadata?.rawText === 'string' ? metadata.rawText : null
@@ -234,7 +234,7 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
       label: match[2] || match[3] || '',
       id: match[3] || match[2] || ''
     })),
-    ...Array.from(text.matchAll(HERMES_DIRECTIVE_RE)).map(match => {
+    ...Array.from(text.matchAll(RABBIT_DIRECTIVE_RE)).map(match => {
       const id = unwrapReferenceValue(match[2] || '')
 
       return {
@@ -338,14 +338,14 @@ function safeEmbeddedImages(text: string) {
 
 function safeDirectiveSegments(text: string): Unstable_DirectiveSegment[] {
   try {
-    return [...hermesDirectiveFormatter.parse(text)]
+    return [...rabbitDirectiveFormatter.parse(text)]
   } catch {
     return [{ kind: 'text', text }]
   }
 }
 
 /**
- * Renders text containing Hermes directives (`@file:...`, `@image:...`) as
+ * Renders text containing Rabbit directives (`@file:...`, `@image:...`) as
  * inline chips. Embedded MEDIA images render below as a thumbnail row.
  */
 export function DirectiveContent({ text }: { text: string }) {
@@ -429,7 +429,7 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
     // Remote gateway: the image lives on the gateway's disk, not ours — fetch
     // it over the authenticated API. Local: read it straight off this disk.
     const load =
-      window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
+      window.rabbitDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.rabbitDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
       .then(async url => {

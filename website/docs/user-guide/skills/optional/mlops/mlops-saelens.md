@@ -14,7 +14,7 @@ Train sparse autoencoders to interpret model features.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/saelens` |
+| Source | Optional — install with `rabbit skills install official/mlops/saelens` |
 | Path | `optional-skills/mlops/saelens` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ Train sparse autoencoders to interpret model features.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # SAELens: Sparse Autoencoders for Mechanistic Interpretability
@@ -401,9 +401,9 @@ For detailed API documentation, tutorials, and advanced usage, see the `referenc
 
 | File | Contents |
 |------|----------|
-| [references/README.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/README.md) | Overview and quick start guide |
-| [references/api.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/api.md) | Complete API reference for SAE, TrainingSAE, configurations |
-| [references/tutorials.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/tutorials.md) | Step-by-step tutorials for training, analysis, steering |
+| [references/README.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/README.md) | Overview and quick start guide |
+| [references/api.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/api.md) | Complete API reference for SAE, TrainingSAE, configurations |
+| [references/tutorials.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/tutorials.md) | Step-by-step tutorials for training, analysis, steering |
 
 ## External Resources
 

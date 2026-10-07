@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY
 from run_agent import AIAgent
 
@@ -61,9 +61,9 @@ def _seed_session(db: SessionDB, sid: str, turns: int = 3) -> None:
 def test_marker_constant_in_sync() -> None:
     """One shared literal across every module that touches the marker.
 
-    ``hermes_state`` and ``agent.turn_finalizer`` import the constant from
+    ``rabbit_state`` and ``agent.turn_finalizer`` import the constant from
     ``agent.context_compressor`` (single source), so the only genuine drift
-    surface left is ``run_agent``'s predating copy — hermes_state cannot
+    surface left is ``run_agent``'s predating copy — rabbit_state cannot
     import run_agent (circular), and run_agent's own literal predates the
     consolidation.
     """

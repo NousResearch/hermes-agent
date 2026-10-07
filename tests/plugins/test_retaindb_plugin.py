@@ -18,10 +18,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
-    """Ensure HERMES_HOME and RETAINDB vars are isolated."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    """Ensure RABBIT_HOME and RETAINDB vars are isolated."""
+    rabbit_home = tmp_path / ".rabbit"
+    rabbit_home.mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
     monkeypatch.delenv("RETAINDB_API_KEY", raising=False)
     monkeypatch.delenv("RETAINDB_BASE_URL", raising=False)
     monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
@@ -236,8 +236,8 @@ class TestRetainDBMemoryProvider:
 
     def _make_provider(self, tmp_path, monkeypatch, api_key="rdb-test-key"):
         monkeypatch.setenv("RETAINDB_API_KEY", api_key)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        (tmp_path / ".hermes").mkdir(exist_ok=True)
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+        (tmp_path / ".rabbit").mkdir(exist_ok=True)
         provider = RetainDBMemoryProvider()
         return provider
 
@@ -259,11 +259,11 @@ class TestPrefetch:
 
     def _make_initialized_provider(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
+        p.initialize("test-session", rabbit_home=str(rabbit_home))
         return p
 
     def test_queue_prefetch_skips_without_client(self, monkeypatch):
@@ -295,11 +295,11 @@ class TestOnMemoryWrite:
 
     def test_mirrors_add_action(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
+        p.initialize("test-session", rabbit_home=str(rabbit_home))
         with patch.object(p._client, "add_memory", return_value={"id": "mem-1"}) as mock_add:
             p.on_memory_write("add", "user", "User prefers dark mode")
             mock_add.assert_called_once()
@@ -308,11 +308,11 @@ class TestOnMemoryWrite:
 
     def test_skips_non_add_action(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
+        p.initialize("test-session", rabbit_home=str(rabbit_home))
         with patch.object(p._client, "add_memory") as mock_add:
             p.on_memory_write("remove", "user", "something")
             mock_add.assert_not_called()
@@ -320,11 +320,11 @@ class TestOnMemoryWrite:
 
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         p = RetainDBMemoryProvider()
-        p.initialize("test-session", hermes_home=str(hermes_home))
+        p.initialize("test-session", rabbit_home=str(rabbit_home))
         with patch.object(p._client, "add_memory", return_value={"id": "mem-1"}) as mock_add:
             p.on_memory_write("add", "memory", "Some env fact")
             assert mock_add.call_args[1]["memory_type"] == "factual"

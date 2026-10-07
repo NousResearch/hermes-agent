@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Connection lifecycle for registry-scoped secondary gateways:
 //
-//  1. Removing a connection must dispose its secondaries — remote/cloud
+//  1. Removing a connection must dispose its secondaries — remote
 //     sources have no local process whose death would drop the socket, so
 //     without an explicit dispose the WebSocket stays open and streams ghost
 //     events until page reload.
@@ -25,9 +25,9 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   setApiRequestConnection: vi.fn(),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {
       this.connectionState = 'closed'
@@ -82,7 +82,7 @@ const {
 } = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = stub
 }
 
 beforeEach(() => {
@@ -96,7 +96,7 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.restoreAllMocks()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094)', () => {

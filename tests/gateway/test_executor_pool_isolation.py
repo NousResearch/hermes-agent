@@ -66,7 +66,7 @@ def test_abandoned_housekeeping_stays_off_the_turn_pool():
     try:
         asyncio.run(_abandon_housekeeping(runner, 3, runner._CLEANUP_TIMEOUT_S))
         assert ran_on, "no housekeeping item started"
-        assert all(name.startswith("hermes-gateway-hk") for name in ran_on), ran_on
+        assert all(name.startswith("rabbit-gateway-hk") for name in ran_on), ran_on
         assert runner._executor is None, "housekeeping created or used the turn pool"
     finally:
         wedge.set()

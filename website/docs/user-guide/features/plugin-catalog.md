@@ -2,16 +2,16 @@
 sidebar_position: 13
 sidebar_label: "Plugin Catalog"
 title: "Plugin Catalog"
-description: "Give Hermes new powers with reviewed plugins you can install in one click"
+description: "Give Rabbit new powers with reviewed plugins you can install in one click"
 ---
 
 # Plugin Catalog
 
-The plugin catalog is a curated, human-reviewed directory of Hermes plugins you
+The plugin catalog is a curated, human-reviewed directory of Rabbit plugins you
 can install by name with a single command:
 
 ```bash
-hermes plugins install <name>
+rabbit plugins install <name>
 ```
 
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
@@ -39,21 +39,21 @@ same reviewed commit this page describes.
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the
-[`plugin-catalog/`](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog)
-directory of the hermes-agent repository, declaring:
+[`plugin-catalog/`](https://github.com/seven0070/Rabbit-/tree/main/plugin-catalog)
+directory of the rabbit-agent repository, declaring:
 
 | Field | Meaning |
 |---|---|
-| `name` | The catalog key you pass to `hermes plugins install` |
+| `name` | The catalog key you pass to `rabbit plugins install` |
 | `description` | One-line summary shown on cards and in the install prompt, including any reviewer disclosure |
 | `repo` | The plugin's public git repository |
 | `sha` | The **exact 40-hex commit** that was reviewed — installs check out this pin, not a branch tip |
 | `subdir` | Path to the plugin inside the repo for monorepos — a plain relative path matching `[A-Za-z0-9._/-]+` (no `..`, `.`, empty segments, absolute or backslash forms) (optional, default repo root) |
-| `tier` | `official` (maintained by NousResearch) or `community` |
+| `tier` | `official` (maintained by the Rabbit team) or `community` |
 | `category` | Browse shelf: `desktop` (default), `memory`, `platform`, `web`, `tools`, `voice`, `automation`, `models` or `general` |
 | `maintainer` | Who owns the plugin |
 | `capabilities` | Declared tools, hooks, middleware, and required env vars |
-| `requires_hermes` | Minimum Hermes version, e.g. `>=0.19` (optional) |
+| `requires_rabbit` | Minimum Rabbit version, e.g. `>=0.19` (optional) |
 | `platforms` | OS restrictions, empty = all (optional) |
 | `title` | Human name shown on cards, e.g. `NVIDIA App` (optional; defaults to `name`) |
 | `onboarding` | `true` offers the plugin on the desktop onboarding card, beside the hosted connectors, on the platforms it lists. Curated: official entries only (optional, default `false`) |
@@ -75,7 +75,7 @@ The catalog is designed so you know exactly what you're installing:
   author pushing new code to their repo does **not** change what the catalog
   installs — updating the pin requires another reviewed PR.
 - **Scanned at admission, trusted at install.** Admission CI runs the same
-  security scanner the installer runs (`hermes plugins validate` includes a
+  security scanner the installer runs (`rabbit plugins validate` includes a
   `security scan` check): a `dangerous` verdict fails the entry, `caution`
   findings are listed for the reviewer. Because the reviewer saw them, a
   catalog install checked out at exactly the pinned SHA does not stop to ask
@@ -84,12 +84,12 @@ The catalog is designed so you know exactly what you're installing:
 - **Desktop plugins run with the app's authority — review is the boundary.**
   A plugin's `desktop/plugin.js` is evaluated inside the Desktop app itself,
   in the same realm as the app's own code: there is no sandbox, and it can
-  do anything the app can (gateway RPC, the full `window.hermesDesktop`
+  do anything the app can (gateway RPC, the full `window.rabbitDesktop`
   bridge, storage of other plugins). What protects you is the trust model
   above — a human read the exact pinned commit, and the install is that
   commit — plus two tripwires: admission's `desktop surface` lint refuses
   the obvious moves outside the plugin SDK (patching built-in prototypes,
-  `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
+  `eval`, importing anything other than `@rabbit/plugin-sdk`/`react`,
   including remote scripts), and the app's loader refuses every non-SDK
   import again at load time. The lint reads a `<script` regex — a literal, or
   the pattern string of a `new RegExp(...)` passed straight to
@@ -98,11 +98,11 @@ The catalog is designed so you know exactly what you're installing:
   including one built from `new RegExp(...).source`, still fails. Treat the
   lint as a review aid, not a
   guarantee; give Desktop halves the same scrutiny you'd give a Python half.
-- **No runtime overrides of Hermes.** Listed plugins extend Hermes through
+- **No runtime overrides of Rabbit.** Listed plugins extend Rabbit through
   its public surfaces (hooks, middleware, provider profiles, Desktop SDK slots)
   and never replace core functions, methods or Desktop UI in place: two plugins
   patching the same seam would break each other, and a core release could break
-  both. Admission's `no core override` check refuses Python that rebinds Hermes
+  both. Admission's `no core override` check refuses Python that rebinds Rabbit
   modules, classes or their tables at runtime, and the `desktop surface` lint
   refuses `desktop/plugin.js` code that queries the app's own markup to restyle,
   hide, click or rewrite core UI.
@@ -115,7 +115,7 @@ The catalog is designed so you know exactly what you're installing:
   `http://` and `www.` spellings of the same repo all match. The installer
   refuses to install anything on the removed list, and a plugin that lands on
   the list *after* you installed it stops updating, cannot be enabled and is
-  refused at load time (`hermes plugins remove <name>`, or reinstall with
+  refused at load time (`rabbit plugins remove <name>`, or reinstall with
   `--allow-removed` to keep it knowingly).
 - **Installed ≠ enabled.** Installing a catalog plugin puts it on disk; like
   any plugin it must still be enabled before it loads. See
@@ -132,16 +132,16 @@ repository. Review the code of anything you give credentials to.
 
 ```bash
 # Install a reviewed catalog entry by name (checks out the pinned SHA)
-hermes plugins install <name>
+rabbit plugins install <name>
 
 # Then enable it, as with any plugin
-hermes plugins enable <name>
+rabbit plugins enable <name>
 ```
 
 The install prompt shows the entry's capability summary — declared tools,
 hooks, and required env vars — before anything is cloned.
 
-The catalog name and the plugin's own manifest name can differ; `hermes
+The catalog name and the plugin's own manifest name can differ; `rabbit
 plugins install` prints the installed name, and `enable` takes that one. For
 example the `touchdesigner` entry (a portable Agent Plugins v1 package that
 bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
@@ -149,23 +149,23 @@ bundles the twozero MCP server with the `touchdesigner-mcp` skill) installs as
 function-name limits:
 
 ```bash
-hermes plugins install touchdesigner
-hermes plugins enable td
+rabbit plugins install touchdesigner
+rabbit plugins enable td
 ```
 
 Portable packages can also carry a stdio MCP server. The `snyk` entry pins the
 Snyk CLI (`npx -y snyk@<version> mcp`) and bundles the `snyk-security-scan`
-skill, so one install gives Hermes code, dependency, container and IaC scanning
+skill, so one install gives Rabbit code, dependency, container and IaC scanning
 plus the workflow for using it; the catalog name and manifest name match:
 
 ```bash
-hermes plugins install snyk
-hermes plugins enable snyk
+rabbit plugins install snyk
+rabbit plugins enable snyk
 ```
 
 ### Updating a catalog install
 
-`hermes plugins update <name>` never runs `git pull` for catalog installs —
+`rabbit plugins update <name>` never runs `git pull` for catalog installs —
 it compares your installed pin against the current catalog pin and, when the
 catalog moved (via a reviewed PR), prepares and dependency-validates the new SHA
 before publishing it. Your
@@ -185,17 +185,17 @@ dependency metadata (`pyproject.toml`, `package.json`, lockfiles). If a user-sta
 path conflicts with the new tree's file/directory layout, the update stops before
 publication so the installed copy — and the user's data — remain intact.
 Edits you made to *tracked* files are not carried onto the new code; copies are
-saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
+saved under `~/.rabbit/plugins-backup/<name>-<sha>/` and the update warns you.
 If the new pin renames the plugin's manifest, the old directory is removed and
-your enabled flag follows the new name. `hermes plugins list` shows catalog
+your enabled flag follows the new name. `rabbit plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.
 
 PM validates the dependencies of an active plugin before its new code replaces
 the installed version. A version, scan, dependency, or publication failure keeps
 the working code and dependency selection. Disabled plugins stay disabled.
-Provenance is recorded by the installer in `~/.hermes/plugins/.install-metadata.json`,
+Provenance is recorded by the installer in `~/.rabbit/plugins/.install-metadata.json`,
 outside the plugin's own tree — a repository cannot ship a file that makes it
-look like a reviewed catalog install. (The `.hermes-catalog.json` inside the
+look like a reviewed catalog install. (The `.rabbit-catalog.json` inside the
 plugin directory is a convenience copy only.) Installing a catalog entry with
 `--ref <sha>` records the SHA you actually checked out, so `list`, the Desktop
 Plugins tab and `update` all report it as off the reviewed pin.
@@ -211,22 +211,22 @@ unreviewed name index. Install such plugins by `owner/repo` or Git URL instead
 ### Live refresh
 
 The docs build publishes the catalog as one JSON document
-(`https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json`).
+(`https://github.com/seven0070/Rabbit-/tree/main/website/docs/api/plugin-catalog.json`).
 `search`/`install`/`update` fetch it at most every six hours and cache it under
-`~/.hermes/cache/`, so new entries and removals reach installed clients without
-updating Hermes. Offline, the cached copy is used for up to 24 hours, then the
+`~/.rabbit/cache/`, so new entries and removals reach installed clients without
+updating Rabbit. Offline, the cached copy is used for up to 24 hours, then the
 copy shipped with your checkout takes over (a failed fetch is remembered for a
 minute, so `plugins list` and the dashboard's Plugins page pay at most one
 connection timeout, not one per installed plugin). When the cached document and
 your checkout disagree on an entry's pin, the newer of the two wins — a git
 checkout whose catalog was committed after the document was published (a fresh
-`hermes update`) installs its own pin, never the cached older one. Removals
+`rabbit update`) installs its own pin, never the cached older one. Removals
 from the in-tree list and the live list are always both enforced, whatever the
 cache's age.
 
 ### Custom git URLs are different
 
-`hermes plugins install <git-url>` still works for any repository, but it
+`rabbit plugins install <git-url>` still works for any repository, but it
 bypasses the catalog entirely:
 
 - **No review** — you get whatever is at the branch tip, not a reviewed pin.
@@ -244,19 +244,19 @@ The complete guidelines live in
 what to check before you submit, how the PR and review work, every admission
 rule, and how pin updates, delisting and removal work. That page mirrors the
 canonical rules in the
-[plugin-catalog README](https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog).
+[plugin-catalog README](https://github.com/seven0070/Rabbit-/tree/main/plugin-catalog).
 
 In short, a listed plugin is submitted by its owner (or added in a reviewed
 maintainer sweep), lives in a public repository, pins an exact commit, passes
-`hermes plugins validate` in catalog CI, never updates itself, and extends
-Hermes only through public hooks and the Desktop SDK, never by patching core
+`rabbit plugins validate` in catalog CI, never updates itself, and extends
+Rabbit only through public hooks and the Desktop SDK, never by patching core
 code or Desktop UI at runtime.
 
 ## See also
 
 - [Plugins](plugins.md) — the plugin system itself: manifest format, enabling,
   configuration
-- [Built-in Plugins](built-in-plugins.md) — plugins that ship with Hermes
-- [Build a Hermes Plugin](../../developer-guide/plugins/index.md) — write your own
+- [Built-in Plugins](built-in-plugins.md) — plugins that ship with Rabbit
+- [Build a Rabbit Plugin](../../developer-guide/plugins/index.md) — write your own
 - [Plugin Catalog page](/plugins) — the browsable catalog
 - [Submitting to the plugin catalog](../../developer-guide/plugins/catalog-submission.md) — admission rules and the submission guide

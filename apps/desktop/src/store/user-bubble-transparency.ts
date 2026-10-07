@@ -9,12 +9,12 @@
  * The bubble and the inline edit composer share that token, so both follow.
  */
 
-import { clampIntensity, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN } from '@hermes/shared/translucency'
+import { clampIntensity, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN } from '@rabbit/shared/translucency'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
-const KEY = 'hermes.desktop.user-bubble-transparency.v1'
+const KEY = 'rabbit.desktop.user-bubble-transparency.v1'
 
 export const $userBubbleTransparency = atom<number>(
   typeof window === 'undefined' ? TRANSLUCENCY_MIN : clampIntensity(storedString(KEY))

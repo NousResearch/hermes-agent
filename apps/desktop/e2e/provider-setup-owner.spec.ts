@@ -1,7 +1,7 @@
 /**
  * Provider setup must keep the Settings owner's gateway AND profile.
  * Two real serve backends; only OpenAI-compatible model discovery is a fixture.
- * Build dist/ separately, then run this spec with HERMES_DESKTOP_PYTHON pointing
+ * Build dist/ separately, then run this spec with RABBIT_DESKTOP_PYTHON pointing
  * at a dependency-complete interpreter. No OAuth account or inference is used.
  */
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
@@ -37,14 +37,14 @@ interface RpcReceipt {
   error?: unknown
 }
 
-function isolatedEnv(home: string, hermesHome: string): Record<string, string> {
+function isolatedEnv(home: string, rabbitHome: string): Record<string, string> {
   // Allowlist rather than inheriting real provider keys, profile selection,
   // browser account state, live desktop overrides, or the host session bus.
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? '',
     HOME: home,
     USERPROFILE: home,
-    HERMES_HOME: hermesHome,
+    RABBIT_HOME: rabbitHome,
     PYTHONPATH: REPO_ROOT,
     PYTHONNOUSERSITE: '1',
     PYTHONDONTWRITEBYTECODE: '1',
@@ -72,11 +72,11 @@ function isolatedEnv(home: string, hermesHome: string): Record<string, string> {
 
 function pythonBinary(): string {
   const python =
-    process.env.HERMES_DESKTOP_PYTHON ??
+    process.env.RABBIT_DESKTOP_PYTHON ??
     path.join(REPO_ROOT, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
 
   if (!fs.existsSync(python)) {
-    throw new Error('Set HERMES_DESKTOP_PYTHON to an isolated dependency-complete interpreter')
+    throw new Error('Set RABBIT_DESKTOP_PYTHON to an isolated dependency-complete interpreter')
   }
 
   return python
@@ -89,9 +89,9 @@ function verifyImports(python: string, env: Record<string, string>): string {
       '-c',
       [
         'import json, pathlib, sys',
-        'import hermes_cli.main, hermes_cli.web_server, tui_gateway.server',
+        'import rabbit_cli.main, rabbit_cli.web_server, tui_gateway.server',
         'root = pathlib.Path.cwd().resolve()',
-        'paths = {name: str(pathlib.Path(sys.modules[name].__file__).resolve()) for name in ("hermes_cli.main", "hermes_cli.web_server", "tui_gateway.server")}',
+        'paths = {name: str(pathlib.Path(sys.modules[name].__file__).resolve()) for name in ("rabbit_cli.main", "rabbit_cli.web_server", "tui_gateway.server")}',
         'assert all(pathlib.Path(p).is_relative_to(root) for p in paths.values()), paths',
         'sys.__stdout__.write(json.dumps(paths))'
       ].join('\n')
@@ -167,10 +167,10 @@ async function startRemote(python: string, env: Record<string, string>, logPath:
 
   const child = spawn(
     python,
-    ['-m', 'hermes_cli.main', 'serve', '--isolated', '--host', '127.0.0.1', '--port', String(port), '--skip-build'],
+    ['-m', 'rabbit_cli.main', 'serve', '--isolated', '--host', '127.0.0.1', '--port', String(port), '--skip-build'],
     {
       cwd: REPO_ROOT,
-      env: { ...env, HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN },
+      env: { ...env, RABBIT_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN },
       stdio: ['ignore', log, log]
     }
   )
@@ -186,7 +186,7 @@ async function startRemote(python: string, env: Record<string, string>, logPath:
           }
 
           return fetch(`${url}/api/status`, {
-            headers: { 'X-Hermes-Session-Token': REMOTE_TOKEN },
+            headers: { 'X-Rabbit-Session-Token': REMOTE_TOKEN },
             signal: AbortSignal.timeout(2_000)
           })
             .then(response => response.status)
@@ -267,12 +267,12 @@ test('Settings provider setup stays on its gateway/profile across A → B → A'
   const original = createSandbox('provider-owner')
   const localHome = path.join(original.root, 'local')
   const remoteHome = path.join(original.root, 'remote')
-  const sandbox: Sandbox = { ...original, hermesHome: path.join(localHome, '.hermes') }
-  const remoteHermesHome = path.join(remoteHome, '.hermes')
-  const remoteProfileHome = path.join(remoteHermesHome, 'profiles', PROFILE)
+  const sandbox: Sandbox = { ...original, rabbitHome: path.join(localHome, '.rabbit') }
+  const remoteRabbitHome = path.join(remoteHome, '.rabbit')
+  const remoteProfileHome = path.join(remoteRabbitHome, 'profiles', PROFILE)
   const python = pythonBinary()
-  const localEnv = isolatedEnv(localHome, sandbox.hermesHome)
-  const remoteEnv = isolatedEnv(remoteHome, remoteHermesHome)
+  const localEnv = isolatedEnv(localHome, sandbox.rabbitHome)
+  const remoteEnv = isolatedEnv(remoteHome, remoteRabbitHome)
   const receipts: RpcReceipt[] = []
   const discoveryRequests: string[] = []
   let advertisedModel = 'remote-first'
@@ -296,8 +296,8 @@ test('Settings provider setup stays on its gateway/profile across A → B → A'
 
   try {
     const endpointUrl = `http://127.0.0.1:${await listen(endpoint)}`
-    seedConfig(sandbox.hermesHome, endpointUrl, 'local-sentinel')
-    seedConfig(remoteHermesHome, endpointUrl, 'remote-default-sentinel')
+    seedConfig(sandbox.rabbitHome, endpointUrl, 'local-sentinel')
+    seedConfig(remoteRabbitHome, endpointUrl, 'remote-default-sentinel')
     seedConfig(remoteProfileHome, endpointUrl, 'remote-before-setup')
     await test
       .info()
@@ -335,12 +335,12 @@ test('Settings provider setup stays on its gateway/profile across A → B → A'
         : {}),
       env: {
         ...localEnv,
-        HERMES_DESKTOP_PYTHON: python,
-        HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
-        HERMES_DESKTOP_IGNORE_EXISTING: '1',
-        HERMES_DESKTOP_HERMES_ROOT: REPO_ROOT,
-        HERMES_DESKTOP_APP_NAME: `ProviderOwnerE2E-${Date.now()}`,
-        HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1'
+        RABBIT_DESKTOP_PYTHON: python,
+        RABBIT_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
+        RABBIT_DESKTOP_IGNORE_EXISTING: '1',
+        RABBIT_DESKTOP_RABBIT_ROOT: REPO_ROOT,
+        RABBIT_DESKTOP_APP_NAME: `ProviderOwnerE2E-${Date.now()}`,
+        RABBIT_DESKTOP_SKIP_QUIT_CONFIRM: '1'
       }
     })
     page = await app.firstWindow()
@@ -350,12 +350,12 @@ test('Settings provider setup stays on its gateway/profile across A → B → A'
     await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({
       timeout: 60_000
     })
-    const localConfig = fs.readFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'utf8')
-    const remoteDefault = fs.readFileSync(path.join(remoteHermesHome, 'config.yaml'), 'utf8')
+    const localConfig = fs.readFileSync(path.join(sandbox.rabbitHome, 'config.yaml'), 'utf8')
+    const remoteDefault = fs.readFileSync(path.join(remoteRabbitHome, 'config.yaml'), 'utf8')
 
     const localProfiles = () =>
-      fs.existsSync(path.join(sandbox.hermesHome, 'profiles'))
-        ? fs.readdirSync(path.join(sandbox.hermesHome, 'profiles')).sort()
+      fs.existsSync(path.join(sandbox.rabbitHome, 'profiles'))
+        ? fs.readdirSync(path.join(sandbox.rabbitHome, 'profiles')).sort()
         : []
 
     expect(localProfiles()).toEqual([])
@@ -410,14 +410,14 @@ test('Settings provider setup stays on its gateway/profile across A → B → A'
           'readiness must resolve the model just saved in the owning profile'
         )
         .toMatchObject({ ok: true, model, profile: PROFILE })
-      expect(fs.readFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'utf8')).toBe(localConfig)
+      expect(fs.readFileSync(path.join(sandbox.rabbitHome, 'config.yaml'), 'utf8')).toBe(localConfig)
       expect(localProfiles()).toEqual([])
-      expect(fs.readFileSync(path.join(remoteHermesHome, 'config.yaml'), 'utf8')).toBe(remoteDefault)
+      expect(fs.readFileSync(path.join(remoteRabbitHome, 'config.yaml'), 'utf8')).toBe(remoteDefault)
       await page.screenshot({ path: test.info().outputPath(`${model}-saved.png`) })
       await page.getByRole('button', { name: 'Close settings', exact: true }).click()
       await selectGateway(page, 'local', 'This device', 'default')
       await openProviderKeys(page)
-      expect(configModel(python, localEnv, sandbox.hermesHome)).toMatchObject({ default: 'local-sentinel' })
+      expect(configModel(python, localEnv, sandbox.rabbitHome)).toMatchObject({ default: 'local-sentinel' })
       await page.screenshot({ path: test.info().outputPath(`${model}-back-on-local.png`) })
       await page.getByRole('button', { name: 'Close settings', exact: true }).click()
 

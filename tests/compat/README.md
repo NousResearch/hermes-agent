@@ -45,7 +45,7 @@ seam: only the isolated takeover command is accepted, and the real temporary
 request/result bridge still runs. Each test resets the parent result cache so
 one export cannot pass just because another already handed off. The tests retain
 historical arguments and return shapes, and forbid old-parent fallbacks.
-`tests/hermes_cli/test_old_updater_takeover.py` separately executes a real child
+`tests/rabbit_cli/test_old_updater_takeover.py` separately executes a real child
 to prove waiting, status propagation and no reentry; these export probes do not
 replace that integration coverage.
 
@@ -64,7 +64,7 @@ Complete history enumeration is not a complete Python call-graph proof. The
 JSON retains `unresolved_dynamic` rather than silently dropping those edges.
 The reviewed categories are:
 
-- `hermes_constants` reloads: fixed first-party module, present and audited.
+- `rabbit_constants` reloads: fixed first-party module, present and audited.
   Reload execution still depends on the running interpreter and process state.
 - `managed_scope`, `main_dashboard`, and browser module objects: fixed modules
   passed between helpers. The modules exist. Arbitrary attribute dispatch is

@@ -10,7 +10,7 @@ there is not fetched — set ``_remote_home`` on the environment to opt in.
 
 The remote path is screened against the same denylist as local deliveries BEFORE any bytes move,
 and again after ``readlink -f`` (fail closed when it cannot resolve) — a remote fetch must never
-become a bypass of the host denylist. Strict mode (``HERMES_MEDIA_DELIVERY_STRICT``) keeps its
+become a bypass of the host denylist. Strict mode (``RABBIT_MEDIA_DELIVERY_STRICT``) keeps its
 pre-existing behaviour: nothing is fetched, since a fetched copy would land in an allowlisted root
 and skip the recency gate strict mode exists for.
 """
@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 _FETCH_MAX_BYTES = 50 * 1024 * 1024
 
 _DENIED_PREFIXES = tuple(PurePosixPath(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES)
-# Credential dirs under the sandbox home plus the Hermes stores, which live at ``~/.hermes`` there.
+# Credential dirs under the sandbox home plus the Rabbit stores, which live at ``~/.rabbit`` there.
 _DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS) + tuple(
-    PurePosixPath(".hermes", *PurePosixPath(rel.replace(os.sep, "/")).parts) for rel in _ROOT_CREDENTIAL_PATHS)
+    PurePosixPath(".rabbit", *PurePosixPath(rel.replace(os.sep, "/")).parts) for rel in _ROOT_CREDENTIAL_PATHS)
 
 
 def remote_path_is_denied(path: str, remote_home: Optional[str]) -> bool:
@@ -72,7 +72,7 @@ def _active_remote_env():
     backend = _tenv("TERMINAL_ENV", "local").strip().lower()
     if backend not in _REMOTE_TERMINAL_BACKENDS and not _plugin_backend_is_remote(backend):
         return None
-    return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
+    return get_active_env(get_session_env("RABBIT_SESSION_ID") or get_session_env("RABBIT_SESSION_KEY") or "default")
 
 
 def fetch_remote_media(path: str) -> Optional[str]:

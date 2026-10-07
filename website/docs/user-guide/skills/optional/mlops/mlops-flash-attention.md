@@ -14,7 +14,7 @@ Speed up long-sequence transformer training and inference.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/flash-attention` |
+| Source | Optional — install with `rabbit skills install official/mlops/flash-attention` |
 | Path | `optional-skills/mlops/flash-attention` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ Speed up long-sequence transformer training and inference.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Flash Attention - Fast Memory-Efficient Attention
@@ -366,9 +366,9 @@ Flash Attention uses float16/bfloat16 for speed. Float32 not supported.
 
 ## Advanced topics
 
-**Integration with HuggingFace Transformers**: See [references/transformers-integration.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/flash-attention/references/transformers-integration.md) for enabling Flash Attention in BERT, GPT, Llama models.
+**Integration with HuggingFace Transformers**: See [references/transformers-integration.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/flash-attention/references/transformers-integration.md) for enabling Flash Attention in BERT, GPT, Llama models.
 
-**Performance benchmarks**: See [references/benchmarks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/flash-attention/references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
+**Performance benchmarks**: See [references/benchmarks.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/flash-attention/references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
 
 ## Hardware requirements
 

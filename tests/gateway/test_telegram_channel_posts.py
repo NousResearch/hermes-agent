@@ -2,7 +2,7 @@
 
 Telegram channel broadcasts are delivered as ``Update.channel_post`` rather than
 ``Update.message``.  The adapter should use ``effective_message`` so channel
-posts are converted into Hermes gateway events instead of being silently
+posts are converted into Rabbit gateway events instead of being silently
 ignored.
 """
 
@@ -99,7 +99,7 @@ def _make_adapter(telegram_adapter_cls):
     return a
 
 
-def _make_channel_message(text="channel id test @hermes_bot"):
+def _make_channel_message(text="channel id test @rabbit_bot"):
     chat = SimpleNamespace(
         id=-1003950368353,
         type="channel",

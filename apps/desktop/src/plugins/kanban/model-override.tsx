@@ -22,7 +22,7 @@ import {
   ModelMenuCloseContext,
   type ModelMenuController,
   reasoningEffortLabel
-} from '@hermes/plugin-sdk'
+} from '@rabbit/plugin-sdk'
 import { useState } from 'react'
 
 import { useKanban } from './ui'
@@ -82,7 +82,7 @@ export function ModelOverrideField({
 
     current: { effort: value.effort, fast: false, model: value.model, provider: value.provider },
 
-    // Read-only against Hermes' global presets is deliberate: see applyPreset.
+    // Read-only against Rabbit' global presets is deliberate: see applyPreset.
     presetFor: () => ({}),
 
     select: (model, provider) => {

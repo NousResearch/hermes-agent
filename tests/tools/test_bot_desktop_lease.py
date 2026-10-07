@@ -78,7 +78,7 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
              "except lease.HumanHasControl:\n    print('HUMAN')\n"
              "lease.release('desktop-viewer')\n") % os.getcwd()
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=30,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": os.environ["HERMES_HOME"]})
+                         stdin=subprocess.DEVNULL, env={**os.environ, "RABBIT_HOME": os.environ["RABBIT_HOME"]})
     assert out.stdout.strip() == "HUMAN", out.stderr
     assert lease.get().holder == lease.AGENT, "the other process's release is visible here"
 
@@ -132,7 +132,7 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
     """Missing file = fresh profile (agent). A file that exists but cannot be parsed must not read as
     "agent holds": a torn write must never let the agent act on a human's screen. Taking over after a
     request keeps the agent's reason so the human still sees WHY while they act."""
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
 
     home = str(tmp_path)
     assert lease.get(profile_key=home).holder == lease.AGENT
@@ -152,7 +152,7 @@ def test_unreadable_lease_file_fails_closed_and_takeover_keeps_the_agents_reason
 
     held = lease.acquire("desk-1", reason="log in to the bank, 2FA on your phone", profile_key=home)
     assert held.reason == "log in to the bank, 2FA on your phone"
-    assert hermes_home_key(home)  # sanity: the key derivation used by the bridge is available
+    assert rabbit_home_key(home)  # sanity: the key derivation used by the bridge is available
 
 
 def test_lease_works_without_fcntl(tmp_path):
@@ -172,7 +172,7 @@ def test_lease_works_without_fcntl(tmp_path):
              "assert lease.release('v1').holder == lease.AGENT\n"
              "print('OK')\n") % os.getcwd()
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, encoding="utf-8", timeout=60,
-                         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+                         stdin=subprocess.DEVNULL, env={**os.environ, "RABBIT_HOME": str(tmp_path)})
     assert out.stdout.strip() == "OK", out.stderr
 
 
@@ -186,8 +186,8 @@ def test_lease_files_are_private_even_when_the_lease_is_written_before_the_scree
 
     home = tmp_path / "deep" / "home"
     home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(lease, "get_hermes_home", lambda: home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(lease, "get_rabbit_home", lambda: home)
     old = os.umask(0o022)
     try:
         lease.acquire("v1")

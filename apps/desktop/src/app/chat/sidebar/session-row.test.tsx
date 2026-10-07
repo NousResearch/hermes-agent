@@ -6,7 +6,7 @@ import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'

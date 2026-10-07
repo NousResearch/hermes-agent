@@ -108,7 +108,7 @@ class TestMemoryManagerUserIdThreading:
         ), patch(
             "agent.process_bootstrap.OpenAI",
         ), patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"memory": {"provider": "recording"}},
         ), patch(
             "plugins.memory.load_memory_provider",
@@ -150,7 +150,7 @@ class TestMem0UserIdScoping:
         with patch("plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
             "user_id": "custom-default",
-            "agent_id": "hermes",
+            "agent_id": "rabbit",
             "rerank": True,
         }):
             provider.initialize(session_id="test-sess")
@@ -166,8 +166,8 @@ class TestMem0UserIdScoping:
 
         with patch("plugins.memory.mem0._load_config", return_value={
             "api_key": "test-key",
-            "user_id": "hermes-user",
-            "agent_id": "hermes",
+            "user_id": "rabbit-user",
+            "agent_id": "rabbit",
             "rerank": True,
         }):
             p1.initialize(session_id="sess-1", user_id="alice_123")

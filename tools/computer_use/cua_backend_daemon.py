@@ -74,7 +74,7 @@ def _embedded_daemon_spawn_command(driver_cmd: str, serve_args: List[str], *, pl
         return [driver_cmd, *serve_args]
     resolved_app = app_path or _resolve_cua_driver_app_path(driver_cmd)
     if not resolved_app:
-        raise RuntimeError("CuaDriver.app is required for private computer-use sessions on macOS. Run `hermes computer-use install` to restore it.")
+        raise RuntimeError("CuaDriver.app is required for private computer-use sessions on macOS. Run `rabbit computer-use install` to restore it.")
     _validate_cua_driver_app_signature(resolved_app)
     return ["/usr/bin/open", "-n", "-g", "-a", resolved_app, "--args", *serve_args]
 
@@ -93,10 +93,10 @@ def _wait_or_kill(process: Any) -> None:
 
 class _EmbeddedCuaDaemon:
     """Private daemon for a non-standard permission mode. cua-driver's permission mode is immutable after daemon
-    startup, so reusing the machine-wide daemon would let one Hermes session's YOLO choice affect another. A
+    startup, so reusing the machine-wide daemon would let one Rabbit session's YOLO choice affect another. A
     private daemon gives the session its own socket, runtime and launch-time authorization; on macOS it is
     launched through CuaDriver.app so TCC stays attached to ``com.trycua.driver``. ``unrestricted`` = explicit
-    Hermes YOLO (``--dangerously-bypass-approvals``); ``bounded`` = a user-reviewed capability manifest approved
+    Rabbit YOLO (``--dangerously-bypass-approvals``); ``bounded`` = a user-reviewed capability manifest approved
     at launch is the authorization boundary, not a runtime prompt. The manifest is a ceiling, not a mode: it "can
     narrow a profile but never widen it", so a configured v3 manifest is forwarded even for ``unrestricted``
     (bounding an approval-bypassed run). Mandatory for ``bounded``, optional everywhere else."""
@@ -126,7 +126,7 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
+        self.socket_path = (rf"\\.\pipe\rabbit-cua-{token}" if sys.platform == "win32"
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:
@@ -172,7 +172,7 @@ class _EmbeddedCuaDaemon:
                                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                          env=env)
         self._owns_runtime = True
-        threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
+        threading.Thread(target=self._drain_stderr, args=(self._process,), name="rabbit-cua-daemon-stderr", daemon=True).start()
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             return_code = self._process.poll()

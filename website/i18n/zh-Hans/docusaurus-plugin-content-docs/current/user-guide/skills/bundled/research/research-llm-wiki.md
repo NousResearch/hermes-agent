@@ -17,7 +17,6 @@ Karpathy 的 LLM Wiki：构建/查询互联 Markdown 知识库。
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/research/llm-wiki` |
 | 版本 | `2.1.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `wiki`, `knowledge-base`, `research`, `notes`, `markdown`, `rag-alternative` |
@@ -26,7 +25,7 @@ Karpathy 的 LLM Wiki：构建/查询互联 Markdown 知识库。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 看到的指令内容。
 :::
 
 # Karpathy 的 LLM Wiki
@@ -49,7 +48,7 @@ Karpathy 的 LLM Wiki：构建/查询互联 Markdown 知识库。
 
 ## Wiki 位置
 
-**位置：** 通过 `WIKI_PATH` 环境变量设置（例如在 `~/.hermes/.env` 中）。
+**位置：** 通过 `WIKI_PATH` 环境变量设置（例如在 `~/.rabbit/.env` 中）。
 
 未设置时，默认为 `~/wiki`。
 

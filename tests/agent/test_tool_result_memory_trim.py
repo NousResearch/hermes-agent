@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from tests.agent.test_start_order_gate import (  # noqa: F401 — autouse fixture rides along
     _FakeAssistantMsg,
     _FakeToolCall,
-    _isolate_hermes,
+    _isolate_rabbit,
     _make_agent,
 )
 
@@ -34,7 +34,7 @@ def _trim_recorder(monkeypatch, agent):
         seen.append((reason, agent._executing_tools))
         return True
 
-    monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", trim)
+    monkeypatch.setattr("rabbit_cli.mem_trim.trim_memory", trim)
     return seen
 
 

@@ -41,8 +41,8 @@
   },
   {
    "q": "Which file path should be checked for the canonical list of provider models?",
-   "gold": "hermes_cli/models.py",
-   "answer": "UNKNOWN \u2014 best guess: `hermes_cli/models.py`.",
+   "gold": "rabbit_cli/models.py",
+   "answer": "UNKNOWN \u2014 best guess: `rabbit_cli/models.py`.",
    "score": 2,
    "why": "The answer provides the correct file path as its best guess, which matches the gold answer exactly."
   },
@@ -62,7 +62,7 @@
   },
   {
    "q": "What exact error message did the agent receive when attempting to checkout a worktree while in the live source directory?",
-   "gold": "Blocked: `git checkout` would rewrite Hermes's live source checkout (/home/teknium/.hermes/hermes-agent) and can mix module versions in this running process.",
+   "gold": "Blocked: `git checkout` would rewrite Rabbit's live source checkout (/home/teknium/.rabbit/rabbit-agent) and can mix module versions in this running process.",
    "answer": "UNKNOWN \u2014 best guess: `fatal: '<branch>' is already checked out at '<worktree path>'`.",
    "score": 0,
    "why": "The answer provides a standard Git error message as a guess, which does not match the specific custom error message provided in the gold answer."
@@ -89,7 +89,7 @@
    "why": "The answer 'UNKNOWN' is a refusal to provide the information required by the gold answer."
   },
   {
-   "q": "What specific SQL update was added to the migration path in hermes_cli/kanban_db.py to prevent losing active wake on upgrade?",
+   "q": "What specific SQL update was added to the migration path in rabbit_cli/kanban_db.py to prevent losing active wake on upgrade?",
    "gold": "UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' WHERE platform != 'tui'",
    "answer": "`UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' WHERE platform != 'tui'` \u2014 applied only during first migration/addition of the column so existing choices were not overwritten.",
    "score": 2,

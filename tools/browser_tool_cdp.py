@@ -52,7 +52,7 @@ def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
     Precedence: ``BROWSER_CDP_URL`` env (live ``/browser connect``), then ``browser.cdp_url``. Is-it-configured
-    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
+    gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``rabbit doctor``) MUST use this, not
     :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
     schema build with no error.
     """
@@ -77,7 +77,7 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
     from tools.browser_supervisor_dialogs import DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S, _VALID_POLICIES
     policy, timeout_s = DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
     try:
-        from hermes_cli.config import read_raw_config
+        from rabbit_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
         if not isinstance(browser_cfg, dict):

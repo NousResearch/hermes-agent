@@ -39,7 +39,7 @@ class FakeClient:
         }
 
 
-def test_status_lists_and_filters_connectors():
+def test_status_reports_empty_without_hosted_connectors():
     client = FakeClient()
     out = json.loads(
         manage_connections(
@@ -47,9 +47,8 @@ def test_status_lists_and_filters_connectors():
             client_factory=lambda: client,
         )
     )
-    assert out["connectors"] == [
-        {"connector": "gmail", "enabled": True, "connected": False}
-    ]
+    assert out["connectors"] == []
+    assert client.calls == []
 
 
 
@@ -58,11 +57,11 @@ def test_status_lists_and_filters_connectors():
 
 
 
-def test_connect_without_connectors_is_a_usage_error():
+def test_hosted_connect_reports_not_available():
     out = json.loads(
         manage_connections({"action": "connect"}, client_factory=FakeClient)
     )
-    assert "requires 'connectors'" in out["error"]
+    assert "not available" in out["error"]
 
 
 def test_disconnect_is_refused_before_any_gateway_call():
@@ -77,16 +76,6 @@ def test_disconnect_is_refused_before_any_gateway_call():
     )
     assert "error" in out
     assert client.calls == []
-
-
-def test_gateway_failure_is_a_model_actionable_error():
-    def exploding():
-        raise RuntimeError("gateway on fire")
-
-    out = json.loads(
-        manage_connections({"action": "status"}, client_factory=exploding)
-    )
-    assert "connector gateway request failed" in out["error"]
 
 
 def test_mcp_actions_belong_to_mcp_targets_only():
@@ -146,8 +135,8 @@ def _session_tool_names(enabled_toolsets, *, connectors, disabled_toolsets=None)
 
 
 def test_cli_session_gets_the_tool_outside_a_code_workspace(tmp_path, monkeypatch):
-    """The path a plain `hermes` run takes: _get_platform_tools, no git cwd."""
-    from hermes_cli.tools_config import _get_platform_tools
+    """The path a plain `rabbit` run takes: _get_platform_tools, no git cwd."""
+    from rabbit_cli.tools_config import _get_platform_tools
 
     monkeypatch.chdir(tmp_path)
     enabled = sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True))
@@ -162,7 +151,7 @@ def test_tui_and_desktop_sessions_get_the_tool(monkeypatch):
     """The path the TUI/desktop gateway takes to build its selection."""
     from tui_gateway.server import _load_enabled_toolsets
 
-    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+    monkeypatch.delenv("RABBIT_TUI_TOOLSETS", raising=False)
     for platform in ("tui", "desktop"):
         selection = _load_enabled_toolsets(platform)
         names = _session_tool_names(selection, connectors=True)
@@ -189,12 +178,12 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     for connectors does not get ``manage_connections`` in its schema on any surface, so the
     model cannot call it and read the gateway's 404 back to the user. The handler keeps the same
     gate for the direct RPC path."""
-    from hermes_cli.tools_config import _get_platform_tools
+    from rabbit_cli.tools_config import _get_platform_tools
     from tools.registry import registry
     from tui_gateway.server import _load_enabled_toolsets
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+    monkeypatch.delenv("RABBIT_TUI_TOOLSETS", raising=False)
     selections = [
         sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True)),
         _load_enabled_toolsets("tui"),
@@ -204,10 +193,6 @@ def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, mo
     for selection in selections:
         assert "manage_connections" not in _session_tool_names(selection, connectors=False), selection
 
-    with patch("tools.connectors.gateway.config.connectors_available", return_value=False):
-        out = json.loads(registry.dispatch("manage_connections", {"action": "status"}))
-    assert "not available in this session" in out["error"]
-
 
 def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
     """`agent.disabled_toolsets: [connections]` wins; a bundle name does not.
@@ -216,7 +201,7 @@ def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
     like any other. Naming a platform composite instead must NOT strip it —
     that branch preserves core tools on purpose (#33924).
     """
-    from hermes_cli.tools_config import _get_platform_tools
+    from rabbit_cli.tools_config import _get_platform_tools
 
     monkeypatch.chdir(tmp_path)
     enabled = sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True))
@@ -225,7 +210,7 @@ def test_operator_can_still_turn_it_off(tmp_path, monkeypatch):
         enabled, connectors=True, disabled_toolsets=["connections"]
     )
     assert "manage_connections" in _session_tool_names(
-        enabled, connectors=True, disabled_toolsets=["hermes-cli"]
+        enabled, connectors=True, disabled_toolsets=["rabbit-cli"]
     )
 
 

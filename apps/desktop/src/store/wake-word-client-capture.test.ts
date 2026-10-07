@@ -30,7 +30,7 @@ beforeEach(() => {
 
 describe('client capture failure surfacing (issue #119089)', () => {
   it('lands the ear off with the reason when the PCM chain dies after arming', async () => {
-    applyWakeStartResult({ capture: 'client', frame_length: 1280, phrase: 'hey hermes', started: true })
+    applyWakeStartResult({ capture: 'client', frame_length: 1280, phrase: 'hey rabbit', started: true })
     await flush()
 
     expect($wakeWord.get()).toMatchObject({ listening: true, notice: '' })

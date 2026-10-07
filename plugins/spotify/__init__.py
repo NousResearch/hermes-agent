@@ -1,8 +1,8 @@
 """Spotify integration plugin — bundled, auto-loaded.
 
 Registers 7 tools into the ``spotify`` toolset. Tools stay registered (so they
-appear in ``hermes tools``) but ``_check_spotify_available()`` gates dispatch
-until the user has run ``hermes auth spotify``.
+appear in ``rabbit tools``) but ``_check_spotify_available()`` gates dispatch
+until the user has run ``rabbit auth spotify``.
 
 Why a plugin rather than a ``tools/`` module: ``tools/`` is reserved for
 foundational capabilities; third-party service integrations live under

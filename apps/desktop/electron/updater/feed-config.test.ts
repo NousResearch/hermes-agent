@@ -7,7 +7,7 @@ import { expect, it } from 'vitest'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './feed-config'
 
 it('reads only the updates feed across equivalent YAML representations', (): void => {
-  const home: string = mkdtempSync(join(tmpdir(), 'hermes-feed-config-'))
+  const home: string = mkdtempSync(join(tmpdir(), 'rabbit-feed-config-'))
   const config: string = join(home, 'config.yaml')
   const expected: string = 'https://mirror.example/updates'
 
@@ -30,7 +30,7 @@ it('reads only the updates feed across equivalent YAML representations', (): voi
 })
 
 it('leaves fallback selection available for missing, invalid or non-string config', (): void => {
-  const home: string = mkdtempSync(join(tmpdir(), 'hermes-feed-config-'))
+  const home: string = mkdtempSync(join(tmpdir(), 'rabbit-feed-config-'))
   const config: string = join(home, 'config.yaml')
 
   const documents: string[] = [

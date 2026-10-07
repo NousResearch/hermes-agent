@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore
 
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db = SessionDB(db_path=tmp_path / "state.db")
     s = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())

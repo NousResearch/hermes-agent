@@ -42,7 +42,7 @@ def _load(env=None):
 
 def test_launcher_dir_resolves_from_argv0(tmp_path):
     ns = _load()
-    argv0 = tmp_path / "bin" / "hermes.exe"
+    argv0 = tmp_path / "bin" / "rabbit.exe"
     assert ns["launcher_dir"](str(argv0)) == str(tmp_path / "bin")
 
 
@@ -50,7 +50,7 @@ def test_payload_sys_paths_order_repo_first(tmp_path):
     ns = _load()
     here = str(tmp_path / "bin")
     entries = ns["payload_sys_paths"](here)
-    # Repo first — its hermes_cli wins over anything stale in the venv
+    # Repo first — its rabbit_cli wins over anything stale in the venv
     # (the sealed payload has no working editable install). Same order the
     # old rust shim composed PYTHONPATH in.
     assert entries == [
@@ -92,7 +92,7 @@ def test_configure_processes_site_pth_files(tmp_path):
     Only addsitedir() runs .pth files, and pywin32.pth is load-bearing on
     Windows bundles: it puts win32\\lib on sys.path, which is what makes
     `import pywintypes` resolve (portalocker's Win32Locker →
-    concurrent-log-handler → hermes_logging.py's file handlers). The old
+    concurrent-log-handler → rabbit_logging.py's file handlers). The old
     raw sys.path[0:0] = entries skipped .pth processing entirely, silently
     killing file logging on Windows bundles (and any future .pth-based
     dependency on every platform).
@@ -135,7 +135,7 @@ def test_configure_defaults_pycache_prefix_to_localappdata(tmp_path, monkeypatch
     original = sys.pycache_prefix
     try:
         ns["configure"](str(tmp_path), environ=environ)
-        expected = os.path.join(str(tmp_path / "lad"), "hermes", "pycache")
+        expected = os.path.join(str(tmp_path / "lad"), "rabbit", "pycache")
         assert environ["PYTHONPYCACHEPREFIX"] == expected
         # The env var alone cannot retro-activate; sys.pycache_prefix is
         # the live switch (the rust shim set it on the CHILD's environment).
@@ -146,14 +146,14 @@ def test_configure_defaults_pycache_prefix_to_localappdata(tmp_path, monkeypatch
 
 @pytest.mark.platforms("posix")
 def test_configure_defaults_pycache_prefix_to_home_cache(tmp_path, monkeypatch):
-    """POSIX counterpart of the LOCALAPPDATA default: ~/.cache/hermes-pycache
+    """POSIX counterpart of the LOCALAPPDATA default: ~/.cache/rabbit-pycache
     (same configure() contract, per the wrapper's own platform split)."""
     ns = _load()
     environ = {"HOME": str(tmp_path / "home")}
     original = sys.pycache_prefix
     try:
         ns["configure"](str(tmp_path), environ=environ)
-        expected = os.path.join(str(tmp_path / "home"), ".cache", "hermes-pycache")
+        expected = os.path.join(str(tmp_path / "home"), ".cache", "rabbit-pycache")
         assert environ["PYTHONPYCACHEPREFIX"] == expected
         assert str(sys.pycache_prefix) == expected
     finally:
@@ -192,15 +192,15 @@ def test_configure_without_localappdata_leaves_pycache_alone(tmp_path):
 def _render(tmp_path: Path) -> Path:
     text = _WRAPPER.read_text(encoding="utf-8")
     for placeholder, value in {
-        "__HERMES_ENTRY_MODULE__": "hermes_cli.main",
-        "__HERMES_ENTRY_FUNC__": "main",
-        "__HERMES_REPO_REL__": "../repo",
-        "__HERMES_SITE_REL__": "../venv/Lib/site-packages",
+        "__RABBIT_ENTRY_MODULE__": "rabbit_cli.main",
+        "__RABBIT_ENTRY_FUNC__": "main",
+        "__RABBIT_REPO_REL__": "../repo",
+        "__RABBIT_SITE_REL__": "../venv/Lib/site-packages",
     }.items():
         text = text.replace(placeholder, value)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    out = bin_dir / "hermes.exe"
+    out = bin_dir / "rabbit.exe"
     out.write_text(text, encoding="utf-8")
     return out
 
@@ -209,18 +209,18 @@ def _render(tmp_path: Path) -> Path:
 def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     """The full wrapper contract without distlib: a rendered copy placed in
     bin/ next to a stub repo + venv resolves its own dir from sys.argv[0],
-    imports hermes_cli.main off the payload paths, and returns main()'s
+    imports rabbit_cli.main off the payload paths, and returns main()'s
     exit code."""
     bin_dir = tmp_path / "bin"
-    (bin_dir / ".." / "repo" / "hermes_cli").mkdir(parents=True, exist_ok=True)
+    (bin_dir / ".." / "repo" / "rabbit_cli").mkdir(parents=True, exist_ok=True)
     (bin_dir / ".." / "venv" / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
-    (bin_dir / ".." / "repo" / "hermes_cli" / "__init__.py").write_text("")
-    (bin_dir / ".." / "repo" / "hermes_bootstrap.py").write_text("READY = True\n")
-    (bin_dir / ".." / "repo" / "hermes_cli" / "main.py").write_text(
+    (bin_dir / ".." / "repo" / "rabbit_cli" / "__init__.py").write_text("")
+    (bin_dir / ".." / "repo" / "rabbit_bootstrap.py").write_text("READY = True\n")
+    (bin_dir / ".." / "repo" / "rabbit_cli" / "main.py").write_text(
         "import sys\n"
-        "assert sys.modules['hermes_bootstrap'].READY\n"
+        "assert sys.modules['rabbit_bootstrap'].READY\n"
         "def main():\n"
-        "    assert sys.argv[0].endswith('hermes.exe'), sys.argv[0]\n"
+        "    assert sys.argv[0].endswith('rabbit.exe'), sys.argv[0]\n"
         "    assert sys.argv[1:] == ['--version']\n"
         "    import stubdep  # importable only via the venv site-packages entry\n"
         "    return 7\n"

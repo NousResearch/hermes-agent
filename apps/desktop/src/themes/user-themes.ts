@@ -15,10 +15,10 @@ import { atom, computed } from 'nanostores'
 import { registry } from '@/contrib/registry'
 
 import { $backendThemes } from './backend-sync'
-import { BUILTIN_THEMES } from './presets'
+import { BUILTIN_THEMES, LEGACY_SKIN_NAMES } from './presets'
 import { type DesktopTheme, isValidTheme } from './types'
 
-const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
+const USER_THEMES_KEY = 'rabbit-desktop-user-themes-v1'
 
 // Marketplace imports stamp their description "VS Code · <publisher.extension>"
 // (see `convertVscodeColorTheme`). This is the one place that convention is read
@@ -148,7 +148,8 @@ export function contributedThemes(): DesktopTheme[] {
 }
 
 /** Resolve a theme by name across the merged set (built-in + user + backend + contributed). */
-export function resolveTheme(name: string): DesktopTheme | undefined {
+export function resolveTheme(rawName: string): DesktopTheme | undefined {
+  const name = LEGACY_SKIN_NAMES[rawName] ?? rawName
   return (
     BUILTIN_THEMES[name] ??
     $userThemes.get()[name] ??

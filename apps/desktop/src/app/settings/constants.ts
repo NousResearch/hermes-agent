@@ -1,4 +1,4 @@
-import { REASONING_EFFORTS } from '@hermes/shared'
+import { REASONING_EFFORTS } from '@rabbit/shared'
 
 import {
   Box,
@@ -17,7 +17,7 @@ import {
 import type { ThemeMode } from '@/themes/context'
 
 // Single source of truth for built-in personality names lives in
-// lib/personalities (mirrors hermes_cli/personality.py BUILTIN_PERSONALITIES).
+// lib/personalities (mirrors rabbit_cli/personality.py BUILTIN_PERSONALITIES).
 export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 import { defineFieldCopy } from './field-copy'
@@ -41,23 +41,16 @@ interface ProviderPrefix {
   priority: number
 }
 
-export const EMPTY_SELECT_VALUE = '__hermes_empty__'
+export const EMPTY_SELECT_VALUE = '__rabbit_empty__'
 export const CONTROL_TEXT = 'text-xs'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
-  {
-    prefix: 'NOUS_',
-    name: 'Nous Portal',
-    description: 'Hosted Hermes & Nous-trained models',
-    docsUrl: 'https://portal.nousresearch.com',
-    priority: 0
-  },
   {
     prefix: 'FIREWORKS_',
     name: 'Fireworks AI',
     description: 'OpenAI-compatible direct model API',
     docsUrl: 'https://app.fireworks.ai/settings/users/api-keys',
-    // Slot #2 — mirrors CANONICAL_PROVIDERS (after Nous, ahead of OpenRouter).
+    // Slot #2 — mirrors CANONICAL_PROVIDERS (ahead of OpenRouter).
     // Same numeric priority as OpenRouter; name sort puts Fireworks first.
     priority: 1
   },
@@ -104,7 +97,7 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     docsUrl: 'https://modelstudio.console.alibabacloud.com/',
     priority: 6
   },
-  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 6 },
+  { prefix: 'RABBIT_QWEN_', name: 'DashScope (Qwen)', priority: 6 },
   {
     prefix: 'GLM_',
     name: 'GLM / Z.AI',
@@ -250,10 +243,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
+  // rabbit_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
-  // gpt-live branch (one full-duplex voice model delegating to Hermes).
+  // gpt-live branch (one full-duplex voice model delegating to Rabbit).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
   'voice.gpt_live.voice': [
     'marin',
@@ -600,11 +593,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
   browser: {
     useRealProfile:
-      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+      "Local browsing uses your real logins. Rabbit copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
   },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
-    maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
+    maxTurns: 'Upper bound for tool-calling turns before Rabbit stops a run.'
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
@@ -618,9 +611,9 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
   },
-  fileReadMaxChars: 'Maximum characters Hermes can read from one file request.',
+  fileReadMaxChars: 'Maximum characters Rabbit can read from one file request.',
   approvals: {
-    mode: 'How Hermes handles commands that need explicit approval.',
+    mode: 'How Rabbit handles commands that need explicit approval.',
     timeout: 'How long approval prompts wait before timing out.'
   },
   security: {
@@ -649,11 +642,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   voice: {
     autoTts: 'Automatically speak assistant responses.',
     voiceChatMode:
-      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
+      'chained: speech-to-text → Rabbit → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Rabbit — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
     gptLive: {
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
-        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+        'Extra sentences for the live voice persona (tone, pace, language). Rabbit keeps its own system prompt.'
     }
   },
   tts: {
@@ -679,7 +672,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   updates: {
     nonInteractiveLocalChanges:
-      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+      'When Rabbit updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
   }
 })
 

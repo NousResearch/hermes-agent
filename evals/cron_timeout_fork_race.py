@@ -1,6 +1,6 @@
 """Linux live cron race probe: real PID map, synchronized fork, owned-only cleanup.
 
-Run with the repository's Python and a disposable HERMES_HOME. No provider calls.
+Run with the repository's Python and a disposable RABBIT_HOME. No provider calls.
 The scheduling hook retains psutil's real snapshot; it never invents process state.
 """
 import ctypes
@@ -20,8 +20,8 @@ def main():
     if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
     with tempfile.TemporaryDirectory(prefix="cron-owned-fork-") as root:
-        os.environ["HERMES_HOME"] = root
-        os.environ["HERMES_CRON_SCRIPT_TIMEOUT"] = "2"
+        os.environ["RABBIT_HOME"] = root
+        os.environ["RABBIT_CRON_SCRIPT_TIMEOUT"] = "2"
         from cron.scheduler_script import _run_job_script
 
         scripts = Path(root, "scripts")

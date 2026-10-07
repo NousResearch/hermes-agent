@@ -179,7 +179,7 @@ def _matrix_adapter(room_id: str, *, is_dm: bool, monkeypatch):
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="syt_test", extra={
-        "homeserver": "https://matrix.example.org", "user_id": "@hermes:example.org"}))
+        "homeserver": "https://matrix.example.org", "user_id": "@rabbit:example.org"}))
     adapter._text_batch_delay_seconds = 0
     adapter._startup_ts = 0
     adapter._dm_rooms[room_id] = is_dm

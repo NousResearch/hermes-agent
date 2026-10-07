@@ -1,31 +1,9 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const arDiagnostics = {
-  sendDiagnostics: {
-    title: 'إرسال التشخيصات إلى Nous',
-    privacyNotice:
-      'سيؤدي هذا إلى رفع حزمة تصحيح إلى التخزين الداخلي لدى Nous (ليست لصيقة عامة). تتضمن معلومات النظام (نظام التشغيل، الإصدارات، المزوّد، وأنواع مفاتيح API المُهيأة — وليس المفاتيح نفسها أبداً) والسجلات الكاملة للوكيل والبوابة وسطح المكتب (حتى 512 كيلوبايت لكل منها، ومن المرجح أن تحتوي على محتوى المحادثات ومخرجات الأدوات ومسارات الملفات). تُحجب الأسرار قبل الرفع. لا يمكن الاطلاع عليها إلا لموظفي Nous ومشرفي Discord المعتمدين، وتُحذف تلقائياً بعد 14 يوماً.',
-    upload: 'رفع',
-    uploading: 'جارٍ الرفع…',
-    cancel: 'إلغاء',
-    close: 'إغلاق',
-    copyLink: 'نسخ الرابط',
-    uploadIdFallback: id => `لم يتم إرجاع رابط عرض — اذكر معرّف الرفع ${id} للدعم`,
-    doneTitle: 'تم إرسال التشخيصات',
-    doneDescription: 'تم رفع الحزمة بشكل خاص. شارك الرابط أدناه في محادثة الدعم لكي يتمكن الفريق من رؤية سجلاتك.',
-    failedTitle: 'فشل الرفع',
-    failedHint:
-      'يمكنك أيضاً تشغيل `hermes debug share --nous` من الطرفية، أو `hermes debug share --local` لعرض التقرير دون رفعه.',
-    handoffLead: 'تابع النقاش في:',
-    links: {
-      github: 'GitHub Issues',
-      portal: 'دعم بوابة Nous',
-      discord: 'Discord'
-    }
-  },
   notifications: {
     sharedProfileWarning:
-      'تستخدم نسخة أخرى من Hermes هذا الملف الشخصي. تتشارك النسختان إعداداته وبياناته، لذا قد تتعارض التغييرات. يمكنك المتابعة أو إغلاق النسخة الأخرى قبل إجراء تغييرات.',
+      'تستخدم نسخة أخرى من Rabbit هذا الملف الشخصي. تتشارك النسختان إعداداته وبياناته، لذا قد تتعارض التغييرات. يمكنك المتابعة أو إغلاق النسخة الأخرى قبل إجراء تغييرات.',
     region: 'الإشعارات',
     hide: 'إخفاء',
     show: 'إظهار',
@@ -36,11 +14,11 @@ export const arDiagnostics = {
     copyDetail: 'نسخ التفاصيل',
     copyDetailFailed: 'تعذر نسخ تفاصيل الإشعار',
     backendOutOfDateTitle: 'الخلفية قديمة',
-    backendOutOfDateMessage: 'خلفية Hermes أقدم من إصدار سطح المكتب الحالي وقد لا تعمل كما يجب. حدثهما ليتوافقا.',
+    backendOutOfDateMessage: 'خلفية Rabbit أقدم من إصدار سطح المكتب الحالي وقد لا تعمل كما يجب. حدثهما ليتوافقا.',
     desktopOutOfDateTitle: 'التطبيق قديم',
-    desktopOutOfDateMessage: 'تطبيق Hermes أقدم من الخلفية المتصل بها وقد لا يعمل كما يجب. حدّث التطبيق ليتوافقا.',
+    desktopOutOfDateMessage: 'تطبيق Rabbit أقدم من الخلفية المتصل بها وقد لا يعمل كما يجب. حدّث التطبيق ليتوافقا.',
     updateDesktopApp: 'تحديث التطبيق',
-    updateHermes: 'تحديث Hermes',
+    updateRabbit: 'تحديث Rabbit',
     updateReadyTitle: 'التحديث جاهز',
     updateReadyMessage: count => `${count} تغيير جديد متاح.`,
     updateReadyMessageUnknown: 'يتوفر تحديث جديد.',
@@ -60,7 +38,7 @@ export const arDiagnostics = {
       elevenLabsNeedsKey: 'يتطلب ElevenLabs STT المفتاح ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'رفض ElevenLabs مفتاح API (401).',
       diskFull: 'القرص ممتلئ — حرّر مساحة ثم أعد المحاولة.',
-      methodNotAllowed: 'رفضت خلفية سطح المكتب هذا الطلب (405 Method Not Allowed). جرب إعادة تشغيل Hermes Desktop.',
+      methodNotAllowed: 'رفضت خلفية سطح المكتب هذا الطلب (405 Method Not Allowed). جرب إعادة تشغيل Rabbit Desktop.',
       microphonePermission: 'تم رفض إذن الميكروفون.',
       openaiRejectedApiKey: 'رفض OpenAI مفتاح API.',
       openaiTtsNeedsKey: 'يتطلب OpenAI TTS المفتاح VOICE_TOOLS_OPENAI_KEY أو OPENAI_API_KEY.',
@@ -93,8 +71,8 @@ export const arDiagnostics = {
       rejectAction: 'رفض',
       inputTitle: 'مطلوب إدخال',
       inputTitleNamed: session => `مطلوب إدخال — ${session}`,
-      inputBody: 'ينتظر Hermes ردّك.',
-      turnDoneTitle: 'أنهى Hermes',
+      inputBody: 'ينتظر Rabbit ردّك.',
+      turnDoneTitle: 'أنهى Rabbit',
       turnDoneBody: '',
       turnErrorTitle: 'فشلت الجولة',
       backgroundDoneTitle: 'انتهت المهمة في الخلفية',
@@ -108,4 +86,4 @@ export const arDiagnostics = {
     reloadWindow: 'إعادة تحميل النافذة',
     openLogs: 'فتح السجلات'
   }
-} satisfies Pick<TranslationOverrides, 'sendDiagnostics' | 'notifications' | 'errors'>
+} satisfies Pick<TranslationOverrides, 'notifications' | 'errors'>

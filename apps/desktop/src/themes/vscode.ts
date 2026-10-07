@@ -15,7 +15,7 @@
  * background luminance, so surface-bound UI matches what's on screen.
  */
 
-import { ensureContrast, mix } from '@hermes/shared/color'
+import { ensureContrast, mix } from '@rabbit/shared/color'
 
 import { luminance, normalizeHex, readableInk } from './color'
 import type { DesktopTerminalPalette, DesktopTheme, DesktopThemeColors } from './types'

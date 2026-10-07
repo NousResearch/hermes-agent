@@ -55,11 +55,11 @@ export function remoteHostLabel(url: string): string {
 
 /**
  * Re-pull each named profile's connection scope from Electron and publish the
- * ones that resolve to a remote/cloud override. Best-effort per profile: a
+ * ones that resolve to a remote override. Best-effort per profile: a
  * single failed read keeps that profile unbadged rather than failing the lot.
  */
 export async function refreshProfileRemoteOverrides(names: string[]): Promise<void> {
-  const getConnectionConfig = window.hermesDesktop?.getConnectionConfig
+  const getConnectionConfig = window.rabbitDesktop?.getConnectionConfig
 
   if (!getConnectionConfig) {
     return
@@ -78,7 +78,7 @@ export async function refreshProfileRemoteOverrides(names: string[]): Promise<vo
       try {
         const config = await getConnectionConfig(key)
 
-        if ((config.mode === 'remote' || config.mode === 'cloud') && config.remoteUrl) {
+        if (config.mode === 'remote' && config.remoteUrl) {
           next[key] = { host: remoteHostLabel(config.remoteUrl) || config.remoteUrl, url: config.remoteUrl }
         }
       } catch {

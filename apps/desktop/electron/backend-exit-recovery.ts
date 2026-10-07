@@ -17,7 +17,7 @@
 export type BackendExitRecoveryState = {
   /** A live primary (local child or remote descriptor) or a published attempt still holds the slot. */
   hasCurrentOwner: boolean
-  /** startHermes() is running but has not published its attempt yet. */
+  /** startRabbit() is running but has not published its attempt yet. */
   hasPendingStart: boolean
   /** The slot was emptied on purpose (re-home, quit, hand-off, latched boot failure). */
   intentionalTeardown: boolean

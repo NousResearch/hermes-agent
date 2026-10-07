@@ -1,7 +1,7 @@
 name: jev-mcp-router
 repo: https://github.com/Pinutss/jev-mcp-router
 sha: 6a7b3baf45af62def86c3d824b06c85569d14298
-description: "Agent Plugins v1 package: one skill plus one stdio MCP server (mcp_select) started with uv run from the checkout. Needs uv on PATH. Registers no Hermes tools or hooks; do not expect jev_* tools."
+description: "Agent Plugins v1 package: one skill plus one stdio MCP server (mcp_select) started with uv run from the checkout. Needs uv on PATH. Registers no Rabbit tools or hooks; do not expect jev_* tools."
 maintainer: Pinutss
 tier: community
 category: tools

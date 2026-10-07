@@ -29,7 +29,7 @@ def mux_home(tmp_path, monkeypatch):
     (home / "profiles" / "secondary" / ".env").write_text(
         "FEISHU_ALLOWED_USERS=secondary-user\n"
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     for key in ("FEISHU_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS"):
         monkeypatch.delenv(key, raising=False)
     prev = secret_scope.is_multiplex_active()

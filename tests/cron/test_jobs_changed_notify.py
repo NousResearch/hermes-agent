@@ -2,7 +2,7 @@
 
 After a store mutation via the consumer surfaces (model tool / CLI / REST), the
 active scheduler provider's on_jobs_changed() must be invoked so an external
-provider (Chronos) re-provisions/cancels. The built-in's no-op default means
+provider re-provisions/cancels. The built-in's no-op default means
 the default path is unchanged.
 """
 
@@ -15,7 +15,7 @@ def _fail_registration(job):
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     yield tmp_path
 
 

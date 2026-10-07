@@ -1,13 +1,13 @@
 name: serpapi
-repo: https://github.com/serpapi/serpapi-hermes-plugin
+repo: https://github.com/serpapi/serpapi-rabbit-plugin
 sha: b5049b4aa0f56836d2f88908c1c2ebca2b9dcf64
-description: "SerpApi web, Maps, News, Shopping, Hotels, Flights, and Travel Explore for Hermes Agent."
+description: "SerpApi web, Maps, News, Shopping, Hotels, Flights, and Travel Explore for Rabbit Agent."
 maintainer: serpapi
 tier: community
 category: web
 title: SerpApi
 version: "1.1.1"
-docs_url: https://github.com/serpapi/serpapi-hermes-plugin#readme
+docs_url: https://github.com/serpapi/serpapi-rabbit-plugin#readme
 capabilities:
   provides_tools:
     - serpapi_maps_search

@@ -27,7 +27,7 @@ def server():
     # The sys.modules mocks only need to cover the *initial* import — once
     # tui_gateway.server is cached, they are inert. Keeping them active for
     # the whole test poisons any module first imported inside a test body:
-    # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
+    # e.g. rabbit_cli.active_sessions would bind the mocked get_rabbit_home
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
     #
@@ -40,10 +40,10 @@ def server():
     import tui_gateway.server_requests  # noqa: F401
     import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
-        "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
-        "hermes_cli.env_loader": MagicMock(),
-        "hermes_cli.banner": MagicMock(),
-        "hermes_state": MagicMock(),
+        "rabbit_constants": MagicMock(get_rabbit_home=MagicMock(return_value="/tmp/rabbit_test")),
+        "rabbit_cli.env_loader": MagicMock(),
+        "rabbit_cli.banner": MagicMock(),
+        "rabbit_state": MagicMock(),
     }):
         import importlib
         mod = importlib.import_module("tui_gateway.server")
@@ -845,7 +845,7 @@ def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, mo
         def assert_resume_safe(self, sid, max_messages=None, *, tip_only=False):
             calls.append(tip_only)
             if not tip_only:
-                from hermes_state import SessionResumeTooLargeError
+                from rabbit_state import SessionResumeTooLargeError
 
                 raise SessionResumeTooLargeError(20_001, 20_000)
             return 666
@@ -887,7 +887,7 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     """The hydration worker never loads a lineage the guard would refuse."""
     import threading
 
-    from hermes_state import SessionResumeTooLargeError
+    from rabbit_state import SessionResumeTooLargeError
 
     tip = [{"role": "user", "content": "tip"}]
     reads = []
@@ -1089,13 +1089,13 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
 @pytest.mark.parametrize("closed_transport", [False, True])
 def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_path, closed_transport):
     """A detached lane cannot keep its lease forever if initial timer setup was lost."""
-    from hermes_cli.active_sessions import (
+    from rabbit_cli.active_sessions import (
         active_session_registry_snapshot,
         try_acquire_active_session,
     )
 
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     sid = "detached-without-reaper"
     sibling_sid = "live-sibling"
     orphan_lease, message = try_acquire_active_session(
@@ -1154,7 +1154,7 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
 
     repo_root = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    env["HERMES_HOME"] = str(home)
+    env["RABBIT_HOME"] = str(home)
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(repo_root), env.get("PYTHONPATH", "")) if part
     )
@@ -1163,7 +1163,7 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
             sys.executable,
             "-c",
             (
-                "from hermes_cli.active_sessions import try_acquire_active_session; "
+                "from rabbit_cli.active_sessions import try_acquire_active_session; "
                 f"lease, refusal = try_acquire_active_session(session_id={sid!r}, surface='desktop', "
                 "config={}, track_liveness=True); "
                 "assert lease is not None and refusal is None, refusal; lease.release()"
@@ -1183,10 +1183,10 @@ def test_idle_reaper_rearms_missing_ws_orphan_timer(server, monkeypatch, tmp_pat
 def test_sync_session_key_after_compress_reanchors_active_session_lease(
     server, monkeypatch, tmp_path
 ):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
-    from hermes_cli.active_sessions import (
+    from rabbit_cli.active_sessions import (
         active_session_registry_snapshot,
         try_acquire_active_session,
     )
@@ -1235,7 +1235,7 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.runtime_provider",
+        "rabbit_cli.runtime_provider",
         types.SimpleNamespace(
             resolve_runtime_provider=lambda **_kwargs: {
                 "provider": "test",
@@ -1258,9 +1258,9 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 
 
 def test_config_roundtrip(server, tmp_path, monkeypatch):
-    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # monkeypatch, not assignment: a bare ``server._rabbit_home = tmp_path`` outlives this test and every
     # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_rabbit_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1289,13 +1289,13 @@ def test_slash_exec_rejects_skill_commands(server):
     server._sessions[sid] = {"session_key": sid, "agent": None}
 
     # Mock scan_skill_commands to return a known skill
-    fake_skills = {"/hermes-agent-dev": {"name": "hermes-agent-dev", "description": "Dev workflow"}}
+    fake_skills = {"/rabbit-agent-dev": {"name": "rabbit-agent-dev", "description": "Dev workflow"}}
 
     with patch("agent.skill_commands.get_skill_commands", return_value=fake_skills):
         resp = server.handle_request({
             "id": "r1",
             "method": "slash.exec",
-            "params": {"command": "hermes-agent-dev", "session_id": sid},
+            "params": {"command": "rabbit-agent-dev", "session_id": sid},
         })
 
     # Should return an error so the TUI's .catch() fires command.dispatch
@@ -1305,7 +1305,7 @@ def test_slash_exec_rejects_skill_commands(server):
 
 def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     """slash.exec must resolve get_skill_commands() against the session's own
-    profile_home rather than the gateway process's ambient HERMES_HOME
+    profile_home rather than the gateway process's ambient RABBIT_HOME
     (#88023). A Desktop session that switches profiles mid-session shares
     the same gateway process, so a skill declared only under the new
     profile's skills.external_dirs must still be recognized here — else the
@@ -1346,7 +1346,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
             "params": {"command": "b-only", "session_id": sid},
         })
 
-    # The gateway's own HERMES_HOME (the test-isolation tempdir, no
+    # The gateway's own RABBIT_HOME (the test-isolation tempdir, no
     # skills.external_dirs) has no "b-only" skill — the only way this
     # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
@@ -1362,7 +1362,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     import agent.skill_commands as skill_commands
     import tools.skills_tool as skills_tool
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     skills_dir = home / "skills"
     for name, instructions in (
         ("nature-figure", "Render figures with natural colors."),
@@ -1375,7 +1375,7 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
             encoding="utf-8",
         )
 
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
@@ -1412,7 +1412,7 @@ def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(serv
     import agent.skill_commands as skill_commands
     import tools.skills_tool as skills_tool
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     skills_dir = home / "skills"
     skill_dir = skills_dir / "nature-figure"
     skill_dir.mkdir(parents=True)
@@ -1421,7 +1421,7 @@ def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(serv
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
 
@@ -1453,7 +1453,7 @@ def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monke
     import agent.skill_commands as sc_mod
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
 
-    root = tmp_path / "hermes_home"
+    root = tmp_path / "rabbit_home"
     for name in ("s6probe-a", "s6probe-b"):
         skill_dir = tmp_path / f"external_{name}" / f"{name}-only"
         skill_dir.mkdir(parents=True)
@@ -1462,8 +1462,8 @@ def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monke
         (root / "profiles" / name / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {skill_dir.parent}\n"
             f"quick_commands:\n  {name}-qc:\n    type: exec\n    command: echo {name}\n")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(server, "_hermes_home", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.setattr(server, "_rabbit_home", str(root))
 
     def palette(profile):
         catalog = server.handle_request({"id": "r1", "method": "commands.catalog", "params": {"profile": profile}})
@@ -1726,7 +1726,7 @@ def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path,
     import agent.skill_bundles as sb_mod
     import agent.skill_commands as sc_mod
 
-    monkeypatch.delenv("HERMES_BUNDLES_DIR", raising=False)
+    monkeypatch.delenv("RABBIT_BUNDLES_DIR", raising=False)
     profile_b = tmp_path / "profile_b"
     external_b = tmp_path / "external_b"
     for name in ("one", "two"):
@@ -1828,17 +1828,17 @@ def test_slow_handlers_run_off_the_reader_thread(slow_method, server, monkeypatc
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
-    """Real config + skin files: activating a skin (as `hermes config set` does)
+    """Real config + skin files: activating a skin (as `rabbit config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
     Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
-    import hermes_cli.skin_engine as skin_engine
+    import rabbit_cli.skin_engine as skin_engine
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
         "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\ncustomCSS: |\n  .chat-input { font-size: 16px; }\n"
     )
-    monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(skin_engine, "get_rabbit_home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_rabbit_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
@@ -1851,7 +1851,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     server._broadcast_skin_if_changed()
     emitted.clear()
 
-    # Activate midnight, as `hermes config set display.skin midnight` would.
+    # Activate midnight, as `rabbit config set display.skin midnight` would.
     time.sleep(0.01)  # ensure the config mtime moves
     (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
@@ -1972,10 +1972,10 @@ def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(s
 
 
 def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, monkeypatch):
-    """`hermes serve` / dashboard speak JSON-RPC over WS only; Desktop captures their stdout
+    """`rabbit serve` / dashboard speak JSON-RPC over WS only; Desktop captures their stdout
     into desktop.log. After the last WS client leaves, the change watcher keeps ticking —
     its sessions.changed / setup.ready / session.reclaimed frames must be dropped, not
-    printed (~1100 `[hermes] {"jsonrpc": ...}` lines in desktop.log)."""
+    printed (~1100 `[rabbit] {"jsonrpc": ...}` lines in desktop.log)."""
     server, buf = capture
     monkeypatch.setattr(server, "_stdio_is_rpc_channel", False, raising=False)
     a = _RecordingTransport()

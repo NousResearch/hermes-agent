@@ -37,7 +37,7 @@ export function Favicon({
   const [pending, setPending] = useState(false)
 
   useEffect(() => {
-    const resolveFavicon = window.hermesDesktop?.resolveFavicon
+    const resolveFavicon = window.rabbitDesktop?.resolveFavicon
 
     if (!url || !resolveFavicon) {
       setIcon('')

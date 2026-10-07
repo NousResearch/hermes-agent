@@ -1,4 +1,4 @@
-"""Hermes-specific AST rules (the ``HX`` ids in ``config.RULES``).
+"""Rabbit-specific AST rules (the ``HX`` ids in ``config.RULES``).
 
 Each checker is a small function ``(tree, ctx) -> iterable of line numbers``; the table at the
 bottom maps rule ids to checkers. Checkers favour precision: a rule that cries wolf gets an
@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 _FUNCS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _CAPTURE_CALLS = {
-    "get_hermes_home",
-    "display_hermes_home",
+    "get_rabbit_home",
+    "display_rabbit_home",
     "load_config",
     "load_config_readonly",
     "read_raw_config",
@@ -318,12 +318,12 @@ def _eager(node: ast.AST) -> Iterator[ast.AST]:
         stack.extend(ast.iter_child_nodes(current))
 
 
-def _hermes_home_path(text: str, prefix: str = "") -> bool:
-    """``text`` (after ``prefix``) starts with the exact ``.hermes`` path component, so
-    ``.hermes/x`` matches and ``.hermes-profile-exports`` does not."""
+def _rabbit_home_path(text: str, prefix: str = "") -> bool:
+    """``text`` (after ``prefix``) starts with the exact ``.rabbit`` path component, so
+    ``.rabbit/x`` matches and ``.rabbit-profile-exports`` does not."""
     if not text.startswith(prefix):
         return False
-    return re.split(r"[/\\]", text[len(prefix):].lstrip("/\\"), maxsplit=1)[0] == ".hermes"
+    return re.split(r"[/\\]", text[len(prefix):].lstrip("/\\"), maxsplit=1)[0] == ".rabbit"
 
 
 def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
@@ -335,13 +335,13 @@ def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 and _call_name(node.left).endswith("Path.home")
                 and isinstance(right, ast.Constant)
                 and isinstance(right.value, str)
-                and _hermes_home_path(right.value)
+                and _rabbit_home_path(right.value)
             ):
                 yield node.lineno
         elif isinstance(node, ast.Call):
             name = _call_name(node)
             arg = _str_arg(node)
-            if arg and _hermes_home_path(arg, "~/") and name.endswith(("expanduser", "Path")):
+            if arg and _rabbit_home_path(arg, "~/") and name.endswith(("expanduser", "Path")):
                 yield node.lineno
 
 
@@ -350,7 +350,7 @@ def new_env_var(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
         read = _env_read_name(node)
         names = [read] if read else _env_write_names(node)
-        if any(n.startswith("HERMES_") and n not in ctx.known_env for n in names):
+        if any(n.startswith("RABBIT_") and n not in ctx.known_env for n in names):
             yield getattr(node, "lineno", 0)
 
 

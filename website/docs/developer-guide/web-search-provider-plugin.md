@@ -1,7 +1,7 @@
 ---
 sidebar_position: 12
 title: "Web Search Provider Plugins"
-description: "How to build a web-search/extract/crawl backend plugin for Hermes Agent"
+description: "How to build a web-search/extract/crawl backend plugin for Rabbit Agent"
 ---
 
 # Building a Web Search Provider Plugin
@@ -9,16 +9,16 @@ description: "How to build a web-search/extract/crawl backend plugin for Hermes 
 Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Perplexity, Exa, Parallel, Keenable, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
-Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](./image-gen-provider-plugin.md), [Video Generation Provider Plugins](./video-gen-provider-plugin.md), [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
+Web search is one of several **backend plugins** Rabbit supports. The others (with their own ABCs) are [Image Generation Provider Plugins](./image-gen-provider-plugin.md), [Video Generation Provider Plugins](./video-gen-provider-plugin.md), [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Rabbit Plugin](./plugins/index.md).
 :::
 
 ## How discovery works
 
-Hermes scans for web-search backends in three places:
+Rabbit scans for web-search backends in three places:
 
 1. **Bundled** — `<repo>/plugins/web/<name>/` (auto-loaded with `kind: backend`, always available)
-2. **User** — `~/.hermes/plugins/web/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
-3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
+2. **User** — `~/.rabbit/plugins/web/<name>/` (opt-in via `plugins.enabled` or `rabbit plugins enable <name>`)
+3. **Pip** — packages declaring a `rabbit_agent.plugins` entry point
 
 Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(...)` — that puts the instance into the registry in `agent/web_search_registry.py`. The active provider for each capability is picked by config:
 
@@ -28,7 +28,7 @@ Each plugin's `register(ctx)` function calls `ctx.register_web_search_provider(.
 | `web_extract` | `web.extract_backend` | `web.backend` |
 | Deep crawl modes inside `web_extract` | `web.extract_backend` | `web.backend` |
 
-When neither key is set, Hermes auto-detects the backend from whichever API key/URL is present in the environment. `hermes tools` walks users through selection.
+When neither key is set, Rabbit auto-detects the backend from whichever API key/URL is present in the environment. `rabbit tools` walks users through selection.
 
 ## Directory structure
 
@@ -66,12 +66,12 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
     @property
     def display_name(self) -> str:
-        # Human label shown in `hermes tools`. Defaults to `name`.
+        # Human label shown in `rabbit tools`. Defaults to `name`.
         return "My Backend"
 
     def is_available(self) -> bool:
         # Cheap check — env var present, optional dep importable, etc.
-        # MUST NOT make network calls (runs on every `hermes tools` paint).
+        # MUST NOT make network calls (runs on every `rabbit tools` paint).
         return bool(os.getenv("MY_BACKEND_API_KEY", "").strip())
 
     def supports_search(self) -> bool:
@@ -140,8 +140,8 @@ requires_env:
 | Key | Purpose |
 |---|---|
 | `kind: backend` | Routes the plugin through the backend-loading path |
-| `provides_web_providers` | List of provider `name`s this plugin registers — used by the loader to advertise the plugin in `hermes tools` even before `register()` runs |
-| `requires_env` | Interactive credential prompt during `hermes plugins install` (see [Build a Hermes Plugin](./plugins/index.md#gate-on-environment-variables) for the rich format) |
+| `provides_web_providers` | List of provider `name`s this plugin registers — used by the loader to advertise the plugin in `rabbit tools` even before `register()` runs |
+| `requires_env` | Interactive credential prompt during `rabbit plugins install` (see [Build a Rabbit Plugin](./plugins/index.md#gate-on-environment-variables) for the rich format) |
 
 ## ABC reference
 
@@ -150,7 +150,7 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 | Member | Required | Default | Purpose |
 |---|---|---|---|
 | `name` | ✅ | — | Stable id used in `web.*_backend` config |
-| `display_name` | — | `name` | Label shown in `hermes tools` |
+| `display_name` | — | `name` | Label shown in `rabbit tools` |
 | `is_available()` | ✅ | — | Cheap availability gate — env vars, optional deps |
 | `supports_search()` | — | `True` | Capability flag for `web_search` routing |
 | `supports_extract()` | — | `False` | Capability flag for `web_extract` routing |
@@ -206,20 +206,20 @@ Both `search()` and `extract()` may be `async def` — the dispatcher detects co
 
 ## Capability flags
 
-Hermes routes calls to the right provider based on the `supports_*` flags. A common multi-provider setup:
+Rabbit routes calls to the right provider based on the `supports_*` flags. A common multi-provider setup:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 web:
   search_backend: "brave-free"     # search-only, fast, free 2k/mo
   extract_backend: "firecrawl"     # extract + crawl, paid quota
 ```
 
-When `web.search_backend` or `web.extract_backend` aren't set, both fall through to `web.backend`. When that's also unset, Hermes picks the first available provider that supports the requested capability based on env-var presence.
+When `web.search_backend` or `web.extract_backend` aren't set, both fall through to `web.backend`. When that's also unset, Rabbit picks the first available provider that supports the requested capability based on env-var presence.
 
 If your provider only supports one capability, leave the other flags at their default (`False`) and the registry will skip it for that tool — users won't see misleading "provider X failed" errors when they're using X only for search and asking the agent to extract.
 
-## How Hermes wires it into the tools
+## How Rabbit wires it into the tools
 
 The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call time they:
 
@@ -229,18 +229,18 @@ The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call t
 4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine
 5. JSON-serialize the response envelope and hand it back to the LLM
 
-Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `hermes tools`.
+Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `rabbit tools`.
 
 ## Lazy-installing optional dependencies
 
-Keep availability checks read-only. For an SDK covered by a Hermes extra,
+Keep availability checks read-only. For an SDK covered by a Rabbit extra,
 use `pm.available("extra-name")` in `is_available()`. Request
 `pm.ensure_import("extra-name")` from the operation that needs it. Report
 `InstallError`, including a required restart, to the caller.
 
 Declare a third-party plugin's own dependencies in its manifest or
-`pyproject.toml` rather than inventing a Hermes extra. See
-[Build a Hermes Plugin → Lazy-install](./plugins/index.md#lazy-install-optional-python-dependencies).
+`pyproject.toml` rather than inventing a Rabbit extra. See
+[Build a Rabbit Plugin → Lazy-install](./plugins/index.md#lazy-install-optional-python-dependencies).
 
 ## Reference implementations
 
@@ -254,7 +254,7 @@ Declare a third-party plugin's own dependencies in its manifest or
 
 ```toml
 # pyproject.toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."rabbit_agent.plugins"]
 my-backend-web = "my_backend_web_package"
 ```
 
@@ -264,4 +264,4 @@ my-backend-web = "my_backend_web_package"
 
 - [Web Search](../user-guide/features/web-search.md) — user-facing feature documentation and per-backend configuration
 - [Plugins overview](../user-guide/features/plugins.md) — all plugin types at a glance
-- [Build a Hermes Plugin](./plugins/index.md) — general tools/hooks/slash commands guide
+- [Build a Rabbit Plugin](./plugins/index.md) — general tools/hooks/slash commands guide

@@ -40,8 +40,8 @@ _TURN_ERROR_LAYER_COPY: dict[str, tuple[str, str]] = {
     "billing": ("The model provider reports no credit left", "Top up the account or switch with /model."),
     "endpoint": ("Your custom model endpoint did not answer", "Check the endpoint is running, then /retry."),
     "streaming": ("The connection to the model provider dropped mid-reply", "Send /retry."),
-    "disk": ("The disk is full, so Hermes could not save the turn", "Free some space, then /retry."),
-    "gateway": ("Hermes hit an internal error while running this turn", "Send /retry; type /logs for the trace."),
+    "disk": ("The disk is full, so Rabbit could not save the turn", "Free some space, then /retry."),
+    "gateway": ("Rabbit hit an internal error while running this turn", "Send /retry; type /logs for the trace."),
     "provider": ("The model provider returned an error", "Send /retry, or switch with /model."),
 }
 
@@ -87,33 +87,30 @@ def busy_message(command: str) -> str:
     """4009 refusal for a history-mutating command while a reply is streaming. There is no
     ``/interrupt`` slash command on any client: Desktop has a Stop button, the terminal TUI uses
     Ctrl+C — name both without assuming which one the reader has."""
-    return (f"session busy — Hermes is still replying. Stop the current reply first (Stop button, "
+    return (f"session busy — Rabbit is still replying. Stop the current reply first (Stop button, "
             f"or Ctrl+C in a terminal), then run /{command.lstrip('/')}.")
 
 
-# Prefixes of the TimeoutErrors raised by ``hermes_cli.auth._auth_store_lock`` (profile
-# auth.json) and ``hermes_cli.auth_nous._nous_shared_store_lock`` (cross-profile shared store)
-# when the advisory lock times out (#124533). Both sit on the assistant-init path
-# (``resolve_nous_access_token`` acquires the shared lock inside the profile lock), and init
-# died on lock contention there — the generic /model /setup hints would send the user
-# debugging credentials that are perfectly fine.
+# Prefixes of the TimeoutErrors raised by ``rabbit_cli.auth._auth_store_lock`` (profile
+# auth.json) when the advisory lock times out (#124533). It sits on the assistant-init path,
+# and init died on lock contention there — the generic /model /setup hints would send the
+# user debugging credentials that are perfectly fine.
 _AUTH_LOCK_TIMEOUT_PREFIXES = (
     "Timed out waiting for auth store lock",
-    "Timed out waiting for shared Nous auth lock",
 )
 
 
 def agent_init_failed_message(exc: Any) -> str:
     if any(prefix in str(exc) for prefix in _AUTH_LOCK_TIMEOUT_PREFIXES):
-        return (f"Hermes could not start the assistant for this session. Details: {exc}. "
+        return (f"Rabbit could not start the assistant for this session. Details: {exc}. "
                 "Wait for the other process to release the lock (or exit it — check for a running "
-                "dashboard or background hermes process), then retry.")
-    return (f"Hermes could not start the assistant for this session. Details: {exc}. "
-            "Check the model and provider with /model, or run `hermes setup` in a terminal to reconfigure.")
+                "dashboard or background rabbit process), then retry.")
+    return (f"Rabbit could not start the assistant for this session. Details: {exc}. "
+            "Check the model and provider with /model, or run `rabbit setup` in a terminal to reconfigure.")
 
 
 AGENT_STILL_STARTING = (
-    "Hermes is still starting this session (loading tools), so this command could not run yet. "
+    "Rabbit is still starting this session (loading tools), so this command could not run yet. "
     "Wait for the status bar to show ready and try again.")
 
 # A deferred build that finished WITHOUT attaching an agent (its session record was replaced or
@@ -121,7 +118,7 @@ AGENT_STILL_STARTING = (
 AGENT_BUILD_ABANDONED = "agent build aborted: the session was closed or replaced before the build finished"
 # Turn refusal when the record still has no agent at admission time (reason unknown).
 AGENT_MISSING_FOR_TURN = (
-    "Hermes could not start the assistant for this session, so your message was not run. "
+    "Rabbit could not start the assistant for this session, so your message was not run. "
     "Reopen the session (or start a new one with /new) and send it again.")
 
 

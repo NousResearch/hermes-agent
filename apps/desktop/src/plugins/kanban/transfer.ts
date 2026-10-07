@@ -8,13 +8,13 @@
  * multi-hundred-megabyte board of attachments out of the renderer heap.
  */
 
-import { host, type PluginOs } from '@hermes/plugin-sdk'
+import { host, type PluginOs } from '@rabbit/plugin-sdk'
 
 import { exportBoard, importBoard } from './api'
 import type { KanbanText } from './i18n'
 import { errText } from './ui'
 
-const ARCHIVE_FILTERS = [{ extensions: ['tar.gz', 'tgz'], name: 'Hermes board' }]
+const ARCHIVE_FILTERS = [{ extensions: ['tar.gz', 'tgz'], name: 'Rabbit board' }]
 
 /** Pick a destination and export `slug`. Returns the archive path, or null
  *  when the user cancelled or the export failed. */

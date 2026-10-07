@@ -254,6 +254,6 @@ def test_review_input_token_budget_default_tracks_forks_context_window():
 
 def test_background_review_config_does_not_freeze_a_fixed_input_budget():
     """The config default must leave the budget resolver access to the active runtime."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from rabbit_cli.config_defaults import DEFAULT_CONFIG
 
     assert "max_input_tokens" not in DEFAULT_CONFIG["auxiliary"]["background_review"]

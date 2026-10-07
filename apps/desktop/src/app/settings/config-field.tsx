@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
-import type { ConfigFieldSchema } from '@/types/hermes'
+import type { ConfigFieldSchema } from '@/types/rabbit'
 
 import { ComboboxInput } from './combobox-input'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, FREE_INPUT_KEYS } from './constants'

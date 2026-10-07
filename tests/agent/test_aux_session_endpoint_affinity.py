@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import auxiliary_client as aux
-from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+from rabbit_cli.runtime_provider_custom import expand_direct_api_alias
 
 SESSION = {"provider": "openai-api", "model": "gpt-5.4",
            "base_url": "https://proxy.example:8443/v1", "api_key": "sk-session"}
@@ -47,7 +47,7 @@ def test_named_provider_defaults_compose_under_task_overrides(monkeypatch, tmp_p
     (tmp_path / "config.yaml").write_text(
         "model:\n  provider: openai\n  default: gpt-5.4\n"
         "providers:\n  openai:\n    api: https://named.example/v1\n    key_env: NAMED_KEY\n")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     def route(**overrides):
         aux._client_cache.clear()
         client, _ = aux.resolve_provider_client("openai", "gpt-5.4-mini", **overrides)

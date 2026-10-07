@@ -1,7 +1,7 @@
 ---
 sidebar_position: 12
 title: "视频生成 Provider 插件"
-description: "如何为 Hermes Agent 构建视频生成后端插件"
+description: "如何为 Rabbit Agent 构建视频生成后端插件"
 ---
 
 # 构建视频生成 Provider 插件
@@ -23,13 +23,13 @@ description: "如何为 Hermes Agent 构建视频生成后端插件"
 
 ## 发现机制
 
-Hermes 在三个位置扫描视频生成后端：
+Rabbit 在三个位置扫描视频生成后端：
 
 1. **内置** — `<repo>/plugins/video_gen/<name>/`（通过 `kind: backend` 自动加载）
-2. **用户** — `~/.hermes/plugins/video_gen/<name>/`（通过 `plugins.enabled` 选择启用）
-3. **Pip** — 声明了 `hermes_agent.plugins` 入口点的包
+2. **用户** — `~/.rabbit/plugins/video_gen/<name>/`（通过 `plugins.enabled` 选择启用）
+3. **Pip** — 声明了 `rabbit_agent.plugins` 入口点的包
 
-每个插件的 `register(ctx)` 函数调用 `ctx.register_video_gen_provider(...)`。活跃 provider 由 `config.yaml` 中的 `video_gen.provider` 指定；`hermes tools` → Video Generation 引导用户完成选择。与 `image_generate` 不同，此处没有内置的遗留后端——每个 provider 都是插件。
+每个插件的 `register(ctx)` 函数调用 `ctx.register_video_gen_provider(...)`。活跃 provider 由 `config.yaml` 中的 `video_gen.provider` 指定；`rabbit tools` → Video Generation 引导用户完成选择。与 `image_generate` 不同，此处没有内置的遗留后端——每个 provider 都是插件。
 
 ## 目录结构
 
@@ -101,7 +101,7 @@ class MyVideoGenProvider(VideoGenProvider):
         return {
             "name": "My Backend",
             "badge": "paid",
-            "tag": "Short description shown in `hermes tools`",
+            "tag": "Short description shown in `rabbit tools`",
             "env_vars": [
                 {
                     "key": "MY_API_KEY",
@@ -181,7 +181,7 @@ requires_env:
 | `seed` | 可复现性 |
 | `model` | 覆盖当前活跃的模型/系列 |
 
-Provider 的 `capabilities()` 声明上述哪些参数会被实际处理。Agent 在工具描述中看到的是当前活跃后端的能力信息，当用户通过 `hermes tools` 切换后端时会动态重建。
+Provider 的 `capabilities()` 声明上述哪些参数会被实际处理。Agent 在工具描述中看到的是当前活跃后端的能力信息，当用户通过 `rabbit tools` 切换后端时会动态重建。
 
 ## 模型系列与端点路由（FAL 模式）
 
@@ -202,7 +202,7 @@ def generate(self, prompt, *, image_url=None, model=None, **kwargs):
     # ... build payload from family's declared capability flags, call endpoint ...
 ```
 
-用户在 `hermes tools` 中只需选择一次 `veo3.1`。Agent 无需关心端点——它只负责传入（或不传入）`image_url`。
+用户在 `rabbit tools` 中只需选择一次 `veo3.1`。Agent 无需关心端点——它只负责传入（或不传入）`image_url`。
 
 ## 选择优先级
 
@@ -224,7 +224,7 @@ def generate(self, prompt, *, image_url=None, model=None, **kwargs):
 
 ## 产物保存位置
 
-如果你的后端返回 base64 数据，使用 `save_b64_video()` 将其写入 `$HERMES_HOME/cache/videos/`。对于通过后续 HTTP 请求获取的原始字节，使用 `save_bytes_video()`。否则直接返回上游 URL——gateway 在交付时会解析远程 URL。
+如果你的后端返回 base64 数据，使用 `save_b64_video()` 将其写入 `$RABBIT_HOME/cache/videos/`。对于通过后续 HTTP 请求获取的原始字节，使用 `save_bytes_video()`。否则直接返回上游 URL——gateway 在交付时会解析远程 URL。
 
 ## 测试
 

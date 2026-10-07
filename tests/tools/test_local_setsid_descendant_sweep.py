@@ -23,8 +23,8 @@ from tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
-def _isolate_hermes_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def _isolate_rabbit_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "logs").mkdir(exist_ok=True)
 
 
@@ -120,7 +120,7 @@ def test_kill_process_survives_psutil_snapshot_failure(monkeypatch):
     env = object.__new__(LocalEnvironment)
     proc = SimpleNamespace(
         pid=12345,
-        _hermes_pgid=67890,
+        _rabbit_pgid=67890,
         poll=lambda: 0,
         wait=lambda timeout=None: 0,
         kill=lambda: None,

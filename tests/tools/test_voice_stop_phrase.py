@@ -48,7 +48,7 @@ class TestIsVoiceStopPhrase:
 class TestLoadVoiceStopPhrases:
     def _with_cfg(self, voice_cfg):
         return patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"voice": voice_cfg},
         )
 
@@ -58,7 +58,7 @@ class TestLoadVoiceStopPhrases:
 
 
     def test_config_error_falls_back(self):
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError):
+        with patch("rabbit_cli.config.load_config", side_effect=RuntimeError):
             assert _load_voice_stop_phrases() == DEFAULT_VOICE_STOP_PHRASES
 
 
@@ -67,7 +67,7 @@ class TestContinuousLoopStopPhrase:
     phrase and never forwards it to on_transcript."""
 
     def _run_silence_cycle(self, transcript_text):
-        import hermes_cli.voice as v
+        import rabbit_cli.voice as v
 
         delivered = []
         silent_limit_fired = []
@@ -127,7 +127,7 @@ class TestContinuousLoopStopPhraseSignal:
             pass
 
     def _run_silence_cycle(self, transcript_text, on_stop_phrase):
-        import hermes_cli.voice as v
+        import rabbit_cli.voice as v
 
         delivered = []
         silent_limit_fired = []

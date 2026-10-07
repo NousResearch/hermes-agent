@@ -92,7 +92,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from utils import atomic_json_write, env_float, env_int
 
 from gateway.platforms._shared import (
@@ -1001,7 +1001,7 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
 # --- Multiplex isolation for the lark_oapi WebSocket client ---
 #
 # ``lark_oapi.ws.client`` keeps the asyncio loop in a *module-level global* (``loop``), and
-# Hermes monkey-patches ``websockets.connect`` on the shared module to inject ping settings.
+# Rabbit monkey-patches ``websockets.connect`` on the shared module to inject ping settings.
 # In multiplex mode N profiles each run a WS client on their own thread, so they overwrite
 # each other's globals (last-write-wins): tasks land on a sibling's loop ("Future attached
 # to a different loop") or a client binds the wrong loop and goes deaf. Fix: install
@@ -1016,7 +1016,7 @@ def _strip_edge_self_mentions(text: str, mentions: Sequence[FeishuMentionRef]) -
 # lark_oapi WebSocket client (#73779)
 # --------------------------------------------------------------------------- ``lark_oapi.ws.client`` keeps
 # the asyncio loop used by ``Client.start()`` and every coroutine it spawns in a *module-level global*
-# (``loop``), and Hermes also monkey-patches ``websockets.connect`` on the shared ``websockets`` module to
+# (``loop``), and Rabbit also monkey-patches ``websockets.connect`` on the shared ``websockets`` module to
 # inject per-adapter ping settings. In multiplex mode every profile runs its own WS client on a dedicated
 # thread, so the N threads overwrite each other's module globals (last-write-wins): a client ends up
 # scheduling tasks on a sibling profile's loop ("Future attached to a different loop" crashes) or binds to
@@ -1312,7 +1312,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_runner = self._webhook_site = self._event_handler = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
-        self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
+        self._dedup_state_path = get_rabbit_home() / "feishu_seen_message_ids.json"
         self._dedup_lock = threading.Lock()
         # Serializes the offloaded dedup-state flushes so two concurrent
         # inbound messages cannot land their writes out of order.
@@ -1399,12 +1399,12 @@ class FeishuAdapter(BasePlatformAdapter):
             bot_open_id=_secret("FEISHU_BOT_OPEN_ID"),
             bot_user_id=_secret("FEISHU_BOT_USER_ID"),
             bot_name=_secret("FEISHU_BOT_NAME"),
-            dedup_cache_size=max(32, env_int("HERMES_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
-            text_batch_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
-            text_batch_split_delay_seconds=env_float("HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
-            text_batch_max_messages=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
-            text_batch_max_chars=max(1, env_int("HERMES_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
-            media_batch_delay_seconds=env_float("HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
+            dedup_cache_size=max(32, env_int("RABBIT_FEISHU_DEDUP_CACHE_SIZE", _DEFAULT_DEDUP_CACHE_SIZE)),
+            text_batch_delay_seconds=env_float("RABBIT_FEISHU_TEXT_BATCH_DELAY_SECONDS", _DEFAULT_TEXT_BATCH_DELAY_SECONDS),
+            text_batch_split_delay_seconds=env_float("RABBIT_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0),
+            text_batch_max_messages=max(1, env_int("RABBIT_FEISHU_TEXT_BATCH_MAX_MESSAGES", _DEFAULT_TEXT_BATCH_MAX_MESSAGES)),
+            text_batch_max_chars=max(1, env_int("RABBIT_FEISHU_TEXT_BATCH_MAX_CHARS", _DEFAULT_TEXT_BATCH_MAX_CHARS)),
+            media_batch_delay_seconds=env_float("RABBIT_FEISHU_MEDIA_BATCH_DELAY_SECONDS", _DEFAULT_MEDIA_BATCH_DELAY_SECONDS),
             webhook_host=_extra_or_env("webhook_host", "FEISHU_WEBHOOK_HOST", _DEFAULT_WEBHOOK_HOST),
             webhook_port=int(extra.get("webhook_port") or _get_scoped_secret("FEISHU_WEBHOOK_PORT", str(_DEFAULT_WEBHOOK_PORT))),
             webhook_path=_extra_or_env("webhook_path", "FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH) or _DEFAULT_WEBHOOK_PATH,
@@ -1460,7 +1460,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 raise RuntimeError("Feishu adapter is shutting down; SDK executor unavailable")
             executor = getattr(self, "_sdk_executor", None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="hermes-feishu-sdk")
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=10, thread_name_prefix="rabbit-feishu-sdk")
                 self._sdk_executor = executor
             return executor
 
@@ -1468,7 +1468,7 @@ class FeishuAdapter(BasePlatformAdapter):
         """Run a blocking Feishu SDK call on the adapter-owned thread pool.
 
         ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
-        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
+        profile RABBIT_HOME override / secret scope (multiplexed dedup flush, thread lookup).
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -1517,7 +1517,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
                 message = (
-                    "Another local Hermes gateway is already using this Feishu app_id"
+                    "Another local Rabbit gateway is already using this Feishu app_id"
                     + (f" (PID {owner_pid})." if owner_pid else ".")
                     + " Stop the other gateway before starting a second Feishu websocket client."
                 )
@@ -1772,7 +1772,7 @@ class FeishuAdapter(BasePlatformAdapter):
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
-        """Approval-button card; ``hermes_action`` in each button value lets the click callback
+        """Approval-button card; ``rabbit_action`` in each button value lets the click callback
         route to ``resolve_gateway_approval()`` and unblock the waiting agent thread."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -1780,7 +1780,7 @@ class FeishuAdapter(BasePlatformAdapter):
             approval_id = next(self._approval_counter)
             actions = [
                 _card_button(label, style or "default",
-                             {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
+                             {"rabbit_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
             card = _card(f"⚠️ {t('gateway.exec_approval.header')}", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
@@ -1814,7 +1814,7 @@ class FeishuAdapter(BasePlatformAdapter):
         default_hint = t("platform.feishu.update_prompt.default_hint", default=default) if default else ""
 
         def _btn(label: str, answer: str, btn_type: str) -> dict:
-            return _card_button(label, btn_type, {"hermes_update_prompt_action": answer, "update_prompt_id": prompt_id})
+            return _card_button(label, btn_type, {"rabbit_update_prompt_action": answer, "update_prompt_id": prompt_id})
 
         actions = [_btn(t("platform.feishu.update_prompt.answer_yes"), "y", "primary"),
                    _btn(t("platform.feishu.update_prompt.answer_no"), "n", "danger")]
@@ -1856,7 +1856,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _write_update_prompt_response(answer: str) -> None:
-        response_path = get_hermes_home() / ".update_response"
+        response_path = get_rabbit_home() / ".update_response"
         tmp_path = response_path.with_suffix(".tmp")
         tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
@@ -2127,7 +2127,7 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
-        """Ignore read-receipt events that Hermes does not act on."""
+        """Ignore read-receipt events that Rabbit does not act on."""
         message = getattr(getattr(data, "event", None), "message", None)
         logger.debug("[Feishu] Ignoring message_read event: %s", getattr(message, "message_id", None) or "")
 
@@ -2203,9 +2203,9 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_value = getattr(action, "value", {}) or {}
         if isinstance(action_value, dict):
-            if action_value.get("hermes_action"):
+            if action_value.get("rabbit_action"):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-            if action_value.get("hermes_update_prompt_action"):
+            if action_value.get("rabbit_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
@@ -2282,7 +2282,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return self._card_response()
-        choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
+        choice = _APPROVAL_CHOICE_MAP.get(action_value.get("rabbit_action"), "deny")
         checked = self._validate_card_action(event=event, state=state, label="approval", ident=approval_id)
         if checked is None:
             return self._card_response()
@@ -2304,7 +2304,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return self._card_response()
-        answer = str(action_value.get("hermes_update_prompt_action", "") or "").strip().lower()
+        answer = str(action_value.get("rabbit_update_prompt_action", "") or "").strip().lower()
         if answer not in {"y", "n"}:
             logger.debug("[Feishu] Card action has invalid update prompt answer=%r", answer)
             return self._card_response()
@@ -2757,7 +2757,7 @@ class FeishuAdapter(BasePlatformAdapter):
             timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},
         ) as client:
             response = await client.get(
-                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
+                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; RabbitAgent/1.0)", "Accept": "*/*"},
             )
             response.raise_for_status()
             # Snapshot headers + body inside the context so pooled connections fully release.
@@ -2858,7 +2858,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._webhook_reject(remote_ip, "401-sig", 401, "Invalid signature")
 
         if payload.get("encrypt"):
-            logger.error("[Feishu] Encrypted webhook payloads are not supported by Hermes webhook mode")
+            logger.error("[Feishu] Encrypted webhook payloads are not supported by Rabbit webhook mode")
             return self._webhook_reject(
                 remote_ip, "400-encrypted", 400, json_msg="encrypted webhook payloads are not supported",
             )
@@ -3580,8 +3580,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _persist_seen_message_ids(self) -> None:
         try:
-            from hermes_constants import mkdir_under_hermes_home
-            mkdir_under_hermes_home(self._dedup_state_path.parent)
+            from rabbit_constants import mkdir_under_rabbit_home
+            mkdir_under_rabbit_home(self._dedup_state_path.parent)
             with self._dedup_lock:
                 recent = self._seen_message_order[-self._dedup_cache_size:]
                 # Save as {msg_id: timestamp} so TTL filtering works across restarts.
@@ -4119,7 +4119,7 @@ def _begin_registration(domain: str = "feishu") -> dict:
     if not device_code:
         raise RuntimeError("Feishu / Lark registration did not return a device_code")
     qr_url = res.get("verification_uri_complete", "")
-    qr_url += ("&" if "?" in qr_url else "?") + "from=hermes&tp=hermes"
+    qr_url += ("&" if "?" in qr_url else "?") + "from=rabbit&tp=rabbit"
     return {
         "device_code": device_code, "qr_url": qr_url, "user_code": res.get("user_code", ""),
         "interval": res.get("interval") or 5, "expire_in": res.get("expire_in") or 600,
@@ -4279,7 +4279,7 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
     else:
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        print("  Tip: from the Hermes environment, run: "
+        print("  Tip: from the Rabbit environment, run: "
               f"{install_hint('messaging')} "
               "to display a scannable QR code here next time")
     print()
@@ -4303,7 +4303,7 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
 # migrations: a register(ctx) entry point plus hook implementations that replace the per-platform core
 # touchpoints (the Platform.FEISHU elif in gateway/run.py, the feishu_cfg YAML→env block +
 # _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _setup_feishu wizard + _PLATFORMS["feishu"]
-# static dict in hermes_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
+# static dict in rabbit_cli/gateway.py, and the _send_feishu dispatch in tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 _MIGRATION_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _MIGRATION_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
@@ -4313,7 +4313,7 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """standalone_sender_fn: out-of-process delivery (cron without gateway) via a transient adapter."""
     if not await asyncio.to_thread(_load_lark_oapi):
-        return send_error("Feishu dependencies not installed. Run `hermes setup` to install Feishu support.")
+        return send_error("Feishu dependencies not installed. Run `rabbit setup` to install Feishu support.")
     try:
         adapter = FeishuAdapter(pconfig)
         adapter._client = adapter._build_lark_client(_sdk_domain(getattr(adapter, "_domain_name", "feishu")))
@@ -4347,10 +4347,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def interactive_setup() -> None:
     """Interactive setup for Feishu / Lark — scan-to-create or manual creds (CLI helpers lazy-imported)."""
-    from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from rabbit_cli.config import remove_env_value, save_env_value
+    from rabbit_cli.setup import prompt_choice
+    from rabbit_cli.cli_output import prompt, print_header, print_info, print_success, print_warning
+    from rabbit_cli.setup_platforms import declines_reconfigure
 
     print_header("Feishu / Lark")
     if declines_reconfigure("Feishu / Lark", "Reconfigure Feishu / Lark?", "FEISHU_APP_ID"):
@@ -4438,7 +4438,7 @@ def interactive_setup() -> None:
         save_env_value("FEISHU_ALLOWED_USERS", "")
         if access_idx == 0:
             print_success("DM pairing enabled.")
-            print_info("Unknown users can request access; approve with `hermes pairing approve`.")
+            print_info("Unknown users can request access; approve with `rabbit pairing approve`.")
         else:
             print_warning("Open DM access enabled for Feishu / Lark.")
 
@@ -4480,13 +4480,13 @@ def _is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Rabbit plugin system."""
     ctx.register_platform(
         name="feishu", label="Feishu / Lark", adapter_factory=FeishuAdapter,
         check_fn=feishu_deps_present, ensure_deps_fn=check_feishu_requirements,
         is_connected=_is_connected, validate_config=_is_connected,
         required_env=["FEISHU_APP_ID", "FEISHU_APP_SECRET"],
-        install_hint="Run `hermes setup` to install Feishu support.", setup_fn=interactive_setup,
+        install_hint="Run `rabbit setup` to install Feishu support.", setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="FEISHU_ALLOWED_USERS",
         allow_all_env="FEISHU_ALLOW_ALL_USERS", cron_deliver_env_var="FEISHU_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",

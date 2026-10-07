@@ -1,4 +1,4 @@
-"""In-memory routing purge for `hermes profile delete`.
+"""In-memory routing purge for `rabbit profile delete`.
 
 The routing index lives in ``SessionStore._entries`` and is written back periodically, so a durable
 DB delete made anywhere else is undone by this process's next save — the store has to drop its own

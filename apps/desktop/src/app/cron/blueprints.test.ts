@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { AutomationBlueprint } from '@/hermes'
+import type { AutomationBlueprint } from '@/rabbit'
 
 import { initialBlueprintValues } from './blueprints'
 

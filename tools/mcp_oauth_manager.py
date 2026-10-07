@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.mcp_oauth_provider import HermesProviderMixin
+from tools.mcp_oauth_provider import RabbitProviderMixin
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +41,17 @@ class _ProviderEntry:
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
 
 
-class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
+class RabbitMCPOAuthProvider(RabbitProviderMixin, *_SDK_BASES):
     """OAuthClientProvider with pre-flow disk-mtime reload (external refreshes become visible to
     a running session), expiry seeding on cold load, pre-flight metadata discovery, dead-client
     registration detection and the bidirectional ``async_auth_flow`` bridge. Token-endpoint
-    fixes come from ``HermesProviderMixin``. Only usable when the SDK's OAuth module imported.
+    fixes come from ``RabbitProviderMixin``. Only usable when the SDK's OAuth module imported.
 
     Reference: Claude Code's ``invalidateOAuthCacheIfDiskChanged`` (``src/utils/auth.ts:1320``, CC-1096 /
     GH#24317).
     """
 
-    _hermes_logger = logger
+    _rabbit_logger = logger
 
     def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
         super().__init__(*args, **kwargs)
@@ -59,27 +59,27 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         # every POST; HTTPX may close the generator from another task). A binary semaphore drops task ownership.
         import anyio
         self.context.lock = anyio.Semaphore(1, max_value=1)
-        self._hermes_server_name = server_name
-        self._hermes_home = ""
+        self._rabbit_server_name = server_name
+        self._rabbit_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
-        self._hermes_preregistered = preregistered
+        self._rabbit_preregistered = preregistered
 
-    def _hermes_storage(self):
-        """The context storage when it is a ``HermesTokenStorage``, else None."""
-        from tools.mcp_oauth import HermesTokenStorage
-        return self.context.storage if isinstance(self.context.storage, HermesTokenStorage) else None
+    def _rabbit_storage(self):
+        """The context storage when it is a ``RabbitTokenStorage``, else None."""
+        from tools.mcp_oauth import RabbitTokenStorage
+        return self.context.storage if isinstance(self.context.storage, RabbitTokenStorage) else None
 
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
-        logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
+        logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._rabbit_server_name, what, exc)
 
     async def _initialize(self) -> None:
         """Load stored state, seed ``token_expiry_time``, restore/prefetch metadata. The SDK's
         ``_initialize`` never calls ``update_token_expiry``, so a restarted process would ship stale
-        Bearer tokens as "valid"; seeding the expiry (``HermesTokenStorage`` persists absolute
+        Bearer tokens as "valid"; seeding the expiry (``RabbitTokenStorage`` persists absolute
         ``expires_at``) makes the SDK refresh first. Metadata is restored from disk, else discovered
         pre-flight when we hold tokens but no metadata: otherwise ``_refresh_token`` guesses
         ``{server_url}/token`` (wrong for split-origin providers), 404s, and we fall to browser reauth."""
-        await super()._initialize()  # HermesProviderMixin: restores metadata from disk, enforces issuer binding
+        await super()._initialize()  # RabbitProviderMixin: restores metadata from disk, enforces issuer binding
         tokens = self.context.current_tokens
         if tokens is not None and tokens.expires_in is not None:
             # The SDK maps a zero TTL to ``time.time()`` and accepts equality
@@ -101,7 +101,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
         builders/response handlers so we track whatever the pinned SDK expects."""
-        # The SDK's httpx flavour, not Hermes': `create_oauth_metadata_request` returns *its* (httpx2) Request objects.
+        # The SDK's httpx flavour, not Rabbit': `create_oauth_metadata_request` returns *its* (httpx2) Request objects.
         from tools.mcp_tool import sdk_httpx
         httpx = sdk_httpx()
         if httpx is None:  # pragma: no cover — SDK import would have failed
@@ -117,7 +117,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             try:
                 return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
-                logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
+                logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._rabbit_server_name, label, url, exc)
                 return None
         async with httpx.AsyncClient(timeout=10.0) as client:
             # PRM discovery to learn the authorization_server URL.
@@ -139,17 +139,17 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     break
                 if asm:
                     self.context.oauth_metadata = asm
-                    storage = self._hermes_storage()  # persist now so a later cold-load skips discovery
+                    storage = self._rabbit_storage()  # persist now so a later cold-load skips discovery
                     if storage is not None:
                         storage.save_oauth_metadata(asm)
                     logger.debug("MCP OAuth '%s': pre-flight ASM discovered token_endpoint=%s",
-                                 self._hermes_server_name, asm.token_endpoint)
+                                 self._rabbit_server_name, asm.token_endpoint)
                     break
 
     def _persist_oauth_metadata_if_changed(self) -> None:
         """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""
         meta = self.context.oauth_metadata
-        storage = self._hermes_storage()
+        storage = self._rabbit_storage()
         if meta is None or storage is None:
             return
         existing = storage.load_oauth_metadata()
@@ -178,23 +178,23 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         is dead server-side: delete ``client.json`` (+ stale metadata) so the SDK re-runs DCR next flow.
         Conservative: acts ONLY on 400/401 at the discovered ``token_endpoint`` (the only request carrying our
         ``client_id``) with ``invalid_client`` in the body; pre-registered clients are never poisoned; any failure
-        is swallowed. The browser-side "Redirect URI Mismatch" case has no HTTP signal (``hermes mcp reauth``).
+        is swallowed. The browser-side "Redirect URI Mismatch" case has no HTTP signal (``rabbit mcp reauth``).
 
         See #36767.
         """
         try:
-            if (self._hermes_preregistered or getattr(response, "status_code", None) not in (400, 401)
+            if (self._rabbit_preregistered or getattr(response, "status_code", None) not in (400, 401)
                     or not await self._is_invalid_client_at_token_endpoint(response)):
                 return
-            storage = self._hermes_storage()
+            storage = self._rabbit_storage()
             # A rejected CIMD URL would loop if re-presented (the server already fetched and refused
             # it): drop it so the retry takes DCR, and mark it on disk so the next process doesn't walk
-            # back into the same refusal (`hermes mcp login` clears the marker).
+            # back into the same refusal (`rabbit mcp login` clears the marker).
             cimd_url = getattr(self.context, "client_metadata_url", None)
             if cimd_url and getattr(self.context.client_info, "client_id", None) == cimd_url:
                 logger.warning("MCP OAuth '%s': authorization server rejected our Client ID Metadata Document (%s) "
                                "with invalid_client — falling back to dynamic client registration.",
-                               self._hermes_server_name, cimd_url)
+                               self._rabbit_server_name, cimd_url)
                 self.context.client_metadata_url = None
                 if storage is not None:
                     storage.mark_cimd_rejected()
@@ -208,7 +208,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     async def async_auth_flow(self, request):  # type: ignore[override]
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
-            await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
+            await get_manager().invalidate_if_disk_changed(self._rabbit_server_name, rabbit_home=self._rabbit_home)
         except Exception as exc:  # pragma: no cover — defensive
             self._log_nonfatal("pre-flow disk-watch", exc)
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
@@ -266,7 +266,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
 
 # Cached at import time; None when the SDK's OAuth module is unavailable.
-_HERMES_PROVIDER_CLS: Optional[type] = HermesMCPOAuthProvider if _SDK_BASES else None
+_RABBIT_PROVIDER_CLS: Optional[type] = RabbitMCPOAuthProvider if _SDK_BASES else None
 
 
 class MCPOAuthManager:
@@ -293,18 +293,18 @@ class MCPOAuthManager:
             if entry.provider is None:
                 entry.provider = self._build_provider(server_name, entry)
                 if entry.provider is not None:
-                    entry.provider._hermes_home = key[0]
+                    entry.provider._rabbit_home = key[0]
             return entry.provider
 
     @staticmethod
-    def _key(server_name: str, hermes_home: str | Path | None = None) -> tuple[str, str]:
-        from hermes_constants import get_hermes_home
-        home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
+    def _key(server_name: str, rabbit_home: str | Path | None = None) -> tuple[str, str]:
+        from rabbit_constants import get_rabbit_home
+        home = Path(rabbit_home) if rabbit_home is not None else get_rabbit_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
     def _build_provider(self, server_name: str, entry: _ProviderEntry) -> Optional[Any]:
-        """Build a ``HermesMCPOAuthProvider``; None if the SDK's OAuth support is unavailable."""
-        if _HERMES_PROVIDER_CLS is None:
+        """Build a ``RabbitMCPOAuthProvider``; None if the SDK's OAuth support is unavailable."""
+        if _RABBIT_PROVIDER_CLS is None:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
             return None
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow  # lazy: circular at import time
@@ -316,40 +316,40 @@ class MCPOAuthManager:
         if get_dashboard_oauth_flow() is None and not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
-                f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
-        return _HERMES_PROVIDER_CLS(
+                f"Run `rabbit mcp login {server_name}` interactively first to complete initial authorization.")
+        return _RABBIT_PROVIDER_CLS(
             server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
-    def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
-        """Evict the provider from cache AND delete tokens from disk (``hermes mcp remove`` / forced re-auth)."""
-        entry = self.evict(server_name, hermes_home=hermes_home)
+    def remove(self, server_name: str, *, rabbit_home: str | Path | None = None) -> _ProviderEntry | None:
+        """Evict the provider from cache AND delete tokens from disk (``rabbit mcp remove`` / forced re-auth)."""
+        entry = self.evict(server_name, rabbit_home=rabbit_home)
         from tools.mcp_oauth import remove_oauth_tokens
-        remove_oauth_tokens(server_name, hermes_home=hermes_home)
+        remove_oauth_tokens(server_name, rabbit_home=rabbit_home)
         logger.info("MCP OAuth '%s': evicted from cache and removed from disk", server_name)
         return entry
 
-    def restore_entry(self, server_name: str, entry: _ProviderEntry | None, *, hermes_home: str | Path | None = None) -> None:
+    def restore_entry(self, server_name: str, entry: _ProviderEntry | None, *, rabbit_home: str | Path | None = None) -> None:
         """Restore a provider entry removed for a failed reauthorization."""
         if entry is None:
             return
         with self._entries_lock:
-            self._entries.setdefault(self._key(server_name, hermes_home), entry)
+            self._entries.setdefault(self._key(server_name, rabbit_home), entry)
 
-    def evict(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
+    def evict(self, server_name: str, *, rabbit_home: str | Path | None = None) -> _ProviderEntry | None:
         """Drop only the in-process provider, preserving persisted OAuth state."""
         with self._entries_lock:
-            return self._entries.pop(self._key(server_name, hermes_home), None)
+            return self._entries.pop(self._key(server_name, rabbit_home), None)
 
-    async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
+    async def invalidate_if_disk_changed(self, server_name: str, *, rabbit_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
         from tools.mcp_oauth import _get_token_dir, _safe_filename
-        entry = self._entries.get(self._key(server_name, hermes_home))
+        entry = self._entries.get(self._key(server_name, rabbit_home))
         if entry is None or entry.provider is None:
             return False
         async with entry.lock:
             try:
-                mtime_ns = (_get_token_dir(hermes_home) / f"{_safe_filename(server_name)}.json").stat().st_mtime_ns
+                mtime_ns = (_get_token_dir(rabbit_home) / f"{_safe_filename(server_name)}.json").stat().st_mtime_ns
             except OSError:
                 return False
             if mtime_ns == entry.last_mtime_ns:
@@ -360,7 +360,7 @@ class MCPOAuthManager:
                 # baseline: the file was written by this process's own first
                 # sign-in, and reloading on the next request would tear down the
                 # live HTTP MCP session. With no tokens in memory (started before
-                # an external `hermes mcp login`), fall through and reload.
+                # an external `rabbit mcp login`), fall through and reload.
                 return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):

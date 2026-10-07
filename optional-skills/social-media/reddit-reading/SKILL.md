@@ -1,12 +1,12 @@
 ---
+author: Teknium (teknium1), Hermes Agent
 name: reddit-reading
 description: "Read Reddit: subreddits, search, threads, users. No browser."
 version: 1.0.0
-author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Reddit, Social Media, Research, Discussions, Community]
     related_skills: [rss-feeds, grounded-citations, blocked-page-recovery, xurl]
 ---
@@ -36,7 +36,7 @@ returns thinner data (no scores, top-level comments only), which is fine for a f
 
 **Optional upgrade (app credentials, still no user login):** for sustained use or full
 data, register a free "script" type app at https://www.reddit.com/prefs/apps and put its
-two values in `~/.hermes/.env`:
+two values in `~/.rabbit/.env`:
 
 ```
 REDDIT_CLIENT_ID=...
@@ -63,7 +63,7 @@ Run every command through `terminal` with the skill-relative script path:
 ```bash
 python3 scripts/reddit.py doctor                                  # which backend, current rate-limit window
 python3 scripts/reddit.py sub LocalLLaMA --sort hot --limit 15
-python3 scripts/reddit.py search "hermes agent" --sub LocalLLaMA --sort new
+python3 scripts/reddit.py search "rabbit agent" --sub LocalLLaMA --sort new
 python3 scripts/reddit.py thread https://www.reddit.com/r/x/comments/abc123/slug/ --limit 40
 python3 scripts/reddit.py user spez --limit 10
 python3 scripts/reddit.py --json search "topic"                  # machine-readable
@@ -100,7 +100,7 @@ than stopping at titles; the listing only carries the first ~300 characters of e
 
 ⑤ If the user needs sustained Reddit access (monitoring, more than ~10 calls), stop and
 ask them to register the app credentials (Prerequisites) rather than grinding through the
-throttle. Tell them plainly: it is a free app registration, not logging Hermes into their
+throttle. Tell them plainly: it is a free app registration, not logging Rabbit into their
 account. Never ask for a Reddit password or browser cookies.
 
 ## Pitfalls

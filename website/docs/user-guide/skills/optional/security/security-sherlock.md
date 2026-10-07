@@ -14,7 +14,7 @@ Find accounts for a username across 400+ platforms.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/security/sherlock` |
+| Source | Optional — install with `rabbit skills install official/security/sherlock` |
 | Path | `optional-skills/security/sherlock` |
 | Version | `1.0.0` |
 | Author | unmodeled-tyler |
@@ -25,7 +25,7 @@ Find accounts for a username across 400+ platforms.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Sherlock OSINT Username Search

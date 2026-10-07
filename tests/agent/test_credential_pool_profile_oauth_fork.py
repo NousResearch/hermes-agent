@@ -1,7 +1,7 @@
 """Regression tests for #100339: cloned / borrowed single-use Anthropic OAuth
 grants must never fork across profiles.
 
-Real imports, real temp HERMES_HOME root + named profile, real auth.json I/O.
+Real imports, real temp RABBIT_HOME root + named profile, real auth.json I/O.
 The Anthropic token endpoint is replaced at the ``urllib.request.urlopen``
 boundary with genuine single-use semantics (a refresh token redeems once;
 a second POST returns ``invalid_grant``).
@@ -20,8 +20,8 @@ import pytest
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
-    """Root HERMES_HOME with an expired-but-refreshable Anthropic pool row."""
-    root = tmp_path / "hermes-root"
+    """Root RABBIT_HOME with an expired-but-refreshable Anthropic pool row."""
+    root = tmp_path / "rabbit-root"
     root.mkdir()
     (tmp_path / "fakehome").mkdir()
     # Keep host ~/.claude and host auth.json out of the picture.
@@ -29,11 +29,11 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "fakehome"))
     for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     # The pytest seat-belt in the root write-through compares the global path
-    # against $HOME/.hermes/auth.json; our root is elsewhere, so writes go.
-    import hermes_constants
-    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    # against $HOME/.rabbit/auth.json; our root is elsewhere, so writes go.
+    import rabbit_constants
+    rabbit_constants._default_rabbit_root_memo = None  # type: ignore[attr-defined]
 
     expired = int((time.time() - 3600) * 1000)
     store = {
@@ -42,7 +42,7 @@ def fleet(tmp_path, monkeypatch):
         "credential_pool": {
             "anthropic": [{
                 "id": "abc123", "label": "team-grant", "auth_type": "oauth",
-                "priority": 0, "source": "manual:hermes_pkce",
+                "priority": 0, "source": "manual:rabbit_pkce",
                 "access_token": "sk-ant-oat01-AT0", "refresh_token": "sk-ant-ort-RT0",
                 "expires_at_ms": expired, "base_url": "https://api.anthropic.com",
             }],
@@ -92,14 +92,14 @@ def fleet(tmp_path, monkeypatch):
 
     def use(home):
         """Switch the process to *home* (root or a profile dir)."""
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
-        import hermes_cli.auth as auth_mod
+        monkeypatch.setenv("RABBIT_HOME", str(home))
+        rabbit_constants._default_rabbit_root_memo = None  # type: ignore[attr-defined]
+        import rabbit_cli.auth as auth_mod
         auth_mod._global_auth_store_cache = None
         auth_mod._oauth_heal_clean_marks.clear()
 
     # Process-wide notice buffer: start each test clean.
-    import hermes_cli.auth as _auth_mod
+    import rabbit_cli.auth as _auth_mod
     _auth_mod._oauth_heal_notices.clear()
     _auth_mod._oauth_heal_clean_marks.clear()
 
@@ -113,7 +113,7 @@ def fleet(tmp_path, monkeypatch):
 
 
 def _profile(fleet, name, **kw):
-    from hermes_cli.profiles import create_profile
+    from rabbit_cli.profiles import create_profile
     fleet["use"](fleet["root"])
     return create_profile(name, **kw)
 
@@ -132,7 +132,7 @@ def test_clone_all_strips_oauth_grant_but_keeps_api_keys(fleet):
 
 
 def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from rabbit_cli.auth import strip_cloned_single_use_oauth_grants
     pdir = tmp_path / "p"
     pdir.mkdir()
     (pdir / "auth.json").write_text(json.dumps({
@@ -161,7 +161,7 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
     agent_key-only nous rows carry no single-use grant and must survive both strip and heal.
     """
     from agent.credential_pool import load_pool
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants, strip_cloned_single_use_oauth_grants
     grant = {"access_token": "AT1", "refresh_token": "RT1", "agent_key": "AK"}
     root_store = json.loads((fleet["root"] / "auth.json").read_text())
     root_store["providers"]["nous"] = dict(grant)
@@ -209,7 +209,7 @@ def test_strip_helper_drops_cloned_nous_refresh_grant(tmp_path, fleet):
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from rabbit_cli.auth import strip_cloned_single_use_oauth_grants
     assert strip_cloned_single_use_oauth_grants(tmp_path) == {"pool": [], "providers": [], "files": []}
 
 
@@ -223,7 +223,7 @@ def test_strip_helper_is_a_noop_without_credentials(tmp_path):
 )
 def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
     """A shared auth store is one grant, not a cloned credential copy."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from rabbit_cli.auth import strip_cloned_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -238,8 +238,8 @@ def test_strip_helper_leaves_shared_root_auth_store_unchanged(fleet, link):
 
 def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, monkeypatch):
     """Credential hygiene must not mutate auth when store identity is unknown."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
-    import hermes_constants
+    from rabbit_cli.auth import strip_cloned_single_use_oauth_grants
+    import rabbit_constants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -247,7 +247,7 @@ def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, mon
     shared = _shared_profile(
         fleet, "shared", link=lambda target, alias: alias.symlink_to(target))
     monkeypatch.setattr(
-        hermes_constants, "get_default_hermes_root",
+        rabbit_constants, "get_default_rabbit_root",
         lambda: (_ for _ in ()).throw(OSError("root unavailable")))
 
     assert strip_cloned_single_use_oauth_grants(shared) == {
@@ -258,7 +258,7 @@ def test_strip_helper_fails_closed_when_root_store_cannot_be_resolved(fleet, mon
 
 def test_strip_helper_fails_closed_when_store_identity_check_errors(fleet, monkeypatch):
     """A transient stat failure must not be interpreted as two stores."""
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from rabbit_cli.auth import strip_cloned_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -320,7 +320,7 @@ def test_borrowing_profile_load_pool_does_not_materialize_local_copy(fleet):
 
 
 def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
-    """Root's hermes_pkce row is seeded from ROOT's .anthropic_oauth.json; a
+    """Root's rabbit_pkce row is seeded from ROOT's .anthropic_oauth.json; a
     profile without that file must not prune (and write-through-delete) it."""
     from agent.credential_pool import load_pool
 
@@ -335,13 +335,13 @@ def test_borrower_prune_never_deletes_root_singleton_grant(fleet, tmp_path):
     (root / "auth.json").write_text(json.dumps(store))
     fleet["use"](root)
     root_rows = [e for e in load_pool("anthropic").entries()]
-    assert [e.source for e in root_rows] == ["hermes_pkce"]
+    assert [e.source for e in root_rows] == ["rabbit_pkce"]
 
     kid = _profile(fleet, "kid")
     fleet["use"](kid)
     pool = load_pool("anthropic")
-    assert [e.source for e in pool.entries()] == ["hermes_pkce"], "borrowed root grant was pruned"
-    assert fleet["rows"](root) and fleet["rows"](root)[0]["source"] == "hermes_pkce"
+    assert [e.source for e in pool.entries()] == ["rabbit_pkce"], "borrowed root grant was pruned"
+    assert fleet["rows"](root) and fleet["rows"](root)[0]["source"] == "rabbit_pkce"
     assert fleet["rows"](kid) is None
 
     # Rotating from the profile commits BOTH the pool row and the singleton at ROOT.
@@ -360,7 +360,7 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     pool = load_pool("anthropic")
     pool.add_entry(PooledCredential(
         provider="anthropic", id="own001", label="mine", auth_type=AUTH_TYPE_OAUTH,
-        priority=0, source="manual:hermes_pkce", access_token="sk-ant-oat01-MINE",
+        priority=0, source="manual:rabbit_pkce", access_token="sk-ant-oat01-MINE",
         refresh_token="rt-mine",
     ))
     assert [e["id"] for e in fleet["rows"](kid)] == ["own001"], "borrowed root row was copied into the profile"
@@ -416,7 +416,7 @@ def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
     assert fleet["rows"](forge)[0]["refresh_token"] == "sk-ant-ort-RT1"
     assert fleet["rows"](atlas)[0]["refresh_token"] == "sk-ant-ort-RT0"
 
-    with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
+    with caplog.at_level(logging.INFO, logger="rabbit_cli.auth"):
         fleet["use"](forge)
         sel = load_pool("anthropic").select()
     assert sel is not None and sel.access_token == "sk-ant-oat01-AT2"
@@ -443,11 +443,11 @@ def test_heal_consolidates_existing_forks_to_the_live_copy(fleet, caplog):
 def test_heal_is_idempotent_and_logs_once(fleet, caplog):
     import logging
     from agent.credential_pool import load_pool
-    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
 
     kid = _fork(fleet, "kid")
     fleet["use"](kid)
-    with caplog.at_level(logging.INFO, logger="hermes_cli.auth"):
+    with caplog.at_level(logging.INFO, logger="rabbit_cli.auth"):
         load_pool("anthropic")
         assert fleet["rows"](kid) is None
         notices = consume_oauth_heal_notices()
@@ -462,7 +462,7 @@ def test_heal_is_idempotent_and_logs_once(fleet, caplog):
 
 
 def test_heal_never_deletes_the_only_surviving_copy(fleet):
-    """Root lost its grant (user ran `hermes auth remove` at root); the profile's
+    """Root lost its grant (user ran `rabbit auth remove` at root); the profile's
     copy is the only one left — and an independent second account stays put."""
     from agent.credential_pool import load_pool
 
@@ -483,7 +483,7 @@ def test_heal_never_deletes_the_only_surviving_copy(fleet):
 def test_heal_preserves_independent_grants_for_same_account(fleet, shape, claims):
     """An account can have independent device logins; identity is not lineage."""
     import base64
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants
 
     def pair(tag):
         payload = base64.urlsafe_b64encode(json.dumps({
@@ -526,7 +526,7 @@ def test_heal_rotated_fork_moves_provider_block_with_the_pool_row(fleet):
     must carry the fresher pair too or the next root load resurrects the spent one.
     """
     from agent.credential_pool import load_pool
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants
 
     def store(tag, exp_off):
         tokens = {"access_token": "at-" + tag, "refresh_token": "rt-" + tag}
@@ -587,8 +587,8 @@ def test_heal_leaves_a_different_account_alone(fleet):
 
 
 def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
-    """`hermes auth` PKCE shape: root + profile each have .anthropic_oauth.json +
-    a hermes_pkce-seeded row; the profile's copy is the rotated (live) one."""
+    """`rabbit auth` PKCE shape: root + profile each have .anthropic_oauth.json +
+    a rabbit_pkce-seeded row; the profile's copy is the rotated (live) one."""
     from agent.credential_pool import load_pool
 
     root = fleet["root"]
@@ -601,7 +601,7 @@ def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
         "expiresAt": int((time.time() - 3600) * 1000),
     }))
     fleet["use"](root)
-    load_pool("anthropic")  # seeds root's hermes_pkce row from the singleton
+    load_pool("anthropic")  # seeds root's rabbit_pkce row from the singleton
 
     kid = _profile(fleet, "kid")
     kid.mkdir(parents=True, exist_ok=True)
@@ -633,7 +633,7 @@ def test_heal_pkce_singleton_shape_commits_live_pair_to_root_singleton(fleet):
 
 
 def test_heal_is_a_noop_in_classic_mode(fleet):
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants
     fleet["use"](fleet["root"])
     before = (fleet["root"] / "auth.json").read_text()
     assert heal_forked_single_use_oauth_grants("anthropic") is None
@@ -684,10 +684,10 @@ def _shared_profile(fleet, name, *, link=_link_same_file):
 
 
 def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
-    """#101356: `ln -s ~/.hermes/auth.json <profile>/auth.json` shares ONE store.
+    """#101356: `ln -s ~/.rabbit/auth.json <profile>/auth.json` shares ONE store.
     Both sides of the consolidation read the same file, so every row looks like
     a fork of itself — healing would strip the shared grant through the link."""
-    from hermes_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import consume_oauth_heal_notices, heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -708,7 +708,7 @@ def test_heal_skips_profile_auth_json_symlinked_to_the_root_store(fleet):
 def test_heal_skips_profile_auth_json_hardlinked_to_the_root_store(fleet):
     """Same class as the symlink: a hardlink resolves to a different name but
     is the same inode, so it is still one store, not a forked copy."""
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     _seed_codex_grant(root)
@@ -726,7 +726,7 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
     """Separate auth.jsons but a profile `.anthropic_oauth.json` symlinked to
     root's: one shared grant, not a fork. The heal must not self-compare it
     or unlink the alias (#101356 sibling site)."""
-    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+    from rabbit_cli.auth import heal_forked_single_use_oauth_grants
 
     root = fleet["root"]
     (root / ".anthropic_oauth.json").write_text(json.dumps({
@@ -750,14 +750,14 @@ def test_heal_leaves_an_aliased_anthropic_singleton_alone(fleet):
 # ── E. the clean mark outlives the process ──────────────────────────────
 #
 # The in-memory mark only silences the heal for one process, so every fresh
-# `hermes` invocation re-paid its two nested EXCLUSIVE auth-store locks to
+# `rabbit` invocation re-paid its two nested EXCLUSIVE auth-store locks to
 # rediscover a store it had already cleared. Persisting the mark removes that,
 # but a mark that outlives the process must also invalidate on anything the
 # heal reads -- including the ROOT store, which the in-memory fingerprint
 # could safely ignore precisely because it died with the process.
 
 def _new_process(auth_mod):
-    """Simulate a fresh `hermes` invocation: in-memory state gone, disk kept."""
+    """Simulate a fresh `rabbit` invocation: in-memory state gone, disk kept."""
     auth_mod._oauth_heal_clean_marks.clear()
     auth_mod._global_auth_store_cache = None
 
@@ -785,8 +785,8 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     """The mark may not outlive the facts. Root acquiring a counterpart turns
     a row the heal deliberately KEPT into a fork it must strip -- with the
     profile's own files untouched, so only root's stamp can catch it."""
-    import hermes_cli.auth as auth_mod
-    from hermes_cli import auth_oauth_grants as grants
+    import rabbit_cli.auth as auth_mod
+    from rabbit_cli import auth_oauth_grants as grants
 
     root = fleet["root"]
     store = json.loads((root / "auth.json").read_text())
@@ -796,7 +796,7 @@ def test_persisted_mark_still_re_heals_when_the_root_store_gains_a_grant(fleet):
     kid = _kid_with_api_key_only(fleet, "kid2")
     fork = {
         "id": "abc123", "label": "team-grant", "auth_type": "oauth",
-        "priority": 0, "source": "manual:hermes_pkce",
+        "priority": 0, "source": "manual:rabbit_pkce",
         "access_token": "sk-ant-oat01-AT0", "refresh_token": "sk-ant-ort-RT0",
         "expires_at_ms": int((time.time() + 3600) * 1000),
         "base_url": "https://api.anthropic.com",

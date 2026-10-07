@@ -4,7 +4,7 @@ import path from 'node:path'
 
 import { afterEach, test, vi } from 'vitest'
 
-import { platformDefaultHermesHome, resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { platformDefaultRabbitHome, resolveDesktopRabbitHome, resolveDesktopUserData } from './data-paths'
 import { controlSocketPath } from './ssh-connection'
 
 afterEach((): void => {
@@ -12,10 +12,10 @@ afterEach((): void => {
 })
 
 test.skipIf(process.platform === 'win32')('local SSH sockets use the suffixed default root', (): void => {
-  vi.stubEnv('HERMES_DATA_DIR_SUFFIX', 'magic-test')
+  vi.stubEnv('RABBIT_DATA_DIR_SUFFIX', 'magic-test')
   const socket: string = controlSocketPath('user', 'host', 22)
 
-  assert.equal(path.dirname(socket), path.join(platformDefaultHermesHome(os.homedir()), 'desktop-ssh'))
+  assert.equal(path.dirname(socket), path.join(platformDefaultRabbitHome(os.homedir()), 'desktop-ssh'))
 })
 
 test('default data roots append the suffix literally on each platform', (): void => {
@@ -23,16 +23,16 @@ test('default data roots append the suffix literally on each platform', (): void
     const paths: typeof path = platform === 'win32' ? path.win32 : path.posix
     const home: string = platform === 'win32' ? 'C:\\Users\\test' : '/home/test'
     const local: string = paths.join(home, 'AppData', 'Local')
-    const userData: string = paths.join(home, 'app-data', 'Hermes')
-    const base: string = platform === 'win32' ? paths.join(local, 'hermes') : paths.join(home, '.hermes')
+    const userData: string = paths.join(home, 'app-data', 'Rabbit')
+    const base: string = platform === 'win32' ? paths.join(local, 'rabbit') : paths.join(home, '.rabbit')
 
     for (const suffix of ['', '-asdfasdf', 'magic-test', ' spaced ']) {
-      const env: NodeJS.ProcessEnv = { LOCALAPPDATA: local, HERMES_DATA_DIR_SUFFIX: suffix }
+      const env: NodeJS.ProcessEnv = { LOCALAPPDATA: local, RABBIT_DATA_DIR_SUFFIX: suffix }
 
-      assert.equal(platformDefaultHermesHome(home, env, platform), base + suffix)
+      assert.equal(platformDefaultRabbitHome(home, env, platform), base + suffix)
       assert.equal(resolveDesktopUserData(userData, env), userData + suffix)
       assert.equal(
-        resolveDesktopHermesHome({ home, env, platform, directoryExists: (): boolean => false }),
+        resolveDesktopRabbitHome({ home, env, platform, directoryExists: (): boolean => false }),
         base + suffix
       )
     }
@@ -43,22 +43,22 @@ test('explicit homes and userData retain precedence, and suffixed Windows homes 
   const home: string = '/home/test'
 
   const env: NodeJS.ProcessEnv = {
-    HERMES_DATA_DIR_SUFFIX: 'magic-test',
-    HERMES_HOME: '/explicit/home',
-    HERMES_DESKTOP_USER_DATA_DIR: '/explicit/electron'
+    RABBIT_DATA_DIR_SUFFIX: 'magic-test',
+    RABBIT_HOME: '/explicit/home',
+    RABBIT_DESKTOP_USER_DATA_DIR: '/explicit/electron'
   }
 
-  assert.equal(resolveDesktopUserData('/default/electron', env), path.resolve(env.HERMES_DESKTOP_USER_DATA_DIR!))
-  assert.equal(resolveDesktopHermesHome({ home, env, platform: 'linux' }), env.HERMES_HOME)
-  delete env.HERMES_HOME
-  assert.equal(resolveDesktopHermesHome({ home, env, platform: 'linux' }), '/explicit/electron/hermes-home')
+  assert.equal(resolveDesktopUserData('/default/electron', env), path.resolve(env.RABBIT_DESKTOP_USER_DATA_DIR!))
+  assert.equal(resolveDesktopRabbitHome({ home, env, platform: 'linux' }), env.RABBIT_HOME)
+  delete env.RABBIT_HOME
+  assert.equal(resolveDesktopRabbitHome({ home, env, platform: 'linux' }), '/explicit/electron/rabbit-home')
 
   const windowsHome: string = 'C:\\Users\\test'
-  const windowsEnv: NodeJS.ProcessEnv = { HERMES_DATA_DIR_SUFFIX: 'magic-test' }
-  const expected: string = path.win32.join(windowsHome, 'AppData', 'Local', 'hermesmagic-test')
+  const windowsEnv: NodeJS.ProcessEnv = { RABBIT_DATA_DIR_SUFFIX: 'magic-test' }
+  const expected: string = path.win32.join(windowsHome, 'AppData', 'Local', 'rabbitmagic-test')
 
   assert.equal(
-    resolveDesktopHermesHome({
+    resolveDesktopRabbitHome({
       home: windowsHome,
       env: windowsEnv,
       platform: 'win32',
@@ -67,7 +67,7 @@ test('explicit homes and userData retain precedence, and suffixed Windows homes 
     expected
   )
   assert.equal(
-    resolveDesktopHermesHome({
+    resolveDesktopRabbitHome({
       home: windowsHome,
       env: windowsEnv,
       platform: 'win32',

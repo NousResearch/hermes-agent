@@ -25,7 +25,7 @@ function classifyWorkRoot(root, installMethod, updateMethod, error) {
     platform: 'windows', phase: 'update', commit: state.old, installMethod, updateMethod, error,
     logs: {
       update: readOptional(path.join(root, 'logs', 'update.log')),
-      desktop: readOptional(path.join(root, 'hermes-home', 'logs', 'desktop.log')),
+      desktop: readOptional(path.join(root, 'rabbit-home', 'logs', 'desktop.log')),
     },
   })
   if (!rule) return null

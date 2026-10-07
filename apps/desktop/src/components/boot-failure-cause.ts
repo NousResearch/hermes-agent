@@ -1,7 +1,7 @@
 /**
  * Plain-language cause for a LOCAL backend boot failure. The main process
  * reports what it saw ("exited before it became ready (1)", "Timed out
- * connecting to Hermes backend after 45000ms", an EACCES, a Python traceback
+ * connecting to Rabbit backend after 45000ms", an EACCES, a Python traceback
  * tail…). None of that tells a non-developer what went wrong, so the overlay
  * leads with one classified sentence and keeps the raw text behind
  * "Show recent logs". Pure, table-driven, unit-tested without React.

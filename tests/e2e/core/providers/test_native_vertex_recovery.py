@@ -1,6 +1,6 @@
 """Vertex AI recovery paths: compaction in a signed reasoning session, and a mid-stream drop.
 
-Real ``hermes chat -q`` turns against the fake Vertex (``tests/fakes/providers/vertex.py``), which
+Real ``rabbit chat -q`` turns against the fake Vertex (``tests/fakes/providers/vertex.py``), which
 rejects exactly what Gemini 3 rejects after history surgery: orphaned tool results, unanswered
 calls, and a current-turn function call without its thought signature (or with a signature it
 never issued). Scenarios run concurrently in a module fixture:
@@ -39,7 +39,7 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     Drop,
     FakeVertex,
     Say,
-    hermes_setup,
+    rabbit_setup,
 )
 
 SUMMARY_MARK = "VERTEX-SUMMARY-OK"
@@ -72,7 +72,7 @@ def run_compaction(tmp: Path) -> dict[str, Any]:
     script: list[Any] = [Call([("read_file", {"path": f"f{i}.txt"})]) for i in range(4)] + [Say(TURN1_FINAL)]
     script += [Call([("read_file", {"path": f"f{i}.txt"})]) for i in range(4, 7)] + [Say(TURN2_FINAL)]
     fake = _fake(tmp, "compaction", script, aux=_summary, prompt_tokens_fn=_prompt_tokens)
-    setup = hermes_setup(fake, context_length=CONTEXT_LENGTH, extra_config={
+    setup = rabbit_setup(fake, context_length=CONTEXT_LENGTH, extra_config={
         "compression": {"threshold_tokens": THRESHOLD_TOKENS, "protect_last_n": 4}})
     nh = make_home(tmp / "compaction" / "h", **setup)
     for i in range(7):
@@ -85,7 +85,7 @@ def run_compaction(tmp: Path) -> dict[str, Any]:
 
 def run_drop(tmp: Path) -> dict[str, Any]:
     fake = _fake(tmp, "drop", [Call([("read_file", {"path": "note.txt"})]), Drop(DROP_PARTIAL, after_chars=22), Say(DROP_FINAL)])
-    nh = make_home(tmp / "drop" / "h", **hermes_setup(fake))
+    nh = make_home(tmp / "drop" / "h", **rabbit_setup(fake))
     (nh.project / "note.txt").write_text("note: KIWI-13\n", encoding="utf-8")
     return {"fake": fake, "nh": nh, "turn": run_chat(nh, "Read note.txt.", env=fake.child_env(), args=ARGS)}
 
@@ -150,7 +150,7 @@ def test_compacted_session_rows_keep_tool_pairs(results: dict[str, Any]) -> None
 
 
 def test_stream_drop_retried_without_duplicate_content(results: dict[str, Any]) -> None:
-    """The response after a signed tool step dies mid-body: Hermes resends the same valid request
+    """The response after a signed tool step dies mid-body: Rabbit resends the same valid request
     (signature intact), prints the recovered answer, and persists it exactly once."""
     res = results["drop"]
     fake, nh = res["fake"], res["nh"]

@@ -8,7 +8,7 @@
 
 import { PassThrough } from 'stream'
 
-import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@rabbit/ink'
 import React from 'react'
 
 import { useVirtualHistory } from '../src/hooks/useVirtualHistory.js'

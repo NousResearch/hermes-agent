@@ -1,9 +1,9 @@
-import { compactNumber } from '@hermes/shared'
+import { compactNumber } from '@rabbit/shared'
 import { useState } from 'react'
 
 import { StableText } from '@/components/chat/stable-text'
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
-import type { UsageStats } from '@/types/hermes'
+import type { UsageStats } from '@/types/rabbit'
 
 export function formatDuration(elapsedMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))

@@ -70,7 +70,7 @@ interface CodeEditorProps {
 function blockHighlight(range: { from: number; to: number }) {
   return EditorView.decorations.compute([], state => {
     const clamp = (pos: number) => Math.max(0, Math.min(pos, state.doc.length))
-    const active = Decoration.line({ class: 'cm-hermes-active-block' })
+    const active = Decoration.line({ class: 'cm-rabbit-active-block' })
     // Inline style, not a theme class: theme rules are scoped per-extension
     // and line opacity must never lose that fight.
     const dimmed = Decoration.line({ attributes: { style: 'opacity:0.5;transition:opacity 120ms ease-out' } })
@@ -155,7 +155,7 @@ const LAYOUT_THEME = EditorView.theme({
     lineHeight: ROW_HEIGHT,
     overflow: 'auto'
   },
-  '.cm-hermes-active-block': {
+  '.cm-rabbit-active-block': {
     backgroundColor: 'color-mix(in srgb, var(--dt-foreground) 5%, transparent)'
   }
 })

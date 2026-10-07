@@ -1,6 +1,6 @@
-import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
+import type { McpCatalogResponse, McpServerSummary } from '@/types/rabbit'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
+import { capabilityScoped, rabbitApi, type ProfileScope, profileScoped } from './client'
 
 export interface McpTestResult {
   ok: boolean
@@ -25,7 +25,7 @@ export interface McpOAuthFlow {
 /** Connect to the server, list its tools, disconnect. Slow (spawns/handshakes
  *  for real) — well past the 15s default fetch timeout. */
 export function testMcpServer(name: string, profile?: ProfileScope): Promise<McpTestResult> {
-  return window.hermesDesktop.api<McpTestResult>({
+  return window.rabbitDesktop.api<McpTestResult>({
     ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/test`,
     method: 'POST',
@@ -34,13 +34,13 @@ export function testMcpServer(name: string, profile?: ProfileScope): Promise<Mcp
 }
 
 /** Replace the whole `mcp_servers` map (the mcp.json editor's save). Unlike
- *  `saveHermesConfig`, this REPLACES rather than deep-merges, so deletes,
+ *  `saveRabbitConfig`, this REPLACES rather than deep-merges, so deletes,
  *  re-enables (dropping `enabled: false`), and removed nested fields persist. */
 export function saveMcpServers(
   servers: Record<string, Record<string, unknown>>,
   profile?: ProfileScope
 ): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+  return window.rabbitDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'PUT',
@@ -63,12 +63,12 @@ export function mcpOAuthRpc(scope?: ProfileScope) {
 
 // ---------------------------------------------------------------------------
 // MCP servers — structured list / test / enable toggle / catalog (parity with
-// `hermes mcp` and the dashboard MCP page). Raw JSON editing stays in
-// config.yaml via saveHermesConfig.
+// `rabbit mcp` and the dashboard MCP page). Raw JSON editing stays in
+// config.yaml via saveRabbitConfig.
 // ---------------------------------------------------------------------------
 
 export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
-  return hermesApi<{ servers: McpServerSummary[] }>({
+  return rabbitApi<{ servers: McpServerSummary[] }>({
     ...profileScoped(),
     path: '/api/mcp/servers'
   })
@@ -87,7 +87,7 @@ export function addMcpServer(
   },
   profile?: ProfileScope
 ): Promise<McpServerSummary> {
-  return window.hermesDesktop.api<McpServerSummary>({
+  return window.rabbitDesktop.api<McpServerSummary>({
     ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'POST',
@@ -98,7 +98,7 @@ export function addMcpServer(
 /** Remove one server from `mcp_servers` (the inline setup card's rollback
  *  when a directory install is cancelled after the config write). */
 export function removeMcpServer(name: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
+  return window.rabbitDesktop.api<{ ok: boolean }>({
     ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}`,
     method: 'DELETE'
@@ -106,7 +106,7 @@ export function removeMcpServer(name: string, profile?: ProfileScope): Promise<{
 }
 
 export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rabbitApi<{ ok: boolean }>({
     ...profileScoped(),
     path: `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
@@ -115,7 +115,7 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
 }
 
 export function getMcpCatalog(profile?: ProfileScope, detectApps = false): Promise<McpCatalogResponse> {
-  return window.hermesDesktop.api<McpCatalogResponse>({
+  return window.rabbitDesktop.api<McpCatalogResponse>({
     ...capabilityScoped(profile),
     path: `/api/mcp/catalog${detectApps ? '?detect_apps=true' : ''}`,
     ...(detectApps ? { timeoutMs: 5000 } : {})
@@ -127,7 +127,7 @@ export function installMcpCatalogEntry(
   env: Record<string, string> = {},
   profile?: ProfileScope
 ): Promise<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
+  return window.rabbitDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
     ...capabilityScoped(profile),
     path: '/api/mcp/catalog/install',
     method: 'POST',

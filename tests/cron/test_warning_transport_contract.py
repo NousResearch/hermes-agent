@@ -33,7 +33,7 @@ def loop_thread():
 @pytest.mark.parametrize("lane", ["native", "relay", "native-fallback", "relay-failure", "standalone", "standalone-async"])
 @pytest.mark.parametrize("setting,for_failure", [(None, True), (False, True), (True, True), (True, False)])
 def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_thread, lane, setting, for_failure):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "delivery.db")
     config_text = "cron: {wrap_response: false}\n"
     if setting is not None:

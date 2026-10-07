@@ -91,26 +91,6 @@ class TestOpenRouterProfile:
         assert p.build_extra_body(model="openai/gpt-5.6-sol", provider_preferences={"ignore": ["x"]})["provider"] == {"ignore": ["x"]}
 
 
-class TestNousProfile:
-
-    def test_sticky_session_id_normalizes_cron_timestamp(self):
-        """Cron re-fires of the same job keep the same sticky routing key."""
-        p = get_provider_profile("nous")
-        first = p.build_extra_body(session_id="cron_job42_20260801_090000")
-        second = p.build_extra_body(session_id="cron_job42_20260802_090000")
-        assert first["session_id"] == "cron_job42"
-        assert first["session_id"] == second["session_id"]
-
-    def test_extra_body_ignores_provider_preferences(self):
-        """Nous Portal rejects caller-supplied provider routing prefs (HTTP 400)."""
-        p = get_provider_profile("nous")
-        body = p.build_extra_body(
-            provider_preferences={"allow": ["anthropic"], "sort": "price"}
-        )
-        assert "provider" not in body
-        assert "tags" in body
-
-
 class TestQwenProfile:
 
     def test_prepare_messages_protects_nested_image_url_retry_mutation(self):
@@ -153,12 +133,12 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
     def test_cn_variants_resolve_in_auth_registry(self, monkeypatch):
         """The reporter's exact failure site: ``auth.resolve_provider()`` only
         consults PROVIDER_REGISTRY (auto-extended from provider profiles,
-        hermes_cli/auth.py:461-490) and raised
-        "Unknown provider 'alibaba-coding-plan-cn'" (hermes_cli/auth.py:1937)
+        rabbit_cli/auth.py:461-490) and raised
+        "Unknown provider 'alibaba-coding-plan-cn'" (rabbit_cli/auth.py:1937)
         even though the models.dev catalog advertised the id — the
         resolve_provider_full() catalog chain covers only the CLI --provider
         path, not the credential/runtime path."""
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        from rabbit_cli.auth import PROVIDER_REGISTRY, resolve_provider
         monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "sk-test")

@@ -3,7 +3,7 @@
 import threading
 
 from gateway import run
-from hermes_cli import plugins_cadence
+from rabbit_cli import plugins_cadence
 
 
 def test_plugin_cadence_runs_at_startup_and_each_housekeeping_tick(monkeypatch):

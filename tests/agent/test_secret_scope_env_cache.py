@@ -48,7 +48,7 @@ def test_unchanged_file_is_parsed_once_and_each_caller_gets_its_own_dict(tmp_pat
     env = tmp_path / ".env"
     env.write_bytes(b"A=1\nB=2\n")
     calls = _count_parses(monkeypatch)
-    monkeypatch.setattr("hermes_cli.env_loader.get_secret_source_values", lambda home: {"EXT": "vault"})
+    monkeypatch.setattr("rabbit_cli.env_loader.get_secret_source_values", lambda home: {"EXT": "vault"})
 
     first = ss.load_env_file(env)
     first["INJECTED"] = "must-not-persist"  # callers mutate what they get back

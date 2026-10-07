@@ -1,7 +1,7 @@
 """``reasoning_details`` replay is route-scoped: OpenRouter reads it, every other
 chat-completions route gets a wire copy without it (strict schemas 400/422 on the field,
-wedging the session after an in-session model switch — hermes-agent#70233; the Nous Portal
-additionally 400s on a cumulative replayed-reasoning budget — hermes-agent#118182)."""
+wedging the session after an in-session model switch — rabbit-agent#70233; the Nous Portal
+additionally 400s on a cumulative replayed-reasoning budget — rabbit-agent#118182)."""
 
 from openai import OpenAI
 

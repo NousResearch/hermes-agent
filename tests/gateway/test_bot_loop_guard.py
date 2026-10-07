@@ -120,7 +120,7 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     from gateway.platforms.base import MessageEvent
 
     _incident_config(monkeypatch)
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    monkeypatch.setenv("RABBIT_GATEWAY_BUSY_ACK_ENABLED", "false")
     settings["value"] = BotLoopGuardSettings(max_events=1, window_seconds=60, cooldown_seconds=60)
     runner._draining = False
     runner._effective_busy_input_mode = lambda source: "steer"
@@ -157,7 +157,7 @@ async def test_routed_bot_traffic_is_metered_by_the_transport_profiles_policy(tm
     for home, block in ((transport, "enabled: false"), (routed, "enabled: true\n    max_events: 1")):
         home.mkdir()
         (home / "config.yaml").write_text(f"gateway:\n  bot_loop_guard:\n    {block}\n")
-    monkeypatch.setenv("HERMES_HOME", str(transport))
+    monkeypatch.setenv("RABBIT_HOME", str(transport))
     runner._bot_loop_guard = BotLoopGuard(clock=clock.now)
     runner._principal_authorized = lambda *a, **kw: True
     runner._adapter_profile_for_source = lambda source: "transport"
@@ -262,13 +262,13 @@ def test_concurrent_admits_respect_the_budget(clock):
 
 
 def test_load_settings_reads_config_yaml(monkeypatch):
-    import hermes_cli.config as hermes_config
+    import rabbit_cli.config as rabbit_config
 
-    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {"gateway": {"bot_loop_guard": {"max_events": 3}}})
+    monkeypatch.setattr(rabbit_config, "load_config_readonly", lambda: {"gateway": {"bot_loop_guard": {"max_events": 3}}})
     assert load_settings().max_events == 3
 
     def boom():
         raise RuntimeError("no config")
 
-    monkeypatch.setattr(hermes_config, "load_config_readonly", boom)
+    monkeypatch.setattr(rabbit_config, "load_config_readonly", boom)
     assert load_settings() == BotLoopGuardSettings()

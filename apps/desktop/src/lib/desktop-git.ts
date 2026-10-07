@@ -1,32 +1,32 @@
 import type {
-  HermesGitBaseBranch,
-  HermesGitBranch,
-  HermesGitWorktree,
-  HermesRepoPullRequests,
-  HermesRepoStatus,
-  HermesReviewList,
-  HermesReviewShipInfo
+  RabbitGitBaseBranch,
+  RabbitGitBranch,
+  RabbitGitWorktree,
+  RabbitRepoPullRequests,
+  RabbitRepoStatus,
+  RabbitReviewList,
+  RabbitReviewShipInfo
 } from '@/global'
-import { hermesApi } from '@/hermes'
+import { rabbitApi } from '@/rabbit'
 
 import { desktopFsProfile, isDesktopFsRemoteMode } from './desktop-fs'
 
 // Remote-aware git facade. Locally the desktop runs git through Electron
-// (window.hermesDesktop.git); on a remote gateway that's the wrong filesystem,
+// (window.rabbitDesktop.git); on a remote gateway that's the wrong filesystem,
 // so we mirror the same surface over the dashboard REST API (/api/git/*) — the
 // coding rail, worktree lanes, review pane, and branch ops then act on the
 // BACKEND repo where sessions actually run. Mirrors desktop-fs.ts.
 
-type GitBridge = NonNullable<NonNullable<Window['hermesDesktop']>['git']>
+type GitBridge = NonNullable<NonNullable<Window['rabbitDesktop']>['git']>
 
 function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  const desktop = window.hermesDesktop
+  const desktop = window.rabbitDesktop
 
   if (!desktop) {
-    throw new Error('Hermes Desktop bridge is unavailable')
+    throw new Error('Rabbit Desktop bridge is unavailable')
   }
 
-  return hermesApi<T>(
+  return rabbitApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }
@@ -49,7 +49,7 @@ function gitPost<T>(route: string, body: Record<string, unknown>): Promise<T> {
 
 const remoteGit: GitBridge = {
   worktreeList: async repoPath =>
-    (await gitGet<{ worktrees: HermesGitWorktree[] }>('worktrees', { path: repoPath })).worktrees,
+    (await gitGet<{ worktrees: RabbitGitWorktree[] }>('worktrees', { path: repoPath })).worktrees,
 
   worktreeAdd: (repoPath, options) => gitPost('worktree/add', { path: repoPath, ...options }),
 
@@ -59,19 +59,19 @@ const remoteGit: GitBridge = {
   branchSwitch: (repoPath, branch) => gitPost('branch/switch', { branch, path: repoPath }),
 
   branchList: async repoPath =>
-    (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
+    (await gitGet<{ branches: RabbitGitBranch[] }>('branches', { path: repoPath })).branches,
 
   baseBranchList: async repoPath =>
-    (await gitGet<{ branches: HermesGitBaseBranch[] }>('base-branches', { path: repoPath })).branches,
+    (await gitGet<{ branches: RabbitGitBaseBranch[] }>('base-branches', { path: repoPath })).branches,
 
-  repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
+  repoStatus: repoPath => gitGet<RabbitRepoStatus | null>('status', { path: repoPath }),
 
   fileDiff: async (repoPath, filePath) =>
     (await gitGet<{ diff: string }>('file-diff', { file: filePath, path: repoPath })).diff,
 
   review: {
     list: (repoPath, scope, baseRef) =>
-      gitGet<HermesReviewList>('review/list', { base: baseRef, path: repoPath, scope }),
+      gitGet<RabbitReviewList>('review/list', { base: baseRef, path: repoPath, scope }),
 
     diff: async (repoPath, filePath, scope, baseRef, staged) =>
       (await gitGet<{ diff: string }>('review/diff', { base: baseRef, file: filePath, path: repoPath, scope, staged }))
@@ -92,10 +92,10 @@ const remoteGit: GitBridge = {
 
     push: repoPath => gitPost('review/push', { path: repoPath }),
 
-    shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
+    shipInfo: repoPath => gitGet<RabbitReviewShipInfo>('review/ship-info', { path: repoPath }),
 
     prList: (repoPath, branches, numbers) =>
-      gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
+      gitPost<RabbitRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
 
     createPr: repoPath => gitPost('review/create-pr', { path: repoPath })
   },
@@ -110,5 +110,5 @@ export function desktopGit(): GitBridge | undefined {
     return undefined
   }
 
-  return isDesktopFsRemoteMode() ? remoteGit : window.hermesDesktop?.git
+  return isDesktopFsRemoteMode() ? remoteGit : window.rabbitDesktop?.git
 }

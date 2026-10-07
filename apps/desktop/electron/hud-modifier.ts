@@ -35,7 +35,7 @@ export function installHudModifierTap({
   const publish = () => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
-        win.webContents.send('hermes:hud-modifier:status', status())
+        win.webContents.send('rabbit:hud-modifier:status', status())
       }
     }
   }
@@ -125,7 +125,7 @@ export function installHudModifierTap({
   }
 
   for (const [name, handler] of Object.entries(handlers)) {
-    ipcMain.handle(`hermes:hud-modifier:${name}`, async (event, value) => {
+    ipcMain.handle(`rabbit:hud-modifier:${name}`, async (event, value) => {
       if (!trusted(event)) {
         throw new Error('HUD gesture request from an untrusted frame')
       }
@@ -154,7 +154,7 @@ export function installHudModifierTap({
   const dispose = () => {
     disposed = true
     stop()
-    Object.keys(handlers).forEach(name => ipcMain.removeHandler(`hermes:hud-modifier:${name}`))
+    Object.keys(handlers).forEach(name => ipcMain.removeHandler(`rabbit:hud-modifier:${name}`))
     powerMonitor.removeListener('suspend', suspend)
     powerMonitor.removeListener('lock-screen', suspend)
     powerMonitor.removeListener('resume', resume)

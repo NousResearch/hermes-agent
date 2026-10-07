@@ -1,7 +1,7 @@
 // IPC surface for local filesystem operations the renderer's project/file
 // surfaces use: directory reads, reveal/open in the OS file manager, plugin
 // roots + git installs, rename/write/trash. Extracted from main.ts; path
-// hardening, HERMES_HOME resolution, and the git binary stay injected.
+// hardening, RABBIT_HOME resolution, and the git binary stay injected.
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -20,7 +20,7 @@ import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
 export interface FsIpcDeps {
-  hermesHome: string
+  rabbitHome: string
   readActiveDesktopProfile: () => null | string
   expandUserPath: (value: string) => string
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
@@ -29,22 +29,22 @@ export interface FsIpcDeps {
 }
 
 export function registerFsIpc({
-  hermesHome,
+  rabbitHome,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,
   directoryExists,
   resolveGitBinary
 }: FsIpcDeps) {
-  ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
+  ipcMain.handle('rabbit:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
-  ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
+  ipcMain.handle('rabbit:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files).
   // `showItemInFolder` silently no-ops on a missing item, and a remote
   // backend's paths are missing here by construction — answer `false` so
   // the renderer can say so instead of reporting a click that showed nothing.
-  ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
+  ipcMain.handle('rabbit:fs:reveal', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
     if (!target) {
@@ -73,7 +73,7 @@ export function registerFsIpc({
   // path — the "Open plugins folder" Windows bug), this is for the plugins door,
   // which often doesn't exist on first use. `shell.openPath` returns '' on
   // success or an error string; both mkdir + openPath failures are surfaced.
-  ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
+  ipcMain.handle('rabbit:fs:openDir', async (_event, dirPath) => {
     const dir = String(dirPath || '').trim()
 
     if (!dir) {
@@ -90,9 +90,9 @@ export function registerFsIpc({
     }
   })
 
-  // The LOCAL Desktop runtime-plugin root: `<HERMES_HOME>/desktop-plugins`,
-  // resolved from the main-process HERMES_HOME (see resolveHermesHome) — NOT from
-  // the connected backend. A remote backend reports its own `hermes_home` over
+  // The LOCAL Desktop runtime-plugin root: `<RABBIT_HOME>/desktop-plugins`,
+  // resolved from the main-process RABBIT_HOME (see resolveRabbitHome) — NOT from
+  // the connected backend. A remote backend reports its own `rabbit_home` over
   // the gateway, which is a path on the REMOTE box; deriving the plugin dir from
   // it yields `undefined/desktop-plugins` (or a non-existent remote path) and the
   // on-disk plugin door silently breaks (#66899). Electron owns this resolution
@@ -108,7 +108,7 @@ export function registerFsIpc({
     const profile =
       named && (named === 'default' || DESKTOP_PROFILE_NAME_RE.test(named)) ? named : readActiveDesktopProfile()
 
-    const base = profile && profile !== 'default' ? path.join(hermesHome, 'profiles', profile) : hermesHome
+    const base = profile && profile !== 'default' ? path.join(rabbitHome, 'profiles', profile) : rabbitHome
 
     return ensureDir(path.join(base, dirName))
   }
@@ -119,34 +119,34 @@ export function registerFsIpc({
   // Earlier builds scoped it per profile; anything left in those folders is
   // moved up once so it does not silently vanish on a profile switch.
   async function desktopPluginsRoot(): Promise<string> {
-    const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
-    await migrateProfileScopedDesktopPlugins(hermesHome, root)
-    await reconcileUnifiedDesktopHalves(hermesHome, root)
+    const root = await ensureDir(path.join(rabbitHome, DESKTOP_PLUGINS_DIR))
+    await migrateProfileScopedDesktopPlugins(rabbitHome, root)
+    await reconcileUnifiedDesktopHalves(rabbitHome, root)
 
     return root
   }
 
-  ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => desktopPluginsRoot())
+  ipcMain.handle('rabbit:fs:desktopPluginsRoot', async () => desktopPluginsRoot())
 
   // Re-run the unified-half reconcile on demand (after an agent-plugin install /
   // update / uninstall through the gateway) so the app-level copy tracks the
   // package without waiting for the next root resolution.
-  ipcMain.handle('hermes:fs:reconcileDesktopPlugins', async () => {
-    const root = await ensureDir(path.join(hermesHome, DESKTOP_PLUGINS_DIR))
+  ipcMain.handle('rabbit:fs:reconcileDesktopPlugins', async () => {
+    const root = await ensureDir(path.join(rabbitHome, DESKTOP_PLUGINS_DIR))
 
-    return reconcileUnifiedDesktopHalves(hermesHome, root)
+    return reconcileUnifiedDesktopHalves(rabbitHome, root)
   })
 
-  // The LOCAL logs root (`<HERMES_HOME>/logs`, profile-aware) — the error
+  // The LOCAL logs root (`<RABBIT_HOME>/logs`, profile-aware) — the error
   // card's "Open Logs" action reveals agent.log/gateway.log without the user
-  // knowing where HERMES_HOME lives. Same Electron-local resolution as the
+  // knowing where RABBIT_HOME lives. Same Electron-local resolution as the
   // plugin roots: valid in every connection mode, created on demand. The
   // caller names the profile that OWNS the failing session: a pooled backend
   // serves many profile homes, and the active Desktop profile is the launch
   // one, not the one whose agent.log holds the failure (#119080).
-  ipcMain.handle('hermes:fs:logsRoot', async (_event, profile) => localPluginsRoot('logs', profile))
+  ipcMain.handle('rabbit:fs:logsRoot', async (_event, profile) => localPluginsRoot('logs', profile))
 
-  ipcMain.handle('hermes:plugin:probe', async (_event, payload) => {
+  ipcMain.handle('rabbit:plugin:probe', async (_event, payload) => {
     const identifier = String(payload?.identifier || payload?.repo || '').trim()
 
     if (!identifier) {
@@ -156,7 +156,7 @@ export function registerFsIpc({
     return probePluginRepo(resolveGitBinary(), identifier)
   })
 
-  ipcMain.handle('hermes:plugin:installDesktop', async (_event, payload) => {
+  ipcMain.handle('rabbit:plugin:installDesktop', async (_event, payload) => {
     const identifier = String(payload?.identifier || payload?.repo || '').trim()
 
     if (!identifier) {
@@ -173,14 +173,14 @@ export function registerFsIpc({
 
   // Uninstall a standalone desktop plugin by FOLDER NAME under the app-level
   // root. The renderer never passes a path; containment is re-checked inside.
-  ipcMain.handle('hermes:plugin:removeDesktop', async (_event, payload) =>
-    removeDesktopPlugin(path.join(hermesHome, DESKTOP_PLUGINS_DIR), payload?.name)
+  ipcMain.handle('rabbit:plugin:removeDesktop', async (_event, payload) =>
+    removeDesktopPlugin(path.join(rabbitHome, DESKTOP_PLUGINS_DIR), payload?.name)
   )
 
   // Rename a file/folder in place. The renderer passes the existing path + a new
   // base name; the destination is resolved in the SAME parent dir so a rename can
   // never move the item elsewhere or traverse out. Rejects on a name collision.
-  ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
+  ipcMain.handle('rabbit:fs:rename', async (_event, targetPath, newName) => {
     const src = String(targetPath || '').trim()
     const name = String(newName || '').trim()
 
@@ -207,7 +207,7 @@ export function registerFsIpc({
   // is hardened (resolveRequestedPathForIpc) and the parent must already exist —
   // this never creates directory trees or escapes the allowed roots, and content
   // is size-capped so it can't be abused as a bulk-write primitive.
-  ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
+  ipcMain.handle('rabbit:fs:writeText', async (_event, filePath, content) => {
     const raw = String(filePath || '').trim()
 
     if (!raw) {
@@ -233,7 +233,7 @@ export function registerFsIpc({
 
   // Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
   // default. `shell.trashItem` routes to Finder/Explorer/Files trash per platform.
-  ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
+  ipcMain.handle('rabbit:fs:trash', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
     if (!target) {

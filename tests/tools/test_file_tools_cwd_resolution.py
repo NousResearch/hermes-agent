@@ -311,7 +311,7 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     ("*** Move File: local.yaml -> old.yaml", False, "shared: true\n", "old.yaml"),
     ("*** Update File: local.yaml\n@@\n-shared: true\n+shared: false\n*** Move File: local.yaml -> old.yaml",
      False, "shared: false\n", "old.yaml"),
-    # The link lives outside HERMES_WRITE_SAFE_ROOT but points inside it: guarding
+    # The link lives outside RABBIT_WRITE_SAFE_ROOT but points inside it: guarding
     # only the target would let the delete remove an entry outside the root.
     ("*** Delete File: local.yaml", True, "shared: true\n", None),
 ])
@@ -336,7 +336,7 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
     target.write_text("shared: true\n", encoding="utf-8")
     link.symlink_to("safe/base.yaml")
     if safe_root:
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(workspace / "safe"))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(workspace / "safe"))
 
     out = json.loads(registry.dispatch(
         "patch", {"mode": "patch", "patch": f"*** Begin Patch\n{header}\n*** End Patch\n"}, task_id=task_id))
@@ -344,7 +344,7 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
     assert target.is_file() and not target.is_symlink()
     assert target.read_text(encoding="utf-8-sig") == content
     if safe_root:
-        assert not out.get("success") and "HERMES_WRITE_SAFE_ROOT" in json.dumps(out), out
+        assert not out.get("success") and "RABBIT_WRITE_SAFE_ROOT" in json.dumps(out), out
         assert link.is_symlink()
         return
     assert out.get("success"), out

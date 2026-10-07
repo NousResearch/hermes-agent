@@ -32,8 +32,8 @@ def test_bundle_only_requests_store_for_stable(tmp_path, tag, commit, store):
         wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(recorder))} "$@"\n', encoding='utf-8')
         wrapper.chmod(0o755)
     jobs = _workflow()['jobs']
-    env = _child_env(HERMES_PAYLOAD_TAG=tag, HERMES_BUILD_COMMIT=commit,
-                     HERMES_PAYLOAD_VERSION='0.28.0', RELEASE_PHASE='candidate' if store else '', CALL_LOG=str(log))
+    env = _child_env(RABBIT_PAYLOAD_TAG=tag, RABBIT_BUILD_COMMIT=commit,
+                     RABBIT_PAYLOAD_VERSION='0.28.0', RELEASE_PHASE='candidate' if store else '', CALL_LOG=str(log))
     env['PATH'] = str(helper) + os.pathsep + env['PATH']
     job = jobs[universal_assembler(jobs)]
     script = next(step['run'] for step in job['steps']
@@ -76,8 +76,8 @@ def test_native_windows_build_selects_store_only_for_stable(tmp_path):
     ]
     for index, (tag, commit, _, kind) in enumerate(cases):
         body.extend([
-            f'$env:HERMES_PAYLOAD_TAG = \'{tag}\'',
-            f'$env:HERMES_BUILD_COMMIT = \'{commit}\'',
+            f'$env:RABBIT_PAYLOAD_TAG = \'{tag}\'',
+            f'$env:RABBIT_BUILD_COMMIT = \'{commit}\'',
             f'$env:CALL_LOG = Join-Path $env:RUNNER_TEMP \'calls-{index}.txt\'',
             f'& ${kind}Build',
         ])

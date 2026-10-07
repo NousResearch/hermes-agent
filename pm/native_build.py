@@ -4,7 +4,7 @@ Windows ARM64 has no wheel for parts of the locked closure (cryptography), so
 every sync there compiles from sdists and needs MSVC, Clang, Rust and static
 OpenSSL. PM owns the sync, so PM prepares that environment. Otherwise only
 callers that remembered to (source activation) could build, and
-install.ps1, `hermes update` and repair failed in openssl-sys.
+install.ps1, `rabbit update` and repair failed in openssl-sys.
 """
 from __future__ import annotations
 

@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
-from hermes_state_ids import new_session_id
+from rabbit_state_ids import new_session_id
 
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource
@@ -48,7 +48,7 @@ _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 def auto_continue_freshness_window() -> float:
     """Resume-scheduler freshness window; stale automation never discards the transcript."""
-    raw = os.environ.get("HERMES_AUTO_CONTINUE_FRESHNESS")
+    raw = os.environ.get("RABBIT_AUTO_CONTINUE_FRESHNESS")
     try:
         return float(raw) if raw else float(_AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT)
     except (TypeError, ValueError):

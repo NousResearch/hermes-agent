@@ -17,7 +17,7 @@ Extract cited obligations, deadlines, tasks from documents.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/document-to-action-items` |
 | Version | `0.1.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documents`, `OCR`, `Action-Items`, `Deadlines`, `Extraction` |
@@ -26,7 +26,7 @@ Extract cited obligations, deadlines, tasks from documents.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Document to Action Items

@@ -185,7 +185,7 @@ class ReviewIdleQueue:
 def _managed_server_idle() -> bool:
     """No processing slot on any loaded model of the managed router; unreachable/no state file reads idle."""
     try:
-        from hermes_cli.local_runtime.supervisor import state_path
+        from rabbit_cli.local_runtime.supervisor import state_path
         from urllib.parse import quote
 
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))

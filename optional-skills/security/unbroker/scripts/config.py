@@ -63,11 +63,11 @@ def save_config(cfg: dict) -> Path:
 
 
 def dotenv_env() -> dict:
-    """Shell env overlaid on `$HERMES_HOME/.env`, so capability detection sees the creds Hermes
+    """Shell env overlaid on `$RABBIT_HOME/.env`, so capability detection sees the creds Rabbit
     loads for its own tools (BROWSERBASE_API_KEY, EMAIL_*, AGENTMAIL_API_KEY, ...) even though the
     terminal-tool shell doesn't export them. Shell env wins; the .env only fills gaps."""
     merged: dict = {}
-    p = paths.hermes_home() / ".env"
+    p = paths.rabbit_home() / ".env"
     if p.exists():
         try:
             for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -85,7 +85,7 @@ def dotenv_env() -> dict:
 def detect_capabilities(env: dict | None = None) -> dict:
     """Report which opt-in upgrades are available without extra setup."""
     env = os.environ if env is None else env
-    home = paths.hermes_home()
+    home = paths.rabbit_home()
     google = (
         (home / "google_token.json").exists()
         or (home / "skills" / "productivity" / "google-workspace").exists()

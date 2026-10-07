@@ -5,7 +5,7 @@ import type { HandoffReceipt } from './handoff-leg'
 const unsavedReceipts = new Map<string, HandoffReceipt>()
 
 export function handoffReceiptKey(connection: null | string, guideStoredId: string): string {
-  return `hermes.onboarding.handoff.v1.connection.${encodeURIComponent(connection ?? 'ambient')}.profile.default.guide.${encodeURIComponent(guideStoredId)}`
+  return `rabbit.onboarding.handoff.v1.connection.${encodeURIComponent(connection ?? 'ambient')}.profile.default.guide.${encodeURIComponent(guideStoredId)}`
 }
 
 export function readHandoffReceipt(key: string): HandoffReceipt | null {

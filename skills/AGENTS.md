@@ -7,7 +7,7 @@ user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
 
 - **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/mlops/`).
 - **`optional-skills/`** — heavier/niche skills shipped but NOT active; installed via
-  `hermes skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
+  `rabbit skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
   `OptionalSkillSource`). Categories: `autonomous-ai-agents, blockchain, communication, creative,
   devops, email, health, mcp, migration, mlops, productivity, research, security, web-development`.
 
@@ -16,10 +16,10 @@ Reviewing a skill PR: check the target directory — heavy-dep or niche skills g
 ## SKILL.md frontmatter
 
 `name`, `description`, `version`, `author`, `license`, `platforms` (OS gate: `[macos]`,
-`[linux, macos]`, ...), `metadata.hermes.tags`, `metadata.hermes.category`,
-`metadata.hermes.related_skills`, `metadata.hermes.config` (config.yaml settings the skill needs —
+`[linux, macos]`, ...), `metadata.rabbit.tags`, `metadata.rabbit.category`,
+`metadata.rabbit.related_skills`, `metadata.rabbit.config` (config.yaml settings the skill needs —
 stored under `skills.config.<key>`, prompted during setup, injected at load). Top-level `tags:` /
-`category:` are accepted and mirrored from `metadata.hermes.*` by the loader.
+`category:` are accepted and mirrored from `metadata.rabbit.*` by the loader.
 
 ## Authoring standards (HARDLINE — enforced by `tests/skills/test_authoring_standards.py`)
 
@@ -29,7 +29,7 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    and dilute attention when many skills load. State the capability, not the implementation; no
    marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
    Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
-2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
+2. **Prose references native Rabbit tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,
    `browser_navigate`, `delegate_task`). Never name shell utilities the agent has wrapped: `grep` →
    `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` → `patch`, `find`/`ls` →
@@ -42,7 +42,7 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
    first (`tempfile.gettempdir`, `pathlib.Path`, `psutil.pid_exists`, Python filtering instead of
    `grep`); gate narrower only when the dependency is genuinely platform-bound.
 4. **`author` credits the human first.** External contributor's real name + GitHub handle first,
-   "Hermes Agent" second. A commit authored as "Hermes Agent" (they drafted with Hermes) is replaced
+   "Rabbit Agent" second. A commit authored as "Rabbit Agent" (they drafted with Rabbit) is replaced
    with the human's name — credit the human, not the tool.
 5. **Modern section order:** `# <Skill> Skill`, 2–3 sentence intro (what it does and doesn't),
    `## When to Use`, `## Prerequisites`, `## How to Run`, `## Quick Reference`, `## Procedure`,
@@ -57,15 +57,15 @@ Every new or modernised skill — bundled, optional, or contributed — meets al
 
 No `offset`/`limit` pagination on skill-loading tools — the agent must read a skill fully (root).
 The salvage/modernisation checklist for external skill PRs is `references/new-skill-pr-salvage.md`
-in the `hermes-agent-dev` skill.
+in the `rabbit-agent-dev` skill.
 
 ## Curator (skill lifecycle)
 
 Background maintenance that tracks usage on agent-created skills and auto-archives stale ones;
-archives go to `~/.hermes/skills/.archive/` and are restorable. Core `agent/curator.py` (review
+archives go to `~/.rabbit/skills/.archive/` and are restorable. Core `agent/curator.py` (review
 loop, auto-transitions, LLM review prompt) + `agent/curator_backup.py` (pre-run tar.gz snapshots);
-CLI `hermes_cli/curator.py` → `hermes curator status|run|pause|resume|pin|unpin|archive|restore|
-prune|backup|rollback`; telemetry `tools/skill_usage.py` owns `~/.hermes/skills/.usage.json`
+CLI `rabbit_cli/curator.py` → `rabbit curator status|run|pause|resume|pin|unpin|archive|restore|
+prune|backup|rollback`; telemetry `tools/skill_usage.py` owns `~/.rabbit/skills/.usage.json`
 (`use_count`, `view_count`, `patch_count`, `last_activity_at`, `state` active/stale/archived,
 `pinned`). Config `curator:` — `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`; its LLM calls route through `auxiliary` (`agent/AGENTS.md`).

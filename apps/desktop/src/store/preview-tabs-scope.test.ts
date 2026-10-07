@@ -1,5 +1,5 @@
 // Regression: the right rail's tabs were persisted under ONE global key
-// (`hermes.desktop.previewTabs.v2` holding a bare array), so a preview opened in
+// (`rabbit.desktop.previewTabs.v2` holding a bare array), so a preview opened in
 // one agent's chat appeared in every other agent's chat — Tess's model showed up
 // in VEXA's rail and vice versa.
 //
@@ -21,7 +21,7 @@ import {
 } from '@/store/preview'
 import { normalizeProfileKey } from '@/store/profile'
 
-const TABS_KEY = 'hermes.desktop.previewTabs.v2'
+const TABS_KEY = 'rabbit.desktop.previewTabs.v2'
 
 function fileTarget(path: string): PreviewTarget {
   return {

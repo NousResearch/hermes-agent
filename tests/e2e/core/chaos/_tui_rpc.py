@@ -227,10 +227,10 @@ _SYSTEM_PATH = ("/usr/local/bin", "/usr/bin", "/bin")
 def env_for_gateway(base_env: dict[str, str], work: Path) -> dict[str, str]:
     env = dict(base_env)
     env["TERMINAL_ENV"] = "local"
-    env["HERMES_YOLO_MODE"] = "1"  # the terminal tool must never wait on an approval prompt
+    env["RABBIT_YOLO_MODE"] = "1"  # the terminal tool must never wait on an approval prompt
     # The child's HOME *is* the tmp root, so the live-DB guard (pytest ancestry) would
     # take our tmp state.db for "production"; the documented child opt-out is safe here.
-    env["HERMES_STATE_DB_GUARD_BYPASS"] = "1"
+    env["RABBIT_STATE_DB_GUARD_BYPASS"] = "1"
     env["PWD"] = str(work)
     tmp = work.parent / "tmp"
     tmp.mkdir(exist_ok=True)

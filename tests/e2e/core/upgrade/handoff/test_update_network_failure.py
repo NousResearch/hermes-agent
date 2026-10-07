@@ -1,4 +1,4 @@
-"""A network failure during ``hermes update`` must never take down a healthy gateway (the exit-75
+"""A network failure during ``rabbit update`` must never take down a healthy gateway (the exit-75
 class, #123370: keep it closed).
 
 The upstream is published, but the git transport is refused: the official URL is rewritten to a
@@ -24,7 +24,7 @@ pytestmark = [
 
 
 def _refuse_git_transport(inst: X.Install) -> str:
-    dead = f"http://127.0.0.1:{X.free_port()}/NousResearch/hermes-agent.git"
+    dead = f"http://127.0.0.1:{X.free_port()}/seven0070/Rabbit-.git"
     (inst.home / ".gitconfig").write_text(
         f'[url "{dead}"]\n  insteadOf = {I.OFFICIAL_HTTPS}\n  insteadOf = {I.OFFICIAL_SSH}\n', encoding="utf-8")
     return dead
@@ -50,7 +50,7 @@ def test_refused_fetch_leaves_the_running_gateway_alone(root, column):
             f"the failed update does not say why\n{diag}")
         assert X.TRACEBACK not in up.stdout + up.stderr, f"the failed update crashed\n{diag}"
         assert inst.sha() == installed, f"a failed fetch moved the checkout\n{diag}"
-        ident = X.identify(inst.hermes_home)
+        ident = X.identify(inst.rabbit_home)
         assert ident is not None and ident["pid"] == before["pid"], (
             f"the running gateway was stopped or replaced by an update that never fetched: {ident}\n{diag}")
         assert ident["code_sha"] == installed, f"gateway identity changed: {ident}\n{diag}"

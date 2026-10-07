@@ -356,21 +356,21 @@ class TestSearchHints:
 class TestSensitivePathCheck:
     """Verify that _check_sensitive_path blocks writes to protected locations."""
 
-    def test_hermes_config_blocked_for_write_file(self, tmp_path, monkeypatch):
+    def test_rabbit_config_blocked_for_write_file(self, tmp_path, monkeypatch):
         fake_config = tmp_path / "config.yaml"
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", str(fake_config))
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved", str(fake_config))
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool(str(fake_config), "approvals:\n  mode: off\n"))
         assert "error" in result
-        assert "Hermes config" in result["error"]
+        assert "Rabbit config" in result["error"]
 
 
 
     def test_system_path_still_blocked(self, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/some/other/path")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved", "/some/other/path")
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved_loaded", True)
 
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/etc/passwd", "evil"))
@@ -393,8 +393,8 @@ class TestSensitivePathCheck:
 
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
-        monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved", "/home/user/.rabbit/config.yaml")
+        monkeypatch.setattr("tools.file_tools_write_guards._rabbit_config_resolved_loaded", True)
         mock_ops = MagicMock()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
@@ -909,8 +909,8 @@ class TestSSHConfigWriteGate:
         assert not ssh_config.exists()
 
     def test_single_query_session_denies_with_the_q_mode_message(self, ssh_config, monkeypatch):
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")  # `hermes chat -q` exports it too
+        monkeypatch.setenv("RABBIT_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setenv("RABBIT_INTERACTIVE", "1")  # `rabbit chat -q` exports it too
         from tools.file_tools import write_file_tool
 
         result = json.loads(write_file_tool(str(ssh_config), "Host x\n  ProxyCommand evil\n"))
@@ -945,14 +945,14 @@ class TestSecretFileReadRedaction:
             }
 
     @pytest.fixture
-    def hermes_home(self, tmp_path, monkeypatch):
-        """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
+    def rabbit_home(self, tmp_path, monkeypatch):
+        """A Rabbit home with no ``.rabbit`` segment, like ``%LOCALAPPDATA%\\rabbit``."""
         import agent.file_safety as file_safety
 
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         home.mkdir()
-        monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
-        monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_rabbit_home_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_rabbit_root_path", lambda: home)
         return home
 
     @staticmethod
@@ -965,7 +965,7 @@ class TestSecretFileReadRedaction:
         return ops
 
     @patch("tools.file_tools._get_file_ops")
-    def test_read_file_of_hermes_config_masks_opaque_token(self, mock_get, hermes_home):
+    def test_read_file_of_rabbit_config_masks_opaque_token(self, mock_get, rabbit_home):
         # read_file renders line-numbered content ("5|      ADS_API_TOKEN: …"); the gutter is
         # part of the text the redactor sees, so the fixture must carry it (a gutter-free
         # fixture would pass even though the real read leaks).
@@ -974,7 +974,7 @@ class TestSecretFileReadRedaction:
         mock_get.return_value = self._read_ops(body)
 
         from tools.file_tools import read_file_tool
-        out = json.loads(read_file_tool(str(hermes_home / "config.yaml"), task_id="secret-read"))
+        out = json.loads(read_file_tool(str(rabbit_home / "config.yaml"), task_id="secret-read"))
 
         assert self.SYNTH not in out["content"]
         assert "«redacted" in out["content"]
@@ -982,19 +982,19 @@ class TestSecretFileReadRedaction:
 
         # A project's own config.yaml is NOT secret-bearing: source dumps are never mangled.
         mock_get.return_value = self._read_ops(f"4|      ADS_API_TOKEN: {self.SYNTH}\n")
-        out = json.loads(read_file_tool(str(hermes_home.parent / "proj-config.yaml"), task_id="plain-read"))
+        out = json.loads(read_file_tool(str(rabbit_home.parent / "proj-config.yaml"), task_id="plain-read"))
         assert self.SYNTH in out["content"]
 
     @patch("tools.file_tools._get_file_ops")
-    def test_search_in_hermes_home_masks_opaque_token(self, mock_get, hermes_home):
-        config = hermes_home / "config.yaml"
+    def test_search_in_rabbit_home_masks_opaque_token(self, mock_get, rabbit_home):
+        config = rabbit_home / "config.yaml"
         ops = MagicMock()
         ops.search.return_value = self._SearchResult(
             [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
         mock_get.return_value = ops
 
         from tools.file_tools import search_tool
-        raw = search_tool(pattern="ADS_API_TOKEN", path=str(hermes_home),
+        raw = search_tool(pattern="ADS_API_TOKEN", path=str(rabbit_home),
                           task_id="secret-search")
 
         assert self.SYNTH not in raw

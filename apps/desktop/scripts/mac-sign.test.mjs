@@ -18,19 +18,19 @@ const digestModule = pathToFileURL(path.join(import.meta.dirname, 'payload-diges
 // The fixture imports pm and scripts.bundles, which only the prepared runtime
 // provides; a PATH python would fail later with an unrelated ImportError.
 function preparedPython() {
-  const configured = process.env.HERMES_PYTHON
-  if (!configured) throw new Error('mac-sign tests need HERMES_PYTHON set to the prepared Hermes runtime interpreter')
+  const configured = process.env.RABBIT_PYTHON
+  if (!configured) throw new Error('mac-sign tests need RABBIT_PYTHON set to the prepared Rabbit runtime interpreter')
   return configured
 }
 
 function fixture() {
   const python = preparedPython()
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mac-digest-order-'))
-  const app = path.join(root, 'Hermes.app')
+  const app = path.join(root, 'Rabbit.app')
   const payload = path.join(app, 'Contents', 'Resources', 'agent-payload')
   const tools = path.join(payload, 'tools')
   const nested = path.join(tools, 'chromium', 'Browser.app')
-  const binaries = [path.join(app, 'Contents', 'MacOS', 'Hermes'),
+  const binaries = [path.join(app, 'Contents', 'MacOS', 'Rabbit'),
     path.join(tools, 'python', 'bin', 'python3'),
     path.join(nested, 'Contents', 'MacOS', process.platform === 'win32' ? 'chrome.exe' : 'Chromium')]
   for (const binary of binaries) {
@@ -42,8 +42,8 @@ function fixture() {
   }
   const ignored = path.join(tools, 'python', 'non-macho.bin')
   fs.writeFileSync(ignored, Buffer.alloc(64))
-  const env = { ...process.env, HERMES_HOME: path.join(root, 'home'),
-    HERMES_RUNTIME_DIR: path.join(root, 'state'), HERMES_PYTHON: python,
+  const env = { ...process.env, RABBIT_HOME: path.join(root, 'home'),
+    RABBIT_RUNTIME_DIR: path.join(root, 'state'), RABBIT_PYTHON: python,
     UV_OFFLINE: '1', UV_PYTHON_DOWNLOADS: 'never', UV_CACHE_DIR: path.join(root, 'cache') }
   delete env.PYTHONHOME
   delete env.PYTHONPATH
@@ -84,7 +84,7 @@ async function signThroughBuilder(f) {
 }
 
 function armEnvironment(f) {
-  for (const name of ['HERMES_HOME', 'HERMES_RUNTIME_DIR', 'HERMES_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
+  for (const name of ['RABBIT_HOME', 'RABBIT_RUNTIME_DIR', 'RABBIT_PYTHON', 'UV_OFFLINE', 'UV_PYTHON_DOWNLOADS', 'UV_CACHE_DIR']) {
     vi.stubEnv(name, f.env[name])
   }
   vi.stubEnv('PYTHONHOME', undefined)

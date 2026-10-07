@@ -3,9 +3,9 @@
 This script never installs, updates, or grants an existing browser profile. Start
 an isolated daemon separately, then point this script at its socket:
 
-    cua-driver serve --embedded --socket /tmp/hermes-cua-0-9-live.sock \
+    cua-driver serve --embedded --socket /tmp/rabbit-cua-0-9-live.sock \
         --no-permissions-gate --no-overlay
-    CUA_DRIVER_LIVE_SOCKET=/tmp/hermes-cua-0-9-live.sock \
+    CUA_DRIVER_LIVE_SOCKET=/tmp/rabbit-cua-0-9-live.sock \
         .venv/bin/python tests/computer_use/live_cua_0_9_smoke.py
 
 The output deliberately excludes process IDs, window IDs, socket paths, and
@@ -84,7 +84,7 @@ end run
 
 
 async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
-    session_id = f"hermes-cua-live-{uuid.uuid4().hex[:8]}"
+    session_id = f"rabbit-cua-live-{uuid.uuid4().hex[:8]}"
     params = StdioServerParameters(
         command="cua-driver",
         args=["mcp", "--embedded", "--socket", socket_path],
@@ -98,7 +98,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
     browser_pid: int | None = None
     prior_foreground_pids: set[int] = set()
     file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix="hermes-cua-live-", suffix=".txt"
+        prefix="rabbit-cua-live-", suffix=".txt"
     )
     os.close(file_descriptor)
     smoke_path = Path(temporary_name)
@@ -189,7 +189,7 @@ async def run_smoke(socket_path: str) -> dict[str, dict[str, Any]]:
                                 "stage": "editor_discovery",
                             }
                         else:
-                            marker = "hermes foreground smoke"
+                            marker = "rabbit foreground smoke"
                             type_args = {
                                 "pid": launched_pid,
                                 "window_id": window_id,
@@ -442,7 +442,7 @@ def main() -> int:
             cell["stage"] = "macos_host_required"
     else:
         socket_path = os.environ.get(
-            "CUA_DRIVER_LIVE_SOCKET", "/tmp/hermes-cua-0-9-live.sock"
+            "CUA_DRIVER_LIVE_SOCKET", "/tmp/rabbit-cua-0-9-live.sock"
         )
         if not Path(socket_path).is_socket():
             for cell in report.values():

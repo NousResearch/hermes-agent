@@ -109,14 +109,14 @@ class CredentialPoolAdminMixin:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import _next_priority, write_credential_pool
-        from hermes_cli import auth as auth_mod
+        from rabbit_cli import auth as auth_mod
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
             if borrowed_ids:
-                # ``hermes -p <profile> auth add <single-use provider>``: the
+                # ``rabbit -p <profile> auth add <single-use provider>``: the
                 # profile claims its OWN credential. Persist only profile-owned
                 # rows — copying the borrowed root grant alongside would fork
                 # its single-use refresh token (#100339). Once the profile owns

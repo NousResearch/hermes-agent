@@ -7,7 +7,7 @@ license: MIT
 dependencies: [pinecone-client, langchain-pinecone]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [RAG, Pinecone, Memory, Research, Vector Database, Agent, Retrieval]
 
 ---

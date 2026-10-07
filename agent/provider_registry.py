@@ -2,7 +2,7 @@
 
 Every pluggable-backend registry has the same shape: a global name->provider map
 plus per-profile *scoped* maps (multiplexed gateways), a lock, registration with
-re-registration logging, and the snapshot/restore pair :mod:`hermes_cli.plugins`
+re-registration logging, and the snapshot/restore pair :mod:`rabbit_cli.plugins`
 uses to unwind a plugin. Each ``*_registry`` module instantiates one
 :class:`ProviderRegistry` and re-exports its bound methods under the historical
 module-level names via :meth:`ProviderRegistry.export`, so ``patch("agent.x_registry.get_provider")``
@@ -15,7 +15,7 @@ import logging
 import threading
 from typing import Any, Callable, Dict, FrozenSet, Generic, List, Optional, TypeVar
 
-from hermes_constants import hermes_home_key, normalize_scope
+from rabbit_constants import rabbit_home_key, normalize_scope
 
 P = TypeVar("P")
 
@@ -102,7 +102,7 @@ class ProviderRegistry(Generic[P]):
         """Global map overlaid with the active profile's scoped map (a copy)."""
         with self._lock:
             merged = dict(self._providers)
-            merged.update(self._scoped_providers.get(hermes_home_key(scope), {}))
+            merged.update(self._scoped_providers.get(rabbit_home_key(scope), {}))
         return merged
 
     def list_providers(self, *, scope: Optional[str] = None) -> List[P]:
@@ -116,13 +116,13 @@ class ProviderRegistry(Generic[P]):
         key = self.normalize(name)
         with self._lock:
             return (
-                self._scoped_providers.get(hermes_home_key(scope), {}).get(key)
+                self._scoped_providers.get(rabbit_home_key(scope), {}).get(key)
                 or self._providers.get(key)
             )
 
     def registry_generation(self, *, scope: Optional[str] = None) -> tuple:
         """Cache fingerprint ``(global_generation, scoped_generation)``."""
-        active_scope = hermes_home_key(scope)
+        active_scope = rabbit_home_key(scope)
         with self._lock:
             return self._generation, self._scoped_generations.get(active_scope, 0)
 
@@ -182,11 +182,11 @@ def is_available_safe(
 
 
 def configured_provider_name(section: str, logger: logging.Logger) -> Optional[str]:
-    """Read ``<section>.provider`` from config.yaml, mapping the managed Nous
-    selection to ``fal`` (the FAL plugin services it via the managed gateway)."""
+    """Read ``<section>.provider`` from config.yaml."""
+
     configured: Optional[str] = None
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         cfg = load_config_readonly()
         block = cfg.get(section) if isinstance(cfg, dict) else None
         raw = block.get("provider") if isinstance(block, dict) else None
@@ -194,11 +194,4 @@ def configured_provider_name(section: str, logger: logging.Logger) -> Optional[s
             configured = raw.strip()
     except Exception as exc:
         logger.debug("Could not read %s.provider from config: %s", section, exc)
-    if configured:
-        try:
-            from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
-            if configured.lower() == NOUS_MANAGED_PROVIDER:
-                configured = "fal"
-        except Exception:  # pragma: no cover — helpers are in-repo
-            pass
     return configured

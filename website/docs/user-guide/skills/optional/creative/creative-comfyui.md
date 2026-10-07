@@ -14,7 +14,7 @@ Generate images, video, and audio via diffusion workflows.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/comfyui` |
+| Source | Optional — install with `rabbit skills install official/creative/comfyui` |
 | Path | `optional-skills/creative/comfyui` |
 | Version | `5.1.0` |
 | Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
@@ -26,7 +26,7 @@ Generate images, video, and audio via diffusion workflows.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # ComfyUI

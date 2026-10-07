@@ -64,11 +64,11 @@ class TestBuildLocalTranscribeKwargs:
         assert kwargs["log_prob_threshold"] == _LOGPROB_THRESHOLD_DEFAULT
 
     def test_language_and_prompt_resolved(self, monkeypatch):
-        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
-        cfg = {"language": "en", "local": {"initial_prompt": "Hermes glossary"}}
+        monkeypatch.delenv("RABBIT_LOCAL_STT_LANGUAGE", raising=False)
+        cfg = {"language": "en", "local": {"initial_prompt": "Rabbit glossary"}}
         kwargs = build_local_transcribe_kwargs(cfg)
         assert kwargs["language"] == "en"
-        assert kwargs["initial_prompt"] == "Hermes glossary"
+        assert kwargs["initial_prompt"] == "Rabbit glossary"
 
 
 class TestConfidenceGate:
@@ -111,7 +111,7 @@ class TestTranscribeLocalWiring:
         monkeypatch.setattr(tt, "_local_model", FakeModel())
         monkeypatch.setattr(tt, "_local_model_name", "base")
         monkeypatch.setattr(tt, "_load_stt_config", lambda: stt_config)
-        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        monkeypatch.delenv("RABBIT_LOCAL_STT_LANGUAGE", raising=False)
         result = tt._transcribe_local("/tmp/fake.wav", "base")
         return captured, result
 

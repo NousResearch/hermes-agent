@@ -24,7 +24,7 @@ p5.js 草图：生成艺术、着色器、交互、3D。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
 :::
 
 # p5.js 生产流水线

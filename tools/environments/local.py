@@ -16,18 +16,18 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from hermes_constants import get_process_hermes_home
+from rabbit_constants import get_process_rabbit_home
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
-from tools.environments.local_env_policy import (  # noqa: F401 — _HERMES_PROVIDER_ENV_BLOCKLIST stays importable from here
-    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
+from rabbit_cli._subprocess_compat import windows_hide_flags
+from tools.environments.local_env_policy import (  # noqa: F401 — _RABBIT_PROVIDER_ENV_BLOCKLIST stays importable from here
+    _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _RABBIT_PROVIDER_ENV_BLOCKLIST, _RABBIT_PROVIDER_ENV_FORCE_PREFIX,
+    _is_rabbit_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
     strip_profile_gate_env)
 from tools.environments.local_pythonpath import (
-    _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+    _build_rabbit_repo_root_aliases, _strip_rabbit_owned_pythonpath_and_runtime_markers)
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -35,24 +35,24 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 # --- Terminal temp-cache pruning ---
-# get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
+# get_temp_dir() defaults to RABBIT_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
 # and a once-per-process sweep covers CLI-only installs. Retention is idle-based like
 # the scratch dir: an entry goes 24h after the last write anywhere inside it.
 TERMINAL_TEMP_MAX_IDLE_HOURS = 24
 _terminal_temp_prune_lock = threading.Lock()
 _terminal_temp_pruned_once = False
-# Background artifacts come in triplets (hermes_bg_<id>.log/.pid/.exit). A live
+# Background artifacts come in triplets (rabbit_bg_<id>.log/.pid/.exit). A live
 # server's .pid never changes mtime while its .log does, so age is judged per
 # GROUP (newest mtime sharing a stem) to keep pid/exit files of live sessions.
-_BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
+_BG_GROUP_RE = re.compile(r"^(rabbit_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
 
 
 def _default_terminal_temp_dir() -> "Path | None":
-    """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
+    """Return RABBIT_HOME/cache/terminal, or None if unresolvable."""
     try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / "cache" / "terminal"
+        from rabbit_constants import get_rabbit_home
+        return get_rabbit_home() / "cache" / "terminal"
     except Exception:
         return None
 
@@ -62,7 +62,7 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
     directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
     housekeeping loop calls every entry with); return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
-    from hermes_constants_scratch import subtree_touched_since
+    from rabbit_constants_scratch import subtree_touched_since
 
     root = _default_terminal_temp_dir()
     if root is None:
@@ -210,18 +210,18 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 # --- Child-process environment construction ---
 def _apply_profile_home(env: dict) -> None:
-    """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+    """Bridge the context-local RABBIT_HOME override, then the subprocess HOME contract."""
+    from rabbit_constants import apply_subprocess_home_env, get_rabbit_home_override
     try:
-        if value := get_hermes_home_override():
-            env["HERMES_HOME"] = value
+        if value := get_rabbit_home_override():
+            env["RABBIT_HOME"] = value
     except Exception:
         pass
     apply_subprocess_home_env(env)
 
 
 def _inject_session_context_env(env: dict) -> None:
-    """Bridge gateway session ContextVars (HERMES_SESSION_*) into a child env.
+    """Bridge gateway session ContextVars (RABBIT_SESSION_*) into a child env.
     Cross-session leak guard: the vars' last-writer-wins ``os.environ`` mirror may
     belong to another turn on a concurrent multi-session host, so once the session
     context is engaged ContextVars are authoritative — a bound value (incl. "") wins
@@ -242,7 +242,7 @@ def _inject_session_context_env(env: dict) -> None:
 def _filter_secret_env(
     items: Mapping[str, str], out: dict, *, unwrap_force: bool,
     plugin_strip: frozenset = frozenset()) -> None:
-    """Copy *items* into *out*, dropping Hermes-managed secrets. ``_HERMES_FORCE_<NAME>``
+    """Copy *items* into *out*, dropping Rabbit-managed secrets. ``_RABBIT_FORCE_<NAME>``
     unwraps to ``NAME`` when ``unwrap_force`` (caller extras / terminal env), else is
     dropped. Blocklisted names survive only via env_passthrough registration or as
     context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
@@ -254,14 +254,14 @@ def _filter_secret_env(
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
     registered = _registered_adapter_secret_env()
     for key, value in items.items():
-        if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+        if key.startswith(_RABBIT_PROVIDER_ENV_FORCE_PREFIX):
             if not unwrap_force:
                 continue
-            key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
-            if not _is_hermes_internal_secret(key):
+            key = key[len(_RABBIT_PROVIDER_ENV_FORCE_PREFIX):]
+            if not _is_rabbit_internal_secret(key):
                 out[key] = value
             continue
-        if _is_hermes_internal_secret(key) or key.upper() in plugin_strip_folded:
+        if _is_rabbit_internal_secret(key) or key.upper() in plugin_strip_folded:
             continue
         first_party = _is_terminal_first_party_env(key)
         passthrough = is_env_passthrough(key)
@@ -275,11 +275,11 @@ def _filter_secret_env(
 
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
-    bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
+    bridging, Rabbit-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
     _apply_profile_home(env)
     _inject_session_context_env(env)
-    _strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    _strip_rabbit_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
@@ -287,7 +287,7 @@ def _finalize_child_env(env: dict) -> dict:
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     """Filter each ``(items, unwrap_force)`` in *parts* into one env, rewrite PATH via
-    *fix_path* (always prepending the hermes install dir so bare ``hermes`` resolves
+    *fix_path* (always prepending the rabbit install dir so bare ``rabbit`` resolves
     for children of a systemd/cron-launched gateway), then apply the shared guards."""
     out: dict[str, str] = {}
     for items, unwrap_force in parts:
@@ -299,22 +299,22 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     from tools.env_passthrough import scoped_passthrough_additions
     out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
     path_key = _path_env_key(out)
-    # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
+    # Keep bare ``rabbit`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
     # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
     if path_key is not None:
-        out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
+        out[path_key] = _prepend_rabbit_bin_dir(fix_path(out.get(path_key, "")))
     return _finalize_child_env(out)
 
 
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
-    """Filter Hermes-managed secrets from a subprocess environment (background/PTY
+    """Filter Rabbit-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
     return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
                          _plugin_terminal_env_strip_keys(), lambda p: p)
 
 
-def hermes_subprocess_env(
+def rabbit_subprocess_env(
     *, inherit_credentials: bool = False, base_env: dict[str, str] | None = None
 ) -> dict[str, str]:
     """Sanitize a non-terminal child's environment (no skill passthrough).
@@ -341,8 +341,8 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     for key in list(env):
         if (key.upper() in strip_folded
                 or (not inherit_credentials and _is_provider_env_blocklisted(key, registered))
-                or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
-                or _is_hermes_internal_secret(key)):
+                or key.startswith(_RABBIT_PROVIDER_ENV_FORCE_PREFIX)
+                or _is_rabbit_internal_secret(key)):
             del env[key]
     return env
 
@@ -355,7 +355,7 @@ def build_subprocess_env(
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
     byte-for-byte (git credential flows, ``bws``/``op``); ``inherit_profile_home``
-    bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win.
+    bridges RABBIT_HOME + HOME and ``extra`` is applied last so caller overrides win.
     ``strip_launch_profile`` drops the LAUNCH profile's ``.env`` residue from the base first
     (:func:`strip_launch_profile_env`; a no-op unless a routed home is active) so a child that
     acts for a routed profile sees only that profile's declared names, never the launch profile's.
@@ -387,7 +387,7 @@ def served_profile_child_env(
     base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
     inherit_credentials: bool = False,
 ) -> dict[str, str]:
-    """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
+    """Child env for a process that acts FOR the active (possibly served) profile: ``rabbit -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
     target is a ROUTED home (not the launch profile's — under multiplex or a Desktop/dashboard backend
     serving ``?profile=`` with the flag off) the launch ``.env`` residue and bridged ``TERMINAL_*`` are
@@ -396,19 +396,19 @@ def served_profile_child_env(
     never recorded in ``.env`` or a source snapshot, so a name-based strip cannot see it and the target
     overlay cannot remove it. ``inherit_credentials=True`` is for children that legitimately run with
     the profile's credentials (they run the agent or mint its token): the target profile's own secrets
-    (its ``.env`` + hydrated sources, what a standalone ``hermes -p X`` loads itself) are overlaid — never
+    (its ``.env`` + hydrated sources, what a standalone ``rabbit -p X`` loads itself) are overlaid — never
     a sibling profile's. Under multiplex with neither a target nor a bound scope the call raises
     (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
-    ``hermes_subprocess_env`` snapshot."""
+    ``rabbit_subprocess_env`` snapshot."""
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
-    from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
-    env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
-    target = str(target_home or get_hermes_home_override() or "")
+    from rabbit_constants import apply_scratch_tmp_env, get_rabbit_home_override
+    env = dict(base) if base is not None else rabbit_subprocess_env(inherit_credentials=inherit_credentials)
+    target = str(target_home or get_rabbit_home_override() or "")
     if target:
-        env["HERMES_HOME"] = target
+        env["RABBIT_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if _is_routed_home(target):
             strip_launch_profile_env(env, target)
@@ -436,9 +436,9 @@ def host_gateway_child_env(
     (desktop, fleet restart, detached watcher) must not donate its dotenv to the
     multiplexer that owns the primary adapter map.
     """
-    from hermes_constants import get_default_hermes_root
+    from rabbit_constants import get_default_rabbit_root
     return served_profile_child_env(
-        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+        base=base, target_home=get_default_rabbit_root(), inherit_credentials=True,
     )
 
 
@@ -446,11 +446,11 @@ def _is_routed_home(target_home: "str | Path") -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 
     Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
-    mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
+    mirrors the served profile into ``RABBIT_HOME``, the live env var names the served home and the
     launch residue would never be stripped from that profile's child env."""
-    from hermes_constants import get_routing_process_hermes_home
+    from rabbit_constants import get_routing_process_rabbit_home
     try:
-        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
+        return Path(target_home).resolve() != get_routing_process_rabbit_home().resolve()
     except OSError:
         return True
 
@@ -458,20 +458,20 @@ def _is_routed_home(target_home: "str | Path") -> bool:
 def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
-    the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
-    ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
+    the secret scrub removes credentials but not settings (``RABBIT_MODEL``, ``TERMINAL_ENV``,
+    ``RABBIT_LANGUAGE``...), so a standalone ``rabbit -p X`` worker and a served one saw different
     envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
     defaults to the active home override; no-op when there is no target or the target IS the
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
-    installing a HERMES_HOME override without that flag."""
+    installing a RABBIT_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
-    target = target_home or get_hermes_home_override()
+    from rabbit_constants import get_rabbit_home_override, get_routing_process_rabbit_home
+    target = target_home or get_rabbit_home_override()
     if not target or not _is_routed_home(target):
         return env
-    launch_home = get_routing_process_hermes_home()
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    launch_home = get_routing_process_rabbit_home()
+    from rabbit_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
@@ -484,7 +484,7 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
     # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
     # it last, with override, so it beats the user's own .env) — leave them in place.
-    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    from rabbit_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
     managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
@@ -504,7 +504,7 @@ def restore_managed_env(env: dict) -> dict:
     has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
     the launch process; a routed child must see the same precedence, or the routed user's value for a
     managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
-    from hermes_cli.env_loader import managed_dotenv_keys
+    from rabbit_cli.env_loader import managed_dotenv_keys
     for key in managed_dotenv_keys():
         if key in os.environ:
             env[key] = os.environ[key]
@@ -513,7 +513,7 @@ def restore_managed_env(env: dict) -> dict:
 
 # --- Shell discovery ---
 def _find_bash() -> str:
-    """Resolve the shell Hermes runs commands with. Owned by pm (the store
+    """Resolve the shell Rabbit runs commands with. Owned by pm (the store
     is the authority on bundled bash); this is a thin wrapper over
     pm.shell() for callers that need a bash binary."""
     import pm.shell
@@ -522,8 +522,8 @@ def _find_bash() -> str:
     if bash:
         return bash
     raise RuntimeError(
-        "No shell found. Hermes needs bash (Git for Windows on Windows). "
-        "Run `hermes pm install` or reinstall the bundle."
+        "No shell found. Rabbit needs bash (Git for Windows on Windows). "
+        "Run `rabbit pm install` or reinstall the bundle."
     )
 
 
@@ -592,68 +592,68 @@ def _find_shell() -> str:
 _SANE_PATH = ("/opt/homebrew/bin:/opt/homebrew/sbin:"
               "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
-# Cached directory containing the ``hermes`` console-script.
+# Cached directory containing the ``rabbit`` console-script.
 # ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
 _SENTINEL = object()
-_HERMES_BIN_DIR: "str | None | object" = _SENTINEL
+_RABBIT_BIN_DIR: "str | None | object" = _SENTINEL
 
 
-def _resolve_hermes_bin_dir() -> str | None:
-    """Directory holding the ``hermes`` console-script, or None (cached). A gateway
+def _resolve_rabbit_bin_dir() -> str | None:
+    """Directory holding the ``rabbit`` console-script, or None (cached). A gateway
     launched by systemd/cron/a desktop launcher lacks the install dir on PATH and bare
-    ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
-    hermes executable; ``sys.executable``'s dir if it holds the shim."""
-    global _HERMES_BIN_DIR
-    if _HERMES_BIN_DIR is not _SENTINEL:
-        return _HERMES_BIN_DIR  # type: ignore[return-value]
-    which = shutil.which("hermes")
+    ``rabbit`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
+    rabbit executable; ``sys.executable``'s dir if it holds the shim."""
+    global _RABBIT_BIN_DIR
+    if _RABBIT_BIN_DIR is not _SENTINEL:
+        return _RABBIT_BIN_DIR  # type: ignore[return-value]
+    which = shutil.which("rabbit")
     argv0 = sys.argv[0] if sys.argv else ""
     base = os.path.basename(argv0).lower()
     exe_dir = os.path.dirname(sys.executable) if sys.executable else ""
-    shim = "hermes.exe" if _IS_WINDOWS else "hermes"
+    shim = "rabbit.exe" if _IS_WINDOWS else "rabbit"
     if which:
         candidate = os.path.dirname(which)
-    elif (os.path.isabs(argv0) and (base == "hermes" or base.startswith("hermes."))
+    elif (os.path.isabs(argv0) and (base == "rabbit" or base.startswith("rabbit."))
             and os.path.isfile(argv0)):
         candidate = os.path.dirname(argv0)
     else:
         candidate = exe_dir if exe_dir and os.path.isfile(os.path.join(exe_dir, shim)) else None
-    _HERMES_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
-    return _HERMES_BIN_DIR
+    _RABBIT_BIN_DIR = candidate if candidate and os.path.isdir(candidate) else None
+    return _RABBIT_BIN_DIR
 
 
-def _prepend_hermes_bin_dir(existing_path: str) -> str:
-    """Prepend the hermes install dir to ``existing_path`` if missing."""
-    bin_dir = _resolve_hermes_bin_dir()
+def _prepend_rabbit_bin_dir(existing_path: str) -> str:
+    """Prepend the rabbit install dir to ``existing_path`` if missing."""
+    bin_dir = _resolve_rabbit_bin_dir()
     return _prepend_missing_path_entries(existing_path, [bin_dir] if bin_dir else [])
 
 
 def _managed_runtime_path_entries() -> list[str]:
-    """Return existing Hermes-managed runtime dirs for the terminal subshell PATH.
+    """Return existing Rabbit-managed runtime dirs for the terminal subshell PATH.
 
     The terminal tool spawns a subshell whose PATH is the agent process's PATH
-    plus ``_SANE_PATH``. Neither carries the runtimes Hermes installs for
-    itself, so on a machine where Hermes provisioned its own toolchain a
+    plus ``_SANE_PATH``. Neither carries the runtimes Rabbit installs for
+    itself, so on a machine where Rabbit provisioned its own toolchain a
     command the agent runs resolves a system copy instead — or nothing at all:
 
     - the pm store's node/npm entries — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
       subprocesses; the agent's shell deserves the same.
-    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
+    - ``$RABBIT_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
       and nothing has ever put that directory on PATH, so an install whose only
       uv is the managed one looks uv-less to both the agent and the model.
 
     Resolved per call rather than cached in a module constant because
-    ``get_hermes_home()`` is profile-scoped and a managed runtime can appear
+    ``get_rabbit_home()`` is profile-scoped and a managed runtime can appear
     mid-process (a lazy pm install, a first browser install).
     """
     try:
         import pm
-        from hermes_constants import get_hermes_home
+        from rabbit_constants import get_rabbit_home
 
         env = pm.env_for("npm", base_env={"PATH": ""})
         managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
-        candidates = [*managed, get_hermes_home() / "bin"]
+        candidates = [*managed, get_rabbit_home() / "bin"]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
@@ -696,7 +696,7 @@ def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
 
     Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``, ``/Create``) into
     ``C:/.../git/FO``-style paths, which breaks native Windows commands such as ``tasklist``, ``schtasks``,
-    and ``wmic``. Hermes runs terminal commands through bash on Windows, so set the standard MSYS opt-out by
+    and ``wmic``. Rabbit runs terminal commands through bash on Windows, so set the standard MSYS opt-out by
     default. Refs #56700.
     MSYS2-proper and Cygwin bash (which ``_find_bash`` can still return via the final ``shutil.which``
     fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL`` instead, so set both. ``*`` disables all argv
@@ -741,18 +741,18 @@ def _make_run_env(env: dict) -> dict:
     return run_env
 
 
-# --- Hermes venv / repo-root detection (module-level, computed once) ---
+# --- Rabbit venv / repo-root detection (module-level, computed once) ---
 # Owned here; read lazily by tools.environments.local_pythonpath (tests patch here).
 # The Electron app prepends the repo root to PYTHONPATH so the backend can ``import
 # tools``; other subprocesses must not inherit it. Aliases: launchers may emit other
-# spellings — the Windows gateway launcher renders Hermes-owned paths under the
-# configured HERMES_HOME spelling (possibly a junction to another drive).
-_hermes_repo_root: Path = Path(__file__).resolve().parents[2]
-_hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
-    _hermes_repo_root, Path(__file__).absolute().parents[2], get_process_hermes_home())
+# spellings — the Windows gateway launcher renders Rabbit-owned paths under the
+# configured RABBIT_HOME spelling (possibly a junction to another drive).
+_rabbit_repo_root: Path = Path(__file__).resolve().parents[2]
+_rabbit_repo_root_aliases: tuple[Path, ...] = _build_rabbit_repo_root_aliases(
+    _rabbit_repo_root, Path(__file__).absolute().parents[2], get_process_rabbit_home())
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
-_hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
+_rabbit_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
 
 
 # --- Login-shell init files ---
@@ -760,7 +760,7 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
     """(shell_init_files, auto_source_bashrc) from config.yaml; defaults on any
     failure so terminal execution never breaks."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         terminal_cfg = (load_config() or {}).get("terminal") or {}
         files = terminal_cfg.get("shell_init_files") or []
         if not isinstance(files, list):
@@ -877,11 +877,11 @@ def _kill_process_group_posix(proc) -> None:
     grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
     PID-reuse guard (#43044): the group is only signalled while its leader's start
     time still matches the spawn-time baseline — a recycled PGID is never killed."""
-    expected_start = getattr(proc, "_hermes_pgid_start", None)
+    expected_start = getattr(proc, "_rabbit_pgid_start", None)
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
-        if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
+        if (pgid := getattr(proc, "_rabbit_pgid", None)) is None:
             raise
     if not _leader_is_ours(pgid, expected_start):
         # Leader exited and its PID/PGID may have been recycled onto an unrelated
@@ -955,7 +955,7 @@ class LocalEnvironment(BaseEnvironment):
 
     _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
-    # Commands run on the Hermes host itself — controller-side platform behavior
+    # Commands run on the Rabbit host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
 
@@ -976,18 +976,18 @@ class LocalEnvironment(BaseEnvironment):
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP
-        (Termux has no system temp dir), ``HERMES_HOME/cache/terminal`` (real storage: a
-        tmpfs system temp dir fills under Hermes load; pruned by ``cleanup_terminal_temp_cache``),
+        (Termux has no system temp dir), ``RABBIT_HOME/cache/terminal`` (real storage: a
+        tmpfs system temp dir fills under Rabbit load; pruned by ``cleanup_terminal_temp_cache``),
         ``tempfile.gettempdir()``; backend env before process env so terminal.env
         overrides work. Windows: ``%TEMP%`` often has spaces that break unquoted bash,
-        so always the HERMES_HOME cache dir with forward slashes (bash- and Python-valid)."""
+        so always the RABBIT_HOME cache dir with forward slashes (bash- and Python-valid)."""
         if _IS_WINDOWS:
             for key in ("TERMINAL_TEMP_DIR", "TMPDIR"):
                 candidate = self.env.get(key) or os.environ.get(key)
                 if candidate and os.path.isabs(candidate) and os.path.isdir(candidate):
                     return Path(candidate).as_posix()
             cache_dir = (_default_terminal_temp_dir()
-                         or Path(tempfile.gettempdir()) / "hermes_terminal")
+                         or Path(tempfile.gettempdir()) / "rabbit_terminal")
             cache_dir.mkdir(parents=True, exist_ok=True)
             _prune_terminal_temp_once()
             return str(cache_dir).replace("\\", "/")
@@ -1057,13 +1057,13 @@ class LocalEnvironment(BaseEnvironment):
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
-                proc._hermes_pgid = os.getpgid(proc.pid)
+                proc._rabbit_pgid = os.getpgid(proc.pid)
                 # Record the group leader's start-time fingerprint so _kill_process can
                 # detect PID/PGID recycling before signalling the group (#43044). The
                 # psutil fallback in get_process_start_time captures a baseline on every
                 # platform, macOS included.
                 from gateway.status import get_process_start_time
-                proc._hermes_pgid_start = get_process_start_time(proc.pid)
+                proc._rabbit_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1081,12 +1081,12 @@ class LocalEnvironment(BaseEnvironment):
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
         with contextlib.suppress(OSError):
-            pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
+            pgid = getattr(proc, "_rabbit_pgid", None) or os.getpgid(proc.pid)
             # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
             # no longer matches the spawn-time baseline — the PGID may have been recycled
             # onto an unrelated process group. Comparison is drift-tolerant (#117505);
             # without a baseline keep the legacy best-effort behaviour.
-            if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_hermes_pgid_start", None)):
+            if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_rabbit_pgid_start", None)):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()

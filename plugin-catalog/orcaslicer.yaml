@@ -1,22 +1,22 @@
 name: orcaslicer
-repo: https://github.com/mazzanfar/hermes-orcaslicer
+repo: https://github.com/mazzanfar/rabbit-orcaslicer
 sha: 08bcbeffff712702896fba0d101d8fa669d129d2
 version: "0.5.0"
-title: OrcaSlicer for Hermes
+title: OrcaSlicer for Rabbit
 description: >-
   Prepare, slice, preflight and export 3D prints with stock OrcaSlicer profiles.
   Includes explicit printer upload/control, camera snapshots and monitoring
   through supported protocols. Protocol and hardware limits are documented.
-  Independent of OrcaSlicer and Nous Research.
+  Independent of OrcaSlicer and Sanath Patil.
   Disclosure — executes the installed local slicer and exposes printer upload,
   start, pause, resume and cancel; agent-supplied confirmation is not independent
-  human authentication. Printer/camera credentials are read from ORCA_*/HERMES_ORCA_*
+  human authentication. Printer/camera credentials are read from ORCA_*/RABBIT_ORCA_*
   environment variables named in tool arguments (HTTPS required unless allow_plaintext_credentials
-  is set); plugin state lives in ~/.hermes-orca (HERMES_ORCA_HOME), outside HERMES_HOME.
+  is set); plugin state lives in ~/.rabbit-orca (RABBIT_ORCA_HOME), outside RABBIT_HOME.
 maintainer: mazzanfar
 tier: community
 category: tools
-docs_url: https://github.com/mazzanfar/hermes-orcaslicer#readme
+docs_url: https://github.com/mazzanfar/rabbit-orcaslicer#readme
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools:

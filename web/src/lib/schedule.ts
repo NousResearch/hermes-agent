@@ -1,7 +1,7 @@
 /**
  * Schedule builder helpers for the cron page.
  *
- * The hermes-agent backend (cron/jobs.py::parse_schedule) accepts a
+ * The rabbit-agent backend (cron/jobs.py::parse_schedule) accepts a
  * surprisingly broad set of string formats:
  *
  *   - Duration (one-shot):       "30m", "2h", "1d"

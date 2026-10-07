@@ -2,8 +2,8 @@
 
 Mirrors ``cron.manage`` / ``mcp.servers.*``: when a ``profile`` is passed the
 handler resolves ``get_profile_dir(profile)`` and wraps the action dispatch in
-``set_hermes_home_override`` / ``reset_hermes_home_override``. Because
-``_plugins_dir()`` keys off ``get_hermes_home()``, the list action must then
+``set_rabbit_home_override`` / ``reset_rabbit_home_override``. Because
+``_plugins_dir()`` keys off ``get_rabbit_home()``, the list action must then
 scan THAT profile's ``plugins/`` dir, not the launch profile's.
 """
 
@@ -21,7 +21,7 @@ def test_plugins_manage_profile_reads_that_profiles_dir(tmp_path, monkeypatch):
     )
 
     # Route the profile name the handler resolves to our temp home.
-    import hermes_cli.profiles as profiles
+    import rabbit_cli.profiles as profiles
 
     monkeypatch.setattr(profiles, "get_profile_dir", lambda name: profile_home)
 
@@ -41,13 +41,13 @@ def test_plugins_manage_profile_reads_that_profiles_dir(tmp_path, monkeypatch):
 
     # The override must not leak: an unscoped call after this one resolves the
     # launch profile again.
-    from hermes_constants import get_hermes_home_override
+    from rabbit_constants import get_rabbit_home_override
 
-    assert get_hermes_home_override() is None
+    assert get_rabbit_home_override() is None
 
 
 def test_plugins_manage_unknown_profile_errors(tmp_path, monkeypatch):
-    import hermes_cli.profiles as profiles
+    import rabbit_cli.profiles as profiles
 
     missing = tmp_path / "profiles" / "ghost"
     monkeypatch.setattr(profiles, "get_profile_dir", lambda name: missing)

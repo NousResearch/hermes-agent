@@ -173,7 +173,7 @@ describe('openExternalUrl', () => {
 
   it('on win32, common http URLs with & query params are forwarded intact', () => {
     const { spawn, calls } = mockSpawn()
-    const url = 'https://example.com/search?q=foo&page=2&utm_source=hermes'
+    const url = 'https://example.com/search?q=foo&page=2&utm_source=rabbit'
 
     openExternalUrl(url, { spawn, platform: () => 'win32' })
     expect(calls[0]!.args).toEqual([url])

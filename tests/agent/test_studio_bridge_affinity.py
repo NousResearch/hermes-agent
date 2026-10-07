@@ -1,7 +1,7 @@
-"""Affinity contract on Hermes Studio's group-chat bridge shape (#96811).
+"""Affinity contract on Rabbit Studio's group-chat bridge shape (#96811).
 
 Studio's group chat is the reproduction reported on #96811, and it reaches
-Hermes as a LIBRARY rather than through the gateway: its Python bridge
+Rabbit as a LIBRARY rather than through the gateway: its Python bridge
 constructs ``AIAgent(...)`` directly with a fresh physical ``session_id`` for
 every reply, and only then persists the session row.
 
@@ -41,7 +41,7 @@ from uuid import uuid4
 import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 # The bridge stamps its rows with the ``source`` carried by ``bridge.chat``
@@ -49,7 +49,7 @@ from run_agent import AIAgent
 # not match.  Keeping them different here is deliberate — the scope has to
 # resolve under the source the row actually landed on.
 BRIDGE_ROW_SOURCE = "api_server"
-BRIDGE_PLATFORM = "hermes_bridge"
+BRIDGE_PLATFORM = "rabbit_bridge"
 
 ROOM = "room-7c1f"
 PROFILE = "default"

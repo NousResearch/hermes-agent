@@ -188,7 +188,7 @@ test('shouldAttemptAclRepair only fires on evidence of trouble', () => {
 })
 
 test('sandbox marker round-trips through the userData file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sandbox-marker-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sandbox-marker-'))
 
   try {
     assert.equal(sandboxMarkerPath(dir), path.join(dir, WINDOWS_SANDBOX_MARKER_FILENAME))
@@ -216,8 +216,8 @@ test('sandbox marker round-trips through the userData file', () => {
 })
 
 test('buildIcaclsGrantArgs targets ALL APPLICATION PACKAGES with inherited RX', () => {
-  assert.deepEqual(buildIcaclsGrantArgs('C:\\Hermes\\win-unpacked'), [
-    'C:\\Hermes\\win-unpacked',
+  assert.deepEqual(buildIcaclsGrantArgs('C:\\Rabbit\\win-unpacked'), [
+    'C:\\Rabbit\\win-unpacked',
     '/grant',
     `*${ALL_APPLICATION_PACKAGES_SID}:(OI)(CI)(RX)`,
     '/T',
@@ -231,7 +231,7 @@ test('grantAllApplicationPackagesAcl is a no-op off Windows and reports exec fai
 
   const calls: Array<{ file: string; args: readonly string[] }> = []
 
-  const ok = grantAllApplicationPackagesAcl('C:\\Hermes', {
+  const ok = grantAllApplicationPackagesAcl('C:\\Rabbit', {
     platform: 'win32',
     execFileSync(file, args) {
       calls.push({ file, args })
@@ -243,9 +243,9 @@ test('grantAllApplicationPackagesAcl is a no-op off Windows and reports exec fai
   assert.deepEqual(ok, { ok: true })
   assert.equal(calls.length, 1)
   assert.equal(calls[0]?.file, 'icacls')
-  assert.deepEqual(calls[0]?.args, buildIcaclsGrantArgs('C:\\Hermes'))
+  assert.deepEqual(calls[0]?.args, buildIcaclsGrantArgs('C:\\Rabbit'))
 
-  const failed = grantAllApplicationPackagesAcl('C:\\Hermes', {
+  const failed = grantAllApplicationPackagesAcl('C:\\Rabbit', {
     platform: 'win32',
     execFileSync() {
       throw new Error('access denied')
@@ -359,9 +359,9 @@ test('renderer crash-loop relaunch requires the sandbox breakpoint signature', (
 })
 
 test('buildNoSandboxRelaunchArgs appends a single --no-sandbox flag', () => {
-  assert.deepEqual(buildNoSandboxRelaunchArgs(['--foo', '--no-sandbox', 'hermes://x']), [
+  assert.deepEqual(buildNoSandboxRelaunchArgs(['--foo', '--no-sandbox', 'rabbit://x']), [
     '--foo',
-    'hermes://x',
+    'rabbit://x',
     '--no-sandbox'
   ])
 })

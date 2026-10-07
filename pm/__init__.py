@@ -1,6 +1,6 @@
-"""pm: the hermes package system.
+"""pm: the rabbit package system.
 
-Everything hermes depends on — tool binaries, the python venv, node_modules
+Everything rabbit depends on — tool binaries, the python venv, node_modules
 dirs, plugins — is a package in one dependency tree. Package definitions
 (pm/packages.py) say what a package IS. The lockfile (pm/lock.json,
 machine-written) says exactly which versions and hashes. The installed-state

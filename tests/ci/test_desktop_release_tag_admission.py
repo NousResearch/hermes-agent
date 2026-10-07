@@ -34,7 +34,7 @@ _CONTROLLER = "c" * 40
 
 
 def _workflow() -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("rabbit_yaml")
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 

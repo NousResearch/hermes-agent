@@ -17,7 +17,7 @@ def _capture_registration(monkeypatch, hooks_cfg):
     seen: dict = {}
     import agent.outbound_webhooks as ow
     import agent.shell_hooks as sh
-    import hermes_cli.config as cfgmod
+    import rabbit_cli.config as cfgmod
 
     def fake_register_outbound(cfg):
         seen["targets"] = ow.iter_configured_targets(cfg)
@@ -30,10 +30,10 @@ def _capture_registration(monkeypatch, hooks_cfg):
 
 
 def test_launch_profile_webhooks_register_signed_under_multiplex(tmp_path, monkeypatch, caplog):
-    launch_home = tmp_path / ".hermes"
+    launch_home = tmp_path / ".rabbit"
     launch_home.mkdir()
     (launch_home / ".env").write_text("MY_HOOK_SECRET=s3cret-of-launch\n")
-    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("RABBIT_HOME", str(launch_home))
     monkeypatch.delenv("MY_HOOK_SECRET", raising=False)
     cfg = {"hooks": {"outbound": [
         {"url": "https://hooks.example/signed", "events": ["on_session_end"], "secret_env": "MY_HOOK_SECRET"},
@@ -57,7 +57,7 @@ def test_launch_profile_webhooks_register_signed_under_multiplex(tmp_path, monke
 
 def test_registration_failure_is_a_warning_not_debug(monkeypatch, caplog):
     """A dropped hook block must be visible: the swallow used to log at DEBUG."""
-    import hermes_cli.config as cfgmod
+    import rabbit_cli.config as cfgmod
 
     def boom():
         raise RuntimeError("config exploded")

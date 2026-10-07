@@ -40,8 +40,8 @@ def test_activate_applies_the_environment_and_deactivate_restores_the_shell(tmp_
         source "@ACTIVATE@"
         or exit 10
         # The sentinel and the tool variables must reach child processes.
-        bash -c 'test -n "$__HERMES_ACTIVATED"'; or exit 11
-        test (bash -c 'printf %s "$HERMES_PM_ACTIVATE_CANARY"') = env-ok; or exit 12
+        bash -c 'test -n "$__RABBIT_ACTIVATED"'; or exit 11
+        test (bash -c 'printf %s "$RABBIT_PM_ACTIVATE_CANARY"') = env-ok; or exit 12
         # PYTHONPATH stays a list: the checkout first, then the selected environment.
         printf '%s\\n' $PYTHONPATH
 
@@ -53,11 +53,11 @@ def test_activate_applies_the_environment_and_deactivate_restores_the_shell(tmp_
         test (string join : $PATH) = $original_path; or exit 20
         test "$PYTHONPATH" = caller-original; or exit 21
         test "$VIRTUAL_ENV" = caller-venv; or exit 22
-        set -q __HERMES_ACTIVATED; and exit 23
-        set -q HERMES_PM_ACTIVATE_CANARY; and exit 24
+        set -q __RABBIT_ACTIVATED; and exit 23
+        set -q RABBIT_PM_ACTIVATE_CANARY; and exit 24
         functions -q deactivate; and exit 25
-        functions -q hermes; and exit 26
-        functions -q __hermes_saved_fish_prompt; and exit 27
+        functions -q rabbit; and exit 26
+        functions -q __rabbit_saved_fish_prompt; and exit 27
         exit 0
     """, tmp_path)
     assert run.returncode == 0, run.stdout + run.stderr
@@ -77,7 +77,7 @@ def test_setup_failure_leaves_the_caller_unchanged(tmp_path):
         set -l code $status
         test $code -ne 0; or exit 10
         test (env | sort | string collect) = "$before"; or exit 11
-        set -q __HERMES_ACTIVATED; and exit 12
+        set -q __RABBIT_ACTIVATED; and exit 12
         functions -q deactivate; and exit 13
         exit 0
     """, tmp_path)

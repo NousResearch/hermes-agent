@@ -4,7 +4,7 @@ The prefix is an address: the caller is naming WHICH agent the request is
 for. The old behavior ignored it whenever ``gateway.multiplex_profiles`` was
 off and answered as the process's own (single) profile — so a request
 explicitly addressed to one agent was silently answered by a different one.
-Observed live (Aug 2026): ``hermes peer dm mini/researcher`` was answered by
+Observed live (Aug 2026): ``rabbit peer dm mini/researcher`` was answered by
 the mini's *default* agent, with no error on either side, because the mini
 runs one LaunchDaemon per profile and only the default daemon hosted an
 api_server.
@@ -44,14 +44,14 @@ class TestResolverWithMultiplexOff:
 
     def test_prefix_naming_own_profile_is_honored(self, adapter, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.profiles.profile_matches_home",
+            "rabbit_cli.profiles.profile_matches_home",
             lambda name, home=None: name == "researcher",
         )
         assert adapter._resolve_request_profile(_request("researcher")) is None
 
     def test_prefix_naming_default_on_default_home_is_honored(self, adapter, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.profiles.profile_matches_home",
+            "rabbit_cli.profiles.profile_matches_home",
             lambda name, home=None: name == "default",
         )
         assert adapter._resolve_request_profile(_request("default")) is None
@@ -59,7 +59,7 @@ class TestResolverWithMultiplexOff:
     def test_prefix_naming_another_agent_fails_closed(self, adapter, monkeypatch):
         """The misdelivery case: addressed to researcher, running as default."""
         monkeypatch.setattr(
-            "hermes_cli.profiles.profile_matches_home",
+            "rabbit_cli.profiles.profile_matches_home",
             lambda name, home=None: name == "default",
         )
         assert adapter._resolve_request_profile(_request("researcher")) is _PROFILE_REJECTED
@@ -70,7 +70,7 @@ class TestResolverWithMultiplexOff:
         def boom(name, home=None):
             raise RuntimeError("no home")
 
-        monkeypatch.setattr("hermes_cli.profiles.profile_matches_home", boom)
+        monkeypatch.setattr("rabbit_cli.profiles.profile_matches_home", boom)
         assert adapter._resolve_request_profile(_request("researcher")) is _PROFILE_REJECTED
 
 
@@ -80,7 +80,7 @@ class TestMultiplexOnUnchanged:
             config=SimpleNamespace(multiplex_profiles=True)
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "rabbit_cli.profiles.profiles_to_serve",
             lambda multiplex: [("worker", object())],
         )
         assert adapter._resolve_request_profile(_request("worker")) == "worker"
@@ -94,7 +94,7 @@ async def test_http_request_addressed_to_another_agent_is_404_not_answered(
     """End to end through the real middleware: the wrong-agent request must
     404 instead of being served — a body would mean the misdelivery is back."""
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        "rabbit_cli.profiles.get_active_profile_name", lambda: "default"
     )
 
     async def handler(request):

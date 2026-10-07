@@ -26,7 +26,7 @@ print(hashlib.sha256(identity).hexdigest()[:12])
 REGISTRY="ghcr.io"
 # macOS still ships Bash 3.2, which predates ${value,,} case conversion.
 OWNER="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-IMAGE="${REGISTRY}/${OWNER}/hermes-termux-builder:${SHORT}"
+IMAGE="${REGISTRY}/${OWNER}/rabbit-termux-builder:${SHORT}"
 
 if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     echo "builder image already published: $IMAGE"

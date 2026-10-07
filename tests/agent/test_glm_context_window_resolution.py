@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from agent import conversation_compression as cc
 from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, get_model_context_length
-from hermes_cli.config_providers import get_custom_provider_context_length
+from rabbit_cli.config_providers import get_custom_provider_context_length
 
 
 def test_hyphenated_relay_slug_resolves_to_specific_catalog_entry():

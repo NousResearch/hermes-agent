@@ -1,12 +1,12 @@
 ---
 sidebar_position: 16
 title: "Yuanbao"
-description: "Connect Hermes Agent to the Yuanbao enterprise messaging platform via WebSocket gateway"
+description: "Connect Rabbit Agent to the Yuanbao enterprise messaging platform via WebSocket gateway"
 ---
 
 # Yuanbao
 
-Connect Hermes to [Yuanbao](https://yuanbao.tencent.com/), Tencent's enterprise messaging platform. The adapter uses a WebSocket gateway for real-time message delivery and supports both direct (C2C) and group conversations.
+Connect Rabbit to [Yuanbao](https://yuanbao.tencent.com/), Tencent's enterprise messaging platform. The adapter uses a WebSocket gateway for real-time message delivery and supports both direct (C2C) and group conversations.
 
 :::info
 Yuanbao is an enterprise messaging platform primarily used within Tencent and enterprise environments. It uses WebSocket for real-time communication, HMAC-based authentication, and supports rich media including images, files, and voice messages.
@@ -16,12 +16,12 @@ Yuanbao is an enterprise messaging platform primarily used within Tencent and en
 
 - A Yuanbao account with bot creation permissions
 - Yuanbao APP_ID and APP_SECRET (from platform admin)
-- Python packages: `websockets` and `httpx`, both core Hermes dependencies
+- Python packages: `websockets` and `httpx`, both core Rabbit dependencies
 
 If these core dependencies are damaged, repair the selected environment:
 
 ```bash
-hermes pm repair
+rabbit pm repair
 ```
 
 ## Setup
@@ -37,7 +37,7 @@ hermes pm repair
 The easiest way to configure Yuanbao is through the interactive setup:
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 Select **Yuanbao** when prompted. The wizard will:
@@ -52,7 +52,7 @@ The WebSocket URL and API Domain have sensible defaults built in. You only need 
 
 ### 3. Configure Environment Variables
 
-After initial setup, verify these variables in `~/.hermes/.env`:
+After initial setup, verify these variables in `~/.rabbit/.env`:
 
 ```bash
 # Required
@@ -78,7 +78,7 @@ YUANBAO_ALLOWED_USERS=user_account_1,user_account_2
 ### 4. Start the Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 The adapter will connect to the Yuanbao WebSocket gateway, authenticate using HMAC signatures, and begin processing messages.
@@ -130,7 +130,7 @@ Use the `/sethome` command in any Yuanbao chat (DM or group) to designate it as 
 If no home channel is configured, the first user to message the bot will be automatically set as the home channel owner. If the current home channel is a group chat, the first DM will upgrade it to a direct channel.
 :::
 
-You can also set it manually in `~/.hermes/.env`:
+You can also set it manually in `~/.rabbit/.env`:
 
 ```bash
 YUANBAO_HOME_CHANNEL=direct:user_account_id
@@ -170,7 +170,7 @@ The bot responds in the same conversation thread.
 
 ### Available Commands
 
-All standard Hermes commands work on Yuanbao:
+All standard Rabbit commands work on Yuanbao:
 
 | Command | Description |
 |---------|-------------|
@@ -204,7 +204,7 @@ When you ask the bot to create or export a file, it sends the file directly to y
 1. Verify APP_ID and APP_SECRET are correct
 2. Check that the WebSocket URL is accessible
 3. Ensure the bot account has proper permissions
-4. Review gateway logs: `tail -f ~/.hermes/logs/gateway.log`
+4. Review gateway logs: `tail -f ~/.rabbit/logs/gateway.log`
 
 ### "Connection refused" error
 
@@ -244,7 +244,7 @@ When you ask the bot to create or export a file, it sends the file directly to y
 1. Check gateway logs for error patterns
 2. Increase heartbeat timeout in connection settings
 3. Ensure stable network connection to Yuanbao API
-4. Consider enabling verbose logging: `hermes gateway run -vv`
+4. Consider enabling verbose logging: `rabbit gateway run -vv`
 
 ## Access Control
 
@@ -278,7 +278,7 @@ platforms:
 
 ### Message Chunking
 
-Yuanbao has a maximum message size. Hermes automatically chunks large responses with Markdown-aware splitting (respects code fences, tables, and paragraph boundaries).
+Yuanbao has a maximum message size. Rabbit automatically chunks large responses with Markdown-aware splitting (respects code fences, tables, and paragraph boundaries).
 
 ### Connection Parameters
 
@@ -302,7 +302,7 @@ These values are currently not configurable via environment variables. They are 
 Enable debug logging to troubleshoot connection issues:
 
 ```bash
-hermes gateway run -vv
+rabbit gateway run -vv
 ```
 
 ## Integration with Other Features
@@ -330,7 +330,7 @@ Run long operations without blocking the conversation:
 Send a message from CLI to Yuanbao:
 
 ```bash
-hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
+rabbit chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ```
 
 ## Related Documentation

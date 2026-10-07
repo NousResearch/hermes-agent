@@ -18,7 +18,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient
-} from '@hermes/plugin-sdk'
+} from '@rabbit/plugin-sdk'
 import { useState } from 'react'
 
 import {

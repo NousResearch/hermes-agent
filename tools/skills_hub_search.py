@@ -1,4 +1,4 @@
-"""Skills Hub discovery: the centralized Hermes index fetch (cached, stale-
+"""Skills Hub discovery: the centralized Rabbit index fetch (cached, stale-
 fallback), the source router, and parallel/unified search across source
 adapters.
 
@@ -17,25 +17,25 @@ from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _filter_results_by_provider, _provider_filter_of
 from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust, hub
-from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
+from tools.skills_hub_official import RabbitIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
 from tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.skills_hub")
 
-HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
-HERMES_INDEX_TTL = 6 * 3600  # 6 hours
+RABBIT_INDEX_URL = "https://github.com/seven0070/Rabbit-/tree/main/website/docs/api/skills-index.json"
+RABBIT_INDEX_TTL = 6 * 3600  # 6 hours
 
 
-def _hermes_index_cache_file() -> Path:
+def _rabbit_index_cache_file() -> Path:
     from tools.skills_hub import _index_cache_dir
-    return _index_cache_dir() / "hermes-index.json"
+    return _index_cache_dir() / "rabbit-index.json"
 
 
-def _load_hermes_index() -> Optional[dict]:
+def _load_rabbit_index() -> Optional[dict]:
     """Fetch the centralized skills index (docs site, rebuilt daily), cached
-    locally for HERMES_INDEX_TTL; on any failure serve the stale cache.
+    locally for RABBIT_INDEX_TTL; on any failure serve the stale cache.
 
     Brotli is deliberately NOT negotiated: the index is tens of MB and httpx's
     streaming Brotli decoder (brotlicffi, pinned for Discord attachments) raises
@@ -44,26 +44,26 @@ def _load_hermes_index() -> Optional[dict]:
     ignore the header and return Brotli anyway.
     """
     from tools.skills_hub import _read_json_if_fresh
-    cache_file = _hermes_index_cache_file()
-    cached = _read_json_if_fresh(cache_file, HERMES_INDEX_TTL)
+    cache_file = _rabbit_index_cache_file()
+    cached = _read_json_if_fresh(cache_file, RABBIT_INDEX_TTL)
     if cached is not None:
         return cached
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):
         try:
             resp = hub()._skills_hub_http_get(
-                HERMES_INDEX_URL, timeout=15, follow_redirects=True,
+                RABBIT_INDEX_URL, timeout=15, follow_redirects=True,
                 headers={"Accept-Encoding": accept_encoding},
             )
             if resp.status_code != 200:
-                logger.debug("Hermes index fetch returned %d", resp.status_code)
+                logger.debug("Rabbit index fetch returned %d", resp.status_code)
                 return _load_stale_index_cache()
             data = resp.json()
             break
         except httpx.DecodingError as e:
-            logger.debug("Hermes index decode failed (Accept-Encoding=%s): %s", accept_encoding, e)
+            logger.debug("Rabbit index decode failed (Accept-Encoding=%s): %s", accept_encoding, e)
         except (httpx.HTTPError, json.JSONDecodeError) as e:
-            logger.debug("Hermes index fetch failed: %s", e)
+            logger.debug("Rabbit index fetch failed: %s", e)
             return _load_stale_index_cache()
     if not isinstance(data, dict) or "skills" not in data:
         return _load_stale_index_cache()
@@ -78,7 +78,7 @@ def _load_hermes_index() -> Optional[dict]:
 def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to the cache regardless of age when the network fetch fails."""
     from tools.skills_hub import _read_json_if_fresh
-    return _read_json_if_fresh(_hermes_index_cache_file(), float("inf"))
+    return _read_json_if_fresh(_rabbit_index_cache_file(), float("inf"))
 
 
 # External API sources the centralized index already covers; skipped when the
@@ -103,7 +103,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         auth = GitHubAuth()
     return [
         OptionalSkillSource(auth=auth),   # official optional skills (highest priority)
-        HermesIndexSource(auth=auth),     # centralized index (search + resolved install paths)
+        RabbitIndexSource(auth=auth),     # centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
         UrlSource(),                      # direct HTTP(S) URL to a SKILL.md
@@ -121,7 +121,7 @@ def _search_one_source(
     try:
         # These sources mix providers in one catalog. Narrow before their top-N
         # cut so another provider cannot crowd every requested match out.
-        if provider_filter and isinstance(src, (HermesIndexSource, GitHubSource)):
+        if provider_filter and isinstance(src, (RabbitIndexSource, GitHubSource)):
             return src.source_id(), src.search(query, limit=limit, provider_filter=provider_filter)
         return src.source_id(), src.search(query, limit=limit)
     except Exception as e:
@@ -140,7 +140,7 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
     """
     effective = "all" if _provider_filter_of(source_filter) else source_filter
     index_available = effective == "all" and any(
-        src.source_id() == "hermes-index" and getattr(src, "is_available", False) for src in sources
+        src.source_id() == "rabbit-index" and getattr(src, "is_available", False) for src in sources
     )
     active: List[SkillSource] = []
     for src in sources:
@@ -166,9 +166,9 @@ def _index_miss_fallback_sources(
     (``--source nvidia``): the fallback registries carry no ``extra.provider``,
     so their results would all be cut and the calls would only burn budget.
     """
-    if not query.strip() or provider_filter or not any(src.source_id() == "hermes-index" for src in active):
+    if not query.strip() or provider_filter or not any(src.source_id() == "rabbit-index" for src in active):
         return []
-    if source_counts.get("hermes-index") != 0:
+    if source_counts.get("rabbit-index") != 0:
         return []
     return [src for src in sources if src.source_id() in _INDEX_MISS_FALLBACK_IDS and src not in active]
 

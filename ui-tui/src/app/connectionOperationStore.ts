@@ -2,7 +2,7 @@ import type {
   ConnectionOperationTarget,
   ConnectionRequestPayload,
   ConnectionUpdatePayload
-} from '@hermes/shared/gateway-events'
+} from '@rabbit/shared/gateway-events'
 import { atom } from 'nanostores'
 
 import { patchOverlayState } from './overlayStore.js'

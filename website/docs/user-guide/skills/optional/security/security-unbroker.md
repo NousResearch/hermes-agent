@@ -14,7 +14,7 @@ Autonomously remove your info from data-broker sites.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/security/unbroker` |
+| Source | Optional — install with `rabbit skills install official/security/unbroker` |
 | Path | `optional-skills/security/unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
@@ -26,7 +26,7 @@ Autonomously remove your info from data-broker sites.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # unbroker
@@ -77,8 +77,8 @@ verifying re-scan.
 
 - `python` (stdlib only; no extra packages needed for the core engine).
 - **Optional upgrades** (the skill works zero-config without these; `setup --auto` turns on every
-  one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
-  Hermes already loads for its own tools are picked up without re-exporting - each one converts a
+  one it detects, reading credentials from the shell env **and from `$RABBIT_HOME/.env`** so keys
+  Rabbit already loads for its own tools are picked up without re-exporting - each one converts a
   class of human tasks into agent actions):
   - **Cloud browser (recommended default): `BROWSERBASE_API_KEY`.** `setup --auto` selects it
     whenever the key is present, and it is the intended baseline: a real residential-IP cloud
@@ -90,11 +90,11 @@ verifying re-scan.
   - Email automation, two credential-free-or-not options:
     - **Browser mode (no password): `setup --email-mode browser`.** The agent sends opt-out/CCPA
       emails and opens verification links through the operator's **logged-in webmail** using
-      `browser_*` tools. Nothing is stored. This requires Hermes to be pointed at the operator's own
+      `browser_*` tools. Nothing is stored. This requires Rabbit to be pointed at the operator's own
       logged-in browser, **NOT** a cloud browser: a headless cloud browser (Browserbase) holds no
       webmail session and is itself Cloudflare/DataDome-gated on webmail and on session-bound broker
       gates (e.g. PeopleConnect guided-mode). Drive the operator's real Chrome over CDP - launch
-      `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` (a dedicated
+      `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.rabbit/chrome-debug"` (a dedicated
       debug profile signed into the webmail once, not the Default profile) and connect the browser
       tools to `127.0.0.1:9222`. **`$PDD cdp` launches this for you** (finds Chrome/Chromium/Brave/Edge,
       starts it detached on the dedicated profile, prints the CDP endpoint; `--check` to test, `--print`
@@ -115,7 +115,7 @@ Run everything through the `terminal` tool. From this skill's directory:
 PDD="python scripts/pdd.py"
 ```
 
-The engine stores data under `$PDD_DATA_DIR` (default `$HERMES_HOME/unbroker`), written
+The engine stores data under `$PDD_DATA_DIR` (default `$RABBIT_HOME/unbroker`), written
 `0600`. Run via `terminal`, **not** `execute_code` (that sandbox scrubs env and redacts output, which
 breaks reading the dossier).
 
@@ -302,10 +302,10 @@ recording `found` and before any deletion.
   goes to the digest. The only mid-run question that's ever warranted is a missing-identity fact that
   blocks scanning (e.g. no city at all) - and that should have been collected at intake.
 - **Use `terminal`, not `execute_code`** for `pdd.py` (secret scrubbing + output redaction break it).
-- **Dossiers are plaintext by default** (JSON, `0600` under `HERMES_HOME`). For at-rest encryption run
+- **Dossiers are plaintext by default** (JSON, `0600` under `RABBIT_HOME`). For at-rest encryption run
   `$PDD setup --encryption age` - it generates a local `age` key and encrypts dossiers + ledgers (the
   audit log holds field names only and stays plaintext). It guards casual/backup/commit exposure, not
-  a full-`HERMES_HOME` read; set `PDD_AGE_IDENTITY` to a separate volume for real key separation.
+  a full-`RABBIT_HOME` read; set `PDD_AGE_IDENTITY` to a separate volume for real key separation.
   `$PDD doctor` shows whether encryption is *actually* engaged (not just whether `age` is installed).
 - **"Hidden from free search" ≠ deleted.** Only mark `confirmed_removed` after verifying the record is
   actually gone; note paid-tier retention in the report.

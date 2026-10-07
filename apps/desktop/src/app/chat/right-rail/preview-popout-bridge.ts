@@ -9,7 +9,7 @@
  * pop-out to run the live act/read and return the result.
  *
  * Transport: the same main-process IPC relay the Comment Mode handoff uses
- * (`window.hermesDesktop.windowRelay`). Packaged builds load renderers over
+ * (`window.rabbitDesktop.windowRelay`). Packaged builds load renderers over
  * `file://`, where BroadcastChannel origin semantics must not be trusted;
  * BroadcastChannel stays only as a dev/browser fallback (dev serves the
  * renderer over http, so same-origin channels work there).
@@ -25,7 +25,7 @@ import { activePreviewNav } from './preview-nav'
 import { type PreviewReadOptions, type PreviewReadResult, readActivePreview } from './preview-reader'
 import { activePreviewScriptRunner } from './preview-script-runner'
 
-const CHANNEL = 'hermes:preview-popout'
+const CHANNEL = 'rabbit:preview-popout'
 
 const ACT_TIMEOUT_MS = 20_000
 const READ_TIMEOUT_MS = 8_000
@@ -58,7 +58,7 @@ function getBus(): RelayBus | null {
     return cachedBus
   }
 
-  const desktopRelay = typeof window !== 'undefined' ? window.hermesDesktop?.windowRelay : undefined
+  const desktopRelay = typeof window !== 'undefined' ? window.rabbitDesktop?.windowRelay : undefined
 
   if (desktopRelay?.onMessage && desktopRelay.send) {
     cachedBus = {

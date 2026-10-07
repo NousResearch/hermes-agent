@@ -17,7 +17,7 @@ TDD: enforce RED-GREEN-REFACTOR, tests before code.
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/test-driven-development` |
 | Version | `1.1.0` |
-| Author | Hermes Agent (adapted from obra/superpowers) |
+| Author | adapted from obra/superpowers |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `testing`, `tdd`, `development`, `quality`, `red-green-refactor` |
@@ -26,7 +26,7 @@ TDD: enforce RED-GREEN-REFACTOR, tests before code.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Test-Driven Development (TDD)
@@ -317,7 +317,7 @@ Can't check all boxes? You skipped TDD. Start over.
 | Must mock everything | Code too coupled. Use dependency injection. |
 | Test setup huge | Extract helpers. Still complex? Simplify the design. |
 
-## Hermes Agent Integration
+## Rabbit Agent Integration
 
 ### Running Tests
 

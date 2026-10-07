@@ -14,7 +14,7 @@ description: "通过 DuckDuckGo 免费搜索网络 — 文本、新闻、图片�
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/research/duckduckgo-search` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/research/duckduckgo-search` 安装 |
 | 路径 | `optional-skills/research/duckduckgo-search` |
 | 版本 | `1.3.0` |
 | 作者 | gamedevCloudy |
@@ -26,7 +26,7 @@ description: "通过 DuckDuckGo 免费搜索网络 — 文本、新闻、图片�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # DuckDuckGo Search

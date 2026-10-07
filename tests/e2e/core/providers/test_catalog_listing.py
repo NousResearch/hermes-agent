@@ -4,11 +4,11 @@ Each runnable provider is configured at a custom ``model.base_url`` (a loopback 
 provider-unique model ids at the EXACT listing path under that base; anything else 404s). Child
 processes per row call the real product functions:
 
-* listing — ``hermes_cli.models.provider_model_ids`` (the catalog the ``/model`` picker renders)
+* listing — ``rabbit_cli.models.provider_model_ids`` (the catalog the ``/model`` picker renders)
   must query the CONFIGURED endpoint at an exact listing path under it, never the provider's
   canonical host (#120844 class): the relay's key must not be addressed to the vendor; rows that
   already do so must also render the relay's own model ids;
-* switch — ``hermes_cli.model_switch.switch_model(explicit_provider=<row>)`` must resolve to that
+* switch — ``rabbit_cli.model_switch.switch_model(explicit_provider=<row>)`` must resolve to that
   provider at its configured endpoint, not to an alias on another endpoint (#120295 class);
 * listing degradation — for the rows that already list from the configured endpoint, a 404 and a
   hanging listing must still return (bounded) without crashing and without falling back to the
@@ -63,7 +63,7 @@ CONTROL_ROWS = [r for r in ROWS if r.supports_model_listing and r.name not in LI
 
 _LIST = r"""
 import json, sys
-from hermes_cli.models import provider_model_ids
+from rabbit_cli.models import provider_model_ids
 try:
     print("RESULT=" + json.dumps({"ids": provider_model_ids(sys.argv[1], force_refresh=True)}))
 except Exception as exc:
@@ -71,8 +71,8 @@ except Exception as exc:
 """
 _SWITCH = r"""
 import json, sys
-from hermes_cli.model_switch import switch_model
-from hermes_cli.providers import normalize_provider
+from rabbit_cli.model_switch import switch_model
+from rabbit_cli.providers import normalize_provider
 r = switch_model(raw_input=sys.argv[2], current_provider="custom", current_model="x", current_base_url="",
                  current_api_key="", explicit_provider=sys.argv[1])
 print("RESULT=" + json.dumps({"ok": bool(r.success), "provider": r.target_provider, "base_url": r.base_url,

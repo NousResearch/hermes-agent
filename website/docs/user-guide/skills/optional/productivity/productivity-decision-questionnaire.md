@@ -14,10 +14,10 @@ Turn an unanswerable decision into a questionnaire doc.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/decision-questionnaire` |
+| Source | Optional — install with `rabbit skills install official/productivity/decision-questionnaire` |
 | Path | `optional-skills/productivity/decision-questionnaire` |
 | Version | `1.0.0` |
-| Author | Matt Pocock (mattpocock/skills, to-questionnaire) + Hermes Agent |
+| Author | Matt Pocock (mattpocock/skills, to-questionnaire) + Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `questionnaire`, `decision`, `async`, `stakeholder`, `discovery`, `communication` |
@@ -26,7 +26,7 @@ Turn an unanswerable decision into a questionnaire doc.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Decision Questionnaire

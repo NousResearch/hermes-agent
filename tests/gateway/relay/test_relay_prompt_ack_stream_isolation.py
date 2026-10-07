@@ -51,7 +51,7 @@ def _descriptor(**overrides):
 class FakeTransport:
     def __init__(self):
         self.frames = []
-        self._identities = [("slack", "hermes")]
+        self._identities = [("slack", "rabbit")]
 
     def descriptor_for_platform(self, platform):
         return None

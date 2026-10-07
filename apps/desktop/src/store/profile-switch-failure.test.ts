@@ -17,10 +17,10 @@ const gatewayMocks = vi.hoisted(() => {
   }
 })
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   setApiRequestProfile: vi.fn(),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {
       this.connectionState = 'closed'
@@ -47,7 +47,7 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 const { ensureGatewayProfile } = await import('./profile')
 
 function installDesktop(stub: Record<string, unknown>): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = stub
 }
 
 function descriptorFor(profile: string) {
@@ -68,7 +68,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('ensureGatewayProfile — switch failure surfaces instead of silent fallback (#81094)', () => {

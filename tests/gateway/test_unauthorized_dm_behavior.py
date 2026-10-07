@@ -93,7 +93,7 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_modern_session_mapping(
     Regression guard for the silently-dropped-LID-sender bug (#36664)."""
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     session_dir = tmp_path / "platforms" / "whatsapp" / "session"
     session_dir.mkdir(parents=True)
@@ -473,7 +473,7 @@ def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
         "    unauthorized_dm_behavior: decline\n",
         encoding="utf-8",
     )
-    with _patch("gateway.config.get_hermes_home", return_value=tmp_path):
+    with _patch("gateway.config.get_rabbit_home", return_value=tmp_path):
         config = load_gateway_config()
     assert config.unauthorized_dm_behavior == "decline"
     assert config.unauthorized_dm_decline_message == "custom text"

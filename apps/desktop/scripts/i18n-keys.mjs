@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Emit the Desktop catalog's key set for language-pack validation.
 //
-// `hermes plugins validate` checks a pack's `<lang>.desktop.yaml` keys against
+// `rabbit plugins validate` checks a pack's `<lang>.desktop.yaml` keys against
 // `locales/_keys.desktop.json` (repo root, committed). This script derives that
 // file from `src/i18n/en.ts` — every leaf's dotted path, sorted; function-
 // valued entries are keys too (a pack overrides them with a positional
 // `{0}`/`{1}` string). Run via `npm run i18n:keys` and commit the result (`--check` verifies);
-// the build never writes it — a dirty checkout would break `hermes update`.
+// the build never writes it — a dirty checkout would break `rabbit update`.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -41,12 +41,12 @@ async function loadEnglishCatalog(source) {
   mkdirSync(outdir, { recursive: true })
   const outfile = join(outdir, `en-${process.pid}.mjs`)
   const alias = {
-    '@hermes/shared/ansi': join(source, 'apps/shared/src/ansi.ts'),
-    '@hermes/shared/billing': join(source, 'apps/shared/src/billing-types.ts'),
-    '@hermes/shared/color': join(source, 'apps/shared/src/color.ts'),
-    '@hermes/shared/i18n': join(source, 'apps/shared/src/i18n.ts'),
-    '@hermes/shared/translucency': join(source, 'apps/shared/src/translucency.ts'),
-    '@hermes/shared': join(source, 'apps/shared/src/index.ts'),
+    '@rabbit/shared/ansi': join(source, 'apps/shared/src/ansi.ts'),
+    '@rabbit/shared/billing': join(source, 'apps/shared/src/billing-types.ts'),
+    '@rabbit/shared/color': join(source, 'apps/shared/src/color.ts'),
+    '@rabbit/shared/i18n': join(source, 'apps/shared/src/i18n.ts'),
+    '@rabbit/shared/translucency': join(source, 'apps/shared/src/translucency.ts'),
+    '@rabbit/shared': join(source, 'apps/shared/src/index.ts'),
     '@': join(app, 'src')
   }
   await build({

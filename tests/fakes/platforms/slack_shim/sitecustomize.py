@@ -1,19 +1,19 @@
 """Point slack_sdk (and raw ``https://slack.com/api/`` aiohttp posts) at a local Slack stand-in.
 
 slack_sdk has no base-URL environment variable, so this module is put on ``PYTHONPATH`` of the child
-``hermes gateway run`` process by the contract harness. Python imports ``sitecustomize`` at startup;
-when ``HERMES_STANDIN_SLACK_API`` is set (e.g. ``http://127.0.0.1:PORT/api/``) every Web API client
+``rabbit gateway run`` process by the contract harness. Python imports ``sitecustomize`` at startup;
+when ``RABBIT_STANDIN_SLACK_API`` is set (e.g. ``http://127.0.0.1:PORT/api/``) every Web API client
 the Slack adapter builds defaults its ``base_url`` to the stand-in, which also moves
-``apps.connections.open`` and therefore the Socket Mode websocket. Nothing in Hermes is touched: the
+``apps.connections.open`` and therefore the Socket Mode websocket. Nothing in Rabbit is touched: the
 redirect lives at the SDK/HTTP boundary, exactly where DNS would send the real traffic.
 
 Side effect: when the variable is set, slack_sdk (and aiohttp) are imported eagerly at interpreter
-startup, before Hermes runs, so the child pays that import up front even if Slack never connects.
+startup, before Rabbit runs, so the child pays that import up front even if Slack never connects.
 """
 
 import os
 
-_API = os.environ.get("HERMES_STANDIN_SLACK_API", "")
+_API = os.environ.get("RABBIT_STANDIN_SLACK_API", "")
 _REAL_API = "https://slack.com/api/"
 
 

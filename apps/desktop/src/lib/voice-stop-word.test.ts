@@ -29,8 +29,8 @@ describe('isVoiceStopCommand', () => {
     }
   })
 
-  it('matches stop commands addressed to Hermes', () => {
-    for (const phrase of ['hermes stop', 'hey hermes stop', 'hey hermes, stop', 'ok stop', 'okay stop']) {
+  it('matches stop commands addressed to Rabbit', () => {
+    for (const phrase of ['rabbit stop', 'hey rabbit stop', 'hey rabbit, stop', 'ok stop', 'okay stop']) {
       expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
@@ -49,7 +49,7 @@ describe('isVoiceStopCommand', () => {
   })
 
   it('does not match bare address words or empty input', () => {
-    for (const phrase of ['', '  ', 'hermes', 'hey hermes', 'ok', 'okay', 'hey']) {
+    for (const phrase of ['', '  ', 'rabbit', 'hey rabbit', 'ok', 'okay', 'hey']) {
       expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
@@ -65,7 +65,7 @@ describe('isVoiceStopCommand', () => {
 
     expect(isVoiceStopCommand('отбой', config)).toBe(true)
     expect(isVoiceStopCommand('Стоп!', config)).toBe(true)
-    expect(isVoiceStopCommand('hermes отбой', config)).toBe(true)
+    expect(isVoiceStopCommand('rabbit отбой', config)).toBe(true)
     expect(isVoiceStopCommand('stop the docker container', config)).toBe(false)
     // Built-in English extras are NOT active when the key is set.
     expect(isVoiceStopCommand('goodbye', config)).toBe(false)
@@ -93,7 +93,7 @@ describe('isVoiceStopCommand', () => {
 
 describe('interceptsTypedVoiceStop', () => {
   it('intercepts a typed bare stop command while the conversation is active', () => {
-    for (const text of ['stop', 'Stop.', 'never mind', 'hey hermes, stop']) {
+    for (const text of ['stop', 'Stop.', 'never mind', 'hey rabbit, stop']) {
       expect(interceptsTypedVoiceStop(true, text)).toBe(true)
     }
   })

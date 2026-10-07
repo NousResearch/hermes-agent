@@ -1,6 +1,6 @@
 """Messaging-adapter contract, Telegram leg: the REAL gateway + REAL ``plugins/platforms/telegram`` adapter.
 
-The child is ``hermes gateway run`` on a throwaway HOME; the adapter's own SDK (python-telegram-bot via ``extra.base_url``) talks to
+The child is ``rabbit gateway run`` on a throwaway HOME; the adapter's own SDK (python-telegram-bot via ``extra.base_url``) talks to
 ``tests/fakes/platforms/telegram_standin.py``, a local stand-in shaped per the platform's published
 API. Scenarios live in ``_contract.py`` and are identical for every adapter; this file only binds the
 Telegram driver and lists the scenarios that are red on main (``KNOWN``: scenario -> (the bug's failure-message

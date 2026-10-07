@@ -2,7 +2,7 @@
  * Minimal OpenAI-compatible mock inference server for E2E tests and the
  * dev:mock dev flow.
  *
- * Implements just enough of the /v1/* surface for `hermes serve` to resolve a
+ * Implements just enough of the /v1/* surface for `rabbit serve` to resolve a
  * provider, list models, and stream a canned chat completion back to the
  * desktop app — without any real LLM.
  *
@@ -288,7 +288,7 @@ const CORRECTION_SWITCH_SCRIPT: ScriptedTurn[] = [
 export const CORRECTION_SWITCH_TRIGGER = 'E2E_CORRECTION_SWITCH_TRIGGER'
 
 /**
- * Drives a real code edit followed by two finish attempts. Hermes should add
+ * Drives a real code edit followed by two finish attempts. Rabbit should add
  * its synthetic verify-on-stop continuation after each finish attempt until
  * the bounded verifier gives up. The mock's request capture proves the nudge
  * reached the model; desktop must never render it as chat content.
@@ -457,7 +457,7 @@ function includesSingleBatchClarifyTrigger(value: unknown): boolean {
  * history the mock falls through to the canned reply.
  */
 export const APPROVAL_COMMAND_TRIGGER = 'E2E_APPROVAL_COMMAND_TRIGGER'
-export const APPROVAL_COMMAND = 'rm -rf /tmp/hermes-e2e-approval-probe'
+export const APPROVAL_COMMAND = 'rm -rf /tmp/rabbit-e2e-approval-probe'
 
 const APPROVAL_COMMAND_TURN: ScriptedTurn = {
   text: '',
@@ -484,7 +484,7 @@ function includesApprovalCommandTrigger(value: unknown): boolean {
  * Per-speaker scripted line for Bot Mode group rooms. A room turn prompt opens
  * with `You are @<handle>` and quotes the user's message verbatim, so one user
  * send can script every member's reply:
- * `E2E_SAY(code-farmer)[{at}hermes Reply with B.] E2E_SAY(hermes)[B]`.
+ * `E2E_SAY(code-farmer)[{at}rabbit Reply with B.] E2E_SAY(rabbit)[B]`.
  * The script deliberately carries no literal `@` (the room's mention parser
  * would otherwise pull every scripted speaker into round one); `{at}` becomes
  * `@` in the reply. The mock answers with the bracketed text whose handle
@@ -1272,7 +1272,7 @@ export interface BackgroundReleaseHandle {
 export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
   const path = nodePath.join(
     os.tmpdir(),
-    `hermes-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    `rabbit-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   )
 
   return {
@@ -1349,22 +1349,22 @@ export const SIDEBAR_CROSS_TEXTS = {
 
 interface DevSandbox {
   root: string
-  hermesHome: string
+  rabbitHome: string
   userDataDir: string
   cleanup: () => void
 }
 
-/** Create an isolated HERMES_HOME + Electron user-data dir in the OS temp dir. */
+/** Create an isolated RABBIT_HOME + Electron user-data dir in the OS temp dir. */
 function createDevSandbox(): DevSandbox {
-  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), `hermes-dev-mock-${Date.now()}`))
-  const hermesHome = nodePath.join(root, 'hermes-home')
+  const root = fs.mkdtempSync(nodePath.join(os.tmpdir(), `rabbit-dev-mock-${Date.now()}`))
+  const rabbitHome = nodePath.join(root, 'rabbit-home')
   const userDataDir = nodePath.join(root, 'electron-user-data')
-  fs.mkdirSync(hermesHome, { recursive: true })
+  fs.mkdirSync(rabbitHome, { recursive: true })
   fs.mkdirSync(userDataDir, { recursive: true })
 
   return {
     root,
-    hermesHome,
+    rabbitHome,
     userDataDir,
     cleanup: () => {
       try {
@@ -1412,19 +1412,19 @@ async function runDevLaunch(): Promise<void> {
   console.log(`  Mock server: ${mock.url}`)
 
   const sandbox = createDevSandbox()
-  writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
-  console.log(`  HERMES_HOME: ${sandbox.hermesHome}`)
+  writeMockProviderConfig(sandbox.rabbitHome, mock.url)
+  writeEnvFile(sandbox.rabbitHome)
+  console.log(`  RABBIT_HOME: ${sandbox.rabbitHome}`)
 
   const electronBin = findElectron(repoRoot)
 
   const env: Record<string, string> = {
     ...process.env,
-    HERMES_HOME: sandbox.hermesHome,
-    HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
-    HERMES_DESKTOP_IGNORE_EXISTING: '1',
-    HERMES_DESKTOP_HERMES_ROOT: repoRoot,
-    HERMES_DESKTOP_APP_NAME: `HermesDevMock-${Date.now()}`,
+    RABBIT_HOME: sandbox.rabbitHome,
+    RABBIT_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
+    RABBIT_DESKTOP_IGNORE_EXISTING: '1',
+    RABBIT_DESKTOP_RABBIT_ROOT: repoRoot,
+    RABBIT_DESKTOP_APP_NAME: `RabbitDevMock-${Date.now()}`,
   }
 
   console.log('Launching Electron...')

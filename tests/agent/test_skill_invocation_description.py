@@ -50,7 +50,7 @@ def skills(tmp_path, monkeypatch):
     _write_bundle(bundles_dir, "demo", ["work", "clean"])
 
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setenv("RABBIT_BUNDLES_DIR", str(bundles_dir))
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache_mtime", None)
@@ -187,13 +187,13 @@ class TestGatewayAutoLoadScaffold:
         assert "_" not in AUTO_LOAD_SCAFFOLD_SQL_LIKE[:-1]
 
     def test_preview_shaping_strips_the_scaffold(self, skills):
-        from hermes_state_common import _shape_preview
+        from rabbit_state_common import _shape_preview
         message = self._auto_load_scaffold(skills, ["work"],
                                            user_text="Fix the CI gate before the release")
         assert _shape_preview(message) == "Fix the CI gate before the release"
 
     def test_long_scaffold_preview_keeps_the_request(self, skills, monkeypatch):
-        from hermes_state_common import _shape_preview
+        from rabbit_state_common import _shape_preview
         long_body = ("Long skill paragraph.\n\n" * 80) + SKILL_BODY
         _write_skill(skills, "work", body=long_body)
         message = self._auto_load_scaffold(skills, ["work"],

@@ -249,7 +249,7 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
         "  loop_watchdog_max_strikes: 12\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("gateway.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.config.get_rabbit_home", lambda: tmp_path)
 
     cfg = load_gateway_config()
     assert cfg.loop_watchdog is False

@@ -1,20 +1,20 @@
-# Tests for install.ps1's HermesHome/InstallDir separation guard (#124526).
+# Tests for install.ps1's RabbitHome/InstallDir separation guard (#124526).
 #
 # Run from a PowerShell prompt:
 #
 #   pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-store-guard.ps1
 #
-# Background: passing -HermesHome and -InstallDir as the same path (or a
-# HermesHome nested inside -InstallDir) makes the pm tool store land at
+# Background: passing -RabbitHome and -InstallDir as the same path (or a
+# RabbitHome nested inside -InstallDir) makes the pm tool store land at
 # <InstallDir>\tools, INSIDE the checkout. Two failures follow: the
 # repository stage's occupied-directory preflight refuses every retry after
-# the first run populated the folder ("exists and is not a Hermes git
+# the first run populated the folder ("exists and is not a Rabbit git
 # checkout"), and `git stash --include-untracked` would sweep the toolchain
 # into the stash. The installer now refuses the combination up front, before
-# any download, unless HERMES_RUNTIME_DIR parks the store elsewhere.
+# any download, unless RABBIT_RUNTIME_DIR parks the store elsewhere.
 #
 # HOW THIS RUNS THE CODE: by executing install.ps1 as a real subprocess with
-# crafted -HermesHome / -InstallDir arguments. -ShowResolvedPaths is a
+# crafted -RabbitHome / -InstallDir arguments. -ShowResolvedPaths is a
 # side-effect-free early exit that runs AFTER Initialize-ResolvedPaths, so
 # the guard executes exactly as during an install. The refusal is a `throw`,
 # which under -File exits the child non-zero before the JSON is printed; the
@@ -43,7 +43,7 @@ function Assert-True {
     }
 }
 
-# Run install.ps1 -ShowResolvedPaths with explicit -HermesHome/-InstallDir and
+# Run install.ps1 -ShowResolvedPaths with explicit -RabbitHome/-InstallDir and
 # capture (exit code, stdout, stderr). The call operator, not Start-Process:
 # `&` inherits this process's environment on every host, and stderr is merged
 # so Windows PowerShell 5.1's NativeCommandError records cannot fail the lane.
@@ -52,18 +52,18 @@ function Invoke-ResolvedPaths {
 
     $psExe = (Get-Process -Id $PID).Path
     $outFile = [System.IO.Path]::GetTempFileName()
-    $savedRuntimeDir = [Environment]::GetEnvironmentVariable('HERMES_RUNTIME_DIR')
-    $savedHermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
+    $savedRuntimeDir = [Environment]::GetEnvironmentVariable('RABBIT_RUNTIME_DIR')
+    $savedRabbitHome = [Environment]::GetEnvironmentVariable('RABBIT_HOME')
     try {
         if ($null -eq $savedRuntimeDir) {
-            Remove-Item Env:HERMES_RUNTIME_DIR -ErrorAction SilentlyContinue
+            Remove-Item Env:RABBIT_RUNTIME_DIR -ErrorAction SilentlyContinue
         } else {
-            $env:HERMES_RUNTIME_DIR = $savedRuntimeDir
+            $env:RABBIT_RUNTIME_DIR = $savedRuntimeDir
         }
-        if ($null -eq $savedHermesHome) {
-            Remove-Item Env:HERMES_HOME -ErrorAction SilentlyContinue
+        if ($null -eq $savedRabbitHome) {
+            Remove-Item Env:RABBIT_HOME -ErrorAction SilentlyContinue
         } else {
-            $env:HERMES_HOME = $savedHermesHome
+            $env:RABBIT_HOME = $savedRabbitHome
         }
         $callArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installScript) + $ExtraArgs + @('-ShowResolvedPaths')
         $prevEAP = $ErrorActionPreference
@@ -76,75 +76,75 @@ function Invoke-ResolvedPaths {
         }
         $exitCode = $LASTEXITCODE
         $raw = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue)
-        $stdout = ($raw | Where-Object { $_ -notlike '`[hermes`]*' }) -join "`n"
-        $stderr = ($raw | Where-Object { $_ -like '`[hermes`]*' -or $_ -match 'HermesHome|install directory|tool store' }) -join "`n"
+        $stdout = ($raw | Where-Object { $_ -notlike '`[rabbit`]*' }) -join "`n"
+        $stderr = ($raw | Where-Object { $_ -like '`[rabbit`]*' -or $_ -match 'RabbitHome|install directory|tool store' }) -join "`n"
         return @{ ExitCode = $exitCode; Stdout = $stdout; All = ($raw -join "`n") }
     } finally {
         if ($null -eq $savedRuntimeDir) {
-            Remove-Item Env:HERMES_RUNTIME_DIR -ErrorAction SilentlyContinue
+            Remove-Item Env:RABBIT_RUNTIME_DIR -ErrorAction SilentlyContinue
         } else {
-            $env:HERMES_RUNTIME_DIR = $savedRuntimeDir
+            $env:RABBIT_RUNTIME_DIR = $savedRuntimeDir
         }
-        if ($null -eq $savedHermesHome) {
-            Remove-Item Env:HERMES_HOME -ErrorAction SilentlyContinue
+        if ($null -eq $savedRabbitHome) {
+            Remove-Item Env:RABBIT_HOME -ErrorAction SilentlyContinue
         } else {
-            $env:HERMES_HOME = $savedHermesHome
+            $env:RABBIT_HOME = $savedRabbitHome
         }
         Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
     }
 }
 
-$base = Join-Path ([System.IO.Path]::GetTempPath()) ("hermes-store-guard-" + [guid]::NewGuid())
+$base = Join-Path ([System.IO.Path]::GetTempPath()) ("rabbit-store-guard-" + [guid]::NewGuid())
 $home1 = Join-Path $base 'home1'
 $dir1 = Join-Path $base 'checkout1'
-$insideHome = Join-Path $base 'checkout2'      # HermesHome nested inside InstallDir
+$insideHome = Join-Path $base 'checkout2'      # RabbitHome nested inside InstallDir
 $insideDir = Join-Path $base 'checkout2'       # the InstallDir that contains it
 
 try {
     # 1. Same path for both: refused, before any download.
-    $r = Invoke-ResolvedPaths @('-HermesHome', $home1, '-InstallDir', $home1)
-    Assert-True ($r.ExitCode -ne 0) 'same HermesHome and InstallDir is refused (non-zero exit)'
+    $r = Invoke-ResolvedPaths @('-RabbitHome', $home1, '-InstallDir', $home1)
+    Assert-True ($r.ExitCode -ne 0) 'same RabbitHome and InstallDir is refused (non-zero exit)'
     Assert-True ($r.All -match 'tool store would land inside the checkout') 'refusal names the tool-store cause'
 
-    # 2. HermesHome nested inside InstallDir: refused for the same reason.
-    $r = Invoke-ResolvedPaths @('-HermesHome', $insideHome, '-InstallDir', $insideDir)
-    Assert-True ($r.ExitCode -ne 0) 'HermesHome inside InstallDir is refused (non-zero exit)'
+    # 2. RabbitHome nested inside InstallDir: refused for the same reason.
+    $r = Invoke-ResolvedPaths @('-RabbitHome', $insideHome, '-InstallDir', $insideDir)
+    Assert-True ($r.ExitCode -ne 0) 'RabbitHome inside InstallDir is refused (non-zero exit)'
 
     # 3. Distinct paths: accepted, and the caller's paths survive verbatim.
-    $r = Invoke-ResolvedPaths @('-HermesHome', $home1, '-InstallDir', $dir1)
+    $r = Invoke-ResolvedPaths @('-RabbitHome', $home1, '-InstallDir', $dir1)
     Assert-True ($r.ExitCode -eq 0) "distinct paths are accepted (exit $($r.ExitCode))"
     $paths = $null
     try { $paths = $r.Stdout | ConvertFrom-Json } catch { $paths = $null }
     Assert-True ($null -ne $paths) 'accepted run prints the resolved-path JSON'
     if ($paths) {
-        Assert-True ("$($paths.hermes_home)" -eq $home1) 'hermes_home echoes the requested -HermesHome'
+        Assert-True ("$($paths.rabbit_home)" -eq $home1) 'rabbit_home echoes the requested -RabbitHome'
         Assert-True ("$($paths.install_dir)" -eq $dir1) 'install_dir echoes the requested -InstallDir'
     }
 
-    # 4. HERMES_RUNTIME_DIR outside the checkout lifts the refusal: the store
+    # 4. RABBIT_RUNTIME_DIR outside the checkout lifts the refusal: the store
     #    no longer lands inside InstallDir, so the configuration is legitimate.
     $storeElsewhere = Join-Path $base 'store'
-    $saved = $env:HERMES_RUNTIME_DIR
+    $saved = $env:RABBIT_RUNTIME_DIR
     try {
-        $env:HERMES_RUNTIME_DIR = $storeElsewhere
-        $r = Invoke-ResolvedPaths @('-HermesHome', $home1, '-InstallDir', $home1)
-        Assert-True ($r.ExitCode -eq 0) "HERMES_RUNTIME_DIR outside lifts the refusal (exit $($r.ExitCode))"
+        $env:RABBIT_RUNTIME_DIR = $storeElsewhere
+        $r = Invoke-ResolvedPaths @('-RabbitHome', $home1, '-InstallDir', $home1)
+        Assert-True ($r.ExitCode -eq 0) "RABBIT_RUNTIME_DIR outside lifts the refusal (exit $($r.ExitCode))"
     } finally {
         if ($null -eq $saved) {
-            Remove-Item Env:HERMES_RUNTIME_DIR -ErrorAction SilentlyContinue
+            Remove-Item Env:RABBIT_RUNTIME_DIR -ErrorAction SilentlyContinue
         } else {
-            $env:HERMES_RUNTIME_DIR = $saved
+            $env:RABBIT_RUNTIME_DIR = $saved
         }
     }
 
     # 5. Default derivation never trips the guard: InstallDir defaults to
-    #    <HermesHome>\hermes-agent, which is a child, not a parent.
-    $r = Invoke-ResolvedPaths @('-HermesHome', $home1)
-    Assert-True ($r.ExitCode -eq 0) "default -InstallDir under -HermesHome stays accepted (exit $($r.ExitCode))"
+    #    <RabbitHome>\rabbit-agent, which is a child, not a parent.
+    $r = Invoke-ResolvedPaths @('-RabbitHome', $home1)
+    Assert-True ($r.ExitCode -eq 0) "default -InstallDir under -RabbitHome stays accepted (exit $($r.ExitCode))"
     $paths = $null
     try { $paths = $r.Stdout | ConvertFrom-Json } catch { $paths = $null }
     if ($paths) {
-        Assert-True ("$($paths.install_dir)" -eq (Join-Path $home1 'hermes-agent')) 'default install_dir derives under hermes_home'
+        Assert-True ("$($paths.install_dir)" -eq (Join-Path $home1 'rabbit-agent')) 'default install_dir derives under rabbit_home'
     }
 } finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
@@ -154,5 +154,5 @@ if ($failures -gt 0) {
     Write-Host "$failures assertion(s) failed." -ForegroundColor Red
     exit 1
 }
-Write-Host 'HermesHome/InstallDir separation guard tests passed.' -ForegroundColor Green
+Write-Host 'RabbitHome/InstallDir separation guard tests passed.' -ForegroundColor Green
 exit 0

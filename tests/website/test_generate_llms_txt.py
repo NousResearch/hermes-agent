@@ -1,7 +1,7 @@
-"""`llms.txt` is how an LLM learns what Hermes can do.
+"""`llms.txt` is how an LLM learns what Rabbit can do.
 
-It is the index every model reads when pointed at our docs — including Hermes
-itself, whose `hermes-agent` skill routes unknown-feature questions there.
+It is the index every model reads when pointed at our docs — including Rabbit
+itself, whose `rabbit-agent` skill routes unknown-feature questions there.
 `website/` is never packaged, so there is no shipped copy to fall back on.
 
 The index used to be a hand-written list of page paths, and it rotted to 53%

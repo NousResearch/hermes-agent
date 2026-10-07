@@ -1,6 +1,6 @@
 """Regression test for the jobs.json cross-process lock.
 
-Background: ``hermes cron pause`` runs in its own process (CLI → cronjob tool →
+Background: ``rabbit cron pause`` runs in its own process (CLI → cronjob tool →
 ``pause_job`` → ``update_job`` → ``save_jobs``), entirely separate from the
 gateway process that also writes ``jobs.json`` (``mark_job_run`` /
 ``advance_next_run`` / due-fast-forward). The module's ``threading.Lock`` only

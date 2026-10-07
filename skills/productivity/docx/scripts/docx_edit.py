@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MIT License. Part of the Hermes docx skill.
+# MIT License. Part of the Rabbit docx skill.
 """Edit an existing .docx in place (or to a new file).
 
 Subcommands:

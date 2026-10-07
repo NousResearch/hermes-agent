@@ -17,21 +17,20 @@ description: "将编码任务委托给 Claude Code CLI（功能、PR）"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/autonomous-ai-agents/claude-code` |
 | 版本 | `2.2.0` |
-| 作者 | Hermes Agent + Teknium |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Coding-Agent`, `Claude`, `Anthropic`, `Code-Review`, `Refactoring`, `PTY`, `Automation` |
-| 相关 skill | [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`opencode`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
+| 相关 skill | [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent), [`opencode`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
-# Claude Code — Hermes 编排指南
+# Claude Code — Rabbit 编排指南
 
-通过 Hermes 终端将编码任务委托给 [Claude Code](https://code.claude.com/docs/en/cli-reference)（Anthropic 的自主编码 agent CLI）。Claude Code v2.x 可以自主读取文件、编写代码、运行 shell 命令、派生子 agent 并管理 git 工作流。
+通过 Rabbit 终端将编码任务委托给 [Claude Code](https://code.claude.com/docs/en/cli-reference)（Anthropic 的自主编码 agent CLI）。Claude Code v2.x 可以自主读取文件、编写代码、运行 shell 命令、派生子 agent 并管理 git 工作流。
 
 ## 前置条件
 
@@ -46,7 +45,7 @@ description: "将编码任务委托给 Claude Code CLI（功能、PR）"
 
 ## 两种编排模式
 
-Hermes 以两种根本不同的方式与 Claude Code 交互。请根据任务选择合适的模式。
+Rabbit 以两种根本不同的方式与 Claude Code 交互。请根据任务选择合适的模式。
 
 ### 模式一：Print 模式（`-p`）— 非交互式（大多数任务的首选）
 
@@ -736,7 +735,7 @@ terminal(command="tmux capture-pane -t dev -p -S -10")
 
 ## 陷阱与注意事项
 
-1. **交互模式需要 tmux** — Claude Code 是完整的 TUI 应用。在 Hermes 终端中单独使用 `pty=true` 可以工作，但 tmux 提供了 `capture-pane` 用于监控和 `send-keys` 用于输入，这对编排至关重要。
+1. **交互模式需要 tmux** — Claude Code 是完整的 TUI 应用。在 Rabbit 终端中单独使用 `pty=true` 可以工作，但 tmux 提供了 `capture-pane` 用于监控和 `send-keys` 用于输入，这对编排至关重要。
 2. **`--dangerously-skip-permissions` 对话框默认为"No, exit"** — 必须按 Down 再按 Enter 才能接受。Print 模式（`-p`）完全跳过此步骤。
 3. **`--max-budget-usd` 最低约为 $0.05** — 仅系统 prompt 缓存创建就需要这么多。设置更低会立即报错。
 4. **`--max-turns` 仅限 print 模式** — 在交互会话中被忽略。
@@ -749,7 +748,7 @@ terminal(command="tmux capture-pane -t dev -p -S -10")
 11. **`--bare` 跳过 OAuth** — 需要 `ANTHROPIC_API_KEY` 环境变量或设置中的 `apiKeyHelper`。
 12. **上下文退化是真实存在的** — 上下文窗口使用率超过 70% 时，AI 输出质量会明显下降。使用 `/context` 监控并主动使用 `/compact`。
 
-## Hermes Agent 规则
+## Rabbit Agent 规则
 
 1. **单一任务优先使用 print 模式（`-p`）** — 更简洁，无需处理对话框，输出结构化
 2. **多轮交互工作使用 tmux** — 编排 TUI 的唯一可靠方式

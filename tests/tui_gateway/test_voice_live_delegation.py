@@ -1,12 +1,12 @@
-"""GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Hermes.
+"""GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Rabbit.
 
 The live voice model owns the microphone and speaker and has no tools; every real
-request is delegated to Hermes as a normal turn on the open session. Two contracts
+request is delegated to Rabbit as a normal turn on the open session. Two contracts
 matter and are pinned here:
 
 * the gateway never hands the OpenAI key to the renderer — ``POST /v1/live/sessions``
   is performed server-side from the renderer's SDP offer, with the session pinned to
-  client delegation so Hermes (any model) is the backend;
+  client delegation so Rabbit (any model) is the backend;
 * a turn submitted from the live voice surface carries the spoken-delegation note on
   the MODEL INPUT only (the byte-stable system prompt is untouched), exactly like the
   HUD note it sits beside.
@@ -39,7 +39,7 @@ def _session(**extra):
 class TestSessionCreation:
     def test_client_delegation_and_key_stay_server_side(self, monkeypatch):
         """Whatever the renderer sends, the vendor request pins ``delegation.type == client``
-        (Hermes is the backend) and authenticates with the resolved key; the client only ever
+        (Rabbit is the backend) and authenticates with the resolved key; the client only ever
         sees the vendor answer."""
         captured = {}
 

@@ -1,14 +1,14 @@
 """Cron: import path of the restart-safe external worker.
 
 The worker is spawned as ``sys.executable -m cron.scheduler``. Its entry module is
-``cron.scheduler``, not ``hermes_cli.main``, so nothing bootstraps the gateway's checkout
+``cron.scheduler``, not ``rabbit_cli.main``, so nothing bootstraps the gateway's checkout
 onto its ``sys.path``; historically it imported ``cron`` only through the implicit ``-m``
 cwd entry. That entry is gone under ``PYTHONSAFEPATH`` and useless when the venv's
 editable install maps a moved/deleted checkout -- the worker then dies with
 "No module named 'cron'" before its ownership ack (#112729, hypothesised cause).
 
-The shared subprocess sanitizer strips Hermes-owned PYTHONPATH entries because user
-children must not see our tree. This child IS Hermes, so the pin is applied *after* the
+The shared subprocess sanitizer strips Rabbit-owned PYTHONPATH entries because user
+children must not see our tree. This child IS Rabbit, so the pin is applied *after* the
 env is built, on the sanitized env. On a self-managed (shell-installer / PM) install the
 sanitizer's drop of the runtime site-packages cannot stand this time: the worker inherits
 this process's interpreter, which is PM's store Python and owns no third-party
@@ -61,7 +61,7 @@ def _committed_dependency_site_packages(project_root: Path) -> Path | None:
     return selected if selected.is_dir() else None
 
 
-def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
+def pin_rabbit_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     """Prepend ``repo_root`` -- and, when this runner has one, the committed dependency
     generation's ``site-packages`` -- to the worker env's own PYTHONPATH (never
     ``os.environ``'s).

@@ -1,7 +1,7 @@
 {
   "openrpc": "1.3.2",
   "info": {
-    "title": "Hermes TUI/Desktop gateway",
+    "title": "Rabbit TUI/Desktop gateway",
     "version": "1",
     "description": "Generated from tui_gateway/contracts by scripts/gen_gateway_contracts.py."
   },
@@ -75,96 +75,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ApprovalRespondResult"
-        }
-      }
-    },
-    {
-      "name": "billing.auto_reload",
-      "summary": "Enable/disable auto top-up with its threshold and reload amount (billing:manage).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BillingAutoReloadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingMutationResult"
-        }
-      }
-    },
-    {
-      "name": "billing.charge",
-      "summary": "Start a one-off top-up charge (billing:manage, idempotent).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BillingChargeParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingChargeResult"
-        }
-      }
-    },
-    {
-      "name": "billing.charge_status",
-      "summary": "Poll one charge by id.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BillingChargeStatusParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingChargeStatusResult"
-        }
-      }
-    },
-    {
-      "name": "billing.state",
-      "summary": "Read-only billing view (no scope); the Nous free tier is answered locally without a portal call.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingStateResult"
-        }
-      }
-    },
-    {
-      "name": "billing.step_up",
-      "summary": "Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/BillingStepUpParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingStepUpResult"
         }
       }
     },
@@ -350,7 +260,7 @@
     },
     {
       "name": "cli.exec",
-      "summary": "Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal.",
+      "summary": "Run ``rabbit <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal.",
       "params": [
         {
           "name": "params",
@@ -674,7 +584,7 @@
     },
     {
       "name": "connectors.operation.wake",
-      "summary": "The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick.",
+      "summary": "The browser leg came back (rabbit://connections/done): read the accounts now, not at the next tick.",
       "params": [
         {
           "name": "params",
@@ -795,24 +705,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/DelegationStatusResult"
-        }
-      }
-    },
-    {
-      "name": "diagnostics.share_nous",
-      "summary": "Upload a force-redacted debug bundle to Nous-internal diagnostics storage.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/DiagnosticsShareNousParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/DiagnosticsShareNousResult"
         }
       }
     },
@@ -993,60 +885,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/FileAttachResult"
-        }
-      }
-    },
-    {
-      "name": "free_tier.ack_notice",
-      "summary": "Mark the one-time availability notice as shown on the free-tier identity.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/FreeTierAckNoticeResult"
-        }
-      }
-    },
-    {
-      "name": "free_tier.provision",
-      "summary": "Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/FreeTierProvisionResult"
-        }
-      }
-    },
-    {
-      "name": "free_tier.status",
-      "summary": "Pure read of the focused profile's free-tier identity state (no network, no side effects).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/FreeTierStatusResult"
         }
       }
     },
@@ -2888,7 +2726,7 @@
     },
     {
       "name": "reload.env",
-      "summary": "Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new.",
+      "summary": "Re-read ~/.rabbit/.env (CLI /reload parity); built agents keep their pool until /new.",
       "params": [
         {
           "name": "params",
@@ -3446,7 +3284,7 @@
     },
     {
       "name": "session.save",
-      "summary": "Export the transcript to ~/.hermes/sessions/saved (classic /save).",
+      "summary": "Export the transcript to ~/.rabbit/sessions/saved (classic /save).",
       "params": [
         {
           "name": "params",
@@ -3554,7 +3392,7 @@
     },
     {
       "name": "session.usage",
-      "summary": "Token / context / cost counters for the session (+ Nous credit lines when available).",
+      "summary": "Token / context / cost counters for the session (+ hosted credit lines when available).",
       "params": [
         {
           "name": "params",
@@ -3716,7 +3554,7 @@
     },
     {
       "name": "shared_metrics.set",
-      "summary": "Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows.",
+      "summary": "Write the shared-metrics collection opt-in (a legacy ``send`` key is accepted and ignored).",
       "params": [
         {
           "name": "params",
@@ -3770,7 +3608,7 @@
     },
     {
       "name": "shared_metrics.status",
-      "summary": "Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).",
+      "summary": "Pure read of the focused profile's shared-metrics collection opt-in (answered or not).",
       "params": [
         {
           "name": "params",
@@ -4003,96 +3841,6 @@
       }
     },
     {
-      "name": "subscription.change",
-      "summary": "Schedule a downgrade / same-price change or a period-end cancellation.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/SubscriptionChangeParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingPendingChangeResult"
-        }
-      }
-    },
-    {
-      "name": "subscription.preview",
-      "summary": "Chargeless quote of what a plan change would do (billing:manage).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/SubscriptionPreviewParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/SubscriptionPreviewResult"
-        }
-      }
-    },
-    {
-      "name": "subscription.resume",
-      "summary": "Clear a scheduled downgrade / cancellation (re-enables recurring spend).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/BillingPendingChangeResult"
-        }
-      }
-    },
-    {
-      "name": "subscription.state",
-      "summary": "Current plan, tier catalog and usage for the picker; fail-open when logged out.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/SubscriptionStateResult"
-        }
-      }
-    },
-    {
-      "name": "subscription.upgrade",
-      "summary": "Prorate, charge and flip the plan (billing:manage, idempotent).",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/SubscriptionUpgradeParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/SubscriptionUpgradeResult"
-        }
-      }
-    },
-    {
       "name": "system.battery",
       "summary": "Host battery for the status bar; always resolves, ``available: false`` when unreadable.",
       "params": [
@@ -4197,24 +3945,6 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ToolsetsListResult"
-        }
-      }
-    },
-    {
-      "name": "usage.bars",
-      "summary": "Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfileParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/UsageModel"
         }
       }
     },
@@ -5407,15 +5137,6 @@
         "title": "AutoContinue",
         "type": "object"
       },
-      "AutoReloadCardKind": {
-        "enum": [
-          "canonical",
-          "distinct",
-          "none"
-        ],
-        "title": "AutoReloadCardKind",
-        "type": "string"
-      },
       "BatteryCategory": {
         "description": "``agent/battery.py::battery_category`` colour bucket.",
         "enum": [
@@ -5427,169 +5148,6 @@
         ],
         "title": "BatteryCategory",
         "type": "string"
-      },
-      "BillingAutoReload": {
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "threshold_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Threshold Usd"
-          },
-          "threshold_display": {
-            "title": "Threshold Display",
-            "type": "string"
-          },
-          "reload_to_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reload To Usd"
-          },
-          "reload_to_display": {
-            "title": "Reload To Display",
-            "type": "string"
-          },
-          "card": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BillingAutoReloadCard"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "required": [
-          "enabled",
-          "threshold_display",
-          "reload_to_display"
-        ],
-        "title": "BillingAutoReload",
-        "type": "object"
-      },
-      "BillingAutoReloadCard": {
-        "additionalProperties": false,
-        "description": "Only ``distinct`` carries the payment-method identity.",
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/AutoReloadCardKind"
-          },
-          "payment_method_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payment Method Id"
-          },
-          "brand": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Brand"
-          },
-          "last4": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Last4"
-          }
-        },
-        "required": [
-          "kind"
-        ],
-        "title": "BillingAutoReloadCard",
-        "type": "object"
-      },
-      "BillingAutoReloadParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "enabled": {
-            "default": false,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "threshold": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Threshold"
-          },
-          "top_up_amount": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Top Up Amount"
-          }
-        },
-        "title": "BillingAutoReloadParams",
-        "type": "object"
       },
       "BillingBlock": {
         "additionalProperties": false,
@@ -5618,10 +5176,6 @@
             ],
             "title": "Billing Url"
           },
-          "is_nous": {
-            "title": "Is Nous",
-            "type": "boolean"
-          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -5644,1260 +5198,9 @@
           "provider_label",
           "model",
           "billing_url",
-          "is_nous",
           "message"
         ],
         "title": "BillingBlock",
-        "type": "object"
-      },
-      "BillingCardInfo": {
-        "additionalProperties": false,
-        "properties": {
-          "brand": {
-            "title": "Brand",
-            "type": "string"
-          },
-          "last4": {
-            "title": "Last4",
-            "type": "string"
-          },
-          "masked": {
-            "title": "Masked",
-            "type": "string"
-          },
-          "display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Display"
-          },
-          "resolved_via": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Resolved Via"
-          }
-        },
-        "required": [
-          "brand",
-          "last4",
-          "masked"
-        ],
-        "title": "BillingCardInfo",
-        "type": "object"
-      },
-      "BillingChargeParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "amount_usd": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Amount Usd"
-          },
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Idempotency Key"
-          }
-        },
-        "title": "BillingChargeParams",
-        "type": "object"
-      },
-      "BillingChargeResult": {
-        "additionalProperties": false,
-        "description": "``202 {chargeId}`` \u2014 money is not confirmed yet; poll ``billing.charge_status``.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          },
-          "charge_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Charge Id"
-          },
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Idempotency Key"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "BillingChargeResult",
-        "type": "object"
-      },
-      "BillingChargeStatusParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "charge_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Charge Id"
-          }
-        },
-        "title": "BillingChargeStatusParams",
-        "type": "object"
-      },
-      "BillingChargeStatusResult": {
-        "additionalProperties": false,
-        "description": "Single status read (pending | settled | failed); the caller drives the poll cadence.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Status"
-          },
-          "amount_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Amount Usd"
-          },
-          "settled_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Settled At"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "BillingChargeStatusResult",
-        "type": "object"
-      },
-      "BillingMonthlyCap": {
-        "additionalProperties": false,
-        "properties": {
-          "limit_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Limit Usd"
-          },
-          "limit_display": {
-            "title": "Limit Display",
-            "type": "string"
-          },
-          "spent_this_month_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Spent This Month Usd"
-          },
-          "spent_display": {
-            "title": "Spent Display",
-            "type": "string"
-          },
-          "is_default_ceiling": {
-            "title": "Is Default Ceiling",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "limit_display",
-          "spent_display",
-          "is_default_ceiling"
-        ],
-        "title": "BillingMonthlyCap",
-        "type": "object"
-      },
-      "BillingMutationResult": {
-        "additionalProperties": false,
-        "description": "A write with no success payload beyond ``ok``.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "BillingMutationResult",
-        "type": "object"
-      },
-      "BillingPaymentMethod": {
-        "additionalProperties": false,
-        "description": "``_serialize_payment_method``: each kind emits only its own fields (a ``card`` never carries\n``email``; ``unknown`` carries what the server called it in ``raw_kind``).",
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/PaymentMethodKind"
-          },
-          "brand": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Brand"
-          },
-          "last4": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Last4"
-          },
-          "wallet": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Wallet"
-          },
-          "email": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Email"
-          },
-          "raw_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Raw Kind"
-          },
-          "resolved_via": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Resolved Via"
-          }
-        },
-        "required": [
-          "kind"
-        ],
-        "title": "BillingPaymentMethod",
-        "type": "object"
-      },
-      "BillingPendingChangeResult": {
-        "additionalProperties": false,
-        "description": "``_billing_pending_change``: ``message`` + the raw NAS body in ``payload`` on success.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "BillingPendingChangeResult",
-        "type": "object"
-      },
-      "BillingStateResult": {
-        "additionalProperties": false,
-        "description": "``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only\n``ok / logged_in / free_tier_account / error``, so everything else is optional.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "logged_in": {
-            "title": "Logged In",
-            "type": "boolean"
-          },
-          "free_tier_account": {
-            "default": false,
-            "title": "Free Tier Account",
-            "type": "boolean"
-          },
-          "free_tier_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Model"
-          },
-          "org_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Org Name"
-          },
-          "org_slug": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Org Slug"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
-          },
-          "is_admin": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Is Admin"
-          },
-          "can_change_plan": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Can Change Plan"
-          },
-          "can_charge": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Can Charge"
-          },
-          "balance_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Balance Usd"
-          },
-          "balance_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Balance Display"
-          },
-          "cli_billing_enabled": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cli Billing Enabled"
-          },
-          "charge_presets": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Charge Presets"
-          },
-          "charge_presets_display": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Charge Presets Display"
-          },
-          "min_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Min Usd"
-          },
-          "max_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Max Usd"
-          },
-          "card": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BillingCardInfo"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "payment_method": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BillingPaymentMethod"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "monthly_cap": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BillingMonthlyCap"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "auto_reload": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/BillingAutoReload"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/UsageModel"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "required": [
-          "ok",
-          "logged_in"
-        ],
-        "title": "BillingStateResult",
-        "type": "object"
-      },
-      "BillingStepUpParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Session Id"
-          }
-        },
-        "title": "BillingStepUpParams",
-        "type": "object"
-      },
-      "BillingStepUpResult": {
-        "additionalProperties": false,
-        "description": "``granted`` false when the server downscopes (also on every error envelope).",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          },
-          "granted": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Granted"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "BillingStepUpResult",
-        "type": "object"
-      },
-      "BillingStepUpVerificationPayload": {
-        "additionalProperties": false,
-        "description": "``methods_session`` billing.step_up on_verification.",
-        "properties": {
-          "verification_url": {
-            "title": "Verification Url",
-            "type": "string"
-          },
-          "user_code": {
-            "title": "User Code",
-            "type": "string"
-          }
-        },
-        "required": [
-          "verification_url",
-          "user_code"
-        ],
-        "title": "BillingStepUpVerificationPayload",
         "type": "object"
       },
       "BotRelayDeliverParams": {
@@ -7531,7 +5834,7 @@
         "type": "object"
       },
       "CatalogAppState": {
-        "description": "The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration.",
+        "description": "The desktop app a catalog plugin drives, from its ``rabbit_platform`` declaration.",
         "enum": [
           "present",
           "missing_app",
@@ -8738,7 +7041,7 @@
       },
       "ConfigProviderRef": {
         "additionalProperties": true,
-        "description": "``hermes_cli/models.py::list_available_providers`` row.",
+        "description": "``rabbit_cli/models.py::list_available_providers`` row.",
         "properties": {
           "id": {
             "title": "Id",
@@ -11999,140 +10302,6 @@
         "title": "CronRemovedJob",
         "type": "object"
       },
-      "CurrentSubscription": {
-        "additionalProperties": false,
-        "properties": {
-          "tier_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tier Id"
-          },
-          "tier_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tier Name"
-          },
-          "monthly_credits": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monthly Credits"
-          },
-          "credits_remaining": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Credits Remaining"
-          },
-          "cycle_ends_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cycle Ends At"
-          },
-          "pending_downgrade_tier_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pending Downgrade Tier Name"
-          },
-          "pending_downgrade_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pending Downgrade At"
-          },
-          "pending_downgrade_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pending Downgrade Display"
-          },
-          "cancel_at_period_end": {
-            "title": "Cancel At Period End",
-            "type": "boolean"
-          },
-          "cancellation_effective_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cancellation Effective At"
-          },
-          "cancellation_effective_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Cancellation Effective Display"
-          }
-        },
-        "required": [
-          "cancel_at_period_end"
-        ],
-        "title": "CurrentSubscription",
-        "type": "object"
-      },
       "DelegationPauseParams": {
         "additionalProperties": false,
         "properties": {
@@ -12201,115 +10370,6 @@
           "max_concurrent_children"
         ],
         "title": "DelegationStatusResult",
-        "type": "object"
-      },
-      "DiagnosticsShareNousParams": {
-        "additionalProperties": false,
-        "properties": {
-          "error_context": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error Context"
-          },
-          "extra_files": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Extra Files"
-          },
-          "log_lines": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Log Lines"
-          }
-        },
-        "title": "DiagnosticsShareNousParams",
-        "type": "object"
-      },
-      "DiagnosticsShareNousResult": {
-        "additionalProperties": false,
-        "description": "Structured envelope: ``ok=False`` + ``error`` renders inline instead of failing the RPC.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "view_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "View Url"
-          },
-          "upload_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Upload Id"
-          },
-          "expires_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Expires At"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "DiagnosticsShareNousResult",
         "type": "object"
       },
       "DiscoveredRepo": {
@@ -13849,7 +11909,7 @@
       },
       "ForeignSessionRow": {
         "additionalProperties": false,
-        "description": "``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
+        "description": "``rabbit_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
         "properties": {
           "id": {
             "title": "Id",
@@ -13930,175 +11990,6 @@
         "title": "ForeignTurn",
         "type": "object"
       },
-      "FreeTierAckNoticeResult": {
-        "additionalProperties": false,
-        "properties": {
-          "acked": {
-            "title": "Acked",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "acked"
-        ],
-        "title": "FreeTierAckNoticeResult",
-        "type": "object"
-      },
-      "FreeTierProvisionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "has_guest": {
-            "title": "Has Guest",
-            "type": "boolean"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error Code"
-          },
-          "retryable": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retryable"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          }
-        },
-        "required": [
-          "has_guest",
-          "enabled"
-        ],
-        "title": "FreeTierProvisionResult",
-        "type": "object"
-      },
-      "FreeTierStatusResult": {
-        "additionalProperties": false,
-        "description": "``available`` = an identity exists AND the tier is on; whether inference runs on it is\n``setup.runtime_check.free_tier_route``'s question.",
-        "properties": {
-          "has_guest": {
-            "title": "Has Guest",
-            "type": "boolean"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "available": {
-            "title": "Available",
-            "type": "boolean"
-          },
-          "notice_pending": {
-            "title": "Notice Pending",
-            "type": "boolean"
-          },
-          "model": {
-            "title": "Model",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error Code"
-          },
-          "retryable": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retryable"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          }
-        },
-        "required": [
-          "has_guest",
-          "enabled",
-          "available",
-          "notice_pending",
-          "model",
-          "label"
-        ],
-        "title": "FreeTierStatusResult",
-        "type": "object"
-      },
       "GatewayCapabilitiesResult": {
         "additionalProperties": false,
         "properties": {
@@ -14151,7 +12042,7 @@
       },
       "GoalContractSnapshot": {
         "additionalProperties": false,
-        "description": "``hermes_cli/goals.py::GoalContract.to_dict``.",
+        "description": "``rabbit_cli/goals.py::GoalContract.to_dict``.",
         "properties": {
           "outcome": {
             "default": "",
@@ -18685,7 +16576,7 @@
       },
       "MessageReaction": {
         "additionalProperties": true,
-        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "description": "One persisted reaction row (``rabbit_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
         "properties": {
           "emoji": {
             "title": "Emoji",
@@ -18889,7 +16780,7 @@
       },
       "ModelCapabilities": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_capabilities``.",
+        "description": "``rabbit_cli/inventory.py::_apply_capabilities``.",
         "properties": {
           "fast": {
             "title": "Fast",
@@ -18976,7 +16867,7 @@
       },
       "ModelOptionProvider": {
         "additionalProperties": true,
-        "description": "One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field\nthe builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path).",
+        "description": "One ``rabbit_cli/inventory.py::build_models_payload`` provider row (the union of every field\nthe builder sets; ``pricing_pending`` marks the cached-only path).",
         "properties": {
           "slug": {
             "title": "Slug",
@@ -19173,42 +17064,6 @@
             "default": null,
             "title": "Pricing Pending"
           },
-          "free_tier": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier"
-          },
-          "free_tier_pending": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Pending"
-          },
-          "free_tier_row": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Row"
-          },
           "unavailable_models": {
             "anyOf": [
               {
@@ -19307,7 +17162,7 @@
       },
       "ModelPricing": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
+        "description": "``rabbit_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are hosted-portal-only.",
         "properties": {
           "input": {
             "title": "Input",
@@ -19846,15 +17701,6 @@
         ],
         "title": "PasteCollapseResult",
         "type": "object"
-      },
-      "PaymentMethodKind": {
-        "enum": [
-          "card",
-          "link",
-          "unknown"
-        ],
-        "title": "PaymentMethodKind",
-        "type": "string"
       },
       "PdfAttachParams": {
         "additionalProperties": false,
@@ -21823,7 +19669,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``rabbit_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
         "properties": {
           "name": {
             "title": "Name",
@@ -21979,7 +19825,7 @@
         "enum": [
           "connected",
           "app_not_running",
-          "hermes_not_connected",
+          "rabbit_not_connected",
           "endpoint_unavailable",
           "no_interactive_session",
           "version_too_old",
@@ -21992,7 +19838,7 @@
       },
       "PluginSettingField": {
         "additionalProperties": false,
-        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
+        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``rabbit_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
         "properties": {
           "key": {
             "title": "Key",
@@ -22278,7 +20124,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``rabbit_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -24736,7 +22582,7 @@
       },
       "ProjectFolder": {
         "additionalProperties": false,
-        "description": "``hermes_cli/projects_db.py::ProjectFolder.to_dict``.",
+        "description": "``rabbit_cli/projects_db.py::ProjectFolder.to_dict``.",
         "properties": {
           "path": {
             "title": "Path",
@@ -24838,7 +22684,7 @@
       },
       "ProjectInfo": {
         "additionalProperties": false,
-        "description": "``hermes_cli/projects_db.py::Project.to_dict`` \u2014 one stored project with its folders.",
+        "description": "``rabbit_cli/projects_db.py::Project.to_dict`` \u2014 one stored project with its folders.",
         "properties": {
           "id": {
             "title": "Id",
@@ -32136,92 +29982,6 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
-      "SetupReadyPayload": {
-        "additionalProperties": true,
-        "description": "``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``.",
-        "properties": {
-          "provider_configured": {
-            "title": "Provider Configured",
-            "type": "boolean"
-          },
-          "inference_provider": {
-            "title": "Inference Provider",
-            "type": "string"
-          },
-          "free_tier_account": {
-            "title": "Free Tier Account",
-            "type": "boolean"
-          },
-          "free_tier_route": {
-            "title": "Free Tier Route",
-            "type": "boolean"
-          },
-          "has_identity": {
-            "title": "Has Identity",
-            "type": "boolean"
-          },
-          "other_providers": {
-            "title": "Other Providers",
-            "type": "boolean"
-          },
-          "error": {
-            "default": "",
-            "title": "Error",
-            "type": "string"
-          },
-          "error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error Code"
-          },
-          "retryable": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retryable"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "finished_at": {
-            "title": "Finished At",
-            "type": "number"
-          }
-        },
-        "required": [
-          "provider_configured",
-          "inference_provider",
-          "free_tier_account",
-          "free_tier_route",
-          "has_identity",
-          "other_providers",
-          "finished_at"
-        ],
-        "title": "SetupReadyPayload",
-        "type": "object"
-      },
       "SetupRuntimeCheckParams": {
         "additionalProperties": false,
         "properties": {
@@ -32255,7 +30015,7 @@
       },
       "SetupRuntimeCheckResult": {
         "additionalProperties": false,
-        "description": "``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the\nselected route is the welcome host.",
+        "description": "``ok=False`` + ``error`` when the resolved model can't be served.",
         "properties": {
           "ok": {
             "title": "Ok",
@@ -32309,18 +30069,6 @@
             "default": null,
             "title": "Error"
           },
-          "free_tier_route": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Route"
-          },
           "profile": {
             "anyOf": [
               {
@@ -32342,7 +30090,7 @@
       },
       "SetupStatusResult": {
         "additionalProperties": false,
-        "description": "``provider_configured`` is the loose answer; the boot record's fields (``ready``,\n``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along\non the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``.",
+        "description": "``provider_configured`` is the loose answer; ``ready`` / ``other_providers`` /\n``inference_provider`` ride along on the launch profile. An unknown ``profile``\nanswers ``ok=False`` + ``error``.",
         "properties": {
           "provider_configured": {
             "anyOf": [
@@ -32367,30 +30115,6 @@
             ],
             "default": null,
             "title": "Ready"
-          },
-          "free_tier_account": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Account"
-          },
-          "free_tier_route": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Free Tier Route"
           },
           "other_providers": {
             "anyOf": [
@@ -32494,14 +30218,10 @@
       },
       "SharedMetricsConsentResult": {
         "additionalProperties": false,
-        "description": "The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while\n``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults\nare not an answer).",
+        "description": "The focused profile's ``telemetry.shared_metrics`` collection opt-in. ``decided`` = the key\nis written in config.yaml (the shipped defaults are not an answer).",
         "properties": {
           "enabled": {
             "title": "Enabled",
-            "type": "boolean"
-          },
-          "send": {
-            "title": "Send",
             "type": "boolean"
           },
           "decided": {
@@ -32511,7 +30231,6 @@
         },
         "required": [
           "enabled",
-          "send",
           "decided"
         ],
         "title": "SharedMetricsConsentResult",
@@ -32772,7 +30491,7 @@
       },
       "SharedMetricsSetParams": {
         "additionalProperties": false,
-        "description": "``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer.",
+        "description": "``first_run`` marks the Desktop first-run answer. A legacy ``send`` key from the upload era\nis accepted and ignored; collection is local-only.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -32862,7 +30581,7 @@
       },
       "SharedMetricsStartupLatencyParams": {
         "additionalProperties": false,
-        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.\n``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a\nreconnect re-sending the same launch counts once while a new launch counts again.",
+        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``RABBIT_DESKTOP`` is unset; without it the backend falls back to its own client detection.\n``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a\nreconnect re-sending the same launch counts once while a new launch counts again.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -32931,7 +30650,7 @@
       },
       "SharedMetricsUpdateRunParams": {
         "additionalProperties": false,
-        "description": "One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout\nhand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the\nbackend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage``\ndownload|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall\ntime, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known.",
+        "description": "One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout\nhand-offs run ``rabbit update`` and are counted from its receipt, never here. Raw words; the\nbackend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage``\ndownload|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall\ntime, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -33133,7 +30852,7 @@
       },
       "SkillBrowseItem": {
         "additionalProperties": true,
-        "description": "``hermes_cli.skills_hub.browse_skills`` row.",
+        "description": "``rabbit_cli.skills_hub.browse_skills`` row.",
         "properties": {
           "name": {
             "default": "",
@@ -33235,7 +30954,7 @@
       },
       "SkillInspectInfo": {
         "additionalProperties": true,
-        "description": "``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere.",
+        "description": "``rabbit_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere.",
         "properties": {
           "name": {
             "anyOf": [
@@ -33605,7 +31324,7 @@
       },
       "SkinPayload": {
         "additionalProperties": true,
-        "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
+        "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``RabbitSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
         "properties": {
           "name": {
             "default": "",
@@ -34816,735 +32535,6 @@
           "subagent_id"
         ],
         "title": "SubagentTailResult",
-        "type": "object"
-      },
-      "SubscriptionChangeEffect": {
-        "enum": [
-          "charge_now",
-          "scheduled",
-          "no_op",
-          "blocked"
-        ],
-        "title": "SubscriptionChangeEffect",
-        "type": "string"
-      },
-      "SubscriptionChangeParams": {
-        "additionalProperties": false,
-        "description": "Either a target tier (downgrade / same-price change) or ``cancel`` (period-end cancellation).",
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "subscription_type_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Subscription Type Id"
-          },
-          "cancel": {
-            "default": false,
-            "title": "Cancel",
-            "type": "boolean"
-          }
-        },
-        "title": "SubscriptionChangeParams",
-        "type": "object"
-      },
-      "SubscriptionContext": {
-        "enum": [
-          "personal",
-          "team"
-        ],
-        "title": "SubscriptionContext",
-        "type": "string"
-      },
-      "SubscriptionPreviewParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "subscription_type_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Subscription Type Id"
-          }
-        },
-        "title": "SubscriptionPreviewParams",
-        "type": "object"
-      },
-      "SubscriptionPreviewResult": {
-        "additionalProperties": false,
-        "description": "``_serialize_subscription_preview`` on success; ``effect`` drives the confirm copy.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          },
-          "effect": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SubscriptionChangeEffect"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          },
-          "current_tier_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Current Tier Id"
-          },
-          "current_tier_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Current Tier Name"
-          },
-          "target_tier_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Target Tier Id"
-          },
-          "target_tier_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Target Tier Name"
-          },
-          "monthly_credits_delta": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monthly Credits Delta"
-          },
-          "amount_due_now_cents": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Amount Due Now Cents"
-          },
-          "effective_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Effective At"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "SubscriptionPreviewResult",
-        "type": "object"
-      },
-      "SubscriptionStateResult": {
-        "additionalProperties": false,
-        "description": "``_serialize_subscription_state``; the view's fallback emits only ``ok / logged_in / error``.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "logged_in": {
-            "title": "Logged In",
-            "type": "boolean"
-          },
-          "is_admin": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Is Admin"
-          },
-          "can_change_plan": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Can Change Plan"
-          },
-          "org_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Org Name"
-          },
-          "org_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Org Id"
-          },
-          "role": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Role"
-          },
-          "context": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SubscriptionContext"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "current": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CurrentSubscription"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "tiers": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/SubscriptionTierOption"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tiers"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "usage": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/UsageModel"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "required": [
-          "ok",
-          "logged_in"
-        ],
-        "title": "SubscriptionStateResult",
-        "type": "object"
-      },
-      "SubscriptionTierOption": {
-        "additionalProperties": false,
-        "properties": {
-          "tier_id": {
-            "title": "Tier Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "tier_order": {
-            "title": "Tier Order",
-            "type": "integer"
-          },
-          "dollars_per_month_display": {
-            "title": "Dollars Per Month Display",
-            "type": "string"
-          },
-          "monthly_credits": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monthly Credits"
-          },
-          "is_current": {
-            "title": "Is Current",
-            "type": "boolean"
-          },
-          "is_enabled": {
-            "title": "Is Enabled",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "tier_id",
-          "name",
-          "tier_order",
-          "dollars_per_month_display",
-          "is_current",
-          "is_enabled"
-        ],
-        "title": "SubscriptionTierOption",
-        "type": "object"
-      },
-      "SubscriptionUpgradeParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "subscription_type_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Subscription Type Id"
-          },
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Idempotency Key"
-          }
-        },
-        "title": "SubscriptionUpgradeParams",
-        "type": "object"
-      },
-      "SubscriptionUpgradeResult": {
-        "additionalProperties": false,
-        "description": "The money route: ``status`` separates a completed upgrade from an SCA / decline that must\nfinish in the portal at ``recovery_url``; ``idempotency_key`` is echoed (also on error) so a\nretry reuses it.",
-        "properties": {
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Error"
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Message"
-          },
-          "portal_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Portal Url"
-          },
-          "retry_after": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Retry After"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Payload"
-          },
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Actor"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Code"
-          },
-          "recovery": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Status"
-          },
-          "target_tier_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Target Tier Name"
-          },
-          "recovery_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Recovery Url"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Reason"
-          },
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Idempotency Key"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "SubscriptionUpgradeResult",
         "type": "object"
       },
       "SudoRequestParams": {
@@ -37014,205 +34004,6 @@
           }
         },
         "title": "Usage",
-        "type": "object"
-      },
-      "UsageBar": {
-        "additionalProperties": false,
-        "description": "``_serialize_usage_bar``: one bar, magnitudes pre-formatted; ``pct_used`` only for ``plan``.",
-        "properties": {
-          "kind": {
-            "$ref": "#/components/schemas/UsageBarKind"
-          },
-          "remaining_display": {
-            "title": "Remaining Display",
-            "type": "string"
-          },
-          "total_display": {
-            "title": "Total Display",
-            "type": "string"
-          },
-          "spent_display": {
-            "title": "Spent Display",
-            "type": "string"
-          },
-          "pct_used": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pct Used"
-          },
-          "fill_fraction": {
-            "title": "Fill Fraction",
-            "type": "number"
-          }
-        },
-        "required": [
-          "kind",
-          "remaining_display",
-          "total_display",
-          "spent_display",
-          "fill_fraction"
-        ],
-        "title": "UsageBar",
-        "type": "object"
-      },
-      "UsageBarKind": {
-        "enum": [
-          "plan",
-          "topup"
-        ],
-        "title": "UsageBarKind",
-        "type": "string"
-      },
-      "UsageModel": {
-        "additionalProperties": false,
-        "description": "``_serialize_usage_model`` \u2014 also embedded as ``usage`` in the billing / subscription states,\nwhere the fail-open form is a bare ``{available: false}`` (no ``ok``).",
-        "properties": {
-          "ok": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Ok"
-          },
-          "available": {
-            "title": "Available",
-            "type": "boolean"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Status"
-          },
-          "plan_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Plan Name"
-          },
-          "renews_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Renews At"
-          },
-          "renews_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Renews Display"
-          },
-          "subscription_remaining_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Subscription Remaining Display"
-          },
-          "topup_remaining_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Topup Remaining Display"
-          },
-          "total_spendable_display": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Total Spendable Display"
-          },
-          "has_topup": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Has Topup"
-          },
-          "plan_bar": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/UsageBar"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "topup_bar": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/UsageBar"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "required": [
-          "available"
-        ],
-        "title": "UsageModel",
         "type": "object"
       },
       "ValueResult": {
@@ -39121,7 +35912,7 @@
           "REISSUE_REFUSED",
           "UNKNOWN_OPERATION",
           "INVALID_ANSWER",
-          "NEEDS_NOUS_AUTH",
+          "NEEDS_SIGN_IN",
           "CONNECTOR_NOT_FOUND",
           "TOOLS_UNAVAILABLE",
           "CONNECTORS_UNAVAILABLE",
@@ -39412,18 +36203,6 @@
       ]
     },
     {
-      "name": "billing.step_up.verification",
-      "summary": "Device-flow URL + code for the billing scope step-up; the client opens the browser.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/BillingStepUpVerificationPayload"
-          }
-        }
-      ]
-    },
-    {
       "name": "bot_relay.outbox.pending",
       "summary": "A bot-relay outbox envelope is queued; drain it.",
       "params": [
@@ -39557,7 +36336,7 @@
     },
     {
       "name": "display.status",
-      "summary": "This profile's screen started or stopped (also for transitions made outside hermes serve).",
+      "summary": "This profile's screen started or stopped (also for transitions made outside rabbit serve).",
       "params": [
         {
           "name": "payload",
@@ -40020,18 +36799,6 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/ChangeSignalPayload"
-          }
-        }
-      ]
-    },
-    {
-      "name": "setup.ready",
-      "summary": "The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.",
-      "params": [
-        {
-          "name": "payload",
-          "schema": {
-            "$ref": "#/components/schemas/SetupReadyPayload"
           }
         }
       ]

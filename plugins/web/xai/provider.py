@@ -1,8 +1,8 @@
 """xAI Web Search — search-only provider backed by Grok's server-side ``web_search`` tool on the
 Responses API (https://docs.x.ai/developers/tools/web-search); Grok is asked for structured JSON
-so rows match every other Hermes web provider. Config: ``web.backend: "xai"``; optional ``web.xai``:
+so rows match every other Rabbit web provider. Config: ``web.backend: "xai"``; optional ``web.xai``:
 ``model`` (default grok-build-0.1), ``allowed_domains`` / ``excluded_domains`` (max 5, mutually
-exclusive), ``timeout`` (default 90s). Auth: Grok OAuth via ``hermes auth``, else XAI_API_KEY.
+exclusive), ``timeout`` (default 90s). Auth: Grok OAuth via ``rabbit auth``, else XAI_API_KEY.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
-from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import has_xai_credentials, rabbit_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 def _load_xai_web_config() -> Dict[str, Any]:
     """Read ``web.xai`` from config.yaml (returns {} on miss)."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         cfg = load_config()
         for key in ("web", "xai"):
             cfg = cfg.get(key) if isinstance(cfg, dict) else None
@@ -60,7 +60,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
     def is_available(self) -> bool:
         """Cheap probe (env var OR auth-store tokens). Deliberately NOT
         ``resolve_xai_http_credentials``: must never refresh tokens or take the
-        auth-store lock, since this runs on every ``hermes tools`` repaint."""
+        auth-store lock, since this runs on every ``rabbit tools`` repaint."""
         return has_xai_credentials()
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -74,7 +74,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         api_key = str(creds.get("api_key") or "").strip()
         base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
         if not api_key:
-            return _fail("No xAI credentials found. Run `hermes auth` to sign in with xAI Grok OAuth, or set XAI_API_KEY.")
+            return _fail("No xAI credentials found. Run `rabbit auth` to sign in with xAI Grok OAuth, or set XAI_API_KEY.")
         # Same clamp range as web_search_tool so explicit limits aren't downgraded.
         limit = max(1, min(_coerce(int, limit, 5), 100))
         cfg = _load_xai_web_config()
@@ -125,7 +125,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         XAI_API_KEY creds can't be refreshed, so they skip the retry rather than burn quota.
         """
         import httpx
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": hermes_xai_user_agent()}
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": rabbit_xai_user_agent()}
         def _refreshed_key() -> str:
             """New bearer after a 401, or "" when refresh fails / returns the same token (retry would be pointless)."""
             try:

@@ -244,7 +244,7 @@ class TestClarifyLogPrivacy:
             "channel": {"id": "C1"},
             "user": {"name": "norbert", "id": "U_NORBERT"},
         }
-        action = {"action_id": "hermes_clarify_choice_1", "value": "cid-priv|1"}
+        action = {"action_id": "rabbit_clarify_choice_1", "value": "cid-priv|1"}
 
         with caplog.at_level(logging.DEBUG, logger=ADAPTER_LOGGER):
             with patch.object(

@@ -162,7 +162,7 @@ class TestCamofoxInteractions:
     @patch("tools.browser_camofox.requests.post")
     def test_type_redacts_api_key(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+        monkeypatch.setenv("RABBIT_REDACT_SECRETS", "true")
         mock_post.return_value = _mock_response(json_data={"tabId": "tab5b", "url": "https://x.com"})
         camofox_navigate("https://x.com", task_id="t5b")
 
@@ -176,7 +176,7 @@ class TestCamofoxInteractions:
     @patch("tools.browser_camofox.requests.post")
     def test_type_failure_redacts_api_key(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+        monkeypatch.setenv("RABBIT_REDACT_SECRETS", "true")
         mock_post.return_value = _mock_response(json_data={"tabId": "tab5c", "url": "https://x.com"})
         camofox_navigate("https://x.com", task_id="t5c")
 

@@ -1,9 +1,9 @@
 type StorageLike = Pick<Storage, "getItem" | "removeItem" | "setItem">;
 
-const TOKEN_RELOAD_STORAGE_KEY = "hermes.tokenReloadAttempted";
+const TOKEN_RELOAD_STORAGE_KEY = "rabbit.tokenReloadAttempted";
 
 function dashboardAuthRequired(): boolean {
-  return typeof window !== "undefined" && !!window.__HERMES_AUTH_REQUIRED__;
+  return typeof window !== "undefined" && !!window.__RABBIT_AUTH_REQUIRED__;
 }
 
 function reloadDashboardWindow(): void {

@@ -55,8 +55,8 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
     # The payload identity stays plain; the attempt ref lives only in the claim env.
     assert request.tag == "v1.2.4"
     assert request.release_epoch == 1787965323
-    env = identity_environment(request, "bundled", {"HERMES_RELEASE_EPOCH": "1"})
-    assert env["HERMES_RELEASE_EPOCH"] == "1787965323"
+    env = identity_environment(request, "bundled", {"RABBIT_RELEASE_EPOCH": "1"})
+    assert env["RABBIT_RELEASE_EPOCH"] == "1787965323"
 
     monkeypatch.setenv("RELEASE_CLAIM_OBJECT", "f" * 40)
     with pytest.raises(ValueError, match="exact claim tag object"):
@@ -69,10 +69,10 @@ def test_stable_build_accepts_the_admitted_commit_before_the_final_tag_exists(tm
 def test_native_version_capture_uses_admitted_build_environment(tmp_path, monkeypatch):
     from scripts.bundles.desktop import capture
 
-    monkeypatch.delenv("HERMES_RELEASE_EPOCH", raising=False)
-    env = {**os.environ, "HERMES_RELEASE_EPOCH": "1787965323"}
-    script = "import os; print(os.environ['HERMES_RELEASE_EPOCH'])"
-    assert capture([sys.executable, "-c", script], tmp_path, env) == env["HERMES_RELEASE_EPOCH"]
+    monkeypatch.delenv("RABBIT_RELEASE_EPOCH", raising=False)
+    env = {**os.environ, "RABBIT_RELEASE_EPOCH": "1787965323"}
+    script = "import os; print(os.environ['RABBIT_RELEASE_EPOCH'])"
+    assert capture([sys.executable, "-c", script], tmp_path, env) == env["RABBIT_RELEASE_EPOCH"]
 
 
 def test_stable_build_rejects_a_claim_tag_for_another_version(tmp_path, monkeypatch):

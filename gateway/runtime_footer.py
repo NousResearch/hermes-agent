@@ -4,7 +4,7 @@ minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, conte
 toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``context_pct`` (last-call
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
 renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the deployment a routing
-proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
+proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Rabbit' own fallback
 route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
 delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""

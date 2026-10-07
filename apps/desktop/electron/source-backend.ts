@@ -26,14 +26,14 @@ interface SourceOptions {
 export async function resolveSourceInstallationBackend(
   root: string,
   args: string[],
-  options: SourceOptions & { hermesHome?: string } = {}
+  options: SourceOptions & { rabbitHome?: string } = {}
 ): Promise<SourceBackend | null> {
-  if (!existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
+  if (!existsSync(path.join(root, 'rabbit_cli', 'main.py'))) {
     return null
   }
 
   const isWindows: boolean = options.isWindows ?? process.platform === 'win32'
-  const launcher: string | null = resolveInstallationLauncher(root, isWindows, options.hermesHome)
+  const launcher: string | null = resolveInstallationLauncher(root, isWindows, options.rabbitHome)
 
   if (!launcher) {
     return null
@@ -58,7 +58,7 @@ export async function resolveSourceInstallationBackend(
 
   return {
     kind: 'command',
-    label: `Hermes at ${root}`,
+    label: `Rabbit at ${root}`,
     command,
     args: [...args],
     env,
@@ -93,9 +93,9 @@ export function createSourcePythonBackend(
 
   return {
     kind: 'python',
-    label: `Hermes source at ${root}`,
+    label: `Rabbit source at ${root}`,
     command,
-    args: ['-m', 'hermes_cli.main', ...args],
+    args: ['-m', 'rabbit_cli.main', ...args],
     // The backend runs in the user's workspace cwd, and the selected
     // interpreter need not have this checkout installed: name it explicitly.
     // (The scrubbed inherited value could point at another checkout.)

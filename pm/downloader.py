@@ -1,6 +1,6 @@
 """Resumable, hash-verified, multi-connection downloads.
 
-Every large fetch in Hermes goes through this one downloader: pm
+Every large fetch in Rabbit goes through this one downloader: pm
 packages (pinned sha256 from lock.json) and local models (deliberately
 unverified — catalog sizes may lag an upstream re-upload, so sha256 is
 optional per source).
@@ -43,7 +43,7 @@ from pm.network import is_transient, retry_network
 # TUR's pool 302s to) 403s unknown tool UAs from CI runner IP ranges --
 # their docs require a real User-Agent. A browser-shaped one is the
 # least-privileged string every asset CDN accepts.
-_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Accept-Encoding": "identity"}
+_UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) rabbit-pm/1.0", "Accept-Encoding": "identity"}
 _LOOPBACK = ("http://127.0.0.1:", "http://localhost:", "http://[::1]:")
 _CHUNK = 1 << 20  # read/write block, also the minimum range size
 
@@ -545,7 +545,7 @@ class Download:
                     pending -= 1
                     updated.set()
 
-        with ThreadPoolExecutor(max_workers=connections, thread_name_prefix="hermes-download") as pool:
+        with ThreadPoolExecutor(max_workers=connections, thread_name_prefix="rabbit-download") as pool:
             futures = [pool.submit(worker, start, end) for start, end in ranges]
             observer_failed = False
             finished = not ranges

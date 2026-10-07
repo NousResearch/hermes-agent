@@ -1,5 +1,5 @@
 name: wechat-social-assistant
-repo: https://github.com/harrylabsj/hermes-plugin-wechat-social-assistant
+repo: https://github.com/harrylabsj/rabbit-plugin-wechat-social-assistant
 sha: fbfc1bd23fc9494ad9c4433de2574954b5f5476f
 description: 'Local-first WeChat relationship memory assistant for macOS: captures only what
   is visible in the WeChat window via system OCR/Accessibility, stores everything in a local

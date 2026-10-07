@@ -140,7 +140,7 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
     """``auxiliary.review`` as a delegation-credentials dict, or None when unconfigured (provider auto/empty
     and no model/base_url) so the reviewer inherits the parent's credentials."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         review = (load_config_readonly().get("auxiliary") or {}).get("review") or {}
     except Exception:
         return None

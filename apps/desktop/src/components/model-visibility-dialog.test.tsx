@@ -1,4 +1,4 @@
-import type { ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionsResult } from '@rabbit/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -75,8 +75,8 @@ describe('Edit Models reset', () => {
 
     await waitFor(async () => expect(await isShown(/gpt-6/i)).toBe(true))
     expect(await isShown(/gpt-5\.5/i)).toBe(true)
-    expect(window.localStorage.getItem('hermes.desktop.visible-models')).toBeNull()
-    expect(window.localStorage.getItem('hermes.desktop.known-models')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.visible-models')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.known-models')).toBeNull()
   })
 
   it('keeps the user’s choices when the reset is cancelled', async () => {

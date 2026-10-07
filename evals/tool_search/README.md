@@ -12,7 +12,7 @@ python3 evals/tool_search/tool_search_livetest.py        # runs all 5 scenarios 
 python3 evals/tool_search/analyze_livetest.py            # side-by-side report
 ```
 
-Requires `OPENROUTER_API_KEY` set or present in `~/.hermes/.env`.
+Requires `OPENROUTER_API_KEY` set or present in `~/.rabbit/.env`.
 
 ## What it verifies
 

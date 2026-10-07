@@ -22,7 +22,7 @@ import { sleep } from '../lib/cdp.mjs'
  *  `render-churn`, but the driver never runs — the turn just stays open. */
 const setup = (tiles, seedTurns) => `
   (() => {
-    const hook = window.__HERMES_SESSION_TILES__
+    const hook = window.__RABBIT_SESSION_TILES__
     if (!hook) return 'no-hook'
     if (!window.__RENDER_COUNTS__) return 'no-render-counter'
 
@@ -58,7 +58,7 @@ const setup = (tiles, seedTurns) => `
   })()
 `
 
-const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
+const reveal = sid => `window.__RABBIT_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Measure the app's self-inflicted commit rate with nothing happening. */
 const idleCost = seconds => `
@@ -187,9 +187,9 @@ const CLEANUP = `
   (() => {
     if (window.__IDLE__) {
       for (const { sid, rid } of window.__IDLE__.ids) {
-        const states = window.__HERMES_SESSION_TILES__.states()
-        window.__HERMES_SESSION_TILES__.publish(rid, { ...states[rid], busy: false, streamId: null })
-        window.__HERMES_SESSION_TILES__.close(sid)
+        const states = window.__RABBIT_SESSION_TILES__.states()
+        window.__RABBIT_SESSION_TILES__.publish(rid, { ...states[rid], busy: false, streamId: null })
+        window.__RABBIT_SESSION_TILES__.close(sid)
       }
       window.__IDLE__ = null
     }

@@ -140,7 +140,7 @@ class RelayAdapter(BasePlatformAdapter):
         # platforms on one WS and a reply must egress through the platform the
         # inbound came from. Empty for a single-platform gateway (connector default).
         self._platform_by_chat: Dict[str, str] = {}
-        # chat_id -> Hermes profile the connector routed the inbound to (multiplex mode). Echoed
+        # chat_id -> Rabbit profile the connector routed the inbound to (multiplex mode). Echoed
         # on every outbound frame's metadata so the connector can stamp the SAME profile on the
         # next passthrough_forward for that chat; empty on a single-profile gateway.
         self._profile_by_chat: Dict[str, str] = {}
@@ -719,7 +719,7 @@ class RelayAdapter(BasePlatformAdapter):
         chat_id: str,
         tasks: list,
         *,
-        title: str = "Hermes is working",
+        title: str = "Rabbit is working",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         fallback_text: Optional[str] = None,
@@ -1191,7 +1191,7 @@ class RelayAdapter(BasePlatformAdapter):
             # read off the wire (engages /sethome's via_relay guard).
             delivered_via_upstream_relay=True,
             # Profile routing (multiplex mode), mirroring _event_from_wire.
-            # The HERMES profile this interaction is routed to (multiplex mode) — mirrors _event_from_wire's
+            # The RABBIT profile this interaction is routed to (multiplex mode) — mirrors _event_from_wire's
             # profile stamping for plain relayed messages (#60586). Without this, a Team-Gateway's Discord
             # slash-command/button/modal always fell back to the legacy agent:main namespace even when the
             # connector resolved a specific profile for it.
@@ -1199,7 +1199,7 @@ class RelayAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
-            # A component press whose custom_id is a Hermes prompt token
+            # A component press whose custom_id is a Rabbit prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;
             # foreign custom_ids keep the best-effort TEXT shape.
             decoded = self._decode_prompt_token(text)

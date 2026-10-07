@@ -135,8 +135,8 @@ class TestFallbackChainAdvancement:
 
     def test_activation_counts_once_with_classifier_reason(self, monkeypatch):
         """A skipped candidate is not an activation; the one that binds records its FailoverReason."""
-        from hermes_cli.observability import shared_metrics_events
-        from hermes_cli.observability.shared_metrics_fields import fallback_fields
+        from rabbit_cli.observability import shared_metrics_events
+        from rabbit_cli.observability.shared_metrics_fields import fallback_fields
 
         calls = []
         monkeypatch.setattr(shared_metrics_events, "record_fallback", lambda **kw: calls.append(kw))
@@ -193,122 +193,6 @@ class TestFallbackChainAdvancement:
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
 
-    def test_nous_anthropic_fallback_uses_the_messages_wire(self, monkeypatch):
-        """Portal Claude fallbacks must not stay on chat_completions when the native wire is selected.
-
-        ``resolve_provider_client`` still returns an OpenAI client for Nous;
-        activation has to re-derive api_mode from the model and rebuild the
-        Anthropic client — otherwise the turn POSTs /chat/completions. The wire
-        is opt-in since 2026-09-06 (``nous.anthropic_wire``, see ``nous_api_mode``).
-        """
-        from hermes_cli import providers as _providers
-        monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
-        portal = "https://inference-api.nousresearch.com/v1"
-        fbs = [
-            {
-                "provider": "nous",
-                "model": "anthropic/claude-opus-4.8",
-            }
-        ]
-        agent = _make_agent(fallback_model=fbs)
-        rebuilt = {"count": 0}
-
-        def _fake_build(api_key, base_url, timeout=None, **kwargs):
-            rebuilt["count"] += 1
-            rebuilt["api_key"] = api_key
-            rebuilt["base_url"] = base_url
-            return MagicMock(name="anthropic-client")
-
-        with (
-            patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
-                return_value=None,
-            ),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(
-                    _mock_client(base_url=portal, api_key="portal-jwt"),
-                    "anthropic/claude-opus-4.8",
-                ),
-            ),
-            patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
-                side_effect=lambda m, p: m,
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client",
-                side_effect=_fake_build,
-            ),
-        ):
-            assert agent._try_activate_fallback() is True
-
-        assert agent.api_mode == "anthropic_messages"
-        assert agent.provider == "nous"
-        assert agent.model == "anthropic/claude-opus-4.8"
-        assert agent.client is None
-        assert rebuilt["count"] == 1
-        assert rebuilt["api_key"] == "portal-jwt"
-        assert rebuilt["base_url"] == portal
-        assert agent._anthropic_client is not None
-
-    def test_nous_non_anthropic_fallback_stays_on_chat_completions(self):
-        portal = "https://inference-api.nousresearch.com/v1"
-        fbs = [{"provider": "nous", "model": "hermes-4-405b"}]
-        agent = _make_agent(fallback_model=fbs)
-        with (
-            patch(
-                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
-                return_value=None,
-            ),
-            patch(
-                "agent.auxiliary_client.resolve_provider_client",
-                return_value=(
-                    _mock_client(base_url=portal, api_key="portal-jwt"),
-                    "hermes-4-405b",
-                ),
-            ),
-            patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
-                side_effect=lambda m, p: m,
-            ),
-            patch(
-                "agent.anthropic_adapter.build_anthropic_client",
-                side_effect=AssertionError("must not build Anthropic client"),
-            ),
-        ):
-            assert agent._try_activate_fallback() is True
-
-        assert agent.api_mode == "chat_completions"
-        assert agent.client is not None
-
-
-# ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
-
-
-def _pool(n_entries: int, has_available: bool = True):
-    """Make a minimal credential-pool stand-in for rotation-room checks."""
-    pool = MagicMock()
-    pool.entries.return_value = [MagicMock() for _ in range(n_entries)]
-    pool.has_available.return_value = has_available
-    return pool
-
-
-
-
-
-
-
-
-
-# ── Skip-self dedup (#22548) ───────────────────────────────────────────────
-
-
-class TestFallbackChainDedup:
-    """A fallback chain entry that resolves to the current provider/model
-    (or the same custom-provider base_url) must be skipped, not retried.
-    Otherwise a misconfigured chain or two custom_providers entries pointing
-    at the same shim loop the same failure. See issue #22548."""
-
     def test_skips_entry_matching_current_provider_and_model(self):
         """Chain has [same-as-current, real-fallback]; activate must skip
         the first and use the second."""
@@ -330,7 +214,7 @@ class TestFallbackChainDedup:
             called.append((provider, model))
             return _mock_client(), model
         with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
-            with patch("hermes_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
+            with patch("rabbit_cli.model_normalize.normalize_model_for_provider", side_effect=lambda m, p: m):
                 ok = agent._try_activate_fallback()
 
         assert ok is True
@@ -383,7 +267,7 @@ class TestFallbackChainDedup:
 
         with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
             with patch(
-                "hermes_cli.model_normalize.normalize_model_for_provider",
+                "rabbit_cli.model_normalize.normalize_model_for_provider",
                 side_effect=lambda m, p: m,
             ):
                 ok = agent._try_activate_fallback()
@@ -486,10 +370,10 @@ class TestFallbackExtraBodyReResolution:
 
 
 def _write_moa_home(tmp_path, monkeypatch):
-    """Real config.yaml with a MoA preset under a temp HERMES_HOME (genuine preset resolution)."""
-    import hermes_yaml as yaml
+    """Real config.yaml with a MoA preset under a temp RABBIT_HOME (genuine preset resolution)."""
+    import rabbit_yaml as yaml
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir(exist_ok=True)
     (home / "config.yaml").write_text(yaml.safe_dump({
         "moa": {"default_preset": "default", "presets": {"default": {
@@ -498,7 +382,7 @@ def _write_moa_home(tmp_path, monkeypatch):
             "aggregator": {"provider": "xai", "model": "grok-4.6"},
         }}},
     }))
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 

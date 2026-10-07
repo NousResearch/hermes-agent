@@ -9,7 +9,7 @@ describe("classifyLine", () => {
     expect(classifyLine(`${TS} DEBUG registry: scanned 12 tools`)).toBe(
       "debug",
     );
-    expect(classifyLine(`${TS} WARNING hermes_state: WAL disabled`)).toBe(
+    expect(classifyLine(`${TS} WARNING rabbit_state: WAL disabled`)).toBe(
       "warning",
     );
     expect(classifyLine(`${TS} ERROR gateway: connect failed`)).toBe("error");

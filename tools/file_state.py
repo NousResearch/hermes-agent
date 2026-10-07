@@ -5,7 +5,7 @@ filesystem) touch the same file: B writes a file A already read, so A's next
 write would clobber B's changes. Complements the single-agent path-overlap
 check in ``agent.tool_dispatch_helpers._should_parallelize_tool_batch``. A process-wide
 ``FileStateRegistry`` tracks per-agent read stamps, the global last writer and
-a per-path lock; every method is a no-op under ``HERMES_DISABLE_FILE_STATE_GUARD=1``.
+a per-path lock; every method is a no-op under ``RABBIT_DISABLE_FILE_STATE_GUARD=1``.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ _MAX_GLOBAL_WRITERS = 4096
 
 def _disabled() -> bool:
     # Re-read each call so tests can toggle via monkeypatch.setenv.
-    return os.environ.get("HERMES_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
+    return os.environ.get("RABBIT_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
 
 
 def guard_disabled() -> bool:

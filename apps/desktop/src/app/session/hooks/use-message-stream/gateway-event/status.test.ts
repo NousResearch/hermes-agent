@@ -82,7 +82,7 @@ describe('gateway `error` event → error card + toast', () => {
     // (tui_gateway/server.py). The fix for this chat is setup, so the user must land there and
     // not on a toast — even after the sentence is reworded again.
     const { ctx } = errorContext(
-      'Hermes could not start the assistant. Details: something new we never matched.',
+      'Rabbit could not start the assistant. Details: something new we never matched.',
       'provider_not_configured'
     )
 
@@ -92,7 +92,7 @@ describe('gateway `error` event → error card + toast', () => {
   })
 
   it('does not route an unrelated failure to onboarding', () => {
-    const { ctx } = errorContext('Hermes could not finish this turn. Try again.')
+    const { ctx } = errorContext('Rabbit could not finish this turn. Try again.')
 
     handleStatusEvent(ctx)
 
@@ -102,7 +102,7 @@ describe('gateway `error` event → error card + toast', () => {
   it("keeps the server's own plain copy as the toast message when no code was recovered", () => {
     // tui_gateway/user_messages.py already writes actionable sentences for
     // pre-turn failures; the generic "couldn't finish" gloss must not bury them.
-    const serverCopy = 'Hermes could not start the assistant for this chat. Check your model settings and try again.'
+    const serverCopy = 'Rabbit could not start the assistant for this chat. Check your model settings and try again.'
     const { ctx, failAssistantMessage } = errorContext(serverCopy)
 
     handleStatusEvent(ctx)

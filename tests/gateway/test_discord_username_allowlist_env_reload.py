@@ -7,7 +7,7 @@ Sequence under test:
      memory (``_allowed_user_ids``) and mirrors them into ``os.environ``.
   3. The gateway's per-turn env hot-reload
      (``_reload_runtime_env_preserving_config_authority`` ->
-     ``load_hermes_dotenv(override=True)``) restores the RAW username strings
+     ``load_rabbit_dotenv(override=True)``) restores the RAW username strings
      from the file into the process env.
   4. ``GatewayAuthorizationMixin._is_user_authorized`` compares the sender's
      numeric ``user_id`` against the env allowlist.
@@ -177,7 +177,7 @@ class TestDiscordAdapterResolvedAccessor:
 
 
 class TestRemovedNumericEntryIsNotResurrected:
-    """A numeric entry removed from DISCORD_ALLOWED_USERS after connect (``hermes pairing revoke``
+    """A numeric entry removed from DISCORD_ALLOWED_USERS after connect (``rabbit pairing revoke``
     from the CLI/dashboard process, or a hand edit) must stop authorizing once the env reloads,
     not stay granted from the adapter's connect-time snapshot until a gateway restart."""
 

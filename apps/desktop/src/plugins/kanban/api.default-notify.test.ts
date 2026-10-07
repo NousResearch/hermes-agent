@@ -6,7 +6,7 @@ const doors = vi.hoisted(() => ({
   setConnection: vi.fn<(id: string | null) => void>()
 }))
 
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@rabbit/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
   const { QueryClient } = await import('@tanstack/react-query')
   const connectionId = atom<string | null>(null)
@@ -22,7 +22,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   }
 })
 
-const { queryClient } = await import('@hermes/plugin-sdk')
+const { queryClient } = await import('@rabbit/plugin-sdk')
 const { bindApi, $boardSlug } = await import('./api')
 let dispose: (() => void) | undefined
 

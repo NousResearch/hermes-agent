@@ -124,7 +124,7 @@ class TestConsolidationProposalSurfaces:
         import json as _json
         from tools.memory_tool_store import MemoryStore
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         store = MemoryStore(memory_char_limit=500, user_char_limit=300)
         store.load_from_disk()

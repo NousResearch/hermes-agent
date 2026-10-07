@@ -177,7 +177,7 @@ class InterruptControlMixin:
             )
             self._pending_redirect = None
 
-        # Codex watches a private interrupt event rather than Hermes' per-thread flag.
+        # Codex watches a private interrupt event rather than Rabbit' per-thread flag.
         _request_interrupt = _ic_codex_method(self, "request_interrupt")
         if _request_interrupt is not None:
             try:

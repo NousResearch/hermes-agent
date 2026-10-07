@@ -30,7 +30,7 @@ export interface ParsedSlashCommand {
 }
 
 /** Split `/name arg…` the way the backend does. The name is lower-cased because
- *  every consumer (`hermes_cli.commands.resolve_command`, `slash.exec`) is
+ *  every consumer (`rabbit_cli.commands.resolve_command`, `slash.exec`) is
  *  case-insensitive; keeping the typed case only made surfaces disagree. */
 export function parseSlashCommand(command: string): ParsedSlashCommand {
   const match = SLASH_PARTS_RE.exec(command.replace(/^\/+/, ''))

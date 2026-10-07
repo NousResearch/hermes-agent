@@ -15,7 +15,7 @@ import pytest
 
 pytestmark = pytest.mark.platforms("posix")
 INSTALL_SH = Path(__file__).resolve().parents[3] / "scripts" / "install.sh"
-MARKER = "# Hermes Agent command"
+MARKER = "# Rabbit Agent command"
 
 # Fedora /etc/skel (bash-5.2): ~/.bashrc guards and prepends with a bare assignment.
 FEDORA_BASHRC = """\
@@ -53,7 +53,7 @@ fi
 
 def _wire(home: Path, runs: int = 1) -> None:
     env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS")}
-    env.update(HOME=str(home), HERMES_HOME=str(home / "hermes"), SHELL="/bin/bash",
+    env.update(HOME=str(home), RABBIT_HOME=str(home / "rabbit"), SHELL="/bin/bash",
                NO_COLOR="1", TERM="dumb", CI="true")
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\n" + "wire_shell_path\n" * runs
     result = subprocess.run(["bash", "-c", script], env=env, stdin=subprocess.DEVNULL,

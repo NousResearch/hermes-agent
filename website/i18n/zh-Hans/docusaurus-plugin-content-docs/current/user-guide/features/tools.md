@@ -1,22 +1,22 @@
 ---
 sidebar_position: 1
 title: "工具与工具集"
-description: "Hermes Agent 工具概览——可用工具、工具集工作方式及终端后端"
+description: "Rabbit Agent 工具概览——可用工具、工具集工作方式及终端后端"
 ---
 
 # 工具与工具集
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
 工具是扩展 Agent 能力的函数。它们被组织为逻辑上的**工具集**，可按平台启用或禁用。
 
 ## 可用工具
 
-Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递等功能。插件还可以提供更多工具，例如 Home Assistant 设备控制由插件目录中的 `homeassistant` 插件提供。
+Rabbit 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递等功能。插件还可以提供更多工具，例如 Home Assistant 设备控制由插件目录中的 `homeassistant` 插件提供。
 
 :::note
-**Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`hermes plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
+**Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`rabbit plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
 :::
 
 高层分类：
@@ -24,10 +24,10 @@ Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动�
 | 分类 | 示例 | 描述 |
 |----------|----------|-------------|
 | **Web** | `web_search`, `web_extract` | 搜索网页并提取页面内容。 |
-| **X 搜索** | `x_search` | 通过 xAI 内置的 `x_search` Responses 工具搜索 X（Twitter）帖子和话题——需要 xAI 凭据（SuperGrok OAuth 或 `XAI_API_KEY`）；默认关闭，可通过 `hermes tools` → 🐦 X (Twitter) Search 启用。 |
+| **X 搜索** | `x_search` | 通过 xAI 内置的 `x_search` Responses 工具搜索 X（Twitter）帖子和话题——需要 xAI 凭据（SuperGrok OAuth 或 `XAI_API_KEY`）；默认关闭，可通过 `rabbit tools` → 🐦 X (Twitter) Search 启用。 |
 | **终端与文件** | `terminal`, `process`, `read_file`, `patch` | 执行命令并操作文件。 |
 | **浏览器** | `browser_navigate`, `browser_snapshot`, `browser_vision` | 支持文本和视觉的交互式浏览器自动化。 |
-| **媒体** | `vision_analyze`, `image_generate`, `video_generate`, `video_analyze`, `text_to_speech` | 多模态分析与生成。`video_generate` 和 `video_analyze` 需手动启用（通过 `hermes tools` 或 `--toolsets` 添加 `video_gen` / `video` 工具集）。 |
+| **媒体** | `vision_analyze`, `image_generate`, `video_generate`, `video_analyze`, `text_to_speech` | 多模态分析与生成。`video_generate` 和 `video_analyze` 需手动启用（通过 `rabbit tools` 或 `--toolsets` 添加 `video_gen` / `video` 工具集）。 |
 | **Agent 编排** | `todo`, `clarify`, `execute_code`, `delegate_task` | 规划、澄清、代码执行及子 Agent 委托。 |
 | **记忆与召回** | `memory`, `session_search` | 持久化记忆与会话搜索。 |
 | **自动化与投递** | `cronjob`, `send_message` | 支持创建/列出/更新/暂停/恢复/运行/删除操作的定时任务，以及出站消息投递。 |
@@ -35,26 +35,22 @@ Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动�
 
 如需查看由代码派生的权威注册表，请参阅 [内置工具参考](../../reference/tools-reference.md) 和 [工具集参考](../../reference/toolsets-reference.md)。
 
-:::tip Nous Tool Gateway
-付费 [Nous Portal](https://portal.nousresearch.com) 订阅者可通过 **[Tool Gateway](tool-gateway.md)** 使用网页搜索、图像生成、TTS 和浏览器自动化——无需单独配置 API 密钥。运行 `hermes model` 启用，或通过 `hermes tools` 配置各工具。
-:::
-
 ## 使用工具集
 
 ```bash
 # 使用指定工具集
-hermes chat --toolsets "web,terminal"
+rabbit chat --toolsets "web,terminal"
 
 # 查看所有可用工具
-hermes tools
+rabbit tools
 
 # 按平台交互式配置工具
-hermes tools
+rabbit tools
 ```
 
 常用工具集包括 `web`、`search`、`terminal`、`file`、`browser`、`vision`、`image_gen`、`moa`、`skills`、`tts`、`todo`、`memory`、`session_search`、`cronjob`、`code_execution`、`delegation`、`clarify`、`messaging`、`spotify`、`discord`、`discord_admin`、`debugging` 和 `safe`。
 
-完整列表（包括 `hermes-cli`、`hermes-telegram` 等平台预设以及 `mcp-<server>` 等动态 MCP 工具集）请参阅 [工具集参考](../../reference/toolsets-reference.md)。
+完整列表（包括 `rabbit-cli`、`rabbit-telegram` 等平台预设以及 `mcp-<server>` 等动态 MCP 工具集）请参阅 [工具集参考](../../reference/toolsets-reference.md)。
 
 ## 终端后端
 
@@ -73,7 +69,7 @@ hermes tools
 ### 配置
 
 ```yaml
-# 在 ~/.hermes/config.yaml 中
+# 在 ~/.rabbit/config.yaml 中
 terminal:
   backend: local    # 或：docker, ssh, singularity, modal, daytona, vercel_sandbox
   cwd: "."          # 工作目录
@@ -88,9 +84,9 @@ terminal:
   docker_image: python:3.11-slim
 ```
 
-**单个持久容器，在整个进程生命周期内共享。** Hermes 在首次使用时启动一个长期运行的容器（`docker run -d ... sleep 2h`），并通过 `docker exec` 将所有终端、文件及 `execute_code` 调用路由到同一容器中。工作目录变更、已安装的包、环境调整以及写入 `/workspace` 的文件，在同一 Hermes 进程的整个生命周期内，跨 `/new`、`/reset` 和 `delegate_task` 子 Agent 均会保留。容器在关闭时停止并删除。
+**单个持久容器，在整个进程生命周期内共享。** Rabbit 在首次使用时启动一个长期运行的容器（`docker run -d ... sleep 2h`），并通过 `docker exec` 将所有终端、文件及 `execute_code` 调用路由到同一容器中。工作目录变更、已安装的包、环境调整以及写入 `/workspace` 的文件，在同一 Rabbit 进程的整个生命周期内，跨 `/new`、`/reset` 和 `delegate_task` 子 Agent 均会保留。容器在关闭时停止并删除。
 
-这意味着 Docker 后端的行为类似持久化沙箱虚拟机，而非每次命令都使用全新容器。如果你执行过一次 `pip install foo`，该包在本次会话的剩余时间内均可用。如果你执行了 `cd /workspace/project`，后续的 `ls` 调用将看到该目录。完整的生命周期详情及控制 `/workspace` 和 `/root` 是否跨 Hermes 重启保留的 `container_persistent` 标志，请参阅 [配置 → Docker 后端](../configuration.md#docker-backend)。
+这意味着 Docker 后端的行为类似持久化沙箱虚拟机，而非每次命令都使用全新容器。如果你执行过一次 `pip install foo`，该包在本次会话的剩余时间内均可用。如果你执行了 `cd /workspace/project`，后续的 `ls` 调用将看到该目录。完整的生命周期详情及控制 `/workspace` 和 `/root` 是否跨 Rabbit 重启保留的 `container_persistent` 标志，请参阅 [配置 → Docker 后端](../configuration.md#docker-backend)。
 
 ### SSH 后端
 
@@ -101,7 +97,7 @@ terminal:
   backend: ssh
 ```
 ```bash
-# 在 ~/.hermes/.env 中设置凭据
+# 在 ~/.rabbit/.env 中设置凭据
 TERMINAL_SSH_HOST=my-server.example.com
 TERMINAL_SSH_USER=myuser
 TERMINAL_SSH_KEY=~/.ssh/id_rsa
@@ -114,8 +110,8 @@ TERMINAL_SSH_KEY=~/.ssh/id_rsa
 apptainer build ~/python.sif docker://python:3.11-slim
 
 # 配置
-hermes config set terminal.backend singularity
-hermes config set terminal.singularity_image ~/python.sif
+rabbit config set terminal.backend singularity
+rabbit config set terminal.singularity_image ~/python.sif
 ```
 
 ### Modal（无服务器云）
@@ -123,34 +119,34 @@ hermes config set terminal.singularity_image ~/python.sif
 ```bash
 python -c "import pm; pm.sync_venv(['modal'], explicit=True)"
 modal setup
-hermes config set terminal.backend modal
+rabbit config set terminal.backend modal
 ```
 
 ### Vercel Sandbox
 
 ```bash
 python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
-hermes config set terminal.backend vercel_sandbox
-hermes config set terminal.vercel_runtime node24
+rabbit config set terminal.backend vercel_sandbox
+rabbit config set terminal.vercel_runtime node24
 ```
 
-需同时配置 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三个凭据。此访问令牌配置方式是在 Render、Railway、Docker 及类似平台上进行部署和正常长期运行 Hermes 进程的推荐路径。支持的运行时为 `node24`、`node22` 和 `python3.13`；Hermes 默认使用 `/vercel/sandbox` 作为远程工作区根目录。
+需同时配置 `VERCEL_TOKEN`、`VERCEL_PROJECT_ID` 和 `VERCEL_TEAM_ID` 三个凭据。此访问令牌配置方式是在 Render、Railway、Docker 及类似平台上进行部署和正常长期运行 Rabbit 进程的推荐路径。支持的运行时为 `node24`、`node22` 和 `python3.13`；Rabbit 默认使用 `/vercel/sandbox` 作为远程工作区根目录。
 
-对于本地一次性开发，Hermes 也接受短期 Vercel OIDC token：
+对于本地一次性开发，Rabbit 也接受短期 Vercel OIDC token：
 
 ```bash
-VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
+VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" rabbit chat
 ```
 
 在已关联的 Vercel 项目目录中：
 
 ```bash
-VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
+VERCEL_OIDC_TOKEN="$(vc project token)" rabbit chat
 ```
 
-启用 `container_persistent: true` 后，Hermes 使用 Vercel 快照在同一任务的沙箱重建时保留文件系统状态，其中可包含沙箱内 Hermes 同步的凭据、技能和缓存文件。快照不保留活跃进程、PID 空间或相同的活跃沙箱标识。
+启用 `container_persistent: true` 后，Rabbit 使用 Vercel 快照在同一任务的沙箱重建时保留文件系统状态，其中可包含沙箱内 Rabbit 同步的凭据、技能和缓存文件。快照不保留活跃进程、PID 空间或相同的活跃沙箱标识。
 
-后台终端命令使用 Hermes 通用的非本地进程流程：在沙箱存活期间，spawn、poll、wait、log 和 kill 均通过标准 process 工具运行，但 Hermes 不提供清理或重启后的原生 Vercel 后台进程恢复能力。
+后台终端命令使用 Rabbit 通用的非本地进程流程：在沙箱存活期间，spawn、poll、wait、log 和 kill 均通过标准 process 工具运行，但 Rabbit 不提供清理或重启后的原生 Vercel 后台进程恢复能力。
 
 `container_disk` 保持未设置或使用共享默认值 `51200`；Vercel Sandbox 不支持自定义磁盘大小，设置后将导致诊断/后端创建失败。
 
@@ -204,7 +200,7 @@ PTY 模式（`pty=true`）可启用 Codex 和 Claude Code 等交互式 CLI 工�
 ## 已完成后台进程的结果
 
 后台命令完成后，其退出状态和捕获的输出会保留在当前配置档案中。
-无头父进程退出或 Hermes 重启后，请恢复启动该命令的会话（或其上下文压缩后的
+无头父进程退出或 Rabbit 重启后，请恢复启动该命令的会话（或其上下文压缩后的
 延续会话），再使用原始 `session_id` 调用 `process(action="log")` 读取输出、
 调用 `process(action="poll")` 查看退出状态。即使知道完整进程标识，其他会话
 或未绑定所属会话的请求也不能读取保留的结果。`process(action="list")`
@@ -219,8 +215,8 @@ PTY 模式（`pty=true`）可启用 Codex 和 Claude Code 等交互式 CLI 工�
 
 ## Sudo 支持
 
-如果命令需要 sudo，系统会提示你输入密码（在本次会话内缓存）。也可在 `~/.hermes/.env` 中设置 `SUDO_PASSWORD`。
+如果命令需要 sudo，系统会提示你输入密码（在本次会话内缓存）。也可在 `~/.rabbit/.env` 中设置 `SUDO_PASSWORD`。
 
 :::warning
-在消息平台上，如果 sudo 失败，输出中会提示将 `SUDO_PASSWORD` 添加到 `~/.hermes/.env`。
+在消息平台上，如果 sudo 失败，输出中会提示将 `SUDO_PASSWORD` 添加到 `~/.rabbit/.env`。
 :::

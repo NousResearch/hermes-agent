@@ -1,9 +1,9 @@
 /**
  * Bot Mode across two machines (#120730, the reported shape): the Desktop
- * runs its OWN local primary backend (Electron-spawned `hermes serve`, the
+ * runs its OWN local primary backend (Electron-spawned `rabbit serve`, the
  * default profile only) and has a second, REMOTE connection registered in
- * connections.json — a real `hermes serve` the test spawns under a different
- * HOME/HERMES_HOME (./remote-helpers.ts) that hosts the bot profile. The user
+ * connections.json — a real `rabbit serve` the test spawns under a different
+ * HOME/RABBIT_HOME (./remote-helpers.ts) that hosts the bot profile. The user
  * opens that bot from the Bots roster, so the chat is owned by the remote
  * secondary while the window's primary stays local. Only the LLM is faked.
  *
@@ -150,9 +150,9 @@ test('bot on a remote secondary connection: a client-only image reaches it as by
   const clientBox = createCoreSandbox('secondary-client')
   // The client's own local backend (default profile) can answer too, so a
   // mis-routed turn would still complete — only the owner assertions tell.
-  writeProviderHome(clientBox.hermesHome, provider.url, IMAGE_CONFIG)
-  writeProviderHome(remoteBox.hermesHome, provider.url, IMAGE_CONFIG)
-  const botHome = path.join(remoteBox.hermesHome, 'profiles', BOT)
+  writeProviderHome(clientBox.rabbitHome, provider.url, IMAGE_CONFIG)
+  writeProviderHome(remoteBox.rabbitHome, provider.url, IMAGE_CONFIG)
+  const botHome = path.join(remoteBox.rabbitHome, 'profiles', BOT)
   writeProviderHome(botHome, provider.url, IMAGE_CONFIG)
   // The picture exists on the client. The remote backend gets a private mount
   // namespace in which this directory is empty: the other machine's view.
@@ -309,7 +309,7 @@ test('bot on a remote secondary connection: a client-only image reaches it as by
       const turn = provider.completions.find(c => c.marker === U1)!
       const user = lastUser(turn.body)
       const userText = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content ?? '')
-      const at = userText.indexOf(remoteBox.hermesHome)
+      const at = userText.indexOf(remoteBox.rabbitHome)
       const staged = at >= 0 ? /^\S+?\.png/.exec(userText.slice(at))?.[0] : undefined
       expect(staged, `the turn references a remote-side image path: ${userText.slice(0, 400)}`).toBeTruthy()
       expect(fs.readFileSync(staged!).equals(png), 'remote-staged image is byte-identical').toBe(true)

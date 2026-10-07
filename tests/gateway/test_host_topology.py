@@ -13,12 +13,12 @@ import pytest
 def host_gateway(tmp_path, monkeypatch):
     from gateway import host_rendezvous as hr
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     (root / "profiles" / "coder").mkdir(parents=True)
     locks = tmp_path / "locks"
     locks.mkdir()
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(locks))
+    monkeypatch.setattr("rabbit_constants.get_default_rabbit_root", lambda: root)
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"))
     return root
 
@@ -37,7 +37,7 @@ def test_default_home_is_reported_as_served_by_the_host_gateway(host_gateway):
 def test_unserved_profile_is_not_claimed_by_the_host_gateway(host_gateway, monkeypatch):
     from gateway import status
 
-    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda *a: False)
+    monkeypatch.setattr("rabbit_cli.gateway.named_profile_served_by_running_multiplexer", lambda *a: False)
     (host_gateway / "profiles" / "other").mkdir()
     assert status.multiplexer_liveness_for_profile(host_gateway / "profiles" / "other") is None
 
@@ -48,7 +48,7 @@ def test_unprovable_record_is_a_candidate_not_the_host_gateway(host_gateway, mon
     from gateway import host_topology
 
     monkeypatch.setattr("gateway.host_rendezvous.liveness_is_proven", lambda record: False)
-    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
+    monkeypatch.setattr("rabbit_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     assert host_topology.host_gateway_topology() is None
 
 
@@ -63,7 +63,7 @@ def test_record_without_createtime_is_never_the_host_gateway(host_gateway, monke
     from gateway import host_rendezvous as hr
     from gateway import host_topology
 
-    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
+    monkeypatch.setattr("rabbit_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     path = hr.record_path(hr.ROLE_GATEWAY)
     record = json.loads(path.read_text())
     record["createTime"] = None
@@ -75,7 +75,7 @@ def test_record_without_createtime_is_never_the_host_gateway(host_gateway, monke
 
 
 def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_state(tmp_path, monkeypatch):
-    """#121352 reporting half: a record from ANOTHER Hermes root is not this tenant's host gateway
+    """#121352 reporting half: a record from ANOTHER Rabbit root is not this tenant's host gateway
     (doctor / cron status / the dashboard ladder), and a NAMED-hosted multiplexer's platforms are read
     from the home that launched it, not from a stale standalone record at the default root."""
     import json
@@ -84,12 +84,12 @@ def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_stat
     from gateway import host_rendezvous as hr
     from gateway import host_topology, status
 
-    root_a, root_b = tmp_path / "hermes-a", tmp_path / "hermes-b"
+    root_a, root_b = tmp_path / "rabbit-a", tmp_path / "rabbit-b"
     argus = root_b / "profiles" / "argus"
     argus.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    monkeypatch.setenv("HERMES_HOME", str(root_b))
-    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("RABBIT_HOME", str(root_b))
+    monkeypatch.setattr("rabbit_constants._default_rabbit_root_memo", None)
 
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(root_a))
     assert host_topology.host_gateway_topology() is None

@@ -34,13 +34,13 @@ it('retains legacy data in memory when migration writes fail and retries on the 
   expect($panes.get()).toEqual(legacy)
   scope.change('simple', () => {})
   expect($panes.get()).toEqual({ sidebar: { open: true, widthOverride: 220 } })
-  expect(window.localStorage.getItem('hermes.desktop.layoutModeScopes.v1')).toBeNull()
+  expect(window.localStorage.getItem('rabbit.desktop.layoutModeScopes.v1')).toBeNull()
   expect(JSON.parse(window.localStorage.getItem(LAYOUT_KEYS.panes)!)).toEqual(legacy)
 
   vi.unstubAllGlobals()
   createLayoutPersistence('simple', true)
   expect(JSON.parse(window.localStorage.getItem(`${LAYOUT_KEYS.panes}.simple`)!)).toEqual(legacy)
-  expect(window.localStorage.getItem('hermes.desktop.layoutModeScopes.v1')).toBe('true')
+  expect(window.localStorage.getItem('rabbit.desktop.layoutModeScopes.v1')).toBe('true')
 
   window.localStorage.clear()
   window.localStorage.setItem(LAYOUT_KEYS.hiddenTabs, '["bots"]')
@@ -48,7 +48,7 @@ it('retains legacy data in memory when migration writes fail and retries on the 
     getItem: storage.getItem.bind(storage),
     removeItem: storage.removeItem.bind(storage),
     setItem: (key: string, value: string) => {
-      if (key === 'hermes.desktop.layoutModeScopes.v1') {
+      if (key === 'rabbit.desktop.layoutModeScopes.v1') {
         throw new DOMException('Full', 'QuotaExceededError')
       }
 

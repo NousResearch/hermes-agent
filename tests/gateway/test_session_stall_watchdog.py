@@ -168,7 +168,7 @@ def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
 async def test_check_session_stalls_notifies_once(monkeypatch):
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "60")
+    monkeypatch.setenv("RABBIT_SESSION_STALL_TIMEOUT", "60")
     session_key = "agent:main:telegram:dm:1"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
@@ -260,7 +260,7 @@ async def test_check_session_stalls_ignores_raw_clock_without_summary():
 async def test_session_stall_watcher_disabled_when_timeout_zero(monkeypatch):
     adapter = _FakeAdapter()
     runner = _runner_for_stall(adapter)
-    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "0")
+    monkeypatch.setenv("RABBIT_SESSION_STALL_TIMEOUT", "0")
     session_key = "agent:main:telegram:dm:6"
     adapter._pending_messages[session_key] = _pending_event()
     runner._running_agents[session_key] = _FakeAgent(time.time() - 999)
@@ -522,12 +522,12 @@ async def test_check_session_stalls_bounds_wedged_send(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_stall_policy_owner_latch_and_source_log_conservation(tmp_path, monkeypatch, caplog, setting):
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
     owner, launch = tmp_path / "owner", tmp_path / "launch"
     owner.mkdir(); launch.mkdir()
     (owner / "config.yaml").write_text(yaml.safe_dump({} if setting is None else {"display": {"suppress_warning_notifications": setting}}))
     (launch / "config.yaml").write_text(yaml.safe_dump({"display": {"suppress_warning_notifications": setting is not True}}))
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     for home, muted in [(owner, setting is True), (launch, setting is not True), (owner, setting is True)]:
         adapter = _FakeAdapter()
         runner = _runner_for_stall(adapter)

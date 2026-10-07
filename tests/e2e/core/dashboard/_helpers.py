@@ -1,11 +1,11 @@
-"""Lane-private harness for the dashboard (``hermes dashboard``) E2E suite.
+"""Lane-private harness for the dashboard (``rabbit dashboard``) E2E suite.
 
-Every scenario drives the REAL web server as a child process: ``python -m hermes_cli.main dashboard
---no-open --skip-build --port 0`` with HOME=<tmp>/home and HERMES_HOME=<tmp>/home/.hermes (profiles
+Every scenario drives the REAL web server as a child process: ``python -m rabbit_cli.main dashboard
+--no-open --skip-build --port 0`` with HOME=<tmp>/home and RABBIT_HOME=<tmp>/home/.rabbit (profiles
 resolve under $HOME, never the real install), every credential env var stripped, the LLM vendor
 replaced by ``tests.fakes.fake_llm_provider.FakeLLMServer``. The client side speaks only what the SPA
 speaks: it reads the session token out of the served ``index.html`` (the browser's bootstrap), sends
-it as ``X-Hermes-Session-Token`` on REST and ``?token=`` on WebSocket upgrades, and appends
+it as ``X-Rabbit-Session-Token`` on REST and ``?token=`` on WebSocket upgrades, and appends
 ``?profile=<name>`` exactly like the profile switcher in ``web/src/lib/api.ts``.
 """
 
@@ -27,21 +27,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 from . import _reaper
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-TOKEN_HEADER = "X-Hermes-Session-Token"
+TOKEN_HEADER = "X-Rabbit-Session-Token"
 PROVIDER_KEY_ENV = "DASH_PROVIDER_KEY"  # same NAME in every profile's .env, distinct VALUE
 
 _STRIP_SUFFIXES = ("_API_KEY", "_TOKEN", "_BASE_URL", "_SECRET", "_ACCESS_KEY", "_KEY_ID", "_KEY")
-_STRIP_PREFIXES = ("HERMES_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_", "GEMINI",
+_STRIP_PREFIXES = ("RABBIT_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_", "GEMINI",
                    "PYTEST_", "NOUS_", "XAI_", "LLM_", "CUSTOM_", "TERMINAL_", "DASH_")
-_TOKEN_RE = re.compile(r'__HERMES_SESSION_TOKEN__\s*=\s*"([^"]+)"')
-_READY_RE = re.compile(r"HERMES_DASHBOARD_READY port=(\d+)")
+_TOKEN_RE = re.compile(r'__RABBIT_SESSION_TOKEN__\s*=\s*"([^"]+)"')
+_READY_RE = re.compile(r"RABBIT_DASHBOARD_READY port=(\d+)")
 
 
 def real_user_home() -> Path:
@@ -67,9 +67,9 @@ def free_port() -> int:
 
 
 def hermetic_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Child env: fake HOME (profile-root anchor) + HERMES_HOME under it, nothing credential-shaped."""
+    """Child env: fake HOME (profile-root anchor) + RABBIT_HOME under it, nothing credential-shaped."""
     home = home.resolve()
-    assert home != real_user_home() and not str(home).startswith(str(real_user_home() / ".hermes" / "profiles")), home
+    assert home != real_user_home() and not str(home).startswith(str(real_user_home() / ".rabbit" / "profiles")), home
     env = {k: v for k, v in os.environ.items()
            if not (k.endswith(_STRIP_SUFFIXES) or k.startswith(_STRIP_PREFIXES))}
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
@@ -78,16 +78,16 @@ def hermetic_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, s
         env.pop(var, None)
     env.update(
         HOME=str(home),
-        HERMES_HOME=str(home / ".hermes"),
+        RABBIT_HOME=str(home / ".rabbit"),
         XDG_STATE_HOME=str(home / ".local" / "state"),
         PYTHONPATH=str(REPO_ROOT),
         NO_COLOR="1",
         NO_PROXY="127.0.0.1,localhost",
         no_proxy="127.0.0.1,localhost",
-        # The live-DB guard treats $HOME/.hermes/state.db of a pytest descendant as production;
+        # The live-DB guard treats $HOME/.rabbit/state.db of a pytest descendant as production;
         # this HOME is the test's own tmp dir (asserted above).
-        HERMES_STATE_DB_GUARD_BYPASS="1",
-        HERMES_DISABLE_LAZY_INSTALLS="1",
+        RABBIT_STATE_DB_GUARD_BYPASS="1",
+        RABBIT_DISABLE_LAZY_INSTALLS="1",
     )
     env.update(extra or {})
     return env
@@ -101,7 +101,7 @@ class Profile:
     """One profile home with its own provider and random canaries (a hit is never a coincidence)."""
 
     name: str
-    home: Path  # the profile's HERMES_HOME
+    home: Path  # the profile's RABBIT_HOME
     tag: str = field(default_factory=lambda: secrets.token_hex(5))
     srv: FakeLLMServer | None = None
 
@@ -139,8 +139,8 @@ class Sandbox:
         return self.root / "home"
 
     @property
-    def hermes_home(self) -> Path:
-        return self.home / ".hermes"
+    def rabbit_home(self) -> Path:
+        return self.home / ".rabbit"
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         return hermetic_env(self.home, extra)
@@ -188,18 +188,18 @@ def write_profile_home(p: Profile, extra_config: dict[str, Any] | None = None) -
 def _select_test_dependencies(sb: Sandbox) -> None:
     from tests.e2e.core._pm_dependencies import select_test_dependencies
 
-    select_test_dependencies(sb.hermes_home, REPO_ROOT)
+    select_test_dependencies(sb.rabbit_home, REPO_ROOT)
 
 
 def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
                  responder: Callable[[Profile], Any] | None = None) -> Sandbox:
-    """Launch profile at HOME/.hermes, the rest under profiles/<name>; each owns a started provider
+    """Launch profile at HOME/.rabbit, the rest under profiles/<name>; each owns a started provider
     that accepts only its own key, so every recorded request proves WHO sent it."""
-    hermes_home = root / "home" / ".hermes"
+    rabbit_home = root / "home" / ".rabbit"
     profiles: dict[str, Profile] = {}
     _reaper.adopt_orphans()  # before any spawn: every detached descendant stays reapable
     for name in names:
-        home = hermes_home if name == "default" else hermes_home / "profiles" / name
+        home = rabbit_home if name == "default" else rabbit_home / "profiles" / name
         p = Profile(name=name, home=home)
         script = responder(p) if responder else None
         p.srv = FakeLLMServer(script, default_text=f"reply-from-{p.name}-{p.tag}", api_key=p.provider_key)
@@ -211,7 +211,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
     _assert_profiles_root_under(sb)
     (root / "web_dist").mkdir(exist_ok=True)
     (root / "web_dist" / "index.html").write_text(
-        "<!doctype html><html><head><title>hermes</title></head><body><div id=root></div></body></html>",
+        "<!doctype html><html><head><title>rabbit</title></head><body><div id=root></div></body></html>",
         encoding="utf-8")
     return sb
 
@@ -219,7 +219,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
 def _assert_profiles_root_under(sb: Sandbox) -> None:
     """The profile root is HOME-anchored: prove it resolves inside the sandbox before any write."""
     probe = subprocess.run(
-        [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
+        [sys.executable, "-c", "from rabbit_cli.profiles import _get_profiles_root as r; print(r())"],
         env=sb.env(), cwd=str(sb.home), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
     )
     assert probe.returncode == 0, probe.stderr[-2000:]
@@ -238,16 +238,16 @@ def kill_group(proc: subprocess.Popen, sig: int | None = None) -> None:
 
 
 class Dashboard:
-    """``hermes dashboard`` bound to 127.0.0.1:<ephemeral>, token scraped from index.html."""
+    """``rabbit dashboard`` bound to 127.0.0.1:<ephemeral>, token scraped from index.html."""
 
     def __init__(self, sb: Sandbox, log_path: Path, extra_env: dict[str, str] | None = None,
                  argv: tuple[str, ...] = ()) -> None:
         self.sb = sb
         self.log_path = log_path
         self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
-        env = sb.env({"HERMES_WEB_DIST": str(sb.root / "web_dist"), **(extra_env or {})})
+        env = sb.env({"RABBIT_WEB_DIST": str(sb.root / "web_dist"), **(extra_env or {})})
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "hermes_cli.main", "dashboard", "--no-open", "--skip-build",
+            [sys.executable, "-m", "rabbit_cli.main", "dashboard", "--no-open", "--skip-build",
              "--host", "127.0.0.1", "--port", "0", *argv],
             cwd=str(sb.home), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True,
@@ -264,8 +264,8 @@ class Dashboard:
                     port_box.append(int(m.group(1)))
         threading.Thread(target=pump, daemon=True, name="dash-stdout").start()
         self.port = poll(lambda: port_box[0] if port_box else (self.proc.poll() is not None and -1), 120,
-                         "hermes dashboard to report its port")
-        assert self.port > 0, f"hermes dashboard exited rc={self.proc.returncode}:\n{self.log_tail()}"
+                         "rabbit dashboard to report its port")
+        assert self.port > 0, f"rabbit dashboard exited rc={self.proc.returncode}:\n{self.log_tail()}"
         self.base = f"http://127.0.0.1:{self.port}"
         self.http = httpx.Client(base_url=self.base, timeout=60.0, trust_env=False)
         index = self.http.get("/")
@@ -329,16 +329,16 @@ def db_rows(db: Path, sql: str, args: tuple = ()) -> list[tuple]:
         conn.close()
 
 
-def run_py(sb: Sandbox, code: str, *args: str, hermes_home: Path | None = None,
+def run_py(sb: Sandbox, code: str, *args: str, rabbit_home: Path | None = None,
            timeout: float = 120.0) -> subprocess.CompletedProcess:
-    extra = {"HERMES_HOME": str(hermes_home)} if hermes_home else None
+    extra = {"RABBIT_HOME": str(rabbit_home)} if rabbit_home else None
     return subprocess.run([sys.executable, "-c", code, *args], env=sb.env(extra), cwd=str(sb.home),
                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 SEED_SESSIONS = """
 import sys
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 prefix, n = sys.argv[1], int(sys.argv[2])
 db = SessionDB()
 for i in range(n):
@@ -352,7 +352,7 @@ print("seeded", n)
 
 
 def seed_sessions(sb: Sandbox, p: Profile, prefix: str, n: int) -> None:
-    r = run_py(sb, SEED_SESSIONS, prefix, str(n), hermes_home=p.home)
+    r = run_py(sb, SEED_SESSIONS, prefix, str(n), rabbit_home=p.home)
     assert r.returncode == 0, r.stderr[-2000:]
 
 

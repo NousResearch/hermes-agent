@@ -5,7 +5,7 @@ description: "Kanban-style prompt queue for the desktop: Play drains cards one a
 maintainer: vectorforge22
 tier: community
 category: desktop
-requires_hermes: ">=0.21.5"
+requires_rabbit: ">=0.21.5"
 version: "1.1.1"
 docs_url: https://github.com/vectorforge22/prompt-queue
 platforms: []

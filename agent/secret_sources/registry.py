@@ -6,7 +6,7 @@ Owns everything that must be uniform across backends: registration
 order, else registration order; first claim wins), ``override_existing``
 semantics (may beat .env/shell, never another source, never a protected var),
 cross-source conflict warnings, and provenance. Startup entry point:
-:func:`apply_all` via ``hermes_cli.env_loader``; plugins register through
+:func:`apply_all` via ``rabbit_cli.env_loader``; plugins register through
 ``PluginContext.register_secret_source()`` → :func:`register_source`.
 """
 
@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key, normalize_scope
+from rabbit_constants import rabbit_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _validate_source(source: SecretSource) -> Optional[str]:
         return f"Ignoring secret source with invalid name {name!r}"
     if source.api_version != SECRET_SOURCE_API_VERSION:
         return (f"Ignoring secret source '{name}': built against secret-source API "
-                f"v{source.api_version}, this Hermes speaks v{SECRET_SOURCE_API_VERSION}")
+                f"v{source.api_version}, this Rabbit speaks v{SECRET_SOURCE_API_VERSION}")
     if source.shape not in ("mapped", "bulk"):
         return f"Ignoring secret source '{name}': shape must be 'mapped' or 'bulk', got {source.shape!r}"
     return None
@@ -136,7 +136,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
 def _merged(scope: Optional[str]) -> Dict[str, SecretSource]:
     """Global sources overlaid with the scope's (default: current home) registrations."""
     merged = dict(_SOURCES)
-    merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
+    merged.update(_SCOPED_SOURCES.get(rabbit_home_key(scope), {}))
     return merged
 
 
@@ -189,7 +189,7 @@ def list_plugin_sources() -> List[SecretSource]:
     _ensure_builtin_sources()
     with _REGISTRY_LOCK:
         merged = {n: s for n, s in _SOURCES.items() if _SOURCE_ORIGINS.get(n) == "plugin"}
-        merged.update(_SCOPED_SOURCES.get(hermes_home_key(), {}))
+        merged.update(_SCOPED_SOURCES.get(rabbit_home_key(), {}))
         return list(merged.values())
 
 
@@ -292,16 +292,16 @@ def enabled_source_names(secrets_cfg: dict, home_path: Path) -> frozenset:
     and enabled). A source missing here was removed or disabled, so a value it injected earlier
     is no longer backed by anything and must be revoked, not kept as process residue."""
     secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
-    return frozenset(s.name for s in _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path)))
+    return frozenset(s.name for s in _ordered_enabled_sources(secrets_cfg, scope=rabbit_home_key(home_path)))
 
 
 def _active_profile_name(home_path: Optional[Path]) -> str:
-    """Active profile name (``~/.hermes/profiles/<name>``); "" for the default profile."""
+    """Active profile name (``~/.rabbit/profiles/<name>``); "" for the default profile."""
     if home_path is not None:
         resolved = Path(home_path)
         if resolved.parent.name == "profiles" and resolved.name:
             return resolved.name
-    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+    for env_name in ("RABBIT_PROFILE_NAME", "RABBIT_PROFILE"):
         value = os.environ.get(env_name, "").strip()
         if value and value != "default":
             return value
@@ -401,7 +401,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     env = environ if environ is not None else os.environ
     report = ApplyReport()
     secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
-    enabled = _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path))
+    enabled = _ordered_enabled_sources(secrets_cfg, scope=rabbit_home_key(home_path))
     if not enabled:
         return report
 

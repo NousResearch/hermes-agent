@@ -1,4 +1,4 @@
-import { type GatewayEvent } from '@hermes/shared'
+import { type GatewayEvent } from '@rabbit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $subagentsBySession, clearSessionSubagents } from '@/store/subagents'

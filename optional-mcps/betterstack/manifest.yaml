@@ -7,10 +7,10 @@ connector_slug: better_stack_mcp
 description: 'Better Stack: logs, uptime monitors, incidents, and status pages.'
 source: https://betterstack.com/docs/getting-started/integrations/mcp/
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration
 # (verified live: RFC 9728 protected-resource metadata -> AS metadata with
-# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# registration_endpoint); Rabbit's MCP client + mcp_oauth_manager handle
 # discovery, PKCE, token exchange, and refresh.
 transport:
   type: http
@@ -29,7 +29,7 @@ auth:
 # below cover BOTH shapes — glob patterns for the snake_case wire names plus
 # the display-label literals; unmatched entries no-op harmlessly.
 # ~85+ product tools stay enabled; re-check with
-# `hermes mcp configure betterstack` after first login.
+# `rabbit mcp configure betterstack` after first login.
 tools:
   default_excluded:
     - search_documentation
@@ -52,13 +52,13 @@ suggest:
     - betterstack.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Better Stack (or run `hermes mcp login betterstack`). Approve access,
+  On first connection Rabbit opens a browser to authorize with
+  Better Stack (or run `rabbit mcp login betterstack`). Approve access,
   then restart the session so tools load.
 
   Heads-up: this server exposes a LARGE tool surface (~106 tools as of
-  Aug 2026). Hermes applies a curated exclude list automatically at install
+  Aug 2026). Rabbit applies a curated exclude list automatically at install
   (docs search, instruction pseudo-tools, the raw-SQL query hatch, cloud
   credential minting, and team-membership tools); everything else stays
   enabled. Review or change the selection any time with:
-    hermes mcp configure betterstack
+    rabbit mcp configure betterstack

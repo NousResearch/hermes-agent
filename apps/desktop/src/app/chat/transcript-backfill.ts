@@ -16,7 +16,7 @@
  */
 
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
-import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
+import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/rabbit'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
@@ -24,7 +24,7 @@ import {
   type TranscriptProfileScope,
   transcriptTailState
 } from '@/store/transcript-tail'
-import type { SessionMessage, SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessage, SessionMessagesResponse } from '@/types/rabbit'
 
 /**
  * Compaction projection can stamp the session's opening USER row

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderMessageStream } from '@/app/session/hooks/use-message-stream/test-harness'
 import { $activeSessionId, $busy, $currentUsage, $selectedStoredSessionId } from '@/store/session'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
-import type { ContextBreakdown, UsageStats } from '@/types/hermes'
+import type { ContextBreakdown, UsageStats } from '@/types/rabbit'
 
 import { useStatusbarItems } from './use-statusbar-items'
 

@@ -165,7 +165,7 @@ class TestGenerate:
         assert post_url.endswith("/generate/image/krea/krea-2/large")
 
     def test_aspect_ratio_mapping(self):
-        """Hermes 'square' must map to Krea '1:1' in the wire payload."""
+        """Rabbit 'square' must map to Krea '1:1' in the wire payload."""
         from plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
@@ -310,7 +310,7 @@ class TestGenerate:
         cap, and a path the credential-read guard denies (before its existence is probed)."""
         from plugins.image_gen import krea
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 10)
         for name in ("a.png", "b.png"):
             (tmp_path / name).write_bytes(b"\x89PNG\r\n")
@@ -504,77 +504,6 @@ class TestPollRetryPolicy:
 # ---------------------------------------------------------------------------
 # Managed Nous gateway path
 # ---------------------------------------------------------------------------
-
-
-def _managed_cfg(
-    origin: str = "https://krea-gateway.example.com",
-    token: str = "nous-tok-abc",
-):
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        vendor="krea",
-        gateway_origin=origin,
-        nous_user_token=token,
-        managed_mode=True,
-    )
-
-
-class TestManagedGateway:
-    def test_managed_submit_uses_gateway_origin_and_nous_token(self, monkeypatch):
-        """Managed mode submits to the gateway origin with the Nous token."""
-        import plugins.image_gen.krea as krea_mod
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        # Even with a direct key present, an active managed gateway wins.
-        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
-
-        submit = _submit_response()
-        poll = _poll_response(_completed_job())
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll) as mock_get, \
-             patch(
-                 "plugins.image_gen.krea.save_url_image",
-                 return_value=Path("/tmp/x.png"),
-             ), \
-             patch("plugins.image_gen.krea.time.sleep"):
-            result = KreaImageGenProvider().generate(prompt="A managed lamp", upscale=False)
-
-        assert result["success"] is True
-        post_url = mock_post.call_args[0][0]
-        assert post_url == (
-            "https://krea-gateway.example.com/generate/image/krea/krea-2/medium"
-        )
-        headers = mock_post.call_args.kwargs["headers"]
-        assert headers["Authorization"] == "Bearer nous-tok-abc"
-        # Idempotency key drives the gateway's per-generation billing boundary.
-        assert headers["x-idempotency-key"]
-        # Poll is bound to the same gateway + Nous token.
-        poll_url = mock_get.call_args[0][0]
-        assert poll_url.startswith("https://krea-gateway.example.com/jobs/")
-        poll_headers = mock_get.call_args.kwargs["headers"]
-        assert poll_headers["Authorization"] == "Bearer nous-tok-abc"
-
-
-    def test_managed_429_concurrency_hint(self, monkeypatch):
-        import requests as req_lib
-        import plugins.image_gen.krea as krea_mod
-        from plugins.image_gen.krea import KreaImageGenProvider
-
-        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
-
-        resp = req_lib.Response()
-        resp.status_code = 429
-        resp._content = b'{"error": {"message": "maximum number of concurrent jobs"}}'
-        resp.headers["Content-Type"] = "application/json"
-        resp.raise_for_status = MagicMock(side_effect=req_lib.HTTPError(response=resp))
-
-        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
-            result = KreaImageGenProvider().generate(prompt="test")
-
-        assert result["success"] is False
-        assert "429" in result["error"]
-        assert "concurrency" in result["error"].lower()
 
 
 class TestExplicitModelOverride:

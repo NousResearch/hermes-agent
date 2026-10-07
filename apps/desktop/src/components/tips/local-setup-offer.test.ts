@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const getLocalModelsStatus = vi.fn()
 const getLocalCatalog = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getLocalCatalog: (...args: unknown[]) => getLocalCatalog(...args),
   getLocalModelsStatus: (...args: unknown[]) => getLocalModelsStatus(...args)
 }))

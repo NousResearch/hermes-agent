@@ -93,9 +93,9 @@ describe('cron delivery targets', () => {
 describe('lastErrorSummary', () => {
   it('strips the exception wrapper and markers, keeping only the first sentence', () => {
     const raw =
-      "RuntimeError: Cron job 'x' has no model configured (job.model=None, HERMES_MODEL=''). Set a per-job model via `hermes cron edit x --model <name>`."
+      "RuntimeError: Cron job 'x' has no model configured (job.model=None, RABBIT_MODEL=''). Set a per-job model via `rabbit cron edit x --model <name>`."
 
-    expect(lastErrorSummary(raw)).toBe("Cron job 'x' has no model configured (job.model=None, HERMES_MODEL='').")
+    expect(lastErrorSummary(raw)).toBe("Cron job 'x' has no model configured (job.model=None, RABBIT_MODEL='').")
     expect(lastErrorSummary('[blocked_config:silent] ⚠️ ValueError: bad schedule\nDetails follow')).toBe('bad schedule')
   })
 

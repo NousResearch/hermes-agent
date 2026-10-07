@@ -1,6 +1,6 @@
 """Lane 1b: per-call cache behaviour from ``agent.log`` (OBSERVED provider usage per call).
 
-Hermes logs one line per API call::
+Rabbit logs one line per API call::
 
     ... INFO [<session_id>] agent.conversation_loop: API call #N: model=... in=<prompt> out=<out> total=... latency=..s cache=<hit>/<total> (pct) [write=<n>] [id=<response id>] [upstream=<name>]
 
@@ -9,7 +9,7 @@ Given the rotated logs, this reproduces: prompt-size distribution, cache hit-rat
 ``in`` grows), the share of uncached input those plateaus explain, and the sawtooth replay of an absolute
 context cap on REAL per-call prompt sizes (the figure the tokens lane reported as -49%).
 
-    python -m evals.postmortem.forensics.logcalls --db state_copy.db --logs ~/.hermes/logs/agent.log*
+    python -m evals.postmortem.forensics.logcalls --db state_copy.db --logs ~/.rabbit/logs/agent.log*
 
 Coverage caveat: logs rotate; report the fraction of the run's calls that were found before quoting
 anything from this lane, and treat extrapolations as upper bounds.

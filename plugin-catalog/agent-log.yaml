@@ -1,5 +1,5 @@
 name: agent-log
-repo: https://github.com/PixelAlchemist4/hermes-agent-log-plugin
+repo: https://github.com/PixelAlchemist4/rabbit-agent-log-plugin
 sha: e58702e60b2697c9d1dc3daa9eb65ac1fcc50560
 description: Readable agent.log viewer in the desktop status bar — a live, colour-coded feed of
   API calls, tools, turns, fallbacks, warnings and errors, with per-call tokens/latency/cache,
@@ -7,7 +7,7 @@ description: Readable agent.log viewer in the desktop status bar — a live, col
 maintainer: PixelAlchemist4
 tier: community
 category: desktop
-docs_url: https://github.com/PixelAlchemist4/hermes-agent-log-plugin#readme
+docs_url: https://github.com/PixelAlchemist4/rabbit-agent-log-plugin#readme
 platforms: []
 capabilities:
   provides_tools: []

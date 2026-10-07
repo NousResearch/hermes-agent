@@ -3,7 +3,7 @@ silently fell back to the old primary provider on the next turn because the
 fallback chain — seeded from config at agent __init__ — kept entries for the
 provider the user just moved away from.
 
-Reported: "switched from openrouter provider to anthropic api key via hermes
+Reported: "switched from openrouter provider to anthropic api key via rabbit
 model and the tui keeps trying openrouter".
 """
 
@@ -42,7 +42,7 @@ def _switch_to_anthropic(agent):
         patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-xyz"),
         patch("agent.anthropic_credentials._is_oauth_token", return_value=False),
-        patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
+        patch("rabbit_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):
         agent.switch_model(
             new_model="claude-sonnet-4-5",
@@ -98,7 +98,7 @@ def test_switch_within_same_provider_preserves_chain():
     chain = [{"provider": "openrouter", "model": "x-ai/grok-4"}]
     agent = _make_agent(chain)
 
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+    with patch("rabbit_cli.timeouts.get_provider_request_timeout", return_value=None):
         agent.switch_model(
             new_model="openai/gpt-5",
             new_provider="openrouter",

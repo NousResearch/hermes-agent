@@ -2,7 +2,7 @@ import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-k
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
-import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage, SessionResumeResult } from '@/types/rabbit'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
 import { reconcileDurableHistory } from './utils'

@@ -9,7 +9,7 @@ import { useIsDark } from './use-is-dark'
 // X and Instagram render in the provider's own cross-origin iframe, like every
 // other embed. Their widget scripts (widgets.js / embed.js) must never run in
 // this document: it is the privileged app window, and any script here can call
-// the preload bridge (window.hermesDesktop: terminal, files, backend API). The
+// the preload bridge (window.rabbitDesktop: terminal, files, backend API). The
 // sandbox keeps only what the embed pages need (scripts, and their own
 // origin's cookies and storage) and drops top navigation, popups (main's
 // window-open policy denies them anyway), forms and modals. The frame is

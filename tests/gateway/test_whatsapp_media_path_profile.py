@@ -10,7 +10,7 @@ profile's cache. The validator must resolve the cache roots per-call.
 """
 from pathlib import Path
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 def _make_profile(root: Path) -> Path:
@@ -31,12 +31,12 @@ def test_validator_follows_override_switch(tmp_path):
     # Under B, B's own media validates...
     b_media = prof_b / "cache" / "images" / "img_b.jpg"
     b_media.write_bytes(b"\xff\xd8\xff\x00")
-    token = set_hermes_home_override(str(prof_b))
+    token = set_rabbit_home_override(str(prof_b))
     try:
         assert _is_allowed_bridge_path(str(b_media)) is True
         # ...and a path from a *different* profile is not in B's cache roots.
         assert _is_allowed_bridge_path(str(a_media)) is False
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 

@@ -5,16 +5,16 @@ import logging
 import pytest
 
 from gateway.run import GatewayRunner, _bridge_max_turns_to_env, _current_max_iterations
-from hermes_cli.config import TURN_LIMIT_UNLIMITED
+from rabbit_cli.config import TURN_LIMIT_UNLIMITED
 
 @pytest.mark.parametrize(
     ("max_turns", "expected"),
     [({"max_turns": 50}, "50"), ({}, "90"), ({"max_turns": "unlimited"}, "unlimited")],
 )
 def test_agent_budget_line_matches_enforced_limit(monkeypatch, max_turns, expected):
-    monkeypatch.setenv("HERMES_MAX_ITERATIONS", "90")  # .env value: config wins when set, else it is the legacy bridge
+    monkeypatch.setenv("RABBIT_MAX_ITERATIONS", "90")  # .env value: config wins when set, else it is the legacy bridge
     monkeypatch.setattr("gateway.run._reload_runtime_env_preserving_config_authority", lambda: None)
-    monkeypatch.setattr("gateway.run.get_hermes_home_override", lambda: None)
+    monkeypatch.setattr("gateway.run.get_rabbit_home_override", lambda: None)
     _bridge_max_turns_to_env(max_turns)
     enforced = _current_max_iterations()
     records = []

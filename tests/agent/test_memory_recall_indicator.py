@@ -1,6 +1,6 @@
 """MemoryManager.describe_recall — the deterministic recall indicator.
 
-When auto-recall injects memory, Hermes surfaces a model-independent
+When auto-recall injects memory, Rabbit surfaces a model-independent
 "🧠 <provider> — recalled N memories" status line so the user SEES memory
 working regardless of whether the model chooses to mention it. These tests
 lock the formatting (singular/plural/generic) and the aggregation across

@@ -129,7 +129,7 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
         return False
 
     monkeypatch.setattr(
-        "hermes_cli.route_identity.should_clear_context_pin",
+        "rabbit_cli.route_identity.should_clear_context_pin",
         blocking_route_identity_check,
     )
 

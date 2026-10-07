@@ -1,6 +1,6 @@
 /**
  * Session lineage and sidebar integrity for branches. One real Electron app +
- * one real `hermes serve`; only the LLM is faked.
+ * one real `rabbit serve`; only the LLM is faked.
  *
  *  - a branch child is born with a title (#121062) and is a sidebar row of
  *    its own;
@@ -83,7 +83,7 @@ async function openSession(page: Page, sessionId: string, mustShow: string) {
 test('lineage: a branch child is its own titled row and switching never leaks turns', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('lineage')
-  writeProviderHome(sandbox.hermesHome, provider.url)
+  writeProviderHome(sandbox.rabbitHome, provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 

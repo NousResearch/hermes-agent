@@ -1,7 +1,7 @@
 """C2 on terminal surfaces: what the classic CLI and the Ink TUI finally show is the transcript,
 exactly once, unmangled, and matches what was persisted.
 
-Real chain: a real ``hermes chat --cli`` / ``hermes --tui`` process (the TUI spawns its real Node
+Real chain: a real ``rabbit chat --cli`` / ``rabbit --tui`` process (the TUI spawns its real Node
 frontend and real ``tui_gateway`` child) on a real PTY, a real AIAgent + SessionDB on disk, and the
 recording fake OpenAI-compatible provider streaming scripted multi-chunk replies, a tool-call turn
 and a reasoning turn. The byte stream is rendered through a VT emulator so assertions are made on
@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.e2e.core.terminal._pty import REPO_ROOT, PtyHermes, canon
+from tests.e2e.core.terminal._pty import REPO_ROOT, PtyRabbit, canon
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 pytestmark = [
@@ -135,15 +135,15 @@ MATRIX = [
 @pytest.mark.parametrize(("surface", "scenario"), MATRIX)
 def test_terminal_transcript_integrity(surface: str, scenario: str, tmp_path: Path) -> None:
     if surface == "tui" and not _tui_available():
-        if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
-            pytest.fail("ui-tui/dist/entry.js or node missing but HERMES_E2E_REQUIRE_TUI=1")
+        if os.environ.get("RABBIT_E2E_REQUIRE_TUI") == "1":
+            pytest.fail("ui-tui/dist/entry.js or node missing but RABBIT_E2E_REQUIRE_TUI=1")
         pytest.skip("Ink TUI not built (cd ui-tui && npm run build) or node missing")
 
     spec = _scenarios(surface)[scenario]
     script = [r for turn in spec.turns for r in turn.responses]
     rows, cols = spec.rows, 100
     with FakeLLMServer(script, aux=lambda _req: Text(TITLE)) as llm:
-        term = PtyHermes(tmp_path, SURFACES[surface], llm, rows=rows, cols=cols)
+        term = PtyRabbit(tmp_path, SURFACES[surface], llm, rows=rows, cols=cols)
         try:
             term.wait_ready()
             expected_main = 0

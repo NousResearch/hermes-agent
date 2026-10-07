@@ -5,10 +5,10 @@
  * dashboard basic-auth) remote gateways (#92183).
  *
  * Historically every cookie-mode remote rode ONE Electron session partition
- * (`persist:hermes-remote-oauth`) — the jar was keyed on the auth *mode*, not
+ * (`persist:rabbit-remote-oauth`) — the jar was keyed on the auth *mode*, not
  * on the connection's identity. Chromium cookie jars scope by host and ignore
  * the port, so two registered gateways on the same host (the #92183 VPN
- * setup: one box, two dashboards) fought over the same `hermes_session*`
+ * setup: one box, two dashboards) fought over the same `rabbit_session*`
  * cookies: signing in to gateway B evicted gateway A's session, and A's
  * cookie was silently PRESENTED to B on every request — a cross-connection
  * credential leak.
@@ -25,8 +25,6 @@
  *   - The registry PRIMARY and the v1 single-connection remote stay on the
  *     LEGACY shared partition, so existing signed-in users are not signed out
  *     by the upgrade.
- *   - `cloud` entries stay on the legacy partition: the silent per-agent
- *     cascade deliberately shares one jar with the Nous Portal session.
  *   - Token-auth remotes, portal URLs, and anything unmatched or malformed
  *     fall back to the legacy partition (cookie-free flows are unaffected).
  *   - Login flows may name the connection explicitly (`connectionId`): the
@@ -41,7 +39,7 @@
  * project; main.ts owns session.fromPartition() and injects nothing here.
  */
 
-export const LEGACY_OAUTH_PARTITION = 'persist:hermes-remote-oauth'
+export const LEGACY_OAUTH_PARTITION = 'persist:rabbit-remote-oauth'
 
 // Colon-free ON PURPOSE: Electron escapes ':' in a partition name to '%3A' in
 // the on-disk profile folder, and a Windows profile folder whose name contains
@@ -56,7 +54,7 @@ export const LEGACY_OAUTH_PARTITION = 'persist:hermes-remote-oauth'
 // The name used to be `${LEGACY_OAUTH_PARTITION}:conn:<id>` (#92183). That
 // jar never worked on Windows; on macOS/Linux a non-primary remote signed in
 // under the old name is re-prompted ONCE after this change (the old
-// `Partitions/hermes-remote-oauth%3Aconn%3A<id>` folder is left on disk,
+// `Partitions/rabbit-remote-oauth%3Aconn%3A<id>` folder is left on disk,
 // inert). One name on every platform beats a per-OS partition scheme.
 const CONNECTION_PARTITION_PREFIX = `${LEGACY_OAUTH_PARTITION}-conn-`
 
@@ -79,7 +77,7 @@ export interface ResolveOauthPartitionOptions {
    * Draft entry shape for the pre-save login: the `kind`/`authMode` the save
    * will persist. The unknown-id shortcut below grants a private jar only
    * when the saved entry would earn one (a non-primary cookie-auth remote);
-   * cloud and token drafts keep the legacy shared jar, which is what they
+   * token drafts keep the legacy shared jar, which is what they
    * resolve to after the save. Absent/invalid values fail closed to the
    * legacy jar — never a private one a saved entry would not read.
    */
@@ -170,10 +168,9 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
       // eligibility the URL-match path applies after the save, so the jar the
       // login writes is always the jar the saved entry reads. Only a
       // non-primary cookie-auth remote earns its own partition (module
-      // header): cloud drafts must share the portal jar (the silent per-agent
-      // cloud cascade depends on it) and token drafts never ride cookies, so
-      // both sign in on the legacy jar — which is also what they resolve to
-      // once saved. A draft whose URL IS the v1 remote's lands on legacy for
+      // header): token drafts never ride cookies, so they sign in on the
+      // legacy jar — which is also what they resolve to once saved. A draft
+      // whose URL IS the v1 remote's lands on legacy for
       // the same reason a saved v1-migrated entry does. An unknown id cannot
       // be the registry primary (the primary is, by definition, persisted), so
       // no primary check is needed here. Missing/invalid pending shape (an
@@ -211,9 +208,9 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     const id = typeof (entry as any).id === 'string' ? (entry as any).id.trim() : ''
 
     // Only NON-primary v2 `remote` entries with cookie-flow auth get their own
-    // jar. Cloud entries need the shared portal jar; token entries never use
-    // cookies; the primary (and the v1 remote it migrated from) keeps the
-    // legacy jar so an upgrade does not sign the user out.
+    // jar. Token entries never use cookies; the primary (and the v1 remote
+    // it migrated from) keeps the legacy jar so an upgrade does not sign the
+    // user out.
     if (!id || id === primaryId) {
       continue
     }

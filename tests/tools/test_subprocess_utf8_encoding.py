@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 def test_op_whoami_survives_non_utf8_cli_output(tmp_path, monkeypatch):
-    from hermes_cli import onepassword_secrets_cli as op_cli
+    from rabbit_cli import onepassword_secrets_cli as op_cli
 
     # _op_whoami runs ``[binary, "whoami"]``. Using the interpreter as the
     # binary makes that ``python whoami``, i.e. run ./whoami from the cwd:

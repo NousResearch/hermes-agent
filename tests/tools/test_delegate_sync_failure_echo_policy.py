@@ -7,7 +7,7 @@ import pytest
 
 def configure(home, setting, monkeypatch):
     home.mkdir(exist_ok=True)
-    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('RABBIT_HOME', str(home))
     (home/'config.yaml').write_text(json.dumps({'display': {} if setting is None else {'suppress_warning_notifications':setting}}))
 
 

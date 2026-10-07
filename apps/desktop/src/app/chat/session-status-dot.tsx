@@ -5,7 +5,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 import { $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 // A pure lookup table: each state maps to its className, aria-label, and title.
 // No priority resolution here — $sessionDotStateById already picked one.

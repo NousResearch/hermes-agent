@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
@@ -47,12 +47,12 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_disabled_by_default(self, tmp_path, monkeypatch):
         """When tool_progress_command is false, /verbose returns an info message."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir()
+        config_path = rabbit_home / "config.yaml"
         config_path.write_text("display:\n  tool_progress: all\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
@@ -63,15 +63,15 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_enabled_cycles_mode(self, tmp_path, monkeypatch):
         """When enabled, /verbose cycles tool_progress mode per-platform."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir()
+        config_path = rabbit_home / "config.yaml"
         config_path.write_text(
             "display:\n  tool_progress_command: true\n  tool_progress: all\n",
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
@@ -87,15 +87,15 @@ class TestVerboseCommand:
     @pytest.mark.asyncio
     async def test_quoted_false_keeps_command_disabled(self, tmp_path, monkeypatch):
         """Quoted false must not enable the /verbose gateway command."""
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir()
+        config_path = rabbit_home / "config.yaml"
         config_path.write_text(
             'display:\n  tool_progress_command: "false"\n  tool_progress: all\n',
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
 
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())

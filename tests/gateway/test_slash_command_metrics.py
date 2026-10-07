@@ -12,7 +12,7 @@ from tests.gateway.test_gateway_command_dispatch_minimal import _make_runner, _m
 async def test_gateway_counts_each_user_slash_command_once(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        "hermes_cli.observability.shared_metrics_events.record_slash_command", lambda **kw: calls.append(kw))
+        "rabbit_cli.observability.shared_metrics_events.record_slash_command", lambda **kw: calls.append(kw))
     runner, _adapter = _make_runner()
     runner._is_user_authorized_for_source = lambda _source: True
     runner._admit_bot_message_for_source = lambda _source: True

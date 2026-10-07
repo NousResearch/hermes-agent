@@ -7,7 +7,7 @@ the tail. The next prompt then appended a second user row and ``repair_message_s
 merged the failed request into the new one. Closed at the core seam
 (``agent/conversation_loop.py::_close_durable_failed_turn``).
 
-Driven through the real ``HermesACPAgent.prompt()`` with a real ``AIAgent`` and ``SessionDB``
+Driven through the real ``RabbitACPAgent.prompt()`` with a real ``AIAgent`` and ``SessionDB``
 against a loopback OpenAI-compatible endpoint; assertions read SQLite rows and the request
 body the provider actually received.
 """
@@ -87,15 +87,15 @@ class _RecordingConn:
 
 @pytest.fixture
 def acp(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_DISABLE_PLUGINS", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_DISABLE_PLUGINS", "1")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     provider = _LoopbackProvider()
 
     import acp_adapter.session as acp_session
-    import hermes_cli.config as cli_config
-    import hermes_cli.mcp_startup as mcp_startup
-    import hermes_cli.runtime_provider as runtime_provider
+    import rabbit_cli.config as cli_config
+    import rabbit_cli.mcp_startup as mcp_startup
+    import rabbit_cli.runtime_provider as runtime_provider
 
     monkeypatch.setattr(cli_config, "load_config", lambda *a, **k: {
         "model": {"provider": "openai-compat", "default": _MODEL, "context_length": 131072},
@@ -108,13 +108,13 @@ def acp(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_startup, "ensure_mcp_discovery_before_agent_build", lambda **k: None)
     monkeypatch.setattr(acp_session, "_expand_acp_enabled_toolsets", lambda *a, **k: [])
 
-    from acp_adapter.server import HermesACPAgent, TextContentBlock
+    from acp_adapter.server import RabbitACPAgent, TextContentBlock
     from acp_adapter.session import SessionManager
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path)
-    server = HermesACPAgent(session_manager=SessionManager(db=db))
+    server = RabbitACPAgent(session_manager=SessionManager(db=db))
     conn = _RecordingConn()
     server.on_connect(conn)
     sid = server.session_manager.create_session(cwd=str(tmp_path)).session_id
@@ -141,7 +141,7 @@ _NEW_REQUEST = "What is the capital of France?"
 def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(acp):
     """Turn 1: HTTP-200 ``content_filter`` refusal. Turn 2: unrelated request.
 
-    Invariant: the durable tail after a failed turn is a Hermes-authored assistant row (never
+    Invariant: the durable tail after a failed turn is a Rabbit-authored assistant row (never
     provider text), and the next prompt reaches the provider as its own user row.
     """
     from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
@@ -198,9 +198,9 @@ def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_contex
 
     from agent.conversation_loop import _close_durable_failed_turn
     from agent.turn_failure_copy import PARTIAL_FAILED_TURN_NOTICE
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
     sid = "s1"
     db.create_session(session_id=sid, source="acp", model="m")
@@ -269,9 +269,9 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     from types import SimpleNamespace
 
     from agent.conversation_loop import _close_durable_failed_turn
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     db = SessionDB(tmp_path / "state.db")
     sid = "s1"
     db.create_session(session_id=sid, source="acp", model="m")

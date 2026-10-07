@@ -5,7 +5,7 @@ terminal status — an ok, or a failure notice carrying its real error.
 the notice already reached the channel, the run must fall through to the owner-fenced terminal
 write in `_finish_completed_run` (the authoritative claim check) instead of recording an error.
 
-These drive the real store (``jobs.json`` under a temp HERMES_HOME) so the assertion is the
+These drive the real store (``jobs.json`` under a temp RABBIT_HOME) so the assertion is the
 actual on-disk ``last_status`` the health watchdog reads, not a mock's call list.
 """
 
@@ -16,8 +16,8 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json/executions don't touch the real store."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    """Isolated RABBIT_HOME so jobs.json/executions don't touch the real store."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     return tmp_path
 
 

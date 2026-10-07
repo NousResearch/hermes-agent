@@ -17,7 +17,7 @@ TDD：强制执行 RED-GREEN-REFACTOR，测试先于代码。
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/software-development/test-driven-development` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent（改编自 obra/superpowers） |
+| 作者 | Rabbit Agent（改编自 obra/superpowers） |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `testing`, `tdd`, `development`, `quality`, `red-green-refactor` |
@@ -26,7 +26,7 @@ TDD：强制执行 RED-GREEN-REFACTOR，测试先于代码。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # 测试驱动开发（TDD）
@@ -298,7 +298,7 @@ TDD 本身就是务实的：
 | 必须 mock 所有东西 | 代码耦合度太高。使用依赖注入。 |
 | 测试 setup 很庞大 | 提取辅助函数。仍然复杂？简化设计。 |
 
-## Hermes Agent 集成
+## Rabbit Agent 集成
 
 ### 运行测试
 

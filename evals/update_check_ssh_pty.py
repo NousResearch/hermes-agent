@@ -15,12 +15,12 @@ BASE = Path(os.environ['AUDIT_DIR'])
 REPO = Path(os.environ['AUDIT_REPO'])
 BASE.mkdir(parents=True, exist_ok=True)
 env = {'PATH': f'{BASE}/bin:/usr/bin:/bin', 'HOME': str(BASE/'home'),
-       'HERMES_HOME': str(BASE/'hermes'), 'PYTHONPATH': str(REPO),
+       'RABBIT_HOME': str(BASE/'rabbit'), 'PYTHONPATH': str(REPO),
        'PYTHONDONTWRITEBYTECODE': '1', 'AUDIT_DIR': str(BASE), 'AUDIT_REPO': str(REPO)}
-for name in ('home', 'hermes', 'bin'):
+for name in ('home', 'rabbit', 'bin'):
     (BASE/name).mkdir(exist_ok=True)
 sys.path.insert(0, str(REPO))
-from hermes_cli import source_check
+from rabbit_cli import source_check
 
 if len(sys.argv) > 1:
     os.environ.clear()

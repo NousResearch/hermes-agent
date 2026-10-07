@@ -422,7 +422,7 @@ _IMAGE_CORRUPT_PHRASES = (
 def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     """Send-path image strip for a model that rejected image content (see turn_recovery).
 
-    Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
+    Runs on the per-call ``api_messages`` copy in Rabbit's own message format, BEFORE the
     provider-specific conversion: the part types this stripper knows are that format's, and a
     converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model

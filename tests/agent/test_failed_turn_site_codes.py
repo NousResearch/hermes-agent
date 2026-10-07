@@ -90,7 +90,7 @@ def test_context_rejection_near_the_window_still_compresses():
 
 def test_hosted_context_rejection_far_below_the_known_window_compresses():
     """A hosted route has no shared slot to wait out: a small request rejected there means the
-    route's real window is below the one Hermes assumes, so /retry would fail forever. Compress."""
+    route's real window is below the one Rabbit assumes, so /retry would fail forever. Compress."""
     verdict, compressed = _context_rejection(
         47_000, window=1_000_000, base_url="https://api.anthropic.com",
         error="This model's maximum context length was exceeded. Please reduce the length of the messages.",
@@ -108,11 +108,11 @@ def test_empty_response_exhaustion_has_one_text_everywhere():
 
 
 def test_persistence_failure_default_copy_is_actionable_and_profile_aware(monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", "/srv/hermes-profile")
+    monkeypatch.setenv("RABBIT_HOME", "/srv/rabbit-profile")
     text = TurnExplainersMixin._format_turn_completion_explanation("session_persistence_failed", "replaced")
-    assert "hermes gateway stop" in text and "hermes doctor" in text
-    assert "~/.hermes" not in text and "/srv/hermes-profile" in text
-    assert "manifest" not in text  # the runbook stays in logger.error at hermes_state
+    assert "rabbit gateway stop" in text and "rabbit doctor" in text
+    assert "~/.rabbit" not in text and "/srv/rabbit-profile" in text
+    assert "manifest" not in text  # the runbook stays in logger.error at rabbit_state
 
 
 

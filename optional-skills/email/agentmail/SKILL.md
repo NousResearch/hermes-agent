@@ -6,7 +6,7 @@ author: Haakam Aujla (Haakam21), AgentMail
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Email, CLI, AgentMail, Communication]
     homepage: https://agentmail.to
 prerequisites:

@@ -159,7 +159,7 @@ def test_broken_root_is_retried_after_broken_retry_seconds(tmp_path, monkeypatch
     src = repo / "x.py"
     src.write_text("", encoding="utf-8")
     cfg = {"lsp": {"wait_timeout": 1.0, "install_strategy": "manual", "broken_retry_seconds": 0.2}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+    with patch("rabbit_cli.config.load_config_readonly", return_value=cfg):
         svc = LSPService.create_from_config()
     assert svc is not None
     try:

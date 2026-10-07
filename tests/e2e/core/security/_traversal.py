@@ -1,8 +1,8 @@
 """Private harness for the traversal sub-lane (store traversal + workspace escape).
 
-``run_tool_calls`` drives the REAL agent tool path: one ``hermes chat -q`` process whose model (the
+``run_tool_calls`` drives the REAL agent tool path: one ``rabbit chat -q`` process whose model (the
 loopback fake) issues the given tool calls in order, then answers ``done``. Each tool result is read
-back from the wire: the final request Hermes sent to the model carries every ``role: tool`` message,
+back from the wire: the final request Rabbit sent to the model carries every ``role: tool`` message,
 keyed by the fake's sequential ``call_fake_<n>`` ids.
 """
 
@@ -33,20 +33,20 @@ def run_tool_calls(home: Path, calls: list[tuple[str, dict[str, Any]]], *, cwd: 
                    config: str = "", env_lines: dict[str, str] | None = None,
                    extra_env: dict[str, str] | None = None, timeout: float = 150.0,
                    prepare: Callable[[], None] | None = None) -> list[str]:
-    """Run one ``hermes chat -q`` turn whose model issues ``calls`` sequentially; return each tool
+    """Run one ``rabbit chat -q`` turn whose model issues ``calls`` sequentially; return each tool
     result text, in call order. ``prepare`` runs after the home (config.yaml + .env) is written and
-    before Hermes starts (snapshot pre-run state there). Harness failures (non-zero exit, a lost tool
+    before Rabbit starts (snapshot pre-run state there). Harness failures (non-zero exit, a lost tool
     result) are plain ``AssertionError`` so a KNOWN ``known_gate`` (``raises=BoundaryBreach``) never masks them."""
     key = H.canary("sk-traversal")
     script: list[Any] = [ToolCall(name, args) for name, args in calls] + [Text("done")]
     with FakeLLMServer(script, api_key=key) as srv:
-        H.write_home(home / ".hermes", srv.base_url, api_key=key, config=config, env=env_lines)
+        H.write_home(home / ".rabbit", srv.base_url, api_key=key, config=config, env=env_lines)
         if prepare is not None:
             prepare()
-        proc = H.run_hermes(["chat", "-q", "run the scripted tools", "-Q"], home, cwd=cwd,
+        proc = H.run_rabbit(["chat", "-q", "run the scripted tools", "-Q"], home, cwd=cwd,
                             extra_env=extra_env, timeout=timeout)
         reqs = srv.main_requests()
-    assert proc.returncode == 0, f"hermes chat -q rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-4000:]}"
+    assert proc.returncode == 0, f"rabbit chat -q rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-4000:]}"
     assert len(reqs) == len(calls) + 1, f"expected {len(calls) + 1} model turns, saw {len(reqs)}\n{proc.stderr[-3000:]}"
     results = {m.get("tool_call_id"): tool_text(m.get("content"))
                for m in reqs[-1]["messages"] if m.get("role") == "tool"}

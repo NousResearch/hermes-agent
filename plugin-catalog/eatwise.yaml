@@ -1,5 +1,5 @@
 name: eatwise
-repo: https://github.com/harrylabsj/hermes-plugin-eatwise
+repo: https://github.com/harrylabsj/rabbit-plugin-eatwise
 sha: d482a1230703e3714abf187754608fd0704000d5
 description: 'Eatwise (外卖营养教练) — local-first Chinese dietary coach: deterministic meal
   nutrition reviews, personal daily energy/nutrient targets, and consented on-device

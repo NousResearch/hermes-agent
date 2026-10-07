@@ -18,9 +18,9 @@ class TestScreenshotPathRecovery:
 
         assert (
             _extract_screenshot_path_from_text(
-                "Screenshot saved to '/Users/david/.hermes/browser_screenshots/shot.png'"
+                "Screenshot saved to '/Users/david/.rabbit/browser_screenshots/shot.png'"
             )
-            == "/Users/david/.hermes/browser_screenshots/shot.png"
+            == "/Users/david/.rabbit/browser_screenshots/shot.png"
         )
 
 
@@ -119,11 +119,11 @@ class TestInactivityJanitorMultiplex:
 
     def test_janitor_tears_down_under_owner_profile_scope(self, tmp_path, monkeypatch):
         from agent import secret_scope
-        from hermes_constants import (
-            get_hermes_home, reset_hermes_home_override, set_hermes_home_override,
+        from rabbit_constants import (
+            get_rabbit_home, reset_rabbit_home_override, set_rabbit_home_override,
         )
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.delenv("CAMOFOX_URL", raising=False)
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
         p1 = tmp_path / "profiles" / "p1"
@@ -131,20 +131,20 @@ class TestInactivityJanitorMultiplex:
         (p1 / ".env").write_text("CAMOFOX_URL=http://127.0.0.1:1\n", encoding="utf-8")
 
         # Profile p1's turn opens the session; the janitor later runs unscoped.
-        home_tok = set_hermes_home_override(str(p1))
+        home_tok = set_rabbit_home_override(str(p1))
         scope_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(p1))
         try:
             bt_lifecycle._update_session_activity("t1")
             self.bt._active_sessions["t1"] = {"session_name": "s1", "bb_session_id": None}
         finally:
             secret_scope.reset_secret_scope(scope_tok)
-            reset_hermes_home_override(home_tok)
+            reset_rabbit_home_override(home_tok)
         self.bt._session_last_activity["t1"] -= 10
 
         seen = {}
 
         def fake_close(task_id, cmd, args, timeout=None):
-            seen["home"] = str(get_hermes_home())
+            seen["home"] = str(get_rabbit_home())
             seen["url"] = secret_scope.get_secret("CAMOFOX_URL")
             return {"success": True}
 
@@ -207,7 +207,7 @@ class TestAtexitStopSwallowsInterrupt:
 
 class TestAtexitOriginUnimportable:
     def test_hooks_stay_silent_when_origin_fresh_import_fails(self, monkeypatch):
-        """Mid-`hermes update` the on-disk tree can be half-new (new config.py importing
+        """Mid-`rabbit update` the on-disk tree can be half-new (new config.py importing
         a name the old utils.py lacks yet); the fresh import in origin_module then raises
         and the atexit hooks must stay silent (#112437)."""
         import tools.browser_tool_origin as origin_mod

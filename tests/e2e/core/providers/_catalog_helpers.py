@@ -3,7 +3,7 @@
 The provider list is NEVER hardcoded: :func:`discover_catalog` runs the real plugin discovery
 (``providers.list_providers()``) in a clean child interpreter, so a new plugin under
 ``plugins/model-providers/`` joins every matrix automatically. Each row is driven through the
-real ``python -m hermes_cli.main`` in a hermetic HOME against
+real ``python -m rabbit_cli.main`` in a hermetic HOME against
 :class:`tests.fakes.providers.catalog_fake.CatalogFake`, redirected the way the product documents
 (``model.provider`` + ``model.base_url`` in config.yaml; ``/anthropic`` path for the Anthropic
 Messages dialect). Every other provider's key is present as a decoy, and all non-loopback egress
@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core._pm_dependencies import select_test_dependencies
@@ -64,8 +64,8 @@ UNREDIRECTABLE_AUTH = {
     "vertex": "Google ADC/OAuth2 token minting is required before any request",
     "external_process": "speaks ACP to a local vendor CLI subprocess, not HTTP",
     "copilot": "the GitHub token exchange URL is hardcoded (api.github.com/copilot_internal/v2/token)",
-    "oauth_device_code": "login + refresh covered by test_catalog_oauth.py",
-    "oauth_external": "login + refresh covered by test_catalog_oauth.py (where redirectable)",
+    "oauth_device_code": "MiniMax OAuth refresh covered by test_catalog_oauth.py; device-code login e2e dropped with the legacy provider strip",
+    "oauth_external": "Anthropic refresh covered by test_oauth_anthropic_refresh.py",
 }
 KEYLESS_PROVIDERS = {
     "custom": "user-defined endpoint keyed by config api_key; covered by test_chat_custom_endpoint.py",
@@ -154,7 +154,7 @@ _CATALOG: list[Row] | None = None
 
 _DISCOVER = """
 import json, providers
-from hermes_cli.providers import host_mandated_api_mode
+from rabbit_cli.providers import host_mandated_api_mode
 out = []
 for p in providers.list_providers():
     key = next((e for e in p.env_vars if not e.endswith("_BASE_URL")), None)
@@ -172,7 +172,7 @@ def discover_catalog() -> list[Row]:
     if _CATALOG is None:
         with tempfile.TemporaryDirectory(prefix="catalog-discover-") as d:
             env = {k: v for k, v in os.environ.items() if k in _PASSTHROUGH}
-            env.update(HOME=d, HERMES_HOME=str(Path(d) / ".hermes"), PYTHONPATH=str(REPO_ROOT))
+            env.update(HOME=d, RABBIT_HOME=str(Path(d) / ".rabbit"), PYTHONPATH=str(REPO_ROOT))
             proc = subprocess.run([sys.executable, "-c", _DISCOVER], env=env, capture_output=True,
                                   text=True, timeout=120, cwd=str(REPO_ROOT))
         line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("CATALOG=")), None)
@@ -195,10 +195,10 @@ def hermetic_env(home: Path, extra: dict[str, str]) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items()
            if (k in _PASSTHROUGH or k.startswith("LC_")) and not k.endswith(_SECRET_SUFFIXES)}
     env.update({
-        "HOME": str(home), "HERMES_HOME": str(home / ".hermes"), "PYTHONPATH": str(REPO_ROOT),
+        "HOME": str(home), "RABBIT_HOME": str(home / ".rabbit"), "PYTHONPATH": str(REPO_ROOT),
         "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb",
         # The child's HOME is tmp_path; this is the state-db guard's documented child escape hatch.
-        "HERMES_STATE_DB_GUARD_BYPASS": "1",
+        "RABBIT_STATE_DB_GUARD_BYPASS": "1",
     })
     env.update(extra)
     return env
@@ -206,22 +206,22 @@ def hermetic_env(home: Path, extra: dict[str, str]) -> dict[str, str]:
 
 def write_home(root: Path, model: dict[str, Any], extra_cfg: dict[str, Any] | None = None) -> Path:
     home = root / "home"
-    (home / ".hermes").mkdir(parents=True, exist_ok=True)
+    (home / ".rabbit").mkdir(parents=True, exist_ok=True)
     cfg = {"model": {"default": "catalog-model-a", "context_length": 128000, **model},
            # auto_recovery_cycles: 0 — the documented post-exhaustion ladder (15/30/60/60/60 s) would
            # otherwise park a transport-failed turn for minutes; one bounded attempt is the contract here.
            "agent": {"api_max_retries": 1, "auto_recovery_cycles": 0}, "updates": {"check": False},
            **(extra_cfg or {})}
-    (home / ".hermes" / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    select_test_dependencies(home / ".hermes", REPO_ROOT)
+    (home / ".rabbit" / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    select_test_dependencies(home / ".rabbit", REPO_ROOT)
     return home
 
 
-def run_hermes(home: Path, cwd: Path, env_extra: dict[str, str], *args: str,
+def run_rabbit(home: Path, cwd: Path, env_extra: dict[str, str], *args: str,
                timeout: float = TURN_TIMEOUT) -> subprocess.CompletedProcess:
     """Run the real CLI; a child that outlives ``timeout`` is killed (rc -9, reason in stderr)."""
     with tempfile.TemporaryFile("w+", encoding="utf-8") as out, tempfile.TemporaryFile("w+", encoding="utf-8") as err:
-        proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", *args], cwd=cwd,
+        proc = subprocess.Popen([sys.executable, "-m", "rabbit_cli.main", *args], cwd=cwd,
                                 env=hermetic_env(home, env_extra), stdout=out, stderr=err, text=True,
                                 stdin=subprocess.DEVNULL)
         try:
@@ -236,7 +236,7 @@ def run_hermes(home: Path, cwd: Path, env_extra: dict[str, str], *args: str,
 
 
 def session_usage(home: Path) -> dict[str, Any] | None:
-    db = home / ".hermes" / "state.db"
+    db = home / ".rabbit" / "state.db"
     if not db.exists():
         return None
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -290,7 +290,7 @@ def drive_turn(row: Row, root: Path, catalog: list[Row]) -> TurnResult:
     started = time.monotonic()
     with CatalogFake(tool_args={"path": str(project / "canary.txt")}, final_text=FINAL, routes=row.routes()) as fake:
         home = write_home(root, {"provider": row.name, "base_url": fake.origin + row.base_path})
-        proc = run_hermes(home, project, {**keys, **fake.proxy_env()}, "-z", "Read canary.txt and report.")
+        proc = run_rabbit(home, project, {**keys, **fake.proxy_env()}, "-z", "Read canary.txt and report.")
         requests = list(fake.requests)
         egress = fake.egress_hosts()
     return TurnResult(row=row, rc=proc.returncode, stdout=proc.stdout, stderr=proc.stderr, requests=requests,

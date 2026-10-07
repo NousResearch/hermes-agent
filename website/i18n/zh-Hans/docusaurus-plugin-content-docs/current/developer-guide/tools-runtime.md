@@ -6,7 +6,7 @@ description: "工具注册表、toolset、调度及终端环境的运行时行�
 
 # 工具运行时
 
-Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过中央注册表/调度系统执行。
+Rabbit 工具是自注册函数，按 toolset（工具集）分组，并通过中央注册表/调度系统执行。
 
 主要文件：
 
@@ -66,7 +66,7 @@ def discover_builtin_tools(tools_dir=None):
 核心工具发现完成后，还会发现 MCP 工具和插件工具：
 
 1. **MCP 工具** — `tools.mcp_tool.discover_mcp_tools()` 读取 MCP 服务器配置，并注册来自外部服务器的工具。
-2. **插件工具** — `hermes_cli.plugins.discover_plugins()` 加载用户/项目/pip 插件，这些插件可能注册额外的工具。
+2. **插件工具** — `rabbit_cli.plugins.discover_plugins()` 加载用户/项目/pip 插件，这些插件可能注册额外的工具。
 
 ## 工具可用性检查（`check_fn`）
 
@@ -96,12 +96,12 @@ if entry.check_fn:
 
 ## Toolset 解析
 
-Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
+Toolset 是工具的命名集合。Rabbit 通过以下方式解析它们：
 
 - 显式启用/禁用的 toolset 列表
-- 平台预设（`hermes-cli`、`hermes-telegram` 等）
+- 平台预设（`rabbit-cli`、`rabbit-telegram` 等）
 - 动态 MCP toolset
-- 精选的特殊用途集合，如 `hermes-acp`
+- 精选的特殊用途集合，如 `rabbit-acp`
 
 ### `get_tool_definitions()` 如何过滤工具
 

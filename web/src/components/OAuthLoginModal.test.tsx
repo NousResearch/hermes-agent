@@ -35,7 +35,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 const provider = {
-  cli_command: "hermes login nous",
+  cli_command: "rabbit login nous",
   disconnectable: true,
   docs_url: "https://example.com/nous",
   flow: "device_code" as const,

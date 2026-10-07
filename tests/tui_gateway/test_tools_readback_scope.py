@@ -10,7 +10,7 @@ session's own profile would build with; the launch profile's session still sees 
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 import tui_gateway.server as server
@@ -31,13 +31,13 @@ def _pin(home, names):
 def two_homes(tmp_path, monkeypatch):
     """Launch home pinned to LAUNCH_PIN, secondary ``profiles/work`` pinned to WORKER_PIN; one
     multiplexing backend serves an agent-less session per home."""
-    root = tmp_path / "hermes_home"
+    root = tmp_path / "rabbit_home"
     worker = root / "profiles" / "work"
     _pin(root, LAUNCH_PIN)
     _pin(worker, WORKER_PIN)
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
-    monkeypatch.setattr(server, "_hermes_home", root)
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.delenv("RABBIT_TUI_TOOLSETS", raising=False)
+    monkeypatch.setattr(server, "_rabbit_home", root)
     from agent import secret_scope
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None
@@ -62,7 +62,7 @@ def _sections(sid: str) -> set[str]:
 
 
 def test_tools_list_reads_back_the_sessions_own_pin_a_b_a(two_homes):
-    from hermes_constants import get_hermes_home_override
+    from rabbit_constants import get_rabbit_home_override
 
     work_first = _enabled("work")
     launch = _enabled("launch")
@@ -70,7 +70,7 @@ def test_tools_list_reads_back_the_sessions_own_pin_a_b_a(two_homes):
     assert set(WORKER_PIN) <= work_first == work_again, sorted(work_first)
     assert work_first.isdisjoint({"web", "browser", "terminal"}), sorted(work_first)
     assert set(LAUNCH_PIN) <= launch and "file" not in launch, sorted(launch)
-    assert get_hermes_home_override() is None  # scope released after each answer
+    assert get_rabbit_home_override() is None  # scope released after each answer
 
 
 def test_tools_show_sections_follow_the_sessions_pin(two_homes):

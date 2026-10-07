@@ -25,7 +25,7 @@ Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Maps Skill
@@ -54,12 +54,12 @@ functionality is covered by the `nearby` command below, with the same
 
 Python 3.8+ (stdlib only — no pip installs needed).
 
-Script path: `~/.hermes/skills/maps/scripts/maps_client.py`
+Script path: `~/.rabbit/skills/maps/scripts/maps_client.py`
 
 ## Commands
 
 ```bash
-MAPS=~/.hermes/skills/maps/scripts/maps_client.py
+MAPS=~/.rabbit/skills/maps/scripts/maps_client.py
 ```
 
 ### search — Geocode a place name
@@ -202,9 +202,9 @@ current.
 ## Verification
 
 ```bash
-python ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python ~/.rabbit/skills/maps/scripts/maps_client.py search "Statue of Liberty"
 # Should return lat ~40.689, lon ~-74.044
 
-python ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python ~/.rabbit/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # Should return a list of restaurants within ~500m of Times Square
 ```

@@ -6,7 +6,7 @@
 **Template:** this-is-fine
 
 ```bash
-python generate_meme.py this-is-fine ~/.hermes/cache/scratch/meme.png "PRODUCTION IS DOWN" "This is fine"
+python generate_meme.py this-is-fine ~/.rabbit/cache/scratch/meme.png "PRODUCTION IS DOWN" "This is fine"
 ```
 
 ## Example 2: Developer Priorities
@@ -15,7 +15,7 @@ python generate_meme.py this-is-fine ~/.hermes/cache/scratch/meme.png "PRODUCTIO
 **Template:** drake
 
 ```bash
-python generate_meme.py drake ~/.hermes/cache/scratch/meme.png "Writing unit tests" "Shipping straight to prod"
+python generate_meme.py drake ~/.rabbit/cache/scratch/meme.png "Writing unit tests" "Shipping straight to prod"
 ```
 
 ## Example 3: Exam Stress
@@ -24,7 +24,7 @@ python generate_meme.py drake ~/.hermes/cache/scratch/meme.png "Writing unit tes
 **Template:** two-buttons
 
 ```bash
-python generate_meme.py two-buttons ~/.hermes/cache/scratch/meme.png "Study everything" "Sleep" "Me at midnight"
+python generate_meme.py two-buttons ~/.rabbit/cache/scratch/meme.png "Study everything" "Sleep" "Me at midnight"
 ```
 
 ## Example 4: Escalating Solutions
@@ -33,7 +33,7 @@ python generate_meme.py two-buttons ~/.hermes/cache/scratch/meme.png "Study ever
 **Template:** expanding-brain
 
 ```bash
-python generate_meme.py expanding-brain ~/.hermes/cache/scratch/meme.png "Reading the docs" "Stack Overflow" "!important on everything" "Deleting the stylesheet"
+python generate_meme.py expanding-brain ~/.rabbit/cache/scratch/meme.png "Reading the docs" "Stack Overflow" "!important on everything" "Deleting the stylesheet"
 ```
 
 ## Example 5: Hot Take
@@ -42,5 +42,5 @@ python generate_meme.py expanding-brain ~/.hermes/cache/scratch/meme.png "Readin
 **Template:** change-my-mind
 
 ```bash
-python generate_meme.py change-my-mind ~/.hermes/cache/scratch/meme.png "Tabs are just thicc spaces"
+python generate_meme.py change-my-mind ~/.rabbit/cache/scratch/meme.png "Tabs are just thicc spaces"
 ```

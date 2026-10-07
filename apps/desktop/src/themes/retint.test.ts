@@ -1,26 +1,26 @@
-import { contrastRatio } from '@hermes/shared/color'
+import { contrastRatio } from '@rabbit/shared/color'
 import { describe, expect, it } from 'vitest'
 
 import { hexToOklch, withHue } from './color'
-import { githubTheme, nousTheme } from './presets'
+import { githubTheme, rabbitTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopThemeColors } from './types'
 
 const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
 
 // A retint seed for each hue, at the authored accent's lightness/chroma.
-const seedAt = (hue: number) => withHue(nousTheme.colors.primary, hue)
+const seedAt = (hue: number) => withHue(rabbitTheme.colors.primary, hue)
 
-const NOUS_BLUE = '#0053FD'
+const RABBIT_BLUE = '#0053FD'
 
 // The two seeds are the whole point of the fork, and both are load-bearing:
 // `#0053FD` is the brand color and passes on the light sidebar, but only 3.6:1
 // on the near-black dark one — so dark carries a lifted twin rather than the
 // literal brand hex. Anything that re-derives these must keep both legible.
-describe('the shipped nous accents', () => {
+describe('the shipped rabbit accents', () => {
   const cases = [
-    { appearance: 'light', colors: nousTheme.colors },
-    { appearance: 'dark', colors: nousTheme.darkColors! }
+    { appearance: 'light', colors: rabbitTheme.colors },
+    { appearance: 'dark', colors: rabbitTheme.darkColors! }
   ] as const
 
   it.each(cases)('$appearance clears AA on its own sidebar', ({ colors }) => {
@@ -33,8 +33,8 @@ describe('the shipped nous accents', () => {
 
   it('leaves GitHub’s neutrals in place — only the accent family is forked', () => {
     for (const key of ['background', 'foreground', 'card', 'border', 'sidebarBackground'] as const) {
-      expect(nousTheme.colors[key]).toBe(githubTheme.colors[key])
-      expect(nousTheme.darkColors![key]).toBe(githubTheme.darkColors![key])
+      expect(rabbitTheme.colors[key]).toBe(githubTheme.colors[key])
+      expect(rabbitTheme.darkColors![key]).toBe(githubTheme.darkColors![key])
     }
   })
 })
@@ -44,17 +44,17 @@ describe('retintTheme', () => {
   // ones that produced the shipped palette. If they drift, retinting at the
   // theme's OWN hue stops being a no-op — and this catches it.
   it('is an identity at the theme’s own accent', () => {
-    const same = retintTheme(nousTheme, nousTheme.colors.primary)
+    const same = retintTheme(rabbitTheme, rabbitTheme.colors.primary)
 
-    expect(same.colors).toEqual(nousTheme.colors)
-    expect(same.darkColors).toEqual(nousTheme.darkColors)
+    expect(same.colors).toEqual(rabbitTheme.colors)
+    expect(same.darkColors).toEqual(rabbitTheme.darkColors)
   })
 
   it('moves every accent-family slot, in both modes', () => {
-    const rose = retintTheme(nousTheme, seedAt(350))
+    const rose = retintTheme(rabbitTheme, seedAt(350))
 
     for (const mode of ['colors', 'darkColors'] as const) {
-      const before = nousTheme[mode]!
+      const before = rabbitTheme[mode]!
       const after = rose[mode]!
 
       for (const key of [
@@ -72,7 +72,7 @@ describe('retintTheme', () => {
   })
 
   it('keeps the four seed slots locked together', () => {
-    const teal = retintTheme(nousTheme, seedAt(195)).colors
+    const teal = retintTheme(rabbitTheme, seedAt(195)).colors
 
     expect(teal.ring).toBe(teal.primary)
     expect(teal.midground).toBe(teal.primary)
@@ -82,19 +82,19 @@ describe('retintTheme', () => {
   it('leaves the chrome alone', () => {
     // The neutrals are the app's surface, not its brand. A hue knob that also
     // swung these would make every theme a monochrome wash.
-    const violet = retintTheme(nousTheme, seedAt(285))
+    const violet = retintTheme(rabbitTheme, seedAt(285))
 
     for (const key of ['background', 'foreground', 'card', 'border', 'muted', 'mutedForeground'] as const) {
-      expect(violet.colors[key], key).toBe(nousTheme.colors[key])
-      expect(violet.darkColors![key], `dark ${key}`).toBe(nousTheme.darkColors![key])
+      expect(violet.colors[key], key).toBe(rabbitTheme.colors[key])
+      expect(violet.darkColors![key], `dark ${key}`).toBe(rabbitTheme.darkColors![key])
     }
   })
 
   it('holds perceived lightness and chroma while only the hue moves', () => {
-    const base = hexToOklch(nousTheme.colors.primary)!
+    const base = hexToOklch(rabbitTheme.colors.primary)!
 
     for (const hue of HUES) {
-      const seed = hexToOklch(retintTheme(nousTheme, seedAt(hue)).colors.primary)!
+      const seed = hexToOklch(retintTheme(rabbitTheme, seedAt(hue)).colors.primary)!
 
       expect(Math.abs(seed.l - base.l), `L at ${hue}`).toBeLessThan(0.02)
       // Chroma can only be REDUCED, and only where sRGB can't show it.
@@ -106,7 +106,7 @@ describe('retintTheme', () => {
   // collapses against it ships invisible section headers.
   it('keeps the accent readable on the sidebar at every hue', () => {
     for (const hue of HUES) {
-      const t = retintTheme(nousTheme, seedAt(hue))
+      const t = retintTheme(rabbitTheme, seedAt(hue))
 
       for (const mode of ['colors', 'darkColors'] as const) {
         const c = t[mode] as DesktopThemeColors
@@ -119,38 +119,38 @@ describe('retintTheme', () => {
 
   it('re-picks the foreground that sits on the accent', () => {
     for (const hue of HUES) {
-      const c = retintTheme(nousTheme, seedAt(hue)).colors
+      const c = retintTheme(rabbitTheme, seedAt(hue)).colors
 
       expect(contrastRatio(c.primary, c.primaryForeground), `on-accent @ ${hue}°`).toBeGreaterThanOrEqual(4.5)
     }
   })
 
   it('accepts any hex form and ignores junk', () => {
-    expect(retintTheme(nousTheme, '#0053FD').colors.primary).toBe(retintTheme(nousTheme, '0053fd').colors.primary)
+    expect(retintTheme(rabbitTheme, '#0053FD').colors.primary).toBe(retintTheme(rabbitTheme, '0053fd').colors.primary)
     // A half-typed hex from a text input must not blow up the theme.
-    expect(retintTheme(nousTheme, '#00').colors).toEqual(nousTheme.colors)
-    expect(retintTheme(nousTheme, 'nonsense').colors).toEqual(nousTheme.colors)
+    expect(retintTheme(rabbitTheme, '#00').colors).toEqual(rabbitTheme.colors)
+    expect(retintTheme(rabbitTheme, 'nonsense').colors).toEqual(rabbitTheme.colors)
   })
 
-  // The real motivating case: Nous blue is legible on GitHub's light sidebar
+  // The real motivating case: Rabbit blue is legible on GitHub's light sidebar
   // (5.4:1) but NOT its dark one (3.6:1), so dark has to adapt or ship
   // invisible section headers.
   describe('a seed that only works in one mode', () => {
-    const blue = retintTheme(nousTheme, NOUS_BLUE)
+    const blue = retintTheme(rabbitTheme, RABBIT_BLUE)
 
     it('keeps the picked color where it already passes', () => {
-      expect(blue.colors.primary.toLowerCase()).toBe(NOUS_BLUE.toLowerCase())
+      expect(blue.colors.primary.toLowerCase()).toBe(RABBIT_BLUE.toLowerCase())
     })
 
     it('lightens it for the mode where it does not', () => {
       const dark = blue.darkColors!.primary
 
-      expect(dark.toLowerCase()).not.toBe(NOUS_BLUE.toLowerCase())
+      expect(dark.toLowerCase()).not.toBe(RABBIT_BLUE.toLowerCase())
       expect(contrastRatio(dark, blue.darkColors!.sidebarBackground!)).toBeGreaterThanOrEqual(4.5)
     })
 
     it('adapts by lightness, holding the hue — so it still reads as the brand', () => {
-      const picked = hexToOklch(NOUS_BLUE)!
+      const picked = hexToOklch(RABBIT_BLUE)!
       const adapted = hexToOklch(blue.darkColors!.primary)!
 
       expect(Math.abs(adapted.h - picked.h)).toBeLessThan(3)
@@ -168,8 +168,8 @@ describe('retintTheme', () => {
   it('does not brand a slot that never tracked the accent', () => {
     // mono's ring is a neutral gray on purpose.
     const neutralRing = {
-      ...nousTheme,
-      colors: { ...nousTheme.colors, ring: '#9a9a9a' },
+      ...rabbitTheme,
+      colors: { ...rabbitTheme.colors, ring: '#9a9a9a' },
       darkColors: undefined
     }
 
@@ -182,8 +182,8 @@ describe('retintTheme', () => {
   // a half-retinted theme.
   describe('a theme whose accent slots are shades of each other', () => {
     const shaded = {
-      ...nousTheme,
-      colors: { ...nousTheme.colors, primary: '#ddd6ff', ring: '#8b80e8', midground: '#8b80e8' },
+      ...rabbitTheme,
+      colors: { ...rabbitTheme.colors, primary: '#ddd6ff', ring: '#8b80e8', midground: '#8b80e8' },
       darkColors: undefined
     }
 

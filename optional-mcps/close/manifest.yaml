@@ -6,10 +6,10 @@ name: close
 description: 'Sales CRM: leads, opportunities, calls, and emails.'
 source: https://help.close.com/docs/mcp-server
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration
 # (verified live: RFC 9728 protected-resource metadata -> AS metadata with
-# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# registration_endpoint); Rabbit's MCP client + mcp_oauth_manager handle
 # discovery, PKCE, token exchange, and refresh.
 
 transport:
@@ -23,7 +23,7 @@ auth:
 # paginate layer duplicating lead_search/activity_search; AI field
 # enrichment; and the entire voice-agent cluster — schedule_voice_agent_call
 # places REAL outbound AI phone calls to contacts. Re-enable any with
-# `hermes mcp configure close`.
+# `rabbit mcp configure close`.
 tools:
   default_excluded:
     - close_product_knowledge_search
@@ -49,6 +49,6 @@ suggest:
     - close.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Close (or run `hermes mcp login close`). Approve access,
+  On first connection Rabbit opens a browser to authorize with
+  Close (or run `rabbit mcp login close`). Approve access,
   then restart the session so tools load.

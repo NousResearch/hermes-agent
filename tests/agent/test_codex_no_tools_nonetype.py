@@ -8,7 +8,7 @@ guard.  Passing ``tools=None`` therefore raises::
 
 …before any HTTP request is issued.  This trips the
 ``openai-codex`` / ``gpt-5.5`` combo on ``chatgpt.com/backend-api/codex``
-whenever the user runs Hermes without external tools registered: the
+whenever the user runs Rabbit without external tools registered: the
 agent loop catches the TypeError, sees no HTTP status, classifies it as
 non-retryable, and aborts (#32892).
 
@@ -56,7 +56,7 @@ def codex_messages() -> List[Dict[str, Any]]:
     """Minimal Codex-shaped chat history mirroring the #32892 reproducer:
     one system + one short user message, with no tool calls in history."""
     return [
-        {"role": "system", "content": "You are Hermes."},
+        {"role": "system", "content": "You are Rabbit."},
         {"role": "user", "content": "Hey! What can I help you with?"},
     ]
 
@@ -94,7 +94,7 @@ def test_build_kwargs_keeps_required_codex_fields_without_tools(transport, codex
     kwargs = _build_kwargs_no_tools(transport, codex_messages)
 
     assert kwargs["model"] == "gpt-5.5"
-    assert kwargs["instructions"] == "You are Hermes."
+    assert kwargs["instructions"] == "You are Rabbit."
     assert kwargs["store"] is False
     assert isinstance(kwargs["input"], list)
     assert kwargs["input"] and kwargs["input"][0]["role"] == "user"

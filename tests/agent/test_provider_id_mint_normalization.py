@@ -45,7 +45,7 @@ def _mint(tool_calls):
 
 @pytest.fixture(autouse=True)
 def _no_metrics(monkeypatch):
-    import hermes_cli.observability.shared_metrics_model as metrics
+    import rabbit_cli.observability.shared_metrics_model as metrics
 
     monkeypatch.setattr(metrics, "record_tool_call_quality", lambda *a, **k: None)
 

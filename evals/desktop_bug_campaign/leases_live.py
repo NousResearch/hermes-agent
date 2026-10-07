@@ -19,7 +19,7 @@ import urllib.request
 
 
 def backend(port):
-    from hermes_cli.web_server import app, start_server
+    from rabbit_cli.web_server import app, start_server
     from tui_gateway import server as gw
 
     work = {}
@@ -137,7 +137,7 @@ memory:
 ''')
     env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home / 'user'), 'LANG': 'C.UTF-8'}
     (home / 'user').mkdir()
-    env.update(HERMES_HOME=str(home), HERMES_DASHBOARD_SESSION_TOKEN='lease-probe',
+    env.update(RABBIT_HOME=str(home), RABBIT_DASHBOARD_SESSION_TOKEN='lease-probe',
                PYTHONPATH=str(repo), OPENAI_API_KEY='probe-key')
     processes = []
     logs = []
@@ -148,7 +148,7 @@ memory:
         results['checks'].append({'name': name, 'pass': bool(ok), 'detail': detail})
         print(json.dumps(results['checks'][-1]), flush=True)
     def control(port, action, sid):
-        req = urllib.request.Request(f'http://127.0.0.1:{port}/lease-probe/{action}/{sid}', data=b'', method='POST', headers={'X-Hermes-Session-Token': 'lease-probe'})
+        req = urllib.request.Request(f'http://127.0.0.1:{port}/lease-probe/{action}/{sid}', data=b'', method='POST', headers={'X-Rabbit-Session-Token': 'lease-probe'})
         return json.load(urllib.request.urlopen(req, timeout=30))
     def wait_idle(port, sid):
         deadline = time.monotonic() + 90

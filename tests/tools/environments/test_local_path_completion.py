@@ -23,7 +23,7 @@ def test_existing_user_local_bin_appended_after_inherited_entries(monkeypatch, t
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
     monkeypatch.setattr(local_mod, "_managed_runtime_path_entries", lambda: [])
-    monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", lambda: None)
+    monkeypatch.setattr(local_mod, "_resolve_rabbit_bin_dir", lambda: None)
 
     entries = _make_run_env({})["PATH"].split(os.pathsep)
 

@@ -1,7 +1,7 @@
 """#100531 — the codex app-server thread survives an AIAgent rebuild (API-server restart, per-request agents).
 
 ``CodexAppServerSession`` keeps the codex thread id in memory only, so every new ``AIAgent`` for the same
-Hermes session used to ``thread/start`` an empty thread while Hermes' own transcript continued. The runtime
+Rabbit session used to ``thread/start`` an empty thread while Rabbit' own transcript continued. The runtime
 now publishes ``codex_thread_id`` into the session row's ``model_config`` once the turn's projected rows are
 durable, the next agent for that session issues ``thread/resume`` for it, and a stored id codex cannot hand
 back fails closed: fresh thread, binding dropped, one status-rail notice.
@@ -12,7 +12,7 @@ from pathlib import Path
 from agent.transports import codex_app_server_session as session_mod
 from agent.transports.codex_app_server import CodexAppServerError
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 SID = "sess-codex-restart"
 

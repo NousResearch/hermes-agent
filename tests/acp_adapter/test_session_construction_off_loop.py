@@ -14,7 +14,7 @@ import pytest
 
 from acp.schema import TextContentBlock
 
-from acp_adapter.server import HermesACPAgent
+from acp_adapter.server import RabbitACPAgent
 from acp_adapter.session import SessionManager
 
 BUILD_SECONDS = 0.5
@@ -31,7 +31,7 @@ def _slow_factory():
 @pytest.mark.asyncio
 async def test_new_session_keeps_the_event_loop_free():
     """A concurrent coroutine keeps ticking while the agent is built."""
-    server = HermesACPAgent(session_manager=SessionManager(agent_factory=_slow_factory))
+    server = RabbitACPAgent(session_manager=SessionManager(agent_factory=_slow_factory))
     ticks = 0
     done = asyncio.Event()
 
@@ -67,7 +67,7 @@ async def test_handlers_restore_unknown_sessions_off_the_loop(call):
         return None
 
     manager._restore = slow_restore
-    server = HermesACPAgent(session_manager=manager)
+    server = RabbitACPAgent(session_manager=manager)
     ticks = 0
     done = asyncio.Event()
 
@@ -130,7 +130,7 @@ def test_import_memory_provider_module_imports_without_constructing(tmp_path, mo
     monkeypatch.syspath_prepend(str(tmp_path / "plugins"))
     monkeypatch.setattr(memory_plugins, "_NATIVE_WARM_IMPORTS", ("_warm_native",), raising=False)
     sys.modules.pop("_warm_native_marker", None)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(memory_plugins, "_external_source_dirs", lambda: [tmp_path / "plugins"])
     sys.modules.pop("_warmprov_marker", None)
     sys.modules.pop("_warmprov_registered", None)

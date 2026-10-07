@@ -43,7 +43,7 @@ internal sealed class HudModifierWindow : NativeWindow, IDisposable
 
     internal HudModifierWindow()
     {
-        CreateHandle(new CreateParams { Caption = "Hermes HUD modifier input", Parent = new IntPtr(-3) });
+        CreateHandle(new CreateParams { Caption = "Rabbit HUD modifier input", Parent = new IntPtr(-3) });
         RawDevice[] devices = {
             new RawDevice { Page = 1, Usage = 6, Flags = 0x100 | 0x2000, Target = Handle },
             new RawDevice { Page = 1, Usage = 2, Flags = 0x100 | 0x2000, Target = Handle }

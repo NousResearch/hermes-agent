@@ -2,11 +2,11 @@
 name: ast-grep
 description: "AST-aware structural code search and rewrite via ast-grep."
 version: 1.0.0
-author: Yeongyu Kim (code-yeongyu), adapted by Hermes Agent
+author: Yeongyu Kim (code-yeongyu), adapted by Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [ast, codemod, refactoring, structural-search, code-search, rewrite, tree-sitter]
     category: software-development
     related_skills: [simplify-code, systematic-debugging]
@@ -37,10 +37,10 @@ Use it whenever the question is about **code structure**, not bytes:
 
 Switch to `search_files` (or plain `rg`) when the question is text-shaped (string literal contents, comments, license headers, file names, cross-language regex). When in doubt, ask: "does the answer depend on the language's syntax tree, or just on the file's bytes?" If the former, ast-grep. If the latter, search_files.
 
-Hermes integration notes:
+Rabbit integration notes:
 - Run the helper and `sg` through the `terminal` tool. Single-quote every pattern so the shell never expands `$VAR`.
 - For find→read chains around matches, use `--json-out` and process with `execute_code` rather than piping through interpreters.
-- This complements (does not replace) Hermes's `patch` tool: `patch` is for targeted edits you author; ast-grep is for pattern-driven bulk rewrites across many sites.
+- This complements (does not replace) Rabbit's `patch` tool: `patch` is for targeted edits you author; ast-grep is for pattern-driven bulk rewrites across many sites.
 
 ---
 

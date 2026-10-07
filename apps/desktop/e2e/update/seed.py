@@ -1,16 +1,16 @@
 """Seed and reset the real local install the Desktop update suite drives.
 
 The install is made by the real entry points a Linux user runs (``scripts/install.sh`` and then
-``hermes desktop --build-only``) against a local bare origin, inside the upgrade suite's sandbox
+``rabbit desktop --build-only``) against a local bare origin, inside the upgrade suite's sandbox
 machinery (``tests/e2e/core/upgrade``). Building it takes minutes, so it is built once per run into
 ``<root>/sb`` and snapshotted; each spec restores the snapshot back into the SAME path (the install
 bakes absolute paths into launchers and PM facts, so a copy elsewhere would not be the same install).
 
-    python seed.py install <root>     -> JSON {home, hermesHome, checkout, origin, env, headSha}
+    python seed.py install <root>     -> JSON {home, rabbitHome, checkout, origin, env, headSha}
     python seed.py restore <root>     -> the snapshot back in place (install + origin)
     python seed.py publish <root> <message> <relpath> <content-file>  -> sha of the new origin/main
 
-HERMES_E2E_UPDATE_INSTALL_REF=<sha> installs that commit instead of HEAD (local A/B against an open
+RABBIT_E2E_UPDATE_INSTALL_REF=<sha> installs that commit instead of HEAD (local A/B against an open
 fix, or a sabotage commit, without touching the checkout the suite runs from).
 """
 
@@ -55,7 +55,7 @@ def install(root: Path) -> None:
     p["facts"].unlink(missing_ok=True)
     for key in ("sb", "origin", "golden"):
         shutil.rmtree(p[key], ignore_errors=True)
-    head = os.environ.get("HERMES_E2E_UPDATE_INSTALL_REF") or I.head_sha()
+    head = os.environ.get("RABBIT_E2E_UPDATE_INSTALL_REF") or I.head_sha()
     origin = I.make_origin(root, head)
     # Serve full clones. When a CI runner's git honours the installer's --filter=tree:0 against a
     # local file:// origin, the clone's lazy tree fetches fan out into more than 1300 concurrent
@@ -74,13 +74,13 @@ def install(root: Path) -> None:
     # apps/desktop/release/linux-unpacked, the tree the Desktop updater swaps in place.
     cp = sb.cli("desktop", "--build-only", timeout=1800)
     if cp.returncode != 0:
-        _fail("hermes desktop --build-only", cp)
+        _fail("rabbit desktop --build-only", cp)
     facts = {
         "sandboxRoot": str(sb.root),
         "home": str(sb.home),
-        "hermesHome": str(sb.hermes_home),
+        "rabbitHome": str(sb.rabbit_home),
         "checkout": str(sb.checkout),
-        "hermes": sb.hermes,
+        "rabbit": sb.rabbit,
         "origin": str(origin),
         "env": sb.env,
         "headSha": head,

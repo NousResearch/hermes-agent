@@ -140,7 +140,7 @@ def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path
 
     current_home = {"path": tmp_path / "default"}
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
-    monkeypatch.setattr(executions, "get_hermes_home", lambda: current_home["path"])
+    monkeypatch.setattr(executions, "get_rabbit_home", lambda: current_home["path"])
 
     default_row = executions.create_execution("default-job", source="builtin")
     current_home["path"] = tmp_path / "worker"
@@ -211,7 +211,7 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     executions = _point_ledger(monkeypatch, tmp_path)
     row = executions.create_execution("cli-job", source="builtin")
     executions.finish_execution(row["id"], success=False, error="boom")
-    from hermes_cli.cron import cron_runs
+    from rabbit_cli.cron import cron_runs
 
     cron_runs("cli-job", limit=10)
 
@@ -222,7 +222,7 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
 
 
 def test_quick_backup_includes_execution_ledger():
-    from hermes_cli.backup import _QUICK_STATE_FILES
+    from rabbit_cli.backup import _QUICK_STATE_FILES
 
     assert "cron/executions.db" in _QUICK_STATE_FILES
 
@@ -247,11 +247,11 @@ def test_recovery_does_not_mark_live_process_execution_unknown(monkeypatch, tmp_
 
 
 def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
-    """Real temp-HERMES_HOME subprocess restart: in-flight is audit-only unknown."""
+    """Real temp-RABBIT_HOME subprocess restart: in-flight is audit-only unknown."""
     home = tmp_path / "home"
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    env["HERMES_HOME"] = str(home)
+    env["RABBIT_HOME"] = str(home)
     env["PYTHONPATH"] = str(repo)
 
     create = subprocess.run(
@@ -380,23 +380,6 @@ def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
     assert events[:2] == ["recover", "heartbeat"]
 
 
-def test_external_provider_start_recovers_interrupted_records(monkeypatch):
-    from plugins.cron_providers.chronos import ChronosCronScheduler
-
-    provider = ChronosCronScheduler()
-    provider._client = type("Client", (), {"arm": lambda self, **kwargs: None})()
-    events = []
-    monkeypatch.setattr(
-        "cron.executions.recover_interrupted_executions",
-        lambda: events.append("recover") or 0,
-    )
-    monkeypatch.setattr(provider, "reconcile", lambda: events.append("reconcile"))
-
-    provider.start(__import__("threading").Event())
-
-    assert events == ["recover", "reconcile"]
-
-
 class _TrackingConnection:
     """Delegates to a real sqlite3.Connection while recording close() calls.
 
@@ -501,9 +484,9 @@ def test_history_orders_by_instant_across_dst_fall_back(monkeypatch, tmp_path):
     new_york = ZoneInfo("America/New_York")
     first_pass = datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
     second_pass = datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
-    monkeypatch.setattr(executions, "_hermes_now", lambda: first_pass)
+    monkeypatch.setattr(executions, "_rabbit_now", lambda: first_pass)
     earlier = executions.create_execution("dst-job", source="builtin")
-    monkeypatch.setattr(executions, "_hermes_now", lambda: second_pass)
+    monkeypatch.setattr(executions, "_rabbit_now", lambda: second_pass)
     later = executions.create_execution("dst-job", source="builtin")
     assert later["claimed_at"] < earlier["claimed_at"]
 

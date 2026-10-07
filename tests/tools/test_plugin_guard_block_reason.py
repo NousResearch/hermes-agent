@@ -12,7 +12,7 @@ def test_dangerous_reason_counts_and_names_blocking_findings():
         verdict="dangerous",
         findings=[
             Finding(
-                "hermes_config_mod_shell", "critical", "persistence",
+                "rabbit_config_mod_shell", "critical", "persistence",
                 "runtime/setup.sh", 4, "echo x > config.yaml", "writes config",
             ),
             Finding(
@@ -29,5 +29,5 @@ def test_dangerous_reason_counts_and_names_blocking_findings():
     allowed, reason = should_allow_plugin_install(result)
 
     assert allowed is False
-    assert "hermes_config_mod_shell" in reason
+    assert "rabbit_config_mod_shell" in reason
     assert "unpinned_pip_install" not in reason

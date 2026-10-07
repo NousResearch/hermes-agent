@@ -24,7 +24,7 @@ def _make_adapter():
         token="syt_test_token",
         extra={
             "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
+            "user_id": "@rabbit:example.org",
         },
     )
     adapter = MatrixAdapter(config)
@@ -40,10 +40,10 @@ class TestHandoffThread:
         adapter._client = MagicMock()  # truthy: a client is connected
         adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$root_evt"))
 
-        thread_id = asyncio.run(adapter.create_handoff_thread("!room1:example.org", "Hermes — daily brief"))
+        thread_id = asyncio.run(adapter.create_handoff_thread("!room1:example.org", "Rabbit — daily brief"))
 
         assert thread_id == "$root_evt"
-        adapter.send.assert_awaited_once_with("!room1:example.org", "Hermes — daily brief")
+        adapter.send.assert_awaited_once_with("!room1:example.org", "Rabbit — daily brief")
         # Root registered so inbound replies in this thread are recognised.
         assert "$root_evt" in adapter._threads
 

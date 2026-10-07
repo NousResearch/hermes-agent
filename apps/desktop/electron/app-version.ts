@@ -19,7 +19,7 @@ export interface AppVersionInfo {
    *  artifact is the old-style installer shell over a managed checkout. */
   payload?: InstallStamp['payload']
   /** True when the runtime checkout carries the bootstrap installers'
-   *  `.hermes-bootstrap-complete` receipt — install.sh / install.ps1 (or the
+   *  `.rabbit-bootstrap-complete` receipt — install.sh / install.ps1 (or the
    *  desktop bootstrap) created it, as opposed to a manual git clone. */
   installedByScript?: boolean
   dirty?: boolean

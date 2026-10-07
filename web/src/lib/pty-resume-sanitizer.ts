@@ -4,7 +4,7 @@
  *
  * Three properties of the real pipeline drive this design:
  *
- * 1. **The PTY is in cooked mode (ONLCR).** `hermes_cli/pty_bridge.py` spawns
+ * 1. **The PTY is in cooked mode (ONLCR).** `rabbit_cli/pty_bridge.py` spawns
  *    via `ptyprocess.PtyProcess.spawn()` and never calls `setraw()`, so the
  *    line discipline rewrites every LF the child writes as CRLF. A burst
  *    therefore arrives as `\r\n\r\n\r\n…`, never as bare `\n\n\n…`, and any

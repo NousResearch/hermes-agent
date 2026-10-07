@@ -19,10 +19,9 @@ import {
 import { ToggleRow } from './primitives'
 
 /**
- * Settings › Safety › Privacy: the same two opt-ins the first-run dialog and
- * `hermes setup` write, for the profile this page applies to. Collection off
- * turns sending off with it (the backend enforces it too), so the send switch
- * is disabled until collection is on. Optimistic, rolled back on failure.
+ * Settings › Safety › Privacy: the same opt-in the first-run dialog and
+ * `rabbit setup` write, for the profile this page applies to. Collection is
+ * local-only; nothing is uploaded. Optimistic, rolled back on failure.
  */
 export function SharedMetricsSettings() {
   const { t } = useI18n()
@@ -55,11 +54,11 @@ export function SharedMetricsSettings() {
     return () => void (cancelled = true)
   }, [request])
 
-  const save = async (flags: { enabled: boolean; send: boolean }) => {
+  const save = async (flags: { enabled: boolean }) => {
     const previous = consent
 
     setBusy(true)
-    setConsent({ ...flags, send: flags.enabled && flags.send, decided: true })
+    setConsent({ ...flags, decided: true })
 
     try {
       const saved = await saveSharedMetricsConsent(request, flags)
@@ -85,25 +84,17 @@ export function SharedMetricsSettings() {
   // An older backend has no shared_metrics.* methods: keep the controls, disabled and explained.
   const unavailable = loaded && consent === null
   const enabled = consent?.enabled ?? false
-  const send = consent?.send ?? false
 
   return (
     <div className="grid gap-1" id="setting-shared-metrics">
       <ToggleRow
+        below={<DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.whatIsCollected}</DocsLink>}
         checked={enabled}
         description={copy.collectDesc}
         disabled={!consent || busy}
         hint={unavailable ? copy.unavailable : undefined}
         label={copy.collectLabel}
-        onChange={on => void save({ enabled: on, send: on && send })}
-      />
-      <ToggleRow
-        below={<DocsLink href={SHARED_METRICS_DOCS_URL}>{copy.whatIsCollected}</DocsLink>}
-        checked={send}
-        description={copy.sendDesc}
-        disabled={!consent || busy || !enabled}
-        label={copy.sendLabel}
-        onChange={on => void save({ enabled, send: on })}
+        onChange={on => void save({ enabled: on })}
       />
     </div>
   )

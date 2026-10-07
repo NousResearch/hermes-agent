@@ -76,7 +76,7 @@ def declared_extras(repo_dir: Path) -> list[str]:
 def opt_in_extras(repo_dir: Path) -> list[str]:
     """Extras that only an explicit selection installs, never an all-extras build.
 
-    ``[tool.hermes] opt-in-extras`` in the repo's pyproject. They stay
+    ``[tool.rabbit] opt-in-extras`` in the repo's pyproject. They stay
     installable through ``sync_venv([extra])``; bundles and other
     ``--all-extras`` builds leave them out, so their closures are absent
     from shipped payloads and from the recorded feature list.
@@ -85,11 +85,11 @@ def opt_in_extras(repo_dir: Path) -> list[str]:
 
     with (repo_dir / "pyproject.toml").open("rb") as f:
         data = tomllib.load(f)
-    names = data.get("tool", {}).get("hermes", {}).get("opt-in-extras", [])
+    names = data.get("tool", {}).get("rabbit", {}).get("opt-in-extras", [])
     declared = set(data.get("project", {}).get("optional-dependencies", {}))
     unknown = sorted(set(names) - declared)
     if unknown:
-        raise ValueError(f"[tool.hermes] opt-in-extras names undeclared extras: {unknown}")
+        raise ValueError(f"[tool.rabbit] opt-in-extras names undeclared extras: {unknown}")
     return sorted(set(names))
 
 

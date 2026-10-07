@@ -40,7 +40,7 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
     """
     try:
         import hashlib
-        from hermes_constants import get_hermes_dir
+        from rabbit_constants import get_rabbit_dir
         from agent.redact import redact_sensitive_text
 
         content = redact_sensitive_text(snapshot_text, force=True)
@@ -52,7 +52,7 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
             )
         from tools.spill_safety import ensure_spill_dir, write_text_exclusive
 
-        cache_dir = get_hermes_dir("cache/web", "web_cache")
+        cache_dir = get_rabbit_dir("cache/web", "web_cache")
         ensure_spill_dir(cache_dir, private=False)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
         path = cache_dir / f"browser-snapshot-{digest}.txt"

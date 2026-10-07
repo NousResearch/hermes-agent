@@ -162,7 +162,7 @@ def test_drain_grace_uses_threaded_remaining_budget(monkeypatch):
     """An explicit remaining budget must override the env-mirrored default:
     the adapter has already spent monitor/go_idle time out of the runner's
     wait_for, so the transport can only drain what is actually left."""
-    monkeypatch.delenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", raising=False)
     reserved = 3 * _TEARDOWN_AWAIT_TIMEOUT_S + 0.5
     # Plenty of remaining budget: grace caps at the constant.
     assert _disconnect_drain_grace_s(100.0) == _DISCONNECT_DRAIN_GRACE_S
@@ -398,7 +398,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
             **ad._capture_routing_origin(),
         }
         assert record.get("scope_id") == "G777", (
-            "dispatch-time capture must snapshot HERMES_SESSION_SCOPE_ID"
+            "dispatch-time capture must snapshot RABBIT_SESSION_SCOPE_ID"
         )
         ad._persist_dispatch(record)
     finally:

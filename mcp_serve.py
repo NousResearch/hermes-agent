@@ -1,10 +1,10 @@
 """
-Hermes MCP Server — expose messaging conversations as MCP tools (`hermes mcp serve`).
+Rabbit MCP Server — expose messaging conversations as MCP tools (`rabbit mcp serve`).
 
 A stdio MCP server letting any MCP client (Claude Code, Cursor, Codex, ...) list
 conversations, read history, send messages, poll live events, and manage approvals.
-Matches OpenClaw's 9-tool channel bridge surface plus the Hermes-specific
-channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "args": ["mcp", "serve"]}}}
+Matches OpenClaw's 9-tool channel bridge surface plus the Rabbit-specific
+channels_list. Client config: {"mcpServers": {"rabbit": {"command": "rabbit", "args": ["mcp", "serve"]}}}
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-logger = logging.getLogger("hermes.mcp_serve")
+logger = logging.getLogger("rabbit.mcp_serve")
 
 # mcp 2.0 removed `mcp.server.fastmcp`; `mcp.server.MCPServer` keeps the same
 # `@server.tool()` / `run_stdio_async()` surface (docstring -> description,
@@ -37,21 +37,21 @@ except ImportError:
 
 # --- Helpers -----------------------------------------------------------------
 
-def _hermes_home() -> Path:
+def _rabbit_home() -> Path:
     try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home()
+        from rabbit_constants import get_rabbit_home
+        return get_rabbit_home()
     except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        return Path(os.environ.get("RABBIT_HOME", Path.home() / ".rabbit"))
 
 
 def _get_sessions_dir() -> Path:
-    return _hermes_home() / "sessions"
+    return _rabbit_home() / "sessions"
 
 
 def _read_state_db_mtime() -> float:
     try:
-        return (_hermes_home() / "state.db").stat().st_mtime
+        return (_rabbit_home() / "state.db").stat().st_mtime
     except OSError:  # missing file included
         return 0.0
 
@@ -78,7 +78,7 @@ def _close_quietly(db, what: str) -> None:
 def _get_session_db():
     """SessionDB instance for reading message transcripts, or None."""
     try:
-        from hermes_state_registry import acquire
+        from rabbit_state_registry import acquire
         return acquire()
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
@@ -96,7 +96,7 @@ def _load_session_messages(session_id: str):
         return None, f"Failed to read messages: {e}"
     finally:
         try:
-            from hermes_state_registry import release_or_close
+            from rabbit_state_registry import release_or_close
             release_or_close(db)
         except Exception:
             logger.debug("Failed to close MCP SessionDB", exc_info=True)
@@ -180,7 +180,7 @@ def _load_sessions_index_from_json() -> dict:
 
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
-    return _read_json(_hermes_home() / "channel_directory.json")
+    return _read_json(_rabbit_home() / "channel_directory.json")
 
 
 def _coerce_int(value, *, default: int, minimum: int, maximum: int) -> int:
@@ -263,7 +263,7 @@ def _latest_ts(messages) -> float:
 
 class EventBridge:
     """Background poller watching SessionDB for new messages, feeding an in-memory
-    event queue with waiter support (the Hermes analogue of OpenClaw's WebSocket
+    event queue with waiter support (the Rabbit analogue of OpenClaw's WebSocket
     gateway bridge, polling SQLite instead)."""
 
     def __init__(self):
@@ -690,11 +690,11 @@ _TOOL_NAMES = (
 
 
 def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
-    """Create and return the Hermes MCP server with all tools registered."""
+    """Create and return the Rabbit MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")
-    mcp = MCPServer("hermes", instructions=(
-        "Hermes Agent messaging bridge. Use these tools to interact with "
+    mcp = MCPServer("rabbit", instructions=(
+        "Rabbit Agent messaging bridge. Use these tools to interact with "
         "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
         "Matrix, and other connected platforms."
     ))
@@ -705,7 +705,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer"
 
 
 def run_mcp_server(verbose: bool = False) -> None:
-    """Start the Hermes MCP server on stdio."""
+    """Start the Rabbit MCP server on stdio."""
     if not _MCP_SERVER_AVAILABLE:
         print("Error: MCP server requires the 'mcp' package.\n"
               f"Install with: {sys.executable} -m pip install 'mcp'", file=sys.stderr)

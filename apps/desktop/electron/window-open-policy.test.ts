@@ -2,52 +2,49 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  HERMES_HUB_FALLBACK_ORIGIN,
-  HERMES_HUB_ORIGIN,
-  isHermesHubClipboardWrite,
-  isHermesHubExternalUrl,
-  isHermesHubOrigin
+  RABBIT_HUB_ORIGIN,
+  isRabbitHubClipboardWrite,
+  isRabbitHubExternalUrl,
+  isRabbitHubOrigin
 } from './hub-iframe-policy'
 import { createWindowOpenHandler, describeDeniedUrl } from './window-open-policy'
 
 describe('hub-iframe-policy predicates', () => {
-  it('admits exactly the two hub origins and nothing else', () => {
-    expect(isHermesHubOrigin(HERMES_HUB_ORIGIN)).toBe(true)
-    expect(isHermesHubOrigin(HERMES_HUB_FALLBACK_ORIGIN)).toBe(true)
+  it('admits exactly the hub origin and nothing else', () => {
+    expect(isRabbitHubOrigin(RABBIT_HUB_ORIGIN)).toBe(true)
 
     // Opaque sandboxed frames, data URLs, look-alikes, and absent origins
     // never qualify.
-    expect(isHermesHubOrigin('null')).toBe(false)
-    expect(isHermesHubOrigin('')).toBe(false)
-    expect(isHermesHubOrigin(null)).toBe(false)
-    expect(isHermesHubOrigin(undefined)).toBe(false)
-    expect(isHermesHubOrigin('https://hermes-agent.nousresearch.com.evil.example')).toBe(false)
-    expect(isHermesHubOrigin('https://evil.example')).toBe(false)
-    expect(isHermesHubOrigin('file://')).toBe(false)
+    expect(isRabbitHubOrigin('null')).toBe(false)
+    expect(isRabbitHubOrigin('')).toBe(false)
+    expect(isRabbitHubOrigin(null)).toBe(false)
+    expect(isRabbitHubOrigin(undefined)).toBe(false)
+    expect(isRabbitHubOrigin('https://github.com/seven0070/Rabbit-.evil.example')).toBe(false)
+    expect(isRabbitHubOrigin('https://evil.example')).toBe(false)
+    expect(isRabbitHubOrigin('file://')).toBe(false)
   })
 
   it('delegates only http/https/mailto external URLs', () => {
-    expect(isHermesHubExternalUrl('https://github.com/NousResearch/hermes-agent')).toBe(true)
-    expect(isHermesHubExternalUrl('http://example.com/docs')).toBe(true)
-    expect(isHermesHubExternalUrl('mailto:support@example.com')).toBe(true)
+    expect(isRabbitHubExternalUrl('https://github.com/seven0070/Rabbit-')).toBe(true)
+    expect(isRabbitHubExternalUrl('http://example.com/docs')).toBe(true)
+    expect(isRabbitHubExternalUrl('mailto:support@example.com')).toBe(true)
 
-    expect(isHermesHubExternalUrl('file:///etc/passwd')).toBe(false)
-    expect(isHermesHubExternalUrl('javascript:alert(1)')).toBe(false)
-    expect(isHermesHubExternalUrl('hermes://internal')).toBe(false)
-    expect(isHermesHubExternalUrl('not a url')).toBe(false)
+    expect(isRabbitHubExternalUrl('file:///etc/passwd')).toBe(false)
+    expect(isRabbitHubExternalUrl('javascript:alert(1)')).toBe(false)
+    expect(isRabbitHubExternalUrl('rabbit://internal')).toBe(false)
+    expect(isRabbitHubExternalUrl('not a url')).toBe(false)
   })
 
   it('grants clipboard-write to hub origins only', () => {
-    expect(isHermesHubClipboardWrite(HERMES_HUB_ORIGIN)).toBe(true)
-    expect(isHermesHubClipboardWrite(HERMES_HUB_FALLBACK_ORIGIN)).toBe(true)
-    expect(isHermesHubClipboardWrite('null')).toBe(false)
-    expect(isHermesHubClipboardWrite('https://artifact-preview.invalid')).toBe(false)
-    expect(isHermesHubClipboardWrite(null)).toBe(false)
+    expect(isRabbitHubClipboardWrite(RABBIT_HUB_ORIGIN)).toBe(true)
+    expect(isRabbitHubClipboardWrite('null')).toBe(false)
+    expect(isRabbitHubClipboardWrite('https://artifact-preview.invalid')).toBe(false)
+    expect(isRabbitHubClipboardWrite(null)).toBe(false)
   })
 })
 
 describe('createWindowOpenHandler trusted-hub delegation', () => {
-  const baseDetails = { url: 'https://github.com/NousResearch/hermes-agent' }
+  const baseDetails = { url: 'https://github.com/seven0070/Rabbit-' }
 
   it('still denies artifact frames (opaque origin) with NO external open', () => {
     const openExternalUrl = vi.fn()
@@ -65,19 +62,19 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
     const openExternalUrl = vi.fn()
 
     const handler = createWindowOpenHandler(undefined, {
-      getOpenerOrigin: () => HERMES_HUB_ORIGIN,
+      getOpenerOrigin: () => RABBIT_HUB_ORIGIN,
       openExternalUrl
     })
 
     expect(handler(baseDetails)).toEqual({ action: 'deny' })
-    expect(openExternalUrl).toHaveBeenCalledExactlyOnceWith('https://github.com/NousResearch/hermes-agent')
+    expect(openExternalUrl).toHaveBeenCalledExactlyOnceWith('https://github.com/seven0070/Rabbit-')
   })
 
   it('delegates from the fallback (GitHub Pages) hub origin too', () => {
     const openExternalUrl = vi.fn()
 
     const handler = createWindowOpenHandler(undefined, {
-      getOpenerOrigin: () => HERMES_HUB_FALLBACK_ORIGIN,
+      getOpenerOrigin: () => RABBIT_HUB_ORIGIN,
       openExternalUrl
     })
 
@@ -89,7 +86,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
     const openExternalUrl = vi.fn()
 
     const handler = createWindowOpenHandler(undefined, {
-      getOpenerOrigin: () => HERMES_HUB_ORIGIN,
+      getOpenerOrigin: () => RABBIT_HUB_ORIGIN,
       openExternalUrl
     })
 
@@ -103,7 +100,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
     const openExternalUrl = vi.fn()
 
     const handler = createWindowOpenHandler(undefined, {
-      getOpenerOrigin: () => 'https://hermes-agent.nousresearch.com.evil.example',
+      getOpenerOrigin: () => 'https://github.com/seven0070/Rabbit-.evil.example',
       openExternalUrl
     })
 
@@ -127,7 +124,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
     expect(openExternalUrl).not.toHaveBeenCalled()
 
     const throwingOpen = createWindowOpenHandler(undefined, {
-      getOpenerOrigin: () => HERMES_HUB_ORIGIN,
+      getOpenerOrigin: () => RABBIT_HUB_ORIGIN,
       openExternalUrl
     })
 
@@ -141,7 +138,7 @@ describe('createWindowOpenHandler trusted-hub delegation', () => {
       () => {
         throw new Error('log failed')
       },
-      { getOpenerOrigin: () => HERMES_HUB_ORIGIN, openExternalUrl }
+      { getOpenerOrigin: () => RABBIT_HUB_ORIGIN, openExternalUrl }
     )
 
     expect(handler(baseDetails)).toEqual({ action: 'deny' })

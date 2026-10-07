@@ -77,10 +77,10 @@ def test_model_not_found_chat_text_points_at_model_picker_not_http():
 def test_oauth_rejection_chat_text_names_the_provider_slug_and_the_failing_profile(tmp_path, monkeypatch):
     """A revoked Codex grant must send the user to THAT profile's own sign-in (profiles are
     islands, 93889b770da) and put the provider slug in the text the goal judge reads (#114012)."""
-    profile_home = tmp_path / ".hermes" / "profiles" / "codex"
+    profile_home = tmp_path / ".rabbit" / "profiles" / "codex"
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("RABBIT_HOME", str(profile_home))
     hints = []
 
     class _Recorder(_Agent):
@@ -92,13 +92,13 @@ def test_oauth_rejection_chat_text_names_the_provider_slug_and_the_failing_profi
         provider="openai-codex", model="gpt-5.6-sol", agent=_Recorder(),
     )
     text = result["final_response"]
-    assert "`hermes -p codex auth add openai-codex --type oauth`" in text
+    assert "`rabbit -p codex auth add openai-codex --type oauth`" in text
     assert "<provider>" not in text
     assert "token_revoked" in text  # the raw error survives for the judge to quote
-    # The CLI 💡 hint names the same command; it no longer sends the user to a bare `hermes auth`.
+    # The CLI 💡 hint names the same command; it no longer sends the user to a bare `rabbit auth`.
     cli_hint = "\n".join(hints)
-    assert "`hermes -p codex auth add openai-codex --type oauth`" in cli_hint, cli_hint
-    assert "`hermes auth`" not in cli_hint, cli_hint
+    assert "`rabbit -p codex auth add openai-codex --type oauth`" in cli_hint, cli_hint
+    assert "`rabbit auth`" not in cli_hint, cli_hint
 
 
 def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
@@ -200,7 +200,7 @@ def test_interpreter_shutdown_copy_substitutes_the_real_session_id():
         _outer_error_count=0, api_call_count=1, messages=[], conversation_history=None,
         _turn_exit_reason="unknown", failed=False, final_response=None,
     )
-    assert "hermes --resume 20260914_abc" in verdict.final_response
+    assert "rabbit --resume 20260914_abc" in verdict.final_response
     assert "<session-id>" not in verdict.final_response
 
 
@@ -217,7 +217,7 @@ def test_site_failure_codes_never_collapse_to_unknown(code):
 
 def test_model_caused_codes_stay_on_the_provider_layer_and_runtime_codes_on_gateway():
     """Cut-off / empty / broken replies come from the model (provider layer, so the client's
-    per-code copy applies); a busy session or loop bug is Hermes-side (gateway layer, so the
+    per-code copy applies); a busy session or loop bug is Rabbit-side (gateway layer, so the
     client never offers Switch provider for it)."""
     layers = {c: build_error_surface_from_result({"failed": True, "error": "x", "failure_reason": c})["layer"]
               for c in ("truncated", "empty_response", "invalid_response", "session_busy", "loop_error")}

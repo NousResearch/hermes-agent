@@ -553,7 +553,7 @@ class TestBlueBubblesGateBeforeDownload:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("text, downloads, handled_count", [
         ("look at this", 0, 0),          # unmentioned group attachment: never fetched
-        ("hermes look at this", 1, 1),   # mentioned: fetched and dispatched
+        ("rabbit look at this", 1, 1),   # mentioned: fetched and dispatched
     ])
     async def test_unmentioned_group_attachment_is_not_downloaded(
             self, monkeypatch, text, downloads, handled_count):

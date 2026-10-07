@@ -2,34 +2,34 @@
 
 [ntfy](https://ntfy.sh/) 是一个简单的基于 HTTP 的发布-订阅通知服务。它可与 `ntfy.sh` 上的免费公共服务器或任何自托管实例配合使用，支持任何能发起 HTTP 请求的客户端——手机、浏览器、脚本、手表。
 
-ntfy 是 Hermes 的轻量级推送渠道的理想选择：通过 [ntfy 移动应用](https://ntfy.sh/docs/subscribe/phone/) 订阅一个 topic（主题），向该 topic 发送消息与 agent 对话，然后在手机上收到回复。
+ntfy 是 Rabbit 的轻量级推送渠道的理想选择：通过 [ntfy 移动应用](https://ntfy.sh/docs/subscribe/phone/) 订阅一个 topic（主题），向该 topic 发送消息与 agent 对话，然后在手机上收到回复。
 
 ## 前提条件
 
-- 一个 topic 名称（任意唯一字符串——`hermes-myname-2026` 即可）
+- 一个 topic 名称（任意唯一字符串——`rabbit-myname-2026` 即可）
 - 已安装 [ntfy 移动应用](https://ntfy.sh/docs/subscribe/phone/) 并订阅该 topic
 - 可选：自托管的 ntfy 服务器，或用于私有/保留 topic 的 `ntfy.sh` 账户 token
 
-仅此而已。无需 SDK、无需守护进程、无需 Node.js。适配器使用 `httpx`，该库已是 Hermes 的依赖项。
+仅此而已。无需 SDK、无需守护进程、无需 Node.js。适配器使用 `httpx`，该库已是 Rabbit 的依赖项。
 
-## 配置 Hermes
+## 配置 Rabbit
 
 ### 通过设置向导
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 选择 **ntfy** 并按提示操作。
 
 ### 通过环境变量
 
-将以下内容添加到 `~/.hermes/.env`：
+将以下内容添加到 `~/.rabbit/.env`：
 
 ```
-NTFY_TOPIC=hermes-myname-2026
-NTFY_ALLOWED_USERS=hermes-myname-2026
-NTFY_HOME_CHANNEL=hermes-myname-2026
+NTFY_TOPIC=rabbit-myname-2026
+NTFY_ALLOWED_USERS=rabbit-myname-2026
+NTFY_HOME_CHANNEL=rabbit-myname-2026
 ```
 
 | 变量 | 是否必填 | 说明 |
@@ -46,7 +46,7 @@ NTFY_HOME_CHANNEL=hermes-myname-2026
 
 ## 身份模型——部署前请阅读
 
-ntfy 没有原生的已认证用户身份。已发布消息中的 `title` 字段由**发布者控制**，可以是发布者想要的任何内容。Hermes 适配器**不**使用 `title` 进行授权——否则任何知道 topic 的发布者都可以伪造允许的用户。
+ntfy 没有原生的已认证用户身份。已发布消息中的 `title` 字段由**发布者控制**，可以是发布者想要的任何内容。Rabbit 适配器**不**使用 `title` 进行授权——否则任何知道 topic 的发布者都可以伪造允许的用户。
 
 相反，**topic 名称本身即为身份**。发布到该 topic 的每条消息都被视为来自同一个逻辑用户（即该 topic）。因此 `NTFY_ALLOWED_USERS` 通常就是 topic 名称本身——一个控制整个渠道访问的单条目白名单。
 
@@ -54,19 +54,19 @@ ntfy 没有原生的已认证用户身份。已发布消息中的 `title` 字段
 
 - **自托管 ntfy** 并通过[访问控制](https://docs.ntfy.sh/config/#access-control)锁定 topic。只有持有读/写 token 的授权客户端才能发布。
 - 或**在 ntfy.sh 上使用私有 topic**（[保留 topic](https://docs.ntfy.sh/publish/#reserved-topics) 需要账户），并通过 `NTFY_TOKEN` 保护。
-- 或**选择一个长且难以猜测的 topic 名称**（`hermes-7d4f9c8b-2026`），将其视为共享密钥。这是最轻量的方案，但 topic 名称可能通过日志或截图泄露。
+- 或**选择一个长且难以猜测的 topic 名称**（`rabbit-7d4f9c8b-2026`），将其视为共享密钥。这是最轻量的方案，但 topic 名称可能通过日志或截图泄露。
 
 在任何情况下，除非底层 topic 已启用访问控制，否则不要通过 ntfy 传输敏感数据。
 
 ## 快速开始——从手机与 agent 对话
 
-1. 选择一个 topic 名称：`hermes-myname-2026`
-2. 在手机上：安装 [ntfy 应用](https://ntfy.sh/docs/subscribe/phone/)，点击 **+**，输入 `hermes-myname-2026`
+1. 选择一个 topic 名称：`rabbit-myname-2026`
+2. 在手机上：安装 [ntfy 应用](https://ntfy.sh/docs/subscribe/phone/)，点击 **+**，输入 `rabbit-myname-2026`
 3. 在主机上：
    ```bash
-   echo 'NTFY_TOPIC=hermes-myname-2026' >> ~/.hermes/.env
-   echo 'NTFY_ALLOWED_USERS=hermes-myname-2026' >> ~/.hermes/.env
-   hermes gateway restart
+   echo 'NTFY_TOPIC=rabbit-myname-2026' >> ~/.rabbit/.env
+   echo 'NTFY_ALLOWED_USERS=rabbit-myname-2026' >> ~/.rabbit/.env
+   rabbit gateway restart
    ```
 4. 从 ntfy 应用向该 topic 发送一条消息。agent 的回复将以推送通知的形式送达。
 
@@ -104,11 +104,11 @@ go install heckel.io/ntfy/v2@latest
 ntfy serve
 ```
 
-然后将 Hermes 指向该实例：
+然后将 Rabbit 指向该实例：
 
 ```
 NTFY_SERVER_URL=https://ntfy.mydomain.com
-NTFY_TOPIC=hermes
+NTFY_TOPIC=rabbit
 NTFY_TOKEN=tk_abc123  # if you've set up access control
 ```
 
@@ -116,7 +116,7 @@ NTFY_TOKEN=tk_abc123  # if you've set up access control
 
 ## Markdown 格式化
 
-当发布者设置 `X-Markdown: true` 请求头时，ntfy 客户端会渲染 Markdown。要为 Hermes 的出站回复启用此功能：
+当发布者设置 `X-Markdown: true` 请求头时，ntfy 客户端会渲染 Markdown。要为 Rabbit 的出站回复启用此功能：
 
 ```
 NTFY_MARKDOWN=true
@@ -135,11 +135,11 @@ platforms:
 
 ## 仅出站设置（只推送通知，不接收消息）
 
-如果只希望 Hermes *推送*通知到 ntfy（cron 摘要、告警），而不接受任何回复消息，可将 `NTFY_TOPIC` 和 `NTFY_PUBLISH_TOPIC` 设为相同值，并完全省略 `NTFY_ALLOWED_USERS`。没有白名单时，agent 不会响应任何入站消息——手机可收到推送，但对话是单向的。
+如果只希望 Rabbit *推送*通知到 ntfy（cron 摘要、告警），而不接受任何回复消息，可将 `NTFY_TOPIC` 和 `NTFY_PUBLISH_TOPIC` 设为相同值，并完全省略 `NTFY_ALLOWED_USERS`。没有白名单时，agent 不会响应任何入站消息——手机可收到推送，但对话是单向的。
 
 ## 限制
 
-- **消息大小**：ntfy 将消息体上限设为 4096 个字符。超出时 Hermes 会截断并发出警告。
+- **消息大小**：ntfy 将消息体上限设为 4096 个字符。超出时 Rabbit 会截断并发出警告。
 - **无输入状态指示**：协议不支持此功能；`send_typing` 为空操作。
 - **无线程或附件**：ntfy 是纯推送通知。长回复保留在消息体中，不会分线程展开。
 - **无原生用户身份**：参见上文的身份模型章节。

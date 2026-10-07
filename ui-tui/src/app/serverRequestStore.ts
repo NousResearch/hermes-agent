@@ -1,4 +1,4 @@
-import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
+import type { ServerRequest } from '@rabbit/shared/json-rpc-channel'
 
 // Live server→client requests (clarify, approval, sudo, …) keyed by request
 // id. Overlay state keeps only the id; answering resolves the stored request

@@ -6,7 +6,7 @@ description: "ACP 适配器的工作原理：生命周期、会话、事件桥�
 
 # ACP 内部机制
 
-ACP 适配器将 Hermes 的同步 `AIAgent` 封装为异步 JSON-RPC stdio 服务器。
+ACP 适配器将 Rabbit 的同步 `AIAgent` 封装为异步 JSON-RPC stdio 服务器。
 
 关键实现文件：
 
@@ -21,12 +21,12 @@ ACP 适配器将 Hermes 的同步 `AIAgent` 封装为异步 JSON-RPC stdio 服�
 ## 启动流程
 
 ```text
-hermes acp / hermes-acp / python -m acp_adapter
+rabbit acp / rabbit-acp / python -m acp_adapter
   -> acp_adapter.entry.main()
   -> parse --version / --check / --setup before server startup
-  -> load ~/.hermes/.env
+  -> load ~/.rabbit/.env
   -> configure stderr logging
-  -> construct HermesACPAgent
+  -> construct RabbitACPAgent
   -> acp.run_agent(agent, use_unstable_protocol=True)
 ```
 
@@ -34,7 +34,7 @@ stdout 保留用于 ACP JSON-RPC 传输。人类可读的日志输出至 stderr�
 
 ## 主要组件
 
-### `HermesACPAgent`
+### `RabbitACPAgent`
 
 `acp_adapter/server.py` 实现 ACP agent 协议。
 
@@ -91,15 +91,15 @@ asyncio.run_coroutine_threadsafe(...)
 
 映射关系：
 
-- `allow_once` -> Hermes `once`
-- `allow_always` -> Hermes `always`
-- 拒绝选项 -> Hermes `deny`
+- `allow_once` -> Rabbit `once`
+- `allow_always` -> Rabbit `always`
+- 拒绝选项 -> Rabbit `deny`
 
 超时和桥接失败默认拒绝。
 
 ### 工具渲染辅助
 
-`acp_adapter/tools.py` 将 Hermes 工具映射到 ACP 工具类型，并构建面向编辑器的内容。
+`acp_adapter/tools.py` 将 Rabbit 工具映射到 ACP 工具类型，并构建面向编辑器的内容。
 
 示例：
 
@@ -113,7 +113,7 @@ asyncio.run_coroutine_threadsafe(...)
 ```text
 new_session(cwd)
   -> create SessionState
-  -> create AIAgent(platform="acp", enabled_toolsets=["hermes-acp"])
+  -> create AIAgent(platform="acp", enabled_toolsets=["rabbit-acp"])
   -> bind task_id/session_id to cwd override
 
 prompt(..., session_id)
@@ -141,12 +141,12 @@ prompt(..., session_id)
 
 ACP 不实现自己的认证存储。
 
-而是复用 Hermes 的运行时解析器：
+而是复用 Rabbit 的运行时解析器：
 
 - `acp_adapter/auth.py`
-- `hermes_cli/runtime_provider.py`
+- `rabbit_cli/runtime_provider.py`
 
-因此 ACP 通告并使用当前配置的 Hermes provider/凭据。它还始终通告一个终端 setup 认证方法（`hermes-setup`，参数 `--setup`），以便首次运行的 ACP 客户端在启动正常 ACP 会话前可以打开 Hermes 的交互式模型/provider 配置。
+因此 ACP 通告并使用当前配置的 Rabbit provider/凭据。它还始终通告一个终端 setup 认证方法（`rabbit-setup`，参数 `--setup`），以便首次运行的 ACP 客户端在启动正常 ACP 会话前可以打开 Rabbit 的交互式模型/provider 配置。
 
 ## 工作目录绑定
 
@@ -169,13 +169,13 @@ ACP 在 prompt 执行期间临时在终端工具上安装审批回调，执行�
 
 ## 当前限制
 
-- ACP 会话持久化至共享的 `~/.hermes/state.db`（SessionDB），在进程重启后透明恢复；它们会出现在 `session_search` 中
+- ACP 会话持久化至共享的 `~/.rabbit/state.db`（SessionDB），在进程重启后透明恢复；它们会出现在 `session_search` 中
 - 非文本 prompt 块在请求文本提取时当前被忽略
 - 编辑器特定的 UX 因 ACP 客户端实现而异
 
 ## 相关文件
 
 - `tests/acp/` — ACP 测试套件
-- `toolsets.py` — `hermes-acp` toolset 定义
-- `hermes_cli/main.py` — `hermes acp` CLI 子命令
-- `pyproject.toml` — `[acp]` 可选依赖 + `hermes-acp` 脚本
+- `toolsets.py` — `rabbit-acp` toolset 定义
+- `rabbit_cli/main.py` — `rabbit acp` CLI 子命令
+- `pyproject.toml` — `[acp]` 可选依赖 + `rabbit-acp` 脚本

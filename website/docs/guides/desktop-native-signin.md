@@ -1,12 +1,12 @@
 ---
 sidebar_position: 18
 title: "Desktop Native Sign-In (RFC 8252)"
-description: "How the Hermes Desktop app signs in to a gated gateway using your system browser and PKCE — no embedded webview, no session cookies"
+description: "How the Rabbit Desktop app signs in to a gated gateway using your system browser and PKCE — no embedded webview, no session cookies"
 ---
 
 # Desktop Native Sign-In (RFC 8252)
 
-When the Hermes Desktop app connects to a **gated gateway** (a hosted or
+When the Rabbit Desktop app connects to a **gated gateway** (a hosted or
 self-hosted dashboard that sits behind an OAuth provider), it can sign in two
 ways:
 
@@ -33,7 +33,7 @@ and the app relies on reading a session cookie out of a private webview. RFC
 all of that: **do the authorization in the system browser and hand the app its
 own tokens.**
 
-For Hermes specifically, native sign-in means:
+For Rabbit specifically, native sign-in means:
 
 - **No embedded webview.** The authorization happens in Safari / Chrome /
   Firefox / Edge — whatever you use — with your logins, extensions, and
@@ -47,7 +47,7 @@ For Hermes specifically, native sign-in means:
 ## How it works
 
 ```
-Desktop app                Gateway (/auth/native/*)          Nous Portal (IDP)
+Desktop app                Gateway (/auth/native/*)          OIDC provider (IDP)
    │ 1. open loopback 127.0.0.1:<random port>
    │ 2. system browser ─►  /auth/native/authorize
    │    (PKCE challenge)    (starts the normal PKCE login) ─► /oauth/authorize
@@ -60,10 +60,10 @@ Desktop app                Gateway (/auth/native/*)          Nous Portal (IDP)
 ```
 
 The gateway **brokers** the flow: it is the authorization server *to the
-desktop app* and an OAuth client *to the upstream identity provider* (Nous
-Portal). This is required because the upstream `client_id` and permitted
+desktop app* and an OAuth client *to the upstream identity provider*. This
+is required because the upstream `client_id` and permitted
 redirect URIs are bound to the gateway's own origin — a desktop app can't be a
-direct client of the Portal. The desktop still gets the full RFC 8252
+direct client of the provider. The desktop still gets the full RFC 8252
 experience: its own PKCE pair, its own loopback redirect, and tokens it owns.
 
 **PKCE (RFC 7636)** protects the loopback hop: the one-time gateway code is
@@ -103,7 +103,7 @@ tool blocks the loopback listener, or you close the browser tab — the app
 Native sign-in is available automatically on any gated gateway with an
 interactive session provider registered. No configuration is required — the
 `/auth/native/*` routes and the `auth_flows` advertisement are part of the
-dashboard-auth subsystem. OAuth providers (e.g. the bundled **Nous** provider)
+dashboard-auth subsystem. OAuth providers (e.g. the bundled **self-hosted OIDC** provider)
 broker the upstream IDP redirect; password providers (e.g. the bundled
 **basic-auth** plugin) land the system browser on the gateway's `/login`
 credential form instead — which is what lets OS password managers (macOS
@@ -122,4 +122,3 @@ The relevant endpoints (all public, pre-auth bootstrap, same as the existing
 
 - [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md) — the loopback-callback
   pattern for provider/MCP OAuth on remote machines.
-- [Run Hermes with Nous Portal](./run-hermes-with-nous-portal.md)

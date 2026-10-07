@@ -1,4 +1,4 @@
-"""Tests for _setup_feishu() in hermes_cli/gateway.py.
+"""Tests for _setup_feishu() in rabbit_cli/gateway.py.
 
 Verifies that the interactive setup writes env vars that correctly drive the
 Feishu adapter: credentials, connection mode, DM policy, and group policy.
@@ -53,17 +53,17 @@ def _run_setup_feishu(
             return True
         return False
 
-    with patch("hermes_cli.config.save_env_value", side_effect=mock_save), \
-         patch("hermes_cli.config.get_env_value", side_effect=mock_get), \
-         patch("hermes_cli.config.remove_env_value", side_effect=mock_remove), \
-         patch("hermes_cli.cli_output.prompt_yes_no", side_effect=prompt_yes_no_responses), \
-         patch("hermes_cli.setup.prompt_choice", side_effect=prompt_choice_responses), \
-         patch("hermes_cli.cli_output.prompt", side_effect=prompt_responses), \
-         patch("hermes_cli.cli_output.print_header"), \
-         patch("hermes_cli.cli_output.print_info"), \
-         patch("hermes_cli.cli_output.print_success"), \
-         patch("hermes_cli.cli_output.print_warning"), \
-         patch("hermes_cli.cli_output.print_error"), \
+    with patch("rabbit_cli.config.save_env_value", side_effect=mock_save), \
+         patch("rabbit_cli.config.get_env_value", side_effect=mock_get), \
+         patch("rabbit_cli.config.remove_env_value", side_effect=mock_remove), \
+         patch("rabbit_cli.cli_output.prompt_yes_no", side_effect=prompt_yes_no_responses), \
+         patch("rabbit_cli.setup.prompt_choice", side_effect=prompt_choice_responses), \
+         patch("rabbit_cli.cli_output.prompt", side_effect=prompt_responses), \
+         patch("rabbit_cli.cli_output.print_header"), \
+         patch("rabbit_cli.cli_output.print_info"), \
+         patch("rabbit_cli.cli_output.print_success"), \
+         patch("rabbit_cli.cli_output.print_warning"), \
+         patch("rabbit_cli.cli_output.print_error"), \
          patch("plugins.platforms.feishu.adapter.qr_register", return_value=qr_result):
 
         from plugins.platforms.feishu.adapter import interactive_setup

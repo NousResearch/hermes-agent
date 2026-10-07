@@ -68,7 +68,7 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
 
 
 def _profile_build_scope(profile_home):
-    """Bind HERMES_HOME + secret + terminal scope for an agent build: the same composition a turn
+    """Bind RABBIT_HOME + secret + terminal scope for an agent build: the same composition a turn
     binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
     ``.env``; home + secrets alone leaves ``_make_agent``'s terminal probing on the launch process's
     ambient ``TERMINAL_*`` (a ``terminal.backend: docker`` secondary built a ``local`` agent)."""
@@ -87,14 +87,14 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
 def _profile_session_db(profile_home):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
-        from hermes_state_registry import acquire
+        from rabbit_state_registry import acquire
         return acquire(Path(profile_home) / "state.db"), True
     return _get_db(), False
 
 
 def _release_db(db) -> None:
     with contextlib.suppress(Exception):
-        from hermes_state_registry import release_or_close
+        from rabbit_state_registry import release_or_close
         release_or_close(db)
 
 
@@ -126,7 +126,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             **({} if db is None else _live_count_field(db, row["id"] if resolved_id is None else resolved_id))}
 
 
-from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+from rabbit_state_sessions import INTERNAL_LISTING_SOURCES
 
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
 _LISTING_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
@@ -164,7 +164,7 @@ def _snapshot_sessions(rid):
 def _pet_display_cfg() -> dict:
     """``display.pet`` config block, ``{}`` when config is unreadable."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         cfg = load_config()
         display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
         return display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
@@ -210,28 +210,8 @@ def _active_pet():
     return None if not enabled or pet is None or not pet.exists else (pet, scale)
 
 
-def _billing_call(rid, fn, extra: dict | None = None) -> dict:
-    """Portal call → ok; BillingError → serialized envelope, else generic; ``extra`` rides both ERROR envelopes."""
-    from hermes_cli.nous_billing import BillingError
-    try:
-        return _ok(rid, fn())
-    except BillingError as exc:
-        return _ok(rid, {**_serialize_billing_error(exc), **(extra or {})})
-    except Exception as exc:
-        return _ok(rid, {"ok": False, "error": "error", "message": str(exc), **(extra or {})})
 
 
-def _billing_invalid(rid, message: str, error: str = "invalid_request") -> dict:
-    return _ok(rid, {"ok": False, "error": error, "message": message})
-
-
-def _billing_pick(result: dict, **fields) -> dict:
-    """``{"ok": True, <snake>: result[<camel>], ...}`` in ``fields`` order."""
-    return {"ok": True, **{key: result.get(src) for key, src in fields.items()}}
-
-
-def _billing_pending_change(result: dict) -> dict:
-    return {"ok": True, "message": result.get("message"), "payload": result}
 
 
 # ── session.create / list / most_recent / facts ──────────────────────
@@ -274,7 +254,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
             db.set_auto_title(new_key, title, source=title_source)
         sync_flushed_message_markers(history, rows)
     except Exception as exc:
-        from hermes_state_errors import is_disk_full_error
+        from rabbit_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
             try:
                 db.delete_session(new_key)
@@ -333,7 +313,7 @@ def _seed_row(record: dict) -> None:
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
-    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+    # ``profile`` (app-global remote mode): stored so the build and every turn re-bind RABBIT_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
     # failure to the first turn's provider 404 (#96817). Custom/unknown providers stay permissive.
@@ -510,7 +490,7 @@ def _unarchive_recoverable(db, session_id: str) -> bool:
     the rare write escalates to a short-lived registry writer instead of writing on the reader."""
     if not getattr(db, "read_only", False):
         return db.unarchive_recoverable_session(session_id)
-    from hermes_state_registry import acquire
+    from rabbit_state_registry import acquire
     try:
         wdb = acquire(db.db_path)
     except Exception:
@@ -561,7 +541,7 @@ def _(rid, params: dict, db) -> dict:
         # surfaces that OWN hidden sessions (Bots pane, pickers).
         from pathlib import Path
 
-        from hermes_cli.session_listing import show_subagent_sessions
+        from rabbit_cli.session_listing import show_subagent_sessions
 
         # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
         # A store without a path has no profile config to read, so it keeps the default shape.
@@ -855,7 +835,7 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     """Refuse a runaway transcript before any history read (sessions.max_resume_messages). Deferred /
     omit_messages / lazy paths load the TIP segment only and are guarded tip-only (a lineage count rejected
     exactly the well-compressed chats). Metadata fallback for lightweight adaptor DBs; fails OPEN on errors."""
-    from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
+    from rabbit_state import SessionResumeTooLargeError, resolved_max_resume_messages
     tip_only = ctx.lazy or ctx.omit_messages or (ctx.defer_history and not ctx.eager_build)
     try:
         if callable(safety_check := getattr(ctx.db, "assert_resume_safe", None)):
@@ -1032,7 +1012,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                     session["composer_override_profile"] = (
                         model_config.get("composer_override_profile")
                         if stored_runtime_overrides.get("model_override") else None)
-                # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
+                # Each turn re-binds RABBIT_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
                 session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
@@ -1110,7 +1090,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4007, "session_key required")
     if not (raw := _str_param(params, "cwd")):
         return _err(rid, 4016, "cwd required")
-    from hermes_constants import translate_cwd_for_wsl_backend
+    from rabbit_constants import translate_cwd_for_wsl_backend
     # Snapshot under the lock — concurrent RPCs mutate _sessions.
     with _sessions_lock:
         live_sid, live = next(
@@ -1151,7 +1131,7 @@ def _(rid, params: dict) -> dict:
         return err
     current = str(params.get("current_session_id") or "")
     # ``_finalized`` sessions linger until the reaper pops them (they inflated the footer). Do NOT filter on
-    # the WS-detached sentinel: detached is attachable until grace-reap, and ``hermes --tui`` rides stdio.
+    # the WS-detached sentinel: detached is attachable until grace-reap, and ``rabbit --tui`` rides stdio.
     # Keep insertion order (focused must not jump).
     rows = [_session_live_item(sid, session, current) for sid, session in snapshot if not session.get("_finalized")]
     return _ok(rid, {"sessions": rows})
@@ -1175,7 +1155,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
-    from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
+    from rabbit_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
         return _err(rid, 4006, "session_id required")
@@ -1189,7 +1169,7 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
         try:
-            home = Path(profile_home) if profile_home is not None else get_hermes_home()
+            home = Path(profile_home) if profile_home is not None else get_rabbit_home()
             deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
@@ -1451,11 +1431,6 @@ def _(rid, params: dict, session: dict) -> dict:
     usage: dict = _session_usage_snapshot(session)
     if session.get("agent") is None and not usage:
         usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
-    # Nous credits are agent-independent (portal fetch); fail-open when absent.
-    with contextlib.suppress(Exception):
-        from agent.account_usage import nous_credits_lines
-        if credits := nous_credits_lines():
-            usage["credits_lines"] = credits
     # Provider account limits (e.g. Codex quota windows) — the same block the CLI and gateway /usage
     # render, so the Desktop usage feed is not the one surface that omits them. Fail-open.
     with contextlib.suppress(Exception):
@@ -1620,7 +1595,7 @@ def _(rid, params: dict, slug: str) -> dict:
     """Adopt a pet: install (if needed) + activate; writes ``display.pet.*`` to config."""
     from agent.pet import store
     from agent.pet.manifest import ManifestError
-    from hermes_cli.pets import _set_active
+    from rabbit_cli.pets import _set_active
     try:
         pet = store.install_pet(slug)
     except (store.PetStoreError, ManifestError) as exc:
@@ -1633,14 +1608,14 @@ def _(rid, params: dict, slug: str) -> dict:
 def _(rid, params: dict, slug: str) -> dict:
     """Uninstall a pet (delete its directory); if it was active, turn the display off."""
     from agent.pet import store
-    from hermes_cli.pets import _clear_active_if
+    from rabbit_cli.pets import _clear_active_if
     removed = store.remove_pet(slug)
     _pet_config_followup("pet.remove", _clear_active_if, slug)
     return _ok(rid, {"ok": removed, "slug": slug})
 
 
 def _pet_config_followup(what: str, fn, *args) -> None:
-    """Best-effort ``hermes_cli.pets`` active-slug update after a store op that already succeeded."""
+    """Best-effort ``rabbit_cli.pets`` active-slug update after a store op that already succeeded."""
     try:
         fn(*args)
     except Exception as exc:  # noqa: BLE001
@@ -1669,7 +1644,7 @@ def _(rid, params: dict, slug: str) -> dict:
     if not (new_slug := store.rename_pet(slug, name)):
         return _err(rid, 5031, "pet.rename failed")
     if new_slug != slug:
-        from hermes_cli.pets import _rename_active_if
+        from rabbit_cli.pets import _rename_active_if
         _pet_config_followup("pet.rename", _rename_active_if, slug, new_slug)
     return _ok(rid, {"ok": True, "slug": new_slug, "displayName": name})
 
@@ -1686,7 +1661,7 @@ def _(rid, params: dict, slug: str) -> dict:
 @_pet_method("pet.disable")
 def _(rid, params: dict) -> dict:
     """``display.pet.enabled=false`` from the desktop picker."""
-    from hermes_cli.pets import _set_enabled
+    from rabbit_cli.pets import _set_enabled
     _set_enabled(False)
     return _ok(rid, {"ok": True})
 
@@ -1694,7 +1669,7 @@ def _(rid, params: dict) -> dict:
 @_pet_method("pet.scale")
 def _(rid, params: dict) -> dict:
     """Persist ``display.pet.scale`` (clamped to engine bounds) from the desktop slider."""
-    from hermes_cli.pets import set_pet_scale
+    from rabbit_cli.pets import set_pet_scale
     scale, err = set_pet_scale(params.get("scale"))
     return _err(rid, 4004, err) if err else _ok(rid, {"ok": True, "scale": scale})
 
@@ -1831,126 +1806,6 @@ def _(rid, params: dict) -> dict:
                      "pet": _pet_sprite_payload(pet, scale=_pet_config_scale()) if pet else {}})
 
 
-# ── billing / subscription ───────────────────────────────────────────
-# All fail-open: a logged-out / unreachable portal yields an ``ok`` envelope with a typed
-# ``error`` (not a JSON-RPC error) so the TUI maps it to copy. ``billing:manage`` routes
-# return error=insufficient_scope on 403, which drives the ``billing.step_up`` device flow.
-def _billing_view(name: str, module: str, builder: str, serializer: str, fallback: dict) -> None:
-    """Read-only view RPC (no scope required): ``serializer(module.builder())``, ``fallback`` on any error.
-    The view module stays a lazy import (startup budget); the serializer is a server global."""
-    @method(name)
-    def _(rid, params: dict) -> dict:
-        try:
-            from importlib import import_module
-            return _ok(rid, globals()[serializer](getattr(import_module(module), builder)()))
-        except Exception:
-            return _ok(rid, dict(fallback))
-
-
-@method("billing.state")
-def _(rid, params: dict) -> dict:
-    """Read-only billing view (no scope required); fail-open. The Nous free tier has no account to
-    bill, so its state is answered locally (``free_tier_account`` set, ``logged_in`` false) without a portal
-    round-trip that could only fail."""
-    try:
-        from agent.billing_view import BillingState, build_billing_state
-        from hermes_cli.anon_auth import has_free_tier_account
-        if has_free_tier_account():
-            return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
-        return _ok(rid, _serialize_billing_state(build_billing_state()))
-    except Exception:
-        return _ok(rid, {"ok": True, "logged_in": False, "free_tier_account": False, "error": "could not load billing state"})
-
-
-_billing_view("usage.bars", "agent.billing_usage", "build_usage_model", "_serialize_usage_model",  # two-bar $ view
-              {"ok": True, "available": False})
-_billing_view("subscription.state", "agent.subscription_view", "build_subscription_state",
-              "_serialize_subscription_state",
-              {"ok": True, "logged_in": False, "error": "could not load subscription state"})
-
-
-@method("subscription.preview")
-def _(rid, params: dict) -> dict:
-    """POST /api/billing/subscription/preview → chargeless effect quote. billing:manage."""
-    from agent.subscription_view import subscription_change_preview_from_payload
-    from hermes_cli.nous_billing import post_subscription_preview
-    if not (tier_id := params.get("subscription_type_id")):
-        return _billing_invalid(rid, "subscription_type_id is required")
-    return _billing_call(rid, lambda: _serialize_subscription_preview(
-        subscription_change_preview_from_payload(post_subscription_preview(subscription_type_id=tier_id))))
-
-
-def _billing_route(name: str, call, *, invalid=None, message: str = "", error: str = "invalid_request",
-                   idempotent: bool = False):
-    """Portal write route on ``hermes_cli.nous_billing`` (lazy; tests patch its functions): ``invalid(params)``
-    → ``_billing_invalid(message, error)``; ``call(nb, params, key)`` performs the request. ``idempotent``
-    mints ``idempotency_key`` if absent and echoes it (also on error) so the TUI retries the SAME operation."""
-    @method(name)
-    def _(rid, params: dict) -> dict:
-        import hermes_cli.nous_billing as nb
-        if invalid is not None and invalid(params):
-            return _billing_invalid(rid, message, error=error)
-        key = extra = None
-        if idempotent:
-            from agent.billing_view import new_idempotency_key
-            key = params.get("idempotency_key") or new_idempotency_key()
-            extra = {"idempotency_key": key}
-        return _billing_call(rid, lambda: call(nb, params, key) | (extra or {}), extra=extra)
-
-
-# PUT pending-change: schedule a downgrade / same-price change OR a period-end cancellation.
-_billing_route("subscription.change", lambda nb, p, _k: _billing_pending_change(nb.put_subscription_pending_change(
-    subscription_type_id=p.get("subscription_type_id"), cancel=bool(p.get("cancel")))),
-    invalid=lambda p: not p.get("cancel") and not p.get("subscription_type_id"),
-    message="subscription_type_id or cancel is required")
-# DELETE pending-change: clear a scheduled downgrade / cancellation (re-enables recurring spend).
-_billing_route("subscription.resume",
-               lambda nb, p, _k: _billing_pending_change(nb.delete_subscription_pending_change()))
-# The money route (prorate + charge + flip plan). SCA / decline → status requires_action / payment_failed +
-# recovery_url.
-_billing_route("subscription.upgrade", lambda nb, p, key: _billing_pick(
-    nb.post_subscription_upgrade(subscription_type_id=p.get("subscription_type_id"), idempotency_key=key),
-    status="status", target_tier_name="targetTierName", recovery_url="recoveryUrl", reason="reason"),
-    invalid=lambda p: not p.get("subscription_type_id"), message="subscription_type_id is required", idempotent=True)
-# POST /api/billing/charge → {ok, charge_id, idempotency_key}.
-_billing_route("billing.charge", lambda nb, p, key: _billing_pick(
-    nb.post_charge(amount_usd=p.get("amount_usd"), idempotency_key=key), charge_id="chargeId"),
-    invalid=lambda p: p.get("amount_usd") is None, message="amount_usd is required", idempotent=True)
-# GET /api/billing/charge/{id} — a single status read; the caller drives the poll cadence.
-_billing_route("billing.charge_status", lambda nb, p, _k: _billing_pick(
-    nb.get_charge_status(p.get("charge_id")), status="status", amount_usd="amountUsd", settled_at="settledAt",
-    reason="reason"), invalid=lambda p: not p.get("charge_id"), message="charge_id is required",
-    error="invalid_charge_id")
-
-
-def _auto_reload(nb, p: dict, _key) -> dict:
-    """PATCH /api/billing/auto-top-up. params: {enabled, threshold, top_up_amount}."""
-    nb.patch_auto_top_up(enabled=bool(p.get("enabled")), threshold=p.get("threshold"),
-                         top_up_amount=p.get("top_up_amount"))
-    return {"ok": True}
-
-
-_billing_route("billing.auto_reload", _auto_reload, message="threshold and top_up_amount are required",
-               invalid=lambda p: p.get("threshold") is None or p.get("top_up_amount") is None)
-
-
-@method("billing.step_up")
-def _(rid, params: dict) -> dict:
-    """billing:manage step-up device flow → {ok, granted} (false when the server downscopes). Pooled (blocks
-    for minutes); URL/code reach the TUI via ``billing.step_up.verification`` (stdout is the RPC pipe) and the
-    browser opens TUI-side, never via the gateway's headless webbrowser.open."""
-    sid = params.get("session_id") or ""
-
-    def call():
-        from hermes_cli.auth import step_up_nous_billing_scope
-        granted = step_up_nous_billing_scope(
-            open_browser=False,
-            on_verification=lambda url, code: _emit(
-                "billing.step_up.verification", sid, {"verification_url": url, "user_code": code}))
-        return {"ok": True, "granted": bool(granted)}
-    return _billing_call(rid, call, extra={"granted": False})
-
-
 # ── session status / history / undo / compress / save / close ────────
 def _status_row(session: dict, params: dict, key: str) -> dict:
     """Stored row for ``key``: the live session's bound profile db first, else params.profile / launch."""
@@ -1971,7 +1826,7 @@ def _try_get_session(db, key: str) -> dict:
 
 @_session_method("session.status")
 def _(rid, params: dict, session: dict) -> dict:
-    from hermes_cli.status_report import build_status_fields, status_lines
+    from rabbit_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
     # Under turn isolation the compute host owns the live route: a stale in-process agent object
@@ -1988,7 +1843,7 @@ def _(rid, params: dict, session: dict) -> dict:
     )
     project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
-        "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
+        "Rabbit TUI Status", "", *status_lines(fields, "session_id", "path"),
         *([f"Project: {project['name']}"] if project else []),
         *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return _ok(rid, {"output": "\n".join(lines)})
@@ -2171,8 +2026,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
-    from hermes_cli.session_export import load_save_snapshot, render_session_for_save
-    from hermes_state import SessionExportTooLargeError
+    from rabbit_cli.session_export import load_save_snapshot, render_session_for_save
+    from rabbit_state import SessionExportTooLargeError
     # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:
         with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db:
@@ -2182,7 +2037,7 @@ def _(rid, params: dict, session: dict) -> dict:
     except Exception:
         logger.warning("session.save: stored-session read failed; saving the in-memory history", exc_info=True)
         data = None
-    path = Path(session.get("profile_home") or get_hermes_home()) / "sessions/saved" / f"hermes_conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
+    path = Path(session.get("profile_home") or get_rabbit_home()) / "sessions/saved" / f"rabbit_conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
     if not data:  # No stored row: the in-memory history as an importable snapshot (CLI fallback shape).
         started = getattr(agent := session["agent"], "session_start", None)
         started = started.timestamp() if isinstance(started, datetime) else session.get("created_at")

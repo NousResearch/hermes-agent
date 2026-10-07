@@ -1,7 +1,7 @@
 ---
 sidebar_position: 13
 title: "Browser Provider Plugins"
-description: "How to build a cloud browser backend plugin for Hermes Agent"
+description: "How to build a cloud browser backend plugin for Rabbit Agent"
 ---
 
 # Building a Browser Provider Plugin
@@ -9,22 +9,22 @@ description: "How to build a cloud browser backend plugin for Hermes Agent"
 Browser provider plugins register a **cloud browser backend** that services cloud-mode `browser_*` tool calls (navigate, click, screenshot, …). Built-in providers — Browserbase, Browser Use, and Firecrawl — all ship as plugins under `plugins/browser/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
-Browser backends are one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Web Search Provider Plugins](./web-search-provider-plugin.md) (which this ABC deliberately mirrors), [Image Generation](./image-gen-provider-plugin.md), [Video Generation](./video-gen-provider-plugin.md), [Memory Providers](./memory-provider-plugin.md), [Context Engines](./context-engine-plugin.md), [Secret Sources](./secret-source-plugin.md), and [Model Providers](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
+Browser backends are one of several **backend plugins** Rabbit supports. The others (with their own ABCs) are [Web Search Provider Plugins](./web-search-provider-plugin.md) (which this ABC deliberately mirrors), [Image Generation](./image-gen-provider-plugin.md), [Video Generation](./video-gen-provider-plugin.md), [Memory Providers](./memory-provider-plugin.md), [Context Engines](./context-engine-plugin.md), [Secret Sources](./secret-source-plugin.md), and [Model Providers](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Rabbit Plugin](./plugins/index.md).
 :::
 
 ## How it fits together
 
-A browser provider does **not** implement browsing. It implements **session lifecycle**: create a remote browser session, hand back a CDP websocket URL, and tear the session down. Hermes' own browser stack (`agent-browser` + `tools/browser_tool.py`) connects to whatever CDP URL you return and drives the page from there — every provider gets the full `browser_*` toolset for free.
+A browser provider does **not** implement browsing. It implements **session lifecycle**: create a remote browser session, hand back a CDP websocket URL, and tear the session down. Rabbit' own browser stack (`agent-browser` + `tools/browser_tool.py`) connects to whatever CDP URL you return and drives the page from there — every provider gets the full `browser_*` toolset for free.
 
 The active provider is selected by `browser.cloud_provider` in `config.yaml`; the dispatcher in `tools/browser_tool.py` is a pure registry lookup with no per-provider conditionals.
 
 ## Discovery
 
-Hermes scans for browser backends in three places:
+Rabbit scans for browser backends in three places:
 
 1. **Bundled** — `<repo>/plugins/browser/<name>/` (auto-loaded with `kind: backend`)
-2. **User** — `~/.hermes/plugins/browser/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
-3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
+2. **User** — `~/.rabbit/plugins/browser/<name>/` (opt-in via `plugins.enabled` or `rabbit plugins enable <name>`)
+3. **Pip** — packages declaring a `rabbit_agent.plugins` entry point
 
 Each plugin's `register(ctx)` calls `ctx.register_browser_provider(...)`, which puts the instance into the registry in `agent/browser_registry.py`.
 
@@ -74,12 +74,12 @@ class MyBackendProvider(BrowserProvider):
 
     @property
     def display_name(self) -> str:
-        return "My Backend"          # shown in `hermes tools`
+        return "My Backend"          # shown in `rabbit tools`
 
     def is_available(self) -> bool:
         """Cheap check only — env var present, dep importable.
         NO network calls: runs at tool-registration time and on every
-        `hermes tools` paint."""
+        `rabbit tools` paint."""
         return bool(os.environ.get("MY_BACKEND_API_KEY"))
 
     def create_session(self, task_id: str) -> dict:
@@ -111,7 +111,7 @@ class MyBackendProvider(BrowserProvider):
 
 An optional `external_call_id` key supports managed-gateway billing.
 
-### `get_setup_schema()` — the `hermes tools` picker row
+### `get_setup_schema()` — the `rabbit tools` picker row
 
 Override this to appear as a first-class option in the Browser Automation picker with API-key prompts and an install hook:
 
@@ -130,7 +130,7 @@ def get_setup_schema(self) -> dict:
     }
 ```
 
-Per the project standard for tool backends: if a backend can't be selected and configured through `hermes tools`, it isn't done — "set this env var manually" is not an integration.
+Per the project standard for tool backends: if a backend can't be selected and configured through `rabbit tools`, it isn't done — "set this env var manually" is not an integration.
 
 ## Users configure it
 
@@ -149,5 +149,5 @@ The three bundled providers under `plugins/browser/` are the canonical examples,
 - [ ] `is_available()` makes zero network calls
 - [ ] `create_session()` returns the full metadata contract (`bb_session_id` key name intact)
 - [ ] `close_session()` / `emergency_cleanup()` never raise
-- [ ] `get_setup_schema()` exposes your env vars so `hermes tools` can configure the backend
+- [ ] `get_setup_schema()` exposes your env vars so `rabbit tools` can configure the backend
 - [ ] `plugin.yaml` declares `kind: backend` + `provides_browser_providers`

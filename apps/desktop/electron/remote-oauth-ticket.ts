@@ -1,4 +1,3 @@
-import { makeNousCloudBackendDownError } from './backend-health'
 import { gatewayTicketFailure, gatewayTicketTransportMessage } from './connection-config'
 import { oauthTicketFailureAuthMessage } from './native-auth-decisions'
 
@@ -10,7 +9,7 @@ interface RemoteOauthTicketDeps {
 // Roster dials use this same mint path before readiness; the ordinary 10s
 // deadline can discard a healthy OAuth source while its cold session warms.
 export function rosterSourceEnumerationTimeoutMs(connection: { kind?: string; authMode?: string }): number {
-  return (connection.kind === 'remote' || connection.kind === 'cloud') && connection.authMode === 'oauth'
+  return connection.kind === 'remote' && connection.authMode === 'oauth'
     ? 30_000
     : 10_000
 }
@@ -32,7 +31,6 @@ export async function resolveRemoteOauthTicket(
     // an HTTP fault — so fleet logs stop hiding three different upstream
     // causes behind one sentence (#98647).
     throw (
-      makeNousCloudBackendDownError(baseUrl, error) ??
       gatewayTicketFailure(error, oauthTicketFailureAuthMessage(hadNativeSession), gatewayTicketTransportMessage(error))
     )
   }

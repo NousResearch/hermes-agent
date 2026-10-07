@@ -2,7 +2,7 @@
 
 Maps gateway monitoring events to OTel spans for the operator-configured ``monitoring.export.otlp``
 endpoint (no default destination ships) and hosts the OTLP plumbing shared with
-``gateway_health_export``.  The OTel SDK is an optional extra (``hermes-agent[otlp]``) imported
+``gateway_health_export``.  The OTel SDK is an optional extra (``rabbit-agent[otlp]``) imported
 lazily; ``headers_env`` values are read at export time and never logged or stored.  The streaming
 subscriber runs fail-isolated on the emitter thread; ``event_filter`` keeps other planes off it.
 """
@@ -141,7 +141,7 @@ def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
 def _runtime_resource_attributes(config: Dict[str, Any], *, telemetry_scope: str) -> Dict[str, str]:
     """Build the safe OTLP resource shared by spans, metrics and diagnostic logs."""
     attrs = _safe_resource_attributes(_monitoring_section(config, "gateway_health_export").get("resource_attributes"))
-    attrs["service.name"] = "hermes-gateway"
+    attrs["service.name"] = "rabbit-gateway"
     attrs["service.instance.id"] = _safe_instance_id(_install_id(config))
     attrs["telemetry.scope"] = telemetry_scope
     return attrs
@@ -182,30 +182,30 @@ _KEEP_BY_KIND: Dict[str, tuple[str, ...]] = {
 
 
 def _allowlisted_attrs(ev: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
-    """``hermes.<key>`` attributes for present keys; string values are redacted and bounded."""
+    """``rabbit.<key>`` attributes for present keys; string values are redacted and bounded."""
     attrs: Dict[str, Any] = {}
     for col in keys:
         v = ev.get(col)
         if v is not None:
-            attrs[f"hermes.{col}"] = redact_bounded(v) if isinstance(v, str) else v
+            attrs[f"rabbit.{col}"] = redact_bounded(v) if isinstance(v, str) else v
     return attrs
 
 
 def _span_attrs(ev: Dict[str, Any]) -> Dict[str, Any]:
     """Span attributes for a monitoring event (content-free by construction)."""
     kind = ev.get("event")
-    attrs: Dict[str, Any] = {"hermes.event": kind or "unknown"}
+    attrs: Dict[str, Any] = {"rabbit.event": kind or "unknown"}
     attrs.update(_allowlisted_attrs(ev, _KEEP_BY_KIND.get(kind, ())))  # type: ignore[arg-type]
     return attrs
 
 
 def export_batch(provider, batch: List[Dict[str, Any]]) -> int:
     """Map a batch of events to OTel spans. Returns spans created."""
-    tracer = provider.get_tracer("hermes.monitoring")
+    tracer = provider.get_tracer("rabbit.monitoring")
     n = 0
     for ev in batch:
         try:
-            tracer.start_span(f"hermes.{ev.get('event', 'event')}", attributes=_span_attrs(ev)).end()
+            tracer.start_span(f"rabbit.{ev.get('event', 'event')}", attributes=_span_attrs(ev)).end()
             n += 1
         except Exception:
             logger.debug("OTLP span map failed", exc_info=True)
@@ -274,7 +274,7 @@ def start_streaming(
         _require_sdk()
     except OTLPUnavailable:
         logger.warning("monitoring.export.otlp.enabled but the OTel SDK could not "
-                       "be installed/imported; install 'hermes-agent[otlp]'")
+                       "be installed/imported; install 'rabbit-agent[otlp]'")
         return None
     from agent.monitoring.emitter import get_emitter
     streamer = OTLPStreamer(config, event_filter=event_filter)

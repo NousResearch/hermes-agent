@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 KEENABLE_API_URL = "https://api.keenable.ai"
-_KEENABLE_TITLE = "hermes-agent"
+_KEENABLE_TITLE = "rabbit-agent"
 
 # Parallel free-tier rate-limit correlation id — random per process, never persisted.
 _SESSION_ID = uuid.uuid4().hex
@@ -66,7 +66,7 @@ def _is_search_failover_eligible(message: str) -> bool:
 
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
-    alt = " or another web backend via `hermes tools`" if other_backends else ""
+    alt = " or another web backend via `rabbit tools`" if other_backends else ""
     return f"Keyless {label} {kind} failed: {exc}. Set {env_key} ({site}){alt} for reliable service."
 
 
@@ -82,7 +82,7 @@ def _search(vendor: str, rows: Callable[[], List[Dict[str, Any]]], catch: Any = 
 
 
 def _per_url(urls: List[str], fetch: Callable[[str], Dict[str, Any]], vendor: str, catch: Any = Exception, hint: bool = False) -> List[Dict[str, Any]]:
-    """Per-URL extract loop: a ``catch`` failure becomes an error entry (``hint`` adds the ``hermes tools`` hint)."""
+    """Per-URL extract loop: a ``catch`` failure becomes an error entry (``hint`` adds the ``rabbit tools`` hint)."""
     def _one(url: str) -> Dict[str, Any]:
         try:
             return fetch(url)
@@ -114,9 +114,9 @@ def _web_config_selects(name: str) -> bool:
 
 
 def provider_tier(name: str) -> str:
-    """``web.provider_tier.<name>`` (``hermes tools`` Free/Paid rows): ``free``, ``paid``, or ``auto`` (anything else/unset)."""
+    """``web.provider_tier.<name>`` (``rabbit tools`` Free/Paid rows): ``free``, ``paid``, or ``auto`` (anything else/unset)."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         tiers = (load_config().get("web") or {}).get("provider_tier") or {}
         value = str(tiers.get(name, "") or "").lower().strip()
         return value if value in ("free", "paid") else "auto"
@@ -190,7 +190,7 @@ def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIM
     :class:`KeylessMCPError` on transport failures, non-2xx, JSON-RPC and tool errors."""
     import requests
     payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": arguments}}
-    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "User-Agent": "hermes-agent"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "User-Agent": "rabbit-agent"}
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
     except requests.RequestException as exc:

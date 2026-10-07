@@ -14,12 +14,12 @@ import pytest
 @pytest.mark.parametrize("packaged", [False, True])
 def test_isolated_pm_launch_captures_only_final_electron_spawn(tmp_path, packaged):
     launch_argv = (
-        [str(tmp_path / "apps/desktop/release/mac-arm64/Hermes.app/Contents/MacOS/Hermes")]
+        [str(tmp_path / "apps/desktop/release/mac-arm64/Rabbit.app/Contents/MacOS/Rabbit")]
         if packaged else ["npm", "exec", "--", "electron", "."]
     )
     root = Path(__file__).resolve().parents[3]
     helper = root / "tests/install/e2e-assets/launch-capture/pm-launch.py"
-    launcher = tmp_path / "hermes"
+    launcher = tmp_path / "rabbit"
     app = tmp_path / "app.py"
     app.write_text(
         "import os, subprocess, sys\n"

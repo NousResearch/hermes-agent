@@ -1,5 +1,5 @@
 """/review from slash.exec runs on the RPC pool, outside any turn. The reviewer it dispatches must
-still be registered under the parent Desktop/TUI session (HERMES_UI_SESSION_ID + exact steer
+still be registered under the parent Desktop/TUI session (RABBIT_UI_SESSION_ID + exact steer
 authority), or `subagent.list` hides it and the Desktop status stack shows nothing for /review."""
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
 
     def fake_start_review(agent, snapshot, prompt):
         from gateway.session_context import get_session_env
-        seen["ui_session_id"] = get_session_env("HERMES_UI_SESSION_ID", "")
+        seen["ui_session_id"] = get_session_env("RABBIT_UI_SESSION_ID", "")
         seen["authority"] = server._current_session_steer_authority(sid)
         return {"status": "dispatched", "delegation_id": "deleg_x"}
 
@@ -39,7 +39,7 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
         ):
             out = server._live_slash_command_output(sid, session, "review", "")
         from gateway.session_context import get_session_env
-        assert get_session_env("HERMES_UI_SESSION_ID", "") == ""  # scope cleared after dispatch
+        assert get_session_env("RABBIT_UI_SESSION_ID", "") == ""  # scope cleared after dispatch
         assert server._current_runtime_session_record.get() is None
     finally:
         server.reset_transport(token)

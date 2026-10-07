@@ -57,7 +57,7 @@ def test_vector_files_shape(tmp_path):
     for platform in PLATFORMS:
         doc = json.loads((tmp_path / f"{platform}.json").read_text(encoding="utf-8"))
         assert doc["platform"] == platform
-        assert doc["oracle"]["repo"] == "NousResearch/hermes-agent"
+        assert doc["oracle"]["repo"] == "seven0070/Rabbit-"
         assert re.match(r"^[0-9a-f]{40}$|^unknown$", doc["oracle"]["commit"])
         assert doc["oracle"]["generator_version"] >= 1
         ids = set()

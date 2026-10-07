@@ -1,7 +1,7 @@
-"""pytest's basetemp must never sit inside the operator's platform-native Hermes home.
+"""pytest's basetemp must never sit inside the operator's platform-native Rabbit home.
 
-Every per-test sandbox is ``<basetemp>/.../hermes_test`` and ``get_default_hermes_root()``
-prefers the platform-native home whenever ``HERMES_HOME`` sits *under* it — so a basetemp
+Every per-test sandbox is ``<basetemp>/.../rabbit_test`` and ``get_default_rabbit_root()``
+prefers the platform-native home whenever ``RABBIT_HOME`` sits *under* it — so a basetemp
 inside the home silently turns the sandbox back into the live install (#111101).
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+import rabbit_constants
 from tests import conftest as suite_conftest
 
 
@@ -35,7 +35,7 @@ def _config_with_basetemp(given: Path | None) -> SimpleNamespace:
 def test_basetemp_inside_the_native_home_is_relocated_outside_it(tmp_path, monkeypatch):
     native = tmp_path / "native-home"
     native.mkdir()
-    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
+    monkeypatch.setattr(rabbit_constants, "_get_platform_default_rabbit_home", lambda: native)
     config = _config_with_basetemp(native / ".repro")
 
     suite_conftest._relocate_basetemp_outside_operator_home(config)
@@ -45,18 +45,18 @@ def test_basetemp_inside_the_native_home_is_relocated_outside_it(tmp_path, monke
     assert config.option.basetemp == str(relocated)
     # One shared, prunable root (never a loose dir in the operator's $HOME) and gone when
     # this pytest exits; a run killed before that is swept as soon as the root is idle.
-    assert relocated.parent.name == "hermes-pytest" and relocated.parent != Path.home()
+    assert relocated.parent.name == "rabbit-pytest" and relocated.parent != Path.home()
     suite_conftest.pytest_unconfigure(config)
     assert not relocated.exists()
     # The sandbox derived from it no longer resolves to the native root.
-    monkeypatch.setenv("HERMES_HOME", str(relocated / "t0" / "hermes_test"))
-    assert hermes_constants.get_default_hermes_root() == relocated / "t0" / "hermes_test"
+    monkeypatch.setenv("RABBIT_HOME", str(relocated / "t0" / "rabbit_test"))
+    assert rabbit_constants.get_default_rabbit_root() == relocated / "t0" / "rabbit_test"
 
 
 def test_basetemp_outside_the_native_home_is_left_alone(tmp_path, monkeypatch):
     native = tmp_path / "native-home"
     native.mkdir()
-    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
+    monkeypatch.setattr(rabbit_constants, "_get_platform_default_rabbit_home", lambda: native)
     given = tmp_path / "elsewhere"
     config = _config_with_basetemp(given)
 
@@ -67,11 +67,11 @@ def test_basetemp_outside_the_native_home_is_left_alone(tmp_path, monkeypatch):
 
 
 def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_path, monkeypatch):
-    # Default install: repo at ~/.hermes/hermes-agent and TEMP under the home (Windows).
+    # Default install: repo at ~/.rabbit/rabbit-agent and TEMP under the home (Windows).
     native = tmp_path / "native-home"
-    (native / "hermes-agent").mkdir(parents=True)
-    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
-    monkeypatch.setattr(suite_conftest, "PROJECT_ROOT", native / "hermes-agent")
+    (native / "rabbit-agent").mkdir(parents=True)
+    monkeypatch.setattr(rabbit_constants, "_get_platform_default_rabbit_home", lambda: native)
+    monkeypatch.setattr(suite_conftest, "PROJECT_ROOT", native / "rabbit-agent")
     monkeypatch.setattr(suite_conftest.tempfile, "gettempdir", lambda: str(native / "tmp"))
     monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
     config = _config_with_basetemp(None)
@@ -88,7 +88,7 @@ def test_relocation_root_sweeps_basetemps_of_killed_runs_and_keeps_live_ones(tmp
 
     native = tmp_path / "native-home"
     native.mkdir()
-    root = native.parent / "hermes-pytest"
+    root = native.parent / "rabbit-pytest"
     dead, live = root / "b-dead", root / "b-live"
     dead.mkdir(parents=True)
     live.mkdir()

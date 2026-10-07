@@ -18,7 +18,7 @@ function Surface(): React.JSX.Element {
 function summary(allowed: boolean): DesktopUninstallSummary {
   return {
     code_removal_allowed: allowed,
-    hermes_home: '/test/home',
+    rabbit_home: '/test/home',
     agent_installed: true,
     gui_installed: true,
     source_built_artifacts: [],
@@ -57,12 +57,12 @@ it.each(['external', 'missing-policy', 'probe-failed', 'loading'] as const)(
 
     const run: ReturnType<typeof vi.fn> = vi.fn()
 
-    vi.stubGlobal('hermesDesktop', { uninstall: { summary: getSummary, run } })
+    vi.stubGlobal('rabbitDesktop', { uninstall: { summary: getSummary, run } })
     await act(async (): Promise<void> => {
       render(<UninstallSection />)
     })
     expect(getSummary).toHaveBeenCalledOnce()
-    expect(screen.queryByText('Uninstall Hermes')).toBeNull()
+    expect(screen.queryByText('Uninstall Rabbit')).toBeNull()
     expect(screen.queryByRole('button', { name: /Uninstall/ })).toBeNull()
     expect(screen.queryByText('Danger zone')).toBeNull()
     expect(run).not.toHaveBeenCalled()
@@ -71,7 +71,7 @@ it.each(['external', 'missing-policy', 'probe-failed', 'loading'] as const)(
 
 it('keeps owned-install removal modes and confirms the selected mode', async (): Promise<void> => {
   const run: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ ok: true })
-  vi.stubGlobal('hermesDesktop', {
+  vi.stubGlobal('rabbitDesktop', {
     uninstall: { summary: async (): Promise<DesktopUninstallSummary> => summary(true), run }
   })
   render(<UninstallSection />)
@@ -87,7 +87,7 @@ it.each(['gui', 'lite', 'full'] as const)(
   'localizes confirmation for %s without changing mode or running before confirmation',
   async (mode: 'gui' | 'lite' | 'full'): Promise<void> => {
     const run: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ ok: false })
-    vi.stubGlobal('hermesDesktop', {
+    vi.stubGlobal('rabbitDesktop', {
       uninstall: { summary: async (): Promise<DesktopUninstallSummary> => summary(true), run }
     })
     render(
@@ -96,7 +96,7 @@ it.each(['gui', 'lite', 'full'] as const)(
       </I18nProvider>
     )
     const zh: (typeof TRANSLATIONS)['zh']['settings']['uninstallSection'] = TRANSLATIONS.zh.settings.uninstallSection
-    await screen.findByText(zh.uninstallHermes)
+    await screen.findByText(zh.uninstallRabbit)
     fireEvent.click(screen.getByRole('button', { name: new RegExp(zh.options[mode].title) }))
     expect(screen.getByText(zh.confirmBody(zh.options[mode].consequence))).toBeTruthy()
     expect(run).not.toHaveBeenCalled()

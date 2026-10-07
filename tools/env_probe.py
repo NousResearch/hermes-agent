@@ -13,7 +13,7 @@ import tempfile
 import threading
 from typing import Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from rabbit_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +133,9 @@ def _build_probe_line() -> str:
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
-    # Bare which() is correct here (unlike Hermes's own uv call sites): this reports
+    # Bare which() is correct here (unlike Rabbit's own uv call sites): this reports
     # the environment *the model will see* in the terminal tool, whose PATH includes
-    # the Hermes-managed $HERMES_HOME/bin via local.py.
+    # the Rabbit-managed $RABBIT_HOME/bin via local.py.
     has_uv = shutil.which("uv") is not None
 
     mismatch = bool(pip_bound_to and py3_ver and not py3_ver.startswith(pip_bound_to))

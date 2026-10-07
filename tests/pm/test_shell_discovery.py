@@ -16,7 +16,7 @@ def test_local_transport_finds_conventional_bash_without_path(monkeypatch, tmp_p
         pytest.skip("a conventional Git for Windows installation is required")
 
     monkeypatch.setenv("ProgramFiles", str(program_files))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     empty_bin = tmp_path / "empty-bin"
     alias_bin = tmp_path / "WindowsApps"
     empty_bin.mkdir()

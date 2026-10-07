@@ -6,7 +6,7 @@ declare global {
      * effectively a constant; kept on `window` for any consumer that reads
      * it directly and for parity with the server's bootstrap script.
      */
-    __HERMES_DASHBOARD_EMBEDDED_CHAT__?: boolean;
+    __RABBIT_DASHBOARD_EMBEDDED_CHAT__?: boolean;
   }
 }
 

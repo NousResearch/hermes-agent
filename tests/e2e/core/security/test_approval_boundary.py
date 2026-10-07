@@ -2,7 +2,7 @@
 
 Two surfaces, both real processes, the model scripted by ``FakeLLMServer``:
 
-* CLI: ``hermes chat -q`` (single-query, nobody present to approve; ``approvals.mode: manual`` so
+* CLI: ``rabbit chat -q`` (single-query, nobody present to approve; ``approvals.mode: manual`` so
   no guardian LLM decides). The fake model calls ``terminal`` with a table of rm -rf spellings meant
   to slip past the detector (quoting, backslash, ``env``, sub-shells, ``$(...)``, absolute path,
   ``find -delete``, ``xargs``, ``eval``, heredoc into ``sh`` ...). Each targets its own victim dir
@@ -32,7 +32,7 @@ import pytest
 
 from tests.e2e.core.delivery._fake_platform import GatewayProcess, wait_until
 from tests.e2e.core._pending_fixes import known_gate
-from tests.e2e.core.security._helpers import BoundaryBreach, run_hermes, write_home
+from tests.e2e.core.security._helpers import BoundaryBreach, run_rabbit, write_home
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell variants + process-group harness")
@@ -112,17 +112,17 @@ def _plant(root: Path) -> Path:
 
 
 def _single_query_run(root: Path, single_query_mode: str) -> Dict[str, Any]:
-    """One ``hermes chat -q`` whose model calls ``terminal`` once per variant, then the control."""
+    """One ``rabbit chat -q`` whose model calls ``terminal`` once per variant, then the control."""
     home, victims = root / "home", _plant(root)
     script: list[Any] = [ToolCall("terminal", {"command": t.format(X=n)}) for n, t in VARIANTS.items()]
     script += [ToolCall("terminal", {"command": CONTROL}), Text("done")]
     key = "sk-approval-cli"
     with FakeLLMServer(script, api_key=key) as srv:
-        write_home(home / ".hermes", srv.base_url, api_key=key,
+        write_home(home / ".rabbit", srv.base_url, api_key=key,
                    config=MANUAL + f"  single_query_mode: {single_query_mode}\n")
-        proc = run_hermes(["chat", "-q", "run the maintenance commands", "-Q"], home, timeout=180, cwd=victims)
+        proc = run_rabbit(["chat", "-q", "run the maintenance commands", "-Q"], home, timeout=180, cwd=victims)
         requests = srv.main_requests()
-    assert proc.returncode == 0, f"hermes chat -q failed rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 0, f"rabbit chat -q failed rc={proc.returncode}\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
     results = _tool_results(requests)
     missing = [n for n, t in VARIANTS.items() if t.format(X=n) not in results] + (
         [] if CONTROL in results else ["control"])

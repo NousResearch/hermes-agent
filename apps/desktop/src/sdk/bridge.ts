@@ -2,7 +2,7 @@
  * Typed capabilities bridge for desktop plugins (`host.skills`, `host.toolsets`,
  * `host.profiles`, `host.pluginDecisions`).
  *
- * Plugins that configure capabilities used to call `window.hermesDesktop.api`
+ * Plugins that configure capabilities used to call `window.rabbitDesktop.api`
  * raw and read the persisted plugin-decisions map straight out of
  * localStorage. These wrappers give them the SAME doors the Capabilities page
  * uses — same endpoints, same `ProfileScope` handling — so a plugin acting on

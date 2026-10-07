@@ -1,36 +1,36 @@
 ---
 sidebar_position: 4
 title: "MCP（模型上下文协议）"
-description: "通过 MCP 将 Hermes Agent 连接到外部工具服务器，并精确控制 Hermes 加载哪些 MCP 工具"
+description: "通过 MCP 将 Rabbit Agent 连接到外部工具服务器，并精确控制 Rabbit 加载哪些 MCP 工具"
 ---
 
 # MCP（模型上下文协议）
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
-MCP 让 Hermes Agent 连接到外部工具服务器，使 agent 能够使用 Hermes 本身之外的工具——GitHub、数据库、文件系统、浏览器栈、内部 API 等等。
+MCP 让 Rabbit Agent 连接到外部工具服务器，使 agent 能够使用 Rabbit 本身之外的工具——GitHub、数据库、文件系统、浏览器栈、内部 API 等等。
 
-如果你曾经希望 Hermes 使用某个已经存在于其他地方的工具，MCP 通常是最简洁的方式。
+如果你曾经希望 Rabbit 使用某个已经存在于其他地方的工具，MCP 通常是最简洁的方式。
 
 ## MCP 能给你带来什么
 
-- 无需先编写原生 Hermes 工具，即可访问外部工具生态系统
+- 无需先编写原生 Rabbit 工具，即可访问外部工具生态系统
 - 在同一配置中同时支持本地 stdio 服务器和远程 HTTP MCP 服务器
 - 启动时自动发现并注册工具
 - 在服务器支持的情况下，提供针对 MCP 资源和 prompt（提示词）的实用工具封装
-- 按服务器过滤，只向 Hermes 暴露你真正需要的 MCP 工具
+- 按服务器过滤，只向 Rabbit 暴露你真正需要的 MCP 工具
 
 ## 快速开始
 
 1. 安装 MCP 支持（如果你使用了标准安装脚本，已包含在内）：
 
 ```bash
-cd ~/.hermes/hermes-agent
+cd ~/.rabbit/rabbit-agent
 python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 ```
 
-2. 在 `~/.hermes/config.yaml` 中添加一个 MCP 服务器：
+2. 在 `~/.rabbit/config.yaml` 中添加一个 MCP 服务器：
 
 ```yaml
 mcp_servers:
@@ -39,13 +39,13 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
 ```
 
-3. 启动 Hermes：
+3. 启动 Rabbit：
 
 ```bash
-hermes chat
+rabbit chat
 ```
 
-4. 让 Hermes 使用 MCP 支持的能力。
+4. 让 Rabbit 使用 MCP 支持的能力。
 
 例如：
 
@@ -53,7 +53,7 @@ hermes chat
 List the files in /home/user/projects and summarize the repo structure.
 ```
 
-Hermes 会发现 MCP 服务器的工具，并像使用其他工具一样使用它们。
+Rabbit 会发现 MCP 服务器的工具，并像使用其他工具一样使用它们。
 
 ## 两种 MCP 服务器
 
@@ -77,7 +77,7 @@ mcp_servers:
 
 ### HTTP 服务器
 
-HTTP MCP 服务器是 Hermes 直接连接的远程端点。
+HTTP MCP 服务器是 Rabbit 直接连接的远程端点。
 
 ```yaml
 mcp_servers:
@@ -90,11 +90,11 @@ mcp_servers:
 适合使用 HTTP 服务器的场景：
 - MCP 服务器托管在其他地方
 - 你的组织暴露了内部 MCP 端点
-- 你不希望 Hermes 为该集成在本地启动子进程
+- 你不希望 Rabbit 为该集成在本地启动子进程
 
 ## 基本配置参考
 
-Hermes 从 `~/.hermes/config.yaml` 的 `mcp_servers` 下读取 MCP 配置。
+Rabbit 从 `~/.rabbit/config.yaml` 的 `mcp_servers` 下读取 MCP 配置。
 
 ### 常用字段
 
@@ -107,7 +107,7 @@ Hermes 从 `~/.hermes/config.yaml` 的 `mcp_servers` 下读取 MCP 配置。
 | `headers` | mapping | 远程服务器的 HTTP 头 |
 | `timeout` | number | 工具调用超时时间 |
 | `connect_timeout` | number | 初始连接超时时间 |
-| `enabled` | bool | 若为 `false`，Hermes 完全跳过该服务器 |
+| `enabled` | bool | 若为 `false`，Rabbit 完全跳过该服务器 |
 | `supports_parallel_tool_calls` | bool | 若为 `true`，该服务器的工具可并发运行 |
 | `tools` | mapping | 按服务器过滤工具及实用工具策略 |
 
@@ -132,7 +132,7 @@ mcp_servers:
 
 ## 内置预设
 
-对于知名 MCP 服务器，`hermes mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
+对于知名 MCP 服务器，`rabbit mcp add` 接受 `--preset` 标志，自动填写传输层细节，无需手动查找命令和参数。预设只提供默认值——你在同一命令行传入的其他内容（环境变量、头信息、过滤规则）仍然优先生效。
 
 | 预设 | 配置内容 |
 |---|---|
@@ -140,7 +140,7 @@ mcp_servers:
 
 ```bash
 # 一行命令将 Codex CLI 添加为 MCP 服务器
-hermes mcp add codex --preset codex
+rabbit mcp add codex --preset codex
 ```
 
 等价于写入：
@@ -152,11 +152,11 @@ mcp_servers:
     args: ["mcp-server"]
 ```
 
-你可以使用任意本地名称（`hermes mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
+你可以使用任意本地名称（`rabbit mcp add my-codex --preset codex` 完全可以）；预设只提供 `command`/`args` 默认值。
 
-## Hermes 注册 MCP 工具的方式
+## Rabbit 注册 MCP 工具的方式
 
-Hermes 为 MCP 工具添加前缀，避免与内置名称冲突：
+Rabbit 为 MCP 工具添加前缀，避免与内置名称冲突：
 
 ```text
 mcp_<server_name>_<tool_name>
@@ -170,11 +170,11 @@ mcp_<server_name>_<tool_name>
 | `github` | `create-issue` | `mcp_github_create_issue` |
 | `my-api` | `query.data` | `mcp_my_api_query_data` |
 
-实际使用中，你通常不需要手动调用带前缀的名称——Hermes 在正常推理过程中会自动识别并选择该工具。
+实际使用中，你通常不需要手动调用带前缀的名称——Rabbit 在正常推理过程中会自动识别并选择该工具。
 
 ## MCP 实用工具
 
-在服务器支持的情况下，Hermes 还会围绕 MCP 资源和 prompt 注册实用工具：
+在服务器支持的情况下，Rabbit 还会围绕 MCP 资源和 prompt 注册实用工具：
 
 - `list_resources`
 - `read_resource`
@@ -189,14 +189,14 @@ mcp_<server_name>_<tool_name>
 ### 重要说明
 
 这些实用工具现在具备能力感知：
-- 只有当 MCP 会话实际支持资源操作时，Hermes 才注册资源实用工具
-- 只有当 MCP 会话实际支持 prompt 操作时，Hermes 才注册 prompt 实用工具
+- 只有当 MCP 会话实际支持资源操作时，Rabbit 才注册资源实用工具
+- 只有当 MCP 会话实际支持 prompt 操作时，Rabbit 才注册 prompt 实用工具
 
 因此，一个只暴露可调用工具而没有资源/prompt 的服务器，不会获得这些额外的封装。
 
 ## 按服务器过滤
 
-你可以控制每个 MCP 服务器向 Hermes 贡献哪些工具，从而精细管理工具命名空间。
+你可以控制每个 MCP 服务器向 Rabbit 贡献哪些工具，从而精细管理工具命名空间。
 
 ### 完全禁用某个服务器
 
@@ -207,7 +207,7 @@ mcp_servers:
     enabled: false
 ```
 
-若 `enabled: false`，Hermes 完全跳过该服务器，甚至不尝试连接。
+若 `enabled: false`，Rabbit 完全跳过该服务器，甚至不尝试连接。
 
 ### 白名单过滤服务器工具
 
@@ -250,7 +250,7 @@ tools:
 
 ### 同样可过滤实用工具
 
-你也可以单独禁用 Hermes 添加的实用工具封装：
+你也可以单独禁用 Rabbit 添加的实用工具封装：
 
 ```yaml
 mcp_servers:
@@ -293,7 +293,7 @@ mcp_servers:
 
 ## 如果所有工具都被过滤掉会怎样？
 
-如果你的配置过滤掉了所有可调用工具，并禁用或省略了所有支持的实用工具，Hermes 不会为该服务器创建空的运行时 MCP 工具集。
+如果你的配置过滤掉了所有可调用工具，并禁用或省略了所有支持的实用工具，Rabbit 不会为该服务器创建空的运行时 MCP 工具集。
 
 这样可以保持工具列表整洁。
 
@@ -301,11 +301,11 @@ mcp_servers:
 
 ### 发现时机
 
-Hermes 在启动时发现 MCP 服务器，并将其工具注册到普通工具注册表中。
+Rabbit 在启动时发现 MCP 服务器，并将其工具注册到普通工具注册表中。
 
 ### 动态工具发现
 
-MCP 服务器可以在运行时通过发送 `notifications/tools/list_changed` 通知，告知 Hermes 其可用工具发生了变化。Hermes 收到该通知后，会自动重新获取服务器的工具列表并更新注册表——无需手动执行 `/reload-mcp`。
+MCP 服务器可以在运行时通过发送 `notifications/tools/list_changed` 通知，告知 Rabbit 其可用工具发生了变化。Rabbit 收到该通知后，会自动重新获取服务器的工具列表并更新注册表——无需手动执行 `/reload-mcp`。
 
 这对于能力动态变化的 MCP 服务器非常有用（例如，加载新数据库 schema 时添加工具，或服务下线时移除工具）。
 
@@ -335,7 +335,7 @@ mcp-<server>
 
 ### Stdio 环境变量过滤
 
-对于 stdio 服务器，Hermes 不会盲目传递你的完整 shell 环境。
+对于 stdio 服务器，Rabbit 不会盲目传递你的完整 shell 环境。
 
 只有显式配置的 `env` 加上安全基线才会被传递。这减少了意外泄露密钥的风险。
 
@@ -410,13 +410,13 @@ Inspect the project root and explain the directory layout.
 
 ```bash
 # 验证 MCP 依赖已安装（标准安装已包含）
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
+cd ~/.rabbit/rabbit-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 node --version
 npx --version
 ```
 
-然后验证你的配置并重启 Hermes。
+然后验证你的配置并重启 Rabbit。
 
 ### 工具未出现
 
@@ -431,7 +431,7 @@ npx --version
 
 ### 为什么资源或 prompt 实用工具没有出现？
 
-因为 Hermes 现在只在以下两个条件同时满足时才注册这些封装：
+因为 Rabbit 现在只在以下两个条件同时满足时才注册这些封装：
 1. 你的配置允许它们
 2. 服务器会话实际支持该能力
 
@@ -448,7 +448,7 @@ mcp_servers:
     supports_parallel_tool_calls: true
 ```
 
-当 `supports_parallel_tool_calls` 为 `true` 时，Hermes 可能在单次工具调用批次中同时执行该服务器的多个工具，就像对内置只读工具（`web_search`、`read_file` 等）的处理方式一样。
+当 `supports_parallel_tool_calls` 为 `true` 时，Rabbit 可能在单次工具调用批次中同时执行该服务器的多个工具，就像对内置只读工具（`web_search`、`read_file` 等）的处理方式一样。
 
 :::caution
 只对工具可以安全同时运行的 MCP 服务器启用并行调用。如果工具会读写共享状态、文件、数据库或外部资源，请在启用此设置前仔细评估读写竞争条件。
@@ -456,7 +456,7 @@ mcp_servers:
 
 ## MCP Sampling 支持
 
-MCP 服务器可以通过 `sampling/createMessage` 协议向 Hermes 请求 LLM 推理。这允许 MCP 服务器代表自己请求 Hermes 生成文本——适用于需要 LLM 能力但没有自己模型访问权限的服务器。
+MCP 服务器可以通过 `sampling/createMessage` 协议向 Rabbit 请求 LLM 推理。这允许 MCP 服务器代表自己请求 Rabbit 生成文本——适用于需要 LLM 能力但没有自己模型访问权限的服务器。
 
 Sampling 对所有 MCP 服务器**默认启用**（当 MCP SDK 支持时）。可在 `sampling` 键下按服务器配置：
 
@@ -487,46 +487,46 @@ mcp_servers:
       enabled: false
 ```
 
-## 将 Hermes 作为 MCP 服务器运行
+## 将 Rabbit 作为 MCP 服务器运行
 
-除了连接**到** MCP 服务器，Hermes 也可以**作为** MCP 服务器运行。这让其他支持 MCP 的 agent（Claude Code、Cursor、Codex 或任何 MCP 客户端）能够使用 Hermes 的消息能力——列出会话、读取消息历史，以及跨所有已连接平台发送消息。
+除了连接**到** MCP 服务器，Rabbit 也可以**作为** MCP 服务器运行。这让其他支持 MCP 的 agent（Claude Code、Cursor、Codex 或任何 MCP 客户端）能够使用 Rabbit 的消息能力——列出会话、读取消息历史，以及跨所有已连接平台发送消息。
 
 ### 适用场景
 
-- 你希望 Claude Code、Cursor 或其他编程 agent 通过 Hermes 发送和读取 Telegram/Discord/Slack 消息
-- 你需要一个单一的 MCP 服务器，同时桥接 Hermes 所有已连接的消息平台
-- 你已经有一个运行中的 Hermes gateway，并已连接各平台
+- 你希望 Claude Code、Cursor 或其他编程 agent 通过 Rabbit 发送和读取 Telegram/Discord/Slack 消息
+- 你需要一个单一的 MCP 服务器，同时桥接 Rabbit 所有已连接的消息平台
+- 你已经有一个运行中的 Rabbit gateway，并已连接各平台
 
 ### 快速开始
 
 ```bash
-hermes mcp serve
+rabbit mcp serve
 ```
 
 这会启动一个 stdio MCP 服务器。进程生命周期由 MCP 客户端（而非你）管理。
 
 ### MCP 客户端配置
 
-将 Hermes 添加到你的 MCP 客户端配置中。例如，在 Claude Code 的 `~/.claude/claude_desktop_config.json` 中：
+将 Rabbit 添加到你的 MCP 客户端配置中。例如，在 Claude Code 的 `~/.claude/claude_desktop_config.json` 中：
 
 ```json
 {
   "mcpServers": {
-    "hermes": {
-      "command": "hermes",
+    "rabbit": {
+      "command": "rabbit",
       "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-或者，如果你将 Hermes 安装在特定位置：
+或者，如果你将 Rabbit 安装在特定位置：
 
 ```json
 {
   "mcpServers": {
-    "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
+    "rabbit": {
+      "command": "/home/user/.rabbit/rabbit-agent/venv/bin/rabbit",
       "args": ["mcp", "serve"]
     }
   }
@@ -535,7 +535,7 @@ hermes mcp serve
 
 ### 可用工具
 
-MCP 服务器暴露 10 个工具，与 OpenClaw 的 channel bridge 接口一致，并额外提供一个 Hermes 专属的 channel 浏览器：
+MCP 服务器暴露 10 个工具，与 OpenClaw 的 channel bridge 接口一致，并额外提供一个 Rabbit 专属的 channel 浏览器：
 
 | 工具 | 描述 |
 |------|-------------|
@@ -552,7 +552,7 @@ MCP 服务器暴露 10 个工具，与 OpenClaw 的 channel bridge 接口一致�
 
 ### 事件系统
 
-MCP 服务器包含一个实时事件桥，轮询 Hermes 的会话数据库以获取新消息。这让 MCP 客户端能够近实时感知新来的会话：
+MCP 服务器包含一个实时事件桥，轮询 Rabbit 的会话数据库以获取新消息。这让 MCP 客户端能够近实时感知新来的会话：
 
 ```
 # 轮询新事件（非阻塞）
@@ -569,26 +569,26 @@ events_wait(after_cursor=42, timeout_ms=30000)
 ### 选项
 
 ```bash
-hermes mcp serve              # 普通模式
-hermes mcp serve --verbose    # 在 stderr 输出调试日志
+rabbit mcp serve              # 普通模式
+rabbit mcp serve --verbose    # 在 stderr 输出调试日志
 ```
 
 ### 工作原理
 
-MCP 服务器直接从 Hermes 的会话存储（`~/.hermes/sessions/sessions.json` 和 SQLite 数据库）读取会话数据。后台线程轮询数据库以获取新消息，并维护一个内存事件队列。发送消息时，使用与 Hermes agent 本身相同的 `send_message` 基础设施。
+MCP 服务器直接从 Rabbit 的会话存储（`~/.rabbit/sessions/sessions.json` 和 SQLite 数据库）读取会话数据。后台线程轮询数据库以获取新消息，并维护一个内存事件队列。发送消息时，使用与 Rabbit agent 本身相同的 `send_message` 基础设施。
 
 读取操作（列出会话、读取历史、轮询事件）**不需要** gateway 运行。发送操作**需要** gateway 运行，因为平台适配器需要活跃连接。
 
 ### 当前限制
 
-- 内嵌的 `hermes mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Hermes 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
+- 内嵌的 `rabbit mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Rabbit 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
 - 事件轮询间隔约 200ms，通过基于 mtime 优化的数据库轮询实现（文件未变化时跳过处理）
 - 暂不支持 `claude/channel` 推送通知协议
 - 仅支持纯文本发送（`messages_send` 不支持媒体/附件发送）
 
 ## 相关文档
 
-- [在 Hermes 中使用 MCP](../../guides/use-mcp-with-hermes.md)
+- [在 Rabbit 中使用 MCP](../../guides/use-mcp-with-rabbit.md)
 - [CLI 命令](../../reference/cli-commands.md)
 - [斜杠命令](../../reference/slash-commands.md)
 - [常见问题](../../reference/faq.md)

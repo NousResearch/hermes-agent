@@ -19,12 +19,12 @@ from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, 
 
 
 def _kbc():
-    from hermes_cli import kanban_db_connect
+    from rabbit_cli import kanban_db_connect
     return kanban_db_connect
 
 
 def _kbd():
-    from hermes_cli import kanban_db_dispatch
+    from rabbit_cli import kanban_db_dispatch
     return kanban_db_dispatch
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
@@ -138,7 +138,7 @@ class _KanbanDispatcher:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
-        from hermes_cli import kanban_db as _kb
+        from rabbit_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             path = self.kb.kanban_db_path(slug)
         try:
@@ -188,9 +188,9 @@ class _KanbanDispatcher:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
             # Pin-first: the tick is machine flow — on a box whose env pins
-            # HERMES_KANBAN_DB every enumerated slug must resolve to the pinned
+            # RABBIT_KANBAN_DB every enumerated slug must resolve to the pinned
             # file, or the dispatcher reads per-slug DBs nobody writes.
-            from hermes_cli import kanban_db as _kb
+            from rabbit_cli import kanban_db as _kb
             with _kb.pin_first_board_resolution():
                 conn = _kbc().connect(board=slug)
                 return _kbd().dispatch_once(conn, board=slug, **kwargs)
@@ -202,7 +202,7 @@ class _KanbanDispatcher:
                     "SQLite database; pausing dispatch for this board until "
                     "the file changes, the gateway restarts, or the "
                     "quarantine timer expires. Move or restore the file, "
-                    "then run `hermes kanban init` if you need a fresh board.",
+                    "then run `rabbit kanban init` if you need a fresh board.",
                     slug, fingerprint[0],
                 )
                 return None
@@ -228,7 +228,7 @@ class _KanbanDispatcher:
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
-        from hermes_cli import kanban_db as _kb
+        from rabbit_cli import kanban_db as _kb
         with _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 conn = None
@@ -251,22 +251,22 @@ class _KanbanDispatcher:
         load from burst-spending the aux LLM. Returns the number decomposed.
         """
         try:
-            from hermes_cli import kanban_decompose as _decomp
+            from rabbit_cli import kanban_decompose as _decomp
         except Exception as exc:  # pragma: no cover
             logger.warning("kanban auto-decompose: import failed (%s); skipping", exc)
             return 0
         attempted = 0
         successes = 0
-        from hermes_cli import kanban_db as _kb
+        from rabbit_cli import kanban_db as _kb
         with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin the board via env for the call: the decomposer connects
                 # with no board kwarg (same pattern as the dashboard specify endpoint).
-                prev_env = os.environ.get("HERMES_KANBAN_BOARD")
+                prev_env = os.environ.get("RABBIT_KANBAN_BOARD")
                 try:
-                    os.environ["HERMES_KANBAN_BOARD"] = slug
+                    os.environ["RABBIT_KANBAN_BOARD"] = slug
                     try:
                         triage_ids = _decomp.list_triage_ids()
                     except Exception as exc:
@@ -279,9 +279,9 @@ class _KanbanDispatcher:
                         successes += self._decompose_one(_decomp, slug, tid)
                 finally:
                     if prev_env is None:
-                        os.environ.pop("HERMES_KANBAN_BOARD", None)
+                        os.environ.pop("RABBIT_KANBAN_BOARD", None)
                     else:
-                        os.environ["HERMES_KANBAN_BOARD"] = prev_env
+                        os.environ["RABBIT_KANBAN_BOARD"] = prev_env
         return successes
 
     @staticmethod
@@ -309,18 +309,18 @@ def _default_profile_secret_scope():
 
     The tick runs via ``_to_thread_process_service`` in a fresh context, so no
     per-turn scope exists and ``get_secret`` fails closed. The decomposer's aux
-    LLM reads ``auxiliary.*`` from ``get_hermes_home()``, so its credentials come
+    LLM reads ``auxiliary.*`` from ``get_rabbit_home()``, so its credentials come
     from that same home. No-op for single-profile gateways.
     """
     from agent.secret_scope import (
         build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     if not is_multiplex_active():
         yield
         return
     token = set_secret_scope(
-        build_profile_secret_scope(Path(get_hermes_home())), profile_home=str(get_hermes_home()))
+        build_profile_secret_scope(Path(get_rabbit_home())), profile_home=str(get_rabbit_home()))
     try:
         yield
     finally:

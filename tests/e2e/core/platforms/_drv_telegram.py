@@ -58,9 +58,9 @@ class TelegramDriver:
     def gateway_env(self) -> Dict[str, str]:
         return {"TELEGRAM_BOT_TOKEN": self.standin.token,
                 "TELEGRAM_ALLOWED_USERS": ",".join((self.user_id, *self.stream_users)),
-                "TELEGRAM_HOME_CHANNEL": self.home_channel, "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS": "1",
+                "TELEGRAM_HOME_CHANNEL": self.home_channel, "RABBIT_TELEGRAM_DISABLE_FALLBACK_IPS": "1",
                 # no text-batch debounce: one inbound is one turn, immediately
-                "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS": "0", "HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS": "0"}
+                "RABBIT_TELEGRAM_TEXT_BATCH_DELAY_SECONDS": "0", "RABBIT_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS": "0"}
 
     def connected(self) -> bool:
         return bool(self.standin.calls_of("getUpdates"))

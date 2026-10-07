@@ -10,7 +10,7 @@ exemptions are held to their own contract instead of being trusted: a public rou
 GET-only or refuses an uncredentialed call by its own mechanism (``/api/cron/fire`` verifies a
 NAS-minted JWT), and no public response carries the sandbox's secrets.
 
-Every credential channel is probed per route: the ``X-Hermes-Session-Token`` header, the legacy
+Every credential channel is probed per route: the ``X-Rabbit-Session-Token`` header, the legacy
 ``Authorization: Bearer``, and the ``?token=`` query string. The query channel exists only for
 download links (no header can ride on a URL the OS shell opens), so the REAL token in ``?token=``
 must be refused everywhere else.
@@ -38,8 +38,8 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PO
 _INVENTORY = r"""
 import json
 from fastapi.routing import APIRoute, APIWebSocketRoute
-from hermes_cli.web_server import app
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+from rabbit_cli.web_server import app
+from rabbit_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 http = sorted({(m, r.path) for r in app.routes if isinstance(r, APIRoute) for m in r.methods if m != "HEAD"})
 ws = sorted({r.path for r in app.routes if isinstance(r, APIWebSocketRoute)})
 print(json.dumps({"http": http, "ws": ws, "public": sorted(PUBLIC_API_PATHS)}))

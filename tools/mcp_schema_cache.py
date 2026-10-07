@@ -1,5 +1,5 @@
 """Persistent MCP tool-schema cache for lazy server startup: per-server tool manifests on
-disk so Hermes can register MCP tools into the agent snapshot without spawning the stdio
+disk so Rabbit can register MCP tools into the agent snapshot without spawning the stdio
 child at idle dashboard startup. Entries are keyed by server name + a fingerprint of the
 connection config (command/args/url/tools filters)."""
 
@@ -20,8 +20,8 @@ _cache_lock = threading.Lock()
 
 
 def _cache_path() -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "cache" / _CACHE_FILENAME
+    from rabbit_constants import get_rabbit_home
+    return get_rabbit_home() / "cache" / _CACHE_FILENAME
 
 
 def config_fingerprint(config: dict) -> str:

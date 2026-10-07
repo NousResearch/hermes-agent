@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [NOTION_API_KEY]
 metadata:
-  hermes:
+  rabbit:
     tags: [Notion, Productivity, Notes, Database, API, CLI, Workers]
     homepage: https://developers.notion.com
 ---
@@ -26,7 +26,7 @@ Talk to Notion two ways. Same integration token works for both — pick by what'
 
 1. Create an integration at https://notion.so/my-integrations
 2. Copy the API key (starts with `ntn_` or `secret_`)
-3. Store in `${HERMES_HOME:-~/.hermes}/.env`:
+3. Store in `${RABBIT_HOME:-~/.rabbit}/.env`:
    ```
    NOTION_API_KEY=ntn_your_key_here
    ```
@@ -50,7 +50,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn reads NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # don't try to use the OS keychain
 ```
 
-Add those exports to your shell profile (or to `${HERMES_HOME:-~/.hermes}/.env`) so every session inherits them.
+Add those exports to your shell profile (or to `${RABBIT_HOME:-~/.rabbit}/.env`) so every session inherits them.
 
 ### 3. Choose path at runtime
 
@@ -283,7 +283,7 @@ curl -s -X PATCH "https://api.notion.com/v1/blocks/{page_id}/children" \
   -H "Content-Type: application/json" \
   -d '{
     "children": [
-      {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Hello from Hermes!"}}]}}
+      {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Hello from Rabbit!"}}]}}
     ]
   }'
 ```
@@ -446,4 +446,4 @@ Headings 5/6 collapse to H4. Multiple `>` lines render as separate quote blocks 
 - Use `"is_inline": true` when creating data sources to embed them in a page.
 - Always pass `-s` to curl to suppress progress bars (cleaner agent output).
 - Pipe JSON through `jq` when reading: `... | jq '.results[0].properties'`.
-- Notion also ships an MCP server now (`Notion MCP`, ~91% more token-efficient on DB ops than the previous version) — wire it via Hermes' MCP support if you want streaming Notion access from inside a session, but the paths above are enough for most one-shot tasks.
+- Notion also ships an MCP server now (`Notion MCP`, ~91% more token-efficient on DB ops than the previous version) — wire it via Rabbit' MCP support if you want streaming Notion access from inside a session, but the paths above are enough for most one-shot tasks.

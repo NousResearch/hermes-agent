@@ -1,4 +1,4 @@
-"""Deterministic spritesheet assembly — generated row strips → Hermes atlas.
+"""Deterministic spritesheet assembly — generated row strips → Rabbit atlas.
 
 Image models draw a row of poses well but can't do exact grid geometry, so the
 model never owns the layout: it emits one loose strip per state and these ops

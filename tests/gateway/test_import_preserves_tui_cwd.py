@@ -19,7 +19,7 @@ def test_gateway_import_preserves_cwdless_tui_workspace(tmp_path, configured):
     env = {k: v for k, v in os.environ.items() if k.upper() in {
         "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
     }}
-    for key in ("HOME", "USERPROFILE", "HERMES_HOME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"):
+    for key in ("HOME", "USERPROFILE", "RABBIT_HOME", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP"):
         env[key] = str(home)
     env["PYTHONPATH"] = str(repo)
     result = subprocess.run(
@@ -56,7 +56,7 @@ def test_gateway_start_keeps_messaging_cwd_defaults(
 ):
     import asyncio
     from gateway.run import start_gateway
-    from hermes_cli import resource_limits
+    from rabbit_cli import resource_limits
 
     class StopBeforeStartup(Exception):
         pass

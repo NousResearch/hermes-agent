@@ -14,22 +14,22 @@ import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 // writable one; narrow the import back so tests can drive it.
 const scopeProfileMock = $settingsRequestProfile as unknown as { set: (value: string) => void }
 
-const getHermesConfigRecord = vi.fn()
-const getHermesConfigSchema = vi.fn()
-const saveHermesConfig = vi.fn()
+const getRabbitConfigRecord = vi.fn()
+const getRabbitConfigSchema = vi.fn()
+const saveRabbitConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
 // Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
 // config hook reaches them through the barrel, and a bare mock would throw.
-vi.mock('@/hermes', async () => ({
+vi.mock('@/rabbit', async () => ({
   ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   // use-config-record folds the scope into its cache key via the barrel; the
   // real one is a pure string fold, mirrored here for the string scopes this
   // suite passes.
   profileScopeKey: (scope?: unknown) => (typeof scope === 'string' && scope.trim()) || 'default',
-  getHermesConfigRecord: (profile?: string) => getHermesConfigRecord(profile),
-  getHermesConfigSchema: () => getHermesConfigSchema(),
-  saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
+  getRabbitConfigRecord: (profile?: string) => getRabbitConfigRecord(profile),
+  getRabbitConfigSchema: () => getRabbitConfigSchema(),
+  saveRabbitConfig: (config: unknown, profile?: string) => saveRabbitConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   setApiRequestProfile: () => {}
 }))
@@ -71,8 +71,8 @@ beforeAll(async () => {
 beforeEach(() => {
   scopeProfileMock.set('default')
   getElevenLabsVoices.mockResolvedValue({ available: false })
-  getHermesConfigSchema.mockResolvedValue({ fields: {} })
-  saveHermesConfig.mockResolvedValue({ ok: true })
+  getRabbitConfigSchema.mockResolvedValue({ fields: {} })
+  saveRabbitConfig.mockResolvedValue({ ok: true })
 })
 
 afterEach(() => {
@@ -97,7 +97,7 @@ function renderConfigSettings(activeSectionId = 'safety') {
 
 describe('ConfigSettings autosave', () => {
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
-    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
+    getRabbitConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
@@ -110,19 +110,19 @@ describe('ConfigSettings autosave', () => {
       toggle.click()
       await vi.advanceTimersByTimeAsync(700)
 
-      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
-      expect(saveHermesConfig.mock.calls[0][0]).toEqual({ checkpoints: { enabled: true } })
+      await vi.waitFor(() => expect(saveRabbitConfig).toHaveBeenCalledTimes(1))
+      expect(saveRabbitConfig.mock.calls[0][0]).toEqual({ checkpoints: { enabled: true } })
 
       // Revert: flip it back to its original value and let autosave fire again.
       toggle.click()
       await vi.advanceTimersByTimeAsync(700)
 
-      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+      await vi.waitFor(() => expect(saveRabbitConfig).toHaveBeenCalledTimes(2))
       // Must still explicitly send the reverted value — diffing against the
       // never-advanced page-load baseline would produce an empty patch here
       // (the field is back to its original value) and leave disk stuck at
       // `enabled: true` from the first save.
-      expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+      expect(saveRabbitConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
     } finally {
       vi.useRealTimers()
     }
@@ -134,19 +134,19 @@ describe('ConfigSettings autosave', () => {
     // the write — a read scoped to B with a write that falls back to the
     // ambient (launch) profile is exactly the silent cross-profile write.
     scopeProfileMock.set('nash')
-    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+    getRabbitConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
 
     vi.useFakeTimers({ shouldAdvanceTime: true })
 
     try {
       renderConfigSettings()
 
-      await vi.waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('nash'))
+      await vi.waitFor(() => expect(getRabbitConfigRecord).toHaveBeenCalledWith('nash'))
 
       ;(await screen.findByRole('switch')).click()
       await vi.advanceTimersByTimeAsync(700)
 
-      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, 'nash'))
+      await vi.waitFor(() => expect(saveRabbitConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, 'nash'))
     } finally {
       vi.useRealTimers()
     }

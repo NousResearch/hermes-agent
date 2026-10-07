@@ -1,6 +1,6 @@
 """Regression tests for the config.yaml → env var bridge in gateway/run.py.
 
-Guards against the 60-vs-500 bug where a stale `.env HERMES_MAX_ITERATIONS=60`
+Guards against the 60-vs-500 bug where a stale `.env RABBIT_MAX_ITERATIONS=60`
 entry silently shadowed `agent.max_turns: 500` in config.yaml because the
 bridge used `if X not in os.environ` guards. After PR#18413 the bridge
 treats config.yaml as authoritative and unconditionally overwrites .env
@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_gateway_import(
-    hermes_home: Path, initial_env: dict[str, str], routed_home: Path | None = None
+    rabbit_home: Path, initial_env: dict[str, str], routed_home: Path | None = None
 ) -> dict[str, str]:
     """Import gateway.run in a clean subprocess and return the post-import env.
 
@@ -36,8 +36,8 @@ def _run_gateway_import(
         import os, sys
         sys.path.insert(0, {str(PROJECT_ROOT)!r})
         if {str(routed_home or "")!r}:
-            from hermes_constants import set_hermes_home_override
-            set_hermes_home_override({str(routed_home or "")!r})
+            from rabbit_constants import set_rabbit_home_override
+            set_rabbit_home_override({str(routed_home or "")!r})
 
         try:
             from gateway import run  # noqa: F401  — module import triggers bridge
@@ -46,15 +46,15 @@ def _run_gateway_import(
             sys.exit(2)
 
         for k in (
-            "HERMES_MAX_ITERATIONS",
-            "HERMES_AGENT_TIMEOUT",
-            "HERMES_AGENT_TIMEOUT_WARNING",
-            "HERMES_TURN_LEASE_TIMEOUT",
-            "HERMES_SESSION_STALL_TIMEOUT",
-            "HERMES_GATEWAY_BUSY_INPUT_MODE",
-            "HERMES_GATEWAY_BUSY_TEXT_MODE",
-            "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
-            "HERMES_TIMEZONE",
+            "RABBIT_MAX_ITERATIONS",
+            "RABBIT_AGENT_TIMEOUT",
+            "RABBIT_AGENT_TIMEOUT_WARNING",
+            "RABBIT_TURN_LEASE_TIMEOUT",
+            "RABBIT_SESSION_STALL_TIMEOUT",
+            "RABBIT_GATEWAY_BUSY_INPUT_MODE",
+            "RABBIT_GATEWAY_BUSY_TEXT_MODE",
+            "RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
+            "RABBIT_TIMEZONE",
             "TERMINAL_CWD",
         ):
             v = os.environ.get(k)
@@ -63,10 +63,10 @@ def _run_gateway_import(
         """
     )
     env = dict(initial_env)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["RABBIT_HOME"] = str(rabbit_home)
     # Keep interpreter paths plus the Windows bootstrap variables required by
     # stdlib platform detection and native dependency loading.  The child is
-    # otherwise intentionally clean so stale Hermes settings cannot leak in.
+    # otherwise intentionally clean so stale Rabbit settings cannot leak in.
     for k in (
         "PATH",
         "PYTHONPATH",
@@ -106,7 +106,7 @@ def _run_gateway_import(
 
 def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict | None = None,
                   timezone: str | None = None, gateway_cfg: dict | None = None) -> None:
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
     cfg: dict = {}
     if agent_cfg:
         cfg["agent"] = agent_cfg
@@ -125,62 +125,62 @@ def _write_env(home: Path, entries: dict[str, str]) -> None:
 
 
 @pytest.fixture
-def hermes_home(tmp_path: Path) -> Path:
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path: Path) -> Path:
+    home = tmp_path / ".rabbit"
     home.mkdir()
     return home
 
 
-def test_config_gateway_timeout_wins_over_stale_env(hermes_home: Path) -> None:
+def test_config_gateway_timeout_wins_over_stale_env(rabbit_home: Path) -> None:
     """Every agent.* bridge key must be config-authoritative, not .env-authoritative."""
-    _write_config(hermes_home, agent_cfg={
+    _write_config(rabbit_home, agent_cfg={
         "gateway_timeout": 1800,
         "gateway_timeout_warning": 900,
         "session_stall_timeout": 300,
     })
-    _write_env(hermes_home, {
-        "HERMES_AGENT_TIMEOUT": "60",
-        "HERMES_AGENT_TIMEOUT_WARNING": "30",
-        "HERMES_SESSION_STALL_TIMEOUT": "15",
+    _write_env(rabbit_home, {
+        "RABBIT_AGENT_TIMEOUT": "60",
+        "RABBIT_AGENT_TIMEOUT_WARNING": "30",
+        "RABBIT_SESSION_STALL_TIMEOUT": "15",
     })
 
-    env = _run_gateway_import(hermes_home, initial_env={})
+    env = _run_gateway_import(rabbit_home, initial_env={})
 
-    assert env.get("HERMES_AGENT_TIMEOUT") == "1800"
-    assert env.get("HERMES_AGENT_TIMEOUT_WARNING") == "900"
-    assert env.get("HERMES_SESSION_STALL_TIMEOUT") == "300"
+    assert env.get("RABBIT_AGENT_TIMEOUT") == "1800"
+    assert env.get("RABBIT_AGENT_TIMEOUT_WARNING") == "900"
+    assert env.get("RABBIT_SESSION_STALL_TIMEOUT") == "300"
 
 
-def test_config_turn_lease_timeout_wins_over_stale_env(hermes_home: Path) -> None:
+def test_config_turn_lease_timeout_wins_over_stale_env(rabbit_home: Path) -> None:
     """The user-facing lease wait budget belongs to config.yaml."""
     _write_config(
-        hermes_home,
+        rabbit_home,
         agent_cfg={"gateway_turn_lease_timeout": 600},
     )
     _write_env(
-        hermes_home,
-        {"HERMES_TURN_LEASE_TIMEOUT": "60"},
+        rabbit_home,
+        {"RABBIT_TURN_LEASE_TIMEOUT": "60"},
     )
 
-    env = _run_gateway_import(hermes_home, initial_env={})
+    env = _run_gateway_import(rabbit_home, initial_env={})
 
-    assert env.get("HERMES_TURN_LEASE_TIMEOUT") == "600"
+    assert env.get("RABBIT_TURN_LEASE_TIMEOUT") == "600"
 
 
 def test_default_turn_lease_timeout_overrides_stale_env_when_key_is_omitted(
-    hermes_home: Path,
+    rabbit_home: Path,
 ) -> None:
     """The internal env mirror must never become a second config source."""
     _write_env(
-        hermes_home,
-        {"HERMES_TURN_LEASE_TIMEOUT": "60"},
+        rabbit_home,
+        {"RABBIT_TURN_LEASE_TIMEOUT": "60"},
     )
 
-    env = _run_gateway_import(hermes_home, initial_env={})
+    env = _run_gateway_import(rabbit_home, initial_env={})
 
-    from hermes_cli.config import DEFAULT_CONFIG
+    from rabbit_cli.config import DEFAULT_CONFIG
 
-    assert float(env.get("HERMES_TURN_LEASE_TIMEOUT")) == float(
+    assert float(env.get("RABBIT_TURN_LEASE_TIMEOUT")) == float(
         DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"]
     )
 
@@ -192,7 +192,7 @@ def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:
     lease registry's DEFAULT_LEASE_WAIT must move together.
     """
     from gateway.turn_lease import DEFAULT_LEASE_WAIT
-    from hermes_cli.config import DEFAULT_CONFIG
+    from rabbit_cli.config import DEFAULT_CONFIG
 
     assert (
         float(DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"])
@@ -200,30 +200,30 @@ def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:
     )
 
 
-def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:
+def test_config_platform_connect_timeout_supplies_env_when_unset(rabbit_home: Path) -> None:
     """config.yaml:gateway.platform_connect_timeout supplies the env var when
     it isn't already set (#19776 — config surface for the Discord connect
     timeout, replacing the undocumented env-var-only workaround)."""
-    _write_config(hermes_home, gateway_cfg={"platform_connect_timeout": 90})
+    _write_config(rabbit_home, gateway_cfg={"platform_connect_timeout": 90})
 
-    env = _run_gateway_import(hermes_home, initial_env={})
+    env = _run_gateway_import(rabbit_home, initial_env={})
 
-    assert env.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "90"
+    assert env.get("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "90"
 
 
-def test_env_platform_connect_timeout_wins_over_config(hermes_home: Path) -> None:
+def test_env_platform_connect_timeout_wins_over_config(rabbit_home: Path) -> None:
     """Unlike the agent.*/display.*/timezone bridges (config-authoritative),
-    HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT is the manual-override escape hatch:
+    RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT is the manual-override escape hatch:
     an explicitly-set env var WINS over config.yaml. This divergence is
     intentional (#19776) — the env var is the operator's emergency knob."""
-    _write_config(hermes_home, gateway_cfg={"platform_connect_timeout": 90})
+    _write_config(rabbit_home, gateway_cfg={"platform_connect_timeout": 90})
 
     env = _run_gateway_import(
-        hermes_home,
-        initial_env={"HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT": "120"},
+        rabbit_home,
+        initial_env={"RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT": "120"},
     )
 
-    assert env.get("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "120"
+    assert env.get("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT") == "120"
 
 
 def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path: Path) -> None:
@@ -241,5 +241,5 @@ def test_first_import_under_a_routed_override_bridges_the_process_home(tmp_path:
 
     env = _run_gateway_import(homes["launch"], {}, routed_home=homes["routed"])
 
-    assert env.get("HERMES_MAX_ITERATIONS") == "111"
+    assert env.get("RABBIT_MAX_ITERATIONS") == "111"
     assert env.get("TERMINAL_CWD") == str(homes["launch"] / "work")

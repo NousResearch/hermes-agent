@@ -13,7 +13,7 @@ from agent import secret_scope
 
 @pytest.fixture
 def secondary_scope(monkeypatch):
-    for name in ("OPENAI_BASE_URL", "XAI_BASE_URL", "HERMES_XAI_BASE_URL", "NOUS_INFERENCE_BASE_URL",
+    for name in ("OPENAI_BASE_URL", "XAI_BASE_URL", "RABBIT_XAI_BASE_URL", "NOUS_INFERENCE_BASE_URL",
                  "GATEWAY_PROXY_URL", "FIRECRAWL_API_URL", "BROWSERBASE_BASE_URL", "XAI_API_KEY"):
         monkeypatch.setenv(name, f"https://{name.lower()}.default.example/v1")
     secret_scope.set_multiplex_active(True)
@@ -31,16 +31,14 @@ def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, second
     import plugins.browser.firecrawl.provider as firecrawl
     import plugins.video_gen.xai as xai_video
     from gateway.run_turn import GatewayTurnMixin
-    from hermes_cli import auth_nous
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
-    monkeypatch.setattr("hermes_cli.runtime_provider._get_named_custom_provider", lambda name: None)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    from rabbit_cli.runtime_provider_custom import expand_direct_api_alias
+    monkeypatch.setattr("rabbit_cli.runtime_provider._get_named_custom_provider", lambda name: None)
 
     _, base = expand_direct_api_alias("openai", None)
     assert "default.example" not in (base or "")
     assert aux._scoped_key_env("OPENAI_BASE_URL") == ""
-    assert auth_nous._nous_inference_env_override() is None
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
     assert GatewayTurnMixin._get_proxy_url(GatewayTurnMixin.__new__(GatewayTurnMixin)) is None
     assert "default.example" not in browserbase.BrowserbaseBrowserProvider()._get_config_or_none()["base_url"]
@@ -53,14 +51,11 @@ def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, second
 def test_unscoped_single_profile_reads_keep_environ(monkeypatch):
     """Multiplex OFF (CLI / single gateway): environ IS the profile's own value — behaviour unchanged."""
     from gateway.run_turn import GatewayTurnMixin
-    from hermes_cli import auth_nous
 
     secret_scope.set_multiplex_active(False)
     token = secret_scope.set_secret_scope(None)
     try:
         monkeypatch.setenv("GATEWAY_PROXY_URL", "https://proxy.mine.example/")
-        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://nous.mine.example/v1/")
         assert GatewayTurnMixin._get_proxy_url(GatewayTurnMixin.__new__(GatewayTurnMixin)) == "https://proxy.mine.example"
-        assert auth_nous._nous_inference_env_override() == "https://nous.mine.example/v1"
     finally:
         secret_scope.reset_secret_scope(token)

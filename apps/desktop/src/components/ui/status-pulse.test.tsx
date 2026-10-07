@@ -55,7 +55,7 @@ describe('StatusPulse', () => {
     cleanup()
     played.length = 0
     Reflect.deleteProperty(HTMLElement.prototype, 'animate')
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()

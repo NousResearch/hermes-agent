@@ -57,7 +57,7 @@ from gateway.platforms.yuanbao_media import (
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
 )
 from gateway.platforms.yuanbao_proto import (
-    CMD_TYPE, WS_HEARTBEAT_RUNNING, WS_HEARTBEAT_FINISH, HERMES_INSTANCE_ID,
+    CMD_TYPE, WS_HEARTBEAT_RUNNING, WS_HEARTBEAT_FINISH, RABBIT_INSTANCE_ID,
     _fields_to_dict, _get_string, _get_varint, _parse_fields,
     decode_conn_msg, decode_inbound_push, decode_forward_msg_data,
     decode_query_group_info_rsp, decode_get_group_member_list_rsp,
@@ -70,10 +70,10 @@ from gateway.session_transcript import TranscriptReadError
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-from hermes_cli.version_info import get_version_info
+from rabbit_cli.version_info import get_version_info
 
 _APP_VERSION = _BOT_VERSION = get_version_info().base_version
-_YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
+_YUANBAO_INSTANCE_ID = str(RABBIT_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
 DEFAULT_WS_GATEWAY_URL = "wss://bot-wss.yuanbao.tencent.com/wss/connection"
@@ -1801,7 +1801,7 @@ class ConnectionManager:
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
-            logger.warning("[%s] %s. Run: hermes pm repair", adapter.name, msg)
+            logger.warning("[%s] %s. Run: rabbit pm repair", adapter.name, msg)
             return False
         if not adapter._app_key or not adapter._app_secret:
             msg = "Yuanbao startup failed: YUANBAO_APP_ID and YUANBAO_APP_SECRET are required"
@@ -2599,7 +2599,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
     MEDIA_MAX_SIZE_MB: int = 50
     DM_MAX_CHARS = 10000
     _active_instance: ClassVar[Optional["YuanbaoAdapter"]] = None
-    # Per Hermes home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
+    # Per Rabbit home: a multiplexed gateway runs one Yuanbao adapter per profile, and the tools /
     # send_message read "the" adapter from inside a profile-scoped turn, so last-wins would route
     # profile B's sends through profile A's bot. Registration and lookup both key on the ambient
     # override (connect/reconnect tasks inherit the profile's Context); the slot above serves the
@@ -2608,22 +2608,22 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @classmethod
     def get_active(cls) -> Optional["YuanbaoAdapter"]:
-        from hermes_constants import get_hermes_home_override, hermes_home_key
+        from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 
-        if get_hermes_home_override() is None:
+        if get_rabbit_home_override() is None:
             return cls._active_instance
-        return cls._active_instances.get(hermes_home_key())
+        return cls._active_instances.get(rabbit_home_key())
 
     @classmethod
     def set_active(cls, adapter: Optional["YuanbaoAdapter"]) -> None:
-        from hermes_constants import get_hermes_home_override, hermes_home_key
+        from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 
-        if get_hermes_home_override() is None:
+        if get_rabbit_home_override() is None:
             cls._active_instance = adapter
         elif adapter is None:
-            cls._active_instances.pop(hermes_home_key(), None)
+            cls._active_instances.pop(rabbit_home_key(), None)
         else:
-            cls._active_instances[hermes_home_key()] = adapter
+            cls._active_instances[rabbit_home_key()] = adapter
 
     def __init__(self, config: PlatformConfig, **kwargs: Any) -> None:
         super().__init__(config, Platform.YUANBAO)

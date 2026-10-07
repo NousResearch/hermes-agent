@@ -2,7 +2,7 @@
 
 A/B harness measuring how `read_file` engineering choices affect real agent
 runs. Motivated by Command Code's read-tool writeup (Aug 2026), which
-benchmarked ten harnesses on hostile-file handling — and whose Hermes column
+benchmarked ten harnesses on hostile-file handling — and whose Rabbit column
 contained several errors (we already ship a per-line clamp, did-you-mean
 suggestions, notebook/docx/xlsx extraction, PDF conversion, and a device-path
 blocklist). This eval tests the failure shapes for real, through the real
@@ -10,7 +10,7 @@ blocklist). This eval tests the failure shapes for real, through the real
 
 ## What it measures
 
-Every task runs the full Hermes agent (file + terminal + search toolsets)
+Every task runs the full Rabbit agent (file + terminal + search toolsets)
 against a deterministic hostile workspace:
 
 | fixture | shape | tasks |
@@ -47,7 +47,7 @@ python3 evals/readtool/runner.py --model qwen/qwen3.8-max \
 python3 evals/readtool/report.py --labels baseline feat-stat-guard
 ```
 
-Rules of engagement (from hermesbench discipline):
+Rules of engagement (from rabbitbench discipline):
 
 - **3 reps minimum**; single-run deltas within ±3% are noise, not wins.
 - Never edit `tools/` while a run is in flight — the runner imports the

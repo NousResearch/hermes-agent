@@ -6,7 +6,7 @@ outbound relay frame for it — authenticating the sender while never
 authorizing the destination. These tests drive the REAL `send_message_tool`
 entrypoint through the REAL production wiring (`gateway.relay.egress`,
 `gateway.channel_directory`, `gateway.relay.relay_fronted_platforms`) against
-a temp HERMES_HOME; nothing under test is constructed by the test itself.
+a temp RABBIT_HOME; nothing under test is constructed by the test itself.
 """
 
 from __future__ import annotations

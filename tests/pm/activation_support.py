@@ -23,9 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVATE = REPO_ROOT / "activate"
 ACTIVATE_FISH = REPO_ROOT / "activate.fish"
 ACTIVATE_PS1 = REPO_ROOT / "activate.ps1"
-SETUP_HERMES_SH = REPO_ROOT / "setup-hermes.sh"
-SETUP_HERMES_PS1 = REPO_ROOT / "setup-hermes.ps1"
-CANARY = "HERMES_PM_ACTIVATE_CANARY"
+SETUP_RABBIT_SH = REPO_ROOT / "setup-rabbit.sh"
+SETUP_RABBIT_PS1 = REPO_ROOT / "setup-rabbit.ps1"
+CANARY = "RABBIT_PM_ACTIVATE_CANARY"
 
 
 def posix(path: Path) -> str:
@@ -73,7 +73,7 @@ def spawnable_python() -> Path:
     base interpreter, then whichever python can run a trivial child; last
     resort is sys.executable."""
     candidates: list[Path] = []
-    for env_name in ("HERMES_TEST_PYTHON",):
+    for env_name in ("RABBIT_TEST_PYTHON",):
         val = os.environ.get(env_name)
         if val:
             candidates.append(Path(val))
@@ -159,19 +159,19 @@ def isolated_checkout(tmp_path: Path) -> Path:
     root = tmp_path / "checkout with spaces"
     root.mkdir()
     shutil.copytree(REPO_ROOT / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
-    (root / "hermes_cli").mkdir()
+    (root / "rabbit_cli").mkdir()
     (root / "scripts").mkdir()
     for relative in ("activate", "activate.fish", "activate.ps1", "scripts/_activation.sh",
-                     "hermes_constants.py", "hermes_cli/__init__.py",
-                     "pm/environments.py", "hermes_cli/runtime_state.py"):
+                     "rabbit_constants.py", "rabbit_cli/__init__.py",
+                     "pm/environments.py", "rabbit_cli/runtime_state.py"):
         shutil.copy2(REPO_ROOT / relative, root / relative)
     # Environment-only tests do not exercise provisioning; the runtime tests
     # replace these stubs with a publisher that records and applies each sync.
-    (root / "setup-hermes.sh").write_text(
+    (root / "setup-rabbit.sh").write_text(
         'test "$#" = 2 && test "$1" = --runtime-only && case "$2" in --test-environment*) ;; *) exit 2 ;; esac\n',
         encoding="utf-8",
     )
-    (root / "setup-hermes.ps1").write_text(
+    (root / "setup-rabbit.ps1").write_text(
         "param([switch]$RuntimeOnly)\nif (-not $RuntimeOnly) { exit 2 }\n", encoding="utf-8",
     )
     return root
@@ -181,10 +181,10 @@ def bash_env(store: Path) -> dict:
     env = child_env()
     home = store.parent / "home"
     home.mkdir(exist_ok=True)
-    env.update(HOME=posix(home), USERPROFILE=str(home), HERMES_HOME=posix(home / "hermes"))
-    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "BASH_ENV", "__HERMES_ACTIVATED"):
+    env.update(HOME=posix(home), USERPROFILE=str(home), RABBIT_HOME=posix(home / "rabbit"))
+    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "BASH_ENV", "__RABBIT_ACTIVATED"):
         env.pop(key, None)
-    env["HERMES_RUNTIME_DIR"] = posix(store)
+    env["RABBIT_RUNTIME_DIR"] = posix(store)
     # Keep the real env out of the composed pm output so the canary export
     # is the only thing activate adds beyond the ambient environment.
     env.pop(CANARY, None)
@@ -256,12 +256,12 @@ def sync_checkout(tmp_path: Path):
         binary.chmod(0o755)
     # Activation's contract with setup is the runtime-only switch; setup
     # itself maps that to PM's --trust-recorded install.
-    (root / "setup-hermes.sh").write_text(
+    (root / "setup-rabbit.sh").write_text(
         'test "$#" = 2 && test "$1" = --runtime-only && test "$2" = --test-environment || exit 2\n'
         f'cd {shlex.quote(str(root))} || exit 3\n'
         f'exec {shlex.quote(str(python))} sync.py runtime-only --trust-recorded --test-environment\n', encoding="utf-8",
     )
-    (root / "setup-hermes.ps1").write_text(
+    (root / "setup-rabbit.ps1").write_text(
         "param([switch]$RuntimeOnly)\n"
         "if (-not $RuntimeOnly) { exit 2 }\n"
         "$ErrorActionPreference = 'Stop'\n"

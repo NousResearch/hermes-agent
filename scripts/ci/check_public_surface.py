@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 
-SRC_DIRS = ("agent", "gateway", "hermes_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
+SRC_DIRS = ("agent", "gateway", "rabbit_cli", "tools", "tui_gateway", "cron", "acp_adapter", "plugins")
 _TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def test_", re.M)
 
 

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 10
 title: "模型提供商插件"
-description: "如何为 Hermes Agent 构建模型提供商（推理后端）插件"
+description: "如何为 Rabbit Agent 构建模型提供商（推理后端）插件"
 ---
 
 # 构建模型提供商插件
 
-模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，或 Bedrock 原生接口——Hermes 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$HERMES_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
+模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，或 Bedrock 原生接口——Rabbit 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$RABBIT_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
 
 :::tip
 模型提供商插件是**提供商插件**的第三种类型。其他两种分别是 [Memory Provider 插件](./memory-provider-plugin.md)（跨会话知识）和 [Context Engine 插件](./context-engine-plugin.md)（上下文压缩策略）。三者均遵循相同的"放入目录、声明 profile、无需编辑仓库"模式。
@@ -16,11 +16,11 @@ description: "如何为 Hermes Agent 构建模型提供商（推理后端）插�
 
 `providers/__init__.py._discover_providers()` 在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时懒加载执行。发现顺序：
 
-1. **内置插件** — `<repo>/plugins/model-providers/<name>/` — 随 Hermes 一同发布
-2. **用户插件** — `$HERMES_HOME/plugins/model-providers/<name>/` — 放入任意目录；后续会话无需重启即可生效
+1. **内置插件** — `<repo>/plugins/model-providers/<name>/` — 随 Rabbit 一同发布
+2. **用户插件** — `$RABBIT_HOME/plugins/model-providers/<name>/` — 放入任意目录；后续会话无需重启即可生效
 3. **旧版单文件** — `<repo>/providers/<name>.py` — 为树外可编辑安装提供向后兼容
 
-**同名用户插件会覆盖内置插件**，因为 `register_provider()` 采用后写者优先策略。放入 `$HERMES_HOME/plugins/model-providers/gmi/` 目录即可替换内置 GMI profile，无需修改仓库。
+**同名用户插件会覆盖内置插件**，因为 `register_provider()` 采用后写者优先策略。放入 `$RABBIT_HOME/plugins/model-providers/gmi/` 目录即可替换内置 GMI profile，无需修改仓库。
 
 ## 目录结构
 
@@ -31,7 +31,7 @@ plugins/model-providers/my-provider/
 └── README.md         # 安装说明（可选）
 ```
 
-唯一必需的文件是 `__init__.py`。`plugin.yaml` 供 `hermes plugins` 用于自省，以及供通用 PluginManager 将插件路由到正确的加载器；若缺少该文件，通用加载器会回退到源码文本启发式检测。
+唯一必需的文件是 `__init__.py`。`plugin.yaml` 供 `rabbit plugins` 用于自省，以及供通用 PluginManager 将插件路由到正确的加载器；若缺少该文件，通用加载器会回退到源码文本启发式检测。
 
 ## 最简示例——一个简单的 API key 提供商
 
@@ -73,14 +73,14 @@ author: Your Name
 
 | 集成点 | 位置 | 获得的能力 |
 |---|---|---|
-| 凭据解析 | `hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` 从 profile 填充 |
-| `--provider` CLI 标志 | `hermes_cli/main.py` | 接受 `acme-inference` |
-| `hermes model` 选择器 | `hermes_cli/models.py` | 出现在 `CANONICAL_PROVIDERS` 中，从 `{base_url}/models` 获取模型列表 |
-| `hermes doctor` | `hermes_cli/doctor.py` | 对 `ACME_API_KEY` 及 `{base_url}/models` 进行健康检查 |
-| `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` 出现在 `OPTIONAL_ENV_VARS` 和设置向导中 |
+| 凭据解析 | `rabbit_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` 从 profile 填充 |
+| `--provider` CLI 标志 | `rabbit_cli/main.py` | 接受 `acme-inference` |
+| `rabbit model` 选择器 | `rabbit_cli/models.py` | 出现在 `CANONICAL_PROVIDERS` 中，从 `{base_url}/models` 获取模型列表 |
+| `rabbit doctor` | `rabbit_cli/doctor.py` | 对 `ACME_API_KEY` 及 `{base_url}/models` 进行健康检查 |
+| `rabbit setup` | `rabbit_cli/config.py` | `ACME_API_KEY` 出现在 `OPTIONAL_ENV_VARS` 和设置向导中 |
 | URL 反向映射 | `agent/model_metadata.py` | 主机名 → 提供商名称，用于自动检测 |
 | 辅助模型 | `agent/auxiliary_client.py` | 使用 `default_aux_model` 进行压缩/摘要 |
-| 运行时解析 | `hermes_cli/runtime_provider.py` | 返回正确的 `base_url`、`api_key`、`api_mode` |
+| 运行时解析 | `rabbit_cli/runtime_provider.py` | 返回正确的 `base_url`、`api_key`、`api_mode` |
 | 传输层 | `agent/transports/chat_completions.py` | Profile 路径通过 `prepare_messages` / `build_extra_body` / `build_api_kwargs_extras` 生成 kwargs |
 
 ## ProviderProfile 字段
@@ -92,7 +92,7 @@ author: Your Name
 | `name` | str | 规范 ID——与 `config.yaml` 中的 `model.provider` 及 `--provider` 标志匹配 |
 | `aliases` | `tuple[str, ...]` | 由 `get_provider_profile()` 解析的别名（如 `grok` → `xai`） |
 | `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` \| `bedrock_converse` |
-| `display_name` | str | 在 `hermes model` 选择器中显示的人类可读标签 |
+| `display_name` | str | 在 `rabbit model` 选择器中显示的人类可读标签 |
 | `description` | str | 选择器副标题 |
 | `signup_url` | str | 首次运行设置时显示（"在此获取 API key"） |
 | `env_vars` | `tuple[str, ...]` | 按优先级排列的 API key 环境变量；最后一个 `*_BASE_URL` 条目用作用户 base URL 覆盖 |
@@ -152,13 +152,12 @@ class AcmeProfile(ProviderProfile):
 | `plugins/model-providers/gemini/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
 | `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`、`extra_body.thinking`、顶层 `reasoning_effort` |
 | `plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
-| `plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |
 | `plugins/model-providers/custom/` | Ollama 的 `num_ctx` + `think: false` 特殊处理 |
 | `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`，`fetch_models` 返回 None（无 REST 端点） |
 
 ## 用户覆盖——不修改仓库替换内置提供商
 
-假设你想将 `gmi` 指向私有测试端点进行测试。创建 `~/.hermes/plugins/model-providers/gmi/__init__.py`：
+假设你想将 `gmi` 指向私有测试端点进行测试。创建 `~/.rabbit/plugins/model-providers/gmi/__init__.py`：
 
 ```python
 from providers import register_provider
@@ -178,7 +177,7 @@ register_provider(ProviderProfile(
 
 ## api_mode 选择
 
-系统识别四个值。Hermes 的选择依据：
+系统识别四个值。Rabbit 的选择依据：
 
 1. 用户显式覆盖（`config.yaml` 中设置了 `model.api_mode`）
 2. OpenCode 的按模型分发（Zen 和 Go 的 `opencode_model_api_mode`）
@@ -194,19 +193,19 @@ register_provider(ProviderProfile(
 |---|---|---|
 | `api_key` | 单个环境变量携带静态 API key | 大多数提供商 |
 | `oauth_device_code` | 设备码 OAuth 流程 | — |
-| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
+| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal |
 | `copilot` | GitHub Copilot token 刷新周期 | 仅 `copilot` 插件 |
 | `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
 | `external_process` | 认证由 agent 启动的子进程处理 | 仅 `copilot-acp` 插件 |
 
-`auth_type` 控制哪些代码路径将你的提供商视为"简单 api-key 提供商"——若不是 `api_key`，PluginManager 仍会记录 manifest，但 Hermes CLI 层面的自动化（doctor 检查、`--provider` 标志、设置向导委托）可能会跳过它。
+`auth_type` 控制哪些代码路径将你的提供商视为"简单 api-key 提供商"——若不是 `api_key`，PluginManager 仍会记录 manifest，但 Rabbit CLI 层面的自动化（doctor 检查、`--provider` 标志、设置向导委托）可能会跳过它。
 
 ## 发现时机
 
 提供商发现是**懒加载**的——由进程中首次调用 `get_provider_profile()` 或 `list_providers()` 触发。实际上这在启动早期就会发生（`auth.py` 模块加载时会主动扩展 `PROVIDER_REGISTRY`）。若需验证插件是否已加载，运行：
 
 ```bash
-hermes doctor
+rabbit doctor
 ```
 
 ——成功的 `auth_type="api_key"` profile 会出现在 Provider Connectivity 部分，并附带 `/models` 探测结果。
@@ -221,12 +220,12 @@ for p in list_providers():
 
 ## 测试你的插件
 
-将 `HERMES_HOME` 指向临时目录，避免污染真实配置：
+将 `RABBIT_HOME` 指向临时目录，避免污染真实配置：
 
 ```bash
-export HERMES_HOME=/tmp/hermes-plugin-test
-mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
-cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
+export RABBIT_HOME=/tmp/rabbit-plugin-test
+mkdir -p $RABBIT_HOME/plugins/model-providers/my-provider
+cat > $RABBIT_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
 from providers import register_provider
 from providers.base import ProviderProfile
 register_provider(ProviderProfile(
@@ -238,25 +237,25 @@ register_provider(ProviderProfile(
 EOF
 
 export MY_API_KEY=your-test-key
-hermes -z "hello" --provider my-provider -m some-model
+rabbit -z "hello" --provider my-provider -m some-model
 ```
 
 ## 通用 PluginManager 集成
 
-通用 `PluginManager`（即 `hermes plugins` 操作的对象）**能看到**模型提供商插件，但不会导入它们——`providers/__init__.py` 负责管理其生命周期。Manager 记录 manifest 用于自省，并按 `kind: model-provider` 分类。当你将一个未标记的用户插件放入 `$HERMES_HOME/plugins/`，而该插件恰好调用了带 `ProviderProfile` 的 `register_provider`，Manager 会通过源码文本启发式检测自动将其归类为 `kind: model-provider`——因此即使没有 `plugin.yaml`，插件仍能正确路由。
+通用 `PluginManager`（即 `rabbit plugins` 操作的对象）**能看到**模型提供商插件，但不会导入它们——`providers/__init__.py` 负责管理其生命周期。Manager 记录 manifest 用于自省，并按 `kind: model-provider` 分类。当你将一个未标记的用户插件放入 `$RABBIT_HOME/plugins/`，而该插件恰好调用了带 `ProviderProfile` 的 `register_provider`，Manager 会通过源码文本启发式检测自动将其归类为 `kind: model-provider`——因此即使没有 `plugin.yaml`，插件仍能正确路由。
 
 ## 通过 pip 分发
 
-与所有 Hermes 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
+与所有 Rabbit 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
 
 ```toml
-[project.entry-points."hermes_agent.plugins"]
-acme-inference = "acme_hermes_plugin:register"
+[project.entry-points."rabbit_agent.plugins"]
+acme-inference = "acme_rabbit_plugin:register"
 ```
 
-……其中 `acme_hermes_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
+……其中 `acme_rabbit_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
 
-完整的入口点设置请参阅 [构建 Hermes 插件](./plugins/index.md#distribute-via-pip)。
+完整的入口点设置请参阅 [构建 Rabbit 插件](./plugins/index.md#distribute-via-pip)。
 
 ## 相关页面
 
@@ -264,4 +263,4 @@ acme-inference = "acme_hermes_plugin:register"
 - [添加提供商](./adding-providers.md) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
 - [Memory Provider 插件](./memory-provider-plugin.md)
 - [Context Engine 插件](./context-engine-plugin.md)
-- [构建 Hermes 插件](./plugins/index.md) — 通用插件编写指南
+- [构建 Rabbit 插件](./plugins/index.md) — 通用插件编写指南

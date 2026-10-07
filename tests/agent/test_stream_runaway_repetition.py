@@ -30,7 +30,7 @@ _CYCLE_125650 = (
     "De bot en de werkers blijven lopen. Ik zoek het punt waar de tekst binnenkomt. "
     "Daar stop ik de herhaling. De bot en de werkers blijven lopen. Ik zoek dat punt nu. "
 )
-_STATUS_LINE_78551 = "- **Texture** : `TEXTURE_LOCAL.md` (trace creative, emergence). Pas dans un Hermes stock.\n"
+_STATUS_LINE_78551 = "- **Texture** : `TEXTURE_LOCAL.md` (trace creative, emergence). Pas dans un Rabbit stock.\n"
 
 # Asked-for repetition stays below the stop path's scale floor (#121600's repeat-on-request case).
 _ASKED_FOR_REPEAT = "Hello world, this is a sentence the user asked me to repeat many times.\n" * 50

@@ -17,7 +17,7 @@ Triage an inbox: prioritize threads, draft replies safely.
 | Source | Bundled (installed by default) |
 | Path | `skills/email/email-inbox-triage` |
 | Version | `0.2.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Email`, `Inbox`, `Triage`, `Replies`, `Productivity` |
@@ -26,7 +26,7 @@ Triage an inbox: prioritize threads, draft replies safely.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Email Inbox Triage

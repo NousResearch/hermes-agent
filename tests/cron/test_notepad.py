@@ -2,7 +2,7 @@
 
 Covers CRUD on the SQLite-backed store, size-cap enforcement, prompt
 injection of non-empty notepads, byte-stable prompts for jobs that don't
-use the notepad, and the `hermes cron notepad` CLI handler.
+use the notepad, and the `rabbit cron notepad` CLI handler.
 """
 
 from __future__ import annotations
@@ -29,20 +29,20 @@ def notepad(monkeypatch, tmp_path):
 
 @pytest.fixture
 def cron_env(tmp_path, monkeypatch, notepad):
-    """Isolated cron environment with temp HERMES_HOME (mirrors test_cron_context_from)."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "cron").mkdir()
-    (hermes_home / "cron" / "output").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    """Isolated cron environment with temp RABBIT_HOME (mirrors test_cron_context_from)."""
+    rabbit_home = tmp_path / ".rabbit"
+    rabbit_home.mkdir()
+    (rabbit_home / "cron").mkdir()
+    (rabbit_home / "cron" / "output").mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
     import cron.jobs as jobs_mod
 
-    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
-    return hermes_home
+    monkeypatch.setattr(jobs_mod, "RABBIT_DIR", rabbit_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", rabbit_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", rabbit_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", rabbit_home / "cron" / "output")
+    return rabbit_home
 
 
 class TestNotepadCrud:
@@ -99,26 +99,26 @@ class TestNotepadCrud:
 
 class TestNotepadProfileIsolation:
     def test_profile_override_routes_writes_to_current_home(self, tmp_path):
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         import cron.notepad as notepad_mod
 
         profile_a = tmp_path / "profile-a"
         profile_b = tmp_path / "profile-b"
 
-        import_token = set_hermes_home_override(profile_a)
+        import_token = set_rabbit_home_override(profile_a)
         try:
             importlib.reload(notepad_mod)
         finally:
-            reset_hermes_home_override(import_token)
+            reset_rabbit_home_override(import_token)
 
-        runtime_token = set_hermes_home_override(profile_b)
+        runtime_token = set_rabbit_home_override(profile_b)
         try:
             notepad_mod.set_note("job-1", "cursor", "page=7")
         finally:
-            reset_hermes_home_override(runtime_token)
+            reset_rabbit_home_override(runtime_token)
 
         assert (profile_b / "cron" / "notepad.db").exists()
         assert not (profile_a / "cron" / "notepad.db").exists()
@@ -244,7 +244,7 @@ class TestNotepadCli:
         return argparse.Namespace(**base)
 
     def test_cli_set_get_list_delete(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from rabbit_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="cursor", value="42")) == 0
         assert notepad.get_note("job-1", "cursor") == "42"
@@ -259,25 +259,25 @@ class TestNotepadCli:
         assert notepad.get_note("job-1", "cursor") is None
 
     def test_cli_get_missing_key_exits_nonzero(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from rabbit_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="get", key="ghost")) == 1
 
     def test_cli_set_requires_key_and_value(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from rabbit_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="k")) == 1
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set")) == 1
 
     def test_cli_set_oversized_value_reports_error(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from rabbit_cli.cron import cron_notepad
 
         big = "x" * (notepad.MAX_VALUE_BYTES + 1)
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="k", value=big)) == 1
         assert notepad.get_note("job-1", "k") is None
 
     def test_cron_command_dispatches_notepad(self, notepad):
-        from hermes_cli.cron import cron_command
+        from rabbit_cli.cron import cron_command
 
         ns = self._ns(job_id="job-9", notepad_action="set", key="k", value="v")
         ns.cron_command = "notepad"

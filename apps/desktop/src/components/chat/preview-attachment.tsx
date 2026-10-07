@@ -17,7 +17,7 @@ import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/
 type LocalTargetState = { path: string; type: 'directory' | 'file' } | { type: 'missing' } | null
 
 async function classifyLocalTarget(rawTarget: string, cwd?: string | null): Promise<LocalTargetState> {
-  const bridge = window.hermesDesktop
+  const bridge = window.rabbitDesktop
 
   // Only the Electron host's filesystem is knowable here; a remote backend's
   // paths are not on this machine, so they keep the gateway-backed actions.
@@ -108,13 +108,13 @@ export function PreviewAttachment({ target }: { target: string }) {
 
     try {
       if (directory) {
-        const result = await window.hermesDesktop?.openDir?.(path)
+        const result = await window.rabbitDesktop?.openDir?.(path)
 
         if (!result?.ok) {
           throw new Error(result?.error || `Could not open directory: ${path}`)
         }
       } else {
-        const revealed = await window.hermesDesktop?.revealPath?.(path)
+        const revealed = await window.rabbitDesktop?.revealPath?.(path)
 
         if (revealed === false) {
           throw new Error(`${path} — ${t.fileMenu.revealMissing}`)

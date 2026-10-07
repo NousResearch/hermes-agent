@@ -17,7 +17,6 @@ description: "通过 memo CLI 管理 Apple Notes：创建、搜索、编辑"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/apple/apple-notes` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | macos |
 | 标签 | `Notes`, `Apple`, `macOS`, `note-taking` |
@@ -26,7 +25,7 @@ description: "通过 memo CLI 管理 Apple Notes：创建、搜索、编辑"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Apple Notes

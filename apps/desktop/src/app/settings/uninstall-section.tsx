@@ -58,7 +58,7 @@ export function UninstallSection(): ReactElement | null {
 
   useEffect((): (() => void) | undefined => {
     let alive: boolean = true
-    const bridge: Window['hermesDesktop']['uninstall'] | undefined = window.hermesDesktop?.uninstall
+    const bridge: Window['rabbitDesktop']['uninstall'] | undefined = window.rabbitDesktop?.uninstall
 
     if (!bridge) {
       return
@@ -83,7 +83,7 @@ export function UninstallSection(): ReactElement | null {
     }
   }, [])
 
-  const bridge: Window['hermesDesktop']['uninstall'] | undefined = window.hermesDesktop?.uninstall
+  const bridge: Window['rabbitDesktop']['uninstall'] | undefined = window.rabbitDesktop?.uninstall
 
   if (!bridge || summary?.code_removal_allowed !== true) {
     return null
@@ -146,7 +146,7 @@ export function UninstallSection(): ReactElement | null {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">{t.settings.uninstallSection.uninstallHermes}</p>
+            <p className="text-sm font-medium">{t.settings.uninstallSection.uninstallRabbit}</p>
             <p className="text-xs text-muted-foreground">{u.chooseHowMuch}</p>
             <div className="mt-1 flex flex-col gap-2">
               {visibleOptions.map((opt: ModeOption): ReactElement => (

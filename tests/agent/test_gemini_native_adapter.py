@@ -55,7 +55,7 @@ def test_followup_user_turn_is_not_merged_into_function_response_turn():
                     "type": "function",
                     "function": {
                         "name": "skill_view",
-                        "arguments": '{"name":"hermes-agent"}',
+                        "arguments": '{"name":"rabbit-agent"}',
                     },
                 }
             ],
@@ -252,7 +252,7 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
                 "content": {
                     "parts": [
                         {"thought": True, "text": "thinking..."},
-                        {"functionCall": {"name": "search", "args": {"q": "hermes"}}},
+                        {"functionCall": {"name": "search", "args": {"q": "rabbit"}}},
                     ]
                 },
                 "finishReason": "STOP",
@@ -270,7 +270,7 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert choice.finish_reason == "tool_calls"
     assert choice.message.reasoning == "thinking..."
     assert choice.message.tool_calls[0].function.name == "search"
-    assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
+    assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "rabbit"}
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):

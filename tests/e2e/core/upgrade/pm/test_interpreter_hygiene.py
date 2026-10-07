@@ -1,6 +1,6 @@
 """Interpreter hygiene after an update (PM lifecycle, failure class 4).
 
-A PM install runs every Hermes process on PM's bundled interpreter with the selected
+A PM install runs every Rabbit process on PM's bundled interpreter with the selected
 generation's site-packages. Two kinds of stray environment sit next to that on real machines:
 
 * the pre-PM in-tree ``venv/`` a main-era install leaves behind after migrating (#123965), and
@@ -9,12 +9,12 @@ generation's site-packages. Two kinds of stray environment sit next to that on r
 
 Both are seeded as real ``uv venv`` environments whose site-packages carry a ``sitecustomize``
 and a ``.pth`` hook that record every interpreter that ever puts them on ``sys.path``. After a
-dependency-changing ``hermes update``:
+dependency-changing ``rabbit update``:
 
-* the gateway (``hermes gateway run``) boots, and no process in its tree ever loaded, mapped or
+* the gateway (``rabbit gateway run``) boots, and no process in its tree ever loaded, mapped or
   put either stray venv on its path;
-* the workers a Hermes process spawns after the update use the PM interpreter and import their
-  deps: ``execute_code`` (#124049) and a Kanban worker spawned by ``hermes kanban dispatch``
+* the workers a Rabbit process spawns after the update use the PM interpreter and import their
+  deps: ``execute_code`` (#124049) and a Kanban worker spawned by ``rabbit kanban dispatch``
   (#124542, #122500), each proven by what reaches the loopback provider.
 """
 
@@ -94,7 +94,7 @@ def updated(tmp_path_factory, provider):
     logs = _seed_stray_venvs(sb)
     target = P.publish_dependency_release(origin, root, 1)
     up = P.update(sb, env=P.lazy_env(sb))
-    P.ok(up, "hermes update failed")
+    P.ok(up, "rabbit update failed")
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == target
     return {"sb": sb, "logs": logs}
 
@@ -138,16 +138,16 @@ def test_gateway_after_update_never_touches_a_stray_venv(updated):
     stray_exes = {pid: exe for pid, exe in pythons.items() if any(exe.startswith(s) for s in strays)}
     hits = _stray_hits(logs, mark)
     assert not (hits or mapped or env_refs or stray_exes), (
-        "the gateway put a stray in-tree venv on an interpreter's path after `hermes update`:\n"
+        "the gateway put a stray in-tree venv on an interpreter's path after `rabbit update`:\n"
         f"hooks fired: {hits}\nmapped files: {mapped}\nenvironment: {env_refs}\nexecutables: {stray_exes}\n"
         f"--- gateway output ---\n{gw.output()[-4000:]}\n" + P.diagnostics(sb))
 
 
 def _turn_with_tool(sb: I.Sandbox, provider: FakeLLMServer, prompt: str, call: ToolCall) -> tuple[str, str]:
-    """One ``hermes -z`` turn where the model calls ``call``; returns (tool result, transcript)."""
+    """One ``rabbit -z`` turn where the model calls ``call``; returns (tool result, transcript)."""
     n = len(provider.main_requests())
     provider.push(call, Text("done"))
-    cp = P.run_env(sb, [sb.hermes, "-z", prompt], P.lazy_env(sb), timeout=600)
+    cp = P.run_env(sb, [sb.rabbit, "-z", prompt], P.lazy_env(sb), timeout=600)
     reqs = provider.main_requests()[n:]
     tool_msgs = [m for r in reqs for m in r["messages"] if m.get("role") == "tool"]
     content = tool_msgs[-1]["content"] if tool_msgs else ""
@@ -174,7 +174,7 @@ def test_kanban_worker_spawned_after_update_boots(updated, provider):
     log = sb.root / "kanban-dispatch.log"
     # One sandbox for dispatcher + worker (the worker outlives `kanban dispatch`, as on a real host);
     # the sandbox stays up until the worker's first model call is observed, then is torn down.
-    script = (f'H="{sb.hermes}"\n"$H" kanban init >/dev/null\n'
+    script = (f'H="{sb.rabbit}"\n"$H" kanban init >/dev/null\n'
               '"$H" kanban create "pm hygiene kanban probe" --assignee default --json\n'
               '"$H" kanban dispatch --json\nsleep 600\n')
     with log.open("w") as out:
@@ -192,12 +192,12 @@ def test_kanban_worker_spawned_after_update_boots(updated, provider):
                 time.sleep(0.5)
         finally:
             H.kill_tree(proc)
-    worker_log = sb.hermes_home / "kanban" / "logs" / f"{task_id}.log"
+    worker_log = sb.rabbit_home / "kanban" / "logs" / f"{task_id}.log"
     detail = (f"--- dispatcher ---\n{log.read_text(errors='replace')[-3000:]}\n--- worker log ---\n"
               + (worker_log.read_text(errors="replace")[-3000:] if task_id and worker_log.exists() else "(none)"))
-    assert task_id, "harness: `hermes kanban create` printed no task id\n" + detail
+    assert task_id, "harness: `rabbit kanban create` printed no task id\n" + detail
     assert reached, (
-        f"the Kanban worker for {task_id} spawned after `hermes update` never reached the provider "
+        f"the Kanban worker for {task_id} spawned after `rabbit update` never reached the provider "
         "(it died at spawn)\n" + detail)
     hits = _stray_hits(updated["logs"], mark)
     assert not hits, f"the worker loaded a stray venv: {hits}"

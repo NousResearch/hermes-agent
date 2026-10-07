@@ -30,9 +30,9 @@ import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 //     bare-id keys) carry no owner and are unreachable by construction —
 //     they are swept once per window so a stale tail can never paint again.
 
-const PREFIX = 'hermes.transcript-tail.v2:'
-const LEGACY_ROOT = 'hermes.transcript-tail.v1'
-const INDEX_KEY = 'hermes.transcript-tail.v2-index'
+const PREFIX = 'rabbit.transcript-tail.v2:'
+const LEGACY_ROOT = 'rabbit.transcript-tail.v1'
+const INDEX_KEY = 'rabbit.transcript-tail.v2-index'
 const TAIL_MESSAGES = 40
 const MAX_ENTRY_BYTES = 256 * 1024
 const MAX_ENTRIES = 50

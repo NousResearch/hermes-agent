@@ -3,7 +3,7 @@
  *
  * On Windows, `BrowserWindow.show()` and `.focus()` both seize the OS
  * foreground: any native dialog another app is showing (Notepad's save
- * confirmation, a print dialog) is forcibly dismissed when Hermes calls
+ * confirmation, a print dialog) is forcibly dismissed when Rabbit calls
  * either while streaming in the background. The report's repro is a
  * `focusWindow()` call reaching the window mid-stream.
  *
@@ -11,7 +11,7 @@
  * invariants are unit-testable without booting Electron:
  *
  * - `revealWindow` (ambient reveal, e.g. `focusWindow`'s un-hide branch)
- *   uses `showInactive()`: raising Hermes must never steal foreground from
+ *   uses `showInactive()`: raising Rabbit must never steal foreground from
  *   the app the user is working in.
  * - `focusWindow`'s keyboard hand-off only calls `.focus()` when the window
  *   is NOT already focused. On Windows a redundant `.focus()` on a focused

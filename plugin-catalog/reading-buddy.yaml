@@ -1,5 +1,5 @@
 name: reading-buddy
-repo: https://github.com/harrylabsj/hermes-plugin-reading-buddy
+repo: https://github.com/harrylabsj/rabbit-plugin-reading-buddy
 sha: 486034846dc82916460faaa7ab1b4baedea08f5b
 description: 'Local-first WeRead (微信读书) reading companion: syncs bookshelf, reading
   stats and notes to the local machine and turns them into private reading cards and

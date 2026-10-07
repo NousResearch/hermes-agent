@@ -80,7 +80,7 @@ def admit(env: dict[str, str], *, run=output, repo: Path | None = None) -> dict[
 
 def receipt_tag(kind: str, version: str, created_at: str, run_id: str) -> str:
     """Return the canonical post-build receipt identity."""
-    from hermes_cli.update_channel import STABLE_TAG_RE
+    from rabbit_cli.update_channel import STABLE_TAG_RE
 
     if kind not in {"channel", "commit"} or not STABLE_TAG_RE.fullmatch("v" + version):
         raise ValueError("Build receipt kind or version is invalid")
@@ -158,7 +158,7 @@ def publish_receipt(kind: str, env: dict[str, str], *, version: str, commit: str
     else:
         message = json.dumps(record, sort_keys=True, separators=(",", ":"))
         run([
-            "git", "-c", "user.name=Hermes Build Receipt",
+            "git", "-c", "user.name=Rabbit Build Receipt",
             "-c", "user.email=actions@users.noreply.github.com",
             "tag", "-a", tag, commit, "-m", message,
         ], repo)

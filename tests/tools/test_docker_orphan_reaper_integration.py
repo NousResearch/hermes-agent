@@ -45,7 +45,7 @@ def test_maybe_reap_runs_once_per_process(monkeypatch):
 
 
 def test_maybe_reap_passes_current_profile_as_filter(monkeypatch):
-    """The reaper must be scoped to the current Hermes profile — a research
+    """The reaper must be scoped to the current Rabbit profile — a research
     profile must NEVER reap default's containers. Verifies the
     profile-filter wiring."""
     _reset_reaper_gate()

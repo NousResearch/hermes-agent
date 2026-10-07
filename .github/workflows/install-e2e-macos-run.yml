@@ -5,10 +5,10 @@
 #   e2e (script arms)       tests/install/installer-script-e2e.sh - the
 #                           OS-agnostic git-redirect driver shared with
 #                           linux. installer-script(+desktop) installs,
-#                           script/updater/hermes-desktop-app-update
+#                           script/updater/rabbit-desktop-app-update
 #                           updates.
 #   gui-e2e (desktop arm)   tests/install/macos-desktop-e2e.sh - the
-#                           published Hermes-Setup.dmg, mounted and run,
+#                           published Rabbit-Setup.dmg, mounted and run,
 #                           then the app driven by Playwright for the
 #                           app-update methods.
 #
@@ -21,11 +21,11 @@ on:
   workflow_call:
     inputs:
       install-method:
-        description: 'How OLD gets installed. Supported: installer-script, installer-script+desktop (curl | bash one-liner, optionally with --include-desktop) and desktop-installer@latest (the published Hermes-Setup.dmg).'
+        description: 'How OLD gets installed. Supported: installer-script, installer-script+desktop (curl | bash one-liner, optionally with --include-desktop) and desktop-installer@latest (the published Rabbit-Setup.dmg).'
         required: true
         type: string
       update-method:
-        description: 'How the install updates to HEAD. Script installs support hermes-update / installer-script / installer-script+desktop / hermes-desktop-app-update; dmg installs support open-app-update / hermes-desktop-app-update.'
+        description: 'How the install updates to HEAD. Script installs support rabbit-update / installer-script / installer-script+desktop / rabbit-desktop-app-update; dmg installs support open-app-update / rabbit-desktop-app-update.'
         required: true
         type: string
       install-ref:
@@ -51,7 +51,7 @@ on:
         description: 'Bootstrap dmg to install OLD with. Default: the latest published one — what a user downloads today.'
         required: false
         type: string
-        default: https://hermes-assets.nousresearch.com/Hermes-Setup.dmg
+        default: https://rabbit-assets.nousresearch.com/Rabbit-Setup.dmg
       bundle-manifest-url:
         description: 'URL of the JSON schema-1 bundle manifest for the packaged-app arm. Empty (default) means the bundled arm does not run — native packaged coverage only runs when the caller pins a real signed OLD/NEW pair.'
         required: false
@@ -82,8 +82,8 @@ jobs:
     if: >-
       (inputs.install-method == 'installer-script'
         || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
+      && (contains(fromJSON('["rabbit-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "rabbit-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
     uses: ./.github/workflows/install-e2e-run.yml
     with:
       install-method: ${{ inputs.install-method }}
@@ -99,10 +99,10 @@ jobs:
   gui-e2e:
     # Short static name on purpose: name expressions render UNEXPANDED on
     # skipped jobs.
-    name: Hermes-Setup.dmg
+    name: Rabbit-Setup.dmg
     if: >-
       inputs.install-method == 'desktop-installer@latest' && inputs.tag-has-desktop
-      && contains(fromJSON('["open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
+      && contains(fromJSON('["open-app-update", "rabbit-desktop-app-update", "rabbit-update", "installer-script", "installer-script+desktop"]'), inputs.update-method)
     runs-on: macos-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
@@ -142,9 +142,9 @@ jobs:
             --update-ref '${{ inputs.update-ref }}' \
             --dmg-url '${{ inputs.dmg-url }}'
         env:
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
-      - name: Install ${{ inputs.install-ref }} via Hermes-Setup.dmg
+      - name: Install ${{ inputs.install-ref }} via Rabbit-Setup.dmg
         run: |
           set -euo pipefail
           tests/install/macos-desktop-e2e.sh --phase install \
@@ -152,7 +152,7 @@ jobs:
             --install-ref '${{ inputs.install-ref }}' \
             --dmg-url '${{ inputs.dmg-url }}'
         env:
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Update ${{ inputs.install-ref }} -> ${{ inputs.update-ref }} (${{ inputs.update-method }})
         run: |
@@ -162,7 +162,7 @@ jobs:
             --install-ref '${{ inputs.install-ref }}' \
             --dmg-url '${{ inputs.dmg-url }}'
         env:
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Stop screen recording
         if: always()
@@ -240,7 +240,7 @@ jobs:
           BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
           BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
           BUNDLE_ARCH: ${{ inputs.bundle-arch }}
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Update to NEW via About -> Update now (${{ inputs.bundle-arch }})
         run: |
@@ -251,7 +251,7 @@ jobs:
           BUNDLE_MANIFEST: ${{ inputs.bundle-manifest-url }}
           BUNDLE_MANIFEST_SHA256: ${{ inputs.bundle-manifest-sha256 }}
           BUNDLE_ARCH: ${{ inputs.bundle-arch }}
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Stop screen recording
         if: always()

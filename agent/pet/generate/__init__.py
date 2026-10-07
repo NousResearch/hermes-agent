@@ -1,6 +1,6 @@
 """Pet generation — base-draft → hatch pipeline.
 
-Public surface for the gateway RPCs, ``hermes pets generate``, and tests:
+Public surface for the gateway RPCs, ``rabbit pets generate``, and tests:
 :func:`generate_base_drafts` / :func:`hatch_pet`, :class:`HatchResult`,
 :class:`GenerationError`, and :mod:`atlas` (deterministic frame extraction +
 atlas composition/validation, testable without any API calls).

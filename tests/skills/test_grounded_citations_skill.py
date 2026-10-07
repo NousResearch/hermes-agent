@@ -275,15 +275,15 @@ def test_cli_verify_missing_draft_returns_2(sources_mod, tmp_path: Path) -> None
 
 
 def test_cli_ledger_path_prefers_flag_over_env(sources_mod, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("HERMES_CITATION_LEDGER", str(tmp_path / "env.json"))
+    monkeypatch.setenv("RABBIT_CITATION_LEDGER", str(tmp_path / "env.json"))
     flagged = tmp_path / "flag.json"
     assert sources_mod.resolve_ledger_path(str(flagged)) == flagged
     assert sources_mod.resolve_ledger_path(None) == tmp_path / "env.json"
 
 
-def test_cli_ledger_path_defaults_under_hermes_home(sources_mod, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.delenv("HERMES_CITATION_LEDGER", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+def test_cli_ledger_path_defaults_under_rabbit_home(sources_mod, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("RABBIT_CITATION_LEDGER", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     path = sources_mod.resolve_ledger_path(None)
     assert path.parts[-3:] == ("cache", "citations", "ledger.json")
     assert str(tmp_path) in str(path)

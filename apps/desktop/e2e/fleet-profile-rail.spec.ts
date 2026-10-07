@@ -2,8 +2,8 @@
  * E2E: the fleet profile rail with two registered gateways.
  *
  * "This device" is the Electron-managed local backend (mock inference). The
- * second gateway, "Homelab", is a REAL second `hermes serve` this spec spawns
- * with its own HERMES_HOME, profiles and session token, registered in the v2
+ * second gateway, "Homelab", is a REAL second `rabbit serve` this spec spawns
+ * with its own RABBIT_HOME, profiles and session token, registered in the v2
  * connections.json as a remote URL connection. A click on an at-rest square
  * therefore performs the same dial → commit → re-home the statusbar switcher
  * does, against a real backend — not a stub.
@@ -43,20 +43,20 @@ interface RemoteGateway {
   close: () => Promise<void>
 }
 
-function findHermesBinary(): string {
-  const venv = path.join(REPO_ROOT, '.venv', 'bin', 'hermes')
+function findRabbitBinary(): string {
+  const venv = path.join(REPO_ROOT, '.venv', 'bin', 'rabbit')
 
   if (fs.existsSync(venv)) {
     return venv
   }
 
-  const result = spawnSync('which', ['hermes'], { encoding: 'utf8' })
+  const result = spawnSync('which', ['rabbit'], { encoding: 'utf8' })
 
   if (result.status === 0 && result.stdout.trim()) {
     return result.stdout.trim()
   }
 
-  throw new Error('hermes binary not found: create the repo venv (uv sync) or put hermes on PATH')
+  throw new Error('rabbit binary not found: create the repo venv (uv sync) or put rabbit on PATH')
 }
 
 async function freePort(): Promise<number> {
@@ -81,8 +81,8 @@ function seedProfiles(home: string, names: string[]): void {
 }
 
 /**
- * Spawn a second, fully real `hermes serve` as the remote gateway. Its
- * session token is pinned through HERMES_DASHBOARD_SESSION_TOKEN so the
+ * Spawn a second, fully real `rabbit serve` as the remote gateway. Its
+ * session token is pinned through RABBIT_DASHBOARD_SESSION_TOKEN so the
  * registry entry can carry a plaintext token envelope.
  */
 async function startRemoteGateway(root: string, mockUrl: string, profiles: string[]): Promise<RemoteGateway> {
@@ -96,15 +96,15 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
   const url = `http://127.0.0.1:${port}`
 
   const child: ChildProcess = spawn(
-    findHermesBinary(),
+    findRabbitBinary(),
     ['serve', '--host', '127.0.0.1', '--port', String(port), '--skip-build'],
     {
       cwd: REPO_ROOT,
       detached: true,
       env: {
         ...process.env,
-        HERMES_HOME: home,
-        HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN,
+        RABBIT_HOME: home,
+        RABBIT_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -122,12 +122,12 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
 
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new Error(`remote hermes serve exited early (${child.exitCode}):\n${log}`)
+      throw new Error(`remote rabbit serve exited early (${child.exitCode}):\n${log}`)
     }
 
     try {
       const response = await fetch(`${url}/api/status`, {
-        headers: { 'X-Hermes-Session-Token': REMOTE_TOKEN },
+        headers: { 'X-Rabbit-Session-Token': REMOTE_TOKEN },
       })
 
       if (response.ok) {
@@ -141,7 +141,7 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
   }
 
   if (Date.now() >= deadline) {
-    throw new Error(`remote hermes serve never became ready:\n${log}`)
+    throw new Error(`remote rabbit serve never became ready:\n${log}`)
   }
 
   return {
@@ -225,12 +225,12 @@ test.describe('fleet profile rail — two registered gateways', () => {
     test.setTimeout(240_000)
     mock = await startMockServer()
     sandbox = createSandbox('fleet')
-    writeMockProviderConfig(sandbox.hermesHome, mock.url)
-    writeEnvFile(sandbox.hermesHome)
+    writeMockProviderConfig(sandbox.rabbitHome, mock.url)
+    writeEnvFile(sandbox.rabbitHome)
     // A named profile on This device too, so the active group has a square
     // beside its home pill. "research" exists on BOTH gateways on purpose: the
     // rail must keep the two apart by gateway, never by name alone.
-    seedProfiles(sandbox.hermesHome, ['research'])
+    seedProfiles(sandbox.rabbitHome, ['research'])
 
     remote = await startRemoteGateway(sandbox.root, mock.url, ['inbox', 'research'])
     writeConnectionsRegistry(sandbox, remote.url)

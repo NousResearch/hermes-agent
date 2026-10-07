@@ -1,39 +1,39 @@
 # 会话存储
 
-Hermes Agent 使用 SQLite 数据库（`~/.hermes/state.db`）跨 CLI 和 gateway 会话持久化会话元数据、完整消息历史及模型配置。这替代了早期的逐会话 JSONL 文件方案。
+Rabbit Agent 使用 SQLite 数据库（`~/.rabbit/state.db`）跨 CLI 和 gateway 会话持久化会话元数据、完整消息历史及模型配置。这替代了早期的逐会话 JSONL 文件方案。
 
-源文件：`hermes_state.py`
+源文件：`rabbit_state.py`
 
-## Hermes home 与 profile 隔离
+## Rabbit home 与 profile 隔离
 
-`get_hermes_home()` 是状态与配置的权威文件系统解析器。它依次使用上下文本地覆盖、`HERMES_HOME`
-环境变量，最后才是平台默认值（macOS 和 Linux 上为 `~/.hermes`；Windows 上为
-`%LOCALAPPDATA%/hermes`）。因此默认数据库始终是 `get_hermes_home() / "state.db"`，
-调用方不应硬编码 `~/.hermes/state.db`。
+`get_rabbit_home()` 是状态与配置的权威文件系统解析器。它依次使用上下文本地覆盖、`RABBIT_HOME`
+环境变量，最后才是平台默认值（macOS 和 Linux 上为 `~/.rabbit`；Windows 上为
+`%LOCALAPPDATA%/rabbit`）。因此默认数据库始终是 `get_rabbit_home() / "state.db"`，
+调用方不应硬编码 `~/.rabbit/state.db`。
 
 命名 profile 是相互隔离的目录：例如名为 `coder` 的 profile 使用
-`<默认 Hermes 根目录>/profiles/coder/`，拥有自己的 `state.db`、配置、日志和其他 profile 级状态。
+`<默认 Rabbit 根目录>/profiles/coder/`，拥有自己的 `state.db`、配置、日志和其他 profile 级状态。
 为某个 profile 创建数据库、读取配置或启动子进程的进程必须保留或传递该 profile 的
-`HERMES_HOME`；回退到默认根目录会把错误 profile 的状态混入操作中。
+`RABBIT_HOME`；回退到默认根目录会把错误 profile 的状态混入操作中。
 
-CLI 启动流程在导入 Hermes 其余部分之前调用 `_apply_profile_override()`。显式的
-`--profile`/`-p` 会解析该 profile 并把解析后的目录写入 `HERMES_HOME`。没有显式选择器时，
-指向 profile 的 `HERMES_HOME` 会被保留；否则启动流程可以使用默认根目录中的 active-profile
-选择。`HOME` 只决定在没有上下文覆盖和 `HERMES_HOME` 时使用的平台默认值，修改 `HOME`
-不是选择命名 profile 的安全方式。特别地，丢弃了 `HERMES_HOME` 的子进程即使在另一个 profile
-处于激活状态时也可能回退到默认 profile，因此子进程的启动方应显式传递 `HERMES_HOME`。
+CLI 启动流程在导入 Rabbit 其余部分之前调用 `_apply_profile_override()`。显式的
+`--profile`/`-p` 会解析该 profile 并把解析后的目录写入 `RABBIT_HOME`。没有显式选择器时，
+指向 profile 的 `RABBIT_HOME` 会被保留；否则启动流程可以使用默认根目录中的 active-profile
+选择。`HOME` 只决定在没有上下文覆盖和 `RABBIT_HOME` 时使用的平台默认值，修改 `HOME`
+不是选择命名 profile 的安全方式。特别地，丢弃了 `RABBIT_HOME` 的子进程即使在另一个 profile
+处于激活状态时也可能回退到默认 profile，因此子进程的启动方应显式传递 `RABBIT_HOME`。
 
-`display_hermes_home()` 仅用于面向用户的文本：它在可能时把解析出的 home 格式化为相对用户主目录
-的形式（例如 `~/.hermes/profiles/coder`），并不提供另一套解析规则。
+`display_rabbit_home()` 仅用于面向用户的文本：它在可能时把解析出的 home 格式化为相对用户主目录
+的形式（例如 `~/.rabbit/profiles/coder`），并不提供另一套解析规则。
 
 ### 测试隔离守卫
 
-测试必须使用临时 `HERMES_HOME` 或显式的临时数据库路径。实时系统守卫会在测试上下文进程打开
-真实默认 Hermes 根目录或真实命名 profile 下的生产 `state.db` 之前抛出异常，防止 fixture 数据或
+测试必须使用临时 `RABBIT_HOME` 或显式的临时数据库路径。实时系统守卫会在测试上下文进程打开
+真实默认 Rabbit 根目录或真实命名 profile 下的生产 `state.db` 之前抛出异常，防止 fixture 数据或
 SQLite 副作用触及正在使用的安装。
 
-`HERMES_STATE_DB_GUARD_BYPASS=1` 是仅供测试使用的逃生口，用于确实必须访问实时数据库的派生子进程。
-进程内的等价逃生口是 `@pytest.mark.live_system_guard_bypass`。不要在普通 Hermes 命令、开发 shell
+`RABBIT_STATE_DB_GUARD_BYPASS=1` 是仅供测试使用的逃生口，用于确实必须访问实时数据库的派生子进程。
+进程内的等价逃生口是 `@pytest.mark.live_system_guard_bypass`。不要在普通 Rabbit 命令、开发 shell
 或应用配置中设置任一绕过：它会禁用保护实时会话历史的守卫（一个硬性的 `RuntimeError`），而导出了
 它的 shell 会把该绕过传给之后的每一次 pytest 运行。
 
@@ -41,7 +41,7 @@ SQLite 副作用触及正在使用的安装。
 ## 架构概览
 
 ```
-~/.hermes/state.db (SQLite, WAL mode)
+~/.rabbit/state.db (SQLite, WAL mode)
 ├── sessions              — 会话元数据、token 计数、计费信息
 ├── messages              — 每个会话的完整消息历史
 ├── messages_fts          — FTS5 虚拟表（content + tool_name + tool_calls）
@@ -187,7 +187,7 @@ END;
 
 ## 写入竞争处理
 
-多个 hermes 进程（gateway + CLI 会话 + worktree agent）共享同一个 `state.db`。`SessionDB` 类通过以下方式处理写入竞争：
+多个 rabbit 进程（gateway + CLI 会话 + worktree agent）共享同一个 `state.db`。`SessionDB` 类通过以下方式处理写入竞争：
 
 - **短 SQLite 超时**（1 秒），而非默认的 30 秒
 - **应用层重试**，带随机抖动（20–150ms，最多 15 次重试）
@@ -209,9 +209,9 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 ### 初始化
 
 ```python
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
-db = SessionDB()                           # 默认：~/.hermes/state.db
+db = SessionDB()                           # 默认：~/.rabbit/state.db
 db = SessionDB(db_path=Path("/tmp/test.db"))  # 自定义路径
 ```
 
@@ -413,8 +413,8 @@ db.delete_session("sess_abc123")
 
 ## 数据库位置
 
-默认路径：`~/.hermes/state.db`
+默认路径：`~/.rabbit/state.db`
 
-该路径由 `hermes_constants.get_hermes_home()` 推导，默认解析为 `~/.hermes/`，或 `HERMES_HOME` 环境变量的值。
+该路径由 `rabbit_constants.get_rabbit_home()` 推导，默认解析为 `~/.rabbit/`，或 `RABBIT_HOME` 环境变量的值。
 
 数据库文件、WAL 文件（`state.db-wal`）和共享内存文件（`state.db-shm`）均创建于同一目录。

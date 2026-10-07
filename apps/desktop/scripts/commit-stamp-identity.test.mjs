@@ -31,15 +31,15 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
     git('add', 'feature')
     git('commit', '-qm', 'feature')
     const feature = git('rev-parse', 'HEAD')
-    const runtime = { repoDir: 'app', toolsDir: 'tools', storePython: 'tools/python/bin/python3', sitePackages: 'venv/site-packages', commands: { hermes: 'bin/hermes' } }
+    const runtime = { repoDir: 'app', toolsDir: 'tools', storePython: 'tools/python/bin/python3', sitePackages: 'venv/site-packages', commands: { rabbit: 'bin/rabbit' } }
     const build = path.join(repo, 'apps/desktop/build')
     fs.mkdirSync(path.join(build, 'agent-payload/app'), { recursive: true })
     fs.mkdirSync(path.join(build, 'agent-payload/bin'), { recursive: true })
-    fs.writeFileSync(path.join(build, 'agent-payload/bin/hermes'), 'launcher fixture')
-    fs.writeFileSync(path.join(build, 'agent-payload/manifest.json'), JSON.stringify({ target: 'darwin-arm64', launchers: ['hermes'], runtime }))
+    fs.writeFileSync(path.join(build, 'agent-payload/bin/rabbit'), 'launcher fixture')
+    fs.writeFileSync(path.join(build, 'agent-payload/manifest.json'), JSON.stringify({ target: 'darwin-arm64', launchers: ['rabbit'], runtime }))
     const out = path.join(build, 'install-stamp.json')
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GITHUB_') && !key.startsWith('HERMES_PAYLOAD_') && !key.startsWith('HERMES_BUILD_')))
-    Object.assign(env, { GITHUB_SHA: main, GITHUB_REF_NAME: 'main', HERMES_BUILD_COMMIT: feature, HERMES_DESKTOP_VARIANT: 'bundled', HERMES_PAYLOAD_VERSION: '0.28.0' })
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GITHUB_') && !key.startsWith('RABBIT_PAYLOAD_') && !key.startsWith('RABBIT_BUILD_')))
+    Object.assign(env, { GITHUB_SHA: main, GITHUB_REF_NAME: 'main', RABBIT_BUILD_COMMIT: feature, RABBIT_DESKTOP_VARIANT: 'bundled', RABBIT_PAYLOAD_VERSION: '0.28.0' })
     const run = override => spawnSync(process.execPath, [path.join(scripts, 'write-build-stamp.mjs')], { cwd: temp, env: { ...env, ...override }, encoding: 'utf8', timeout: 30000 })
     const result = run({})
     assert.equal(result.status, 0, result.stderr)
@@ -52,23 +52,23 @@ test('desktop stamp uses the admitted checkout rather than the dispatch SHA', ()
     assert.equal(stamp.tag, null)
     assert.equal(stamp.updateMechanism, 'external')
     assert.equal(stamp.bundleEnv, undefined)
-    assert.deepEqual(stamp.runtime, { ...runtime, commands: { hermes: `bin/hermes-${feature.slice(0, 7)}` } })
+    assert.deepEqual(stamp.runtime, { ...runtime, commands: { rabbit: `bin/rabbit-${feature.slice(0, 7)}` } })
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(build, 'agent-payload/app/install-stamp.json'), 'utf8')), stamp)
     // A commit bundle records its baked defaults/clears as data so the smoke
     // driver can replay them without running the app.
-    const bundleEnv = { HERMES_HOME: null, HERMES_DATA_DIR_SUFFIX: '-suffix', HERMES_GUEST_ONBOARDING: '1' }
-    assert.equal(run({ HERMES_BUNDLE_ENV_JSON: JSON.stringify(bundleEnv) }).status, 0)
+    const bundleEnv = { RABBIT_HOME: null, RABBIT_DATA_DIR_SUFFIX: '-suffix', RABBIT_GUEST_ONBOARDING: '1' }
+    assert.equal(run({ RABBIT_BUNDLE_ENV_JSON: JSON.stringify(bundleEnv) }).status, 0)
     assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')).bundleEnv, bundleEnv)
     const before = fs.readFileSync(out)
     git('checkout', '-q', 'main')
     assert.notEqual(run({}).status, 0)
     assert.deepEqual(fs.readFileSync(out), before)
     git('checkout', '-q', 'feature')
-    for (const override of [{ HERMES_BUILD_COMMIT: feature.slice(0, 8) }, { HERMES_BUILD_COMMIT: ` ${feature}` }, { HERMES_PAYLOAD_TAG: 'v1.2.3' }]) {
+    for (const override of [{ RABBIT_BUILD_COMMIT: feature.slice(0, 8) }, { RABBIT_BUILD_COMMIT: ` ${feature}` }, { RABBIT_PAYLOAD_TAG: 'v1.2.3' }]) {
       assert.notEqual(run(override).status, 0)
       assert.deepEqual(fs.readFileSync(out), before)
     }
-    assert.equal(run({ HERMES_BUILD_COMMIT: '', HERMES_PAYLOAD_TAG: 'v1.2.3', GITHUB_SHA: feature }).status, 0)
+    assert.equal(run({ RABBIT_BUILD_COMMIT: '', RABBIT_PAYLOAD_TAG: 'v1.2.3', GITHUB_SHA: feature }).status, 0)
     assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).tag, 'v1.2.3')
     assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')).runtime, runtime)
   } finally {

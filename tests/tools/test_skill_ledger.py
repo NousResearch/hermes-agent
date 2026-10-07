@@ -30,7 +30,7 @@ Original body.
 
 @pytest.fixture
 def ledger_env(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME + skills dir for skill_manage and the ledger."""
+    """Isolated RABBIT_HOME + skills dir for skill_manage and the ledger."""
     from agent import skill_utils
     from tools import skill_ledger, skill_manager_tool, skill_usage
 
@@ -38,8 +38,8 @@ def ledger_env(tmp_path, monkeypatch):
     skills_dir = home / "skills"
     skills_dir.mkdir(parents=True)
 
-    monkeypatch.setattr(skill_ledger, "get_hermes_home", lambda: home)
-    monkeypatch.setattr(skill_usage, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(skill_ledger, "get_rabbit_home", lambda: home)
+    monkeypatch.setattr(skill_usage, "get_rabbit_home", lambda: home)
     monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
     return {"home": home, "skills": skills_dir}
@@ -124,8 +124,8 @@ def test_foreground_patch_is_ledgered_as_agent(ledger_env):
     assert rows[0]["actor"] == "agent"
 
 
-def test_rollback_refuses_paths_outside_hermes_home(ledger_env):
-    """A hand-edited ledger entry pointing outside HERMES_HOME must not
+def test_rollback_refuses_paths_outside_rabbit_home(ledger_env):
+    """A hand-edited ledger entry pointing outside RABBIT_HOME must not
     become a write-anywhere primitive."""
     from tools import skill_ledger
 
@@ -348,7 +348,7 @@ def test_config_gate_off_no_ledger_writes(ledger_env, monkeypatch):
     from tools import skill_ledger
     from tools.skill_manager_tool import skill_manage
 
-    import hermes_cli.config as _cfg
+    import rabbit_cli.config as _cfg
 
     off = {"skills": {"ledger": False}}
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: off)
@@ -622,7 +622,7 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
 
     from tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import rabbit_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 8192}}
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
@@ -659,7 +659,7 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     survives verbatim."""
     from tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import rabbit_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 0}}  # no sweeps while seeding
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
@@ -720,7 +720,7 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
 
     from tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import rabbit_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 4096}}  # padded rows ~600 B: a trim on nearly every append
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)

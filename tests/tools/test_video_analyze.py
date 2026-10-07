@@ -184,7 +184,7 @@ class TestVideoAnalyzeTool:
         remote_bytes = b"REMOTE-SANDBOX-VIDEO"
         remote_b64 = base64.b64encode(remote_bytes).decode("ascii")
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
 
         import tools.image_source as isrc
         import tools.terminal_tool as tt

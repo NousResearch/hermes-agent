@@ -59,8 +59,8 @@ SCENARIOS: List[Dict[str, Any]] = base.SCENARIOS + [
 def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dict[str, Any]:
     """mode: 'enabled' (bare bridge) | 'listing' (bridge + catalog listing) | 'disabled' (eager)."""
     enabled = mode in ("enabled", "listing")
-    hermes_home = base.setup_isolated_home(enabled, listing=("auto" if mode == "listing" else "off"))
-    os.environ["HERMES_HOME"] = str(hermes_home)
+    rabbit_home = base.setup_isolated_home(enabled, listing=("auto" if mode == "listing" else "off"))
+    os.environ["RABBIT_HOME"] = str(rabbit_home)
     base.reset_module_state()
     n_registered = base.register_fake_tools()
 
@@ -103,7 +103,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
             skip_context_files=True, skip_memory=True,
             platform="cli", max_iterations=15,
         )
-        from hermes_cli.plugins import get_plugin_manager, discover_plugins
+        from rabbit_cli.plugins import get_plugin_manager, discover_plugins
         discover_plugins()  # idempotent; ensures no later clear wipes our hook
         pm = get_plugin_manager()
         pm._hooks.setdefault("post_api_request", []).append(usage_hook)
@@ -188,7 +188,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     }
     out_path = out_dir / f"{scenario['id']}__{'enabled' if enabled else 'disabled'}__rep{rep}.json"
     out_path.write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    shutil.rmtree(Path(os.environ["HERMES_HOME"]).parent, ignore_errors=True)
+    shutil.rmtree(Path(os.environ["RABBIT_HOME"]).parent, ignore_errors=True)
     return rec
 
 

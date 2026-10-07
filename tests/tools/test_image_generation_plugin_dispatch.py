@@ -21,7 +21,7 @@ class TestPluginDispatch:
         """Declared controls reach generate(); an undeclared one the model sent anyway is dropped, so a
         plugin whose generate() lacks **kwargs never sees it."""
         from agent.image_gen_provider import ImageGenProvider
-        from hermes_cli import plugins as plugins_module
+        from rabbit_cli import plugins as plugins_module
         from tools import image_generation_tool
 
         seen = {}
@@ -42,7 +42,7 @@ class TestPluginDispatch:
             def list_models(self):
                 return []
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         image_gen_registry.register_provider(_Recorder())
         monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "recorder")
         monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda **kwargs: None)

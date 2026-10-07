@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
-from hermes_time import safe_strftime
+from rabbit_time import safe_strftime
 
 
 # Leading timestamp prefix, either the current human format

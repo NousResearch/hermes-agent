@@ -153,7 +153,7 @@ def test_host_send_honors_sync_and_async_plugin_handlers(plugin_platform, async_
 
 def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeypatch, capsys):
     from cron.scheduler_delivery import _resolve_single_delivery_target
-    from hermes_cli.send_cmd import cmd_send
+    from rabbit_cli.send_cmd import cmd_send
 
     name, _entry, _seen = plugin_platform
     _platform, _pconfig, config = _config_for(name)
@@ -167,7 +167,7 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
         quiet=False,
     )
 
-    monkeypatch.setattr("hermes_cli.send_cmd._load_hermes_env", lambda: None)
+    monkeypatch.setattr("rabbit_cli.send_cmd._load_rabbit_env", lambda: None)
     with patch("gateway.config.load_gateway_config", return_value=config), \
          patch("tools.interrupt.is_interrupted", return_value=False), \
          patch("gateway.mirror.mirror_to_session", return_value=True), \
@@ -190,7 +190,7 @@ def test_cli_and_cron_share_plugin_target_normalization(plugin_platform, monkeyp
 
 
 def test_force_reload_unregisters_profile_owned_platform(plugin_platform, monkeypatch):
-    from hermes_cli.plugins import PluginManager
+    from rabbit_cli.plugins import PluginManager
 
     name, _entry, _seen = plugin_platform
     manager = PluginManager()
@@ -228,7 +228,7 @@ def test_fresh_process_real_plugin_fixture_covers_host_send_and_cron(tmp_path):
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
-from hermes_cli.plugins import discover_plugins
+from rabbit_cli.plugins import discover_plugins
 from gateway.config import Platform
 from tools.registry import registry
 from tools.send_message_tool import send_message_tool
@@ -249,8 +249,8 @@ print(json.dumps({"host_send": host_send, "cron": cron,
 '''
     env = dict(os.environ)
     env.update({
-        "HERMES_HOME": str(home),
-        "HERMES_KANBAN_TASK": "fixture",
+        "RABBIT_HOME": str(home),
+        "RABBIT_KANBAN_TASK": "fixture",
         "PYTHONPATH": os.getcwd(),
     })
     completed = subprocess.run(

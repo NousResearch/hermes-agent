@@ -88,9 +88,9 @@ const cases: ReceiptCase[] = [
 it.each(cases)(
   '$name receipt paints the dominant warning and subordinate rows',
   async ({ receipt, headline, tone }: ReceiptCase): Promise<void> => {
-    vi.stubGlobal('hermesDesktop', {
+    vi.stubGlobal('rabbitDesktop', {
       getSyncStatus: async (): Promise<DesktopSyncReceipt | null> => receipt
-    } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus'>)
+    } satisfies Pick<Window['rabbitDesktop'], 'getSyncStatus'>)
     await act(async (): Promise<void> => {
       render(<SyncStatusCard />)
     })
@@ -118,11 +118,11 @@ it.each(cases)(
 )
 
 it('a rejected bridge leaves the overlay usable', async (): Promise<void> => {
-  vi.stubGlobal('hermesDesktop', {
+  vi.stubGlobal('rabbitDesktop', {
     getSyncStatus: async (): Promise<never> => {
       throw new Error('bridge gone')
     }
-  } satisfies Pick<Window['hermesDesktop'], 'getSyncStatus'>)
+  } satisfies Pick<Window['rabbitDesktop'], 'getSyncStatus'>)
   await act(async (): Promise<void> => {
     render(<SyncStatusCard />)
   })

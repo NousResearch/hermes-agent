@@ -172,7 +172,7 @@ class MCPServerRunMixin:
 
     def _log_park(self, msg: str, *args) -> None:
         """Park chatter control (#115713): re-parking a server that never revived is not a state
-        transition — ``hermes mcp list`` already surfaces the parked state, so one identical
+        transition — ``rabbit mcp list`` already surfaces the parked state, so one identical
         WARNING per self-probe carries no new information. The first park (and the revived line
         in ``_mark_session_proven``) stays a WARNING; an identical repeat while still parked is
         demoted to DEBUG so a long-lived gateway's error log is not flooded (10k+ identical
@@ -213,7 +213,7 @@ class MCPServerRunMixin:
             # OAuth setup for a server the user turned off, every interval, for the life of
             # the process (background loops that do not run the gateway reconcile tick
             # never learn the entry changed). An explicit reconnect request — manual
-            # refresh or `hermes mcp login` — still revives immediately regardless of the
+            # refresh or `rabbit mcp login` — still revives immediately regardless of the
             # config gate; only the unattended probe honours it. Announce the pause once:
             # a line per skipped wake would be the very flood this gate exists to stop.
             if outcome == "self-probe" and not self._still_configured_enabled():
@@ -269,7 +269,7 @@ class MCPServerRunMixin:
         self._sampling = (_sampling.SamplingHandler(self.name, sampling_config)
                           if sampling_config.get("enabled", True) and _core._MCP_SAMPLING_TYPES else None)
         # elicitation/create lets a server ask for structured input mid-call; the handler
-        # routes it through Hermes' approval system.
+        # routes it through Rabbit' approval system.
         elicitation_config = config.get("elicitation", {})
         self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
                                                        call_context=lambda: self._pending_call_context)
@@ -361,7 +361,7 @@ class MCPServerRunMixin:
                 # Task was cancelled (shutdown, gateway restart, explicit task.cancel()). Don't treat this
                 # as a connection failure — CancelledError inherits from BaseException (not Exception) in
                 # Python 3.11+, so the broad ``except Exception`` below would NOT catch it; we'd silently
-                # exit the reconnect loop and the MCP server would stay dead until Hermes is fully
+                # exit the reconnect loop and the MCP server would stay dead until Rabbit is fully
                 # restarted. See #9930.
                 self.session = None
                 raise
@@ -482,7 +482,7 @@ class MCPServerRunMixin:
             # Deterministic failure (bad command, non-MCP URL, 401/403): park at once; auth
             # failures park (not return) so the task can pick up fresh tokens later.
             detail = (f"authentication, parking until credentials change; re-authenticate with "
-                      f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
+                      f"`rabbit mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)

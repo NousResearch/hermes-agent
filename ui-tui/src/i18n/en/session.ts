@@ -3,7 +3,7 @@
 // Function leaves take positional args; packs use `{0}`, `{1}` (argument order documented per leaf).
 //
 // Not keyed on purpose: the status-bar state values the app layer compares
-// against ('ready', 'running…', 'interrupted', 'summoning hermes…') and the
+// against ('ready', 'running…', 'interrupted', 'summoning rabbit…') and the
 // transient trail marker 'analyzing tool output…' — those are mapped to the
 // `status` namespace at render time (appChrome.displayStatus / thinking.tsx).
 
@@ -86,10 +86,10 @@ export const sessionEn = {
       dangerousCommand: 'dangerous command'
     },
     handoff: {
-      launching: (command: string) => `launching \`hermes ${command}\`…`,
-      launchError: (error: string) => `error launching hermes: ${error}`,
+      launching: (command: string) => `launching \`rabbit ${command}\`…`,
+      launchError: (error: string) => `error launching rabbit: ${error}`,
       // {0}=subcommand {1}=exit code
-      exitedWithCode: (subcommand: string, code: string) => `hermes ${subcommand} exited with code ${code}`,
+      exitedWithCode: (subcommand: string, code: string) => `rabbit ${subcommand} exited with code ${code}`,
       stillNoProvider: 'still no provider configured'
     }
   }

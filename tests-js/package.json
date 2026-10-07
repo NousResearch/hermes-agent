@@ -1,5 +1,5 @@
 {
-  "name": "@hermes/root-tests",
+  "name": "@rabbit/root-tests",
   "private": true,
   "type": "module",
   "scripts": {

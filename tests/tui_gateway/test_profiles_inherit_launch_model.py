@@ -8,15 +8,15 @@ definition is already in the profile — writing it after the pin never ran (#10
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import tui_gateway.server as srv
 
 
 def test_inherit_launch_model_carries_a_custom_provider_gateway(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setenv("FAKE_GW_TOKEN", "gw-FAKE-111")
     (home / "config.yaml").write_text(
         "model:\n  provider: my-gateway\n  default: my-finetune\n"

@@ -1,7 +1,7 @@
 """install.sh reads the python pin from pm/lock.json by structure, not layout.
 
 bootstrap_python's pre-Python awk reader must follow object names and braces
-(the same contract setup-hermes.sh's pin() established), so any indentation the
+(the same contract setup-rabbit.sh's pin() established), so any indentation the
 lock writer produces resolves the same pinned version.
 """
 import json
@@ -58,7 +58,7 @@ def test_bootstrap_python_reads_pin_independent_of_indentation(tmp_path, indent,
         f'INSTALL_DIR="{core.as_posix()}"\n'
         "bootstrap_python\n"
     )
-    env = dict(os.environ, HOME=str(tmp_path), HERMES_HOME=str(tmp_path / ".hermes"))
+    env = dict(os.environ, HOME=str(tmp_path), RABBIT_HOME=str(tmp_path / ".rabbit"))
     result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     # A layout-sensitive reader resolves no version, falls back to "3.14", and

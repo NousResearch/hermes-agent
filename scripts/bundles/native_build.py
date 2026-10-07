@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 
 
 def prepare(source: Path, work: Path, cache: Path, out: Path, ref: str) -> Path:
-    from hermes_cli.runtime_state import _lock
+    from rabbit_cli.runtime_state import _lock
     from scripts.bundles.desktop_prepare import git, require_source
     from scripts.bundles.desktop_toolchain import run_preparation
     from scripts.bundles.native_prepared import prepared_path

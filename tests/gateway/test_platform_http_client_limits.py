@@ -16,13 +16,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
-    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
 
 def test_env_override_rejects_garbage(monkeypatch):
     """Malformed env values fall back to defaults rather than raising."""
-    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "not-a-number")
-    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", "-3")
+    monkeypatch.setenv("RABBIT_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", "not-a-number")
+    monkeypatch.setenv("RABBIT_GATEWAY_HTTPX_MAX_KEEPALIVE", "-3")
     from gateway.platforms._http_client_limits import platform_httpx_limits
     limits = platform_httpx_limits()
     # Non-positive / non-numeric → fell back to defaults (not the override values)

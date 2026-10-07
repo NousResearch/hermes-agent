@@ -52,7 +52,7 @@ def test_served_profile_completion_wakes_in_process_only_for_the_session_it_owns
     _FakeHttpSession.calls = []
     monkeypatch.setattr(aiohttp, "ClientSession", _FakeHttpSession)
     adapter = RecordingApiServerAdapter()
-    adapter._api_key, adapter._host, adapter._port, adapter._model_name = "k" * 20, "127.0.0.1", 8642, "hermes"
+    adapter._api_key, adapter._host, adapter._port, adapter._model_name = "k" * 20, "127.0.0.1", 8642, "rabbit"
 
     # Raw event (no profile anywhere): the owning store is the proof.
     assert _wake(_make_runner(adapter=adapter), _completion_event(SESSION)) is True
@@ -75,7 +75,7 @@ def test_served_profile_completion_wakes_in_process_only_for_the_session_it_owns
     _own_session(served.root, "default-owned", "default")
     assert _wake(_make_runner(adapter=adapter), _completion_event("default-owned")) is True
     assert adapter.turns == []
-    assert [c["headers"]["X-Hermes-Session-Id"] for c in _FakeHttpSession.calls] == ["default-owned"]
+    assert [c["headers"]["X-Rabbit-Session-Id"] for c in _FakeHttpSession.calls] == ["default-owned"]
     assert _FakeHttpSession.calls[0]["url"].endswith("/v1/chat/completions")
 
 
@@ -87,9 +87,9 @@ def test_single_profile_gateway_keeps_the_http_self_post(served, monkeypatch):
     _FakeHttpSession.calls = []
     monkeypatch.setattr(aiohttp, "ClientSession", _FakeHttpSession)
     adapter = RecordingApiServerAdapter()
-    adapter._api_key, adapter._host, adapter._port, adapter._model_name = "k" * 20, "127.0.0.1", 8642, "hermes"
+    adapter._api_key, adapter._host, adapter._port, adapter._model_name = "k" * 20, "127.0.0.1", 8642, "rabbit"
     runner = _make_runner(adapter=adapter)
     runner.config = SimpleNamespace(multiplex_profiles=False, profile_routes=())
     assert _wake(runner, _completion_event(SESSION)) is True
     assert adapter.turns == []
-    assert [c["headers"]["X-Hermes-Session-Id"] for c in _FakeHttpSession.calls] == [SESSION]
+    assert [c["headers"]["X-Rabbit-Session-Id"] for c in _FakeHttpSession.calls] == [SESSION]

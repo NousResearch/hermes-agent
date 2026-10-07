@@ -14,10 +14,10 @@ ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/ascii-art` |
+| Source | Optional — install with `rabbit skills install official/creative/ascii-art` |
 | Path | `optional-skills/creative/ascii-art` |
 | Version | `4.0.0` |
-| Author | 0xbyt4, Hermes Agent |
+| Author | 0xbyt4, Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `ASCII`, `Art`, `Banners`, `Creative`, `Unicode`, `Text-Art`, `pyfiglet`, `figlet`, `cowsay`, `boxes` |
@@ -26,7 +26,7 @@ ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # ASCII Art Skill
@@ -172,9 +172,9 @@ boxes -l                                       # List all 70+ designs
 ### Combine with pyfiglet or asciified
 
 ```bash
-python -m pyfiglet "HERMES" -f slant | boxes -d stone
+python -m pyfiglet "RABBIT" -f slant | boxes -d stone
 # Or without pyfiglet installed:
-curl -s "https://asciified.thelicato.io/api/v2/ascii?text=HERMES&font=Slant" | boxes -d stone
+curl -s "https://asciified.thelicato.io/api/v2/ascii?text=RABBIT&font=Slant" | boxes -d stone
 ```
 
 ## Tool 5: TOIlet (Colored Text Art)
@@ -250,14 +250,14 @@ Large collection of classic ASCII art organized by subject. Art is inside HTML `
 **Step 1 — Fetch the page:**
 
 ```bash
-curl -s 'https://ascii.co.uk/art/cat' -o ~/.hermes/cache/scratch/ascii_art.html
+curl -s 'https://ascii.co.uk/art/cat' -o ~/.rabbit/cache/scratch/ascii_art.html
 ```
 
 **Step 2 — Extract art from pre tags:**
 
 ```python
 import os, re, html
-with open(os.path.expanduser('~/.hermes/cache/scratch/ascii_art.html')) as f:
+with open(os.path.expanduser('~/.rabbit/cache/scratch/ascii_art.html')) as f:
     text = f.read()
 arts = re.findall(r'<pre[^>]*>(.*?)</pre>', text, re.DOTALL)
 for art in arts:

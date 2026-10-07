@@ -39,7 +39,7 @@ def _strip_outbound_callbacks():
     keeps previously-registered callbacks; without this, a target registered
     in one test would fire (real network!) in every later test in this file.
     """
-    from hermes_cli.plugins import get_plugin_manager
+    from rabbit_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
     for event, callbacks in list(manager._hooks.items()):
@@ -322,16 +322,16 @@ class TestPayload:
     def test_profile_field_reflects_bound_profile_home(self, tmp_path, monkeypatch):
         """Receivers behind a multiplexed gateway need to know which profile
         fired (#92674): ``profile`` follows the bound home at fire time."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         profile_home = tmp_path / "profiles" / "b"
         profile_home.mkdir(parents=True)
-        token = set_hermes_home_override(profile_home)
+        token = set_rabbit_home_override(profile_home)
         try:
             body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_1")
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert json.loads(body)["profile"] == "b"
         body = outbound_webhooks._serialize_payload("on_session_end", {}, "did_2")
         assert json.loads(body)["profile"] == "default"
@@ -358,7 +358,7 @@ class TestRegistration:
         assert second == []
 
     def test_safe_mode_skips_registration(self, monkeypatch):
-        monkeypatch.setenv("HERMES_SAFE_MODE", "1")
+        monkeypatch.setenv("RABBIT_SAFE_MODE", "1")
         cfg = _cfg(
             {"url": "https://example.com/hook", "events": ["on_session_end"]}
         )
@@ -369,7 +369,7 @@ class TestRegistration:
         cfg = _cfg({"url": _url(http_server), "events": ["pre_tool_call"]})
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from rabbit_cli.plugins import get_plugin_manager
 
         results = get_plugin_manager().invoke_hook(
             "pre_tool_call", tool_name="terminal", args={"command": "ls"},
@@ -391,12 +391,12 @@ class TestForceReloadHomeScoping:
     def test_force_reload_restores_webhook_and_fires_once(
         self, monkeypatch, http_server,
     ):
-        from hermes_cli import plugins
+        from rabbit_cli import plugins
 
         cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: cfg)
 
-        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b-webhook")
+        monkeypatch.setenv("RABBIT_HOME", "/tmp/profile-b-webhook")
         mgr_b = plugins.PluginManager()
         plugins._plugin_manager = mgr_b
         outbound_webhooks.register_from_config(cfg)
@@ -437,7 +437,7 @@ class TestDelivery:
         registered = outbound_webhooks.register_from_config(cfg)
         assert len(registered) == 1
 
-        from hermes_cli.plugins import get_plugin_manager
+        from rabbit_cli.plugins import get_plugin_manager
 
         get_plugin_manager().invoke_hook(
             "on_session_end",
@@ -458,24 +458,24 @@ class TestDelivery:
         assert payload["extra"]["completed"] is True
         assert payload["extra"]["model"] == "test-model"
 
-        assert req["headers"]["X-Hermes-Event"] == "on_session_end"
-        assert req["headers"]["X-Hermes-Delivery"]
+        assert req["headers"]["X-Rabbit-Event"] == "on_session_end"
+        assert req["headers"]["X-Rabbit-Delivery"]
         expected = hmac.new(
             secret.encode(), req["body"], hashlib.sha256
         ).hexdigest()
-        assert req["headers"]["X-Hermes-Signature-256"] == f"sha256={expected}"
+        assert req["headers"]["X-Rabbit-Signature-256"] == f"sha256={expected}"
 
     def test_unsigned_delivery_has_no_signature_header(self, http_server):
         cfg = _cfg({"url": _url(http_server), "events": ["on_session_end"]})
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from rabbit_cli.plugins import get_plugin_manager
 
         get_plugin_manager().invoke_hook("on_session_end", session_id="s")
         assert outbound_webhooks.flush()
 
         assert len(http_server.captured) == 1
-        assert "X-Hermes-Signature-256" not in http_server.captured[0]["headers"]
+        assert "X-Rabbit-Signature-256" not in http_server.captured[0]["headers"]
 
     def test_matcher_filters_tool_events(self, http_server):
         cfg = _cfg(
@@ -487,7 +487,7 @@ class TestDelivery:
         )
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from rabbit_cli.plugins import get_plugin_manager
 
         manager = get_plugin_manager()
         manager.invoke_hook(
@@ -542,7 +542,7 @@ class TestDelivery:
         assert http_server.captured[0]["path"] == "/hook"
 
     def test_delivery_id_matches_header_and_body(self, http_server):
-        """The X-Hermes-Delivery header and the signed body's delivery_id
+        """The X-Rabbit-Delivery header and the signed body's delivery_id
         must be the same value, or receiver-side dedupe breaks."""
         cfg = _cfg(
             {"url": _url(http_server), "events": ["on_session_end"],
@@ -550,14 +550,14 @@ class TestDelivery:
         )
         outbound_webhooks.register_from_config(cfg)
 
-        from hermes_cli.plugins import get_plugin_manager
+        from rabbit_cli.plugins import get_plugin_manager
 
         get_plugin_manager().invoke_hook("on_session_end", session_id="s1")
         assert outbound_webhooks.flush()
 
         req = http_server.captured[0]
         payload = json.loads(req["body"])
-        assert payload["delivery_id"] == req["headers"]["X-Hermes-Delivery"]
+        assert payload["delivery_id"] == req["headers"]["X-Rabbit-Delivery"]
 
     def test_connection_error_does_not_raise(self):
         target = outbound_webhooks.WebhookTarget(
@@ -573,7 +573,7 @@ class TestDelivery:
         outbound_webhooks._deliver(delivery)
 
     def test_events_enqueued_at_exit_still_delivered(self, http_server, tmp_path):
-        """A short-lived process (`hermes chat -q`, cron) exits right after
+        """A short-lived process (`rabbit chat -q`, cron) exits right after
         firing on_session_end.  The delivery worker is a daemon thread, so
         without the atexit flush the final event is silently dropped."""
         import subprocess
@@ -587,7 +587,7 @@ class TestDelivery:
             "import sys\n"
             f"sys.path.insert(0, {repr(str(Path(outbound_webhooks.__file__).resolve().parents[1]))})\n"
             "from agent import outbound_webhooks\n"
-            "from hermes_cli.plugins import get_plugin_manager\n"
+            "from rabbit_cli.plugins import get_plugin_manager\n"
             f"cfg = {repr(cfg)}\n"
             "outbound_webhooks.register_from_config(cfg)\n"
             "get_plugin_manager().invoke_hook('on_session_end', session_id='exit_test')\n"

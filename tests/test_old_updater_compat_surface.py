@@ -1,6 +1,6 @@
-"""An old `hermes update` must still find every name it loads mid-swap.
+"""An old `rabbit update` must still find every name it loads mid-swap.
 
-`hermes update` replaces the checkout underneath a RUNNING process. The
+`rabbit update` replaces the checkout underneath a RUNNING process. The
 old process then lazy-imports from the new tree: whatever it asks for
 must still exist, or the user's update dies half-applied. The names it
 can ask for are the contract of updaters shipped BEFORE the PM migration:
@@ -16,9 +16,9 @@ Regeneration requires a full clone. These tests deliberately consume the
 checked-in names and resolve them against the current tree, so shallow CI can
 enforce the contract without reconstructing (or silently truncating) it.
 
-`managed_uv._reload_hermes_constants` is the scar proving the failure
+`managed_uv._reload_rabbit_constants` is the scar proving the failure
 mode is real: a live updater hit ``cannot import name 'venv_python_path'
-from 'hermes_constants'`` while the NEW file on disk plainly held it.
+from 'rabbit_constants'`` while the NEW file on disk plainly held it.
 
 If this test fails you have two honest options:
 * restore the name (a stub with the old signature is fine), or
@@ -103,12 +103,12 @@ class TestTheFrozenFileIsSane:
         # pass vacuously.
         bare = set(_load_surface()["bare"])
         for anchor in (
-            "hermes_constants::with_hermes_node_path",
-            "hermes_constants::venv_python_path",
-            "hermes_cli.gitlock::clear_stale_git_locks",
-            "hermes_cli.managed_uv::ensure_uv",
-            "hermes_cli.managed_uv::rebuild_venv",
-            "hermes_cli._subprocess_compat::run",
+            "rabbit_constants::with_rabbit_node_path",
+            "rabbit_constants::venv_python_path",
+            "rabbit_cli.gitlock::clear_stale_git_locks",
+            "rabbit_cli.managed_uv::ensure_uv",
+            "rabbit_cli.managed_uv::rebuild_venv",
+            "rabbit_cli._subprocess_compat::run",
         ):
             assert anchor in bare, (
                 f"{anchor} missing from the frozen surface — the freeze "
@@ -129,12 +129,12 @@ class TestTheFrozenFileIsSane:
         assert history.get("complete_history") is True
         assert history["commits"] > 0
         assert history["roots"] and history["entrypoint_paths"]
-        assert "hermes_cli/main.py" in history["entrypoint_paths"], (
+        assert "rabbit_cli/main.py" in history["entrypoint_paths"], (
             "the freeze omitted the original inline cmd_update history"
         )
         assert history["history_ref"]
         analyzed = set(history["files_analyzed"])
-        for must_see in ("hermes_cli/update_cmd.py", "hermes_cli/managed_uv.py"):
+        for must_see in ("rabbit_cli/update_cmd.py", "rabbit_cli/managed_uv.py"):
             assert must_see in analyzed, (
                 f"{must_see} was not analyzed for the freeze — the audit "
                 f"lost part of the update flow; a vacuously small surface "

@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 import { describe, expect, it } from 'vitest'
 
 import { isMissingPendingPromptRequest, isMissingRpcMethod } from './gateway-rpc'
@@ -17,7 +17,7 @@ describe('isMissingRpcMethod', () => {
   })
 
   it('ignores unrelated failures', () => {
-    expect(isMissingRpcMethod(new Error('Hermes gateway is not connected'))).toBe(false)
+    expect(isMissingRpcMethod(new Error('Rabbit gateway is not connected'))).toBe(false)
     expect(isMissingRpcMethod(new Error('no such project'))).toBe(false)
   })
 })

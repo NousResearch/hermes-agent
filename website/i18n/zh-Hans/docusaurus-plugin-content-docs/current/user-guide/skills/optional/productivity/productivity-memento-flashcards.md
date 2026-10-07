@@ -14,7 +14,7 @@ description: "间隔重复闪卡系统"
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/productivity/memento-flashcards` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/productivity/memento-flashcards` 安装 |
 | 路径 | `optional-skills/productivity/memento-flashcards` |
 | 版本 | `1.0.0` |
 | 作者 | Memento AI |
@@ -25,7 +25,7 @@ description: "间隔重复闪卡系统"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Memento Flashcards — 间隔重复闪卡 Skill
@@ -77,7 +77,7 @@ Memento Flashcards 的用户响应风格：
 卡片存储在以下路径的 JSON 文件中：
 
 ```
-~/.hermes/skills/productivity/memento-flashcards/data/cards.json
+~/.rabbit/skills/productivity/memento-flashcards/data/cards.json
 ```
 
 **切勿直接编辑此文件。** 始终使用 `memento_cards.py` 子命令。该脚本通过原子写入（先写入临时文件，再重命名）来防止数据损坏。
@@ -116,7 +116,7 @@ Statement: "{statement}"
 **第 2 步：** 调用脚本存储卡片：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add \
   --question "What year did World War 2 end?" \
   --answer "1945" \
   --collection "History"
@@ -140,13 +140,13 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 当用户想要复习时，获取所有到期卡片：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due
 ```
 
 返回 `next_review_at <= now` 的卡片 JSON 数组。如需集合过滤：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due --collection "History"
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due --collection "History"
 ```
 
 **复习流程（自由文本评分）：**
@@ -179,7 +179,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 5. 然后显示下一题。
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
   --id CARD_ID --rating easy --user-answer "what the user said"
 ```
 
@@ -213,7 +213,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 **第 2 步：** 获取字幕：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/youtube_quiz.py fetch VIDEO_ID
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/youtube_quiz.py fetch VIDEO_ID
 ```
 
 返回 `{"title": "...", "transcript": "..."}` 或错误信息。
@@ -227,9 +227,9 @@ source ./activate
 python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)"
 ```
 
-准备前按照[包管理](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+准备前按照[包管理](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/package-management#developer-workflow)
 选择独立开发数据目录。重试时使用该 Python 和 `skill_view` 返回的实际 skill 目录。
-远程或沙箱终端需在其主机上准备独立辅助环境；不要向 Hermes 选中的环境 pip 安装。
+远程或沙箱终端需在其主机上准备独立辅助环境；不要向 Rabbit 选中的环境 pip 安装。
 
 **第 3 步：** 从字幕生成 5 道测验题。使用以下规则：
 
@@ -263,7 +263,7 @@ Answer rules:
 **第 5 步：** 存储测验卡片：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add-quiz \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add-quiz \
   --video-id "VIDEO_ID" \
   --questions '[{"question":"...","answer":"..."},...]' \
   --collection "Quiz - Episode Title"
@@ -278,7 +278,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 4. **重要：你必须先回复用户反馈，再做任何其他操作。** 显示评级、正确答案以及卡片下次到期时间。不要静默跳到下一题。保持简短、纯文本。示例："不太对。答案：&#123;answer&#125;。下次复习是明天。"
 5. **显示反馈后**，调用评级命令，然后在同一消息中显示下一题：
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
   --id CARD_ID --rating easy --user-answer "what the user said"
 ```
 6. 重复。每个回答在进入下一题前必须收到可见反馈。
@@ -287,7 +287,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 
 **导出：**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py export \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py export \
   --output ~/flashcards.csv
 ```
 
@@ -295,7 +295,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 
 **导入：**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py import \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py import \
   --file ~/flashcards.csv \
   --collection "Imported"
 ```
@@ -305,7 +305,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 ### 统计
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
 ```
 
 返回包含以下字段的 JSON：
@@ -328,9 +328,9 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 直接验证辅助脚本：
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add --question "Capital of France?" --answer "Paris" --collection "General"
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add --question "Capital of France?" --answer "Paris" --collection "General"
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due
 ```
 
 如果从仓库检出进行测试，运行：

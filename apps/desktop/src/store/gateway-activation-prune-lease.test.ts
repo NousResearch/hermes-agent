@@ -17,8 +17,8 @@ const secondaryGateways: Array<{
 
 let connectGate: Promise<void> | null = null
 
-vi.mock('@/hermes', () => ({
-  HermesGateway: class {
+vi.mock('@/rabbit', () => ({
+  RabbitGateway: class {
     connectionState = 'closed'
     connect = vi.fn(async () => {
       if (this.connectionState === 'connecting') {
@@ -60,7 +60,7 @@ const {
 const { SOURCE_SWITCH_DIAL_TIMEOUT_MS } = await import('@/lib/with-timeout')
 
 function installDesktop(): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
     getConnection: vi.fn(async (profile: null | string) =>
       profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
     ),
@@ -94,7 +94,7 @@ afterEach(() => {
   closeSecondaryGateways()
   vi.clearAllMocks()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 // Flush microtasks until the dial registers its secondary (or bail). The dial

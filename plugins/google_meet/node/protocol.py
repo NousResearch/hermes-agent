@@ -4,7 +4,7 @@
     Response:  {"type": "response", "id": <req-id>, "payload": <dict>}
     Error:     {"type": "error", "id": <req-id>, "error": <str>}
 
-Requests carry the shared bearer token (``hermes meet node approve`` on the gateway, read off
+Requests carry the shared bearer token (``rabbit meet node approve`` on the gateway, read off
 disk on the server); mismatched tokens are rejected before dispatch.
 """
 

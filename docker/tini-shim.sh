@@ -6,7 +6,7 @@
 # ----------
 # The published image used to ship real `tini` as PID 1. After the
 # s6-overlay migration, PID 1 is `/init`. Downstream catalogs (Hostinger
-# Hermes WebUI, NAS "update" flows that preserve an old entrypoint, etc.)
+# Rabbit WebUI, NAS "update" flows that preserve an old entrypoint, etc.)
 # still pin entrypoints like:
 #
 #   ["/usr/bin/tini", "-g", "--"]
@@ -30,14 +30,14 @@
 # s6-overlay already reaps zombies and forwards signals as PID 1; the
 # flag semantics are intentionally no-ops here.
 #
-# Test hook: HERMES_TINI_SHIM_TARGET overrides the `/init` path (and
-# HERMES_TINI_SHIM_WRAPPER the main-wrapper path) so unit tests can
+# Test hook: RABBIT_TINI_SHIM_TARGET overrides the `/init` path (and
+# RABBIT_TINI_SHIM_WRAPPER the main-wrapper path) so unit tests can
 # record argv without a real s6 tree.
 
 set -e
 
-INIT_TARGET="${HERMES_TINI_SHIM_TARGET:-/init}"
-WRAPPER="${HERMES_TINI_SHIM_WRAPPER:-/opt/hermes/docker/main-wrapper.sh}"
+INIT_TARGET="${RABBIT_TINI_SHIM_TARGET:-/init}"
+WRAPPER="${RABBIT_TINI_SHIM_WRAPPER:-/opt/rabbit/docker/main-wrapper.sh}"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

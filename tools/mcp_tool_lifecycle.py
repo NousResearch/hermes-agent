@@ -132,13 +132,13 @@ def _reregister_orphaned_adopters() -> None:
         return
     from pathlib import Path
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     from tools import mcp_tool_discovery as _discovery
     from tools.mcp_tool_config import _load_mcp_config
     for adopter, names in pending.items():
         home_token = secret_token = None
         try:
-            home_token = set_hermes_home_override(adopter)
+            home_token = set_rabbit_home_override(adopter)
             secret_token = set_secret_scope(build_profile_secret_scope(Path(adopter)), profile_home=adopter)
             servers = {n: c for n, c in (_load_mcp_config() or {}).items() if n in names}
             if servers:
@@ -149,7 +149,7 @@ def _reregister_orphaned_adopters() -> None:
             if secret_token is not None:
                 reset_secret_scope(secret_token)
             if home_token is not None:
-                reset_hermes_home_override(home_token)
+                reset_rabbit_home_override(home_token)
 
 
 def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,

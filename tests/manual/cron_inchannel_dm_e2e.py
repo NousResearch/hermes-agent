@@ -23,7 +23,7 @@ Run from INSIDE the worktree:
     cd <worktree>
     PYTHONPATH="$PWD" ../../.venv/bin/python tests/manual/cron_inchannel_dm_e2e.py
 
-No real names. Uses a throwaway HERMES_HOME.
+No real names. Uses a throwaway RABBIT_HOME.
 """
 
 import asyncio
@@ -33,7 +33,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron_dm_e2e_")
+os.environ["RABBIT_HOME"] = tempfile.mkdtemp(prefix="cron_dm_e2e_")
 
 import cron.scheduler as sched  # noqa: E402
 from gateway.config import PlatformConfig, Platform  # noqa: E402

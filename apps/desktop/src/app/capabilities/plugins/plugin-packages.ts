@@ -30,7 +30,7 @@ export interface PluginPackage {
 }
 
 /** Folder name when a desktop record lives in the UNIFIED agent-plugins root
- *  (`~/.hermes/plugins/<name>/desktop/plugin.js`) — legacy records from before
+ *  (`~/.rabbit/plugins/<name>/desktop/plugin.js`) — legacy records from before
  *  halves were copied to the app root. */
 function legacyPackageName(file?: string): null | string {
   if (!file) {

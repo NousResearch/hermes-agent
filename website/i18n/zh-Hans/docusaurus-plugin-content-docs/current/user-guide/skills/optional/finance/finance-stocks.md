@@ -14,10 +14,10 @@ description: "通过 Yahoo 获取股票报价、历史、搜索、比较及加�
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/finance/stocks` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/finance/stocks` 安装 |
 | 路径 | `optional-skills/finance/stocks` |
 | 版本 | `0.1.0` |
-| 作者 | Mibay (Mibayy), Hermes Agent |
+| 作者 | Mibay (Mibayy), Rabbit Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Stocks`, `Finance`, `Market`, `Crypto`, `Investing` |
@@ -26,7 +26,7 @@ description: "通过 Yahoo 获取股票报价、历史、搜索、比较及加�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Stocks Skill
@@ -52,7 +52,7 @@ description: "通过 Yahoo 获取股票报价、历史、搜索、比较及加�
 通过 `terminal` 工具调用。安装完成后：
 
 ```
-SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
+SCRIPT=~/.rabbit/skills/finance/stocks/scripts/stocks_client.py
 python3 $SCRIPT quote AAPL
 ```
 
@@ -102,7 +102,7 @@ python3 $SCRIPT crypto BTC ETH SOL
 ## 验证
 
 ```
-python3 ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
+python3 ~/.rabbit/skills/finance/stocks/scripts/stocks_client.py quote AAPL
 ```
 
 返回包含 `symbol: "AAPL"` 及数值型 `price` 字段的 JSON 对象。

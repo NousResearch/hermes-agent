@@ -6,14 +6,14 @@ author: 宝玉 (JimLiu)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [infographic, visual-summary, creative, image-generation]
     homepage: https://github.com/JimLiu/baoyu-skills#baoyu-infographic
 ---
 
 # Infographic Generator
 
-Adapted from [baoyu-infographic](https://github.com/JimLiu/baoyu-skills) for Hermes Agent's tool ecosystem.
+Adapted from [baoyu-infographic](https://github.com/JimLiu/baoyu-skills) for Rabbit Agent's tool ecosystem.
 
 Two dimensions: **layout** (information structure) × **style** (visual aesthetics). Freely combine any layout with any style.
 

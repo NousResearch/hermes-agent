@@ -22,7 +22,7 @@ _PNG_BYTES = base64.b64decode(
 
 
 class TestResolveMediaToDataUrls(unittest.TestCase):
-    def _write_png(self, tmpdir_name="hermes_media_test"):
+    def _write_png(self, tmpdir_name="rabbit_media_test"):
         import tempfile
         from pathlib import Path
 

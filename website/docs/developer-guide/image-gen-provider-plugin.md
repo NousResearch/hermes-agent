@@ -1,7 +1,7 @@
 ---
 sidebar_position: 11
 title: "Image Generation Provider Plugins"
-description: "How to build an image-generation backend plugin for Hermes Agent"
+description: "How to build an image-generation backend plugin for Rabbit Agent"
 ---
 
 # Building an Image Generation Provider Plugin
@@ -9,20 +9,20 @@ description: "How to build an image-generation backend plugin for Hermes Agent"
 Image-gen provider plugins register a backend that services every `image_generate` tool call — DALL·E, gpt-image, Grok, Flux, Imagen, Stable Diffusion, fal, Replicate, a local ComfyUI rig, anything. Built-in providers (OpenAI, OpenAI-Codex, xAI, FAL, Krea, DeepInfra, OpenRouter, Meta Model API) all ship as plugins. You can add a new one, or override a bundled one, by dropping a directory into `plugins/image_gen/<name>/`.
 
 :::tip
-Image-gen is one of several **backend plugins** Hermes supports. The others (with more specialized ABCs) are [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).
+Image-gen is one of several **backend plugins** Rabbit supports. The others (with more specialized ABCs) are [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Rabbit Plugin](./plugins/index.md).
 :::
 
 ## How discovery works
 
-Hermes scans for image-gen backends in three places:
+Rabbit scans for image-gen backends in three places:
 
 1. **Bundled** — `<repo>/plugins/image_gen/<name>/` (auto-loaded with `kind: backend`, always available)
-2. **User** — `~/.hermes/plugins/image_gen/<name>/` (opt-in via `plugins.enabled`)
-3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
+2. **User** — `~/.rabbit/plugins/image_gen/<name>/` (opt-in via `plugins.enabled`)
+3. **Pip** — packages declaring a `rabbit_agent.plugins` entry point
 
-Each plugin's `register(ctx)` function calls `ctx.register_image_gen_provider(...)` — that puts it into the registry in `agent/image_gen_registry.py`. The active provider is picked by `image_gen.provider` in `config.yaml`; `hermes tools` walks users through selection.
+Each plugin's `register(ctx)` function calls `ctx.register_image_gen_provider(...)` — that puts it into the registry in `agent/image_gen_registry.py`. The active provider is picked by `image_gen.provider` in `config.yaml`; `rabbit tools` walks users through selection.
 
-The `image_generate` tool wrapper asks the registry for the active provider and dispatches there. If no provider is registered, the tool surfaces a helpful error pointing at `hermes tools`.
+The `image_generate` tool wrapper asks the registry for the active provider and dispatches there. If no provider is registered, the tool surfaces a helpful error pointing at `rabbit tools`.
 
 ## Directory structure
 
@@ -32,7 +32,7 @@ plugins/image_gen/my-backend/
 └── plugin.yaml      # Manifest with kind: backend
 ```
 
-A bundled plugin is complete at this point. User plugins at `~/.hermes/plugins/image_gen/<name>/` need to be added to `plugins.enabled` in `config.yaml` (or run `hermes plugins enable <name>`).
+A bundled plugin is complete at this point. User plugins at `~/.rabbit/plugins/image_gen/<name>/` need to be added to `plugins.enabled` in `config.yaml` (or run `rabbit plugins enable <name>`).
 
 ## The ImageGenProvider ABC
 
@@ -62,7 +62,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
 
     @property
     def display_name(self) -> str:
-        # Human label shown in `hermes tools`. Defaults to name.title() if omitted.
+        # Human label shown in `rabbit tools`. Defaults to name.title() if omitted.
         return "My Backend"
 
     def is_available(self) -> bool:
@@ -77,7 +77,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
         return True
 
     def list_models(self) -> List[Dict[str, Any]]:
-        # Catalog shown in `hermes tools` model picker.
+        # Catalog shown in `rabbit tools` model picker.
         return [
             {
                 "id": "my-model-fast",
@@ -99,7 +99,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
         return "my-model-fast"
 
     def get_setup_schema(self) -> Dict[str, Any]:
-        # Metadata for the `hermes tools` picker — keys to prompt for at setup.
+        # Metadata for the `rabbit tools` picker — keys to prompt for at setup.
         return {
             "name": "My Backend",
             "badge": "paid",        # optional; shown as a short tag in the picker
@@ -176,7 +176,7 @@ class MyBackendImageGenProvider(ImageGenProvider):
 
             # Two shapes supported:
             #   - URL string: return it as `image`
-            #   - base64 data: save under $HERMES_HOME/cache/images/ via save_b64_image()
+            #   - base64 data: save under $RABBIT_HOME/cache/images/ via save_b64_image()
             if result.get("image_b64"):
                 path = save_b64_image(
                     result["image_b64"],
@@ -223,7 +223,7 @@ requires_env:
   - MY_BACKEND_API_KEY
 ```
 
-`kind: backend` is what routes the plugin to the image-gen registration path. `requires_env` is prompted during `hermes plugins install`.
+`kind: backend` is what routes the plugin to the image-gen registration path. `requires_env` is prompted during `rabbit plugins install`.
 
 ## ABC reference
 
@@ -232,9 +232,9 @@ Full contract in `agent/image_gen_provider.py`. The methods you'll typically ove
 | Member | Required | Default | Purpose |
 |---|---|---|---|
 | `name` | ✅ | — | Stable id used in `image_gen.provider` config |
-| `display_name` | — | `name.title()` | Label shown in `hermes tools` |
+| `display_name` | — | `name.title()` | Label shown in `rabbit tools` |
 | `is_available()` | — | `True` | Gate for missing creds/deps |
-| `list_models()` | — | `[]` | Catalog for `hermes tools` model picker |
+| `list_models()` | — | `[]` | Catalog for `rabbit tools` model picker |
 | `default_model()` | — | first from `list_models()` | Fallback when no model is configured |
 | `get_setup_schema()` | — | minimal | Picker metadata + env-var prompts |
 | `generate(prompt, aspect_ratio, **kwargs)` | ✅ | — | The call |
@@ -271,31 +271,31 @@ The tool wrapper JSON-serializes the dict and hands it to the LLM. Errors are su
 
 ## Handling base64 vs URL output
 
-Some backends return image URLs (fal, Replicate); others return base64 payloads (OpenAI gpt-image-2). For the base64 case, use `save_b64_image()` — it writes to `$HERMES_HOME/cache/images/<prefix>_<timestamp>_<uuid>.<ext>` and returns the absolute `Path`. Pass that path (as `str`) as `image=` in `success_response()`. Gateway delivery (Telegram photo bubble, Discord attachment) recognizes both URLs and absolute paths.
+Some backends return image URLs (fal, Replicate); others return base64 payloads (OpenAI gpt-image-2). For the base64 case, use `save_b64_image()` — it writes to `$RABBIT_HOME/cache/images/<prefix>_<timestamp>_<uuid>.<ext>` and returns the absolute `Path`. Pass that path (as `str`) as `image=` in `success_response()`. Gateway delivery (Telegram photo bubble, Discord attachment) recognizes both URLs and absolute paths.
 
 ## User overrides
 
-Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name` property as a bundled one and enable it via `hermes plugins enable <name>` — the registry is last-writer-wins, so your version replaces the built-in. Useful for pointing an `openai` plugin at a private proxy, or swapping in a custom model catalog.
+Drop a user plugin at `~/.rabbit/plugins/image_gen/<name>/` with the same `name` property as a bundled one and enable it via `rabbit plugins enable <name>` — the registry is last-writer-wins, so your version replaces the built-in. Useful for pointing an `openai` plugin at a private proxy, or swapping in a custom model catalog.
 
 ## Testing
 
 ```bash
-export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-imggen-test
-mkdir -p $HERMES_HOME/plugins/image_gen/my-backend
+export RABBIT_HOME=$HOME/.rabbit/cache/scratch/rabbit-imggen-test
+mkdir -p $RABBIT_HOME/plugins/image_gen/my-backend
 # …copy __init__.py + plugin.yaml into that dir…
 
 export MY_BACKEND_API_KEY=your-test-key
-hermes plugins enable my-backend
+rabbit plugins enable my-backend
 
 # Pick it as the active provider
-echo "image_gen:" >> $HERMES_HOME/config.yaml
-echo "  provider: my-backend" >> $HERMES_HOME/config.yaml
+echo "image_gen:" >> $RABBIT_HOME/config.yaml
+echo "  provider: my-backend" >> $RABBIT_HOME/config.yaml
 
 # Exercise it
-hermes -z "Generate an image of a corgi in a spacesuit"
+rabbit -z "Generate an image of a corgi in a spacesuit"
 ```
 
-Or interactively: `hermes tools` → "Image Generation" → select `my-backend` → enter API key if prompted.
+Or interactively: `rabbit tools` → "Image Generation" → select `my-backend` → enter API key if prompted.
 
 ## Reference implementations
 
@@ -307,7 +307,7 @@ Or interactively: `hermes tools` → "Image Generation" → select `my-backend` 
 
 ```toml
 # pyproject.toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."rabbit_agent.plugins"]
 my-backend-imggen = "my_backend_imggen_package"
 ```
 
@@ -317,4 +317,4 @@ my-backend-imggen = "my_backend_imggen_package"
 
 - [Image Generation](../user-guide/features/image-generation.md) — user-facing feature documentation
 - [Plugins overview](../user-guide/features/plugins.md) — all plugin types at a glance
-- [Build a Hermes Plugin](./plugins/index.md) — general tools/hooks/slash commands guide
+- [Build a Rabbit Plugin](./plugins/index.md) — general tools/hooks/slash commands guide

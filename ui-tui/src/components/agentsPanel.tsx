@@ -1,5 +1,5 @@
-import { Box, stringWidth, Text, useStdout } from '@hermes/ink'
-import { mix } from '@hermes/shared/color'
+import { Box, stringWidth, Text, useStdout } from '@rabbit/ink'
+import { mix } from '@rabbit/shared/color'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 

@@ -12,7 +12,7 @@ import {
   togglePane
 } from './panes'
 
-const STORAGE_KEY = 'hermes.desktop.paneStates.v1'
+const STORAGE_KEY = 'rabbit.desktop.paneStates.v1'
 
 describe('panes store', () => {
   beforeEach(() => {

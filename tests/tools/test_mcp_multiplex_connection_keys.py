@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import rabbit_home_key, reset_rabbit_home_override, set_rabbit_home_override
 
 
 def _tool():
@@ -48,16 +48,16 @@ def two_profiles(tmp_path, monkeypatch):
     tokens = []
 
     def enter(which):
-        tokens.append(set_hermes_home_override(homes[which]))
-        return hermes_home_key(homes[which])
+        tokens.append(set_rabbit_home_override(homes[which]))
+        return rabbit_home_key(homes[which])
 
     yield enter
     for toolset in ("mcp-x", "mcp-s"):
         for tool_name in list(registry.get_tool_names_for_toolset(toolset)):
             for home in homes.values():
-                registry.deregister(tool_name, scope=hermes_home_key(home))
+                registry.deregister(tool_name, scope=rabbit_home_key(home))
     for token in reversed(tokens):
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     for n in ledgers:
         getattr(core, n).clear()
         getattr(core, n).update(saved[n])
@@ -121,7 +121,7 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     # stdio identity still resolves in ITS OWN scope, so an equal value shares the owner's child.
     import sys
     import agent.secret_scope as secret_scope
-    import hermes_cli.env_loader as env_loader
+    import rabbit_cli.env_loader as env_loader
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
     for profile in ("a", "b"):
@@ -294,7 +294,7 @@ def test_parallel_safe_opt_in_is_per_profile(two_profiles):
 
 
 def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profiles, monkeypatch):
-    """A dashboard/desktop backend serves profiles through the HERMES_HOME override with
+    """A dashboard/desktop backend serves profiles through the RABBIT_HOME override with
     ``gateway.multiplex_profiles`` off; a same-named server with other credentials must still be a
     separate connection there, or profile B calls the server as profile A (#111151). The launch
     profile itself (no override) keeps the bare, unscoped key."""
@@ -319,7 +319,7 @@ def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profi
     assert registry.get_tool_names_for_toolset("mcp-x") == []
     assert "x" in disc._select_new_servers({"x": cfg_b})
 
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("rabbit_constants.get_rabbit_home_override", return_value=None):
         assert core._mcp_registry_scope() is None
         assert _server_key("x") == "x"
 
@@ -336,7 +336,7 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
     cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
     srv_a = _server("x", cfg_a)
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("rabbit_constants.get_rabbit_home_override", return_value=None):
         disc._adopt_server("x", srv_a)
         srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
         entry = registry._tools["mcp__x__t"]
@@ -345,7 +345,7 @@ def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_prof
         two_profiles("b")
         assert registry_mod.check_fn_cache_scope() is not None
         assert registry_mod._check_fn_cached(entry.check_fn) is False
-        with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        with patch("rabbit_constants.get_rabbit_home_override", return_value=None):
             assert registry_mod._check_fn_cached(entry.check_fn) is True
     finally:
         registry.deregister("mcp__x__t")
@@ -368,7 +368,7 @@ def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connec
     disc._adopt_server("x", srv_b)
     assert core._server_scope_keys[(scope_b, "x")] == scope_b
 
-    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+    with patch("rabbit_constants.get_rabbit_home_override", return_value=None):
         assert core._mcp_registry_scope() is None
         srv_launch = _server("x", cfg)
         disc._adopt_server("x", srv_launch)
@@ -400,7 +400,7 @@ def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connec
 
 def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profiles, monkeypatch):
     """A corrupt/removed adopter home raising inside ``build_profile_secret_scope`` must
-    not leak that adopter's HERMES_HOME override into the caller's context, and the
+    not leak that adopter's RABBIT_HOME override into the caller's context, and the
     remaining adopters still get their re-registration pass."""
     import agent.secret_scope as ss
     import tools.mcp_tool as core
@@ -421,7 +421,7 @@ def test_adopter_scope_setup_failure_leaks_no_override_and_continues(two_profile
 
     lifecycle._reregister_orphaned_adopters()
 
-    from hermes_constants import get_hermes_home_override
-    assert get_hermes_home_override() is None
+    from rabbit_constants import get_rabbit_home_override
+    assert get_rabbit_home_override() is None
     assert ss.current_secret_scope() is None
     assert registered == [{"x": {"url": "https://mcp.example/x"}}]

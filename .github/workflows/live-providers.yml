@@ -36,7 +36,7 @@ jobs:
   live:
     name: Live provider canaries
     # Forks and PRs never see these secrets; only run where they exist.
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'seven0070/Rabbit-'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # Only booleans at job level: the key VALUES are scoped to the one step that
@@ -49,7 +49,7 @@ jobs:
       HAS_OPENAI: ${{ secrets.LIVE_OPENAI_API_KEY != '' }}
       HAS_GEMINI: ${{ secrets.LIVE_GEMINI_API_KEY != '' }}
       HAS_XAI: ${{ secrets.LIVE_XAI_API_KEY != '' }}
-      HERMES_LIVE_USAGE_FILE: ${{ github.workspace }}/live-usage.jsonl
+      RABBIT_LIVE_USAGE_FILE: ${{ github.workspace }}/live-usage.jsonl
     steps:
       - name: Check that at least one provider secret is configured
         id: gate
@@ -116,12 +116,12 @@ jobs:
           rows = ["### Live provider canary usage", "",
                   "| case | model | calls | input | output | cache read | cache write | est. $ | ceiling $ |",
                   "|---|---|---|---|---|---|---|---|---|"]
-          path = os.environ["HERMES_LIVE_USAGE_FILE"]
+          path = os.environ["RABBIT_LIVE_USAGE_FILE"]
           if os.path.exists(path):
               for line in open(path, encoding="utf-8"):
                   u = json.loads(line)
                   rows.append("| {case} | {model} | {api_calls} | {input} | {output} | {cache_read} "
-                              "| {cache_write} | {hermes_est_usd} | {list_price_ceiling_usd} |".format(**u))
+                              "| {cache_write} | {rabbit_est_usd} | {list_price_ceiling_usd} |".format(**u))
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(rows) + "\n")
 

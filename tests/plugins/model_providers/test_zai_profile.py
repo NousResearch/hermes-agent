@@ -8,7 +8,7 @@ every turn (the desktop "thinking reverts to medium" report).
 
 GLM-5.2 additionally exposes a native ``reasoning_effort`` knob with two
 enabled levels (high / max) on the OpenAI-compatible ``/api/paas/v4``
-endpoint; the Hermes effort scale is collapsed onto those.
+endpoint; the Rabbit effort scale is collapsed onto those.
 
 These tests pin the profile's wire-shape contract so Z.AI requests stay
 correctly shaped without going live.
@@ -78,7 +78,7 @@ class TestZaiGLM52ReasoningEffort:
 
     @pytest.mark.parametrize("effort", ["low", "medium", "minimal"])
     def test_lower_efforts_clamp_up_to_high(self, zai_profile, effort):
-        """GLM-5.2's minimum thinking level is high — lower Hermes levels
+        """GLM-5.2's minimum thinking level is high — lower Rabbit levels
         clamp onto it."""
         extra_body, top_level = zai_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},

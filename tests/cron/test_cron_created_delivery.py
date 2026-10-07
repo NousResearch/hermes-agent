@@ -6,7 +6,7 @@ the run's session is ephemeral, so a stored literal 'origin' would resolve
 against a session that no longer exists by fire time. The cronjob tool
 therefore resolves 'origin' (or an omitted deliver) AT CREATE TIME to the
 creating job's own concrete persistent target, read from the
-HERMES_CRON_AUTO_DELIVER_* contextvars that run_job publishes per run.
+RABBIT_CRON_AUTO_DELIVER_* contextvars that run_job publishes per run.
 Non-cron sessions keep the literal 'origin' (live chat sessions have a real
 origin to resolve at fire time).
 """
@@ -36,17 +36,17 @@ def _enter_cron_context(platform=None, chat_id=None, thread_id=None):
     extra = []
     if platform is not None:
         extra.append(
-            (_VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"],
-             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(platform))
+            (_VAR_MAP["RABBIT_CRON_AUTO_DELIVER_PLATFORM"],
+             _VAR_MAP["RABBIT_CRON_AUTO_DELIVER_PLATFORM"].set(platform))
         )
         extra.append(
-            (_VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"],
-             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(chat_id)))
+            (_VAR_MAP["RABBIT_CRON_AUTO_DELIVER_CHAT_ID"],
+             _VAR_MAP["RABBIT_CRON_AUTO_DELIVER_CHAT_ID"].set(str(chat_id)))
         )
         if thread_id is not None:
             extra.append(
-                (_VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"],
-                 _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(thread_id)))
+                (_VAR_MAP["RABBIT_CRON_AUTO_DELIVER_THREAD_ID"],
+                 _VAR_MAP["RABBIT_CRON_AUTO_DELIVER_THREAD_ID"].set(str(thread_id)))
             )
     return tokens, extra
 

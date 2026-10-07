@@ -41,7 +41,7 @@ def test_disabled_and_5m_are_left_alone():
 def test_real_spawn_path_applies_it(tmp_path, monkeypatch):
     """Through ``_build_child_agent`` with a real AIAgent: parent configured 1h, child ends at 5m, and the
     parent is untouched."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         "prompt_caching:\n  cache_ttl: 1h\nmodel:\n  default: anthropic/claude-sonnet-4.6\n", encoding="utf-8")
     from run_agent import AIAgent

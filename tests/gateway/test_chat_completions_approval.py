@@ -38,7 +38,7 @@ async def test_streamed_completion_approval_resolves_via_runs_endpoint(monkeypat
     async with TestClient(TestServer(app)) as cli:
         with patch.object(adapter, "_create_agent", side_effect=lambda **_k: _approval_agent(decisions)):
             resp = await cli.post("/v1/chat/completions", json={
-                "model": "hermes-agent", "stream": True, "messages": [{"role": "user", "content": "hi"}]})
+                "model": "rabbit-agent", "stream": True, "messages": [{"role": "user", "content": "hi"}]})
             assert resp.status == 200
             async def _first_approval():
                 event = None

@@ -89,7 +89,7 @@ def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env:
 
 
 def _cfg() -> Dict:
-    from hermes_cli.config import load_config_readonly
+    from rabbit_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}
     return cfg if isinstance(cfg, dict) else {}
 

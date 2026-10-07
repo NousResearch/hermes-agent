@@ -1,14 +1,14 @@
 """Cloud-backend battery: pr arm attached to a provisioned cloud browser per cell.
 
 Backends:
-    nous-cloud   - Nous Portal-provisioned Browser Use cloud browser
-                   (plugins.browser.browser_use provider; needs gateway access)
+    browser-use-cloud - Browser Use cloud browser
+                   (plugins.browser.browser_use provider; needs BROWSER_USE_API_KEY)
     browserbase  - fresh Browserbase session per cell
                    (needs BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID)
 
 Usage:
     BUBENCH_BASE_TREE=... BUBENCH_PR_TREE=... \
-        python3 orchestrate_cloud.py --backend nous-cloud [--reps 2]
+        python3 orchestrate_cloud.py --backend browser-use-cloud [--reps 2]
         python3 orchestrate_cloud.py --backend browserbase [--reps 1]
 
 Per cell: provision a session, export its CDP endpoint via BENCH_CDP_URL /
@@ -32,7 +32,7 @@ ENV_BASE["PATH"] = (
 )
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--backend", required=True, choices=["nous-cloud", "browserbase"])
+parser.add_argument("--backend", required=True, choices=["browser-use-cloud", "browserbase"])
 parser.add_argument("--tasks", default=os.path.join(ROOT, "tasks", "hard.json"))
 parser.add_argument("--models", default="anthropic/claude-opus-4.8,moonshotai/kimi-k3")
 parser.add_argument("--reps", type=int, default=2)
@@ -56,7 +56,7 @@ if os.path.exists(RESULTS):
             pass
 
 
-class NousCloud:
+class BrowserUseCloud:
     def __init__(self):
         sys.path.insert(0, os.environ["BUBENCH_PR_TREE"])
         import importlib
@@ -110,7 +110,7 @@ class Browserbase:
         urllib.request.urlopen(req, timeout=30)
 
 
-provider = NousCloud() if args.backend == "nous-cloud" else Browserbase()
+provider = BrowserUseCloud() if args.backend == "browser-use-cloud" else Browserbase()
 
 cells = [(t, m, rep) for m, t, rep in itertools.product(MODELS, TASKS, REPS)]
 total = len(cells)

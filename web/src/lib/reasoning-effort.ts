@@ -2,7 +2,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORT_VALUES,
   type ReasoningEffortValue,
-} from "@hermes/shared";
+} from "@rabbit/shared";
 
 /**
  * Pure reasoning-effort helpers shared by the dashboard ReasoningPicker.
@@ -10,8 +10,8 @@ import {
  * Kept DOM-free so the node-environment vitest harness can cover the
  * resolution logic without loading React or the UI kit.
  *
- * Values come from @hermes/shared (hermes_constants.VALID_REASONING_EFFORTS
- * plus `none`, thinking-off). An empty/unset config value means the Hermes
+ * Values come from @rabbit/shared (rabbit_constants.VALID_REASONING_EFFORTS
+ * plus `none`, thinking-off). An empty/unset config value means the Rabbit
  * default.
  */
 
@@ -39,7 +39,7 @@ export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = REASONING_EFFORT_VALU
 export const VALID_EFFORTS: ReadonlySet<string> = new Set(REASONING_EFFORT_VALUES);
 
 /** Normalize a raw `agent.reasoning_effort` config value to a selectable
- *  option. Empty/unknown → `medium` (Hermes' default when unset). */
+ *  option. Empty/unknown → `medium` (Rabbit' default when unset). */
 export function normalizeEffort(raw: unknown): string {
   const value = String(raw ?? "").trim().toLowerCase();
   if (!value) return DEFAULT_REASONING_EFFORT;

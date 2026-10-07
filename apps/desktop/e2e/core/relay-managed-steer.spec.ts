@@ -55,7 +55,7 @@ function stopButton(page: Page) {
 test('steer and queue stay live under Relay managed execution', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('relay-steer')
-  writeProviderHome(sandbox.hermesHome, provider.url, RELAY_MANAGED_EXECUTION)
+  writeProviderHome(sandbox.rabbitHome, provider.url, RELAY_MANAGED_EXECUTION)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 

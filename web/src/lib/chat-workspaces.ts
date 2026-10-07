@@ -11,7 +11,7 @@ export interface WorkspaceOption {
   label: string;
 }
 
-const STORAGE_PREFIX = "hermes-chat-workspace:";
+const STORAGE_PREFIX = "rabbit-chat-workspace:";
 
 export function workspaceStorageKey(profile?: string): string {
   return `${STORAGE_PREFIX}${profile ?? ""}`;

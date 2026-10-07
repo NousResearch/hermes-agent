@@ -10,11 +10,11 @@ import pytest
 
 @pytest.fixture()
 def _zen_free_default_home(monkeypatch, tmp_path):
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         "model:\n  default: mimo-v2.5-free\n  provider: opencode\n  base_url: https://opencode.ai/zen/v1\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test-go")
 
 
@@ -30,8 +30,8 @@ def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, mon
     """The gateway's AuthError fallback goes through the shared ``resolve_runtime_with_fallback``
     walker (no gateway-private loop) and keeps the entry's own model."""
     import gateway.run as gateway_run
-    import hermes_cli.runtime_provider as rp
-    from hermes_cli.auth import AuthError
+    import rabbit_cli.runtime_provider as rp
+    from rabbit_cli.auth import AuthError
 
     real_resolve = rp.resolve_runtime_provider
 

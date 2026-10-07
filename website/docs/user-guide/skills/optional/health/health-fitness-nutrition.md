@@ -14,10 +14,10 @@ Workout planning, macros, and body metrics via wger/USDA.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/health/fitness-nutrition` |
+| Source | Optional — install with `rabbit skills install official/health/fitness-nutrition` |
 | Path | `optional-skills/health/fitness-nutrition` |
 | Version | `1.0.0` |
-| Author | Hailey Marshall (haileymarshall), Hermes Agent |
+| Author | Hailey Marshall (haileymarshall), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `health`, `fitness`, `nutrition`, `gym`, `workout`, `diet`, `exercise` |
@@ -25,7 +25,7 @@ Workout planning, macros, and body metrics via wger/USDA.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Fitness & Nutrition

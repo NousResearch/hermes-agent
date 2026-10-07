@@ -1,7 +1,7 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { JsonRpcGatewayClient } from '@rabbit/shared'
 import { map, type MapStore } from 'nanostores'
 
-import type { HermesApiRequest } from '@/global'
+import type { RabbitApiRequest } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -9,7 +9,7 @@ import type { HermesApiRequest } from '@/global'
 // /api/profiles runs list_profiles(), which does a recursive skill-tree walk
 // per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.ts)
 // times out a backend that is alive-but-busy, surfacing as a spurious
-// "Timed out connecting to Hermes backend" that hangs the UI (#48504).
+// "Timed out connecting to Rabbit backend" that hangs the UI (#48504).
 //
 // Give the boot burst a generous per-call timeout instead of raising the
 // global default: interactive/runtime calls and the liveness poll (/api/status)
@@ -26,13 +26,13 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 // ever fires when the turn itself would have been abandoned server-side.
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
-export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Hermes gateway is not connected'
+export const GATEWAY_NOT_CONNECTED_MESSAGE = 'Rabbit gateway is not connected'
 
-export class HermesGateway extends JsonRpcGatewayClient {
+export class RabbitGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
-      closedErrorMessage: 'Hermes gateway connection closed',
-      connectErrorMessage: 'Could not connect to Hermes gateway',
+      closedErrorMessage: 'Rabbit gateway connection closed',
+      connectErrorMessage: 'Could not connect to Rabbit gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: GATEWAY_NOT_CONNECTED_MESSAGE,
       // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
@@ -40,7 +40,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
         console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
       // The channel already answered -32601; note the missing registry in devtools.
       onUnhandledRequest: request =>
-        console.warn(`[gateway] Hermes Desktop has no server-request registry for ${request.method} (${request.id})`),
+        console.warn(`[gateway] Rabbit Desktop has no server-request registry for ${request.method} (${request.id})`),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
   }
@@ -85,7 +85,7 @@ export function profileScoped(profile?: null | string): { priority?: 'foreground
  *  a Bot on another connection is (its connection, its profile) — never the
  *  active connection with the Bot's profile name. Missing halves fall back to
  *  the ambient scope; an explicit connection — `'local'` included — overrides
- *  the ambient tag `hermesApi` spreads underneath (as capabilityScoped does). */
+ *  the ambient tag `rabbitApi` spreads underneath (as capabilityScoped does). */
 export interface OwnerScope {
   connectionId?: null | string
   profile?: null | string
@@ -118,12 +118,12 @@ export function resolveOwnerNow(owner?: OwnerScope): ResolvedOwner {
   }
 }
 
-/** `hermesApi` for a resolved owner: its tags are sent verbatim, with no
+/** `rabbitApi` for a resolved owner: its tags are sent verbatim, with no
  *  ambient connection spread underneath. An untagged half stays untagged. A
  *  named profile is always explicit here, so it carries the foreground
  *  priority `profileScoped` gives explicit profiles (voice is user-driven). */
-export function hermesApiAs<T>(owner: ResolvedOwner, request: HermesApiRequest): Promise<T> {
-  return window.hermesDesktop.api<T>({
+export function rabbitApiAs<T>(owner: ResolvedOwner, request: RabbitApiRequest): Promise<T> {
+  return window.rabbitDesktop.api<T>({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
     ...(owner.profile ? { priority: 'foreground' as const, profile: owner.profile } : {}),
     ...request
@@ -152,7 +152,7 @@ export function setApiRequestConnection(connectionId: null | string): void {
 // Registry connection scope for a REST request. A registered remote gateway
 // owns its own state.db — cron jobs and their run sessions live THERE — so
 // requests for gateway-owned data must carry the connection id for the main
-// process to route them to that host (hermes:api's registry branch). Null
+// process to route them to that host (rabbit:api's registry branch). Null
 // resolves to no tag, keeping single-source users byte-identical; explicit
 // 'local' must remain tagged when the legacy primary points elsewhere.
 export function connectionScoped(): { connectionId?: string } {
@@ -165,7 +165,7 @@ export function connectionScoped(): { connectionId?: string } {
 // store/session's setConnection (same no-store-import contract as profile scope)
 // so api/ helpers can name the backend an UNTAGGED request lands on without
 // importing the heavy session store — which would close a module cycle
-// through @/hermes.
+// through @/rabbit.
 let _apiLocalMode = false
 
 export function setApiRequestLocalMode(local: boolean): void {
@@ -189,8 +189,8 @@ export function ambientOwnerConnectionId(): string | undefined {
  *  pin — `'local'` included — so a pin always overrides the ambient tag spread
  *  underneath it. (It used to omit the key for 'local', which made the pin
  *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
-export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
-  return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
+export function rabbitApi<T>(request: RabbitApiRequest): Promise<T> {
+  return window.rabbitDesktop.api<T>({ ...connectionScoped(), ...request })
 }
 
 // ── Capability scope: (connection, profile) routing for the Capabilities
@@ -211,7 +211,7 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     owns the routing. Dropping the `'local'` pin (the pre-#91564 behavior,
 //     when an absent id always meant the local pool) silently re-routes a
 //     "This device" pick to the registry PRIMARY once that primary is a
-//     remote/cloud/ssh gateway: the v1 fallback route treats a remote registry
+//     remote/ssh gateway: the v1 fallback route treats a remote registry
 //     primary as global-remote, so the explicit pin is the ONLY way back to
 //     this machine (see apiRequestRegistryConnectionId in Electron main).
 export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }

@@ -1,2 +1,2 @@
 JonathanFeller
-# plugin-catalog: hermes-impossibl
+# plugin-catalog: rabbit-impossibl

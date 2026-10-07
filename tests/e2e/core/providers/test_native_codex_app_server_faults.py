@@ -1,8 +1,8 @@
-"""codex_app_server faults and approval edges: real ``hermes chat -q`` against a fake ``codex app-server``.
+"""codex_app_server faults and approval edges: real ``rabbit chat -q`` against a fake ``codex app-server``.
 
 See ``test_native_codex_app_server.py`` for the fake. Here: the app-server crashing mid-item, a failed turn,
 a JSON-RPC error on ``turn/start``, a retrying ``error`` notification, and the server-initiated requests
-Hermes must answer (approval in single-query mode, permissions) plus process-tree teardown.
+Rabbit must answer (approval in single-query mode, permissions) plus process-tree teardown.
 """
 
 from __future__ import annotations

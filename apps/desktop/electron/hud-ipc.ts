@@ -38,11 +38,11 @@ export function registerHudIpc({
   // The renderer needs this before first paint so X11 never installs the
   // Chromium drag region that steals modifier-drag gestures from the WM.
   // Main answers because it owns the actual Ozone backend selection.
-  ipcMain.on('hermes:hud:native-drag', event => {
+  ipcMain.on('rabbit:hud:native-drag', event => {
     event.returnValue = hudWindowing().move === 'native-drag'
   })
 
-  ipcMain.on('hermes:hud:windowing', event => {
+  ipcMain.on('rabbit:hud:windowing', event => {
     event.returnValue = hudWindowingView(hudWindowing())
   })
 
@@ -52,7 +52,7 @@ export function registerHudIpc({
   // window to `_NET_CURRENT_DESKTOP`, exactly like releasing a native titlebar
   // drag on the destination desktop. Native Wayland owns its move loop and
   // Windows/macOS stay out of this Linux-specific bridge.
-  ipcMain.on('hermes:hud:workspace-transfer', (event, transferring) => {
+  ipcMain.on('rabbit:hud:workspace-transfer', (event, transferring) => {
     const hudWindow = getHudWindow()
 
     if (
@@ -134,7 +134,7 @@ export function registerHudIpc({
     // tint the sheet already paints and skips the native frost entirely.
   }
 
-  ipcMain.handle('hermes:hud:open', async (_event, request) => {
+  ipcMain.handle('rabbit:hud:open', async (_event, request) => {
     openHudWindow(
       typeof request?.sessionId === 'string' ? request.sessionId : null,
       typeof request?.profile === 'string' ? request.profile : null
@@ -143,7 +143,7 @@ export function registerHudIpc({
     return { ok: true }
   })
 
-  ipcMain.handle('hermes:hud:frost', (_event, showing) => {
+  ipcMain.handle('rabbit:hud:frost', (_event, showing) => {
     bandShowing = Boolean(showing)
     applyHudFrost()
 
@@ -155,7 +155,7 @@ export function registerHudIpc({
   // rectangle is a faded-out band over whatever the user is actually working in.
   // `forward` keeps mousemove flowing so the renderer can re-arm when the cursor
   // reaches the bar.
-  ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
+  ipcMain.on('rabbit:hud:ignore-mouse', (_event, ignore) => {
     const hudWindow = getHudWindow()
 
     if (!hudWindow || hudWindow.isDestroyed()) {
@@ -173,7 +173,7 @@ export function registerHudIpc({
     hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
   })
 
-  ipcMain.on('hermes:hud:begin-move', event => {
+  ipcMain.on('rabbit:hud:begin-move', event => {
     const hudWindow = getHudWindow()
 
     if (
@@ -189,7 +189,7 @@ export function registerHudIpc({
     hudDrag.begin(screen.getCursorScreenPoint(), { x, y })
   })
 
-  ipcMain.on('hermes:hud:end-move', event => {
+  ipcMain.on('rabbit:hud:end-move', event => {
     const hudWindow = getHudWindow()
 
     if (hudWindow && !hudWindow.isDestroyed() && event.sender !== hudWindow.webContents) {
@@ -199,7 +199,7 @@ export function registerHudIpc({
     hudDrag.end()
   })
 
-  ipcMain.on('hermes:hud:move-by', (event, delta) => {
+  ipcMain.on('rabbit:hud:move-by', (event, delta) => {
     const hudWindow = getHudWindow()
 
     if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
@@ -237,7 +237,7 @@ export function registerHudIpc({
   // system resize hot-zone, or dragging grows it), which on Windows/Linux also
   // blocks programmatic setBounds sizing — so briefly flip resizable on while
   // the size actually changes, exactly like the pet overlay's wheel-scale does.
-  ipcMain.on('hermes:hud:set-bounds', (event, bounds) => {
+  ipcMain.on('rabbit:hud:set-bounds', (event, bounds) => {
     const hudWindow = getHudWindow()
 
     if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents || !bounds) {
@@ -271,7 +271,7 @@ export function registerHudIpc({
     }
   })
 
-  ipcMain.handle('hermes:hud:reset-layout', event => {
+  ipcMain.handle('rabbit:hud:reset-layout', event => {
     const hudWindow = getHudWindow()
 
     if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
@@ -283,7 +283,7 @@ export function registerHudIpc({
 
   // The HUD renderer reporting which session it is on, so the close broadcast
   // can hand it back to the app window (see hudSessionId).
-  ipcMain.on('hermes:hud:session', (event, sessionId) => {
+  ipcMain.on('rabbit:hud:session', (event, sessionId) => {
     const hudWindow = getHudWindow()
 
     if (hudWindow && !hudWindow.isDestroyed() && event.sender === hudWindow.webContents) {
@@ -291,7 +291,7 @@ export function registerHudIpc({
     }
   })
 
-  ipcMain.handle('hermes:hud:close', async () => {
+  ipcMain.handle('rabbit:hud:close', async () => {
     closeHudWindow()
 
     return { ok: true }

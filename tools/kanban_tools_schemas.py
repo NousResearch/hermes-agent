@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 _DESC_TASK_ID_DEFAULT = (
-    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
+    "Task id. If omitted, defaults to RABBIT_KANBAN_TASK from the env — the "
     "task the dispatcher spawned you to work on. That default only exists for "
     "a dispatcher-spawned worker; any other caller has no default and must "
     "pass an explicit task_id (use kanban_list to discover ids)."
@@ -12,8 +12,8 @@ _DESC_TASK_ID_DEFAULT = (
 
 _DESC_BOARD = (
     "Kanban board slug to target. When omitted, the call resolves the "
-    "active board the usual way: HERMES_KANBAN_DB env → "
-    "HERMES_KANBAN_BOARD env → the 'current' symlink under the kanban "
+    "active board the usual way: RABBIT_KANBAN_DB env → "
+    "RABBIT_KANBAN_BOARD env → the 'current' symlink under the kanban "
     "home → 'default'. Pass an explicit slug only when the caller (e.g. "
     "a Telegram routing layer) needs to override the env-pinned active "
     "board for this one call."
@@ -150,8 +150,8 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files you produced during this run — generated "
                 "charts, PDFs, spreadsheets, images, archives. "
-                "Examples: [\"~/.hermes/cache/scratch/q3-revenue.png\", "
-                "\"~/.hermes/cache/scratch/report.pdf\"]. The gateway notifier "
+                "Examples: [\"~/.rabbit/cache/scratch/q3-revenue.png\", "
+                "\"~/.rabbit/cache/scratch/report.pdf\"]. The gateway notifier "
                 "uploads each path as a native attachment to the "
                 "subscribed chat (images embed inline, everything "
                 "else uploads as a file) so the deliverable "
@@ -261,7 +261,7 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files this handoff names — generated charts, "
                 "PDFs, spreadsheets, images, archives. Examples: "
-                "['~/.hermes/cache/scratch/q3-revenue.png', '~/.hermes/cache/scratch/report.pdf']. "
+                "['~/.rabbit/cache/scratch/q3-revenue.png', '~/.rabbit/cache/scratch/report.pdf']. "
                 "A review handoff is the last implementer "
                 "transition, so the kernel copies these into the "
                 "task's durable attachments before the reviewer's "
@@ -361,7 +361,7 @@ KANBAN_ATTACH_SCHEMA = _schema(
 KANBAN_ATTACH_URL_SCHEMA = _schema(
     "kanban_attach_url",
     (
-        "Attach a file to a task by URL — Hermes downloads it server-side "
+        "Attach a file to a task by URL — Rabbit downloads it server-side "
         "and stores it as a real attachment (capped at 25 MB). Use when "
         "you have a link rather than the bytes. Only http/https URLs are "
         "accepted."
@@ -429,7 +429,7 @@ KANBAN_CREATE_SCHEMA = _schema(
         },
         "tenant": _prop("string", (
                 "Optional namespace for multi-project isolation. "
-                "Defaults to HERMES_TENANT env if set."
+                "Defaults to RABBIT_TENANT env if set."
         )),
         "priority": _prop("integer", (
                 "Dispatcher tiebreaker. Higher = picked sooner "
@@ -521,7 +521,7 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
         "provider": _prop("string", (
                 "Provider the 'model' belongs to (e.g. 'openrouter', "
-                "'anthropic', 'nous'). Set this whenever the model "
+                "'anthropic', 'xai'). Set this whenever the model "
                 "is not from the assignee profile's configured "
                 "provider — a model name alone is resolved against "
                 "the profile's provider and will fail if it belongs "

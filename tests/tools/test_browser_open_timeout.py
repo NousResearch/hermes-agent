@@ -14,7 +14,7 @@ from tools import browser_tool_install as bt_install
 
 @pytest.fixture(autouse=True)
 def _reset_browser_caches(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     bt._cached_command_timeout = None
     bt._command_timeout_resolved = False
     bt._active_sessions.clear()
@@ -80,7 +80,7 @@ class TestTimeoutErrorFormatting:
         assert "playwright install-deps chromium" in err
         assert "agent-browser install" not in err
         if not stderr:
-            assert "hermes pm install chromium" in err
+            assert "rabbit pm install chromium" in err
 
 
 

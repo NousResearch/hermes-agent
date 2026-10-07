@@ -26,7 +26,7 @@ export const SHIKI_COLOR_REPLACEMENTS: Record<string, Record<string, string>> = 
  * options (themes, color replacements) change, because keys are NOT allowed to
  * silently produce a different DOM than the one they were computed with.
  */
-export const SHIKI_HIGHLIGHT_SCOPE = `hermes-shiki-v1:${JSON.stringify({
+export const SHIKI_HIGHLIGHT_SCOPE = `rabbit-shiki-v1:${JSON.stringify({
   dark: SHIKI_THEME.dark,
   light: SHIKI_THEME.light,
   colorReplacements: SHIKI_COLOR_REPLACEMENTS

@@ -81,8 +81,8 @@ export function isWindowsStackCookieExit(exitCode: unknown): boolean {
   return n === WINDOWS_STACK_COOKIE_EXIT || n >>> 0 === 0xc0000409
 }
 
-export function isHermesDesktopGpuOverrideOff(env: NodeJS.ProcessEnv = process.env): boolean {
-  const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
+export function isRabbitDesktopGpuOverrideOff(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = String(env.RABBIT_DESKTOP_DISABLE_GPU || '')
     .trim()
     .toLowerCase()
 
@@ -91,7 +91,7 @@ export function isHermesDesktopGpuOverrideOff(env: NodeJS.ProcessEnv = process.e
 
 /**
  * True when this process already launched with GPU off — Chromium argv
- * (`--disable-gpu`) or HERMES_DESKTOP_DISABLE_GPU on. Mirrors
+ * (`--disable-gpu`) or RABBIT_DESKTOP_DISABLE_GPU on. Mirrors
  * `alreadyHasNoSandbox`: the crash-loop relaunch MUST pass these switches so
  * the next process is protected even if the sticky marker write failed.
  */
@@ -100,7 +100,7 @@ export function alreadyHasDisableGpu(argv: readonly string[] = [], env: NodeJS.P
     return true
   }
 
-  const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
+  const override = String(env.RABBIT_DESKTOP_DISABLE_GPU || '')
     .trim()
     .toLowerCase()
 
@@ -266,7 +266,7 @@ export function shouldSurfaceErrorForRendererStackCookieCrashLoop(
  * - `--disable-gpu` already in argv (crash-loop relaunch / Chromium switch)
  *   is honored even if the sticky marker write failed, but is NOT made sticky
  *   from argv alone.
- * - `HERMES_DESKTOP_DISABLE_GPU` explicitly off (`0`/`false`/`no`/`off`)
+ * - `RABBIT_DESKTOP_DISABLE_GPU` explicitly off (`0`/`false`/`no`/`off`)
  *   fail-opens: do not disable GPU.
  */
 export function decideWindowsGpuStackCookieLaunch(
@@ -287,7 +287,7 @@ export function decideWindowsGpuStackCookieLaunch(
     return { enable: false, reason: null, nextMarker: { state: 'booting' } }
   }
 
-  if (isHermesDesktopGpuOverrideOff(env)) {
+  if (isRabbitDesktopGpuOverrideOff(env)) {
     const nextMarker: GpuStackCookieMarker = marker?.state === 'fallback' ? marker : { state: 'booting' }
 
     return { enable: false, reason: null, nextMarker }

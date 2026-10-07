@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Hermes Bot Desktop — one headless Xfce desktop per Hermes profile, served over RFB.
+# Rabbit Bot Desktop — one headless Xfce desktop per Rabbit profile, served over RFB.
 #
-# Spawned by tools/bot_desktop/runtime.py with HERMES_BD_* variables set. Runs TigerVNC's Xvnc
+# Spawned by tools/bot_desktop/runtime.py with RABBIT_BD_* variables set. Runs TigerVNC's Xvnc
 # (X server + RFB server in one process; damage-driven, resizable via SetDesktopSize) listening on a
 # 0600 Unix socket only, then a minimal Xfce started component-wise under a private dbus session.
 #
@@ -15,18 +15,18 @@
 # script exists to keep out.
 set -euo pipefail
 
-: "${HERMES_BD_PROFILE:?}"      # profile name (display name in the VNC title)
-: "${HERMES_BD_DISPLAY_NUM:?}"  # allocated by runtime.py
-: "${HERMES_BD_SOCKET:?}"       # RFB unix socket path
-: "${HERMES_BD_XAUTH:?}"        # Xauthority path
-: "${HERMES_BD_ENV_FILE:?}"     # where to publish DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
-: "${HERMES_BD_CONFIG_HOME:?}"  # per-profile XDG_CONFIG_HOME (xfconf lives here)
-GEOM="${HERMES_BD_GEOMETRY:-1440x900}"
+: "${RABBIT_BD_PROFILE:?}"      # profile name (display name in the VNC title)
+: "${RABBIT_BD_DISPLAY_NUM:?}"  # allocated by runtime.py
+: "${RABBIT_BD_SOCKET:?}"       # RFB unix socket path
+: "${RABBIT_BD_XAUTH:?}"        # Xauthority path
+: "${RABBIT_BD_ENV_FILE:?}"     # where to publish DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
+: "${RABBIT_BD_CONFIG_HOME:?}"  # per-profile XDG_CONFIG_HOME (xfconf lives here)
+GEOM="${RABBIT_BD_GEOMETRY:-1440x900}"
 DEPTH=24
 
-export XDG_CONFIG_HOME="$HERMES_BD_CONFIG_HOME"
-export XDG_CACHE_HOME="${HERMES_BD_CACHE_HOME:-$HERMES_BD_CONFIG_HOME/.cache}"
-export XDG_DATA_HOME="${HERMES_BD_DATA_HOME:-$HERMES_BD_CONFIG_HOME/.local-share}"
+export XDG_CONFIG_HOME="$RABBIT_BD_CONFIG_HOME"
+export XDG_CACHE_HOME="${RABBIT_BD_CACHE_HOME:-$RABBIT_BD_CONFIG_HOME/.cache}"
+export XDG_DATA_HOME="${RABBIT_BD_DATA_HOME:-$RABBIT_BD_CONFIG_HOME/.local-share}"
 export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE
 export GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb NO_AT_BRIDGE=1 GTK_A11Y=none
 export LANG="${LANG:-C.UTF-8}"
@@ -35,19 +35,19 @@ export LANG="${LANG:-C.UTF-8}"
 unset SESSION_MANAGER DBUS_SESSION_BUS_ADDRESS DISPLAY XAUTHORITY WAYLAND_DISPLAY
 
 mkdir -p "$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml" "$XDG_CONFIG_HOME/autostart" \
-         "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$(dirname "$HERMES_BD_SOCKET")"
+         "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$(dirname "$RABBIT_BD_SOCKET")"
 
-export DISPLAY=":$HERMES_BD_DISPLAY_NUM"
-export XAUTHORITY="$HERMES_BD_XAUTH"
+export DISPLAY=":$RABBIT_BD_DISPLAY_NUM"
+export XAUTHORITY="$RABBIT_BD_XAUTH"
 
 # Stale lock files from a crashed server block restart; a lock whose pid is alive belongs to a
 # running server (another profile may have taken this number) and is never touched — Xvnc then
 # fails to start on it and runtime.py reports that instead of us disrupting the other desktop.
-rm -f "$HERMES_BD_SOCKET"
+rm -f "$RABBIT_BD_SOCKET"
 # no-tmp: ok — the X11 protocol fixes its lock and socket under /tmp; this is not our scratch dir
-xlock="/tmp/.X${HERMES_BD_DISPLAY_NUM}-lock"
+xlock="/tmp/.X${RABBIT_BD_DISPLAY_NUM}-lock"
 if [[ -e "$xlock" ]] && ! kill -0 "$(tr -d ' ' < "$xlock" 2>/dev/null)" 2>/dev/null; then
-  rm -f "$xlock" "/tmp/.X11-unix/X${HERMES_BD_DISPLAY_NUM}"  # no-tmp: ok — X11 display socket, fixed by the protocol
+  rm -f "$xlock" "/tmp/.X11-unix/X${RABBIT_BD_DISPLAY_NUM}"  # no-tmp: ok — X11 display socket, fixed by the protocol
 fi
 : > "$XAUTHORITY"; chmod 600 "$XAUTHORITY"
 # The cookie goes in on stdin, not argv: a command line is readable by every local user via ps.
@@ -55,13 +55,13 @@ xauth -q -f "$XAUTHORITY" source - <<COOKIE
 add $DISPLAY MIT-MAGIC-COOKIE-1 $(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 COOKIE
 
-# ---- look: dark theme from whatever the host ships (first match wins), Hermes wallpaper ----
+# ---- look: dark theme from whatever the host ships (first match wins), Rabbit wallpaper ----
 pick_theme() { local d t; for t in "$@"; do for d in /usr/share/themes "$HOME/.themes"; do [[ -d "$d/$t" ]] && { echo "$t"; return; }; done; done; echo "$1"; }
 pick_icons() { local d t; for t in "$@"; do for d in /usr/share/icons "$HOME/.icons"; do [[ -d "$d/$t" ]] && { echo "$t"; return; }; done; done; echo "$1"; }
 GTK_THEME_NAME=$(pick_theme Adwaita-dark Breeze-Dark Greybird-dark Arc-Dark Adwaita)
 WM_THEME_NAME=$(pick_theme Default-hdpi Default)   # xfwm4 window themes ship with xfwm4 itself
 ICON_THEME_NAME=$(pick_icons Papirus-Dark breeze-dark Adwaita hicolor)
-: "${HERMES_BD_WALLPAPER:="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wallpaper.png"}"
+: "${RABBIT_BD_WALLPAPER:="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wallpaper.png"}"
 
 # ---- pre-seed xfconf BEFORE xfconfd starts (it caches; edits after start are overwritten) ----
 X="$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml"
@@ -72,12 +72,12 @@ X="$XDG_CONFIG_HOME/xfce4/xfconf/xfce-perchannel-xml"
     <property name="use_compositing" type="bool" value="false"/>
     <property name="workspace_count" type="int" value="1"/>
     <property name="focus_new" type="bool" value="true"/>
-    <property name="theme" type="string" value="HERMES_BD_WM_THEME"/>
+    <property name="theme" type="string" value="RABBIT_BD_WM_THEME"/>
     <property name="title_font" type="string" value="DejaVu Sans Bold 9"/>
   </property>
 </channel>
 EOF
-sed -i "s|HERMES_BD_WM_THEME|$WM_THEME_NAME|" "$X/xfwm4.xml"
+sed -i "s|RABBIT_BD_WM_THEME|$WM_THEME_NAME|" "$X/xfwm4.xml"
 [[ -e "$X/xfce4-screensaver.xml" ]] || cat > "$X/xfce4-screensaver.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-screensaver" version="1.0">
@@ -90,8 +90,8 @@ EOF
 <channel name="xsettings" version="1.0">
   <property name="Net" type="empty">
     <property name="EnableEventSounds" type="bool" value="false"/>
-    <property name="ThemeName" type="string" value="HERMES_BD_GTK_THEME"/>
-    <property name="IconThemeName" type="string" value="HERMES_BD_ICON_THEME"/>
+    <property name="ThemeName" type="string" value="RABBIT_BD_GTK_THEME"/>
+    <property name="IconThemeName" type="string" value="RABBIT_BD_ICON_THEME"/>
   </property>
   <property name="Gtk" type="empty">
     <property name="FontName" type="string" value="DejaVu Sans 10"/>
@@ -104,7 +104,7 @@ EOF
   </property>
 </channel>
 EOF
-sed -i "s|HERMES_BD_GTK_THEME|$GTK_THEME_NAME|; s|HERMES_BD_ICON_THEME|$ICON_THEME_NAME|" "$X/xsettings.xml"
+sed -i "s|RABBIT_BD_GTK_THEME|$GTK_THEME_NAME|; s|RABBIT_BD_ICON_THEME|$ICON_THEME_NAME|" "$X/xsettings.xml"
 [[ -e "$X/xfce4-desktop.xml" ]] || cat > "$X/xfce4-desktop.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <channel name="xfce4-desktop" version="1.0">
@@ -114,7 +114,7 @@ sed -i "s|HERMES_BD_GTK_THEME|$GTK_THEME_NAME|; s|HERMES_BD_ICON_THEME|$ICON_THE
         <property name="workspace0" type="empty">
           <property name="color-style" type="int" value="0"/>
           <property name="image-style" type="int" value="5"/>
-          <property name="last-image" type="string" value="HERMES_BD_WALLPAPER_PLACEHOLDER"/>
+          <property name="last-image" type="string" value="RABBIT_BD_WALLPAPER_PLACEHOLDER"/>
           <property name="rgba1" type="array">
             <value type="double" value="0.11"/><value type="double" value="0.12"/>
             <value type="double" value="0.16"/><value type="double" value="1"/>
@@ -128,7 +128,7 @@ sed -i "s|HERMES_BD_GTK_THEME|$GTK_THEME_NAME|; s|HERMES_BD_ICON_THEME|$ICON_THE
   </property>
 </channel>
 EOF
-sed -i "s|HERMES_BD_WALLPAPER_PLACEHOLDER|$HERMES_BD_WALLPAPER|" "$X/xfce4-desktop.xml"
+sed -i "s|RABBIT_BD_WALLPAPER_PLACEHOLDER|$RABBIT_BD_WALLPAPER|" "$X/xfce4-desktop.xml"
 # Own panel layout (a layout on disk also suppresses the first-run "Welcome to the panel" dialog):
 # top bar = menu · tasks · tray · clock; bottom dock = only launchers whose program exists on this
 # host, the browser pinned to the one the bot drives so a human lands in the bot's own browser profile.
@@ -141,21 +141,21 @@ if [[ ! -e "$X/xfce4-panel.xml" ]]; then
     command -v "$3" >/dev/null 2>&1 || return 0
     n=$((n+1)); mkdir -p "$L/launcher-$n"
     printf '[Desktop Entry]\nVersion=1.0\nType=Application\nName=%s\nIcon=%s\n%s\nTerminal=false\nStartupNotify=false\n' \
-      "$1" "$2" "${4:-Exec=$3}" > "$L/launcher-$n/hermes.desktop"
+      "$1" "$2" "${4:-Exec=$3}" > "$L/launcher-$n/rabbit.desktop"
     dock_ids+=("$n")
   }
   add_launcher "Terminal" utilities-terminal "xfce4-terminal"
   # The bot's browser: runtime.py resolves the executable agent-browser drives plus the profile's
   # persistent user-data-dir, so a human taking over lands in the bot's own cookie jar.
-  [[ -n "${HERMES_BD_BROWSER_EXEC:-}" ]] && \
-    add_launcher "Browser" internet-web-browser "$HERMES_BD_BROWSER_EXEC" "${HERMES_BD_BROWSER_EXEC_LINE:-}" && \
-    echo "$n" > "$L/.hermes-browser-launcher"
+  [[ -n "${RABBIT_BD_BROWSER_EXEC:-}" ]] && \
+    add_launcher "Browser" internet-web-browser "$RABBIT_BD_BROWSER_EXEC" "${RABBIT_BD_BROWSER_EXEC_LINE:-}" && \
+    echo "$n" > "$L/.rabbit-browser-launcher"
   add_launcher "Files" system-file-manager "thunar"
   add_launcher "Text Editor" accessories-text-editor "mousepad"
   dock_plugins=""; dock_items=""
   for id in "${dock_ids[@]}"; do
     dock_plugins+="<value type=\"int\" value=\"$id\"/>"
-    dock_items+="<property name=\"plugin-$id\" type=\"string\" value=\"launcher\"><property name=\"items\" type=\"array\"><value type=\"string\" value=\"hermes.desktop\"/></property></property>"
+    dock_items+="<property name=\"plugin-$id\" type=\"string\" value=\"launcher\"><property name=\"items\" type=\"array\"><value type=\"string\" value=\"rabbit.desktop\"/></property></property>"
   done
   cat > "$X/xfce4-panel.xml" <<PANEL
 <?xml version="1.0" encoding="UTF-8"?>
@@ -226,29 +226,29 @@ for a in xfce4-screensaver light-locker xfce4-power-manager xfce-polkit \
 done
 # The Browser launcher's Exec= line binds the bot's user-data-dir by absolute path. The panel layout is
 # seeded once (the human may have rearranged it), but this one line is ours and must follow the profile:
-# after `hermes profile rename` the old path would open a browser with an empty, unshared cookie jar.
+# after `rabbit profile rename` the old path would open a browser with an empty, unshared cookie jar.
 L="$XDG_CONFIG_HOME/xfce4/panel"
-# Profiles seeded before the marker existed have the launcher but no `.hermes-browser-launcher`; recover
-# it from our own Browser entry (hermes.desktop is ours by name) so their Exec= follows a rename too.
-if [[ -n "${HERMES_BD_BROWSER_EXEC:-}" && -n "${HERMES_BD_BROWSER_EXEC_LINE:-}" && ! -r "$L/.hermes-browser-launcher" ]]; then
-  for d in "$L"/launcher-*/hermes.desktop; do
+# Profiles seeded before the marker existed have the launcher but no `.rabbit-browser-launcher`; recover
+# it from our own Browser entry (rabbit.desktop is ours by name) so their Exec= follows a rename too.
+if [[ -n "${RABBIT_BD_BROWSER_EXEC:-}" && -n "${RABBIT_BD_BROWSER_EXEC_LINE:-}" && ! -r "$L/.rabbit-browser-launcher" ]]; then
+  for d in "$L"/launcher-*/rabbit.desktop; do
     [[ -f "$d" ]] || continue
     while IFS= read -r line; do
       if [[ "$line" == "Name=Browser" ]]; then
-        bn="${d%/hermes.desktop}"; bn="${bn##*/launcher-}"
-        printf '%s\n' "$bn" > "$L/.hermes-browser-launcher"; break 2
+        bn="${d%/rabbit.desktop}"; bn="${bn##*/launcher-}"
+        printf '%s\n' "$bn" > "$L/.rabbit-browser-launcher"; break 2
       fi
     done < "$d"
   done
 fi
-if [[ -n "${HERMES_BD_BROWSER_EXEC:-}" && -n "${HERMES_BD_BROWSER_EXEC_LINE:-}" && -r "$L/.hermes-browser-launcher" ]]; then
-  bn="$(cat "$L/.hermes-browser-launcher")"
-  d="$L/launcher-$bn/hermes.desktop"
-  [[ -f "$d" ]] && sed -i "s|^Exec=.*|$(printf '%s' "$HERMES_BD_BROWSER_EXEC_LINE" | sed 's/[&|\\]/\\&/g')|" "$d"
+if [[ -n "${RABBIT_BD_BROWSER_EXEC:-}" && -n "${RABBIT_BD_BROWSER_EXEC_LINE:-}" && -r "$L/.rabbit-browser-launcher" ]]; then
+  bn="$(cat "$L/.rabbit-browser-launcher")"
+  d="$L/launcher-$bn/rabbit.desktop"
+  [[ -f "$d" ]] && sed -i "s|^Exec=.*|$(printf '%s' "$RABBIT_BD_BROWSER_EXEC_LINE" | sed 's/[&|\\]/\\&/g')|" "$d"
 fi
 
 # Tests seed the config tree on a fake PATH and stop here (no X server needed).
-[[ -n "${HERMES_BD_SEED_ONLY:-}" ]] && exit 0
+[[ -n "${RABBIT_BD_SEED_ONLY:-}" ]] && exit 0
 
 # ---- X server + RFB (TigerVNC Xvnc), Unix socket only ----
 # SecurityTypes None is safe ONLY because -rfbport -1 disables TCP and the 0600 socket is reachable
@@ -258,9 +258,9 @@ fi
 # paste INTO the screen keeps working. -MaxCutText caps a client cut-text at 256 KiB — the same bound
 # the bridge enforces (tools/bot_desktop/rfb_filter.py _MAX_CUT_TEXT); keep the two in sync.
 Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
-  -rfbport -1 -rfbunixpath "$HERMES_BD_SOCKET" -rfbunixmode 0600 \
+  -rfbport -1 -rfbunixpath "$RABBIT_BD_SOCKET" -rfbunixmode 0600 \
   -SecurityTypes None -AlwaysShared -AcceptSetDesktopSize -FrameRate 30 -SendCutText=0 -MaxCutText 262144 \
-  -desktop "hermes:$HERMES_BD_PROFILE" -auth "$XAUTHORITY" -nolisten tcp \
+  -desktop "rabbit:$RABBIT_BD_PROFILE" -auth "$XAUTHORITY" -nolisten tcp \
   -Log '*:stderr:30' 2> >(grep -v --line-buffered 'Could not resolve keysym' >&2) &
 XVNC_PID=$!
 trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
@@ -286,7 +286,7 @@ dbus-run-session -- bash -c '
   umask 077
   printf "DISPLAY=%s\nXAUTHORITY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\nXDG_CONFIG_HOME=%s\nXDG_CACHE_HOME=%s\nXDG_DATA_HOME=%s\n" \
     "$DISPLAY" "$XAUTHORITY" "$DBUS_SESSION_BUS_ADDRESS" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" \
-    > "$HERMES_BD_ENV_FILE.tmp" && mv -f "$HERMES_BD_ENV_FILE.tmp" "$HERMES_BD_ENV_FILE"
+    > "$RABBIT_BD_ENV_FILE.tmp" && mv -f "$RABBIT_BD_ENV_FILE.tmp" "$RABBIT_BD_ENV_FILE"
   xfsettingsd --sm-client-disable --daemon 2>/dev/null || true
   xfwm4 --compositor=off --sm-client-disable &
   for _ in $(seq 1 50); do xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break; sleep 0.1; done

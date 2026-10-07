@@ -6,7 +6,7 @@ before any byte leaves the process. #93650 documents that walk wedging for 12+
 hours on a ~1.4 MB conversation — starving the TTFB/stale watchdogs whose job is
 to rescue this exact call; the hang is pre-network, so no socket kill helps.
 
-Hermes assembles these payloads from JSON round-trips, so they are already wire
+Rabbit assembles these payloads from JSON round-trips, so they are already wire
 format and the walk has nothing to convert. The SDK merges ``extra_body`` into
 the JSON body *after* the transform (``_base_client._build_request``), so moving
 the bulk fields there skips the walk and yields the same request bytes.
@@ -23,7 +23,7 @@ RESPONSES_BYPASS_FIELDS = ("input", "tools")
 CHAT_COMPLETIONS_BYPASS_FIELDS = ("messages", "tools")
 
 # One hatch for both API families (established by #93650); restores the typed SDK path.
-ESCAPE_HATCH_ENV = "HERMES_CODEX_SDK_TRANSFORM"
+ESCAPE_HATCH_ENV = "RABBIT_CODEX_SDK_TRANSFORM"
 
 
 def _is_plain_json_data(value: Any) -> bool:
@@ -70,7 +70,7 @@ def bypass_chat_sdk_request_transform(request_kwargs: dict, client: Any) -> dict
     """Chat-completions bypass, gated on the real OpenAI SDK.
 
     Only the SDK performs the transform and only the SDK merges ``extra_body``
-    afterwards. Hermes also drives chat-shaped facades that are NOT the SDK (the
+    afterwards. Rabbit also drives chat-shaped facades that are NOT the SDK (the
     in-process MoA aggregator, test stand-ins); handing those an ``extra_body`` they
     never merge would silently send an empty conversation.
     """

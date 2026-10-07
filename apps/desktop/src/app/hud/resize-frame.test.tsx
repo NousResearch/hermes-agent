@@ -23,7 +23,7 @@ describe('HudShell resize-frame engagement gates', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
-    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as { rabbitDesktop?: unknown }).rabbitDesktop
   })
 
   const shellOf = (container: HTMLElement) => {
@@ -80,7 +80,7 @@ describe('HudShell resize-frame engagement gates', () => {
   })
 
   it('a solid-input host keeps the frame live unconditionally', () => {
-    Object.assign(window, { hermesDesktop: { hud: { windowing: { solid: true } } } })
+    Object.assign(window, { rabbitDesktop: { hud: { windowing: { solid: true } } } })
 
     const { container } = render(
       <MemoryRouter>

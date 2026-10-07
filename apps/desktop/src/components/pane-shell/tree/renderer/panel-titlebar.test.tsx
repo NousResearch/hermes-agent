@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesConnection } from '@/global'
+import type { RabbitConnection } from '@/global'
 import { $connection } from '@/store/session'
 import { stubResizeObserver } from '@/test/jsdom'
 
@@ -31,7 +31,7 @@ beforeEach(() => {
   right.dataset.titlebarCluster = 'right'
   right.getBoundingClientRect = () => rect(900, 80)
   document.body.append(left, right)
-  $connection.set({ isFullscreen: false, windowButtonPosition: { x: 20, y: 10 } } as unknown as HermesConnection)
+  $connection.set({ isFullscreen: false, windowButtonPosition: { x: 20, y: 10 } } as unknown as RabbitConnection)
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     cb(0)
 
@@ -78,7 +78,7 @@ describe('usePanelTitlebar', () => {
     // (e.g. a status heartbeat): only chrome-moving fields trigger a measure.
     clusterLeft = 14
     act(() => {
-      $connection.set({ ...$connection.get()!, connected: true } as HermesConnection)
+      $connection.set({ ...$connection.get()!, connected: true } as RabbitConnection)
     })
 
     expect(element.style.getPropertyValue('--panel-titlebar-left')).toBe('172px')

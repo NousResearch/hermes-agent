@@ -36,7 +36,7 @@ function managedUpdater(): ((id: string) => Promise<DesktopManagedConnectionUpda
     return null
   }
 
-  return window.hermesDesktop?.connections?.updateManaged ?? null
+  return window.rabbitDesktop?.connections?.updateManaged ?? null
 }
 
 /** Whether this Electron main exposes the transactional SSH update bridge.

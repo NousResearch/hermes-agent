@@ -1,19 +1,19 @@
-"""`hermes update` on a realistic user home: everything the user owns survives, sessions resume.
+"""`rabbit update` on a realistic user home: everything the user owns survives, sessions resume.
 
 One real install (HEAD's ``scripts/install.sh`` into an empty sandbox HOME, git redirected to a
 local bare origin), then a home built the way users build it, mostly through the real CLI:
 
-* three profiles (default + two made with ``hermes profile create``), each with a hand-edited
+* three profiles (default + two made with ``rabbit profile create``), each with a hand-edited
   config.yaml carrying comments and a key HEAD does not know, its own .env, SOUL.md and
   MEMORY.md, and sessions in its own state.db from real one-shot turns. The default profile's
   config sits at the oldest ``_config_version`` HEAD still migrates and ``work``'s one version
   behind, so the update's config migration (active profile + siblings) runs; ``research`` is
   current and must come through byte-for-byte;
-* a custom skill, a user plugin under ``~/.hermes/plugins/``, a cron job made by ``hermes cron``;
+* a custom skill, a user plugin under ``~/.rabbit/plugins/``, a cron job made by ``rabbit cron``;
 * two broken profiles next to them (a dangling symlink, a profile whose config.yaml is not YAML);
 * local files the user dropped inside the checkout (an untracked notes file and an extension dir).
 
-Upstream then publishes a new commit and the user runs ``hermes update --yes``. A second leg
+Upstream then publishes a new commit and the user runs ``rabbit update --yes``. A second leg
 publishes a commit that touches a file the user edited in the checkout (the autostash cannot be
 restored cleanly) while an untracked extension dir sits in the tree (#120179).
 
@@ -28,7 +28,7 @@ import os
 import shutil
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
@@ -45,13 +45,13 @@ pytestmark = [
 
 UPDATE_TIMEOUT = 1500
 PROFILES = ("default", "work", "research")
-_VERSIONS_PY = ("from hermes_cli.config_defaults import DEFAULT_CONFIG as D; "
-                "from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION as F; "
+_VERSIONS_PY = ("from rabbit_cli.config_defaults import DEFAULT_CONFIG as D; "
+                "from rabbit_cli.config_migrations import SUPPORT_FLOOR_VERSION as F; "
                 "print(D['_config_version'], F)")
 
 
 def _profile_home(sb: I.Sandbox, name: str):
-    return sb.hermes_home if name == "default" else sb.hermes_home / "profiles" / name
+    return sb.rabbit_home if name == "default" else sb.rabbit_home / "profiles" / name
 
 
 def _pargs(name: str) -> list[str]:
@@ -97,7 +97,7 @@ def _snapshot(sb: I.Sandbox) -> dict:
             "MEMORY.md": (home / "memories" / "MEMORY.md").read_bytes(),
             "db": I.db_state(home / "state.db"),
         }
-    hh = sb.hermes_home
+    hh = sb.rabbit_home
     snap["custom_skill"] = I.tree_digest(hh / "skills" / "my-own-skill")
     snap["plugin"] = I.tree_digest(hh / "plugins" / "my-plugin")
     snap["cron"] = sorted((j.get("id"), j.get("name"), j.get("prompt"), j.get("schedule_display") or str(j.get("schedule")))
@@ -132,7 +132,7 @@ def _seed_home(sb: I.Sandbox, provider: FakeLLMServer) -> tuple[dict[str, str], 
         # hand-edited config as the state immediately before the update, not before
         # the turns that seed the sessions.
         (home / "config.yaml").write_text(I.provider_config(provider.base_url, versions[name], extra), encoding="utf-8")
-    hh = sb.hermes_home
+    hh = sb.rabbit_home
     skill = hh / "skills" / "my-own-skill"
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text("---\nname: my-own-skill\ndescription: mine\n---\nDo my thing.\n", encoding="utf-8")
@@ -172,7 +172,7 @@ def world(tmp_path_factory, provider):
 
 def test_update_on_a_realistic_home_exits_clean_at_the_new_commit(world):
     sb, up = world["sb"], world["update"]
-    assert up.returncode == 0, "hermes update failed on a realistic home:\n" + I.describe(up)
+    assert up.returncode == 0, "rabbit update failed on a realistic home:\n" + I.describe(up)
     assert I.TRACEBACK not in up.stdout + up.stderr, I.describe(up)
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == world["target"], "update exited 0 but HEAD is not the target"
     assert not (sb.checkout / ".git" / "index.lock").exists()
@@ -246,10 +246,10 @@ def test_every_profile_session_resumes_after_update(world, provider):
 def test_broken_profiles_warn_but_do_not_fail_the_update(world):
     sb, up = world["sb"], world["update"]
     out = up.stdout + up.stderr
-    assert up.returncode == 0, "a broken profile under ~/.hermes/profiles/ failed the whole update:\n" + I.describe(up)
-    bad = str(sb.hermes_home / "profiles" / "badyaml" / "config.yaml")
+    assert up.returncode == 0, "a broken profile under ~/.rabbit/profiles/ failed the whole update:\n" + I.describe(up)
+    bad = str(sb.rabbit_home / "profiles" / "badyaml" / "config.yaml")
     assert bad in out, "the update did not warn about the profile whose config.yaml is broken:\n" + I.describe(up)
-    assert (sb.hermes_home / "profiles" / "badyaml" / "config.yaml").read_bytes() == world["snap"]["badyaml"], (
+    assert (sb.rabbit_home / "profiles" / "badyaml" / "config.yaml").read_bytes() == world["snap"]["badyaml"], (
         "the update rewrote the user's broken config instead of leaving it for them to fix")
 
 

@@ -21,10 +21,10 @@ def _dispatcher():
 
 
 def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkeypatch, tmp_path):
-    import hermes_cli
+    import rabbit_cli
 
     (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=launch-profile-key\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(kwd, "_board_slugs", lambda kb: ["default"])
 
     seen = {}
@@ -34,8 +34,8 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
         return SimpleNamespace(ok=True, fanout=False, child_ids=None, reason=None)
 
     fake = SimpleNamespace(list_triage_ids=lambda: ["t1"], decompose_task=fake_decompose)
-    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
-    monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
+    monkeypatch.setitem(sys.modules, "rabbit_cli.kanban_decompose", fake)
+    monkeypatch.setattr(rabbit_cli, "kanban_decompose", fake, raising=False)
 
     ss.set_multiplex_active(True)
     try:

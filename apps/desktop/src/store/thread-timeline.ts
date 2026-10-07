@@ -4,7 +4,7 @@ import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 import { recordFeatureToggle } from './desktop-metrics'
 
-const HIDE_THREAD_TIMELINE_STORAGE_KEY = 'hermes.desktop.hideThreadTimeline'
+const HIDE_THREAD_TIMELINE_STORAGE_KEY = 'rabbit.desktop.hideThreadTimeline'
 
 /** Desktop-local appearance preference, shared by all threads in this window. */
 export const $hideThreadTimeline = atom(storedBoolean(HIDE_THREAD_TIMELINE_STORAGE_KEY, false))

@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 // A turn that ends WITHOUT its message.complete (turn crash, reconnect gap,
 // steer race) used to leave its streaming bubble pending:true forever. The
 // next user message then landed after it, stranding a live thinking indicator

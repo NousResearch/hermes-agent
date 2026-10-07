@@ -16,7 +16,7 @@ let dir: string
 let file: string
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'hermes-renderer-crash-'))
+  dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'rabbit-renderer-crash-'))
   file = path.join(dir, PENDING_RENDERER_CRASH_FILE)
 })
 
@@ -172,15 +172,15 @@ test('registerRendererCrashIpc wires consent, take and ack to the calling window
 
   registerRendererCrashIpc({ handle: (channel, fn) => handlers.set(channel, fn) }, recorder)
 
-  handlers.get('hermes:desktop-metrics:set-enabled')!(from, 'yes', 'local|default')
+  handlers.get('rabbit:desktop-metrics:set-enabled')!(from, 'yes', 'local|default')
   recorder.record(7, 'crashed')
   expect(fs.existsSync(file)).toBe(false)
 
-  handlers.get('hermes:desktop-metrics:set-enabled')!(from, true, 'local|default')
+  handlers.get('rabbit:desktop-metrics:set-enabled')!(from, true, 'local|default')
   recorder.record(7, 'crashed')
-  expect(handlers.get('hermes:desktop-metrics:crash:take')!({ sender: { id: 8 } })).toBeNull()
-  expect(handlers.get('hermes:desktop-metrics:crash:take')!(from)).toEqual({ reasons: ['crash'] })
+  expect(handlers.get('rabbit:desktop-metrics:crash:take')!({ sender: { id: 8 } })).toBeNull()
+  expect(handlers.get('rabbit:desktop-metrics:crash:take')!(from)).toEqual({ reasons: ['crash'] })
 
-  handlers.get('hermes:desktop-metrics:crash:ack')!(from, true)
+  handlers.get('rabbit:desktop-metrics:crash:ack')!(from, true)
   expect(fs.existsSync(file)).toBe(false)
 })

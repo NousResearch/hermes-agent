@@ -76,10 +76,10 @@ describe('foregroundSessionScopes', () => {
   })
 
   it('keeps the exact registry owner of an idle foreground runtime', () => {
-    recordSessionEventScope({ connectionId: 'cloud', profile: 'default', session_id: 'runtime-1' })
+    recordSessionEventScope({ connectionId: 'remote-gw', profile: 'default', session_id: 'runtime-1' })
     $activeSessionId.set('runtime-1')
 
-    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:remote-gw::default']))
   })
 
   it('fails closed when the foreground runtime has no registered source', () => {
@@ -89,28 +89,28 @@ describe('foregroundSessionScopes', () => {
   })
 
   it('keeps every open pane owner, not only the focused runtime', () => {
-    recordSessionEventScope({ connectionId: 'cloud-a', profile: 'default', session_id: 'runtime-a' })
-    recordSessionEventScope({ connectionId: 'cloud-b', profile: 'default', session_id: 'runtime-b' })
+    recordSessionEventScope({ connectionId: 'remote-a', profile: 'default', session_id: 'runtime-a' })
+    recordSessionEventScope({ connectionId: 'remote-b', profile: 'default', session_id: 'runtime-b' })
     $sessionTiles.set([
       { runtimeId: 'runtime-a', storedSessionId: 'stored-a' },
       {
-        ownerRoute: { connectionId: 'cloud-b', profile: 'default' },
+        ownerRoute: { connectionId: 'remote-b', profile: 'default' },
         storedSessionId: 'stored-b'
       }
     ])
 
-    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud-a::default', 'conn:cloud-b::default']))
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:remote-a::default', 'conn:remote-b::default']))
   })
 
   it('releases an idle pane owner when the pane closes', () => {
     $sessionTiles.set([
       {
-        ownerRoute: { connectionId: 'cloud', profile: 'default' },
-        storedSessionId: 'stored-cloud'
+        ownerRoute: { connectionId: 'remote-gw', profile: 'default' },
+        storedSessionId: 'stored-remote'
       }
     ])
 
-    expect(foregroundSessionScopes()).toEqual(new Set(['conn:cloud::default']))
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:remote-gw::default']))
 
     $sessionTiles.set([])
 
@@ -757,7 +757,7 @@ describe('closeAllOpenSessionTiles persists Bot Mode Close All (#94137)', () => 
 })
 
 describe('dropTilesForProfile', () => {
-  const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
+  const TILES_KEY = 'rabbit.desktop.sessionTiles.v2'
   const BOTS_BUCKET = '__bots_workspace__'
 
   const storedTiles = (): Record<string, unknown> => {
@@ -949,7 +949,7 @@ describe('dropTilesForProfile', () => {
     // no connection id at all. `String(undefined ?? '').trim()` yields '', so a
     // local-delete branch comparing against `=== 'local'` never matches and the
     // tile survives every delete, resurrecting the deleted profile on relaunch
-    // (hermes-agent#94235). The branch must treat a missing id as local.
+    // (rabbit-agent#94235). The branch must treat a missing id as local.
     mod.openSessionTile('bot-legacy', 'right', undefined, undefined, {
       ownerRoute: { mode: 'local' as const, profile: 'press-bot' } as unknown as SessionProfileRoute,
       workspaceMode: 'bots' as const,
@@ -1185,7 +1185,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
   it('a Bots-pane click keeps the main-zone bot tile focused instead of collapsing to a null selection edge', () => {
     // Bot chats open as TILES and never set $selectedStoredSessionId. Clicking
     // a roster row moves the interaction tracker to the sidebar group, whose
-    // active pane is chrome ('hermes-bots:pane'), not a session tile. The old
+    // active pane is chrome ('rabbit-bots:pane'), not a session tile. The old
     // derivation then fell back to the null primary selection and published a
     // NULL "focused session" edge — which the Bots plugin read as "the chat
     // lost the center", releasing its open claim and re-asserting the Bots
@@ -1194,7 +1194,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     $selectedStoredSessionId.set(null)
     $layoutTree.set(
       split('row', [
-        group(['sessions', 'hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'grp-sessions' }),
+        group(['sessions', 'rabbit-bots:pane'], { active: 'rabbit-bots:pane', id: 'grp-sessions' }),
         group(['workspace', tilePane('chat-b')], { active: tilePane('chat-b'), id: 'grp-main' })
       ])
     )
@@ -1217,7 +1217,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     $selectedStoredSessionId.set(null)
     $layoutTree.set(
       split('row', [
-        group(['sessions', 'hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'grp-sessions' }),
+        group(['sessions', 'rabbit-bots:pane'], { active: 'rabbit-bots:pane', id: 'grp-sessions' }),
         group(['workspace'], { active: 'workspace', id: 'grp-main' })
       ])
     )
@@ -1390,7 +1390,7 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     states.openSessionTile('after', 'center', 'workspace')
     tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
     const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
-    const ownerRoute = { connectionId: 'cloud', profile: 'agent' }
+    const ownerRoute = { connectionId: 'remote-gw', profile: 'agent' }
     states.patchSessionTile('closed', { ownerRoute })
     states.closeSessionTile('closed')
     tree.noteActiveTreeGroup(null)

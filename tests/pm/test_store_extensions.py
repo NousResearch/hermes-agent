@@ -18,7 +18,7 @@ def test_missing_bundle_tool_is_installed_in_writable_store(pm_env, tmp_path, mo
     (shipped.parent / "manifest.json").write_text('{"repo":"core","store":"tools","venv":"venv"}')
     monkeypatch.setattr(paths, "store_root", lambda: shipped)
     monkeypatch.setattr(paths, "facts_path", lambda: shipped / "facts.json")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     ensure_module = importlib.import_module("pm.install")
     monkeypatch.setattr(ensure_module, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(ensure_module, "sealed", lambda: sealed_install)

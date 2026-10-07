@@ -2,7 +2,7 @@
 
 Covers:
 
-1. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
+1. ``rabbit lsp status`` surfaces a ``Backend warnings`` section when
    bash-language-server is installed but ``shellcheck`` is missing.
 2. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
    command exists on PATH but couldn't actually run — e.g. ``npx tsc``
@@ -34,7 +34,7 @@ def test_install_python_server_uses_pm_tool_environment(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pm, "ensure_python_tool", ensure)
     monkeypatch.setattr(pm, "python_tool", lambda *a, **kw: selected[0] if selected else None)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(install_mod, "INSTALL_RECIPES", {
         "fake-lsp": {"strategy": "pip", "pkg": "fake-lsp==1.0", "bin": "fake-language-server"},
     })
@@ -92,10 +92,10 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
 
     from agent.lsp import install as install_mod
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    staging = str(install_mod.hermes_lsp_bin_dir().parent)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    staging = str(install_mod.rabbit_lsp_bin_dir().parent)
     cfg = {"lsp": {}}
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: cfg)
     runs = []
     monkeypatch.setattr(install_mod.subprocess, "run", lambda cmd, **kw: (runs.append(cmd), MagicMock(returncode=0, stderr=""))[1])
     present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm", "yarn": "/usr/bin/yarn"}

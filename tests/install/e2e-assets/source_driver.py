@@ -18,7 +18,7 @@ def desktop_outputs(root: Path) -> list[Path]:
     desktop = root / "apps/desktop"
     return [path for pattern in (
         "release/*/resources/app.asar.unpacked/dist",
-        "release/mac*/Hermes.app/Contents/Resources/app.asar.unpacked/dist",
+        "release/mac*/Rabbit.app/Contents/Resources/app.asar.unpacked/dist",
     ) for path in desktop.glob(pattern)]
 
 
@@ -32,14 +32,14 @@ def verify_products(root: Path, desktop: str, node: Path | None = None) -> None:
         if not outputs or not any((out / "index.html").is_file() for out in outputs):
             raise RuntimeError("desktop packaged renderer is missing or incomplete")
         executables = [path for pattern in (
-            "release/*/Hermes.exe", "release/*/Hermes", "release/*/hermes",
-            "release/mac*/Hermes.app/Contents/MacOS/Hermes",
+            "release/*/Rabbit.exe", "release/*/Rabbit", "release/*/rabbit",
+            "release/mac*/Rabbit.app/Contents/MacOS/Rabbit",
         ) for path in app.glob(pattern) if path.is_file() and path.stat().st_size]
         if not executables:
             raise RuntimeError("desktop executable is missing or empty")
     if node is None:
         return  # Historical builds have no compiler receipt contract.
-    products = [("tui", root / "ui-tui/dist"), ("web", root / "hermes_cli/web_dist")]
+    products = [("tui", root / "ui-tui/dist"), ("web", root / "rabbit_cli/web_dist")]
     if desktop == "present":
         products.extend(("desktop", out) for out in outputs)
     for product, out in products:
@@ -56,7 +56,7 @@ def probe_pm(root: Path, desktop: str, command: list[str]) -> None:
     # Use the launcher's Python ABI, but deliberately do NOT execute its
     # bootstrap: that would complete dependencies or recover markers for it.
     sys.path.insert(0, str(root))
-    from hermes_cli._launchers import runtime_command
+    from rabbit_cli._launchers import runtime_command
     from pm.environments import selected_venv, site_packages
 
     if command != runtime_command(root):
@@ -85,7 +85,7 @@ def main() -> None:
     if args.runtime_command:
         probe_pm(root, args.desktop, json.loads(args.runtime_command))
     elif (root / "pm/lock.json").is_file():
-        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", HERMES_DISABLE_LAZY_INSTALLS="1")
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", RABBIT_DISABLE_LAZY_INSTALLS="1")
         result = subprocess.run([str(args.launcher), "--print-runtime-command"],
                                 capture_output=True, text=True, check=True, env=env, timeout=30)
         command = json.loads(result.stdout)

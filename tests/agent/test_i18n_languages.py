@@ -16,7 +16,7 @@ def test_bundled_table_matches_bundled_catalogs():
 
 
 def test_language_options_are_en_first_sorted_and_sourced(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     i18n.reset_language_cache()
     try:
         options = i18n.language_options()
@@ -31,9 +31,9 @@ def test_language_options_are_en_first_sorted_and_sourced(monkeypatch, tmp_path)
 def test_describe_language_precedence():
     # Pack metadata names a pack-only language; the bundled table wins for a bundled id even if a pack
     # re-declares it; an overlay-only language is reported as such and falls back to the bare id.
-    pack = {"endonym": "Polski", "rtl": False, "source": "plugin:hermes-lang-pl"}
+    pack = {"endonym": "Polski", "rtl": False, "source": "plugin:rabbit-lang-pl"}
     assert describe_language("pl", pack=pack, overlay=False) == {
-        "id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:hermes-lang-pl"}
+        "id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:rabbit-lang-pl"}
     assert describe_language("ar", pack={**pack, "endonym": "Other", "rtl": False}, overlay=False)["endonym"] == "العربية"
     assert describe_language("ar", pack={**pack, "rtl": False}, overlay=False)["rtl"] is True
     assert describe_language("eo", pack=None, overlay=True) == {"id": "eo", "endonym": "eo", "rtl": False, "source": "overlay"}

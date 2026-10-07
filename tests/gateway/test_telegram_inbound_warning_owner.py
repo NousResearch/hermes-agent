@@ -9,7 +9,7 @@ import pytest
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.profile_routing import ProfileRoute
 from gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_message, _make_update
 
@@ -21,10 +21,10 @@ from tests.gateway.test_telegram_documents import _make_document, _make_message,
 async def test_inbound_cache_failure_keeps_owner_policy_and_context(
         tmp_path, monkeypatch, caplog, ambient, setting, kind):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     root.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     (root / "config.yaml").write_text(json.dumps({"display": {"suppress_warning_notifications": ambient}}))
     for name, value in (("a", setting), ("b", not bool(setting))):
         home = root / "profiles" / name
@@ -48,7 +48,7 @@ async def test_inbound_cache_failure_keeps_owner_policy_and_context(
         msg.reply_to_message = msg.quote = None
         sent_homes = []
         async def reply(*args, **kwargs):
-            sent_homes.append(get_hermes_home())
+            sent_homes.append(get_rabbit_home())
         msg.reply_text = AsyncMock(side_effect=reply)
         await adapter._handle_media_message(_make_update(msg), SimpleNamespace())
         event = adapter.handle_message.call_args.args[0]
@@ -59,6 +59,6 @@ async def test_inbound_cache_failure_keeps_owner_policy_and_context(
         assert "could not be downloaded" in event.text
         assert ("asked to retry" in event.text) is not suppressed
         assert not event.media_urls
-        assert get_hermes_home() == root
+        assert get_rabbit_home() == root
     assert "download failure retained" in caplog.text
     assert adapter.handle_message.await_count == 3

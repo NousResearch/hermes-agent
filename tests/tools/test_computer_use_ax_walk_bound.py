@@ -44,7 +44,7 @@ class TestAxWalkBound:
     def test_configured_value_reaches_the_driver_args(self, tmp_path, monkeypatch):
         """End to end through the loader the backend uses: config.yaml -> get_window_state args."""
         _write_config(tmp_path, "computer_use:\n  ax_max_elements: 350\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         assert cua_backend._cua_configured_ax_max_elements() == 350
         stub = _StubCapture()
         assert stub._gws_args()["max_elements"] == 350
@@ -55,7 +55,7 @@ class TestAxWalkBound:
     def test_zero_disables_the_bound(self, tmp_path, monkeypatch):
         """0 restores the driver default and must not leak a ``max_elements`` key into the payload."""
         _write_config(tmp_path, "computer_use:\n  ax_max_elements: 0\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         assert cua_backend._cua_configured_ax_max_elements() == 0
         assert "max_elements" not in _StubCapture()._gws_args()
 

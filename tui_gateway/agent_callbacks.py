@@ -229,7 +229,7 @@ def _wire_callbacks(sid: str):
         # record whose profile scope the value is saved into. No bound owner: skip.
         from gateway.session_context import get_session_env
 
-        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        owner_sid = get_session_env("RABBIT_UI_SESSION_ID")
         # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
         # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
         # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
@@ -244,7 +244,7 @@ def _wire_callbacks(sid: str):
             val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
-        from hermes_cli.config import save_env_value_secure
+        from rabbit_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
     set_sudo_password_callback(lambda: _ask(
@@ -274,15 +274,15 @@ def _wire_callbacks(sid: str):
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    """Built-ins + user overrides, via hermes_cli.personality (single owner)."""
-    from hermes_cli.personality import available_personalities
+    """Built-ins + user overrides, via rabbit_cli.personality (single owner)."""
+    from rabbit_cli.personality import available_personalities
     return available_personalities(_load_cfg() if cfg is None else cfg)
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     """(name, prompt) for a requested personality or ValueError; like resolve_personality but
     via the module-level _available_personalities so tests keep a single patch point."""
-    from hermes_cli.personality import normalize_personality_name, render_personality_prompt
+    from rabbit_cli.personality import normalize_personality_name, render_personality_prompt
     if not (name := normalize_personality_name(value)):
         return "", ""
     personalities = _available_personalities(cfg)
@@ -293,8 +293,8 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 
 
 def _prompt_text(value) -> str:
-    """Normalize config prompt values from YAML for AIAgent (hermes_cli.personality owns this)."""
-    from hermes_cli.personality import prompt_text
+    """Normalize config prompt values from YAML for AIAgent (rabbit_cli.personality owns this)."""
+    from rabbit_cli.personality import prompt_text
     return prompt_text(value)
 
 
@@ -330,9 +330,9 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    from rabbit_cli.config import resolve_turn_limit as _resolve_turn_limit
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
-    if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
+    if env_val := os.environ.get("RABBIT_TUI_MAX_TURNS"):
         return _resolve_turn_limit(env_val, default=default)
     raw = (cfg.get("agent") or {}).get("max_turns")
     if raw is None:
@@ -341,14 +341,14 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
 
 
 def _parse_tui_skills_env() -> list[str]:
-    raw = os.environ.get("HERMES_TUI_SKILLS", "")
+    raw = os.environ.get("RABBIT_TUI_SKILLS", "")
     return list(dict.fromkeys(p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()))
 
 
 def _load_fallback_model():
     """Configured fallback chain via the shared ``get_fallback_chain`` (parity with
-    HermesCLI/gateway: ``fallback_providers`` first, legacy ``fallback_model`` merged after)."""
-    from hermes_cli.fallback_config import get_fallback_chain
+    RabbitCLI/gateway: ``fallback_providers`` first, legacy ``fallback_model`` merged after)."""
+    from rabbit_cli.fallback_config import get_fallback_chain
     return get_fallback_chain(_load_cfg())
 
 
@@ -356,16 +356,16 @@ def _load_prefill_messages() -> list:
     """Configured prefill messages, resolved like the CLI (env > ``prefill_messages_file`` > legacy
     ``agent.*``). Desktop/TUI agents never run the CLI bootstrap, so without this the setting was
     ignored there (#60456). Relative paths resolve against the active profile home, per call."""
-    from hermes_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
-    from hermes_constants import get_hermes_home
-    return _load(_resolve_prefill_messages_file(_load_cfg()), get_hermes_home())
+    from rabbit_cli.cli_config_load import _load_prefill_messages as _load, _resolve_prefill_messages_file
+    from rabbit_constants import get_rabbit_home
+    return _load(_resolve_prefill_messages_file(_load_cfg()), get_rabbit_home())
 
 
 def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
     """Adopt ``fallback_providers`` edits into the cached agent at turn start.
 
     Desktop/TUI chats keep one agent across turns, and ``_make_agent`` reads the chain once: a chat
-    opened before ``hermes fallback add`` kept an empty chain forever and a provider-quota 429 ended in
+    opened before ``rabbit fallback add`` kept an empty chain forever and a provider-quota 429 ended in
     a provider error with a healthy fallback configured (#95066). Same per-turn contract the messaging
     gateway applies to its cached agents (``GatewayRunner._refresh_fallback_model``): the config is
     read fail-closed, so a torn/invalid config.yaml keeps the agent's last known-good chain instead of
@@ -376,8 +376,8 @@ def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
         return
     try:
         from gateway.run import GatewayRunner
-        from hermes_cli.config_effective import load_user_config_effective
-        from hermes_cli.fallback_config import get_fallback_chain
+        from rabbit_cli.config_effective import load_user_config_effective
+        from rabbit_cli.fallback_config import get_fallback_chain
         chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
     except Exception as e:
         logger.warning("fallback chain sync skipped for %s (keeping current chain): %s", sid, e)
@@ -434,7 +434,7 @@ def _side_agent_session_db(parent_db):
     if parent_db is None or path is None:
         yield parent_db
         return
-    from hermes_state_registry import acquire, release_or_close
+    from rabbit_state_registry import acquire, release_or_close
     db = acquire(path)
     try:
         yield db

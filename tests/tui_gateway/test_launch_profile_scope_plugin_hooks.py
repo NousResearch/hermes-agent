@@ -1,6 +1,6 @@
 """Plugin hooks fired from a launch-profile turn see a bound profile scope under multiplexing.
 
-Regression for #118538: routed turns bind ``_profile_runtime_scope(home)`` (HERMES_HOME override +
+Regression for #118538: routed turns bind ``_profile_runtime_scope(home)`` (RABBIT_HOME override +
 secrets + terminal policy), but the launch profile's own turns went through
 ``launch_profile_runtime_scope`` / ``_profile_runtime_scope_tokens(None)`` which bound secrets and
 terminal policy only. Under multiplexing an unset override is the fail-closed "unbound context"
@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from agent.secret_scope import set_multiplex_active
-from hermes_cli import plugins as plugins_mod
-from hermes_constants import get_hermes_home, get_hermes_home_override
+from rabbit_cli import plugins as plugins_mod
+from rabbit_constants import get_rabbit_home, get_rabbit_home_override
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 import tui_gateway.server as server
@@ -31,7 +31,7 @@ from tui_gateway import launch_profile_policy as lpp
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
-    launch = tmp_path / "hermes_home"
+    launch = tmp_path / "rabbit_home"
     routed = launch / "profiles" / "beta"
     for home, tag in ((launch, "alpha"), (routed, "beta")):
         home.mkdir(parents=True)
@@ -39,28 +39,28 @@ def two_homes(tmp_path, monkeypatch):
             f"plugins:\n  enabled: [stub]\n  entries:\n    stub:\n      settings:\n        x: {tag}\n",
             encoding="utf-8")
         (home / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
-    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", launch)
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(lpp, "_snapshot", None)
     plugins_mod._reset_plugin_managers_for_tests()
     seen: list[dict] = []
 
     def stub_pre_tool_call(**_kw):
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         entry = ((load_config_readonly().get("plugins") or {}).get("entries") or {}).get("stub") or {}
-        seen.append({"home": get_hermes_home().name, "x": (entry.get("settings") or {}).get("x"),
-                     "bound": get_hermes_home_override() is not None})
+        seen.append({"home": get_rabbit_home().name, "x": (entry.get("settings") or {}).get("x"),
+                     "bound": get_rabbit_home_override() is not None})
         return None
 
     # Plugin managers are keyed per home: each profile loads its own copy of the plugin.
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     for home in (launch, routed):
-        token = set_hermes_home_override(str(home))
+        token = set_rabbit_home_override(str(home))
         try:
             manager = plugins_mod.get_plugin_manager()
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         manager._discovered = True  # never scan the real plugin tree
         manager._hooks.setdefault("pre_tool_call", []).append(stub_pre_tool_call)
     yield launch, routed, seen
@@ -86,7 +86,7 @@ def _fire_off_turn_workers(launch_manager_hook_seen):
     observed: list[dict] = []
 
     def observer(**_kw):
-        observed.append({"home": get_hermes_home().name, "bound": get_hermes_home_override() is not None})
+        observed.append({"home": get_rabbit_home().name, "bound": get_rabbit_home_override() is not None})
 
     manager._hooks.setdefault("on_stream_end", []).append(observer)
     manager._subscribe_event("stub", "stub:tick", observer)
@@ -119,11 +119,11 @@ def test_launch_profile_turn_hooks_see_bound_scope_a_b_a(two_homes):
         server._release_profile_runtime_scope_tokens(scopes)
 
     assert [(r["home"], r["x"]) for r in seen] == [
-        ("hermes_home", "alpha"), ("beta", "beta"), ("hermes_home", "alpha")]
+        ("rabbit_home", "alpha"), ("beta", "beta"), ("rabbit_home", "alpha")]
     assert all(r["bound"] for r in seen), seen
-    assert off_turn_a == [{"home": "hermes_home", "bound": True}] * 2, off_turn_a
+    assert off_turn_a == [{"home": "rabbit_home", "bound": True}] * 2, off_turn_a
     assert off_turn_b == [{"home": "beta", "bound": True}] * 2, off_turn_b
-    assert get_hermes_home_override() is None  # every scope released
+    assert get_rabbit_home_override() is None  # every scope released
 
 
 def test_single_profile_launch_scope_binds_no_override(two_homes):
@@ -132,9 +132,9 @@ def test_single_profile_launch_scope_binds_no_override(two_homes):
     launch, _routed, seen = two_homes
     scopes = server._profile_runtime_scope_tokens(None)
     try:
-        assert get_hermes_home_override() is None
+        assert get_rabbit_home_override() is None
         _fire_from_tool_worker()
     finally:
         server._release_profile_runtime_scope_tokens(scopes)
-    assert seen == [{"home": "hermes_home", "x": "alpha", "bound": False}]
-    assert Path(get_hermes_home()) == launch
+    assert seen == [{"home": "rabbit_home", "x": "alpha", "bound": False}]
+    assert Path(get_rabbit_home()) == launch

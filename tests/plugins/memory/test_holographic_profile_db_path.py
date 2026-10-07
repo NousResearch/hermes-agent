@@ -1,6 +1,6 @@
 """The holographic fact DB set up with the default path belongs to whichever profile opens it.
 
-Setup used to offer, and store, the active profile's concrete path (``~/.hermes/memory_store.db``).
+Setup used to offer, and store, the active profile's concrete path (``~/.rabbit/memory_store.db``).
 ``profile create --clone`` copies config.yaml verbatim, so the clone opened the source profile's
 facts; ``profile rename`` moves the directory, so the renamed profile opened an empty DB in a
 re-created directory under its old name.
@@ -13,10 +13,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-import hermes_cli.memory_setup as memory_setup
-from hermes_cli.profiles import create_profile, rename_profile
+import rabbit_cli.memory_setup as memory_setup
+from rabbit_cli.profiles import create_profile, rename_profile
 from plugins.memory.holographic import HolographicMemoryProvider, _load_plugin_config
 
 
@@ -25,15 +25,15 @@ def root(tmp_path, monkeypatch):
     # A ``~/`` path is displayed through Path.home() and expanded through HOME; both name the sandbox.
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
 def _setup_with_defaults(monkeypatch, home: Path) -> dict:
-    """``hermes memory setup`` for holographic with Enter on every field, saved as ``cmd_setup`` does."""
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    """``rabbit memory setup`` for holographic with Enter on every field, saved as ``cmd_setup`` does."""
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     provider = HolographicMemoryProvider(config={"hrr_dim": 64})
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *_a, default=0, **_k: default)
     monkeypatch.setattr(sys, "stdin", io.StringIO("\n" * 10))
@@ -44,8 +44,8 @@ def _setup_with_defaults(monkeypatch, home: Path) -> dict:
 
 
 def _opened_db(monkeypatch, home: Path) -> Path:
-    """The DB a session started with ``hermes -p <profile>`` opens."""
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    """The DB a session started with ``rabbit -p <profile>`` opens."""
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     provider = HolographicMemoryProvider(config=_load_plugin_config())
     provider.initialize("s")
     try:
@@ -58,20 +58,20 @@ def _opened_db(monkeypatch, home: Path) -> Path:
 def test_default_db_path_follows_the_profile_that_opens_it(root, monkeypatch, lifecycle):
     if lifecycle == "clone":
         answers = _setup_with_defaults(monkeypatch, root)
-        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setenv("RABBIT_HOME", str(root))
         profile = create_profile("work", clone_config=True, no_alias=True)
     else:
         source = create_profile("alpha", no_alias=True)
         answers = _setup_with_defaults(monkeypatch, source)
-        monkeypatch.setenv("HERMES_HOME", str(root))
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        monkeypatch.setenv("RABBIT_HOME", str(root))
+        with patch("rabbit_cli.profiles.check_alias_collision", return_value="skip"):
             profile = rename_profile("alpha", "beta")
 
     assert _opened_db(monkeypatch, profile) == (profile / "memory_store.db").resolve()
     if lifecycle == "rename":
         assert not (root / "profiles" / "alpha").exists()
     # The prompt offers the value it stores, so what the user accepted is what config.yaml says.
-    assert answers["db_path"] == "$HERMES_HOME/memory_store.db"
+    assert answers["db_path"] == "$RABBIT_HOME/memory_store.db"
 
 
 @pytest.mark.parametrize("spelling", ["display", "absolute", "elsewhere"])
@@ -79,15 +79,15 @@ def test_save_config_stores_only_this_profiles_default_path_as_the_placeholder(r
     # "display"/"absolute": the concrete value an older setup wrote, and the dashboard form re-submits on
     # its next save. "elsewhere": a deliberately shared store (#4726) is kept as given.
     profile = create_profile("work", no_alias=True)
-    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("RABBIT_HOME", str(profile))
     given = {
-        "display": "~/.hermes/profiles/work/memory_store.db",
+        "display": "~/.rabbit/profiles/work/memory_store.db",
         "absolute": str(profile / "memory_store.db"),
         "elsewhere": str(root / "shared" / "facts.db"),
     }[spelling]
-    expected = given if spelling == "elsewhere" else "$HERMES_HOME/memory_store.db"
+    expected = given if spelling == "elsewhere" else "$RABBIT_HOME/memory_store.db"
 
     HolographicMemoryProvider(config={"hrr_dim": 64}).save_config({"db_path": given, "hrr_dim": "64"}, str(profile))
 
-    stored = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["plugins"]["hermes-memory-store"]
+    stored = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["plugins"]["rabbit-memory-store"]
     assert stored == {"db_path": expected, "hrr_dim": "64"}

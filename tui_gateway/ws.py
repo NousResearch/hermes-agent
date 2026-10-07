@@ -50,7 +50,7 @@ def _sanitize_ws_text(text: str) -> str:
 
     ``json.dumps(..., ensure_ascii=False)`` happily emits lone UTF-16 surrogates; Starlette's
     ``send_text`` then raises ``UnicodeEncodeError``, which used to latch the whole connection
-    closed. Same U+FFFD replacement every other Hermes transport applies.
+    closed. Same U+FFFD replacement every other Rabbit transport applies.
 
     See #97288.
     """
@@ -369,7 +369,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             }},
         })
         if ready_ok:
-            # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
+            # Live-apply skins Rabbit activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
             server._ensure_lease_watcher()  # cross-process lease moves → display.lease

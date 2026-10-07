@@ -15,7 +15,7 @@ from tools.code_kernel import shutdown_all_kernels
 
 @pytest.fixture
 def runtime_dependency(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
     root = Path(code_execution_env.__file__).resolve().parents[1]
     generation = install_state_dir(root) / "environments" / "fixture" / "venv"
     generation.mkdir(parents=True)

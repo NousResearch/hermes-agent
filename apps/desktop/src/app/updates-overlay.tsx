@@ -413,7 +413,7 @@ function ManualView({
       <button
         className={cn(
           'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
-          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+          copied ? 'border-primary/50' : 'border-(--stroke-rabbit) hover:border-(--ui-stroke-secondary)'
         )}
         onClick={handleCopy}
         type="button"

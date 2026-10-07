@@ -194,7 +194,7 @@ class TestCheckpointReadopt:
                 "host_start_time": real + 1,
                 "task_id": "t1",
                 "notify_on_complete": True,
-                "systemd_unit": "hermes-worker-proc_recover_reused.scope",
+                "systemd_unit": "rabbit-worker-proc_recover_reused.scope",
             }]))
             stopped = []
             monkeypatch.setattr(

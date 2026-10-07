@@ -6,10 +6,10 @@ name: strava
 description: 'Strava: activities, fitness trends, training load (read-only).'
 source: https://support.strava.com/en-us/articles/15401531-strava-mcp-connector
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration
 # (verified live: RFC 9728 protected-resource metadata -> AS metadata with
-# registration_endpoint); Hermes's MCP client + mcp_oauth_manager handle
+# registration_endpoint); Rabbit's MCP client + mcp_oauth_manager handle
 # discovery, PKCE, token exchange, and refresh.
 
 transport:
@@ -29,8 +29,8 @@ suggest:
     - strava.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Strava (or run `hermes mcp login strava`). Approve access,
+  On first connection Rabbit opens a browser to authorize with
+  Strava (or run `rabbit mcp login strava`). Approve access,
   then restart the session so tools load.
 
   Requires a Strava subscription.

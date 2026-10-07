@@ -11,12 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_test_dependencies_are_group_only_in_manifest_and_lock():
     manifest = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
-    hermes = next(package for package in lock["package"] if package["name"] == manifest["project"]["name"])
+    rabbit = next(package for package in lock["package"] if package["name"] == manifest["project"]["name"])
     assert manifest["tool"]["uv"]["default-groups"] == []
     assert "dev" in manifest["dependency-groups"]
     assert "dev" not in manifest["project"]["optional-dependencies"]
-    assert "dev" in hermes["dev-dependencies"]
-    assert "dev" not in hermes.get("optional-dependencies", {})
+    assert "dev" in rabbit["dev-dependencies"]
+    assert "dev" not in rabbit.get("optional-dependencies", {})
 
 
 def test_core_and_optional_speech_dependencies():

@@ -4,8 +4,8 @@ The catch-up machinery already ran late fires after gateway downtime, but
 the run then looked like an ordinary on-time success: nothing recorded the
 scheduled instant vs the actual dispatch time. The due-scan now persists a
 ``last_dispatch`` stamp (scheduled_at / dispatched_at / lateness_seconds /
-kind) on every recurring dispatch so `hermes cron list` and
-`hermes cron status` can surface late catch-ups.
+kind) on every recurring dispatch so `rabbit cron list` and
+`rabbit cron status` can surface late catch-ups.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -28,7 +28,7 @@ def cron_store(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: FIXED_NOW)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: FIXED_NOW)
     return tmp_path
 
 
@@ -82,7 +82,7 @@ class TestDueScanDispatchStamp:
         assert stamp["dispatched_at"] == FIXED_NOW.isoformat()
         expected_late = (FIXED_NOW - scheduled).total_seconds()
         assert stamp["lateness_seconds"] == pytest.approx(expected_late, abs=1)
-        # Persisted, so a separate `hermes cron list` process can read it.
+        # Persisted, so a separate `rabbit cron list` process can read it.
         persisted = load_jobs()[0]
         assert persisted["last_dispatch"] == stamp
 

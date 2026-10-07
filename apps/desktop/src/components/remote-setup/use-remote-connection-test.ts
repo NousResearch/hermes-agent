@@ -87,7 +87,7 @@ export function useRemoteConnectionTest(options: RemoteConnectionTestOptions): R
 
     try {
       if (!authResolved) {
-        const result = await window.hermesDesktop.probeConnectionConfig(url)
+        const result = await window.rabbitDesktop.probeConnectionConfig(url)
 
         if (current()) {
           acceptProbe(result)
@@ -100,7 +100,7 @@ export function useRemoteConnectionTest(options: RemoteConnectionTestOptions): R
         return
       }
 
-      const result = await window.hermesDesktop.testConnectionConfig(payload)
+      const result = await window.rabbitDesktop.testConnectionConfig(payload)
 
       if (!current()) {
         return

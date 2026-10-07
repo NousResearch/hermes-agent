@@ -1,0 +1,17 @@
+name: gitrabbit
+repo: https://github.com/claudiumio/gitrabbit
+sha: 09d5b566da650290dc0d639ea1e77def4bcdab31
+description: GitHub PRs and issues as a right workspace pane in Rabbit Desktop, via the connected gh CLI. Disclosure — shells out to your logged-in gh CLI; the in-pane update pill only runs `rabbit plugins update gitrabbit` (no fetch-and-replace) and currently compares against upstream main rather than the pinned sha.
+maintainer: claudiumio
+tier: community
+category: desktop
+requires_rabbit: ">=0.21.1"
+docs_url: https://github.com/claudiumio/gitrabbit#readme
+version: "0.5.0"
+image: https://raw.githubusercontent.com/claudiumio/gitrabbit/09d5b566da650290dc0d639ea1e77def4bcdab31/docs/social-preview.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

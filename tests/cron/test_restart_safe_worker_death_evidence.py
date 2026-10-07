@@ -22,7 +22,7 @@ def test_adopted_worker_failure_is_visible(tmp_path, monkeypatch, manual, death)
     print("SCHEDULER", scheduler.__file__, flush=True)
     home = tmp_path / "profile"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", home / "cron" / "executions.db")
     monkeypatch.setattr(scheduler, "load_config_readonly", lambda: {})
     if death == "concurrent_recovery":

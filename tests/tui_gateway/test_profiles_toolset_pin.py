@@ -11,7 +11,7 @@ from tui_gateway.methods_profiles import _describe_toolsets, _save_toolset_pin
 
 
 def _pin_and_resolve(cfg: dict, names: list[str]) -> tuple[set[str], set[str] | None]:
-    from hermes_cli.tools_config import _get_platform_tools
+    from rabbit_cli.tools_config import _get_platform_tools
 
     _save_toolset_pin(cfg, names, save_config=lambda _c: None)
     resolved = set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False))
@@ -38,7 +38,7 @@ def test_toolset_pin_round_trips_a_then_b_then_a(second):
 
 
 def test_empty_pin_clears_the_pin_and_falls_back_to_the_platform_default():
-    from hermes_cli.tools_config import _get_platform_tools
+    from rabbit_cli.tools_config import _get_platform_tools
 
     cfg: dict = {}
     _pin_and_resolve(cfg, ["web"])

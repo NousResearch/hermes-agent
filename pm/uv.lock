@@ -3,7 +3,7 @@ revision = 3
 requires-python = "==3.14.*"
 
 [[package]]
-name = "hermes-pm-runtime"
+name = "rabbit-pm-runtime"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [

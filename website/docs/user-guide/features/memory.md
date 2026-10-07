@@ -1,12 +1,12 @@
 ---
 sidebar_position: 3
 title: "Persistent Memory"
-description: "How Hermes Agent remembers across sessions — MEMORY.md, USER.md, and session search"
+description: "How Rabbit Agent remembers across sessions — MEMORY.md, USER.md, and session search"
 ---
 
 # Persistent Memory
 
-Hermes Agent has bounded, curated memory that persists across sessions. This lets it remember your preferences, your projects, your environment, and things it has learned.
+Rabbit Agent has bounded, curated memory that persists across sessions. This lets it remember your preferences, your projects, your environment, and things it has learned.
 
 ## How It Works
 
@@ -17,10 +17,10 @@ Two files make up the agent's memory:
 | **MEMORY.md** | Agent's personal notes — environment facts, conventions, things learned | 2,200 chars (~800 tokens) |
 | **USER.md** | User profile — your preferences, communication style, expectations | 1,375 chars (~500 tokens) |
 
-Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
+Both are stored in `~/.rabbit/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
-:::caution One agent per Hermes home
-Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](../profiles.md) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](./memory-providers.md) instead.
+:::caution One agent per Rabbit home
+Don't point two agent processes at the same Rabbit home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](../profiles.md) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](./memory-providers.md) instead.
 :::
 
 :::info
@@ -71,15 +71,15 @@ The most common report looks like this: you tell the agent where something lives
 1. **Check whether the write actually happened.** Memory only persists when the model *calls the `memory` tool*; a sentence like "I've added that to my memory" is just text. Open the file and look for the entry:
 
    ```bash
-   cat ~/.hermes/memories/MEMORY.md
-   cat ~/.hermes/memories/USER.md
+   cat ~/.rabbit/memories/MEMORY.md
+   cat ~/.rabbit/memories/USER.md
    ```
 
    If the fact is not there, the model claimed a save it never made. Small local models (roughly under 30B parameters) and models with weak tool-calling do this often — they produce the confirmation without the tool call. Ask explicitly ("use the `memory` tool to save the vault path `/srv/vault`") and confirm the entry landed in the file. If it keeps happening, the fix is a stronger model for setup, not more instructions; once the entries exist, a smaller model reads them fine because they arrive in the system prompt.
 
 2. **Check the write wasn't staged.** With `write_approval: true`, writes outside the interactive CLI are held for review and never reach the file until approved — run `/memory pending` and `/memory approve all`. See [Controlling memory writes](#controlling-memory-writes-write_approval).
 
-3. **Check you are reading the same memory you wrote.** Memory is per [profile](../profiles.md): `hermes -p work` (or `work chat` / `work gateway start`) reads `~/.hermes/profiles/work/memories/`, not `~/.hermes/memories/`. A CLI session in the default profile and a Telegram bot on another profile do not share notes. `hermes profile list` shows what exists.
+3. **Check you are reading the same memory you wrote.** Memory is per [profile](../profiles.md): `rabbit -p work` (or `work chat` / `work gateway start`) reads `~/.rabbit/profiles/work/memories/`, not `~/.rabbit/memories/`. A CLI session in the default profile and a Telegram bot on another profile do not share notes. `rabbit profile list` shows what exists.
 
 4. **Check memory is enabled.** `memory.memory_enabled: false` (or `memory` under `agent.disabled_toolsets`) removes the tool entirely — the model cannot save anything, whatever it says. See [Configuration](#configuration).
 
@@ -219,13 +219,13 @@ Memory entries are scanned for injection and exfiltration patterns before being 
 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:
 
-- All CLI and messaging sessions are stored in SQLite (`~/.hermes/state.db`) with FTS5 full-text search
+- All CLI and messaging sessions are stored in SQLite (`~/.rabbit/state.db`) with FTS5 full-text search
 - Search queries return actual messages from the DB — no LLM summarization, no truncation
 - The agent can find things it discussed weeks ago, even if they're not in its active memory
 - The agent can also scroll forward/backward inside any session it finds
 
 ```bash
-hermes sessions list    # Browse past sessions
+rabbit sessions list    # Browse past sessions
 ```
 
 See [Session Search Tool](../sessions.md#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
@@ -245,28 +245,28 @@ See [Session Search Tool](../sessions.md#session-search-tool) for the three call
 
 ## Learning Journey (`/journey`)
 
-The learning journey is a timeline view of everything Hermes has learned — saved skills and memory entries plotted over time (oldest at top, newest at bottom), with a playable "constellation" scrubber that replays the build-up. The same graph data drives three surfaces:
+The learning journey is a timeline view of everything Rabbit has learned — saved skills and memory entries plotted over time (oldest at top, newest at bottom), with a playable "constellation" scrubber that replays the build-up. The same graph data drives three surfaces:
 
-- **Classic CLI / standalone** — `hermes journey` (aliases: `hermes learning`, `hermes memory-graph`) renders the timeline in the terminal. Flags: `--play` animates the build-up (`--fps` to tune it), `--width`/`--height` override the render size, `--no-color` disables color, and `--json` dumps the raw graph payload.
+- **Classic CLI / standalone** — `rabbit journey` (aliases: `rabbit learning`, `rabbit memory-graph`) renders the timeline in the terminal. Flags: `--play` animates the build-up (`--fps` to tune it), `--width`/`--height` override the render size, `--no-color` disables color, and `--json` dumps the raw graph payload.
 - **TUI** — `/journey` (aliases: `/learning`, `/memory-graph`) opens the timeline as an overlay.
 - **Desktop app** — `/journey` opens the Star Map / memory-graph panel, an interactive visual of the same nodes.
 
 A skill appears on the timeline as soon as it has a learning signal: it was created in this profile (a `/learn` result or a foreground `skill_manage` create), created by the background review, or used at least once. Bundled skills and hand-written skills that have never been used stay out of the timeline.
 
-Beyond viewing, the journey is also where you **prune and correct** what Hermes has learned:
+Beyond viewing, the journey is also where you **prune and correct** what Rabbit has learned:
 
 | Command | What it does |
 |---------|--------------|
-| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
-| `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
-| `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
+| `rabbit journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
+| `rabbit journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
+| `rabbit journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 
 The same `list` / `delete <id>` / `edit <id>` subcommands work from the in-chat `/journey` command on the CLI, and the desktop panel offers edit/delete on nodes directly.
 
 ## Configuration
 
 ```yaml
-# In ~/.hermes/config.yaml
+# In ~/.rabbit/config.yaml
 memory:
   memory_enabled: true
   user_profile_enabled: true
@@ -328,7 +328,7 @@ every entry it overwrote or removed.
 ## Background review notifications (`display.memory_notifications`)
 
 After a turn, the background self-improvement review may quietly save a memory
-or update a skill. This is Hermes' consent-aware learning loop: repeated
+or update a skill. This is Rabbit' consent-aware learning loop: repeated
 corrections and durable workflow lessons become compact memory entries or
 procedural skills, while `write_approval` can stage those writes for review
 before they affect future sessions. By default it surfaces a short
@@ -501,19 +501,19 @@ inline, but the full diff stays out-of-band:
 
 On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
-`~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
+`~/.rabbit/pending/skills/<id>.json` when you want to read the whole change.
 Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 5 external memory provider plugins — OpenViking, Mem0, Holographic, RetainDB and ByteRover — and more, such as Honcho, Hindsight and Supermemory, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Rabbit ships with 5 external memory provider plugins — OpenViking, Mem0, Holographic, RetainDB and ByteRover — and more, such as Honcho, Hindsight and Supermemory, are available from the [plugin catalog](plugins.md) via `rabbit plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 
 ```bash
-hermes memory setup      # pick a provider and configure it
-hermes memory status     # check what's active
+rabbit memory setup      # pick a provider and configure it
+rabbit memory status     # check what's active
 ```
 
 See the [Memory Providers](./memory-providers.md) guide for full details on each provider, setup instructions, and comparison.

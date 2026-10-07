@@ -13,9 +13,9 @@ import asyncio
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db_notify as kbn
 
 
 class SoftFailAdapter:
@@ -37,7 +37,7 @@ class ApiServerLikeAdapter:
         self._host = "127.0.0.1"
         self._port = 8642
         self._api_key = "k"
-        self._model_name = "hermes"
+        self._model_name = "rabbit"
         self.handle_message_calls = []
         self.send_calls = 0
 
@@ -105,7 +105,7 @@ def _unseen_terminal_events(tid, platform, chat_id):
 def test_apiserver_sub_wakes_subscription_destination_via_self_post(tmp_path, monkeypatch):
     """An api_server subscription wakes its chat_id destination, not the
     task's worker-session provenance or a build_session_key()-derived session."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "apiserver.db"))
     kb.init_db()
     tid = _create_completed_subscription(
         "api_server", "origin-session", session_id="worker-session",
@@ -147,7 +147,7 @@ def test_apiserver_sub_wakes_subscription_destination_via_self_post(tmp_path, mo
 def test_apiserver_subscriptions_have_independent_wake_destinations(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-multi.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "apiserver-multi.db"))
     kb.init_db()
     conn = kbc.connect()
     try:
@@ -188,7 +188,7 @@ def test_apiserver_subscriptions_have_independent_wake_destinations(
 def test_apiserver_wake_failure_rewinds_then_retries_destination(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "apiserver-retry.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "apiserver-retry.db"))
     kb.init_db()
     tid = _create_completed_subscription(
         "api_server", "origin-session", session_id="worker-session",

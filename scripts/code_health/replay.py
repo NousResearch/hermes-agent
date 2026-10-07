@@ -45,7 +45,7 @@ query($q: String!, $after: String) {
 def merged_prs(repo: Path, window: str, limit: int) -> list[dict]:
     prs: list[dict] = []
     after = None
-    query = f"repo:NousResearch/hermes-agent is:pr is:merged base:main merged:{window} sort:created-asc"
+    query = f"repo:seven0070/Rabbit- is:pr is:merged base:main merged:{window} sort:created-asc"
     while len(prs) < limit:
         args = ["gh", "api", "graphql", "-f", f"query={_QUERY}", "-f", f"q={query}"]
         if after:

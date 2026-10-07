@@ -7,7 +7,7 @@ import '@/store/suggestion-providers/mcp'
 import '@/store/suggestion-providers/skill'
 
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
-import { SLASH_COMMAND_RE } from '@hermes/shared'
+import { SLASH_COMMAND_RE } from '@rabbit/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'

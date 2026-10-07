@@ -48,14 +48,14 @@ def _claim_commit(repo: Path, tag: str) -> str:
 def _refresh_claims(repo: Path, remote: str) -> None:
     _git(
         repo, "fetch", remote,
-        "+refs/heads/main:refs/remotes/hermes-release/main",
+        "+refs/heads/main:refs/remotes/rabbit-release/main",
         *(f"+refs/tags/{glob}:refs/tags/{glob}" for glob in _ATTEMPT_GLOBS),
     )
 
 
 def _require_remote_main(repo: Path, commit: str) -> None:
     result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/hermes-release/main"],
+        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/rabbit-release/main"],
         cwd=repo, capture_output=True,
     )
     if result.returncode != 0:
@@ -262,7 +262,7 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             url = (execute([
                 "gh", "release", "create", tag, "--repo", repository,
                 "--verify-tag", "--draft", "--notes-file", file.name,
-                "--title", f"Hermes Agent v{version}",
+                "--title", f"Rabbit Agent v{version}",
             ]) or "").strip()
         finally:
             os.unlink(file.name)
@@ -363,7 +363,7 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
             repo: Path | None = None, remote: str | None = None) -> dict:
     """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
-    from hermes_cli.update_channel import STABLE_TAG_RE
+    from rabbit_cli.update_channel import STABLE_TAG_RE
 
     if not STABLE_TAG_RE.fullmatch(tag):
         raise ReleaseRefused(f"{version} is not a stable version")

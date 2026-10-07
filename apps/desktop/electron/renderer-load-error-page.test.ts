@@ -9,26 +9,26 @@ test('error page names the failure and carries a Reload button', () => {
     errorCode: -6,
     errorDescription: 'The desktop renderer bundle is incomplete after the last update (2 missing file(s)).',
     missingAssets: ['assets/app-C0ffee.js', 'assets/shiki-block-DeadBeef.js'],
-    repairHint: 'hermes desktop --force-build'
+    repairHint: 'rabbit desktop --force-build'
   })
 
   assert.match(html, /incomplete after the last update \(2 missing file\(s\)\)/)
   assert.match(html, /-6/)
   assert.match(html, /assets\/app-C0ffee\.js/)
   assert.match(html, /assets\/shiki-block-DeadBeef\.js/)
-  assert.match(html, /hermes desktop --force-build/)
+  assert.match(html, /rabbit desktop --force-build/)
   assert.match(html, /location\.reload\(\)/)
 })
 
 test('error page reload button targets the real renderer URL when provided', () => {
   const html = buildRendererLoadErrorPage({
     errorDescription: 'load failed',
-    reloadUrl: 'file:///C:/Hermes%20Agent/dist/index.html'
+    reloadUrl: 'file:///C:/Rabbit%20Agent/dist/index.html'
   })
 
   // A data: page cannot recover with location.reload() (it would re-render
   // the error page) — the button must navigate back to the app URL.
-  assert.match(html, /location\.replace\("file:\/\/\/C:\/Hermes%20Agent\/dist\/index\.html"\)/)
+  assert.match(html, /location\.replace\("file:\/\/\/C:\/Rabbit%20Agent\/dist\/index\.html"\)/)
   assert.doesNotMatch(html, /location\.reload\(\)/)
 })
 

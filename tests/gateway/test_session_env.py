@@ -45,32 +45,32 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     )
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_SOURCE", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_TYPE", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_USER_NAME", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_THREAD_ID", raising=False)
 
     tokens = runner._set_session_env(context)
 
     # Values should be readable via get_session_env (contextvar path)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
-    assert get_session_env("HERMES_SESSION_SOURCE") == ""
-    assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
-    assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
-    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
-    assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
-    assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
-    assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("RABBIT_SESSION_SOURCE") == ""
+    assert get_session_env("RABBIT_SESSION_CHAT_ID") == "-1001"
+    assert get_session_env("RABBIT_SESSION_CHAT_NAME") == "Group"
+    assert get_session_env("RABBIT_SESSION_CHAT_TYPE") == "group"
+    assert get_session_env("RABBIT_SESSION_USER_ID") == "123456"
+    assert get_session_env("RABBIT_SESSION_USER_NAME") == "alice"
+    assert get_session_env("RABBIT_SESSION_THREAD_ID") == "17585"
 
     # os.environ should NOT be touched
-    assert os.getenv("HERMES_SESSION_PLATFORM") is None
-    assert os.getenv("HERMES_SESSION_SOURCE") is None
-    assert os.getenv("HERMES_SESSION_CHAT_TYPE") is None
-    assert os.getenv("HERMES_SESSION_THREAD_ID") is None
+    assert os.getenv("RABBIT_SESSION_PLATFORM") is None
+    assert os.getenv("RABBIT_SESSION_SOURCE") is None
+    assert os.getenv("RABBIT_SESSION_CHAT_TYPE") is None
+    assert os.getenv("RABBIT_SESSION_THREAD_ID") is None
 
     # Clean up
     runner._clear_session_env(tokens)
@@ -80,13 +80,13 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)
 
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_TYPE", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_USER_NAME", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_THREAD_ID", raising=False)
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -100,38 +100,38 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     context = SessionContext(source=source, connected_platforms=[], home_channels={})
 
     tokens = runner._set_session_env(context)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
-    assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
-    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("RABBIT_SESSION_USER_ID") == "123456"
+    assert get_session_env("RABBIT_SESSION_CHAT_TYPE") == "group"
 
     runner._clear_session_env(tokens)
 
     # After clear, contextvars should return to defaults (empty)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
-    assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
-    assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
-    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == ""
-    assert get_session_env("HERMES_SESSION_USER_ID") == ""
-    assert get_session_env("HERMES_SESSION_USER_NAME") == ""
-    assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == ""
+    assert get_session_env("RABBIT_SESSION_CHAT_ID") == ""
+    assert get_session_env("RABBIT_SESSION_CHAT_NAME") == ""
+    assert get_session_env("RABBIT_SESSION_CHAT_TYPE") == ""
+    assert get_session_env("RABBIT_SESSION_USER_ID") == ""
+    assert get_session_env("RABBIT_SESSION_USER_NAME") == ""
+    assert get_session_env("RABBIT_SESSION_THREAD_ID") == ""
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     """get_session_env should fall back to os.environ when contextvar is unset."""
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("RABBIT_SESSION_PLATFORM", "discord")
 
     # No contextvar set — should read from os.environ
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == "discord"
 
     # Now set a contextvar — should prefer it
     tokens = set_session_vars(platform="telegram")
-    assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == "telegram"
 
     # After clear — should return "" (explicitly cleared), NOT fall back
     # to os.environ.  This is the fix for #10304: stale os.environ values
     # must not leak through after a gateway session is cleaned up.
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_SESSION_PLATFORM") == ""
+    assert get_session_env("RABBIT_SESSION_PLATFORM") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -141,18 +141,18 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
 
 def test_session_key_falls_back_to_os_environ(monkeypatch):
     """get_session_env for SESSION_KEY should fall back to os.environ."""
-    monkeypatch.setenv("HERMES_SESSION_KEY", "env-session-123")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "env-session-123")
 
     # No contextvar set — should read from os.environ
-    assert get_session_env("HERMES_SESSION_KEY") == "env-session-123"
+    assert get_session_env("RABBIT_SESSION_KEY") == "env-session-123"
 
     # Set contextvar — should prefer it
     tokens = set_session_vars(session_key="ctx-session-456")
-    assert get_session_env("HERMES_SESSION_KEY") == "ctx-session-456"
+    assert get_session_env("RABBIT_SESSION_KEY") == "ctx-session-456"
 
     # After clear — should return "" (explicitly cleared), not os.environ (#10304)
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("RABBIT_SESSION_KEY") == ""
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):
@@ -162,7 +162,7 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     reads back its own value. With os.environ the second task would
     overwrite the first (the old bug).
     """
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_KEY", raising=False)
 
     results = {}
 
@@ -170,7 +170,7 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
         tokens = set_session_vars(session_key=key)
         try:
             await asyncio.sleep(delay)
-            read_back = get_session_env("HERMES_SESSION_KEY")
+            read_back = get_session_env("RABBIT_SESSION_KEY")
             results[key] = read_back
         finally:
             clear_session_vars(tokens)
@@ -196,10 +196,10 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
 async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     """Gateway executor work should inherit session contextvars for tool routing."""
     runner = object.__new__(GatewayRunner)
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_USER_ID", raising=False)
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -220,10 +220,10 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     try:
         result = await runner._run_in_executor_with_context(
             lambda: {
-                "platform": get_session_env("HERMES_SESSION_PLATFORM"),
-                "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
-                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
-                "session_key": get_session_env("HERMES_SESSION_KEY"),
+                "platform": get_session_env("RABBIT_SESSION_PLATFORM"),
+                "chat_id": get_session_env("RABBIT_SESSION_CHAT_ID"),
+                "user_id": get_session_env("RABBIT_SESSION_USER_ID"),
+                "session_key": get_session_env("RABBIT_SESSION_KEY"),
             }
         )
     finally:
@@ -242,49 +242,49 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
 
 def test_cron_session_contextvar_preserves_legacy_env_fallback(monkeypatch):
     """Unset cron ContextVar keeps old env-only cron callers working."""
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("RABBIT_CRON_SESSION", "1")
 
-    assert get_session_env("HERMES_CRON_SESSION") == "1"
+    assert get_session_env("RABBIT_CRON_SESSION") == "1"
 
 
 def test_cron_session_explicit_blank_masks_leaked_env(monkeypatch):
     """Non-cron session bindings must override a stale process cron env flag."""
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("RABBIT_CRON_SESSION", "1")
 
     tokens = set_session_vars(platform="api_server", cron_session="")
     try:
-        assert get_session_env("HERMES_CRON_SESSION") == ""
+        assert get_session_env("RABBIT_CRON_SESSION") == ""
     finally:
         clear_session_vars(tokens)
 
-    assert get_session_env("HERMES_CRON_SESSION") == ""
+    assert get_session_env("RABBIT_CRON_SESSION") == ""
 
 
 def test_cron_session_set_clear_and_reset_tristate(monkeypatch):
     """Cron marker supports _UNSET fallback, 1 cron, and  explicit clear."""
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("RABBIT_CRON_SESSION", "1")
 
     tokens = set_session_vars(cron_session="1")
-    assert get_session_env("HERMES_CRON_SESSION") == "1"
+    assert get_session_env("RABBIT_CRON_SESSION") == "1"
 
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_CRON_SESSION") == ""
+    assert get_session_env("RABBIT_CRON_SESSION") == ""
 
     reset_session_vars()
-    assert get_session_env("HERMES_CRON_SESSION") == "1"
+    assert get_session_env("RABBIT_CRON_SESSION") == "1"
 
 
 @pytest.mark.asyncio
 async def test_plugin_slash_command_sees_session_env(monkeypatch):
-    """A plugin-registered slash command handler must see the same HERMES_SESSION_*
+    """A plugin-registered slash command handler must see the same RABBIT_SESSION_*
     contextvars an agent turn would for that event (#108698): the agent-turn path binds
     them via _set_session_env before running, but plugin command dispatch is a separate,
     earlier path that previously called the handler with nothing bound."""
     from gateway.config import GatewayConfig, PlatformConfig
     from gateway.platforms.event import MessageEvent
 
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
-    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_KEY", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_CHAT_ID", raising=False)
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
@@ -298,11 +298,11 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     seen = {}
 
     def _handler(raw_args):
-        seen["session_key"] = get_session_env("HERMES_SESSION_KEY")
-        seen["chat_id"] = get_session_env("HERMES_SESSION_CHAT_ID")
+        seen["session_key"] = get_session_env("RABBIT_SESSION_KEY")
+        seen["chat_id"] = get_session_env("RABBIT_SESSION_CHAT_ID")
         return f"Bound: {raw_args}"
 
-    from hermes_cli import plugins as _plugins_mod
+    from rabbit_cli import plugins as _plugins_mod
     monkeypatch.setattr(_plugins_mod, "get_plugin_command_handler",
                          lambda name: _handler if name == "gsd-bind" else None)
 
@@ -314,5 +314,5 @@ async def test_plugin_slash_command_sees_session_env(monkeypatch):
     assert seen["session_key"] != ""
     assert seen["chat_id"] == "c1"
     # Bound only for the handler call, not leaked past dispatch
-    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("RABBIT_SESSION_KEY") == ""
 

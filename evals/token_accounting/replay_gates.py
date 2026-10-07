@@ -192,7 +192,7 @@ def scenario(wire: _FakeChat, *, shape: str, real: int, chars: int, tmp: Path) -
     if shape == "gateway":
         return _run_turns(wire, lambda: _make_agent(wire.base_url), history, reload=True, real=real)
     # restore: turn 1 in one process/agent, persisted; fresh agent + reopened DB for the rest.
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     wire.requests.clear()
     wire.usage_script[:] = [real] * (TURNS + 2)
@@ -274,7 +274,7 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="ab-token-accounting-"))
-    os.environ["HERMES_HOME"] = str(tmp / "home")
+    os.environ["RABBIT_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     wire = _FakeChat()

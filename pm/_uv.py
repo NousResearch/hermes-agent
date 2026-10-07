@@ -33,7 +33,7 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
         if location is None:
             if not realize:
                 return None
-            raise InstallError(name, "pinned tool is unavailable", "run `hermes pm install`")
+            raise InstallError(name, "pinned tool is unavailable", "run `rabbit pm install`")
         if name == "python" and target.startswith("win32") and sealed():
             writable = paths.writable_store_root()
             if location[1].root != writable:
@@ -53,6 +53,6 @@ def _toolchain(*, realize: bool = True, explicit: bool = False) -> tuple[Path, P
         if binary is None or not binary.is_file():
             if not realize:
                 return None
-            raise InstallError(name, "installed binary is missing", "run `hermes pm install`")
+            raise InstallError(name, "installed binary is missing", "run `rabbit pm install`")
         binaries[name] = binary
     return binaries["uv"], binaries["python"]

@@ -75,7 +75,7 @@ async function startSession() {
 
   spawnMock.fn.mockReturnValueOnce(fake.pty)
 
-  const start = handles.map.get('hermes:terminal:start') as (
+  const start = handles.map.get('rabbit:terminal:start') as (
     event: { sender: ReturnType<typeof makeSender> },
     payload: Record<string, unknown>
   ) => Promise<{ cwd: string | null; id: string; shell: string }>
@@ -104,7 +104,7 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
 
   // Killing the handle must not break the buffered-exit delivery: a renderer
   // attaching after the fast exit still gets the output gate's exit payload…
-  const attach = handles.map.get('hermes:terminal:attach') as (
+  const attach = handles.map.get('rabbit:terminal:attach') as (
     event: { sender: ReturnType<typeof makeSender> },
     id: string
   ) => boolean
@@ -116,7 +116,7 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
   assert.deepEqual(exitSend?.[1], { code: 0, signal: null })
 
   // …and once the exit is flushed the session is fully gone.
-  const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
+  const write = handles.map.get('rabbit:terminal:write') as (event: unknown, id: string, data: string) => boolean
 
   assert.equal(write({}, session.id, 'echo hi'), false)
 })
@@ -124,12 +124,12 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
 test('explicit dispose kills the PTY and drops the session', async () => {
   const { fake, session } = await startSession()
 
-  const dispose = handles.map.get('hermes:terminal:dispose') as (event: unknown, id: string) => boolean
+  const dispose = handles.map.get('rabbit:terminal:dispose') as (event: unknown, id: string) => boolean
 
   assert.equal(dispose({}, session.id), true)
   assert.equal(fake.pty.kill.mock.calls.length >= 1, true)
 
-  const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
+  const write = handles.map.get('rabbit:terminal:write') as (event: unknown, id: string, data: string) => boolean
 
   assert.equal(write({}, session.id, 'echo hi'), false)
   assert.equal(dispose({}, session.id), false)

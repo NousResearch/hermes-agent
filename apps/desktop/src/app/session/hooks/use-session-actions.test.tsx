@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -20,7 +20,7 @@ import {
   type SessionInfo,
   type SessionResumeResult,
   setSessionArchived
-} from '@/hermes'
+} from '@/rabbit'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -125,7 +125,7 @@ import {
 import type { TranscriptViewCutoff } from './use-session-actions/transcript-provenance'
 import { useSessionStateCache } from './use-session-state-cache'
 
-vi.mock('@/hermes', async importOriginal => ({
+vi.mock('@/rabbit', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
   getSession: vi.fn(),
@@ -3976,7 +3976,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
   )
 
   it('pins an untagged row to the active registry connection instead of the same-named local profile', async () => {
-    setConnection({ connectionId: 'hermes01', mode: 'remote' } as never)
+    setConnection({ connectionId: 'rabbit01', mode: 'remote' } as never)
     setSessions([storedSession({ id: 'remote-stored', profile: 'default' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'remote-stored' } as never)
     vi.mocked(requestGatewayForAgent).mockResolvedValue({
@@ -4000,7 +4000,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resume!('remote-stored', true)
 
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
-      'hermes01',
+      'rabbit01',
       'default',
       'session.resume',
       expect.objectContaining({ session_id: 'remote-stored' })
@@ -7090,7 +7090,7 @@ describe('branchStoredSession failure retry', () => {
     await waitFor(() => expect(createCallCount).toBe(2))
   })
 
-  // Regression for hermes-sweeper review on PR #65411: a retry after a lost
+  // Regression for rabbit-sweeper review on PR #65411: a retry after a lost
   // response must reuse the SAME idempotency key, otherwise the backend
   // spawns a duplicate child session.
   it('passes the same idempotency_key on retry as on the first attempt', async () => {
@@ -7142,7 +7142,7 @@ describe('branchStoredSession failure retry', () => {
     expect(seenKeys[1]).toBe(seenKeys[0])
   })
 
-  // Regression for hermes-sweeper review on PR #65411: the notification must
+  // Regression for rabbit-sweeper review on PR #65411: the notification must
   // go through notifyError's readableError normalization (wrapper stripping,
   // detail extraction, long-message fallback), not raw err.message.
   it('uses readableError normalization for the failure notification', async () => {

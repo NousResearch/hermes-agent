@@ -59,7 +59,7 @@ def _secure(path: Path, mode: int) -> None:
     try:
         os.chmod(path, mode)
     except OSError:
-        pass  # non-POSIX / unsupported FS; HERMES_HOME directory perms still apply
+        pass  # non-POSIX / unsupported FS; RABBIT_HOME directory perms still apply
 
 
 def ensure_dir(path: Path) -> Path:

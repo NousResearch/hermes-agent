@@ -191,11 +191,11 @@ describe('serializeSelectionStructure', () => {
 
 describe('installSelectionCopyColorGuard', () => {
   beforeEach(() => {
-    document.documentElement.dataset.hermesMode = 'dark'
+    document.documentElement.dataset.rabbitMode = 'dark'
   })
 
   afterEach(() => {
-    delete document.documentElement.dataset.hermesMode
+    delete document.documentElement.dataset.rabbitMode
     window.getSelection()?.removeAllRanges()
   })
 
@@ -240,7 +240,7 @@ describe('installSelectionCopyColorGuard', () => {
   })
 
   it('leaves light-ink selections alone when the theme is light', () => {
-    document.documentElement.dataset.hermesMode = 'light'
+    document.documentElement.dataset.rabbitMode = 'light'
 
     const dispose = installSelectionCopyColorGuard(document)
     const host = armSelection('<p style="color: rgb(230, 237, 243)">bright transcript ink</p>')

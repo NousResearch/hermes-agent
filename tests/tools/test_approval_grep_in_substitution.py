@@ -55,7 +55,7 @@ class TestExecutableSubstitutionBodiesStayExecutable:
         assert blocked and reason == "system shutdown/reboot"
 
     def test_public_guard_blocks_without_offering_approval(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "hh"))
         from tools.approval import check_dangerous_command
         calls = []
         result = check_dangerous_command('echo "$(grep -P \'safe\' /dev/null\nreboot)"', "local",

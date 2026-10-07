@@ -1,4 +1,4 @@
-> **Hermes adaptation note:** upstream auteur routed asset generation to several local image CLIs by strength. In Hermes there is one route: the built-in `image_generate` tool for every still and edit (move the returned file into the project's `assets/gen/` path), the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The taste guidance below transfers; the per-CLI shootout tables were dropped in the port.
+> **Rabbit adaptation note:** upstream auteur routed asset generation to several local image CLIs by strength. In Rabbit there is one route: the built-in `image_generate` tool for every still and edit (move the returned file into the project's `assets/gen/` path), the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The taste guidance below transfers; the per-CLI shootout tables were dropped in the port.
 
 # assets.md — producing visual assets
 
@@ -19,7 +19,7 @@ MiniMax music (ambient score) needs `MINIMAX_API_KEY` — skip the audio leg if 
 | Hero / brand-critical stills — peak scene, abstract hero background (needs clean negative space for text), product mockup / UI screen, premium transparent element or icon | `image_generate` | one frame first, approve, then batch style-locked to the anchor. Watch for warm palette drift on cool briefs — anchor the palette in the prompt |
 | Any scene that becomes VIDEO or needs a consistent A→B edit pair; exact brand-COLOR adherence | `image_generate` edit of frame A (§2) | editing keeps the world intact; a second generation never does |
 | Volume & CONTEXT — lifestyle/environmental shots (room, hands, props, in-situ), bulk backgrounds, fast iteration | `image_generate` | cheap iteration; keep the anchor still as the style reference |
-| Real video | an image→video model on an approved keyframe (6–10s) — user-supplied backend or browser tool | animate an approved keyframe; Hermes ships no native video tool |
+| Real video | an image→video model on an approved keyframe (6–10s) — user-supplied backend or browser tool | animate an approved keyframe; Rabbit ships no native video tool |
 | Ambient score | **MiniMax** music | one loopable bed matched to the commit-sheet mood |
 
 Transparent PNG (alpha) depends on the configured backend. **Match the asset's background to the page** — generate the subject on the SAME ground the page uses (white-on-white, or true alpha) so it melts into the layout with no visible frame; a photographic rectangle floating on a flat page is an instant slop tell.
@@ -155,7 +155,7 @@ Depth is a cached master like any still. Feed color + depth to scroll-cinema §3
 
 ## 3. Video — animate an approved keyframe
 
-An image→video model animates an approved keyframe (6 or 10 seconds); Hermes has no native video tool, so use whatever image→video backend the user has (or a browser tool via `browser_exec`), save into `assets/gen/`, then optimize (§5). **Spend video like the motion budget spends attention** — one hero clip + at most a couple supporting; a video that isn't the wow peak is usually a still that should have stayed a still.
+An image→video model animates an approved keyframe (6 or 10 seconds); Rabbit has no native video tool, so use whatever image→video backend the user has (or a browser tool via `browser_exec`), save into `assets/gen/`, then optimize (§5). **Spend video like the motion budget spends attention** — one hero clip + at most a couple supporting; a video that isn't the wow peak is usually a still that should have stayed a still.
 
 **Directed A→B state change (before/after, "first+last frame").** ⚠️ Most image→video models have NO true first+last-frame interpolator: image-to-video animates ONE source frame with no end frame; reference-to-video modes treat extra images as style/content *references*, not strict start/end keyframes — an A+B reference clip is organic drift, not a controlled morph. Routes, best first:
 - **Controlled, on the web (preferred):** the WebGL displacement morph between frame A and frame B (scroll-cinema.md) — exact, scroll-scrubbable, no video model, and it's the skill's signature move anyway. This is the real answer to "we have two frames and want the transition".

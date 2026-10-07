@@ -14,7 +14,7 @@ description: "最简分布式训练 API"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/accelerate` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/accelerate` 安装 |
 | 路径 | `optional-skills/mlops/accelerate` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "最简分布式训练 API"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # HuggingFace Accelerate - 统一分布式训练
@@ -319,11 +319,11 @@ set_seed(42)
 
 ## 高级主题
 
-**Megatron 集成**：张量并行、流水线并行和序列并行的配置，请参阅 [references/megatron-integration.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/accelerate/references/megatron-integration.md)。
+**Megatron 集成**：张量并行、流水线并行和序列并行的配置，请参阅 [references/megatron-integration.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/accelerate/references/megatron-integration.md)。
 
-**自定义插件**：创建自定义分布式插件及高级配置，请参阅 [references/custom-plugins.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/accelerate/references/custom-plugins.md)。
+**自定义插件**：创建自定义分布式插件及高级配置，请参阅 [references/custom-plugins.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/accelerate/references/custom-plugins.md)。
 
-**性能调优**：性能分析、内存优化及最佳实践，请参阅 [references/performance.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/accelerate/references/performance.md)。
+**性能调优**：性能分析、内存优化及最佳实践，请参阅 [references/performance.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/accelerate/references/performance.md)。
 
 ## 硬件要求
 

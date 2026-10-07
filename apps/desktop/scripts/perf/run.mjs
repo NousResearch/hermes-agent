@@ -7,7 +7,7 @@
 //
 // Flags:
 //   --spawn                launch a fully isolated instance (own user-data-dir +
-//                          HERMES_HOME + debug port) instead of attaching
+//                          RABBIT_HOME + debug port) instead of attaching
 //   --port <n>             CDP port to attach to (default 9222)
 //   --dev-port <n>         vite dev-server port to match / spawn (default 5174)
 //   --runs <n>             repeat each scenario n times, report the median (default 1)

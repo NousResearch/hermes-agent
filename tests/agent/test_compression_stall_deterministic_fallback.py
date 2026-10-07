@@ -24,7 +24,7 @@ import agent.conversation_compression as cc
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor import SUMMARY_PREFIX, pin_summary_route
 from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 CHAIN_ENTRY = {
     "provider": "custom", "model": "backup-summarizer", "base_url": "https://fallback.invalid/v1",

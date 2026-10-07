@@ -4,7 +4,7 @@ from pm.workspace import enabled_member_dirs
 
 def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     current = home / "plugins" / "group" / "plugin"
     other_home = home / "profiles" / "other"
     other = other_home / "plugins" / "same"
@@ -19,7 +19,7 @@ def test_scoped_members_respect_disabled_and_keep_other_profiles(tmp_path, monke
 
 
 def test_manifest_only_member_is_named_after_its_plugin_dir_and_stays_unique(tmp_path):
-    """uv's conflict text names the workspace member (``hermes-plugin-<key> depends on …``);
+    """uv's conflict text names the workspace member (``rabbit-plugin-<key> depends on …``);
     a bare path hash left the user with nothing to disable. Two same-named plugins from
     different homes must still be distinct members."""
     import tomllib
@@ -34,7 +34,7 @@ def test_manifest_only_member_is_named_after_its_plugin_dir_and_stays_unique(tmp
         root.mkdir()
         members.append(_workspace_member(plugin, root, identity=plugin))
     names = [tomllib.loads((m / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"] for m in members]
-    assert all(name.startswith("hermes-plugin-my-plugin-") for name in names), names
+    assert all(name.startswith("rabbit-plugin-my-plugin-") for name in names), names
     assert names[0] != names[1]
     assert members[0].name != members[1].name
 
@@ -53,7 +53,7 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
         plugin = tmp_path / home / "plugins" / "hindsight"
         plugin.mkdir(parents=True)
         (plugin / "pyproject.toml").write_text(
-            '[project]\nname = "hermes-plugin-hindsight"\nversion = "1.0.0"\n'
+            '[project]\nname = "rabbit-plugin-hindsight"\nversion = "1.0.0"\n'
             'dependencies = ["hindsight-client>=0.10.1"]\n',
             encoding="utf-8",
         )
@@ -61,7 +61,7 @@ def test_pyproject_member_is_renamed_by_its_key_and_stays_unique(tmp_path):
         root.mkdir()
         members.append(_workspace_member(plugin, root, identity=plugin))
     names = [tomllib.loads((m / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"] for m in members]
-    assert all(name.startswith("hermes-plugin-hindsight-") for name in names), names
+    assert all(name.startswith("rabbit-plugin-hindsight-") for name in names), names
     assert names[0] != names[1]
     document = tomllib.loads((members[0] / "pyproject.toml").read_text(encoding="utf-8"))
     assert document["project"]["version"] == "1.0.0"

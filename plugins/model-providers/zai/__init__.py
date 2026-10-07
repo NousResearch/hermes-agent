@@ -29,7 +29,7 @@ def _has_token(model: str | None, tokens: tuple[str, ...]) -> bool:
 
 
 def _glm_5_2_reasoning_effort(reasoning_config: dict | None, *, model: str | None = None) -> str | None:
-    """Hermes effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
+    """Rabbit effort -> GLM vocabulary (5.2: high/max; 5.3: low..max). Below-floor
     efforts clamp to the floor; disabled/unset leaves the server default."""
     effort = re_.requested_effort(reasoning_config)
     if effort is None or effort == "none":

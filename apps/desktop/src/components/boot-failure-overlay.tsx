@@ -10,7 +10,6 @@ import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig, DesktopOauthLoginResult } from '@/global'
 import { useI18n } from '@/i18n'
-import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
 import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
@@ -97,7 +96,7 @@ export function BootFailureOverlay() {
   const [showLogs, setShowLogs] = useState(false)
   const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
   const [connectionConfig, setConnectionConfig] = useState<DesktopConnectionConfig | null>(null)
-  // A remote/cloud backend that failed to boot is fixable from gateway settings,
+  // A remote backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
   // A bundled install (payload ships in-app) has no installer to repair with.
@@ -127,7 +126,7 @@ export function BootFailureOverlay() {
       return
     }
 
-    void window.hermesDesktop
+    void window.rabbitDesktop
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
@@ -143,7 +142,7 @@ export function BootFailureOverlay() {
 
     let cancelled = false
 
-    void window.hermesDesktop
+    void window.rabbitDesktop
       ?.getBootstrapState()
       .then(snapshot => {
         if (!cancelled && snapshot) {
@@ -173,7 +172,7 @@ export function BootFailureOverlay() {
     let cancelled = false
 
     void (async () => {
-      const desktop = window.hermesDesktop
+      const desktop = window.rabbitDesktop
 
       if (!desktop?.getConnectionConfig) {
         return
@@ -226,7 +225,7 @@ export function BootFailureOverlay() {
 
   const retry = async () => {
     setBusy('retry')
-    await window.hermesDesktop?.resetBootstrap().catch(() => undefined)
+    await window.rabbitDesktop?.resetBootstrap().catch(() => undefined)
     window.location.reload()
   }
 
@@ -234,11 +233,11 @@ export function BootFailureOverlay() {
     setBusy('repair')
 
     try {
-      if (!window.hermesDesktop?.repairBootstrap) {
+      if (!window.rabbitDesktop?.repairBootstrap) {
         throw new Error(t.boot.errors.ipcBridgeUnavailable)
       }
 
-      const result = await window.hermesDesktop.repairBootstrap()
+      const result = await window.rabbitDesktop.repairBootstrap()
 
       // Main refuses repair on a bundled install (its stamp is authoritative;
       // our snapshot may be stale) — say what to do instead of the raw code.
@@ -261,16 +260,14 @@ export function BootFailureOverlay() {
   const switchToLocalGateway = async () => {
     setBusy('local')
     // Soft apply: tears down the primary and re-dials in place (shell stays).
-    await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
+    await window.rabbitDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
     setBusy(null)
   }
 
   // Clear this gateway's stale auth first, then re-establish it through the
-  // connection's owning login flow. Hermes Cloud must reuse its portal session
-  // and per-agent cascade; generic remote gateways use native/embedded OAuth.
-  // Reload after success so boot mints a fresh ticket against the new session.
-  // The cloud ladder is shared with Settings (reestablishCloudAgentSession) so
-  // the boot recovery and the in-Settings recovery cannot drift apart.
+  // connection's owning login flow: generic remote gateways use
+  // native/embedded OAuth. Reload after success so boot mints a fresh ticket
+  // against the new session.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -279,43 +276,15 @@ export function BootFailureOverlay() {
     setBusy('signin')
 
     try {
-      const desktop = window.hermesDesktop
+      const desktop = window.rabbitDesktop
 
-      let connected: boolean
-      // Only the oauth arm reports a reason (DesktopOauthLoginResult.error);
-      // the incomplete sign-in notice below surfaces it. The cloud ladder
-      // reports an outcome, handled in its own branch.
-      let error: string | undefined
+      await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
-      if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
-        // The ladder drops this gateway's lapsed cookies itself — logging out
-        // here as well would fire the IPC twice for the cloud path.
-        const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url)
-
-        if (outcome === 'portal-incomplete') {
-          notify({
-            kind: 'warning',
-            title: t.boot.failure.signInIncompleteTitle,
-            message: t.boot.failure.signInIncompleteMessage
-          })
-
-          return
-        }
-
-        connected = true
-      } else {
-        await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
-
-        const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
-        connected = result?.connected === true
-        error = result?.error
-      }
+      const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      const connected = result?.connected === true
+      const error: string | undefined = result?.error
 
       if (connected) {
-        if (connectionConfig?.mode === 'cloud') {
-          await desktop?.resetBootstrap().catch(() => undefined)
-        }
-
         notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
         window.location.reload()
 
@@ -334,7 +303,7 @@ export function BootFailureOverlay() {
     }
   }
 
-  const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+  const openLogs = () => void window.rabbitDesktop?.revealLogs().catch(() => undefined)
 
   const dismiss = () => setDismissedError(boot.error)
 
@@ -393,11 +362,6 @@ export function BootFailureOverlay() {
 
   let actions: RecoveryAction[]
   let hint: string
-  // The electron boot path flags a Nous Cloud backend-down (502/503/504) with
-  // the structured isCloudBackendDown/statusCode it carries through boot
-  // progress. When set, the recovery screen leads with the cloud-specific
-  // guidance instead of the generic remote-failure copy (#85335).
-  const cloudDown = Boolean(boot.isCloudBackendDown)
 
   if (remoteReauth) {
     actions = [
@@ -412,31 +376,6 @@ export function BootFailureOverlay() {
       localAction
     ]
     hint = copy.remoteSignInHint(label)
-  } else if (cloudDown) {
-    // A Nous Cloud agent is down — the user cannot restart the managed
-    // instance and Repair is local-only. Lead with the paths that actually
-    // resolve it: check the portal (status/instance controls), switch to the
-    // local gateway, retry, or get support on Discord. Portal/Discord are
-    // buttons (not URLs buried in the hint prose) so localized hints can't
-    // drift the links.
-    actions = [
-      {
-        key: 'portal',
-        label: copy.cloudDownCheckPortal,
-        onClick: () => openExternalLink('https://portal.nousresearch.com'),
-        icon: <ExternalLink />
-      },
-      localAction,
-      { ...retryAction, variant: 'secondary' },
-      {
-        key: 'discord',
-        label: copy.cloudDownDiscord,
-        onClick: () => openExternalLink('https://discord.gg/NousResearch'),
-        variant: 'ghost'
-      },
-      { ...settingsAction, variant: 'ghost' }
-    ]
-    hint = copy.cloudDownHint
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
     hint = copy.remoteFailureHint
@@ -475,7 +414,7 @@ export function BootFailureOverlay() {
   if (view === 'connect') {
     return (
       <BootFailureModal onDismiss={dismiss} title={copy.gatewaySettings}>
-        <div className="relative flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <div className="relative flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-rabbit) bg-(--ui-chat-bubble-background) shadow-rabbit">
           <DialogCloseButton />
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
@@ -499,18 +438,18 @@ export function BootFailureOverlay() {
 
   return (
     <BootFailureModal onDismiss={dismiss}>
-      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-rabbit) bg-(--ui-chat-bubble-background) shadow-rabbit">
         <DialogCloseButton />
         <div className="flex items-start gap-3 px-5 py-4 pr-12">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <DialogPrimitive.Title asChild>
               <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-                {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+                {remoteReauth ? copy.remoteTitle : copy.title}
               </h2>
             </DialogPrimitive.Title>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
+              {remoteReauth ? copy.remoteDescription : copy.description}
             </p>
           </div>
         </div>

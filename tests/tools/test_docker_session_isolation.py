@@ -137,7 +137,7 @@ class TestRoutedScopeQualification:
 
     def test_colliding_session_id_is_isolated_per_routed_profile(self, monkeypatch, tmp_path):
         from agent import secret_scope
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         _enable_isolation(monkeypatch)
         raw = "api-9a5f7809eec0aac1"
@@ -150,7 +150,7 @@ class TestRoutedScopeQualification:
         try:
             keys, cwds = {}, {}
             for name in ("research", "default", "research"):  # A → B → A
-                token = set_hermes_home_override(str(homes[name]))
+                token = set_rabbit_home_override(str(homes[name]))
                 try:
                     keys[name] = terminal_tool._resolve_container_task_id(raw)
                     terminal_tool.register_container_alias(f"child-{name}", raw)
@@ -160,20 +160,20 @@ class TestRoutedScopeQualification:
                         terminal_tool.record_session_cwd(raw, f"/workspace/{name}")
                     cwds[name] = terminal_tool.get_session_cwd(raw)
                 finally:
-                    reset_hermes_home_override(token)
+                    reset_rabbit_home_override(token)
             assert keys["research"] == f"profile:research:{raw}"
             assert keys["default"] == f"default:{raw}"
             assert cwds == {"research": "/workspace/research", "default": "/workspace/default"}
-            token = set_hermes_home_override(str(homes["default"]))
+            token = set_rabbit_home_override(str(homes["default"]))
             try:
                 terminal_tool.clear_session_cwd(raw)
             finally:
-                reset_hermes_home_override(token)
-            token = set_hermes_home_override(str(homes["research"]))
+                reset_rabbit_home_override(token)
+            token = set_rabbit_home_override(str(homes["research"]))
             try:
                 assert terminal_tool.get_session_cwd(raw) == "/workspace/research"
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
         finally:
             secret_scope.set_multiplex_active(False)
 

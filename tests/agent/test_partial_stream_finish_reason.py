@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from rabbit_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.conversation_loop import _join_truncated_parts
 
 
@@ -78,7 +78,7 @@ class TestPartialStreamStubFinishReason:
         agent = _make_agent()
         agent._current_streamed_assistant_text = "Here's my answer so far"
 
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -109,7 +109,7 @@ class TestTerminalChunkFenceException:
     def test_superseded_writer_accepts_finish_reason_chunk(
         self, _mock_close, mock_create, monkeypatch,
     ):
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         agent_box = {}
 
         class SupersedeBeforeFinish:
@@ -138,7 +138,7 @@ class TestTerminalChunkFenceException:
     def test_superseded_writer_still_fences_further_content(
         self, _mock_close, mock_create, monkeypatch,
     ):
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         agent_box = {}
 
         class SupersedeBeforeMoreText:
@@ -171,7 +171,7 @@ class TestTerminalChunkFenceException:
     def test_genuine_truncation_without_finish_still_drops(
         self, _mock_close, mock_create, monkeypatch,
     ):
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
 
         def _truncated():
             yield _make_stream_chunk(content="cut off with no terminal chunk")
@@ -562,7 +562,7 @@ class TestContentFilterStallActivatesFallback:
         agent._fire_stream_delta = lambda text: None
         agent._current_streamed_assistant_text = "Writing the file: "
 
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -946,7 +946,7 @@ class TestPortalLastOneWithoutDone:
 class TestStreamIncludeUsageFinalChunk:
     """OpenAI / vLLM streaming with stream_options={'include_usage': True} emits
     a final usage-only chunk with empty choices (choices=[]) and no finish_reason.
-    Hermes must recognize that the presence of usage proves the stream completed
+    Rabbit must recognize that the presence of usage proves the stream completed
     cleanly and must NOT misclassify it as a mid-stream network drop (#91373).
     """
 
@@ -970,7 +970,7 @@ class TestStreamIncludeUsageFinalChunk:
         mock_create.return_value = mock_client
 
         agent = _make_agent()
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id != PARTIAL_STREAM_STUB_ID
@@ -998,7 +998,7 @@ class TestStreamIncludeUsageFinalChunk:
 
         agent = _make_agent()
         agent._current_streamed_assistant_text = "Partial text before drop"
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -1025,7 +1025,7 @@ class TestStreamIncludeUsageFinalChunk:
         mock_create.return_value = mock_client
 
         agent = _make_agent()
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -1066,7 +1066,7 @@ class TestMergedFinishChunkSurvivesSSEGuard:
         mock_create.return_value = mock_client
 
         agent = _make_agent()
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id != PARTIAL_STREAM_STUB_ID
@@ -1092,7 +1092,7 @@ class TestMergedFinishChunkSurvivesSSEGuard:
         mock_create.return_value = mock_client
 
         agent = _make_agent()
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id != PARTIAL_STREAM_STUB_ID

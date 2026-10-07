@@ -135,7 +135,7 @@ class TestGoogleMeetSpawn:
     ):
         """start() resolves the key from the scope and injects it explicitly."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("HERMES_MEET_REALTIME_KEY", raising=False)
+        monkeypatch.delenv("RABBIT_MEET_REALTIME_KEY", raising=False)
         multiplex_scope({"OPENAI_API_KEY": "scoped-openai-key"})
 
         import plugins.google_meet.process_manager as pm
@@ -163,7 +163,7 @@ class TestGoogleMeetSpawn:
         child_env = captured["env"]
         # The scoped key crosses the process boundary explicitly, not via
         # inherited os.environ (which had no key at all).
-        assert child_env["HERMES_MEET_REALTIME_KEY"] == "scoped-openai-key"
+        assert child_env["RABBIT_MEET_REALTIME_KEY"] == "scoped-openai-key"
 
     def test_explicit_key_argument_still_wins(
         self, multiplex_scope, monkeypatch, tmp_path
@@ -191,4 +191,4 @@ class TestGoogleMeetSpawn:
             realtime_api_key="explicit-key",
         )
 
-        assert captured["env"]["HERMES_MEET_REALTIME_KEY"] == "explicit-key"
+        assert captured["env"]["RABBIT_MEET_REALTIME_KEY"] == "explicit-key"

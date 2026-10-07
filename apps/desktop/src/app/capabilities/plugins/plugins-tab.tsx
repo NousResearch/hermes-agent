@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
-import type { ProfileScope } from '@/hermes'
+import type { ProfileScope } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
@@ -60,12 +60,12 @@ import { PluginSettingsForm } from './plugin-settings-form'
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
 // hides the docs chrome and adds "+ Add to this Agent" per card, which posts
-//   { type: 'hermes-plugin-pick', name, repo, sha, subdir, tier, installCmd }
+//   { type: 'rabbit-plugin-pick', name, repo, sha, subdir, tier, installCmd }
 // to the parent window. We validate the origin and open the shared
 // dual-target install modal (agent half → catalog-pinned install into the
 // scoped profile; desktop half → this app), so unified packages install both
 // halves in one flow. URLs live in `@/lib/plugin-catalog` so the
-// `hermes://plugin/install?catalog=` deep link resolves against the same feed.
+// `rabbit://plugin/install?catalog=` deep link resolves against the same feed.
 
 // Catalog viewport: persisted through the shared pane store, dragged from the
 // section's TOP edge ("pull the catalog up"), clamped so neither the catalog
@@ -101,14 +101,14 @@ function profileParam(scope: ProfileScope): null | string {
 }
 
 function reveal(file: string) {
-  void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
+  void window.rabbitDesktop?.revealPath?.(file)?.catch(() => undefined)
 }
 
 async function revealPluginsDir() {
   try {
     // Electron owns the app-level plugin root — deriving it from the backend's
-    // hermes_home breaks against a remote backend (#66899).
-    const dir = await window.hermesDesktop?.desktopPluginsRoot?.()
+    // rabbit_home breaks against a remote backend (#66899).
+    const dir = await window.rabbitDesktop?.desktopPluginsRoot?.()
 
     if (!dir) {
       notifyError('Desktop plugins are unavailable', 'Could not resolve the plugins folder')
@@ -116,7 +116,7 @@ async function revealPluginsDir() {
       return
     }
 
-    const result = await window.hermesDesktop?.openDir?.(dir)
+    const result = await window.rabbitDesktop?.openDir?.(dir)
 
     if (result && !result.ok) {
       notifyError(result.error ?? 'unknown error', 'Could not open the plugins folder')
@@ -129,7 +129,7 @@ async function revealPluginsDir() {
 /** Copy any changed unified desktop halves into the app root FIRST, then
  *  rescan the root — a concurrent scan would read the pre-copy state. */
 async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
-  await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
+  await window.rabbitDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
   await loadAgentPlugins(requestGateway, scope)
 }
@@ -157,7 +157,7 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
 const SERVER_TONE = {
   connected: 'success',
   app_not_running: 'warn',
-  hermes_not_connected: 'warn',
+  rabbit_not_connected: 'warn',
   endpoint_unavailable: 'warn',
   no_interactive_session: 'warn',
   unknown: 'warn',
@@ -280,7 +280,7 @@ function PackageRow({
   // the backend and entrypoint (pip-installed) ones go with their package.
   const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
   const unavailableServers = agent?.servers?.filter(server => server.state !== 'connected') ?? []
-  // A STANDALONE desktop plugin (a folder in <HERMES_HOME>/desktop-plugins with
+  // A STANDALONE desktop plugin (a folder in <RABBIT_HOME>/desktop-plugins with
   // no agent package behind it) is deleted by Electron. A unified package's
   // desktop half is not offered here: uninstalling the agent half prunes it.
   const desktopRemovable = desktop?.kind === 'disk' && !desktop.packageName && !agent
@@ -644,7 +644,7 @@ export const PluginsTab = memo(function PluginsTab({
 
       const data = event.data as null | PluginPickMessage
 
-      if (!data || data.type !== 'hermes-plugin-pick' || !data.name || !data.repo) {
+      if (!data || data.type !== 'rabbit-plugin-pick' || !data.name || !data.repo) {
         return
       }
 

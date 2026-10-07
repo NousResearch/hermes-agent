@@ -23,8 +23,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           # Desktop checks also run Python payload and icon build helpers, and
-          # the electron contracts drive real hermes_cli/pm code through
-          # HERMES_PYTHON, which needs the application dependencies.
+          # the electron contracts drive real rabbit_cli/pm code through
+          # RABBIT_PYTHON, which needs the application dependencies.
           toolchain: all
           extras: '[]'
           test-environment: 'true'

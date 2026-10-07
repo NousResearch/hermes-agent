@@ -79,7 +79,7 @@ const intersects = (a: Bounds, b: Bounds): boolean =>
 /**
  * The fullscreen app the HUD is floating over on `display`, or null.
  *
- * Front-to-back: skip every window of our own process (all Hermes windows
+ * Front-to-back: skip every window of our own process (all Rabbit windows
  * share main's pid) and the desktop shell's display-sized layers, then let the
  * FIRST window that intersects the display decide — covering it means a
  * fullscreen app, anything less means ordinary windows are on top and the

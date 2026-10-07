@@ -1,6 +1,6 @@
 """MemoryManager strips slash-skill scaffolding for every provider.
 
-When a user invokes a /skill or /bundle, Hermes expands the turn into a
+When a user invokes a /skill or /bundle, Rabbit expands the turn into a
 model-facing message that embeds the full skill body. Feeding that verbatim to
 memory providers pollutes their stores/embeddings with prompt scaffolding
 instead of what the user actually asked. The strip lives once in MemoryManager

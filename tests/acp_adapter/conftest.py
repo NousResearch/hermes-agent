@@ -1,7 +1,7 @@
 """Shared fixtures for tests/acp_adapter.
 
-Keeps the ACP server tests offline: ``HermesACPAgent._build_model_state``
-calls ``hermes_cli.inventory.build_models_payload``, which (without this
+Keeps the ACP server tests offline: ``RabbitACPAgent._build_model_state``
+calls ``rabbit_cli.inventory.build_models_payload``, which (without this
 fixture) performs live network fetches — models.dev registry, GitHub model
 catalog, Copilot token exchange, Anthropic model list — adding ~3s of real
 SSL/socket time to every test that creates or loads a session (~147s total
@@ -18,7 +18,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _offline_model_inventory(monkeypatch):
     """Stub the shared model inventory so ACP tests never hit the network."""
-    import hermes_cli.inventory as inventory
+    import rabbit_cli.inventory as inventory
 
     class _StubPickerContext:
         def with_overrides(self, **_kwargs):

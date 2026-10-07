@@ -18,12 +18,12 @@ OVERRIDE = {"model": "nous/hermes-4", "provider": "nous"}
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    import hermes_state
+    import rabbit_state
 
     def _raise():
         raise RuntimeError("SQLite disabled in test")
 
-    monkeypatch.setattr(hermes_state, "SessionDB", _raise)
+    monkeypatch.setattr(rabbit_state, "SessionDB", _raise)
     with patch("gateway.session.SessionStore._ensure_loaded"):
         s = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
     s._loaded = True

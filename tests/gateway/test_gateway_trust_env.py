@@ -4,8 +4,8 @@ import pytest
 from gateway.platforms import base as gw_base
 
 def _write_config(tmp_path, monkeypatch, body: str) -> None:
-    # load_config caches on (path, mtime) — a fresh tmp HERMES_HOME per test is a fresh cache key.
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # load_config caches on (path, mtime) — a fresh tmp RABBIT_HOME per test is a fresh cache key.
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(body)
 
 @pytest.mark.parametrize(

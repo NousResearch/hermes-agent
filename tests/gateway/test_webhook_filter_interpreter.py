@@ -9,8 +9,8 @@ from tools.environments import local
 
 
 def _filter_script(body: str):
-    from hermes_constants import get_hermes_home
-    scripts = get_hermes_home() / "scripts"
+    from rabbit_constants import get_rabbit_home
+    scripts = get_rabbit_home() / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     filt = scripts / "filter.sh"
     filt.write_text(body, encoding="utf-8")

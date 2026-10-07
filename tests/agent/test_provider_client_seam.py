@@ -18,8 +18,8 @@ from providers.base import ProviderProfile
 
 
 class _FakeClient:
-    HERMES_SKIP_TRANSPORT_WRAP = True
-    HERMES_SKIP_ASYNC_WRAP = True
+    RABBIT_SKIP_TRANSPORT_WRAP = True
+    RABBIT_SKIP_ASYNC_WRAP = True
     api_key = "k"
     base_url = "acp://seam-test"
 
@@ -95,9 +95,9 @@ def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients
     from agent.copilot_acp_client import CopilotACPClient
     from agent.gemini_native_adapter import GeminiNativeClient
 
-    assert CopilotACPClient.HERMES_SKIP_TRANSPORT_WRAP and CopilotACPClient.HERMES_SKIP_ASYNC_WRAP
-    assert GeminiNativeClient.HERMES_SKIP_TRANSPORT_WRAP
-    assert not getattr(GeminiNativeClient, "HERMES_SKIP_ASYNC_WRAP", False)
+    assert CopilotACPClient.RABBIT_SKIP_TRANSPORT_WRAP and CopilotACPClient.RABBIT_SKIP_ASYNC_WRAP
+    assert GeminiNativeClient.RABBIT_SKIP_TRANSPORT_WRAP
+    assert not getattr(GeminiNativeClient, "RABBIT_SKIP_ASYNC_WRAP", False)
 
     client = _FakeClient()  # never imported by auxiliary_client
     assert _maybe_wrap_anthropic(client, "m", "k", "acp://seam-test") is client

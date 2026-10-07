@@ -19,7 +19,6 @@ import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
-import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
@@ -33,7 +32,6 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
-import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -42,7 +40,6 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
-import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
@@ -94,7 +91,7 @@ import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/stor
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -103,7 +100,7 @@ import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
-import { useHermesConfigRecord } from '../hooks/use-config-record'
+import { useRabbitConfigRecord } from '../hooks/use-config-record'
 import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
@@ -129,7 +126,7 @@ import { SessionSwitcher } from '../session-switcher'
 import { useBackgroundQueueDrain } from '../session/hooks/use-background-queue-drain'
 import { useContextSuggestions } from '../session/hooks/use-context-suggestions'
 import { useCwdActions } from '../session/hooks/use-cwd-actions'
-import { useHermesConfig } from '../session/hooks/use-hermes-config'
+import { useRabbitConfig } from '../session/hooks/use-rabbit-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
@@ -205,7 +202,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // Billing recovery routes to Settings → Billing from surfaces without router
   // context (the sticky toast). The shell owns `navigate`, so it consumes the
   // intent counter here; the ref skips the initial mount value.
-  const billingSettingsSeenRef = useRef(0)
   const poolLimitsSettingsSeenRef = useRef(0)
   const routeRequestSeenRef = useRef(0)
   const backendRestartSeenRef = useRef(0)
@@ -218,7 +214,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
-  const billingSettingsRequest = useStore($billingSettingsRequest)
   const poolLimitsSettingsRequest = useStore($poolLimitsSettingsRequest)
   const routeRequest = useStore($routeRequest)
   const backendRestartRequest = useStore($backendRestartRequest)
@@ -237,9 +232,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     navigate(routeRequest.path)
   }, [navigate, routeRequest])
 
-  // "Restart Hermes" from a toast: recycle the local backend the user is
+  // "Restart Rabbit" from a toast: recycle the local backend the user is
   // looking at (same IPC the Models page uses), then let the boot hook re-dial.
-  // A remote/cloud connection has no local process to recycle — there the
+  // A remote connection has no local process to recycle — there the
   // only meaningful "restart" is re-dialing the connection.
   // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
   useEffect(() => {
@@ -251,29 +246,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     if (backendRestartRequest > 0) {
       if ($connection.get()?.mode === 'remote') {
-        void reconnectGateway().catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
+        void reconnectGateway().catch(err => notifyError(err, translateNow('notifications.errors.restartRabbitFailed')))
 
         return
       }
 
-      void window.hermesDesktop
+      void window.rabbitDesktop
         ?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get()))
-        .catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
+        .catch(err => notifyError(err, translateNow('notifications.errors.restartRabbitFailed')))
     }
   }, [backendRestartRequest])
-
-  // eslint-disable-next-line no-restricted-syntax -- one-shot request-seen sentinel, not an atom mirror
-  useEffect(() => {
-    if (billingSettingsRequest === billingSettingsSeenRef.current) {
-      return
-    }
-
-    billingSettingsSeenRef.current = billingSettingsRequest
-
-    if (billingSettingsRequest > 0) {
-      navigate(`${SETTINGS_ROUTE}?tab=billing`)
-    }
-  }, [billingSettingsRequest, navigate])
 
   // Pool-cap recovery is fired by the notification action, which has no router
   // context. Keep navigation user-initiated: the counter changes only when the
@@ -442,7 +424,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
+  const { refreshRabbitConfig, sttEnabled, voiceMaxRecordingSeconds } = useRabbitConfig({ activeSessionIdRef })
 
   const { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel } = useModelControls({
     cacheOwnerConnectionId: activeConnectionId || undefined,
@@ -457,9 +439,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // don't have router access); listen and navigate to the settings keybinds tab.
   useEffect(() => {
     const onOpenKeybinds = () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-    window.addEventListener('hermes:open-keybinds', onOpenKeybinds)
+    window.addEventListener('rabbit:open-keybinds', onOpenKeybinds)
 
-    return () => window.removeEventListener('hermes:open-keybinds', onOpenKeybinds)
+    return () => window.removeEventListener('rabbit:open-keybinds', onOpenKeybinds)
   }, [navigate])
 
   // Dev-only: install the credit-notice demo trigger (Ctrl+Shift+C / ⌘K palette
@@ -527,7 +509,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     activeSessionIdRef,
     hydrateFromStoredSession,
     queryClient,
-    refreshHermesConfig,
+    refreshRabbitConfig,
     refreshSessions,
     sessionStateByRuntimeIdRef,
     updateSessionState
@@ -627,10 +609,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // backend. These refreshes carry intent tokens so an in-flight picker
     // click still wins.
     void refreshCurrentModel(true)
-    void refreshHermesConfig(true)
+    void refreshRabbitConfig(true)
     void refreshActiveProfile()
     resetProjectTreeState()
-  }, [gatewayScope, refreshCurrentModel, refreshHermesConfig])
+  }, [gatewayScope, refreshCurrentModel, refreshRabbitConfig])
 
   // New session anchored to a workspace. Seeds cwd + branch from the clicked
   // workspace; an explicit worktree path also drills the sidebar into that
@@ -935,7 +917,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onGatewayReady: g => {
       gatewayRef.current = g
     },
-    refreshHermesConfig,
+    refreshRabbitConfig,
     refreshSessions
   })
 
@@ -955,7 +937,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     const report = () => void reportPendingUpdateRun(requestGateway)
     report()
 
-    return window.hermesDesktop?.updates?.onPendingRun?.(report)
+    return window.rabbitDesktop?.updates?.onPendingRun?.(report)
   }, [gatewayState, requestGateway])
 
   useDesktopMetrics({
@@ -991,7 +973,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshActiveTranscript,
     refreshCronJobs,
     refreshCurrentModel,
-    refreshHermesConfig,
+    refreshRabbitConfig,
     refreshMessagingSessions,
     refreshSessions,
     requestGateway,
@@ -1006,7 +988,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // display.resume_last_session gates the cold-start restore. `undefined` while
   // the record is still loading holds the restore latch open; a failed fetch
   // falls back to the historical behavior (resume).
-  const configRecord = useHermesConfigRecord()
+  const configRecord = useRabbitConfigRecord()
 
   const resumeLastSession = configRecord.isPending
     ? undefined
@@ -1301,7 +1283,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
   // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
   // renderer paints its own min/max/close (main decides via customWindowControls).
-  const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
+  const customWindowControls = connection?.customWindowControls ?? window.rabbitDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
   const shownTool = shownInMode(interfaceMode)
@@ -1369,7 +1351,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}
           onCompleted={() => {
-            void refreshHermesConfig()
+            void refreshRabbitConfig()
             void refreshCurrentModel()
             void queryClient.invalidateQueries({ queryKey: ['model-options'] })
           }}
@@ -1384,10 +1366,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           requestGateway={requestGateway}
         />
       )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}
@@ -1420,7 +1398,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             gateway={gateway}
             onClose={closeOverlayToPreviousRoute}
             onConfigSaved={() => {
-              void refreshHermesConfig()
+              void refreshRabbitConfig()
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })
             }}
@@ -1493,10 +1471,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
       <ConfirmHost />
-
-      {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
-          (error card action); renders nothing until requested. */}
-      <SendDiagnosticsHost />
 
       {/* Fallback modal when opening an external URL fails — carries the URL
           so a dead system-browser click is never silent. */}

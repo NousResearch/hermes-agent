@@ -47,7 +47,7 @@ describe('Bot Screen install password card', () => {
           fail: vi.fn(),
           id: 'srq-1',
           method: 'display.install.sudo',
-          params: { profile_key: '/home/h/.hermes', session_id: '' },
+          params: { profile_key: '/home/h/.rabbit', session_id: '' },
           profile: 'default',
           respond
         },

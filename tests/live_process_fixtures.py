@@ -1,4 +1,4 @@
-"""Sleeper script used by the live process-topology E2Es to stand in for real Hermes processes.
+"""Sleeper script used by the live process-topology E2Es to stand in for real Rabbit processes.
 
 The fixtures spawn ``python <sleeper.py> <argv tail...>``: the tail is inert to the child but
 fully visible to psutil / ``Win32_Process`` cmdline scans, which is what the detection and
@@ -29,7 +29,7 @@ def sleeper_script_path() -> str:
     """Path to the sleeper script, created once per test session."""
     global _sleeper_script
     if _sleeper_script is None:
-        path = Path(tempfile.mkdtemp(prefix="hermes-live-sleeper-")) / "sleeper.py"
+        path = Path(tempfile.mkdtemp(prefix="rabbit-live-sleeper-")) / "sleeper.py"
         path.write_text(_SLEEPER_SOURCE, encoding="utf-8")
         _sleeper_script = path
     return str(_sleeper_script)

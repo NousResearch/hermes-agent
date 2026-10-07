@@ -144,7 +144,7 @@ all_chars = set()
 for pal in [PAL_DEFAULT, PAL_DENSE, PAL_BLOCKS, PAL_RUNE, PAL_KATA,
             PAL_GREEK, PAL_MATH, PAL_DOTS, PAL_BRAILLE, PAL_STARS,
             PAL_HALFFILL, PAL_HATCH, PAL_BINARY, PAL_MUSIC, PAL_BOX,
-            PAL_CIRCUIT, PAL_ARROWS, PAL_HERMES]:  # ... all palettes used in project
+            PAL_CIRCUIT, PAL_ARROWS, PAL_RABBIT]:  # ... all palettes used in project
     all_chars.update(pal)
 # Add any overlay text characters
 all_chars.update("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,-:;!?/|")
@@ -304,7 +304,7 @@ PAL_HATCH    = " ▣▤▥▦▧▨▩"                     # crosshatch density
 
 #### Project-Specific (examples -- invent new ones per project)
 ```python
-PAL_HERMES   = " .\u00b7~=\u2248\u221e\u26a1\u263f\u2726\u2605\u2295\u25ca\u25c6\u25b2\u25bc\u25cf\u25a0"   # mythology/tech blend
+PAL_RABBIT   = " .\u00b7~=\u2248\u221e\u26a1\u263f\u2726\u2605\u2295\u25ca\u25c6\u25b2\u25bc\u25cf\u25a0"   # mythology/tech blend
 PAL_OCEAN    = " ~\u2248\u2248\u2248\u223c\u2307\u2248\u224b\u224c\u2248"                       # water/wave characters
 PAL_ORGANIC  = " .\u00b0\u2218\u2022\u25e6\u25c9\u2742\u273f\u2741\u2743"                 # growing/botanical
 PAL_MACHINE  = " _\u2500\u2502\u250c\u2510\u253c\u2261\u25a0\u2588\u2593\u2592\u2591"             # mechanical/industrial

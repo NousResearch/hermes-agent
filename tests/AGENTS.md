@@ -1,11 +1,11 @@
-# tests/ — how Hermes tests are written and run
+# tests/ — how Rabbit tests are written and run
 
 Applies on top of the root `AGENTS.md`. Read it before adding or changing any test.
 
 ## Running tests
 
 **ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity: credential
-vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `HERMES_HOME` → temp dir, and per-file subprocess
+vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `RABBIT_HOME` → temp dir, and per-file subprocess
 isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU count) so
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
@@ -19,7 +19,7 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 This is a fresh build, not an in-place sync. If the disposable output exists,
 stop its processes and intentionally remove it before regeneration. The runner
 clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
-fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+fresh output outside the checkout, set `RABBIT_PYTHON` to its interpreter.
 
 ```bash
 scripts/run_tests.sh                                    # full suite
@@ -29,33 +29,33 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 ```
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
-  `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
+  `RABBIT_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
   retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
-- **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
-  `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
+- **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/rabbit_cli/`,
+  `tests/agent/`, `tests/rabbit_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
   under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
-  `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
+  `utils`, `rabbit_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
   cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
 - **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
-- **Tests must not write to `~/.hermes/`.** The autouse `_isolate_hermes_home` fixture in
-  `tests/conftest.py` redirects `HERMES_HOME`; never hardcode `~/.hermes/` in tests. Profile
-  tests also mock `Path.home()` so `_get_profiles_root()` / `_get_default_hermes_home()` stay
-  in the temp dir (pattern: `tests/hermes_cli/test_profiles.py`):
+- **Tests must not write to `~/.rabbit/`.** The autouse `_isolate_rabbit_home` fixture in
+  `tests/conftest.py` redirects `RABBIT_HOME`; never hardcode `~/.rabbit/` in tests. Profile
+  tests also mock `Path.home()` so `_get_profiles_root()` / `_get_default_rabbit_home()` stay
+  in the temp dir (pattern: `tests/rabbit_cli/test_profiles.py`):
   ```python
   @pytest.fixture
   def profile_env(tmp_path, monkeypatch):
-      home = tmp_path / ".hermes"; home.mkdir()
+      home = tmp_path / ".rabbit"; home.mkdir()
       monkeypatch.setattr(Path, "home", lambda: tmp_path)
-      monkeypatch.setenv("HERMES_HOME", str(home))
+      monkeypatch.setenv("RABBIT_HOME", str(home))
       return home
   ```
-  Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
-  env var, not `Path.home()/.hermes`.
+  Tests that `patch.object(Path, "home", ...)` must ALSO set `RABBIT_HOME` — code reads the
+  env var, not `Path.home()/.rabbit`.
 
 ## Don't fake the host OS
 
@@ -91,7 +91,7 @@ fully replaced — `platforms` is the only host-gating marker in the tree.
 real Windows process behavior that mocks cannot reproduce (venv-holder
 scans, process-tree parentage, launcher/worker chains, detach semantics),
 there is an on-demand workflow `windows-venv-e2e.yml` that runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
+`tests/rabbit_cli/test_venv_holder_windows_live.py` on a real
 `windows-latest` runner — spawning actual processes and driving the real
 detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
 branches (inert on PRs and main; costs nothing on normal work). The proven

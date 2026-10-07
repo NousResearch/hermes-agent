@@ -1,8 +1,8 @@
-"""How one auxiliary logical call ended, for its Relay ``hermes.logical_llm_call`` scope.
+"""How one auxiliary logical call ended, for its Relay ``rabbit.logical_llm_call`` scope.
 
 The scope's ``outcome`` + ``error_class`` become the shared-metrics ``model_route`` row of an
 auxiliary call, under the same contract as a primary call: a failure carries the classifier's
-``FailoverReason`` for the error that ended it, a Hermes-side abort (``/stop``, Ctrl+C, an
+``FailoverReason`` for the error that ended it, a Rabbit-side abort (``/stop``, Ctrl+C, an
 interrupt, shutdown) is ``cancelled`` rather than ``failed``, and a success keeps the last
 attempt error it recovered from (a retried timeout, a fallback past a 429).
 """
@@ -39,7 +39,7 @@ def embedded_provider_error(response: Any) -> dict[str, Any] | None:
 
 
 def is_cancellation(error: BaseException) -> bool:
-    """Hermes aborted the call (explicit cancel, interrupt, Ctrl+C, task cancel, shutdown):
+    """Rabbit aborted the call (explicit cancel, interrupt, Ctrl+C, task cancel, shutdown):
     everything that is not an ``Exception``, plus the ``InterruptedError`` aux streams raise."""
     return not isinstance(error, Exception) or isinstance(error, InterruptedError)
 

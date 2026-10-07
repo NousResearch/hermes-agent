@@ -14,13 +14,13 @@ import {
 } from './session'
 import { $sessionStates, sessionTileDelegate } from './session-states'
 
-const STORAGE_KEY = 'hermes.desktop.model-presets'
+const STORAGE_KEY = 'rabbit.desktop.model-presets'
 const pendingWrites = new Map<string, Promise<unknown>>()
 const confirmedValues = new Map<string, string>()
 
 /** Per-model reasoning/fast preset, remembered globally across sessions and
  *  re-applied to the session whenever that model is selected. Unset dimensions
- *  fall back to the Hermes default (medium effort, no fast). */
+ *  fall back to the Rabbit default (medium effort, no fast). */
 export interface ModelPreset {
   effort?: string
   fast?: boolean

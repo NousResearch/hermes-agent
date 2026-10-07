@@ -37,7 +37,7 @@ uncompacted history. The scripts reconstruct those into eval transcripts:
 
 ```bash
 # 1. ALWAYS copy the DB first — never point at the live state.db
-cp ~/.hermes/state.db /tmp/state_copy.db
+cp ~/.rabbit/state.db /tmp/state_copy.db
 
 # 2. Find big lineages (sessions with parent_session_id form chains), then:
 python evals/compaction/scripts/reconstruct_lineage.py \
@@ -107,7 +107,7 @@ python evals/compaction/scripts/jev_cycles.py /path/lineage.json 160000 60 > cyc
 python evals/compaction/scripts/jev_cycles_report.py cycles-*.json      # markdown table
 ```
 
-Threshold 500000 ≈ Hermes' 1M-window posture; 160000 ≈ a 200K-window host.
+Threshold 500000 ≈ Rabbit' 1M-window posture; 160000 ≈ a 200K-window host.
 Each cycle costs 1–8 Jev requests (< 1¢); a 40-cycle run is ~$0.20. The
 2026-09-19 runs are committed under `results/jev-cycles-2026-09-19/` (counts
 only, no transcript content) and summarised in `SCORECARD-2026-09-19-jev.md`:
@@ -126,7 +126,7 @@ one 200K run was stuck after 0.42M tokens of work, one transcript never fit.
 - `--also-uncompacted` adds a control arm that answers from the full
   original transcript — the recall ceiling.
 - **Default arm is `current+recovery`: the production path.** Compaction in
-  Hermes is the summary *plus* the session_search pointer it carries, so the
+  Rabbit is the summary *plus* the session_search pointer it carries, so the
   answerer gets one search round-trip over the archived region (same FTS5+BM25
   engine as production). A bare policy name (`current`) is closed-book — the
   summary with its recovery pointer unused — and scores 30+ pts lower on

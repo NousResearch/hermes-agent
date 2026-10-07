@@ -4,7 +4,7 @@ Gateway-fired cron jobs hung forever on the 2nd+ API call because both the
 non-streaming (``interruptible_api_call``) and the default streaming
 (``interruptible_streaming_api_call``) paths run the request on a spawned
 daemon worker thread. Inside the gateway's nested cron thread pools that extra
-worker wedged before the socket opened; the same job succeeded via ``hermes
+worker wedged before the socket opened; the same job succeeded via ``rabbit
 cron tick`` (foreground, no nested pools). Cron has no interactive interrupt
 surface, so both paths now run inline on the conversation thread for the
 ``cron`` platform.

@@ -23,7 +23,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from hermes_time import now as _hermes_now
+from rabbit_time import now as _rabbit_now
 
 logger = logging.getLogger("cron.scheduler")
 
@@ -43,7 +43,7 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     model calls were made)."""
     if cfg is None:
         try:
-            from hermes_cli.config import load_config
+            from rabbit_cli.config import load_config
 
             cfg = load_config() or {}
         except Exception:  # config unreadable — keep the reliability default
@@ -101,7 +101,7 @@ def will_retry(job: Dict[str, Any]) -> bool:
         return False  # _advance_after_run completes the job; plan_retry never runs
     from cron.jobs import _parse_aware, compute_next_run
 
-    now = _hermes_now()
+    now = _rabbit_now()
     natural_next = _parse_aware(compute_next_run(job.get("schedule") or {}, now.isoformat()))
     if natural_next is None:
         # The natural occurrence is uncomputable (e.g. croniter missing): _advance_after_run
@@ -143,7 +143,7 @@ def plan_retry(job: Dict[str, Any]) -> bool:
     a retry was scheduled."""
     from cron.jobs import _parse_aware  # late: jobs imports this module's helpers
 
-    retry_dt = _ladder_instant(job, _parse_aware(job.get("next_run_at")), _hermes_now())
+    retry_dt = _ladder_instant(job, _parse_aware(job.get("next_run_at")), _rabbit_now())
     attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)
     if retry_dt is None:
         if attempt >= len(RETRY_DELAYS_SECONDS) and _ladder_applies(job):

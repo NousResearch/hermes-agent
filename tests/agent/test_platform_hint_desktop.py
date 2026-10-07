@@ -4,7 +4,7 @@ Pins the second half of the fix: the new ``PLATFORM_HINTS["desktop"]``
 entry, the deletion of the standalone desktop-hint block from
 ``build_environment_hints()``, and the lookup-site extension that
 appends the embedded-terminal-pane clarifier to the ``tui`` platform hint
-when ``HERMES_DESKTOP_TERMINAL=1``.
+when ``RABBIT_DESKTOP_TERMINAL=1``.
 
 These tests run against the real prompt builders (no mocks) because
 cache-stability and byte-for-byte text contracts are what we are
@@ -59,8 +59,8 @@ class TestPlatformHintResolutionInStablePrompt:
     that used to live in ``build_environment_hints()`` is gone."""
 
     def test_desktop_platform_yields_desktop_hint_no_tui_framing(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
-        monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+        monkeypatch.setenv("RABBIT_DESKTOP", "1")
+        monkeypatch.delenv("RABBIT_DESKTOP_TERMINAL", raising=False)
         stable = _stable_prompt(_make_agent(platform="desktop"))
         assert PLATFORM_HINTS["desktop"] in stable
         assert "terminal UI" not in stable
@@ -68,15 +68,15 @@ class TestPlatformHintResolutionInStablePrompt:
         assert "embedded terminal pane" not in stable
 
     def test_embedded_tui_yields_tui_hint_with_clarifier(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DESKTOP", "1")
-        monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", "1")
+        monkeypatch.setenv("RABBIT_DESKTOP", "1")
+        monkeypatch.setenv("RABBIT_DESKTOP_TERMINAL", "1")
         stable = _stable_prompt(_make_agent(platform="tui"))
         assert PLATFORM_HINTS["tui"] in stable
         assert "embedded terminal pane" in stable
         assert "Shift-drag" in stable or "Option-drag" in stable or "⌥" in stable
 
 class TestEmbeddedTuiPaneClarifier:
-    """When ``HERMES_DESKTOP_TERMINAL=1``, a standalone ``hermes --tui`` is
+    """When ``RABBIT_DESKTOP_TERMINAL=1``, a standalone ``rabbit --tui`` is
     running inside the desktop's embedded terminal pane. The user can
     ⌥-drag-select its output and ⌘/Ctrl+L to send it to the chat composer.
     That clarifier must be appended to the ``tui`` platform hint at the
@@ -86,8 +86,8 @@ class TestEmbeddedTuiPaneClarifier:
 
     @pytest.mark.parametrize("val", ["0", "false", ""])
     def test_falsy_env_does_not_trigger_clarifier(self, monkeypatch, val):
-        monkeypatch.setenv("HERMES_DESKTOP_TERMINAL", val)
+        monkeypatch.setenv("RABBIT_DESKTOP_TERMINAL", val)
         out = _tui_embedded_pane_clarifier(PLATFORM_HINTS["tui"])
         assert out == PLATFORM_HINTS["tui"], (
-            f"HERMES_DESKTOP_TERMINAL={val!r} should not trigger clarifier"
+            f"RABBIT_DESKTOP_TERMINAL={val!r} should not trigger clarifier"
         )

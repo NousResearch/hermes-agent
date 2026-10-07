@@ -7,7 +7,7 @@ survivor. A gateway closing a 500MB WAL store runs a PASSIVE checkpoint in
 autocheckpoint threshold) that does not reliably finish in 5s. A SIGKILL
 landing mid-checkpoint leaves half-written b-tree pages — macOS ``fsync``
 guarantees neither data-on-platter nor write ordering, which is exactly why
-``hermes_state_wal._enforce_macos_synchronous_full`` exists.
+``rabbit_state_wal._enforce_macos_synchronous_full`` exists.
 
 The port-rebinding reason the 5s deadline was introduced still holds, so the
 force-kill stays — it just must not fire on a process that is still shutting
@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_state_wal
+import rabbit_state_wal
 
-from hermes_cli.gateway import (
+from rabbit_cli.gateway import (
     _ORPHAN_EXIT_GRACE_SECONDS,
     _await_gateway_exit,
 )
@@ -74,7 +74,7 @@ def test_the_grace_period_covers_a_large_wal_checkpoint() -> None:
 def test_force_kill_is_logged_so_the_next_incident_has_evidence(caplog) -> None:
     import logging
 
-    from hermes_cli import gateway as gw
+    from rabbit_cli import gateway as gw
 
     killed = []
     with caplog.at_level(logging.WARNING):

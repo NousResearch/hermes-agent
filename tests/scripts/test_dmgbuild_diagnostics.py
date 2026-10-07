@@ -16,7 +16,7 @@ def test_detach_diagnostics_run_before_cleanup_and_preserve_results():
     events = []
     attachment = {"system-entities": [
         {"dev-entry": "/dev/disk24"},
-        {"dev-entry": "/dev/disk25s1", "mount-point": "/Volumes/Install Hermes Agent"},
+        {"dev-entry": "/dev/disk25s1", "mount-point": "/Volumes/Install Rabbit Agent"},
     ]}
     failure = (16, "hdiutil: couldn't eject disk25 - Resource busy")
 
@@ -53,12 +53,12 @@ def test_detach_diagnostics_run_before_cleanup_and_preserve_results():
         assert kwargs["timeout"] <= 15
         if argv[-1] == "/usr/bin/true":
             return subprocess.CompletedProcess(argv, 0, "", "")
-        return subprocess.CompletedProcess(argv, 0, "COMMAND PID PPID USER FD TYPE NAME\nmds 4321 1 root 7r DIR /Volumes/Install Hermes Agent\n", "")
+        return subprocess.CompletedProcess(argv, 0, "COMMAND PID PPID USER FD TYPE NAME\nmds 4321 1 root 7r DIR /Volumes/Install Rabbit Agent\n", "")
 
     diagnostics.report_detach_failure("/dev/disk25s1", events[2][2], failure[1], run=run, stream=errors)
     text = errors.getvalue()
     assert "mds 4321 1 root 7r" in text
-    assert any("+f" in argv and argv[-1] == "/Volumes/Install Hermes Agent" for argv in calls)
+    assert any("+f" in argv and argv[-1] == "/Volumes/Install Rabbit Agent" for argv in calls)
     file_query = next(argv for argv in calls if "-f" in argv)
     assert "/tmp/our staging.dmg" in file_query and "/dev/disk24" in file_query
     assert "/dev/disk25s1" in file_query and "/dev/rdisk25s1" in file_query
@@ -103,17 +103,17 @@ def test_diagnostic_entrypoint_preserves_cli_arguments_and_failure(tmp_path):
         'def hdiutil(command, *args, **kwargs):\n'
         '    print("fixture native", command, *args, flush=True)\n'
         '    if command == "attach":\n'
-        '        return 0, {"system-entities": [{"dev-entry": "/dev/hermes-dmg-fixture-not-a-device"}]}\n'
+        '        return 0, {"system-entities": [{"dev-entry": "/dev/rabbit-dmg-fixture-not-a-device"}]}\n'
         '    return (0, "cleanup") if "-force" in args else (16, "Resource busy")\n', encoding="utf-8")
     (package / "__main__.py").write_text(
         'import json, sys\nfrom . import core\n'
         'def main():\n'
         '    print(json.dumps(sys.argv[1:]), flush=True)\n'
-        '    core.hdiutil("attach", "-nobrowse", "/hermes-dmg-fixture-no-image.dmg")\n'
-        '    result = core.hdiutil("detach", "/dev/hermes-dmg-fixture-not-a-device", plist=False)\n'
-        '    core.hdiutil("detach", "-force", "/dev/hermes-dmg-fixture-not-a-device", plist=False)\n'
+        '    core.hdiutil("attach", "-nobrowse", "/rabbit-dmg-fixture-no-image.dmg")\n'
+        '    result = core.hdiutil("detach", "/dev/rabbit-dmg-fixture-not-a-device", plist=False)\n'
+        '    core.hdiutil("detach", "-force", "/dev/rabbit-dmg-fixture-not-a-device", plist=False)\n'
         '    raise SystemExit(result[0])\n', encoding="utf-8")
-    args = ["-s", "settings with spaces.json", "Install Hermes Agent", "output.dmg"]
+    args = ["-s", "settings with spaces.json", "Install Rabbit Agent", "output.dmg"]
     result = subprocess.run([sys.executable, str(Path(diagnostics.__file__)), *args],
                             cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tmp_path)},
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -128,7 +128,7 @@ def test_native_busy_image_reports_the_process_holding_its_file(tmp_path):
     image, mount = tmp_path.resolve() / "held.dmg", tmp_path.resolve() / "mount"
     mount.mkdir()
     subprocess.run(["/usr/bin/hdiutil", "create", "-size", "16m", "-fs", "HFS+",
-                    "-volname", "Hermes diagnostic fixture", str(image)],
+                    "-volname", "Rabbit diagnostic fixture", str(image)],
                    check=True, capture_output=True, timeout=60)
 
     def native(command, *args, plist=True):

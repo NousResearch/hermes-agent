@@ -41,7 +41,7 @@ try {
 } finally {
   Set-Location $env:TEMP
   Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-  if ([IO.Path]::GetFileName($PSScriptRoot).StartsWith('hermes-relaunch-')) {
+  if ([IO.Path]::GetFileName($PSScriptRoot).StartsWith('rabbit-relaunch-')) {
     Remove-Item -LiteralPath $PSScriptRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
 }

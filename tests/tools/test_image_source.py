@@ -24,10 +24,10 @@ CORRUPT_PNG = base64.b64decode(
 )
 
 
-def _reload(monkeypatch, hermes_home: Path):
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    import hermes_constants
-    importlib.reload(hermes_constants)
+def _reload(monkeypatch, rabbit_home: Path):
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
     import tools.image_source as isrc
     importlib.reload(isrc)
     return isrc
@@ -46,7 +46,7 @@ def _no_real_sandbox_bringup(monkeypatch):
 class TestDataUrl:
     @pytest.mark.asyncio
     async def test_valid_data_url_resolves_to_bytes(self, tmp_path, monkeypatch):
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         b64 = base64.b64encode(PNG).decode()
         res = await isrc.resolve_image_source(
             f"data:image/png;base64,{b64}", isrc.ResolveContext())
@@ -56,7 +56,7 @@ class TestDataUrl:
 
     @pytest.mark.asyncio
     async def test_non_image_data_url_rejected(self, tmp_path, monkeypatch):
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         b64 = base64.b64encode(b"not an image").decode()
         with pytest.raises(isrc.NotAnImage):
             await isrc.resolve_image_source(
@@ -65,7 +65,7 @@ class TestDataUrl:
     @pytest.mark.asyncio
     async def test_corrupt_png_rejected_at_resolver_boundary(self, tmp_path, monkeypatch):
         """A PNG-shaped but undecodable payload never becomes a resolved image."""
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         img = tmp_path / "corrupt.png"
         img.write_bytes(CORRUPT_PNG)
@@ -76,7 +76,7 @@ class TestDataUrl:
 class TestLocalBackend:
     @pytest.mark.asyncio
     async def test_local_backend_reads_any_host_path(self, tmp_path, monkeypatch):
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         img = tmp_path / "outside" / "pic.png"
         img.parent.mkdir(parents=True)
@@ -90,7 +90,7 @@ class TestLocalBackend:
     async def test_bare_relative_path_resolves(self, tmp_path, monkeypatch):
         """A cwd-relative bare filename ('pic.png') is a valid local source —
         main accepted it; the resolver must not regress it (PR review)."""
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         img = tmp_path / "pic.png"
         img.write_bytes(PNG)
@@ -106,7 +106,7 @@ class TestNonLocalBackendConfinement:
 
     @pytest.mark.asyncio
     async def test_media_cache_path_host_read(self, tmp_path, monkeypatch):
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         cached = home / "cache" / "images" / "inbound.png"
@@ -119,7 +119,7 @@ class TestNonLocalBackendConfinement:
 
     @pytest.mark.asyncio
     async def test_desktop_upload_images_dir_host_read(self, tmp_path, monkeypatch):
-        """Desktop/clipboard uploads under ``HERMES_HOME/images`` are host-read.
+        """Desktop/clipboard uploads under ``RABBIT_HOME/images`` are host-read.
 
         Regression for #69575: uploads land in the flat top-level ``images/``
         dir (not ``cache/images``). Under a sandbox backend the vision resolver
@@ -127,7 +127,7 @@ class TestNonLocalBackendConfinement:
         task-id-less sandbox reader and fails with "not reachable inside the
         sandbox".
         """
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         upload = home / "images" / "upload_20260722_181019_1.png"
@@ -143,7 +143,7 @@ class TestNonLocalBackendConfinement:
     async def test_host_secret_outside_cache_routes_to_sandbox_not_host(self, tmp_path, monkeypatch):
         """A non-cache host path (e.g. /etc/passwd) must NOT be host-read — it
         routes to the in-sandbox exec-read, which reads the CONTAINER's file."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
@@ -174,7 +174,7 @@ class TestNonLocalBackendConfinement:
     @pytest.mark.asyncio
     async def test_non_cache_path_fails_closed_without_sandbox(self, tmp_path, monkeypatch):
         """No active sandbox env -> refuse rather than fall back to a host read."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         secret = tmp_path / "id_rsa"
@@ -188,7 +188,7 @@ class TestNonLocalBackendConfinement:
     async def test_symlink_in_cache_pointing_outside_is_not_host_read(self, tmp_path, monkeypatch):
         """A symlink planted inside a cache dir that points at a host secret must
         not be host-read (resolve() escapes the cache) — it routes to sandbox."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         secret = tmp_path / "outside" / "id_rsa"
@@ -213,7 +213,7 @@ class TestExecReadSafety:
     async def test_exec_read_is_bounded_and_redirect_safe(self, tmp_path, monkeypatch):
         """Leading-dash paths go through an input redirect (no argv exposure)
         and the read is size-bounded via head -c."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         captured = {}
@@ -237,7 +237,7 @@ class TestExecReadSafety:
         resolver must transparently retry before raising, so users don't
         see 'could not read inside the sandbox' on a file that is fully
         readable on the second attempt."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
@@ -266,7 +266,7 @@ class TestExecReadSafety:
         """#76566: when every retry still fails, the error must carry the
         container's stderr/stdout so the user can tell 'no such file'
         from 'permission denied' from 'cold start never came up'."""
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
@@ -290,7 +290,7 @@ class TestSvgNormalization:
     @pytest.mark.asyncio
     async def test_svg_rasterized_when_converter_available(self, tmp_path, monkeypatch):
         from tools import vision_tools_image_prep as vt
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>')
@@ -310,7 +310,7 @@ class TestSvgNormalization:
 
     def test_svg_actionable_error_when_no_converter(self, tmp_path, monkeypatch):
         from tools import vision_tools_image_prep as vt
-        _reload(monkeypatch, tmp_path / "hermes")
+        _reload(monkeypatch, tmp_path / "rabbit")
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
         with patch.object(vt, "_rasterize_svg_to_png", return_value=False):
@@ -326,7 +326,7 @@ class TestLazySandboxBringUp:
 
     @pytest.mark.asyncio
     async def test_first_read_brings_up_sandbox_then_reads(self, tmp_path, monkeypatch):
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
 
         brought_up = []
@@ -356,7 +356,7 @@ class TestLazySandboxBringUp:
     async def test_bringup_that_yields_no_env_still_fails_closed(self, tmp_path, monkeypatch):
         """If the bring-up can't produce an env, the resolver still refuses
         rather than falling back to a host read."""
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY")
@@ -504,7 +504,7 @@ class TestHeicDetection:
         pillow_heif.register_heif_opener()
         from PIL import Image
         from tools import vision_tools_image_prep as vt
-        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        isrc = _reload(monkeypatch, tmp_path / "rabbit")
         monkeypatch.setenv("TERMINAL_ENV", "local")
 
         heic = tmp_path / "photo.heic"
@@ -529,7 +529,7 @@ class TestHeicDetection:
         (install pillow-heif) rather than a generic conversion failure — the
         same soft-dependency posture as SVG-without-rasterizer."""
         from tools import vision_tools_image_prep as vt
-        _reload(monkeypatch, tmp_path / "hermes")
+        _reload(monkeypatch, tmp_path / "rabbit")
         heic = tmp_path / "photo.heic"
         heic.write_bytes(HEIC_HEADER)
 
@@ -561,7 +561,7 @@ class TestHeicDetection:
         if not features.check("avif"):
             pytest.skip("this Pillow build has no native AVIF codec")
         from tools import vision_tools_image_prep as vt
-        _reload(monkeypatch, tmp_path / "hermes")
+        _reload(monkeypatch, tmp_path / "rabbit")
 
         avif = tmp_path / "photo.avif"
         Image.new("RGB", (8, 8), (10, 180, 90)).save(str(avif), format="AVIF")
@@ -587,7 +587,7 @@ class TestHeicDetection:
         the AV1/Pillow path — not blame pillow-heif alone, which frequently
         ships without any AV1 codec."""
         from tools import vision_tools_image_prep as vt
-        _reload(monkeypatch, tmp_path / "hermes")
+        _reload(monkeypatch, tmp_path / "rabbit")
         # Valid AVIF brand, but the payload is not decodable by anything.
         broken = tmp_path / "broken.avif"
         broken.write_bytes(AVIF_HEADER)

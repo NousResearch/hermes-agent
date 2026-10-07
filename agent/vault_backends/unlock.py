@@ -65,8 +65,8 @@ def get_save_login_prompt_callback() -> Optional[SaveLoginPrompt]:
 def _key(backend: str) -> tuple[str, str]:
     # Tokens are profile-scoped: a Desktop gateway hosts several profiles in one process and
     # profile B must never reuse (or lock) profile A's manager session.
-    from hermes_constants import get_hermes_home
-    return (str(get_hermes_home()), backend)
+    from rabbit_constants import get_rabbit_home
+    return (str(get_rabbit_home()), backend)
 
 
 # Lock generation per key: ``lock()`` bumps it, and an unlock that started before the bump must

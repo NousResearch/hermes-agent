@@ -308,7 +308,7 @@ class TestAllowPrivateUrlsConfig:
 
     def test_browser_config_string_false_stays_disabled(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
+            "rabbit_cli.config.read_raw_config",
             lambda: {"browser": {"allow_private_urls": "false"}},
         )
 
@@ -323,9 +323,9 @@ class TestAllowPrivateUrlsConfig:
         self, tmp_path, profile_order
     ):
         """The browser's independent guard must follow the active profile."""
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
 
         allowed_home = tmp_path / "allowed"
@@ -340,11 +340,11 @@ class TestAllowPrivateUrlsConfig:
         )
 
         def under_profile(home):
-            token = set_hermes_home_override(home)
+            token = set_rabbit_home_override(home)
             try:
                 return bt_cloud._allow_private_urls()
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
 
         homes = {"allowed": allowed_home, "blocked": blocked_home}
         expected = {"allowed": True, "blocked": False}

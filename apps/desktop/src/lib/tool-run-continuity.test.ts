@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { isToolCallPart, type ToolCallLike } from '@/components/assistant-ui/tool/run-summary'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {

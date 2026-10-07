@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import secret_scope as ss
 from gateway.platforms.base import cache_media_bytes
@@ -23,12 +23,12 @@ from tools.credential_files import from_agent_visible_cache_path, get_cache_dire
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
-    """Launch home A (HERMES_HOME, local backend) and routed profile B (docker backend)."""
-    a = tmp_path / ".hermes"
+    """Launch home A (RABBIT_HOME, local backend) and routed profile B (docker backend)."""
+    a = tmp_path / ".rabbit"
     b = a / "profiles" / "b"
     b.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.setenv("RABBIT_HOME", str(a))
     for name, home in (("a", a), ("b", b)):
         (home / "config.yaml").write_text(
             yaml.safe_dump({"terminal": {"backend": "local" if name == "a" else "docker"}}), encoding="utf-8")
@@ -54,12 +54,12 @@ def test_routed_turn_rehomes_adapter_cached_attachments_a_b_a(two_homes):
     with _profile_runtime_scope(b):  # routed turn: B's mounts, B's cache roots
         rehome_inbound_media(event)
         note = GatewayInboundMixin._prepend_inbound_document_notes(event, "")
-        assert "/root/.hermes/cache/documents/doc_0123456789ab_report.pdf" in note  # sandbox form
+        assert "/root/.rabbit/cache/documents/doc_0123456789ab_report.pdf" in note  # sandbox form
         # The sandbox path names a file B's container actually mounts.
-        host = Path(from_agent_visible_cache_path("/root/.hermes/cache/documents/doc_0123456789ab_report.pdf"))
+        host = Path(from_agent_visible_cache_path("/root/.rabbit/cache/documents/doc_0123456789ab_report.pdf"))
         assert host.is_file() and host == b / "cache" / "documents" / "doc_0123456789ab_report.pdf"
         assert {Path(m["host_path"]) for m in get_cache_directory_mounts()} >= {host.parent, (b / "cache" / "images")}
-        assert "/root/.hermes/cache/documents/doc_0123456789ab_report.pdf" in event.text  # baked note repointed
+        assert "/root/.rabbit/cache/documents/doc_0123456789ab_report.pdf" in event.text  # baked note repointed
     assert event.media_urls == [str(b / "cache" / "documents" / "doc_0123456789ab_report.pdf"),
                                 str(b / "cache" / "images" / "img_1.jpg")]
     assert not Path(doc).exists() and not Path(img).exists()  # moved, not copied: A holds nothing of B's
@@ -82,4 +82,4 @@ def test_cache_media_bytes_returns_host_path_and_translates_in_note(two_homes):
     with _profile_runtime_scope(b):  # docker backend
         cached = cache_media_bytes(b"%PDF-1.4 x", filename="report.pdf", mime_type="application/pdf")
         assert Path(cached.path).is_file() and Path(cached.path).parent == b / "cache" / "documents"
-        assert cached.context_note().startswith("[document 'report.pdf' saved at: /root/.hermes/cache/documents/doc_")
+        assert cached.context_note().startswith("[document 'report.pdf' saved at: /root/.rabbit/cache/documents/doc_")

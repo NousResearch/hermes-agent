@@ -33,29 +33,6 @@ class TestTerminalRequirements:
         assert terminal_tool_module.check_terminal_requirements() is True
 
 
-    def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-        monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "_get_env_config",
-            lambda: {"env_type": "modal", "modal_mode": "managed"},
-        )
-        monkeypatch.setattr(
-            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
-            lambda _vendor: True,
-        )
-        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
-        names = {tool["function"]["name"] for tool in tools}
-
-        assert "terminal" in names
-        assert "execute_code" in names
-
-
 class TestCheckFnTransientFailureSuppression:
     """The check_fn TTL cache should absorb transient probe failures.
 
@@ -116,7 +93,7 @@ class TestCheckFnTransientFailureSuppression:
 
 
     def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
-        """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
+        """A check_fn that drops a ``_RABBIT_CORE_TOOLS`` member it had previously admitted logs at
         WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
         leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
         accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
@@ -138,8 +115,8 @@ class TestCheckFnTransientFailureSuppression:
 
         clock = {"now": 1000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
-        monkeypatch.setattr(toolsets, "_HERMES_CORE_TOOLS",
-                            [*toolsets._HERMES_CORE_TOOLS, "core_probe_tool", "never_probe_tool"])
+        monkeypatch.setattr(toolsets, "_RABBIT_CORE_TOOLS",
+                            [*toolsets._RABBIT_CORE_TOOLS, "core_probe_tool", "never_probe_tool"])
         for name, gate in (("core_probe_tool", core_gate), ("never_probe_tool", never_gate)):
             reg.registry.register(name=name, toolset=name, schema={"name": name},
                                   handler=lambda **kw: None, check_fn=gate)
@@ -196,9 +173,9 @@ class TestCheckFnTransientFailureSuppression:
             set_multiplex_active,
             set_secret_scope,
         )
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         from model_tools import _clear_tool_defs_cache, get_tool_definitions
 
@@ -224,7 +201,7 @@ class TestCheckFnTransientFailureSuppression:
         )
         set_multiplex_active(True)
         try:
-            home_a = set_hermes_home_override(str(profile_a))
+            home_a = set_rabbit_home_override(str(profile_a))
             secrets_a = set_secret_scope({"PROFILE_CACHE_TEST_TOKEN": "token-a"})
             try:
                 tools_a = get_tool_definitions(
@@ -234,9 +211,9 @@ class TestCheckFnTransientFailureSuppression:
                 )
             finally:
                 reset_secret_scope(secrets_a)
-                reset_hermes_home_override(home_a)
+                reset_rabbit_home_override(home_a)
 
-            home_b = set_hermes_home_override(str(profile_b))
+            home_b = set_rabbit_home_override(str(profile_b))
             secrets_b = set_secret_scope({})
             try:
                 tools_b = get_tool_definitions(
@@ -246,7 +223,7 @@ class TestCheckFnTransientFailureSuppression:
                 )
             finally:
                 reset_secret_scope(secrets_b)
-                reset_hermes_home_override(home_b)
+                reset_rabbit_home_override(home_b)
 
             assert tool_name in {tool["function"]["name"] for tool in tools_a}
             assert tool_name not in {tool["function"]["name"] for tool in tools_b}

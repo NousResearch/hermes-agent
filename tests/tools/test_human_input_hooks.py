@@ -33,7 +33,7 @@ def captured(monkeypatch):
 
     monkeypatch.setattr(terminal_tool, "_callback_tls", threading.local())
     monkeypatch.setattr(terminal_tool_sudo, "_sudo_password_cache", {})
-    with patch("hermes_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
+    with patch("rabbit_cli.plugins.invoke_hook", side_effect=fake_invoke_hook):
         yield calls
 
 
@@ -55,7 +55,7 @@ def _assert_no_secret(calls, *secrets):
 
 
 def test_hooks_are_registered():
-    from hermes_cli.plugins import VALID_HOOKS
+    from rabbit_cli.plugins import VALID_HOOKS
 
     assert set(HOOKS) <= VALID_HOOKS
 
@@ -150,7 +150,7 @@ class TestApproval:
         assert _single_pair(captured, "approval")[1]["outcome"] == "notify_failed"
 
     def test_plugin_transport_fires_pair(self, captured, monkeypatch):
-        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from rabbit_cli.plugins import PluginContext, PluginManager, PluginManifest
         from tools import approval_prompt
 
         manager = PluginManager()

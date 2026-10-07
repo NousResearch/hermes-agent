@@ -28,13 +28,13 @@ class _FakeClient:
 
 def _agent(**overrides):
     base = dict(_codex_session=None, session_cwd="/tmp", tool_progress_callback=None,
-                _cached_system_prompt="SOUL: you are Hermes", ephemeral_system_prompt=None)
+                _cached_system_prompt="SOUL: you are Rabbit", ephemeral_system_prompt=None)
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
 _HISTORY = [
-    {"role": "system", "content": "SOUL: you are Hermes"},
+    {"role": "system", "content": "SOUL: you are Rabbit"},
     {"role": "user", "content": "my dog is called Shadow"},
     {"role": "assistant", "content": "Noted: Shadow.", "tool_calls": [{"function": {"name": "memory"}}]},
     {"role": "tool", "content": "saved"},
@@ -50,13 +50,13 @@ def test_fresh_thread_is_seeded_with_prior_turns_but_not_the_current_one(monkeyp
     agent._codex_session.ensure_started()
     (_, params), = [(m, p) for (m, p) in client.requests if m == "thread/start"]
     instructions = params["developerInstructions"]
-    assert instructions.startswith("SOUL: you are Hermes")
+    assert instructions.startswith("SOUL: you are Rabbit")
     assert "my dog is called Shadow" in instructions and "Noted: Shadow." in instructions
     assert "called tools: memory" in instructions and "saved" in instructions
     assert "what is my dog called?" not in instructions
-    assert instructions.count("SOUL: you are Hermes") == 1  # system rows are not re-rendered as history
+    assert instructions.count("SOUL: you are Rabbit") == 1  # system rows are not re-rendered as history
     # The seed is not part of the recorded composition: the next turn keeps the thread.
-    assert agent._codex_session_prompt == "SOUL: you are Hermes"
+    assert agent._codex_session_prompt == "SOUL: you are Rabbit"
     codex_runtime._ensure_codex_session(agent, _HISTORY + [{"role": "assistant", "content": "Shadow"}])
     assert len([m for (m, _) in client.requests if m == "thread/start"]) == 1
 

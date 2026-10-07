@@ -43,7 +43,7 @@ class TestTruncation:
 
 
     def test_truncation_stores_full_text_readable(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
         body = "UNIQUE_MIDDLE_MARKER\n" + ("\n".join(f"row {i}" for i in range(5000)))
         out, truncated = web_tools_truncate._truncate_with_footer(body, "https://example.com/doc", 3000)
         assert truncated is True
@@ -69,7 +69,7 @@ class TestCharLimitConfig:
 
 class TestEndToEnd:
     def test_web_extract_truncates_large_page_no_llm(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
         big = "\n".join(f"para {i} " + "y" * 80 for i in range(3000))
 
         class FakeProvider:

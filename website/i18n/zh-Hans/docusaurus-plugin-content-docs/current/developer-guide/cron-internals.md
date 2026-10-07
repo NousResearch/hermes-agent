@@ -1,7 +1,7 @@
 ---
 sidebar_position: 11
 title: "Cron 内部机制"
-description: "Hermes 如何存储、调度、编辑、暂停、加载技能以及投递 cron 任务"
+description: "Rabbit 如何存储、调度、编辑、暂停、加载技能以及投递 cron 任务"
 ---
 
 # Cron 内部机制
@@ -16,7 +16,7 @@ cron 子系统提供定时任务执行能力——从简单的单次延迟到带
 | `cron/scheduler.py` | 调度器循环——到期任务检测、执行、重复计数跟踪 |
 | `tools/cronjob_tools.py` | 面向模型的 `cronjob` 工具注册与处理器 |
 | `gateway/run.py` | Gateway 集成——在长运行循环中触发 cron tick |
-| `hermes_cli/cron.py` | CLI `hermes cron` 子命令 |
+| `rabbit_cli/cron.py` | CLI `rabbit cron` 子命令 |
 
 ## 调度模型
 
@@ -33,7 +33,7 @@ cron 子系统提供定时任务执行能力——从简单的单次延迟到带
 
 ## 任务存储
 
-任务存储在 `~/.hermes/cron/jobs.json` 中，采用原子写入语义（先写入临时文件，再重命名）。每条任务记录包含：
+任务存储在 `~/.rabbit/cron/jobs.json` 中，采用原子写入语义（先写入临时文件，再重命名）。每条任务记录包含：
 
 ```json
 {
@@ -104,7 +104,7 @@ tick()
 
 在 gateway 模式下，调度器运行在专用后台线程中（`gateway/run.py` 中的 `_start_cron_ticker`），每 60 秒调用一次 `scheduler.tick()`，与消息处理并行运行。
 
-在 CLI 模式下，cron 任务仅在运行 `hermes cron` 命令或活跃 CLI 会话期间触发。
+在 CLI 模式下，cron 任务仅在运行 `rabbit cron` 命令或活跃 CLI 会话期间触发。
 
 ### 全新会话隔离
 
@@ -135,7 +135,7 @@ cron 任务可通过 `skills` 字段附加一个或多个技能。执行时：
 任务还可通过 `script` 字段附加 Python 脚本。该脚本在每次 agent 轮次*之前*运行，其 stdout 作为上下文注入到 prompt 中。这支持数据采集和变更检测模式：
 
 ```python
-# ~/.hermes/scripts/check_competitors.py
+# ~/.rabbit/scripts/check_competitors.py
 import requests, json
 # 获取竞争对手发布说明，与上次运行结果进行差异比对
 # 将摘要打印到 stdout——agent 进行分析并报告
@@ -144,7 +144,7 @@ import requests, json
 脚本超时默认为 120 秒。`_get_script_timeout()` 通过三层链路解析限制：
 
 1. **模块级覆盖** — `_SCRIPT_TIMEOUT`（用于测试/monkeypatching）。仅在与默认值不同时使用。
-2. **环境变量** — `HERMES_CRON_SCRIPT_TIMEOUT`
+2. **环境变量** — `RABBIT_CRON_SCRIPT_TIMEOUT`
 3. **配置** — `config.yaml` 中的 `cron.script_timeout_seconds`（通过 `load_config()` 读取）
 4. **默认值** — 120 秒
 
@@ -168,7 +168,7 @@ Cron 任务结果可投递到任何受支持的平台。
 | 目标 | 语法 | 示例 |
 |--------|--------|---------|
 | 来源聊天 | `origin` | 投递到创建该任务的聊天 |
-| 本地文件 | `local` | 保存到 `~/.hermes/cron/output/` |
+| 本地文件 | `local` | 保存到 `~/.rabbit/cron/output/` |
 | Telegram | `telegram`、`telegram:<chat_id>`、`telegram:<chat_id>:<thread_id>`、`telegram:@username` | `telegram:-1001234567890:17585` |
 | Discord | `discord`、`discord:#channel`、`discord:<channel_id>`、`discord:<channel_id>:<thread_id>` | `discord:#engineering` |
 | Slack | `slack`、`slack:#channel`、`slack:<channel_id>`、`slack:<channel_id>:<thread_ts>` | `slack:#engineering` |
@@ -213,20 +213,20 @@ Cron 运行的会话已禁用 `cronjob` 工具集。这可防止：
 
 ## 锁机制
 
-调度器使用跨进程文件锁（Unix 上的 `fcntl.flock`，Windows 上的 `msvcrt.locking`）防止重叠的 tick 对同一批到期任务执行两次——即使在 gateway 的进程内 ticker 与独立的 `hermes cron` / 手动 `tick()` 调用之间也如此。若无法获取锁，`tick()` 立即返回 0。
+调度器使用跨进程文件锁（Unix 上的 `fcntl.flock`，Windows 上的 `msvcrt.locking`）防止重叠的 tick 对同一批到期任务执行两次——即使在 gateway 的进程内 ticker 与独立的 `rabbit cron` / 手动 `tick()` 调用之间也如此。若无法获取锁，`tick()` 立即返回 0。
 
 ## CLI 接口
 
-`hermes cron` CLI 提供直接的任务管理功能：
+`rabbit cron` CLI 提供直接的任务管理功能：
 
 ```bash
-hermes cron list                    # 显示所有任务
-hermes cron create                  # 交互式创建任务（别名：add）
-hermes cron edit <job_id>           # 编辑任务配置
-hermes cron pause <job_id>          # 暂停运行中的任务
-hermes cron resume <job_id>         # 恢复已暂停的任务
-hermes cron run <job_id>            # 触发立即执行
-hermes cron remove <job_id>         # 删除任务
+rabbit cron list                    # 显示所有任务
+rabbit cron create                  # 交互式创建任务（别名：add）
+rabbit cron edit <job_id>           # 编辑任务配置
+rabbit cron pause <job_id>          # 暂停运行中的任务
+rabbit cron resume <job_id>         # 恢复已暂停的任务
+rabbit cron run <job_id>            # 触发立即执行
+rabbit cron remove <job_id>         # 删除任务
 ```
 
 ## 相关文档

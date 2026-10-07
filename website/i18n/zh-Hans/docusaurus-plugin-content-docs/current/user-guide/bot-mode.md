@@ -1,16 +1,16 @@
 ---
 title: "Bot 模式"
-description: "把你的 Hermes profile 变成一支具名的 Bot 团队——每个 Bot 都有自己的对话、角色、模型、记忆、技能和头像。Bot 可以运行例行任务、共享群聊，并互相发消息。"
+description: "把你的 Rabbit profile 变成一支具名的 Bot 团队——每个 Bot 都有自己的对话、角色、模型、记忆、技能和头像。Bot 可以运行例行任务、共享群聊，并互相发消息。"
 ---
 
 # Bot 模式
 
-**Bot 模式**把你的 [Hermes profile](./profiles.md) 变成一支具名 **Bot** 团队。每个 Bot 都有自己的角色、模型、记忆、技能和头像；Bot 之间可以运行周期性的例行任务、在群聊中共同商议，并直接互相发消息。花一次功夫搭建一个专精 Bot，它就永远留在那里，一键可达。
+**Bot 模式**把你的 [Rabbit profile](./profiles.md) 变成一支具名 **Bot** 团队。每个 Bot 都有自己的角色、模型、记忆、技能和头像；Bot 之间可以运行周期性的例行任务、在群聊中共同商议，并直接互相发消息。花一次功夫搭建一个专精 Bot，它就永远留在那里，一键可达。
 
 Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无需安装。它在左侧边栏中以 **Bots** 标签页的形式出现，紧挨着 Sessions；当 Bots 标签页处于激活状态时，一个 **Routines** 面板会停靠在对话旁边。
 
 :::tip Bot 就是 profile
-这里没有新概念需要学习：Bot **就是** 一个 Hermes profile——位于 `~/.hermes/profiles/<name>/` 下的独立配置、记忆、技能、凭据和聊天记录。Bot 模式只是这个基本单元之上的一层 UI，所以你在其中做的一切在 CLI 里同样可见：`hermes -p <bot> chat` 打开的是同一个 agent，Bot 的例行任务也会出现在 `hermes cron list` 中。没有核心补丁，没有后台守护进程，也不需要额外的存储。
+这里没有新概念需要学习：Bot **就是** 一个 Rabbit profile——位于 `~/.rabbit/profiles/<name>/` 下的独立配置、记忆、技能、凭据和聊天记录。Bot 模式只是这个基本单元之上的一层 UI，所以你在其中做的一切在 CLI 里同样可见：`rabbit -p <bot> chat` 打开的是同一个 agent，Bot 的例行任务也会出现在 `rabbit cron list` 中。没有核心补丁，没有后台守护进程，也不需要额外的存储。
 :::
 
 ## Bots 面板
@@ -47,10 +47,10 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 
 - **从现有 profile 克隆**——从另一个 Bot 的配置、技能、SOUL 和记忆起步，或者选择 **Fresh profile** 从零开始。
 - **Create empty**——完全跳过内置技能，得到一个最小化的 profile。
-- **模型与 provider 锁定**——为 Bot 指定专属模型。Hermes 支持的任意 provider/model 组合都可以使用，不同的 Bot 可以并排运行在不同的模型上。留空则继承自启动 profile。
+- **模型与 provider 锁定**——为 Bot 指定专属模型。Rabbit 支持的任意 provider/model 组合都可以使用，不同的 Bot 可以并排运行在不同的模型上。留空则继承自启动 profile。
 - **自定义 SOUL.md**——Bot 的人格与常驻指令。
 - **按技能、按工具集、按 MCP 服务器逐项启用**——精确勾选这个专精 Bot 需要的能力。
-- **从主 profile 复制 API 密钥**——默认开启。每个 Bot 都拥有自己的凭据存储：静态 API 密钥会被复制进来，而一次性 OAuth 登录（Anthropic、OpenAI Codex、xAI）不会被复制——请用 `hermes -p <name> auth add <provider>` 在 Bot 内登录。详见[每个 profile 各自拥有凭据](./profiles.md)。
+- **从主 profile 复制 API 密钥**——默认开启。每个 Bot 都拥有自己的凭据存储：静态 API 密钥会被复制进来，而一次性 OAuth 登录（Anthropic、OpenAI Codex、xAI）不会被复制——请用 `rabbit -p <name> auth add <provider>` 在 Bot 内登录。详见[每个 profile 各自拥有凭据](./profiles.md)。
 
 ### 选择它运行在哪台机器上（"Create on"）
 
@@ -76,15 +76,15 @@ Bot 模式**内置于[桌面应用](./desktop)**中，**默认开启**——无�
 - **几何脸**——经典的 7 种形状 × 10 种颜色组合。在聚焦的实时轮次进行期间，拥有该轮次的 Bot 会侧身向上看，并显示三个动态的小点，轮次结束后再缓缓回到空闲姿态。所有权包含连接信息，因此不同 gateway 上的同名 Bot 不会借用彼此的姿态。后台 worker 保留原有的工作动画；照片、Blob 脸和印记（sigil）保留各自的渲染方式。
 - **上传的图片**——任何你喜欢的图片。
 - **AI 生成的肖像**——配置了图像后端时，在原地生成（这走的是标准的 `image.generate` RPC，本地和远程 gateway 均可使用）。
-- **像素宠物**——来自 [petdex 图鉴](./features/pets) 的伙伴，在 Bot 工作时会在头像旁跳动。在终端中运行 `hermes pets` 即可浏览图鉴。
+- **像素宠物**——来自 [petdex 图鉴](./features/pets) 的伙伴，在 Bot 工作时会在头像旁跳动。在终端中运行 `rabbit pets` 即可浏览图鉴。
 
 一个 Bot 的外观、标题和描述都保存在该 profile 的后端元数据中，因此同一个 Bot 在连接到该后端的每台桌面上看起来都一样。
 
 ## Routines（例行任务）
 
-**Routines** 面板把周期性任务挂载到负责它的 Bot 上——"每天早上帮我总结收件箱"就紧挨着负责这件事的 Bot。这个面板只在 Bots 标签页激活时才停靠在对话旁边，切回 Sessions 时会自动让开（较旧的桌面版本会始终显示它）。一个结构化的调度选择器会构建调度规则（先选频率，再填入真正重要的细节），Advanced 字段则暴露原始的 Hermes 调度字符串。
+**Routines** 面板把周期性任务挂载到负责它的 Bot 上——"每天早上帮我总结收件箱"就紧挨着负责这件事的 Bot。这个面板只在 Bots 标签页激活时才停靠在对话旁边，切回 Sessions 时会自动让开（较旧的桌面版本会始终显示它）。一个结构化的调度选择器会构建调度规则（先选频率，再填入真正重要的细节），Advanced 字段则暴露原始的 Rabbit 调度字符串。
 
-Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Hermes cron 任务](./features/cron.md)——它们同样会出现在 `hermes cron list` 和核心 Cron 页面中。运行结果会写入该 Bot 自己的对话历史，所以结果正好出现在你本来就会找这个 Bot 交流的地方。
+Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Rabbit cron 任务](./features/cron.md)——它们同样会出现在 `rabbit cron list` 和核心 Cron 页面中。运行结果会写入该 Bot 自己的对话历史，所以结果正好出现在你本来就会找这个 Bot 交流的地方。
 
 ## 群组与群聊
 
@@ -92,7 +92,7 @@ Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Herm
 
 右键点击一个本地 Bot → **Manage groups**，即可把它加入或移出任意数量的群聊。可以单独挑选已有的群，也可以直接内联创建一个新群。本地成员关系保存在该 Bot 的后端同步 profile 元数据中，因此它会跟随这个 profile 出现在各个桌面上；带有一个旧版群组的旧 profile 仍能正常工作。Connections Bot 通过 New Group Chat 选择器加入群聊，并在房间的共享状态中保留来源标识。
 
-**房间跟随的是你的 gateway，而不是某一台 Desktop。** 每个房间的近期记录、成员、图片和名称都会被镜像到你的 Desktop 所连接的**每一个** gateway 的共享 profile 元数据中，并带有按 gateway 划分的版本号，因此两台 Desktop 同时写入时会合并而不是互相覆盖。在另一台机器上打开 Hermes Desktop（局域网、Tailscale，任何地方都可以），连接到同一个 gateway，这个房间及其历史就会出现；仅有 gateway 的客户端也能看到它。房间携带一个持久的内部身份，因此重命名一个房间只会在各处改变它的显示名称，解散一个房间会在每个客户端上永久移除它——即便是当时离线的客户端也不例外——而重新创建一个同名群组会开启一个真正全新的房间。如果某个 gateway 挂掉或被移除，不会丢失任何数据：每台连接的 Desktop 都在本地保留完整的房间，并在重新连接时向任何 gateway 重新播种。（完整的编排日志留在每台 Desktop 的本地存储中；共享镜像只是一个有界的近期历史投影。）
+**房间跟随的是你的 gateway，而不是某一台 Desktop。** 每个房间的近期记录、成员、图片和名称都会被镜像到你的 Desktop 所连接的**每一个** gateway 的共享 profile 元数据中，并带有按 gateway 划分的版本号，因此两台 Desktop 同时写入时会合并而不是互相覆盖。在另一台机器上打开 Rabbit Desktop（局域网、Tailscale，任何地方都可以），连接到同一个 gateway，这个房间及其历史就会出现；仅有 gateway 的客户端也能看到它。房间携带一个持久的内部身份，因此重命名一个房间只会在各处改变它的显示名称，解散一个房间会在每个客户端上永久移除它——即便是当时离线的客户端也不例外——而重新创建一个同名群组会开启一个真正全新的房间。如果某个 gateway 挂掉或被移除，不会丢失任何数据：每台连接的 Desktop 都在本地保留完整的房间，并在重新连接时向任何 gateway 重新播种。（完整的编排日志留在每台 Desktop 的本地存储中；共享镜像只是一个有界的近期历史投影。）
 
 群组的身份在创建时和创建后都可以编辑：
 
@@ -107,21 +107,21 @@ Routines 本质上就是命名空间为 `[bot:<name>] <routine>` 的普通 [Herm
 
 - **一条可见的对话。** 公开消息和每个成员的回复按到达顺序保持可读，并带有发言者的名字和时间戳。开启另一个话题不会折叠之前的回复。**Reply in thread** 会在不打乱房间顺序的前提下延续那个话题；**Activity** 是一个辅助的状态视图，而不是消息的替代品。私有的 Bot Chat 保持独立。
 - 你的消息会触发最多**三轮串行**的成员发言。被 @提及 的 Bot 会回应（如果没有人被提及，则所有人都会回应）；每个 Bot 简短回复或选择跳过，当完整一轮都保持沉默时，房间就会安静下来。
-- 队友可以用 `@hermes` 把工作转交给主 Bot，在较早保存的房间中同样有效；其他 gateway 上的 Bot 会保留带设备限定的标签（例如 `@default-vera`）。
+- 队友可以用 `@rabbit` 把工作转交给主 Bot，在较早保存的房间中同样有效；其他 gateway 上的 Bot 会保留带设备限定的标签（例如 `@default-vera`）。
 - Bot 之间通过 `@name` 互相拉入对话，遇到真正需要判断的问题会用 `@user` 上报给你——这种情况下群组行会显示一个**需要你**的徽标。待处理的提问和命令审批同样会点亮这个徽标；解决最后一个提示只会清除提示类的关注，而不会清除独立的提及。提示会跟随重命名后的房间，而解散房间会让它们退役，即使某个成员正在进行中的轮询稍后才到达。
 - 硬性上限（每次发送 10 条消息，3 轮）防止房间失控。
 - 每个成员都保留自己独立、持久的房间会话，因此房间上下文会像其他对话一样持续保存。
 - **不是每个 Bot 都会回复每一条消息。** 是否发言由每个成员自己决定——一个 Bot 只有在有新内容可补充时才会回复，否则就跳过；@提及特定成员会把这一轮范围限定到他们身上。你可以预期被 @提及 的成员（或任何有话要说的成员）会发言，其余的保持安静。
-- **关闭 Desktop 后房间仍会继续运行。** 当一个房间的所有成员都位于同一个 gateway 上时，该 gateway 会通过一个持久的驱动器来负责轮次调度：关闭 Hermes Desktop（或失去它的连接）不会让讨论中途停止，Desktop 重新连接时只需从房间日志中补上进度即可。适用这种情况时，gateway 上的 `groups.capabilities` 会报告 `driver: true`。成员跨多台机器的房间则不同：每个成员的轮次运行在它自己的 gateway 上，*Bot 之间的消息*一节中描述的跨连接信使机制仍然适用于它们。
+- **关闭 Desktop 后房间仍会继续运行。** 当一个房间的所有成员都位于同一个 gateway 上时，该 gateway 会通过一个持久的驱动器来负责轮次调度：关闭 Rabbit Desktop（或失去它的连接）不会让讨论中途停止，Desktop 重新连接时只需从房间日志中补上进度即可。适用这种情况时，gateway 上的 `groups.capabilities` 会报告 `driver: true`。成员跨多台机器的房间则不同：每个成员的轮次运行在它自己的 gateway 上，*Bot 之间的消息*一节中描述的跨连接信使机制仍然适用于它们。
 - **房间可以跨越多台机器。** New Group Chat 选择器可以从任意已注册的连接中挑选 Bot；每个成员的发言都运行在它自己的机器上，在它自己那台机器的房间会话里。跨机器的成员在房间和其他成员的对话记录中都带有设备徽标（`dixie · Mac Mini`），消除歧义的 `@name-device` handle 在房间提及中同样有效——因此两台机器上同名的 agent 永远不会混淆。
-- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Hermes 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
+- **插件可以观察成员的工作。** 持久的房间日志会记录 `turn.started` 和 `turn.settled`；成员在这两者之间做的事情（工具、审批、流式文本）会通过 [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) 钩子投射给插件，并附带房间、成员和轮次坐标，因此社区客户端无需读取 Rabbit 内部实现，就能在 Group Chat 之上构建工具卡片和实时成员状态。
 
 ## Bot 之间的消息
 
 Bot 之间发消息会带有署名，你也可以从任意对话中把工作转交出去：
 
 - **@提及**——在任意对话中输入 `@researcher have a look at this`，输入框的 `@` 自动补全会帮你选中正确的 Bot；发送时，这个提及会与当前花名册进行解析，当前活跃的 Bot 会被准确告知你指的是谁（profile、友好名称，以及跨连接 Bot 的设备信息）。随后该 Bot 会自己撰写消息，并通过 `message_agent` 发送出去——你的原文永远不会被原样转发，回复会带着那个 agent 的署名返回。一个邮箱地址或未知的 `@` 会原样透传。运行在其他已连接机器上的 Bot 同样可以这样触达（见下方*跨机器的 Bot*）：Desktop 会通过那个连接自己的 socket 转发消息。
-- **重命名的 Bot 会同步保留标签**——给一个 Bot 起一个友好名字（它对话头部的铅笔图标，或 `hermes profile rename`），它就可以用这个名字被 @标记：一个标题为 *Research Buddy* 的 Bot 会响应 `@research-buddy`（以及 `@researchbuddy`），无论是在普通对话还是群聊中都是如此。输入框的 `@` 自动补全会提供重命名后的标签，同时输入旧的 profile 名称依然能匹配并继续生效。
+- **重命名的 Bot 会同步保留标签**——给一个 Bot 起一个友好名字（它对话头部的铅笔图标，或 `rabbit profile rename`），它就可以用这个名字被 @标记：一个标题为 *Research Buddy* 的 Bot 会响应 `@research-buddy`（以及 `@researchbuddy`），无论是在普通对话还是群聊中都是如此。输入框的 `@` 自动补全会提供重命名后的标签，同时输入旧的 profile 名称依然能匹配并继续生效。
 - **私信**——每个 Bot Chat 都携带 `message_agent` 工具：一个 Bot 通过调用 `message_agent(target="researcher", message="…")` 给队友发消息。这个工具会根据当前花名册校验目标，自动加上发送方的 `Message from 🤖 <sender> (@<sender>):` 署名前缀，并投递到队友的规范 Bot Chat 中。投递是**发后即忘**的：发送方会收到一个确认，完成自己的这一轮，而回复会作为一条后台完成通知稍后到达。这条消息作为真正的参数传递（不经过 shell 解释——引号、`$(...)` 和反引号都会原样到达），而且 Bot 会自己撰写消息，而不是转发你的原话。队友花名册——每个 profile 的名称**和角色**（来自标题/描述）——是每个 Bot Chat 系统提示的一部分，因此 Bot 在选择接收方之前就知道谁负责什么。这个工具**只**存在于 Bot 模式管理的安装上的规范 Bot Chat 会话中；普通对话、群聊成员会话和 CLI 会话都看不到它。
 
 本地消息同样能送达一个在 Desktop 或 TUI 中保持打开的 Bot Chat。接收方后端保留所有权：它在现有的通知轮询器上读取持久化的入站消息，空闲时立即接纳，否则等到正在运行的轮次和已排队的人类提示完成后再处理。`queued` 确认表示消息已被持久接纳，**而不是**回复已完成。目标 profile 会在 `runtime/bot_live_delivery/` 下保留投递 ID 和回执；`settled` 表示已完成。崩溃或被取消的导入轮次不会被自动重放，绑定到已离开的所有者的待处理工作会保留下来供检查，而不是被悄悄重新运行。不要重发结果未知的投递。不具备实时投递能力的较旧后端仍会返回原有的所有权拒绝；升级后请重启那个后端。
@@ -145,7 +145,7 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 
 一次失败的投递轮次最多重试一次，并且只在重试确实可能有帮助时才会重试。瞬时性失败（目标运行时离线、投递超时、provider 限流或服务端错误）会不加改动地重新运行同一个 Bot Chat 会话。上下文溢出失败同样会重新运行同一个会话——重试的这一轮会先通过标准的上下文压缩流程压缩超出阈值的记录，再调用模型，这样重试就能装进原本装不下的空间。认证、配额和配置类的失败永远不会自动重试：第二次尝试无法解决这些问题，只会白白消耗配额，因此这类失败会被立即上报。一次重试永远不会开启新会话——你的 Bot Chat 历史和上下文会保持完整。
 
-当目标没有活跃的 Desktop 或 TUI 所有者时，本地投递会通过一次安静的 CLI 轮次打开该 profile 的规范 Bot Chat。这条传输路径优先使用与发送方运行时的 Python 解释器并列的 Hermes 入口，因此只要这个同级入口存在，某个服务 `PATH` 上不相关或较旧的 `hermes` 就不会抢先。`--in ~` 选择工作目录；显式的 Bot Chat 标题会在目标 profile 的会话数据库中解析。
+当目标没有活跃的 Desktop 或 TUI 所有者时，本地投递会通过一次安静的 CLI 轮次打开该 profile 的规范 Bot Chat。这条传输路径优先使用与发送方运行时的 Python 解释器并列的 Rabbit 入口，因此只要这个同级入口存在，某个服务 `PATH` 上不相关或较旧的 `rabbit` 就不会抢先。`--in ~` 选择工作目录；显式的 Bot Chat 标题会在目标 profile 的会话数据库中解析。
 
 ### 投递失败时：带类型的原因码
 
@@ -153,33 +153,33 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 
 ### 跨已连接机器的消息（Desktop 中继）
 
-你在**设置 → Connections** 中注册的每一个 gateway——本地、远程 URL、SSH、Hermes Cloud、docker——都是 Desktop 持续保持打开的一条常驻连接，Bot 模式会自动利用这些连接来发消息。无需额外配置：
+你在**设置 → Connections** 中注册的每一个 gateway——本地、远程 URL、SSH、Rabbit Cloud、docker——都是 Desktop 持续保持打开的一条常驻连接，Bot 模式会自动利用这些连接来发消息。无需额外配置：
 
 - **花名册会自行同步。** 只要 Desktop 在运行，它就会定期告诉每个已连接的 gateway，*其他*连接上都有哪些 agent。每个 Bot Chat 的队友花名册随即会列出它们（"在其他已连接机器上的队友"），包含名称、角色以及所在的机器——当 agent 出现、消失或被重命名时，这份花名册也会刷新（能力版本）。
 - **`message_agent` 可以直接触达它们。** 你笔记本上的 Bot 可以用 `message_agent(target="moxie", …)` 给云端 agent 发消息，和给本地队友发消息完全一样。如果同一个 handle 在多台机器上都存在，用 `target="moxie@<connection>"` 消除歧义（这个工具的报错信息会告诉 Bot 确切的写法）。投递走的是 Desktop：发送方的 gateway 把消息入队，Desktop 把它中继到目标连接自己的 gateway，目标 Bot 在它自己的规范 Bot Chat 中运行一轮，回复以本地私信同样使用的那种后台完成通知的形式返回给发送方。发给不同 Bot 的消息会并行投递，因此一个 Bot 的长轮次永远不会拖延另一个 Bot 的邮件（也不会让它超过 `bot_mode.envelope_ttl_seconds` 而过期）；发给*同一个* Bot 的消息则按顺序、一次一轮地投递。
-- **Desktop 是信使。** 只要一台同时认识两个连接的 Desktop 在运行，跨连接投递就能工作（它持有 socket 和凭据——gateway 之间彼此看不到对方的认证信息）。如果 Desktop 在投递途中被关闭，发送方的 Bot 会被告知回复没有送达，而不是被无限期挂起。若需要完全不经过 Desktop 的、永远在线的机器对机器消息，请注册一个 peer（见下方 `hermes peer`）——这两条路径可以共存。
+- **Desktop 是信使。** 只要一台同时认识两个连接的 Desktop 在运行，跨连接投递就能工作（它持有 socket 和凭据——gateway 之间彼此看不到对方的认证信息）。如果 Desktop 在投递途中被关闭，发送方的 Bot 会被告知回复没有送达，而不是被无限期挂起。若需要完全不经过 Desktop 的、永远在线的机器对机器消息，请注册一个 peer（见下方 `rabbit peer`）——这两条路径可以共存。
 
-### Bot 发起的跨机器私信（`hermes peer`）
+### Bot 发起的跨机器私信（`rabbit peer`）
 
 一台机器上的 Bot 可以在没有任何 Desktop 参与的情况下，给**另一台机器的 gateway** 上的 Bot 发消息。把对方的 gateway 注册为一个 *peer*（它的 API server URL + `API_SERVER_KEY`）：
 
 ```bash
-hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
-hermes peer list
-hermes peer dm spark < ~/.hermes/cache/scratch/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
-hermes peer dm spark/researcher < ~/.hermes/cache/scratch/dm.txt   # 多路复用 peer 上的指定 profile
-hermes peer run spark --idempotency-key ticket-123 < ~/.hermes/cache/scratch/long-task.txt
-hermes peer status spark run_abc123
-hermes peer stop spark run_abc123
+rabbit peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
+rabbit peer list
+rabbit peer dm spark < ~/.rabbit/cache/scratch/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
+rabbit peer dm spark/researcher < ~/.rabbit/cache/scratch/dm.txt   # 多路复用 peer 上的指定 profile
+rabbit peer run spark --idempotency-key ticket-123 < ~/.rabbit/cache/scratch/long-task.txt
+rabbit peer status spark run_abc123
+rabbit peer stop spark run_abc123
 ```
 
-`hermes peer dm` 会通过该 peer 已有的 API server，把消息投递进远程 agent 的规范 Bot Chat，在那里运行一轮 agent，并把回复打印到 stdout——这正是本地 `hermes -p <bot> chat` 命令的跨机器对应版本。
+`rabbit peer dm` 会通过该 peer 已有的 API server，把消息投递进远程 agent 的规范 Bot Chat，在那里运行一轮 agent，并把回复打印到 stdout——这正是本地 `rabbit -p <bot> chat` 命令的跨机器对应版本。
 
 `peer dm` 只适合简短的查询和回执，因为它会一直占用一条 HTTP 连接直到轮次结束。对于较长的轮次，`peer run` 会立即返回一个 `run_id`；用 `peer status` 轮询它。这次运行会继承规范 Bot Chat 的记录，而一个稳定的 `--idempotency-key` 会让重试返回原来的那次运行，而不是开始重复的工作。用 `peer stop` 加上这个确切的运行 ID 来中断它，而不会误伤其他轮次。
 
 一旦注册了 peer，教给每个 Bot Chat 的消息协议（`agent.bot_mode_protocol`）就会自动包含 peer 花名册，`message_agent` 也可以直接接受 peer 目标——`message_agent(target="spark/researcher", …)`，或用 `target="spark"` 指向该 peer 的主 agent——这样**你的 Bot 会自己了解到**其他机器上存在队友，以及如何触达它们。注册或移除一个 peer 会在下一条消息时刷新每个 Bot Chat 的协议（能力版本）。
 
-前提条件：peer 所在机器运行 `api_server` gateway 平台，并配置了强密码的 `API_SERVER_KEY`；能否触达取决于你的网络（局域网、Tailscale、VPN）。这个 key 是一项凭据，保存在 `~/.hermes/.env` 中的 `HERMES_PEER_<NAME>_KEY` 下；peer 的名称/URL 保存在 `config.yaml` 的 `bot_peers` 下。
+前提条件：peer 所在机器运行 `api_server` gateway 平台，并配置了强密码的 `API_SERVER_KEY`；能否触达取决于你的网络（局域网、Tailscale、VPN）。这个 key 是一项凭据，保存在 `~/.rabbit/.env` 中的 `RABBIT_PEER_<NAME>_KEY` 下；peer 的名称/URL 保存在 `config.yaml` 的 `bot_peers` 下。
 
 :::note 单向可达（NAT）
 跨 gateway 的链接是 gateway 到 gateway 的直接连接——Desktop 只是观察者，不是中继。位于家庭 NAT 之后的 gateway 可以向公网 peer 主动拨出（笔记本 → VPS 可行），但反方向没有入站路由（VPS → 家庭会失败），除非你的网络提供了一条。如果你的 Group Chat 跨越了 NAT 边界，请把房间的权威放在每个参与者都能触达的主机上（通常是公网 VPS），或者用 Tailscale/VPN 打通网络。
@@ -214,15 +214,15 @@ hermes peer stop spark run_abc123
 
 ## 跨机器的 Bot
 
-当你在**设置 → Connections** 中注册了多个后端——本地运行时、远程 gateway、SSH 主机、Hermes Cloud 实例——花名册会持续显示来自**每一个**已连接来源的 Bot：SSH 来源会在不在远程主机上启动任何进程的前提下被盘点，暂时无法触达的机器会保留它们最后已知的行，而不是直接消失。当同一个 profile 名称存在于多个来源时，handle 会以 `@name-device` 的形式消除歧义（例如 `@research-homelab`）。一个 Bot 的对话、会话、记忆和例行任务都存放在拥有该 profile 的那台机器上。
+当你在**设置 → Connections** 中注册了多个后端——本地运行时、远程 gateway、SSH 主机、Rabbit Cloud 实例——花名册会持续显示来自**每一个**已连接来源的 Bot：SSH 来源会在不在远程主机上启动任何进程的前提下被盘点，暂时无法触达的机器会保留它们最后已知的行，而不是直接消失。当同一个 profile 名称存在于多个来源时，handle 会以 `@name-device` 的形式消除歧义（例如 `@research-homelab`）。一个 Bot 的对话、会话、记忆和例行任务都存放在拥有该 profile 的那台机器上。
 
-点击一个 Connections Bot **不会**把你的窗口切换到那台机器上——留在你当前的对话里 @提及 它、把它安排进某个群聊，或者用 **Create on** 选择器直接在它所在的机器上创建新的 agent。云端和本地 agent 就这样共用同一个花名册：注册你的 Hermes Cloud 实例和你的桌面（比如通过 Tailscale 或 SSH），它们的 Bot 就能互相发消息、共处同一个房间，每个 agent 的工作都运行在自己的机器上。跨这些机器的 Bot 间私信会自动走 Desktop 中继（见上文*跨已连接机器的消息*）。
+点击一个 Connections Bot **不会**把你的窗口切换到那台机器上——留在你当前的对话里 @提及 它、把它安排进某个群聊，或者用 **Create on** 选择器直接在它所在的机器上创建新的 agent。云端和本地 agent 就这样共用同一个花名册：注册你的 Rabbit Cloud 实例和你的桌面（比如通过 Tailscale 或 SSH），它们的 Bot 就能互相发消息、共处同一个房间，每个 agent 的工作都运行在自己的机器上。跨这些机器的 Bot 间私信会自动走 Desktop 中继（见上文*跨已连接机器的消息*）。
 
-完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop)。
+完整的多连接指南请参阅[将 Desktop 连接到多个 Rabbit 实例](./multi-connection-desktop)。
 
 ## Warm Bot Backends（同时运行多少个 Bot）
 
-每个本地 Bot 都运行在自己的后端进程中，Desktop 最多同时保留 **设置 → Advanced → Warm Bot Backends** 个后端存活（默认 3 个，每个约 60 MB）。空闲的后端会在该设置旁边的空闲超时（默认 10 分钟）后被回收；`desktop.log` 中紧跟空闲回收消息之后出现的 `Hermes backend for profile "<name>" exited (1)` 一行就是这次清理，而不是崩溃。当所有槽位都被占用时，你打开的 Bot 会最多等待 30 秒以获得一个槽位，然后以 *timed out waiting for a free local slot* 失败。
+每个本地 Bot 都运行在自己的后端进程中，Desktop 最多同时保留 **设置 → Advanced → Warm Bot Backends** 个后端存活（默认 3 个，每个约 60 MB）。空闲的后端会在该设置旁边的空闲超时（默认 10 分钟）后被回收；`desktop.log` 中紧跟空闲回收消息之后出现的 `Rabbit backend for profile "<name>" exited (1)` 一行就是这次清理，而不是崩溃。当所有槽位都被占用时，你打开的 Bot 会最多等待 30 秒以获得一个槽位，然后以 *timed out waiting for a free local slot* 失败。
 
 读取另一个 Bot 的聊天历史以及后台的记录刷新**不会**占用槽位——只有交互式打开或正在运行的轮次才会。如果你在驾驭一支庞大的队伍（成员众多的群聊，或跨多个 profile 的 Kanban 派发），请把 Warm Bot Backends 调高到你预期同时活跃的 Bot 数量，并为机器配备相应的内存。把它设得比你实际使用的 profile 数量还高，只会增加启动开销。
 
@@ -238,9 +238,9 @@ Bot 模式是一个内置的桌面插件。在 **Capabilities → Plugins → Bo
 
 | 在 Bot 模式中 | 在终端中 |
 | --- | --- |
-| 与一个 Bot 对话 | `hermes -p <bot> chat` |
-| 一个 Bot 的文件、技能、记忆 | `~/.hermes/profiles/<bot>/` |
-| 例行任务 | `hermes cron list`（任务名为 `[bot:<name>] …`） |
-| 创建 / 查看 profile | `hermes profile create`、`hermes profile list` |
+| 与一个 Bot 对话 | `rabbit -p <bot> chat` |
+| 一个 Bot 的文件、技能、记忆 | `~/.rabbit/profiles/<bot>/` |
+| 例行任务 | `rabbit cron list`（任务名为 `[bot:<name>] …`） |
+| 创建 / 查看 profile | `rabbit profile create`、`rabbit profile list` |
 
 底层原理请参阅 [Profiles](./profiles.md)，完整 CLI 参考请参阅 [Profile Commands](../reference/profile-commands.md)。

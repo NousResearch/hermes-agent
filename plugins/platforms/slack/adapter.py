@@ -60,20 +60,20 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
-# User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
-from hermes_cli.version_info import get_version_info
+# User-Agent prefix (``RabbitAgent/<version>``) for platform-partner attribution of API calls.
+from rabbit_cli.version_info import get_version_info
 
-_HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{get_version_info().base_version}"
+_RABBIT_SLACK_USER_AGENT_PREFIX = f"RabbitAgent/{get_version_info().base_version}"
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
 
 # Model picker Block Kit action IDs. The picker is a two-step drill-down:
 # provider static_select → model static_select, plus Back/Cancel buttons.
-_MODEL_PICKER_PROVIDER_ACTION = "hermes_model_provider"
-_MODEL_PICKER_MODEL_ACTION = "hermes_model_model"
-_MODEL_PICKER_BACK_ACTION = "hermes_model_back"
-_MODEL_PICKER_CANCEL_ACTION = "hermes_model_cancel"
+_MODEL_PICKER_PROVIDER_ACTION = "rabbit_model_provider"
+_MODEL_PICKER_MODEL_ACTION = "rabbit_model_model"
+_MODEL_PICKER_BACK_ACTION = "rabbit_model_back"
+_MODEL_PICKER_CANCEL_ACTION = "rabbit_model_cancel"
 # Rendered when a live-looking picker message can no longer resolve (gateway
 # restart, aged-out state entry, or a value the stored state no longer
 # covers): the message is rewritten to this so the control visibly dies.
@@ -400,7 +400,7 @@ def _rewrite_known_bang_command(text: str) -> str:
     if not text.startswith("!"):
         return text
     try:
-        from hermes_cli.commands import is_gateway_known_command
+        from rabbit_cli.commands import is_gateway_known_command
         first_token = text[1:].split(maxsplit=1)[0]
         cmd_name = first_token.split("@", 1)[0].lower()
         if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
@@ -677,7 +677,7 @@ def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
 
     canonical = text or ""
     # Order matters: unescape before links (same brackets/``&``); permalinks after links (bare
-    # URL); labels after dates (dates carry a label); bot mention after labels (``<@U…|hermes>``).
+    # URL); labels after dates (dates carry a label); bot mention after labels (``<@U…|rabbit>``).
     canonical = _unescape_slack_entities(canonical)
     canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, canonical)
     canonical = _SLACK_DATE_RE.sub(_date, canonical)
@@ -1569,7 +1569,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "is missing the 'mpim:history' scope and 'message.mpim' event. Add "
                     "'mpim:history' (and 'mpim:read') to bot scopes, add 'message.mpim' to event "
                     "subscriptions, then REINSTALL the app to the workspace. Regenerating the app "
-                    "from `hermes slack` produces a manifest with these already included.",
+                    "from `rabbit slack` produces a manifest with these already included.",
                     team_key or "this workspace")
         except Exception:  # pragma: no cover - diagnostics must never break connect
             pass
@@ -1640,7 +1640,7 @@ class SlackAdapter(BasePlatformAdapter):
             self._app.event(event_type)(_listener_for(handler))
         # Catch-all ack: unacked envelopes count as failures and past 95%/60-min Slack disables
         # Event Subscriptions (ALL inbound). Registered AFTER all named handlers (first match wins).
-        # Catch-all no-op ack for any other subscribed event type that Hermes has no listener for (e.g.
+        # Catch-all no-op ack for any other subscribed event type that Rabbit has no listener for (e.g.
         # user_change, user_huddle_changed, member_joined_channel, channel_archive, pin_added, etc.). Two
         # reasons this must exist (issues #6572 and the Event Subscriptions auto-disable failure mode): 1.
         # Correctness at scale: without a matching listener, slack-bolt returns HTTP 404 for every unhandled
@@ -1658,33 +1658,33 @@ class SlackAdapter(BasePlatformAdapter):
         async def handle_unhandled_event(event, body, logger):
             logger.debug(
                 "[Slack] Ignoring unhandled event type=%s (no listener registered; subscribed "
-                "events not handled by Hermes can be removed from the Slack app manifest via "
-                "`hermes slack manifest`)",
+                "events not handled by Rabbit can be removed from the Slack app manifest via "
+                "`rabbit slack manifest`)",
                 (event or {}).get("type", (body or {}).get("event", {}).get("type", "unknown")))
 
         # Every COMMAND_REGISTRY command is a native slash via one regex matcher. Commands must
-        # ALSO be declared in the app manifest (`hermes slack manifest`): Socket Mode won't
+        # ALSO be declared in the app manifest (`rabbit slack manifest`): Socket Mode won't
         # deliver undeclared commands at all.
-        from hermes_cli.commands_platforms import slack_native_slashes
+        from rabbit_cli.commands_platforms import slack_native_slashes
         _slash_names = [name for name, _d, _h in slack_native_slashes()]
         if _slash_names:
             _slash_pattern = re.compile(
                 r"^/(?:" + "|".join(re.escape(n) for n in _slash_names) + r")$")
         else:  # pragma: no cover - registry always non-empty
-            _slash_pattern = re.compile(r"^/hermes$")
+            _slash_pattern = re.compile(r"^/rabbit$")
 
-        self._app.command(_slash_pattern)(self._handle_hermes_command)
+        self._app.command(_slash_pattern)(self._handle_rabbit_command)
 
         # Approval buttons, slash-confirm buttons (tools/slash_confirm.py), feedback.
         for _action_id in self._APPROVAL_CHOICES:
             self._app.action(_action_id)(self._handle_approval_action)
         for _action_id in self._CONFIRM_CHOICES:
             self._app.action(_action_id)(self._handle_slash_confirm_action)
-        self._app.action("hermes_feedback")(self._handle_feedback_action)
+        self._app.action("rabbit_feedback")(self._handle_feedback_action)
         # Clarify buttons (tools/clarify_gateway.py); indexed action IDs because
         # Block Kit requires unique IDs within an actions block.
-        self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
-        self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+        self._app.action(re.compile(r"^rabbit_clarify_choice_\d+$"))(self._handle_clarify_action)
+        self._app.action("rabbit_clarify_other")(self._handle_clarify_action)
         # Register Block Kit action handlers for the model picker
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
@@ -1700,7 +1700,7 @@ class SlackAdapter(BasePlatformAdapter):
         a ``(action_id, plugin)`` already registered on the live app is skipped, so the late
         re-wire (#87770) never stacks a second listener that would run the callback twice."""
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from rabbit_cli.plugins import get_plugin_manager
             _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[Slack] Could not load plugin action handlers: %s", e)
@@ -1748,7 +1748,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _new_web_client(token: str, proxy_url: Optional[str]) -> Any:
-        client = AsyncWebClient(token=token, user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX)
+        client = AsyncWebClient(token=token, user_agent_prefix=_RABBIT_SLACK_USER_AGENT_PREFIX)
         _apply_slack_proxy(client, proxy_url)
         return client
 
@@ -1847,13 +1847,13 @@ class SlackAdapter(BasePlatformAdapter):
     def _fatal_missing_env(self, env_name: str) -> None:
         """Log + record the permanent config error for a missing SLACK_* token."""
         logger.error(
-            "[Slack] %s not set — this is a permanent config error; set %s via `hermes "
-            "gateway setup` or in the active profile's ~/.hermes/.env file, then restart the "
+            "[Slack] %s not set — this is a permanent config error; set %s via `rabbit "
+            "gateway setup` or in the active profile's ~/.rabbit/.env file, then restart the "
             "gateway.", env_name, env_name)
         self._set_fatal_error(
             f"missing_{env_name.lower()}",
-            f"{env_name} not configured. Use `hermes gateway setup` "
-            "or add it to your active profile's ~/.hermes/.env file, then restart the gateway.",
+            f"{env_name} not configured. Use `rabbit gateway setup` "
+            "or add it to your active profile's ~/.rabbit/.env file, then restart the gateway.",
             retryable=False)
 
     def _hint_allow_bots(self) -> None:
@@ -1873,7 +1873,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.info(
                 "[Slack] allow_bots=%s — for bot-to-bot interop also ensure: (a) the Slack "
                 "app manifest subscribes to message.channels / message.groups / message.im as "
-                "appropriate (run 'hermes slack manifest' if unsure), and (b) the other bot's "
+                "appropriate (run 'rabbit slack manifest' if unsure), and (b) the other bot's "
                 "Slack user id is in SLACK_ALLOWED_USERS or GATEWAY_ALLOW_ALL_USERS=true. "
                 "Without these, bot events are silently dropped upstream of the allow_bots "
                 "gate.", _allow_bots_cfg)
@@ -3112,7 +3112,7 @@ class SlackAdapter(BasePlatformAdapter):
             "elements": [
                 {
                     "type": "feedback_buttons",
-                    "action_id": "hermes_feedback",
+                    "action_id": "rabbit_feedback",
                     "positive_button": {
                         "text": {"type": "plain_text", "text": t("platform.slack.feedback.good")[:75]},
                         "accessibility_label": t("platform.slack.feedback.good_a11y")[:75],
@@ -3889,8 +3889,8 @@ class SlackAdapter(BasePlatformAdapter):
     def _synthetic_reaction_event(
         self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:
         """Message-shaped event for a reaction. The reaction's own event_ts keeps the deduplicator
-        from conflating it with the reacted-to message; ``_hermes_force_process`` skips the mention
-        requirement (user auth and allowed_channels still apply); ``_hermes_reaction`` is
+        from conflating it with the reacted-to message; ``_rabbit_force_process`` skips the mention
+        requirement (user auth and allowed_channels still apply); ``_rabbit_reaction`` is
         informational. An optional handoff target channel replaces the reacted-to channel; a
         channel-only target is a handoff, not a reply — respond top-level there."""
         item = event.get("item") or {}
@@ -3904,8 +3904,8 @@ class SlackAdapter(BasePlatformAdapter):
             "channel": channel_id,
             "ts": event.get("event_ts") or f"reaction-{msg_ts}-{reaction_name}-{user_id}",
             "thread_ts": thread_ts,
-            "_hermes_force_process": True,
-            "_hermes_reaction": {
+            "_rabbit_force_process": True,
+            "_rabbit_reaction": {
                 "name": reaction_name, "action": action, "reacted_to_ts": msg_ts,
                 "event_ts": event.get("event_ts")}}
         if team_id:
@@ -3917,12 +3917,12 @@ class SlackAdapter(BasePlatformAdapter):
         if target_channel:
             synthetic["channel"] = target_channel
             synthetic["channel_type"] = "im" if target_channel.startswith("D") else "channel"
-            synthetic["_hermes_reaction_source_channel"] = channel_id
+            synthetic["_rabbit_reaction_source_channel"] = channel_id
             if target_thread:
                 synthetic["thread_ts"] = target_thread
             else:
                 synthetic.pop("thread_ts", None)
-                synthetic["_hermes_no_thread_response"] = True
+                synthetic["_rabbit_no_thread_response"] = True
         return synthetic
 
     async def _reaction_thread_ts(
@@ -4303,7 +4303,7 @@ class SlackAdapter(BasePlatformAdapter):
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
             return thread_ts
-        if event.get("_hermes_no_thread_response"):
+        if event.get("_rabbit_no_thread_response"):
             return event.get("thread_ts") or None
         # Reaction handoff into a configured target channel (#45265): the response should be a new top-level
         # message in the target channel, never a thread under the synthetic ts (which is the reaction's
@@ -4630,7 +4630,7 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
-        force_process = bool(event.get("_hermes_force_process"))
+        force_process = bool(event.get("_rabbit_force_process"))
         if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
             return
         if (
@@ -4959,8 +4959,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     _EA_REASON_BUDGET = 500
     _EA_SECTION_CAP = 3000  # a longer section text → invalid_blocks → no buttons at all
-    _EA_ACTION_IDS = {"once": "hermes_approve_once", "session": "hermes_approve_session",
-                      "always": "hermes_approve_always", "deny": "hermes_deny"}
+    _EA_ACTION_IDS = {"once": "rabbit_approve_once", "session": "rabbit_approve_session",
+                      "always": "rabbit_approve_always", "deny": "rabbit_deny"}
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
@@ -5006,11 +5006,11 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "actions",
                     "elements": [
                         self._button(t("platform.slack.confirm.approve_once")[:75],
-                                     "hermes_confirm_once", value, style="primary"),
+                                     "rabbit_confirm_once", value, style="primary"),
                         self._button(t("platform.slack.confirm.always_approve")[:75],
-                                     "hermes_confirm_always", value),
+                                     "rabbit_confirm_always", value),
                         self._button(t("platform.slack.confirm.cancel")[:75],
-                                     "hermes_confirm_cancel", value, style="danger")]}]
+                                     "rabbit_confirm_cancel", value, style="danger")]}]
             return f"{_title}: {body[:100]}", blocks
 
         return await self._send_interactive_prompt(chat_id, metadata, _build, "send_slash_confirm")
@@ -5144,7 +5144,7 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = self._resolve_thread_ts(None, metadata)
 
             try:
-                from hermes_cli.providers import get_label
+                from rabbit_cli.providers import get_label
                 provider_label = get_label(current_provider)
             except Exception:
                 provider_label = current_provider
@@ -5323,7 +5323,7 @@ class SlackAdapter(BasePlatformAdapter):
             state["stage"] = "provider"
             state["selected_provider_slug"] = ""
             try:
-                from hermes_cli.providers import get_label
+                from rabbit_cli.providers import get_label
                 provider_label = get_label(
                     state.get("current_provider", "")
                 )
@@ -5408,8 +5408,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
         session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Clarify prompt as Block Kit buttons: one ``hermes_clarify_choice_<idx>`` per option
-        (value ``clarify_id|idx``) plus "✏️ Other…" (``hermes_clarify_other``), which flips the
+        """Clarify prompt as Block Kit buttons: one ``rabbit_clarify_choice_<idx>`` per option
+        (value ``clarify_id|idx``) plus "✏️ Other…" (``rabbit_clarify_other``), which flips the
         entry into text-capture mode for the gateway's text-intercept. No choices → base impl."""
         if not choices:
             return await super().send_clarify(
@@ -5431,10 +5431,10 @@ class SlackAdapter(BasePlatformAdapter):
                 label = str(choice).strip() or t("platform.slack.clarify.option_n", n=str(idx + 1))
                 elements.append(
                     self._button(
-                        label[:75], f"hermes_clarify_choice_{idx}",
+                        label[:75], f"rabbit_clarify_choice_{idx}",
                         f"{clarify_id}|{idx}", emoji=True))
             elements.append(
-                self._button(t("platform.slack.clarify.other")[:75], "hermes_clarify_other",
+                self._button(t("platform.slack.clarify.other")[:75], "rabbit_clarify_other",
                              f"{clarify_id}|other", emoji=True)
             )
             blocks: list = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
@@ -5559,15 +5559,15 @@ class SlackAdapter(BasePlatformAdapter):
 
     # Button action_id → choice, and choice → outcome text (``{user}`` = clicker's name).
     _APPROVAL_CHOICES: ClassVar[Dict[str, str]] = {
-        "hermes_approve_once": "once", "hermes_approve_session": "session",
-        "hermes_approve_always": "always", "hermes_deny": "deny"}
+        "rabbit_approve_once": "once", "rabbit_approve_session": "session",
+        "rabbit_approve_always": "always", "rabbit_deny": "deny"}
     # choice → catalog key; resolved through ``t()`` at click time so the active language applies.
     _APPROVAL_DECISION_KEYS: ClassVar[Dict[str, str]] = {
         "once": "platform.slack.approval.resolved_once", "session": "platform.slack.approval.resolved_session",
         "always": "platform.slack.approval.resolved_always", "deny": "platform.slack.approval.resolved_deny"}
     _CONFIRM_CHOICES: ClassVar[Dict[str, str]] = {
-        "hermes_confirm_once": "once", "hermes_confirm_always": "always",
-        "hermes_confirm_cancel": "cancel"}
+        "rabbit_confirm_once": "once", "rabbit_confirm_always": "always",
+        "rabbit_confirm_cancel": "cancel"}
     _CONFIRM_DECISION_KEYS: ClassVar[Dict[str, str]] = {
         "once": "platform.slack.approval.resolved_once", "always": "platform.slack.confirm.resolved_always",
         "cancel": "platform.slack.confirm.resolved_cancel"}
@@ -5688,7 +5688,7 @@ class SlackAdapter(BasePlatformAdapter):
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
         # gateway's text-intercept resolves it from the user's next message.
         expired_text = t("platform.slack.clarify.expired", user=user_name)
-        if action_id == "hermes_clarify_other" or token == "other":
+        if action_id == "rabbit_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
                 self._clarify_messages.pop(clarify_id, None)
@@ -6047,7 +6047,7 @@ class SlackAdapter(BasePlatformAdapter):
         allowed_channels = self._slack_allowed_channels()
         return bool(allowed_channels) and not str(channel_id).startswith("D") and channel_id not in allowed_channels
 
-    async def _handle_hermes_command(self, ack, command: dict) -> None:
+    async def _handle_rabbit_command(self, ack, command: dict) -> None:
         """Bolt listener for every native slash: ack within 3s, then run. A gated channel gets a
         bare ack, never a "Running /x" promise the gate in _handle_slash_command will break."""
         if self._slash_channel_gated(command.get("channel_id", "")):
@@ -6059,7 +6059,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or
-        ``/hermes <subcommand> [args]``; other text after ``/hermes`` is a regular message."""
+        ``/rabbit <subcommand> [args]``; other text after ``/rabbit`` is a regular message."""
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
@@ -6084,7 +6084,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
             source=source, raw_message=command)
         # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-        # events only: free-form "/hermes <question>" replies must stay public.
+        # events only: free-form "/rabbit <question>" replies must stay public.
         response_url = command.get("response_url", "")
         if response_url and user_id and channel_id and text.startswith("/"):
             self._stash_slash_context(team_id, channel_id, user_id, response_url)
@@ -6099,14 +6099,14 @@ class SlackAdapter(BasePlatformAdapter):
     @staticmethod
     def _slash_command_text(command: dict) -> str:
         """Gateway message text for a slash payload. Native slashes keep Slack's raw argument
-        payload verbatim (internal/trailing spacing). ``/hermes`` (or a missing ``command``) maps
+        payload verbatim (internal/trailing spacing). ``/rabbit`` (or a missing ``command``) maps
         ``<subcommand> [args]`` via the registry, else free-form text is a regular question."""
         slash_name = (command.get("command") or "").lstrip("/").strip()
         raw_text = str(command.get("text") or "")
-        if slash_name not in {"hermes", ""}:
+        if slash_name not in {"rabbit", ""}:
             return f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
         legacy_text = raw_text.strip()
-        from hermes_cli.commands_platforms import slack_subcommand_map
+        from rabbit_cli.commands_platforms import slack_subcommand_map
         subcommand_map = slack_subcommand_map()
         subcommand_map["compact"] = "/compress"
         first_word = legacy_text.split()[0] if legacy_text.split() else ""
@@ -6497,7 +6497,7 @@ class SlackAdapter(BasePlatformAdapter):
 # ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
-# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
+# in ``rabbit_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: Dict[str, str] = {}
 _SLACK_DM_CACHE_MAX = 5000
@@ -6521,8 +6521,8 @@ def _load_slack_bot_tokens(raw_token: str, *, quiet: bool) -> List[str]:
     order). ``quiet`` (standalone): no permission warning / per-token INFO; failures swallowed."""
     tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
     try:
-        from hermes_constants import get_hermes_home
-        tokens_file = get_hermes_home() / "slack_tokens.json"
+        from rabbit_constants import get_rabbit_home
+        tokens_file = get_rabbit_home() / "slack_tokens.json"
         present = tokens_file.exists()
     except Exception:
         if quiet:
@@ -6801,7 +6801,7 @@ _SETUP_STEPS = (
     "   3. Install to Workspace: Settings → Install App",
     "   4. After installing, invite the bot to channels: /invite @YourBot",)
 _SETUP_HOME_CHANNEL_HELP = (
-    "📬 Home Channel: where Hermes delivers cron job results,",
+    "📬 Home Channel: where Rabbit delivers cron job results,",
     "   cross-platform messages, and notifications.",
     "   To get a channel ID: open the channel in Slack, then right-click",
     "   the channel name → Copy link — the ID starts with C (e.g. C01ABC2DE3F).",
@@ -6809,14 +6809,14 @@ _SETUP_HOME_CHANNEL_HELP = (
 
 
 def _write_slack_manifest_and_instruct() -> None:
-    """Write the manifest under HERMES_HOME and print paste instructions; non-fatal."""
-    from hermes_cli.cli_output import print_info, print_success, print_warning
+    """Write the manifest under RABBIT_HOME and print paste instructions; non-fatal."""
+    from rabbit_cli.cli_output import print_info, print_success, print_warning
     try:
-        from hermes_cli.slack_cli import _build_full_manifest
-        from hermes_constants import get_hermes_home
+        from rabbit_cli.slack_cli import _build_full_manifest
+        from rabbit_constants import get_rabbit_home
         manifest = _build_full_manifest(
-            bot_name="Hermes", bot_description="Your Hermes agent on Slack")
-        target = _Path(get_hermes_home()) / "slack-manifest.json"
+            bot_name="Rabbit", bot_description="Your Rabbit agent on Slack")
+        target = _Path(get_rabbit_home()) / "slack-manifest.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -6826,8 +6826,8 @@ def _write_slack_manifest_and_instruct() -> None:
             "→ App Manifest → Edit, then Save.  Slack will prompt to "
             "reinstall if scopes or slash commands changed.")
         print_info(
-            "   Re-run `hermes slack manifest --write` anytime to refresh after "
-            "Hermes adds new commands.")
+            "   Re-run `rabbit slack manifest --write` anytime to refresh after "
+            "Rabbit adds new commands.")
     except Exception as e:
         print_warning(f"Could not write Slack manifest: {e}")
 
@@ -6835,23 +6835,23 @@ def _write_slack_manifest_and_instruct() -> None:
 def interactive_setup() -> None:
     """Guide the user through Slack bot setup (manifest, tokens, allowlist, home channel).
     CLI helpers are lazy-imported to keep the plugin's import surface small."""
-    from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.cli_output import (
+    from rabbit_cli.config import remove_env_value, save_env_value
+    from rabbit_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success, print_warning)
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from rabbit_cli.setup_platforms import declines_reconfigure
 
     print_header("Slack")
     if declines_reconfigure("Slack", "Reconfigure Slack?", "SLACK_BOT_TOKEN"):
         # Still offer a manifest refresh so new commands get registered.
         if prompt_yes_no(
             "Regenerate the Slack app manifest with the latest command "
-            "list? (recommended after `hermes update`)", True):
+            "list? (recommended after `rabbit update`)", True):
             _write_slack_manifest_and_instruct()
         return
     for line in _SETUP_STEPS:
         print_info(line)
     print()
-    print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
+    print_info("   Full guide: https://github.com/seven0070/Rabbit-/tree/main/website/docs/user-guide/messaging/slack/")
     print()
     # Write the manifest up-front for the "Create from manifest" flow.
     _write_slack_manifest_and_instruct()
@@ -6913,7 +6913,7 @@ _is_connected = _env_is_connected("SLACK_BOT_TOKEN")
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Rabbit plugin system."""
     ctx.register_platform(
         name="slack",
         label="Slack",
@@ -6922,7 +6922,7 @@ def register(ctx) -> None:
         ensure_deps_fn=check_slack_requirements,
         is_connected=_is_connected,
         required_env=["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"],
-        install_hint="Run `hermes setup` to install Slack support.",
+        install_hint="Run `rabbit setup` to install Slack support.",
         setup_fn=interactive_setup,
         # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,

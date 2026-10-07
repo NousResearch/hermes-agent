@@ -7,7 +7,7 @@ from agent.credential_pool import (
     credential_pool_matches_provider,
     resolve_runtime_pool_key,
 )
-from hermes_cli import runtime_provider as rp
+from rabbit_cli import runtime_provider as rp
 
 
 def test_provider_match_requires_exact_non_custom_identity():

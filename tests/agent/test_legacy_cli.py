@@ -1,4 +1,4 @@
-"""The packaged ``hermes-agent`` console script honours argv (#54648).
+"""The packaged ``rabbit-agent`` console script honours argv (#54648).
 
 A console script calls its target with no arguments; these tests go through the
 target named in pyproject ``[project.scripts]`` exactly the way pip's wrapper does.
@@ -18,8 +18,8 @@ import run_agent
 
 def _run_console_script(monkeypatch, *argv: str):
     pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    module, func = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]["hermes-agent"].split(":")
-    monkeypatch.setattr(sys, "argv", ["hermes-agent", *argv])
+    module, func = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["scripts"]["rabbit-agent"].split(":")
+    monkeypatch.setattr(sys, "argv", ["rabbit-agent", *argv])
     try:
         return getattr(importlib.import_module(module), func)()
     except SystemExit as exc:
@@ -35,7 +35,7 @@ def test_metadata_invocations_never_start_an_agent(argv, monkeypatch, capsys):
 
     assert _run_console_script(monkeypatch, *argv) in (0, None)
     out = capsys.readouterr().out
-    assert "usage: hermes-agent" in out or out.startswith("Hermes Agent v")
+    assert "usage: rabbit-agent" in out or out.startswith("Rabbit Agent v")
 
 
 def test_query_and_runner_options_reach_the_agent(monkeypatch, capsys):

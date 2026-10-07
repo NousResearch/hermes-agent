@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   check-freshness:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'seven0070/Rabbit-'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: trusted-automation
@@ -35,7 +35,7 @@ jobs:
         id: probe
         run: |
           set -e
-          URL="https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
+          URL="https://github.com/seven0070/Rabbit-/tree/main/website/docs/api/skills-index.json"
           echo "Probing $URL"
           # -L follows redirects; -f fails on HTTP errors; -s suppresses progress
           if ! curl -fsSL --retry 3 --retry-delay 10 -o /tmp/skills-index.json "$URL"; then

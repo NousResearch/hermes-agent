@@ -3,7 +3,7 @@
 import time
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from agent.insights import (
     InsightsEngine,
     _estimate_cost,
@@ -138,7 +138,7 @@ def populated_db(db):
 class TestHasKnownPricing:
 
     def test_unknown_custom_model(self):
-        assert _has_known_pricing("FP16_Hermes_4.5") is False
+        assert _has_known_pricing("FP16_Rabbit_4.5") is False
         assert _has_known_pricing("my-custom-model") is False
         assert _has_known_pricing("glm-5") is False
         assert _has_known_pricing("") is False

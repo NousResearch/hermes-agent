@@ -3,7 +3,7 @@ import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
-import { compactNumber } from "@hermes/shared";
+import { compactNumber } from "@rabbit/shared";
 
 interface ModelInfoCardProps {
   /** Current model string from config state — used to detect changes */

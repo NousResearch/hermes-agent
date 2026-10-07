@@ -5,7 +5,7 @@ icacls, reg, vssadmin, bcdedit, diskpart, cipher) and PowerShell cmdlets
 that the POSIX-shaped DANGEROUS_PATTERNS never matched — destructive
 commands passed approval silently. These tests pin the Windows tier and
 the backslash-path detection variant. Platform-independent: the patterns
-must match regardless of host OS (a Linux-hosted Hermes can still drive a
+must match regardless of host OS (a Linux-hosted Rabbit can still drive a
 Windows box over SSH).
 """
 
@@ -93,8 +93,8 @@ class TestWindowsPathVariant:
         r"del C:\Users\me\.ssh\id_rsa",
         r"type C:\Users\me\.ssh\id_ed25519",
         "cat C:/Users/me/.ssh/id_rsa",
-        r"copy C:\Users\me\AppData\Local\hermes\.env D:\exfil\e.txt",
-        "cat C:/Users/me/AppData/Local/hermes/.env",
+        r"copy C:\Users\me\AppData\Local\rabbit\.env D:\exfil\e.txt",
+        "cat C:/Users/me/AppData/Local/rabbit/.env",
     ])
     def test_windows_credential_paths_flagged(self, cmd):
         assert _is_dangerous(cmd), f"should be flagged: {cmd}"

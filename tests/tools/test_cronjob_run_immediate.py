@@ -41,9 +41,9 @@ class TestCronjobRunExecutesImmediately:
         m_run.assert_called_once_with(claimed, adapters=None, loop=None, extra_prompt=None)
 
     def test_run_reconciles_external_provider_after_claimed_execution(self):
-        """A direct run must re-arm Chronos after it advances next_run_at.
+        """A direct run must re-arm the external scheduler after it advances next_run_at.
 
-        Otherwise a scheduled Chronos fire that loses its claim to this direct
+        Otherwise a scheduled external fire that loses its claim to this direct
         run is consumed without a successor one-shot, permanently stalling the
         recurring job.
         """
@@ -150,7 +150,7 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \
-             patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/work")), \
+             patch("rabbit_constants.get_rabbit_home", return_value=Path("/srv/rabbit/profiles/work")), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
@@ -179,7 +179,7 @@ class TestCronjobRunExecutesImmediately:
 
         with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("gateway.run._gateway_runner_ref", return_value=runner), \
-             patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/keeper")), \
+             patch("rabbit_constants.get_rabbit_home", return_value=Path("/srv/rabbit/profiles/keeper")), \
              patch("cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[route]), \
              patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
              patch("tools.cronjob_tools.get_job", return_value=completed):

@@ -14,10 +14,9 @@ Build self-updating dashboards from live sources.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/productivity/live-dashboard` |
+| Source | Optional — install with `rabbit skills install official/productivity/live-dashboard` |
 | Path | `optional-skills/productivity/live-dashboard` |
 | Version | `0.2.0` |
-| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `dashboards`, `monitoring`, `status`, `automation`, `reporting` |
@@ -26,7 +25,7 @@ Build self-updating dashboards from live sources.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Live Dashboard
@@ -49,7 +48,7 @@ Don't use for: one-off status questions (answer directly), price/availability th
 
 - At least one source connector the dashboard will read from: email/calendar via `himalaya` or `google-workspace`, websites via `web_extract` or `browser_navigate`, local files via `read_file`. If none is configured, renegotiate the sources in step 1 before writing any artifact.
 - `cronjob` for the recurring tick.
-- Optional: the `desktop_preview` tool (Hermes desktop app sessions). When it is in the toolset, dashboards render in the in-app preview pane; otherwise the user is given the file path.
+- Optional: the `desktop_preview` tool (Rabbit desktop app sessions). When it is in the toolset, dashboards render in the in-app preview pane; otherwise the user is given the file path.
 
 ## Procedure — Setup (foreground, once)
 
@@ -63,7 +62,7 @@ For each source, do one bounded foreground read now: email/calendar via the conn
 
 ### 3. Build the dashboard artifact
 
-Write two files under the Hermes home directory's `dashboards/<slug>/` (the same directory that holds `config.yaml`; never assume a fixed location):
+Write two files under the Rabbit home directory's `dashboards/<slug>/` (the same directory that holds `config.yaml`; never assume a fixed location):
 
 - `dashboard.json` — the contract plus current state: purpose, entities, per-field values, per-field source + retrieval timestamp, a `needs_attention` list, and a change log (append-only, most recent first).
 - `index.html` — a single self-contained HTML page (inline CSS, no external requests) rendering the state: a header with purpose and last-updated time, a "Needs attention" section on top, the entity table, and the recent-changes list. Regenerate it from `dashboard.json` on every refresh; never hand-edit HTML state.
@@ -113,7 +112,7 @@ Done when the user has either seen the rendered page or been told exactly where 
 - Rendering state into HTML only — `dashboard.json` is the source of truth; HTML is a projection.
 - Alerting on every refresh instead of on material change.
 - Tracking the wrong grain (per-thread when the user thinks per-application).
-- Hardcoding the Hermes home path — resolve it from the running install (the directory holding `config.yaml`) and write absolute paths into cron prompts.
+- Hardcoding the Rabbit home path — resolve it from the running install (the directory holding `config.yaml`) and write absolute paths into cron prompts.
 - Calling `desktop_preview` outside a desktop session — it is only in the toolset for GUI sessions; fall back to the path.
 
 ## Verification

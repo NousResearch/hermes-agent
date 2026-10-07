@@ -1,4 +1,4 @@
-"""Drive a real ``hermes --tui`` inside a private tmux server and read what the user would see.
+"""Drive a real ``rabbit --tui`` inside a private tmux server and read what the user would see.
 
 tmux is the terminal emulator here: it owns the grid, reflows it on resize and keeps the
 scrollback, exactly as it does for a user running the TUI inside tmux. We read it back with
@@ -9,7 +9,7 @@ Every transcript word the fake provider streams is a unique token (``<tag>w<NNN>
 *word ledger* over the captured text tells lost, duplicated and reordered words apart.
 
 Isolation: the tmux server has its own socket and a config written into the test's tmp dir;
-the TUI gets a sandbox HOME/HERMES_HOME wired only to the loopback fake provider; cleanup kills
+the TUI gets a sandbox HOME/RABBIT_HOME wired only to the loopback fake provider; cleanup kills
 the tmux server and every process of the pane's session by session id, never by pattern.
 """
 
@@ -37,7 +37,7 @@ import pytest
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.terminal._pty import cmdline, poll, session_members
 from tests.e2e.core.terminal._vt import Screen
-from tests.fakes.fake_llm_provider import write_hermes_home
+from tests.fakes.fake_llm_provider import write_rabbit_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TITLE = "Scripted session title"
@@ -48,7 +48,7 @@ _DIGITS = re.compile(r"\d")
 _SPINNER = re.compile(r"[\u2800-\u28ff]")
 _STATUS_BAR = re.compile(r"│ fake model")
 # The status bar's first cell once the startup session is live: "─ ready │ fake model │ …". Before
-# that it reads "summoning hermes…" / "forging session…" / "starting agent…" / "resuming…".
+# that it reads "summoning rabbit…" / "forging session…" / "starting agent…" / "resuming…".
 _READY = re.compile(r"─ ready │")
 _STATUS_ROW = re.compile(r"^ ─ (.+?) │")
 # AF_UNIX sun_path is 108 bytes; stay well inside it.
@@ -71,15 +71,15 @@ def require_tui() -> None:
     ) if not ok]
     if not missing:
         return
-    if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1" and missing != ["tmux"]:
-        pytest.fail(f"{missing} missing but HERMES_E2E_REQUIRE_TUI=1")
+    if os.environ.get("RABBIT_E2E_REQUIRE_TUI") == "1" and missing != ["tmux"]:
+        pytest.fail(f"{missing} missing but RABBIT_E2E_REQUIRE_TUI=1")
     pytest.skip(f"needs {missing}")
 
 
 def private_tui_dir(root: Path) -> Path:
-    """A private copy of the prebuilt bundle for ``HERMES_TUI_DIR``.
+    """A private copy of the prebuilt bundle for ``RABBIT_TUI_DIR``.
 
-    A checkout launch of ``hermes --tui`` re-runs esbuild on ``ui-tui/dist/entry.js`` every
+    A checkout launch of ``rabbit --tui`` re-runs esbuild on ``ui-tui/dist/entry.js`` every
     time, non-atomically, so a TUI started by another worker (or another e2e suite) while it
     rebuilds dies with a Node ``SyntaxError`` on a half-written bundle. The prebuilt-bundle path
     runs the same file without rebuilding; a copy that ``node --check`` accepts is immune to
@@ -219,7 +219,7 @@ def layout_problem(rows: list[str], cols: int, tag: str, slack: int | None = 12)
 
 
 class TmuxTui:
-    """One ``hermes --tui`` in a private tmux server."""
+    """One ``rabbit --tui`` in a private tmux server."""
 
     def __init__(self, root: Path, base_url: str, *, cols: int = 120, rows: int = 50,
                  extra_config: str = "", args: Iterable[str] = ("--yolo",), inline: bool = False,
@@ -227,7 +227,7 @@ class TmuxTui:
                  tui_dir: Path | None = None) -> None:
         self.root = root
         self.home = root / "home"
-        self.hermes_home = self.home / ".hermes"
+        self.rabbit_home = self.home / ".rabbit"
         # A socket path of our own (never the shared default dir tmux-<uid> under the system temp
         # dir, where a crashed run would leave it behind); close() removes it.
         self._sock_dir: str | None = None
@@ -237,7 +237,7 @@ class TmuxTui:
             sock = Path(self._sock_dir) / "s"
         self.sock = str(sock)
         if write_home:
-            write_hermes_home(self.hermes_home, base_url, extra_config=BASE_CONFIG + extra_config)
+            write_rabbit_home(self.rabbit_home, base_url, extra_config=BASE_CONFIG + extra_config)
         for sub in ("tmp", "work"):
             (root / sub).mkdir(parents=True, exist_ok=True)
         conf = root / "tmux.conf"
@@ -246,13 +246,13 @@ class TmuxTui:
             "set -g history-limit 100000\nset -g status off\nset -g remain-on-exit on\n"
             "set -g default-terminal tmux-256color\nset -g escape-time 10\n", encoding="utf-8")
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("HERMES_", "TMUX", "OPENAI_", "OPENROUTER_", "ANTHROPIC_"))}
-        env.update(HOME=str(self.home), HERMES_HOME=str(self.hermes_home), PYTHONPATH=str(REPO_ROOT),
+               if not k.startswith(("RABBIT_", "TMUX", "OPENAI_", "OPENROUTER_", "ANTHROPIC_"))}
+        env.update(HOME=str(self.home), RABBIT_HOME=str(self.rabbit_home), PYTHONPATH=str(REPO_ROOT),
                    TMPDIR=str(root / "tmp"), LANG="C.UTF-8", LC_ALL="C.UTF-8", PYTHONUNBUFFERED="1",
-                   HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_TUI_INLINE="1" if inline else "0",
-                   HERMES_TUI_DIR=str(tui_dir or private_tui_dir(root)))
+                   RABBIT_STATE_DB_GUARD_BYPASS="1", RABBIT_TUI_INLINE="1" if inline else "0",
+                   RABBIT_TUI_DIR=str(tui_dir or private_tui_dir(root)))
         env.update(env_extra or {})
-        argv = [sys.executable, "-m", "hermes_cli.main", "--tui", *args]
+        argv = [sys.executable, "-m", "rabbit_cli.main", "--tui", *args]
         subprocess.run(["tmux", "-S", self.sock, "-f", str(conf), "new-session", "-d", "-s", "p",
                         "-x", str(cols), "-y", str(rows), "-c", str(root / "work"), *argv],
                        env=env, check=True, timeout=30)
@@ -349,7 +349,7 @@ class TmuxTui:
                  timeout=timeout, what=f"{what} on screen")
         except AssertionError as exc:
             raise AssertionError(f"{exc}\n--- screen ---\n{self.dump()}") from None
-        assert self.alive(), f"hermes exited while waiting for {what}\n{self.dump()}"
+        assert self.alive(), f"rabbit exited while waiting for {what}\n{self.dump()}"
 
     def wait_quiet(self, idle: float = 1.0, timeout: float = 45.0) -> None:
         """A settled frame: unchanged for ``idle`` seconds, ignoring what ticks on its own while a
@@ -380,7 +380,7 @@ class TmuxTui:
         return not (lflag & (termios.ICANON | termios.ECHO) or iflag & termios.ICRNL)
 
     def status(self) -> str:
-        """The status bar's first cell (``ready``, ``summoning hermes…``, ``running…``), or ''."""
+        """The status bar's first cell (``ready``, ``summoning rabbit…``, ``running…``), or ''."""
         for row in reversed(self.rows()):
             if m := _STATUS_ROW.match(row):
                 return m.group(1)
@@ -395,7 +395,7 @@ class TmuxTui:
             raise AssertionError(f"{exc}\n{self.dump()}") from None
         state = self.pane_state()
         assert state.startswith("0 "), (
-            f"hermes --tui exited during startup (pane_dead pid status={state!r}, "
+            f"rabbit --tui exited during startup (pane_dead pid status={state!r}, "
             f"tmux server {'up' if state else 'gone'})\n{self.dump()}")
 
     def wait_ready(self, timeout: float = 120.0) -> None:
@@ -408,7 +408,7 @@ class TmuxTui:
                  what="the startup session (status bar 'ready')")
         except AssertionError as exc:
             raise AssertionError(f"{exc} (status {self.status()!r})\n{self.dump()}") from None
-        assert self.alive(), f"hermes --tui exited during startup\n{self.dump()}"
+        assert self.alive(), f"rabbit --tui exited during startup\n{self.dump()}"
         self.wait_quiet(1.5, timeout=timeout)
 
     # -- processes -------------------------------------------------------------------------------
@@ -529,7 +529,7 @@ class TmuxTui:
     # -- persisted state -------------------------------------------------------------------------
 
     def db_rows(self, sql: str, args: tuple = ()) -> list[tuple]:
-        db = self.hermes_home / "state.db"
+        db = self.rabbit_home / "state.db"
         if not db.exists():
             return []
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=10)
@@ -555,7 +555,7 @@ class TmuxTui:
             poll(done, timeout=timeout, what=f"{n} assistant replies persisted", interval=0.1)
         except AssertionError as exc:
             raise AssertionError(f"{exc}\n{self.dump()}") from None
-        assert self.alive(), f"hermes exited mid-turn\n{self.dump()}"
+        assert self.alive(), f"rabbit exited mid-turn\n{self.dump()}"
 
 
 def _proc_state(pid: int) -> str:

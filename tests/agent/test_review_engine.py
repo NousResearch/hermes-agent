@@ -106,7 +106,7 @@ def test_build_review_task_includes_excerpt_and_prompt():
 
 def test_load_review_credentials_cfg_reads_config(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "rabbit_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
@@ -123,14 +123,14 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
 
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "rabbit_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {"provider": "auto", "model": ""}}},
     )
     assert re_mod._load_review_credentials_cfg() is None
 
 def test_load_review_credentials_cfg_missing_section(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
+        "rabbit_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
     )
     assert re_mod._load_review_credentials_cfg() is None
 
@@ -262,7 +262,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     parent = MagicMock()
     parent.ephemeral_system_prompt = (
         '[IMPORTANT: The user launched this CLI session with the '
-        '"hermes-agent-dev" skill preloaded. Treat its instructions as '
+        '"rabbit-agent-dev" skill preloaded. Treat its instructions as '
         'active guidance for the duration of this session unless the user '
         'overrides them.]'
     )
@@ -272,7 +272,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
                           "arguments": '{"name": "github-pr-workflow"}'}},
             # reference-file read of an already-counted skill: skipped
             {"function": {"name": "skill_view",
-                          "arguments": '{"name": "hermes-agent-dev", '
+                          "arguments": '{"name": "rabbit-agent-dev", '
                                        '"file_path": "references/x.md"}'}},
             {"function": {"name": "read_file",
                           "arguments": '{"path": "/tmp/x"}'}},
@@ -284,7 +284,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
         ]},
     ]
     names = collect_parent_loaded_skills(parent, msgs)
-    assert names == ["hermes-agent-dev", "github-pr-workflow"]
+    assert names == ["rabbit-agent-dev", "github-pr-workflow"]
 
 def test_collect_skills_empty_when_none_loaded():
     from agent.review_engine import collect_parent_loaded_skills
@@ -313,8 +313,8 @@ def test_collect_skills_caps_at_limit():
 
 def test_briefing_includes_loaded_skills_instruction():
     snap = [{"role": "user", "text": "review my PR"}]
-    _, context = build_review_task(snap, "", ["hermes-agent-dev", "xitter"])
-    assert "hermes-agent-dev, xitter" in context
+    _, context = build_review_task(snap, "", ["rabbit-agent-dev", "xitter"])
+    assert "rabbit-agent-dev, xitter" in context
     assert "skill_view" in context
 
 def test_start_review_threads_loaded_skills_into_context(monkeypatch):
@@ -346,7 +346,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
 
     parent = _fake_parent()
     parent.ephemeral_system_prompt = (
-        'session with the "hermes-agent-dev" skill preloaded.'
+        'session with the "rabbit-agent-dev" skill preloaded.'
     )
     msgs = [
         {"role": "user", "content": "open a PR"},
@@ -354,7 +354,7 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
     ]
     result = start_review(parent, msgs, "")
     assert result["status"] == "dispatched"
-    assert "hermes-agent-dev" in built["context"]
+    assert "rabbit-agent-dev" in built["context"]
     assert "skill_view" in built["context"]
 
 # ---------------------------------------------------------------------------
@@ -388,9 +388,9 @@ def test_review_registered_in_every_aux_surface():
     allowlist (_AUX_TASK_SLOTS). The desktop and web AUX_TASKS tsx arrays
     mirror _AUX_TASK_SLOTS by convention (shared "Must match" comments).
     """
-    from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main_provider_setup import _AUX_TASKS
-    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
+    from rabbit_cli.config import DEFAULT_CONFIG
+    from rabbit_cli.main_provider_setup import _AUX_TASKS
+    from rabbit_cli.web_server_config import _AUX_TASK_SLOTS
 
     assert "review" in DEFAULT_CONFIG["auxiliary"], \
         "review missing from DEFAULT_CONFIG['auxiliary']"

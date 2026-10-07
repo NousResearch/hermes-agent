@@ -2,7 +2,7 @@
 import logging
 
 from agent.provider_registry import ProviderRegistry
-from hermes_constants import hermes_home_key
+from rabbit_constants import rabbit_home_key
 
 
 class Provider:
@@ -14,8 +14,8 @@ def test_scoped_reads_and_restore_share_canonical_key(tmp_path, monkeypatch):
     home = tmp_path / "Profile"
     home.mkdir()
     raw = str(home / ".." / home.name)
-    key = hermes_home_key(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    key = rabbit_home_key(home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     global_provider, scoped, replacement = Provider(), Provider(), Provider()
     registry.register(global_provider)
     registry.register(scoped, scope=raw)

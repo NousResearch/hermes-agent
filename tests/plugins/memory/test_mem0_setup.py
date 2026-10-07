@@ -14,22 +14,22 @@ from plugins.memory.mem0._setup import (
 )
 
 
-def _inject_fake_hermes_cli(monkeypatch):
-    """Inject fake hermes_cli modules so yaml/curses aren't required."""
-    fake_config_mod = types.ModuleType("hermes_cli.config")
+def _inject_fake_rabbit_cli(monkeypatch):
+    """Inject fake rabbit_cli modules so yaml/curses aren't required."""
+    fake_config_mod = types.ModuleType("rabbit_cli.config")
     fake_config_mod.save_config = lambda c: None
 
-    fake_setup_mod = types.ModuleType("hermes_cli.memory_setup")
+    fake_setup_mod = types.ModuleType("rabbit_cli.memory_setup")
     fake_setup_mod._curses_select = lambda *a, **kw: 0
     fake_setup_mod._prompt = lambda label, default=None, secret=False: default or ""
 
-    fake_hermes_cli = types.ModuleType("hermes_cli")
-    fake_hermes_cli.config = fake_config_mod
-    fake_hermes_cli.memory_setup = fake_setup_mod
+    fake_rabbit_cli = types.ModuleType("rabbit_cli")
+    fake_rabbit_cli.config = fake_config_mod
+    fake_rabbit_cli.memory_setup = fake_setup_mod
 
-    monkeypatch.setitem(sys.modules, "hermes_cli", fake_hermes_cli)
-    monkeypatch.setitem(sys.modules, "hermes_cli.config", fake_config_mod)
-    monkeypatch.setitem(sys.modules, "hermes_cli.memory_setup", fake_setup_mod)
+    monkeypatch.setitem(sys.modules, "rabbit_cli", fake_rabbit_cli)
+    monkeypatch.setitem(sys.modules, "rabbit_cli.config", fake_config_mod)
+    monkeypatch.setitem(sys.modules, "rabbit_cli.memory_setup", fake_setup_mod)
 
     monkeypatch.setattr("plugins.memory.mem0._setup._curses_select", lambda *a, **kw: 0)
     monkeypatch.setattr("plugins.memory.mem0._setup._prompt", lambda label, default=None, secret=False: default or "")
@@ -179,9 +179,9 @@ class TestPromptApiKey:
 class TestPostSetup:
 
     def test_platform_flag_mode(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["hermes", "--mode", "platform", "--api-key", "sk-test"])
-        monkeypatch.setattr("plugins.memory.mem0._setup.get_hermes_home", lambda: tmp_path)
-        _inject_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr("sys.argv", ["rabbit", "--mode", "platform", "--api-key", "sk-test"])
+        monkeypatch.setattr("plugins.memory.mem0._setup.get_rabbit_home", lambda: tmp_path)
+        _inject_fake_rabbit_cli(monkeypatch)
         config = {"memory": {}}
         post_setup(str(tmp_path), config)
         assert config["memory"]["provider"] == "mem0"
@@ -193,11 +193,11 @@ class TestPostSetup:
 
     def test_selfhosted_flag_mode(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.argv", [
-            "hermes", "--mode", "selfhosted",
+            "rabbit", "--mode", "selfhosted",
             "--host", "http://localhost:8888/", "--api-key", "admin-key",
         ])
-        monkeypatch.setattr("plugins.memory.mem0._setup.get_hermes_home", lambda: tmp_path)
-        _inject_fake_hermes_cli(monkeypatch)
+        monkeypatch.setattr("plugins.memory.mem0._setup.get_rabbit_home", lambda: tmp_path)
+        _inject_fake_rabbit_cli(monkeypatch)
         monkeypatch.setattr("plugins.memory.mem0._setup._check_selfhosted_server", lambda h: None)
         config = {"memory": {}}
         post_setup(str(tmp_path), config)
@@ -206,7 +206,7 @@ class TestPostSetup:
         assert "MEM0_API_KEY=admin-key" in env_content
         mem0_json = json.loads((tmp_path / "mem0.json").read_text())
         assert mem0_json["host"] == "http://localhost:8888"  # trailing slash stripped
-        assert mem0_json["user_id"] == "hermes-user"
+        assert mem0_json["user_id"] == "rabbit-user"
 
 
 
@@ -221,7 +221,7 @@ class TestConnectivityChecks:
 
 
 def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
-    """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
+    """`rabbit memory setup mem0` reaches the wizard when the package is first imported by plugin
     discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
     module the loader actually cached, not on a normal top-level import."""
     from plugins.memory import load_memory_provider

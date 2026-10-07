@@ -91,7 +91,7 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
   // absolute URLs: `new URL()` either throws (POSIX, `~`, UNC) or mis-parses a
   // drive letter as a bogus `c:` scheme, which the web allowlist below would
   // reject as "Invalid external URL". Route them through the audited file
-  // resolver instead (hermes-agent 80946, 84361).
+  // resolver instead (rabbit-agent 80946, 84361).
   if (looksLikeLocalFilesystemPath(raw)) {
     let opened: boolean
 

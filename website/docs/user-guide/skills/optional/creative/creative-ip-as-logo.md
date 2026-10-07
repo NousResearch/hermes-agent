@@ -14,10 +14,10 @@ Design minimal cute IP mascot marks readable at 32px.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/ip-as-logo` |
+| Source | Optional — install with `rabbit skills install official/creative/ip-as-logo` |
 | Path | `optional-skills/creative/ip-as-logo` |
 | Version | `1.0.0` |
-| Author | s1dashu (https://github.com/s1dashu, upstream s1dashu/ip-as-logo-skill), ported by Hermes Agent |
+| Author | s1dashu (https://github.com/s1dashu, upstream s1dashu/ip-as-logo-skill), ported by Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `logo`, `mascot`, `branding`, `ip-character`, `image-generation`, `creative` |
@@ -26,14 +26,14 @@ Design minimal cute IP mascot marks readable at 32px.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # IP as Logo Skill
 
 Create the simplest possible cute IP character: a compact, lovable symbol that remains recognizable at `32 × 32`, not a detailed character illustration.
 
-> **Hermes adaptation notes** (the rest of this document is the upstream
+> **Rabbit adaptation notes** (the rest of this document is the upstream
 > workflow, kept intact — snapshot of
 > [s1dashu/ip-as-logo-skill](https://github.com/s1dashu/ip-as-logo-skill)
 > commit [`b1bf517c`](https://github.com/s1dashu/ip-as-logo-skill/commit/b1bf517c54a407452cfaca98a54668cd052f8e63),
@@ -63,7 +63,7 @@ Use when a user wants a mascot, IP character, brand character, or "cute logo" fo
 
 ## Prerequisites
 
-- An image-generation backend configured for the built-in `image_generate` tool; check with `hermes tools` and enable one there if the tool reports no backend.
+- An image-generation backend configured for the built-in `image_generate` tool; check with `rabbit tools` and enable one there if the tool reports no backend.
 - `vision_analyze` only for an explicitly requested compliance check; `delegate_task` only for large batches where the user wants speed.
 
 ## Procedure
@@ -82,7 +82,7 @@ Use when a user wants a mascot, IP character, brand character, or "cute logo" fo
    - For a pre-authorized reduced batch (e.g. "generate exactly 2") where the user did not pick directions, prefer one direction with N variants labeled `A1..AN`; state the direction and rationale in the report. Skip the three-direction proposal round whenever the request already authorizes a specific batch and forbids further confirmation — the "always present three directions" rule in step 4 applies only when a proposal round is possible.
    - For any other even default batch size, split candidates equally between lower-left and lower-right. For an odd batch, assign the extra candidate to either side deliberately and record the imbalance. Do not use bottom-center unless the user explicitly requests it.
 7. Default every candidate to exactly three semantic colors in the complete image: exactly two IP base colors plus exactly one background color. Reuse the two IP colors for facial marks rather than introducing additional semantic colors. Follow an explicit user request for another color count. Keep required product cues, identifying features, complexity limits, and any supplied palette consistent enough for useful comparison.
-8. Determine the available image-generation path before promising output. In Hermes this is the `image_generate` tool; if it reports no configured backend, ask the user to enable one (`hermes tools`) instead of fabricating results.
+8. Determine the available image-generation path before promising output. In Rabbit this is the `image_generate` tool; if it reports no configured backend, ask the user to enable one (`rabbit tools`) instead of fabricating results.
 9. If the batch is large and the user wants speed, parallelize candidates via `delegate_task` (one candidate per task, same product brief and shared constraints, one assigned direction or variant each). Otherwise generate candidates through separate `image_generate` calls.
 10. If the user supplies a background palette, reserve every supplied color for backgrounds unless they explicitly say otherwise. Choose exactly two IP base colors independently for the subject and context unless the user also assigns subject colors. Do not treat any historical or example palette as a closed list of allowed backgrounds.
 11. Abstract each subject using the complexity budget below. Generate every candidate as a separate full-resolution square asset; never ask an image model to compose a contact sheet, grid, or multi-image sheet. Do not use previous candidates as image references when testing prompt-only reproducibility.

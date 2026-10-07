@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesConfigRecord } from '@/hermes'
+import type { RabbitConfigRecord } from '@/rabbit'
 
 import { TRANSLATIONS } from './catalog'
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
@@ -185,7 +185,7 @@ describe('I18nProvider', () => {
   })
 
   it('mirrors a registered language’s direction onto the document', async () => {
-    const dispose = registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:hermes-lang-he')
+    const dispose = registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:rabbit-lang-he')
 
     try {
       render(
@@ -204,7 +204,7 @@ describe('I18nProvider', () => {
   it('reads latest config before saving language and preserves unrelated values', async () => {
     const saveConfig = vi.fn().mockResolvedValue({ ok: true })
 
-    const latestConfig: HermesConfigRecord = {
+    const latestConfig: RabbitConfigRecord = {
       display: { language: 'en', skin: 'slate' },
       terminal: { cwd: '/new' }
     }

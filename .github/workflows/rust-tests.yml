@@ -1,7 +1,7 @@
 # .github/workflows/rust-tests.yml
 name: Rust tests
 
-# `cargo test` for the Tauri bootstrap installer (Hermes-Setup). Nothing in CI
+# `cargo test` for the Tauri bootstrap installer (Rabbit-Setup). Nothing in CI
 # compiled this crate before: `.rs` lives under `apps/`, so the change
 # classifier matched it as `frontend` and ran the TypeScript matrix, which
 # cannot notice a Rust error. The crate's unit tests existed in the tree and had

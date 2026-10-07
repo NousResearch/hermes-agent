@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 import pm.plugins_state as pstate
@@ -34,20 +34,20 @@ def _make_dep_plugin(plugins_dir: Path, name: str) -> Path:
 
 @pytest.mark.parametrize("layout", ["default", "custom", "profile"])
 def test_home_layout_joins_sibling_union(tmp_path, monkeypatch, layout):
-    import hermes_constants
+    import rabbit_constants
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / (".hermes" if layout == "default" else "data-root")
+    root = tmp_path / (".rabbit" if layout == "default" else "data-root")
     active = root / "profiles/active" if layout == "profile" else root
     if layout == "default":
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("RABBIT_HOME", raising=False)
     else:
-        monkeypatch.setenv("HERMES_HOME", str(active))
+        monkeypatch.setenv("RABBIT_HOME", str(active))
     active.mkdir(parents=True, exist_ok=True)
     sibling = root / "profiles/sibling"
     _write_enabled(sibling, ["dep-plug"])
     member = _make_dep_plugin(sibling / "plugins", "dep-plug")
     (root / "profiles/README.txt").write_text("not a profile")
-    assert hermes_constants.get_default_hermes_root() == root
+    assert rabbit_constants.get_default_rabbit_root() == root
     assert ws.enabled_member_dirs() == [member]
     assert pstate.enabled_plugins_ordered() == {sibling / "plugins": ["dep-plug"]}

@@ -15,7 +15,7 @@ const sources = [
   { label: 'legacy SSH', connectionId: null, mode: 'ssh' },
   { label: 'registry remote', connectionId: 'remote-work', mode: 'remote' },
   { label: 'registry SSH', connectionId: 'ssh-work', mode: 'ssh' },
-  { label: 'registry cloud', connectionId: 'cloud-work', mode: 'cloud' }
+  { label: 'registry remote alt', connectionId: 'remote-alt', mode: 'remote' }
 ]
 
 for (const method of ['PATCH', 'DELETE']) {

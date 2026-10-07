@@ -9,7 +9,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _first_matching, _get_json, _get_text,
-    _hermes_tags, _memo_json, _parse_frontmatter, _referenced_support_paths,
+    _rabbit_tags, _memo_json, _parse_frontmatter, _referenced_support_paths,
     _validate_bundle_rel_path, _validate_skill_name, hub,
 )
 
@@ -199,7 +199,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
         if loaded is None:
             return None
         url, _text, fm, name = loaded
-        raw_tags = _hermes_tags(fm)
+        raw_tags = _rabbit_tags(fm)
         return SkillMeta(
             name=name or "", description=str(fm.get("description") or ""), source="url", identifier=url,
             trust_level="community", path=name or "",
@@ -338,7 +338,7 @@ class LobeHubSource(SkillSource):
         tags = meta.get("tags", [])
         tag_list = tags if isinstance(tags, list) else []
         system_role = agent_data.get("config", {}).get("systemRole", "")
-        fm_lines = ["---", f"name: {identifier}", f"description: {description[:500]}", "metadata:", "  hermes:",
+        fm_lines = ["---", f"name: {identifier}", f"description: {description[:500]}", "metadata:", "  rabbit:",
                     f"    tags: [{', '.join(str(t) for t in tag_list)}]", "  lobehub:", "    source: lobehub", "---"]
         body_lines = [f"# {title}", "", description, "", "## Instructions", "",
                       system_role if system_role else "(No system role defined)"]

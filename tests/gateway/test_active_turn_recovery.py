@@ -43,7 +43,7 @@ def _make_store(tmp_path) -> SessionStore:
 
 
 def _make_db_store(tmp_path) -> SessionStore:
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     sessions_dir = tmp_path / "sessions"
     store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
@@ -532,7 +532,7 @@ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed
     any other human turn, never the raw marker."""
     from gateway.delivery_ledger import sweep_recoverable
 
-    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
+    (Path(os.environ["RABBIT_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
     runner, store = _db_runner(tmp_path)
     source = _turn(store, "quiet", marked=True, reply=reply, **prompt)
 

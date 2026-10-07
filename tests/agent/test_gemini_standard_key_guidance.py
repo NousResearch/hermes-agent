@@ -12,7 +12,7 @@ September 2026). Two wire shapes exist:
   says the key is invalid and hides the real fix. A mistyped Auth (``AQ.``)
   key must keep the raw invalid-key message.
 
-Port of Kilo-Org/kilocode#12162, adapted to Hermes' GeminiAPIError surface.
+Port of Kilo-Org/kilocode#12162, adapted to Rabbit' GeminiAPIError surface.
 """
 from __future__ import annotations
 

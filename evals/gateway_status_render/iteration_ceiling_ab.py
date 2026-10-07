@@ -4,7 +4,7 @@ Drives the REAL render paths (busy-ack, long-running heartbeat, inactivity-timeo
 with a REAL ``AIAgent`` constructed with its default (unlimited) ``max_iterations`` and a
 stub adapter that records the outbound text. Run on origin/main and on the fix branch:
 
-    HERMES_HOME=$(mktemp -d) python evals/gateway_status_render/iteration_ceiling_ab.py [--finite 250]
+    RABBIT_HOME=$(mktemp -d) python evals/gateway_status_render/iteration_ceiling_ab.py [--finite 250]
 
 Prints one JSON object per render site with the exact text a user would see.
 """
@@ -71,7 +71,7 @@ async def _heartbeat(agent) -> str:
     from gateway.run_turn import GatewayTurnMixin
     from gateway.turn_context import TurnContext
 
-    os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = "0.01"
+    os.environ["RABBIT_AGENT_NOTIFY_INTERVAL"] = "0.01"
     mixin = GatewayTurnMixin()
     adapter = MagicMock()
     adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb1"))

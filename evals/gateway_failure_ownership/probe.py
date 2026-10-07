@@ -5,20 +5,20 @@ from types import SimpleNamespace
 
 ROOT = Path(sys.argv[1]).resolve()
 RECEIPT = Path(sys.argv[2]).resolve()
-HOME = Path(tempfile.mkdtemp(prefix="hermes-104653-state-"))
+HOME = Path(tempfile.mkdtemp(prefix="rabbit-104653-state-"))
 # Discard inherited credentials/config, preserve only interpreter essentials.
 keep = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "LC_ALL", "TZ")}
 os.environ.clear()
 os.environ.update(keep)
 os.environ.update(
     HOME=str(HOME),
-    HERMES_HOME=str(HOME),
-    HERMES_DISABLE_PLUGINS="1",
+    RABBIT_HOME=str(HOME),
+    RABBIT_DISABLE_PLUGINS="1",
     # The scrub above drops the test harness's hermetic switch. Without it, GatewayRunner()
     # in this fresh home starts tirith's startup install on a background thread (PM runtime,
     # Python and uv downloaded and unpacked while the cases run) and its buffers land in the
     # process-wide tracemalloc window the archive case measures.
-    HERMES_DISABLE_LAZY_INSTALLS="1",
+    RABBIT_DISABLE_LAZY_INSTALLS="1",
     NO_PROXY="127.0.0.1,localhost",
 )
 sys.path.insert(0, str(ROOT))
@@ -27,7 +27,7 @@ os.chdir(HOME)
     "model:\n  provider: openai-compat\n  default: fixture-model\n  context_length: 131072\nagent:\n  max_iterations: 2\ncompression:\n  enabled: false\ndatabase:\n  journal_mode: delete\n"
 )
 # Fence all network calls to loopback, including optional discovery/aux paths. Both entry
-# points: hermes_bootstrap's happy-eyeballs socket.create_connection dials with connect_ex.
+# points: rabbit_bootstrap's happy-eyeballs socket.create_connection dials with connect_ex.
 orig_connect = socket.socket.connect
 orig_connect_ex = socket.socket.connect_ex
 blocked = []
@@ -138,7 +138,7 @@ class Peer(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Peer)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 from run_agent import AIAgent
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from gateway.session import SessionStore, AsyncSessionStore, SessionSource
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent

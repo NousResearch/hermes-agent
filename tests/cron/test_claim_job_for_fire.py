@@ -1,10 +1,10 @@
 """Tests for the store-level CAS fire claim (Phase 4C).
 
 `claim_job_for_fire` gives multi-machine at-most-once semantics when an external
-scheduler (Chronos) fires a job: across N gateway replicas, exactly ONE wins the
+scheduler fires a job: across N gateway replicas, exactly ONE wins the
 claim for a given fire. Single-machine deployments always win (unaffected).
 
-These exercise the real store against a temp HERMES_HOME (no mocks) per the
+These exercise the real store against a temp RABBIT_HOME (no mocks) per the
 E2E-over-mocks discipline for file-touching code.
 """
 import threading
@@ -15,9 +15,9 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
+    """Isolated RABBIT_HOME so jobs.json doesn't touch the real store."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    # cron.jobs caches no home at import; get_rabbit_home() reads the env live.
     yield tmp_path
 
 
@@ -115,7 +115,7 @@ def test_fire_claim_heartbeat_refreshes_only_expected_owner(temp_home, monkeypat
     claimed_at = datetime.fromisoformat(claimed["at"])
     monkeypatch.setattr(
         jobs,
-        "_hermes_now",
+        "_rabbit_now",
         lambda: claimed_at + timedelta(seconds=30),
     )
 
@@ -143,7 +143,7 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
     original_at = datetime.fromisoformat(original["at"])
     monkeypatch.setattr(
         jobs,
-        "_hermes_now",
+        "_rabbit_now",
         lambda: original_at + timedelta(seconds=301),
     )
 
@@ -292,7 +292,7 @@ def test_unclassified_off_tick_claim_does_not_stamp_a_future_occurrence(temp_hom
     job = jobs.create_job(prompt="x", schedule="every 5m", name="off-tick")
     pending = jobs.get_job(job["id"])["next_run_at"]
     monkeypatch.setattr(
-        jobs, "_hermes_now", lambda: datetime.fromisoformat(pending) - timedelta(minutes=1))
+        jobs, "_rabbit_now", lambda: datetime.fromisoformat(pending) - timedelta(minutes=1))
 
     claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
 
@@ -314,18 +314,18 @@ def test_claim_seconds_before_the_slot_owns_it_once(temp_home, monkeypatch):
     slot = jobs.get_job(job["id"])["next_run_at"]
     slot_dt = datetime.fromisoformat(slot)
 
-    monkeypatch.setattr(jobs, "_hermes_now", lambda: slot_dt - timedelta(seconds=2))
-    monkeypatch.setattr(executions, "_hermes_now", lambda: slot_dt - timedelta(seconds=2))
+    monkeypatch.setattr(jobs, "_rabbit_now", lambda: slot_dt - timedelta(seconds=2))
+    monkeypatch.setattr(executions, "_rabbit_now", lambda: slot_dt - timedelta(seconds=2))
     claimed = jobs.claim_job_for_fire(job["id"], return_job=True)
     assert claimed["_scheduled_instant"] == scheduled_instant(slot)
     row = executions.create_execution(
-        job["id"], source="chronos", scheduled_instant=claimed["_scheduled_instant"])
+        job["id"], source="external-scheduler", scheduled_instant=claimed["_scheduled_instant"])
     executions.finish_execution(row["id"], success=True)
     jobs.mark_job_run(job["id"], True)
 
     backstop = slot_dt.astimezone(timezone.utc) + timedelta(minutes=11)
-    monkeypatch.setattr(jobs, "_hermes_now", lambda: backstop)
-    monkeypatch.setattr(executions, "_hermes_now", lambda: backstop)
+    monkeypatch.setattr(jobs, "_rabbit_now", lambda: backstop)
+    monkeypatch.setattr(executions, "_rabbit_now", lambda: backstop)
     assert jobs.claim_job_for_fire(job["id"], return_job=True) is False, (
         "misfire backstop re-ran the slot a skewed early fire already completed")
     assert datetime.fromisoformat(jobs.get_job(job["id"])["next_run_at"]) > slot_dt
@@ -345,7 +345,7 @@ def test_manual_claim_still_refuses_a_paused_job(temp_home):
 
 def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
     """A claim younger than the TTL whose owner pid (same host) has exited is stale at once: a
-    ``hermes cron run`` killed mid-flight must not block the next manual run for the whole TTL
+    ``rabbit cron run`` killed mid-flight must not block the next manual run for the whole TTL
     with "already being fired". A live owner's fresh claim still blocks."""
     import os
     import socket

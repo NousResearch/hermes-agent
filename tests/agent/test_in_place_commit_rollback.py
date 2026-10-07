@@ -34,7 +34,7 @@ def _session_db(name):
     letting TemporaryDirectory clean up first raises WinError 32 and masks the
     assertion result.
     """
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     with tempfile.TemporaryDirectory() as tmp:
         db = SessionDB(db_path=Path(tmp) / name)
@@ -100,7 +100,7 @@ def _counts(db, sid):
 class TestInPlaceCommitFailureRollback:
     def test_failed_commit_does_not_reinsert_the_transcript(self):
         """archive_and_compact raises → live list must return to the snapshot."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import compress_context
 
@@ -152,7 +152,7 @@ class TestInPlaceCommitFailureRollback:
 
     def test_successful_commit_still_compacts_in_place(self):
         """The rollback must not fire when the commit landed (#98450 guard)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import compress_context
 

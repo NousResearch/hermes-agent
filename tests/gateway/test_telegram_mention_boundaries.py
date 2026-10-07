@@ -2,7 +2,7 @@
 
 The old implementation used a naive substring check
 (`f"@{bot_username}" in text.lower()`), which incorrectly matched partial
-substrings like 'foo@hermes_bot.example'.
+substrings like 'foo@rabbit_bot.example'.
 
 Detection now relies entirely on the MessageEntity objects Telegram's server
 emits for real mentions. A bare `@username` substring in message text without
@@ -21,17 +21,17 @@ def _make_adapter():
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra={})
-    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    adapter._bot = SimpleNamespace(id=999, username="rabbit_bot")
     return adapter
 
 
-def _mention_entity(text, mention="@hermes_bot"):
+def _mention_entity(text, mention="@rabbit_bot"):
     """Build a MENTION entity pointing at a literal `@username` in `text`."""
     offset = text.index(mention)
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
 
 
-def _telegram_mention_entity(text, mention="@hermes_bot", entity_type="mention"):
+def _telegram_mention_entity(text, mention="@rabbit_bot", entity_type="mention"):
     """Build an entity with Telegram UTF-16 code-unit offset/length values."""
     start = text.index(mention)
     offset = len(text[:start].encode("utf-16-le")) // 2
@@ -66,14 +66,14 @@ class TestRealMentionsAreDetected:
 
     def test_mention_at_start_of_message(self):
         adapter = _make_adapter()
-        text = "@hermes_bot hello world"
+        text = "@rabbit_bot hello world"
         msg = _message(text=text, entities=[_mention_entity(text)])
         assert adapter._message_mentions_bot(msg) is True
 
 
     def test_mention_after_non_bmp_characters_uses_telegram_offsets(self):
         adapter = _make_adapter()
-        text = "\U0001f680\U0001f680 @hermes_bot hello"
+        text = "\U0001f680\U0001f680 @rabbit_bot hello"
         msg = _message(text=text, entities=[_telegram_mention_entity(text)])
         assert adapter._message_mentions_bot(msg) is True
 
@@ -94,22 +94,22 @@ class TestSubstringFalsePositivesAreRejected:
     """
 
     def test_email_like_substring(self):
-        """bug #12545 exact repro: 'foo@hermes_bot.example'."""
+        """bug #12545 exact repro: 'foo@rabbit_bot.example'."""
         adapter = _make_adapter()
-        msg = _message(text="email me at foo@hermes_bot.example")
+        msg = _message(text="email me at foo@rabbit_bot.example")
         assert adapter._message_mentions_bot(msg) is False
 
 
     def test_substring_inside_url_without_entity(self):
         """@handle inside a URL produces a URL entity, not a MENTION entity."""
         adapter = _make_adapter()
-        msg = _message(text="see https://example.com/@hermes_bot for details")
+        msg = _message(text="see https://example.com/@rabbit_bot for details")
         assert adapter._message_mentions_bot(msg) is False
 
 
     def test_email_substring_in_caption(self):
         adapter = _make_adapter()
-        msg = _message(caption="foo@hermes_bot.example")
+        msg = _message(caption="foo@rabbit_bot.example")
         assert adapter._message_mentions_bot(msg) is False
 
 
@@ -119,7 +119,7 @@ class TestEntityEdgeCases:
 
     def test_malformed_entity_with_negative_offset(self):
         adapter = _make_adapter()
-        msg = _message(text="@hermes_bot hi",
+        msg = _message(text="@rabbit_bot hi",
                        entities=[SimpleNamespace(type="mention", offset=-1, length=11)])
         assert adapter._message_mentions_bot(msg) is False
 
@@ -129,27 +129,27 @@ class TestCaseInsensitivity:
 
     def test_uppercase_mention(self):
         adapter = _make_adapter()
-        text = "hi @HERMES_BOT"
-        msg = _message(text=text, entities=[_mention_entity(text, mention="@HERMES_BOT")])
+        text = "hi @RABBIT_BOT"
+        msg = _message(text=text, entities=[_mention_entity(text, mention="@RABBIT_BOT")])
         assert adapter._message_mentions_bot(msg) is True
 
 
 
 class TestTelegramUtf16EntityOffsets:
     def test_extracts_bot_mention_username_after_non_bmp_characters(self):
-        text = "\U0001f9ea\U0001f9ea @hermes_bot please"
+        text = "\U0001f9ea\U0001f9ea @rabbit_bot please"
         msg = _message(text=text, entities=[_telegram_mention_entity(text)])
-        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"hermes_bot"}
+        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"rabbit_bot"}
 
     def test_bot_command_suffix_after_non_bmp_characters_mentions_bot(self):
         adapter = _make_adapter()
-        text = "\U0001f9ea\U0001f9ea /new@hermes_bot"
-        entity = _telegram_mention_entity(text, mention="/new@hermes_bot", entity_type="bot_command")
+        text = "\U0001f9ea\U0001f9ea /new@rabbit_bot"
+        entity = _telegram_mention_entity(text, mention="/new@rabbit_bot", entity_type="bot_command")
         msg = _message(text=text, entities=[entity])
         assert adapter._message_mentions_bot(msg) is True
 
     def test_extracts_bot_command_target_after_non_bmp_characters(self):
-        text = "\U0001f9ea\U0001f9ea /new@hermes_bot"
-        entity = _telegram_mention_entity(text, mention="/new@hermes_bot", entity_type="bot_command")
+        text = "\U0001f9ea\U0001f9ea /new@rabbit_bot"
+        entity = _telegram_mention_entity(text, mention="/new@rabbit_bot", entity_type="bot_command")
         msg = _message(text=text, entities=[entity])
-        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"hermes_bot"}
+        assert TelegramAdapter._extract_bot_mention_usernames(msg) == {"rabbit_bot"}

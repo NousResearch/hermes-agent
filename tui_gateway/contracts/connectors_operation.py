@@ -80,7 +80,7 @@ class CatalogTier(WireEnum):
 
 
 class CatalogAppState(WireEnum):
-    """The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration."""
+    """The desktop app a catalog plugin drives, from its ``rabbit_platform`` declaration."""
 
     present = "present"
     missing_app = "missing_app"
@@ -197,7 +197,7 @@ class ConnectionWakeResult(Result):
 
 
 method("connectors.operation.wake", params=ConnectionOperationParams, result=ConnectionWakeResult,
-       doc="The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick.")
+       doc="The browser leg came back (rabbit://connections/done): read the accounts now, not at the next tick.")
 
 
 class ConnectionAnswerStatus(WireEnum):

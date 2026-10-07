@@ -71,13 +71,13 @@ vi.mock('./preview-nav', () => ({
   activePreviewNav: () => activePreviewNav()
 }))
 
-/** Loopback stand-in for the preload IPC relay (window.hermesDesktop.windowRelay). */
+/** Loopback stand-in for the preload IPC relay (window.rabbitDesktop.windowRelay). */
 function installDesktopRelay() {
   const listeners = new Set<(payload: unknown) => void>()
 
-  const desktopWindow = window as unknown as { hermesDesktop?: Record<string, unknown> }
+  const desktopWindow = window as unknown as { rabbitDesktop?: Record<string, unknown> }
 
-  desktopWindow.hermesDesktop = {
+  desktopWindow.rabbitDesktop = {
     windowRelay: {
       onMessage: (callback: (payload: unknown) => void) => {
         listeners.add(callback)
@@ -93,7 +93,7 @@ function installDesktopRelay() {
   }
 
   return () => {
-    delete desktopWindow.hermesDesktop
+    delete desktopWindow.rabbitDesktop
     listeners.clear()
   }
 }

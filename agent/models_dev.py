@@ -1,7 +1,7 @@
 """Models.dev registry integration — primary database for providers and models.
 
 Resolution: in-memory cache (fresh, or stale served while one background daemon
-thread refreshes) → disk cache (~/.hermes/models_dev_cache.json, any age) →
+thread refreshes) → disk cache (~/.rabbit/models_dev_cache.json, any age) →
 network only when no cache exists. Failed refreshes back off 5 min process-wide.
 Refreshes use ETag conditional GET when a servable registry is held. Hot paths
 pass ``allow_network=False`` and never do I/O. A corrupt/empty disk cache is
@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_json_write, atomic_write_text
 
-from hermes_constants import openrouter_variant_base
+from rabbit_constants import openrouter_variant_base
 
 import requests
 
@@ -106,7 +106,7 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-# Hermes provider names → models.dev provider IDs
+# Rabbit provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
@@ -123,23 +123,23 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "xai-oauth": "xai",  # OAuth is a transport path for the same xAI catalog
     "xiaomi": "xiaomi", "nvidia": "nvidia",
     # Meta Model API (Muse Spark, api.meta.ai): models.dev keys it "meta", the
-    # Hermes provider is "meta-ai"; both aliases are needed or muse-spark-*
+    # Rabbit provider is "meta-ai"; both aliases are needed or muse-spark-*
     # falls back to the generic 256K default instead of its true 1M window.
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
 }
-# Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).
+# Reverse mapping: models.dev id → Rabbit ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, List[str]]] = None
 
 
-def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
-    """Return the Hermes provider ids that map to *mdev_id* (may be [])."""
+def _models_dev_to_rabbit_ids(mdev_id: str) -> List[str]:
+    """Return the Rabbit provider ids that map to *mdev_id* (may be [])."""
     global _MODELS_DEV_TO_PROVIDER
     if _MODELS_DEV_TO_PROVIDER is None:
         _MODELS_DEV_TO_PROVIDER = {}
-        for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
-            _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(hermes_id)
+        for rabbit_id, mapped in PROVIDER_TO_MODELS_DEV.items():
+            _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(rabbit_id)
     return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
 
 
@@ -178,7 +178,7 @@ def _configured_catalog_provider(
 def _models_dev_id(
     provider: str, *, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
-    """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
+    """models.dev provider id for a Rabbit provider id, or None. A custom provider reaches the
     catalog only through its configured ``catalog_provider`` alias (#112649)."""
     key = (provider or "").strip()
     mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
@@ -190,7 +190,7 @@ def _models_dev_id(
             # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
             if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
                 _UNKNOWN_CATALOG_PROVIDER_WARNED.add((key, alias))
-                logger.warning("providers.%s: catalog_provider %r is neither a Hermes provider id nor a "
+                logger.warning("providers.%s: catalog_provider %r is neither a Rabbit provider id nor a "
                                "models.dev id; ignoring", key, alias)
             mdev_id = None
     return mdev_id
@@ -202,23 +202,23 @@ _UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once p
 def _cfg_get(*keys: str, default: Any, config: Optional[Dict[str, Any]] = None) -> Any:
     """``cfg_get`` over the read-only config; *default* on any failure."""
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from rabbit_cli.config import cfg_get, load_config_readonly
         return cfg_get(config if config is not None else load_config_readonly(), *keys, default=default)
     except Exception:
         return default
 
 
-def _hermes_path(name: str) -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / name
+def _rabbit_path(name: str) -> Path:
+    from rabbit_constants import get_rabbit_home
+    return get_rabbit_home() / name
 
 
 def _get_cache_path() -> Path:
-    return _hermes_path("models_dev_cache.json")
+    return _rabbit_path("models_dev_cache.json")
 
 
 def _get_etag_path() -> Path:
-    return _hermes_path("models_dev_cache.etag")
+    return _rabbit_path("models_dev_cache.etag")
 
 
 def _quietly(what: str, fn, default=None):
@@ -238,9 +238,9 @@ def _load_etag() -> str:
 def _save_etag(etag: str) -> None:
     def write() -> None:
         etag_path = _get_etag_path()
-        from hermes_constants import mkdir_under_hermes_home
+        from rabbit_constants import mkdir_under_rabbit_home
 
-        mkdir_under_hermes_home(etag_path.parent)
+        mkdir_under_rabbit_home(etag_path.parent)
         atomic_write_text(etag_path, etag)
     _quietly("save models.dev ETag", write)
 
@@ -511,7 +511,7 @@ def _registry_models(mdev_id: str, *, allow_network: bool) -> Optional[Dict[str,
 def _get_provider_models(
     provider: str, *, allow_network: bool = False, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Resolve a Hermes provider ID to its models dict, or None if unknown.
+    """Resolve a Rabbit provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
     mdev_id = _models_dev_id(provider, config=config)
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
@@ -615,7 +615,7 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 # accept): context_window, supports_tools, supports_vision, supports_reasoning,
 # model_family. ``<provider>.<model_id>`` is an explicit partial patch that always wins over the
 # catalog. ``<provider>._default`` / top-level ``_default`` are FILL-GAP defaults: they apply ONLY to
-# models the catalog does not know and never displace catalog data. Provider keys accept the Hermes
+# models the catalog does not know and never displace catalog data. Provider keys accept the Rabbit
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
 # Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
@@ -666,7 +666,7 @@ def _load_model_overrides(*, config: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
 def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Override section for *provider* (keyed by Hermes OR models.dev id), or None."""
+    """Override section for *provider* (keyed by Rabbit OR models.dev id), or None."""
     overrides = (
         _load_model_overrides(config=config)
         if config is not None
@@ -675,8 +675,8 @@ def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]
     provider_key = (provider or "").strip()
     if not overrides or not provider_key:
         return None
-    # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
-    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    # Forward (Rabbit → models.dev id) and reverse (caller passed a models.dev id, config keyed by Rabbit id) aliases.
+    candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_rabbit_ids(provider_key)]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 
@@ -792,7 +792,7 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
 def _builtin_model_metadata(
     provider: str, model: str, *, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
+    """Built-in metadata for a provider/model pair, if Rabbit has a vendor-specific entry."""
     provider_key = _models_dev_id(provider, config=config) or (provider or "").strip()
     return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
@@ -803,7 +803,7 @@ def _relay_vision_marker_metadata(provider: str, model: str) -> Optional[Dict[st
     ``-vision`` token is the vendor's own capability marker; without it ``image_input_mode: auto`` treats
     the model as text-only and detours images through the lossy describe path (#96066). Every other field
     keeps the unknown-model defaults, so only vision is claimed."""
-    from hermes_cli.models import opencode_provider_family
+    from rabbit_cli.models import opencode_provider_family
 
     if "-vision" not in (model or "").strip().lower() or opencode_provider_family(provider) is None:
         return None
@@ -882,7 +882,7 @@ def get_model_capabilities(
 def list_provider_models(provider: str, *, allow_network: bool = True) -> List[str]:
     """All model IDs for a provider ([] if unknown). ``allow_network`` defaults to True: the model
     picker is interactive and a fresh catalog is worth a short wait."""
-    from hermes_cli.models import normalize_provider
+    from rabbit_cli.models import normalize_provider
     provider = normalize_provider(provider) or provider
     models = _get_provider_models(provider, allow_network=allow_network)
     return [mid for mid in models if not _should_hide_from_provider_catalog(provider, mid)] if models is not None else []
@@ -952,7 +952,7 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 def get_provider_info(
     provider_id: str, *, allow_network: bool = True, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[ProviderInfo]:
-    """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
+    """Provider metadata by Rabbit or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
     mdev_id = _models_dev_id(provider_id, config=config) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
@@ -961,7 +961,7 @@ def get_provider_info(
 def get_model_info(
     provider_id: str, model_id: str, *, allow_network: bool = False, config: Optional[Dict[str, Any]] = None,
 ) -> Optional[ModelInfo]:
-    """Full model metadata by Hermes or models.dev provider ID (exact match, then case-insensitive), or
+    """Full model metadata by Rabbit or models.dev provider ID (exact match, then case-insensitive), or
     None if not found. EXPLICIT ``model_overrides`` patch known catalog models; ``_default`` fills the gap
     only for unknown ones. ``allow_network`` defaults to False — cost guard and inventory are hot paths.
 

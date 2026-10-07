@@ -1,4 +1,4 @@
-"""Hermes Gateway - multi-platform messaging integration (sessions, context
+"""Rabbit Gateway - multi-platform messaging integration (sessions, context
 injection, delivery routing, platform-specific toolsets)."""
 
 from importlib import import_module

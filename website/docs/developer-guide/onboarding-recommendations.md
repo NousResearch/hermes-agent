@@ -5,7 +5,7 @@ sidebar_label: Onboarding recommendations
 
 # Onboarding recommendations
 
-Guided onboarding suggests outcomes from the user's app preferences and observed capabilities. It does not grant access or implement a second connection lifecycle. The feature remains inside the existing `HERMES_GUEST_ONBOARDING` flow.
+Guided onboarding suggests outcomes from the user's app preferences and observed capabilities. It does not grant access or implement a second connection lifecycle. The feature remains inside the existing `RABBIT_GUEST_ONBOARDING` flow.
 
 ## What takes priority
 
@@ -72,7 +72,7 @@ The legacy composer suggestion provider can only complete hosted HTTP OAuth. It 
 
 The implementation consumes the public `manage_connections` tool and the existing catalog API. It does not modify connection-operation states, generated RPC contracts, account identifiers, OAuth callbacks, retry ownership, watcher behavior or settled-result handling.
 
-It was checked against the current integration and Sid's pending [connection-operation PR](https://github.com/NousResearch/hermes-agent/pull/111008). That PR moves MCP execution into the backend; recommendations do not depend on which side currently executes the operation. Optional catalog fields preserve older clients, and missing fields preserve older backends. Sid's cancelled portal toolkit-metadata endpoint is not a dependency.
+It was checked against the current integration and Sid's pending [connection-operation PR](https://github.com/seven0070/Rabbit-/pull/111008). That PR moves MCP execution into the backend; recommendations do not depend on which side currently executes the operation. Optional catalog fields preserve older clients, and missing fields preserve older backends. Sid's cancelled portal toolkit-metadata endpoint is not a dependency.
 
 There is one intentional product-policy overlap in the onboarding runbooks and their tests: the old requirement to produce a no-account substitute is replaced by the accepted task's actual prerequisites. That overlap must be reconciled when the branches meet, not retained as contradictory instructions. Compatibility with an unknown future breaking API change is not implied.
 

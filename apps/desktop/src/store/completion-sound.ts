@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
-const STORAGE_KEY = 'hermes.desktop.completionSoundVariantId'
+const STORAGE_KEY = 'rabbit.desktop.completionSoundVariantId'
 
 export const DEFAULT_COMPLETION_SOUND_VARIANT_ID = 1
 

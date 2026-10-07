@@ -70,8 +70,8 @@ class DiscordDriver:
             "DISCORD_COMMAND_SYNC_POLICY": "bulk",
             # no text-batch debounce: one inbound is one turn, immediately
             "DISCORD_TEXT_BATCH_DELAY_SECONDS": "0", "DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS": "0",
-            "HERMES_STANDIN_DISCORD_API": self.standin.api_base,
-            "HERMES_STANDIN_DISCORD_GATEWAY": self.standin.gateway_url,
+            "RABBIT_STANDIN_DISCORD_API": self.standin.api_base,
+            "RABBIT_STANDIN_DISCORD_GATEWAY": self.standin.gateway_url,
             "PYTHONPATH_PREPEND": str(SHIM_DIR),
         }
 

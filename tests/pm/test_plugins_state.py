@@ -18,17 +18,17 @@ def homes(tmp_path, monkeypatch):
     default_home.mkdir(parents=True)
     profile_home.mkdir(parents=True)
 
-    import hermes_constants
+    import rabbit_constants
 
     monkeypatch.setattr(
-        hermes_constants, "get_default_hermes_root", lambda: default_home
+        rabbit_constants, "get_default_rabbit_root", lambda: default_home
     )
     monkeypatch.setattr(pstate, "_profiles_root", lambda: tmp_path / "profiles")
     return default_home, profile_home
 
 
 def _write_config(home: Path, enabled: list) -> None:
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     config = {"plugins": {"enabled": enabled}} if enabled else {"plugins": {}}
     with (home / "config.yaml").open("w", encoding="utf-8") as f:
@@ -46,7 +46,7 @@ def test_enabled_plugins_ordered_reads_all_homes(homes):
 
 
 def test_only_live_profiles_join_the_dependency_union(homes):
-    from hermes_constants import mark_named_profile_deleted
+    from rabbit_constants import mark_named_profile_deleted
 
     default_home, profile_home = homes
     profiles = profile_home.parent
@@ -151,7 +151,7 @@ def test_empty_config_is_an_explicit_empty_selection(homes, content):
     ([], "ghost", False, []),
 ])
 def test_memory_provider_joins_ordered_selection(homes, enabled, provider, exists, expected):
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
     home, sibling = homes
     if exists:
         (home / "plugins" / provider).mkdir(parents=True)

@@ -4,7 +4,7 @@ Spins up the REAL iron-proxy binary (auto-installed if not present), routes
 a curl request through it against a local fake upstream, and verifies that
 the Authorization header was swapped from a proxy token to a real secret.
 
-Gated on the network: skipped unless HERMES_RUN_E2E=1 (no CI lane sets it;
+Gated on the network: skipped unless RABBIT_RUN_E2E=1 (no CI lane sets it;
 it is a manual smoke, see website/docs/developer-guide/egress-internals.md).
 This is intentional — the test downloads ~16MB and requires both `openssl`
 and `curl` to be present.
@@ -27,16 +27,16 @@ from agent.proxy_sources import iron_proxy as ip
 
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("HERMES_RUN_E2E", "0") != "1",
-    reason="E2E proxy test — set HERMES_RUN_E2E=1 to run (requires network + curl + openssl)",
+    os.environ.get("RABBIT_RUN_E2E", "0") != "1",
+    reason="E2E proxy test — set RABBIT_RUN_E2E=1 to run (requires network + curl + openssl)",
 )
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / "rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
@@ -64,7 +64,7 @@ class _CaptureHandler(BaseHTTPRequestHandler):
         return  # silence access log
 
 
-def test_iron_proxy_swaps_authorization_header_end_to_end(hermes_home, monkeypatch):
+def test_iron_proxy_swaps_authorization_header_end_to_end(rabbit_home, monkeypatch):
     """Real binary, real CA, real curl. Verify the proxy swaps a proxy-token
     Authorization header for the real bearer value before forwarding."""
 
@@ -187,7 +187,7 @@ class _CaptureXApiKeyHandler(BaseHTTPRequestHandler):
         return
 
 
-def test_iron_proxy_swaps_x_api_key_header_end_to_end(hermes_home, monkeypatch):
+def test_iron_proxy_swaps_x_api_key_header_end_to_end(rabbit_home, monkeypatch):
     """Header-auth providers: the secrets transform must swap the proxy
     token out of a NON-Authorization header (x-api-key — the Anthropic
     native scheme) on the pinned binary."""
@@ -274,7 +274,7 @@ def test_iron_proxy_swaps_x_api_key_header_end_to_end(hermes_home, monkeypatch):
         server.server_close()
 
 
-def test_iron_proxy_management_reload_end_to_end(hermes_home, monkeypatch):
+def test_iron_proxy_management_reload_end_to_end(rabbit_home, monkeypatch):
     """Real binary: the management listener comes up, an authenticated
     POST /v1/reload succeeds after a config edit, and the edited ruleset
     takes effect WITHOUT a restart (same pid)."""

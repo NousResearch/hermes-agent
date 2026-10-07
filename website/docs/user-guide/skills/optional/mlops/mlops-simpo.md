@@ -14,7 +14,7 @@ Reference-free preference alignment, simpler than DPO.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/simpo` |
+| Source | Optional — install with `rabbit skills install official/mlops/simpo` |
 | Path | `optional-skills/mlops/simpo` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ Reference-free preference alignment, simpler than DPO.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # SimPO - Simple Preference Optimization
@@ -208,11 +208,11 @@ gradient_checkpointing: true
 
 ## Advanced topics
 
-**Loss functions**: See [references/loss-functions.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/loss-functions.md) for sigmoid vs hinge loss, mathematical formulations, and when to use each.
+**Loss functions**: See [references/loss-functions.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/loss-functions.md) for sigmoid vs hinge loss, mathematical formulations, and when to use each.
 
-**Hyperparameter tuning**: See [references/hyperparameters.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/hyperparameters.md) for beta, gamma, learning rate selection guide, and model-size-specific recommendations.
+**Hyperparameter tuning**: See [references/hyperparameters.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/hyperparameters.md) for beta, gamma, learning rate selection guide, and model-size-specific recommendations.
 
-**Dataset preparation**: See [references/datasets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/datasets.md) for preference data formats, quality filtering, and custom dataset creation.
+**Dataset preparation**: See [references/datasets.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/datasets.md) for preference data formats, quality filtering, and custom dataset creation.
 
 ## Hardware requirements
 

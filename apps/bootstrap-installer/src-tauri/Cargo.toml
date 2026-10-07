@@ -1,24 +1,24 @@
 [package]
-name = "hermes-bootstrap"
+name = "rabbit-bootstrap"
 version = "0.0.0"
-description = "Hermes Setup — signed installer that drives scripts/install.ps1"
-authors = ["Nous Research <info@nousresearch.com>"]
+description = "Rabbit Setup — signed installer that drives scripts/install.ps1"
+authors = ["Sanath Patil <info@nousresearch.com>"]
 edition = "2021"
 rust-version = "1.77"
 
 # Rename the output binary so the distributed artifact is literally
-# `Hermes-Setup.exe` on disk — not `hermes-bootstrap.exe`. Grandma sees
+# `Rabbit-Setup.exe` on disk — not `rabbit-bootstrap.exe`. Grandma sees
 # what we hand her, period. Tauri honors [[bin]] over [package].name
 # for the produced executable name.
 [[bin]]
-name = "Hermes-Setup"
+name = "Rabbit-Setup"
 path = "src/main.rs"
 
 # The library target name MUST match the `withGlobalTauri` binding name that
 # tauri.conf.json's `app.windows[].label` references. We don't ship a separate
 # lib for now; everything is in src/.
 [lib]
-name = "hermes_bootstrap_lib"
+name = "rabbit_bootstrap_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -43,7 +43,7 @@ serde_json = "1"
 # HTTP — rustls so we don't need OpenSSL on the build box
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
-# Logging — emitted to a file under HERMES_HOME/logs/ and (optionally) the
+# Logging — emitted to a file under RABBIT_HOME/logs/ and (optionally) the
 # webview console via Tauri's event channel.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -14,8 +14,8 @@ import pytest
 
 
 @pytest.fixture
-def hermes_home(monkeypatch, tmp_path):
-    """Isolate HERMES_HOME so the tests don't pollute the real config.
+def rabbit_home(monkeypatch, tmp_path):
+    """Isolate RABBIT_HOME so the tests don't pollute the real config.
 
     Also clears module-level caches (file_ops, active_environments,
     file-staleness state) after the test so subsequent tests in the
@@ -23,9 +23,9 @@ def hermes_home(monkeypatch, tmp_path):
     (real file_ops and terminal environments get created under
     task_id='default' via _resolve_container_task_id).
     """
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     yield home
     # Cleanup: drop the cached file_ops and active environment so the
     # next test sees a fresh state.  Without this, _get_live_tracking_cwd
@@ -56,7 +56,7 @@ def _bare_lf_count(b: bytes) -> int:
 
 
 class TestPatchCRLFPreservation:
-    def test_patch_on_crlf_file_stays_pure_crlf(self, hermes_home, tmp_path):
+    def test_patch_on_crlf_file_stays_pure_crlf(self, rabbit_home, tmp_path):
         """LLM sends LF old/new; file has CRLF.  Result must be all CRLF,
         no mixed endings."""
         from tools.file_tools import _handle_patch
@@ -85,7 +85,7 @@ class TestPatchCRLFPreservation:
         assert b"key=99\r\n" in raw
 
 
-    def test_patch_multiline_replacement_on_crlf(self, hermes_home, tmp_path):
+    def test_patch_multiline_replacement_on_crlf(self, rabbit_home, tmp_path):
         """Multi-line new_string with bare LFs should be CRLF-converted
         before write."""
         from tools.file_tools import _handle_patch
@@ -114,7 +114,7 @@ class TestPatchCRLFPreservation:
 
 class TestWriteFileCRLFPreservation:
     def test_overwrite_crlf_file_with_lf_content_preserves_crlf(
-        self, hermes_home, tmp_path
+        self, rabbit_home, tmp_path
     ):
         """The agent typically sends bare-LF content; if the file existed
         with CRLF, the write should convert to CRLF rather than silently
@@ -143,7 +143,7 @@ class TestWriteFileCRLFPreservation:
         assert _crlf_count(raw) == 3
 
 
-    def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
+    def test_overwrite_lf_file_stays_lf(self, rabbit_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
         from tools.file_tools import _handle_write_file, read_file_tool
 

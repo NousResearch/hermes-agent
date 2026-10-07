@@ -182,7 +182,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `append_to_transcript(session_id, message, skip_db=False)` | Append a message to SQLite transcript. `skip_db=True` prevents duplicate writes when the agent already persisted. |
 | `rewrite_transcript(session_id, messages)` | Full replacement of session transcript (used by `/retry`, `/undo`, `/compress`). |
 | `load_transcript(session_id)` | Load all messages from a session's SQLite transcript. |
-| `rewind_session(session_id, n=1)` | Back up `n` user turns via soft-delete (keeps audit trail); thin wrapper over `SessionDB.rewind_user_turn` (`hermes_state_rewind.py`), the one rewind shared with CLI `/undo`/`/retry` and the TUI. Returns `{rewound_count, turns_undone, target_text}`. |
+| `rewind_session(session_id, n=1)` | Back up `n` user turns via soft-delete (keeps audit trail); thin wrapper over `SessionDB.rewind_user_turn` (`rabbit_state_rewind.py`), the one rewind shared with CLI `/undo`/`/retry` and the TUI. Returns `{rewound_count, turns_undone, target_text}`. |
 
 ### Internal Helpers
 
@@ -199,7 +199,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
   {session_id}.jsonl     # (Legacy, removed in spec 002)
 ```
 
-The canonical transcript store is SQLite via `SessionDB` (from `hermes_state`). The
+The canonical transcript store is SQLite via `SessionDB` (from `rabbit_state`). The
 `sessions.json` file persists the `session_key → session_id` mapping and entry metadata
 (flags, timestamps, token counts). If SQLite is unavailable, the store falls back to
 JSONL, but this is a degradation path.
@@ -383,7 +383,7 @@ A turn already in the ledger is redelivered by the ledger sweep, which also clea
 
 ### Stuck-Loop Detection (`_suspend_stuck_loop_sessions`)
 
-Counts consecutive restarts via a JSON file (`{HERMES_HOME}/restart_counts.json`). If a
+Counts consecutive restarts via a JSON file (`{RABBIT_HOME}/restart_counts.json`). If a
 session has been active across 3+ consecutive restarts, it's auto-suspended so the user
 gets a clean slate.
 
@@ -419,7 +419,7 @@ Written at the end of a graceful shutdown. On next startup:
   were already drained, so no sessions are stuck.
 - Then delete the marker.
 
-This prevents unwanted auto-resets after `hermes update`, `hermes gateway restart`,
+This prevents unwanted auto-resets after `rabbit update`, `rabbit gateway restart`,
 or `/restart`.
 
 ---

@@ -20,7 +20,7 @@ describe('useMediaImage gateway proxy fallback (#74564)', () => {
 
   beforeEach(() => {
     api.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { api } })
+    vi.stubGlobal('window', { rabbitDesktop: { api } })
   })
 
   afterEach(() => {

@@ -7,9 +7,9 @@ $ErrorActionPreference = 'Stop'
 $suitePath = $PSCommandPath
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installer = Join-Path $repoRoot 'scripts/install.ps1'
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('hermes-utf8-' + [guid]::NewGuid())
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('rabbit-utf8-' + [guid]::NewGuid())
 $savedEncoding = [Console]::OutputEncoding
-$envNames = @('HERMES_HOME', 'HERMES_RUNTIME_DIR', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL', 'UTF8_PROBE_FIND_EXIT')
+$envNames = @('RABBIT_HOME', 'RABBIT_RUNTIME_DIR', 'UTF8_PROBE_PYTHON', 'UTF8_PROBE_CALLS', 'UTF8_PROBE_PM', 'UTF8_PROBE_NEEDS_INSTALL', 'UTF8_PROBE_FIND_EXIT')
 $savedEnv = @{}
 foreach ($name in $envNames) { $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name) }
 
@@ -56,12 +56,12 @@ try {
         Add-Type @'
 using System;
 using System.Runtime.InteropServices;
-public static class HermesUtf8Host {
+public static class RabbitUtf8Host {
     [DllImport("kernel32.dll")]
     public static extern IntPtr GetConsoleWindow();
 }
 '@
-        Assert-Equal ([IntPtr]::Zero) ([HermesUtf8Host]::GetConsoleWindow()) 'hidden host has no attached console'
+        Assert-Equal ([IntPtr]::Zero) ([RabbitUtf8Host]::GetConsoleWindow()) 'hidden host has no attached console'
         Assert-Equal $true ([Console]::IsInputRedirected) 'hidden host stdin is redirected'
         Assert-Equal $true ([Console]::IsOutputRedirected) 'hidden host stdout is redirected'
         Assert-Equal $true ([Console]::IsErrorRedirected) 'hidden host stderr is redirected'
@@ -73,8 +73,8 @@ public static class HermesUtf8Host {
     $profileName = ([string][char]0x5F20) + [char]0x4E09 + ' Ren' + [char]0xE9 + " O'Brien Pawe" + [char]0x142
     $profileDir = Join-Path $testRoot $profileName
     New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-    $env:HERMES_HOME = Join-Path $profileDir 'hermes-home'
-    $testInstallDir = Join-Path $profileDir 'hermes-agent'
+    $env:RABBIT_HOME = Join-Path $profileDir 'rabbit-home'
+    $testInstallDir = Join-Path $profileDir 'rabbit-agent'
     $packageDir = Join-Path $testInstallDir 'pm'
     New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $packageDir 'lock.json'), '{"packages":{"python":{"version":"3.14.0+fixture"},"uv":{"version":"fixture","artifacts":{"any":{"url":"https://example.invalid/unused.zip"}}}}}')
@@ -120,17 +120,17 @@ class Fixture {
 
     # Run the supported setup/activation entry from a real temporary checkout.
     # Prestage uv at its pinned store path so setup needs no download or mocks.
-    $setupScript = Join-Path $testInstallDir 'setup-hermes.ps1'
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'setup-hermes.ps1') -Destination $setupScript
-    $env:HERMES_RUNTIME_DIR = Join-Path $profileDir 'tools'
+    $setupScript = Join-Path $testInstallDir 'setup-rabbit.ps1'
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'setup-rabbit.ps1') -Destination $setupScript
+    $env:RABBIT_RUNTIME_DIR = Join-Path $profileDir 'tools'
     foreach ($arch in @('x64', 'arm64')) {
-        $uvEntry = Join-Path $env:HERMES_RUNTIME_DIR "uv-fixture-win32-$arch"
+        $uvEntry = Join-Path $env:RABBIT_RUNTIME_DIR "uv-fixture-win32-$arch"
         New-Item -ItemType Directory -Path $uvEntry -Force | Out-Null
         Copy-Item -LiteralPath $env:UTF8_PROBE_PYTHON -Destination (Join-Path $uvEntry 'uv.exe')
     }
     $env:UTF8_PROBE_FIND_EXIT = '0'
 
-    . $installer -InstallDir $testInstallDir -HermesHome $env:HERMES_HOME
+    . $installer -InstallDir $testInstallDir -RabbitHome $env:RABBIT_HOME
     # Override acquisition only. Production Get-BootstrapPython, both native
     # find call sites, caching and Stage-PythonDeps still execute unchanged.
     function Get-Uv { return $env:UTF8_PROBE_PYTHON }

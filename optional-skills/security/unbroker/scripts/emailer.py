@@ -7,7 +7,7 @@ by email_modes.extract_verification_link, so arbitrary/phishing links are ignore
 The agent still OPENS the link with its own browser - several brokers bind the
 verification session to the browser that opens it (see the intelius record).
 
-Configuration comes from the same env vars the Hermes email gateway uses:
+Configuration comes from the same env vars the Rabbit email gateway uses:
   EMAIL_ADDRESS / EMAIL_PASSWORD              (required for Mode B)
   EMAIL_SMTP_HOST / EMAIL_SMTP_PORT           (optional; inferred for common providers)
   EMAIL_IMAP_HOST / EMAIL_IMAP_PORT           (optional; inferred for common providers)

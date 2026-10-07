@@ -108,9 +108,9 @@ class TestRealWorldOutput:
         "\tClaim within: 60 minutes\n"
         "\tClaim URL: https://dash.cloudflare.com/claim-preview?claimToken=fxLzyAD-vlTzMQmClpg\n"
         "Total Upload: 0.19 KiB / gzip: 0.16 KiB\n"
-        "Uploaded hermes-temp-hello (0.74 sec)\n"
-        "Deployed hermes-temp-hello triggers (0.42 sec)\n"
-        "  https://hermes-temp-hello.serene-temple.workers.dev\n"
+        "Uploaded rabbit-temp-hello (0.74 sec)\n"
+        "Deployed rabbit-temp-hello triggers (0.42 sec)\n"
+        "  https://rabbit-temp-hello.serene-temple.workers.dev\n"
     )
 
     def test_multiword_account_name(self):
@@ -120,7 +120,7 @@ class TestRealWorldOutput:
 
     def test_all_fields_from_real_output(self):
         r = pdo.parse(self.REAL)
-        assert r["live_url"] == "https://hermes-temp-hello.serene-temple.workers.dev"
+        assert r["live_url"] == "https://rabbit-temp-hello.serene-temple.workers.dev"
         assert r["claim_url"].endswith("claimToken=fxLzyAD-vlTzMQmClpg")
         assert r["expires_minutes"] == 60
         assert r["deployed"] is True

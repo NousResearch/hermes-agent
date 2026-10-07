@@ -29,7 +29,7 @@ def _result():
 
 
 def test_default_stores_tool_outputs_verbatim():
-    with patch("hermes_cli.config.load_config", return_value={}):
+    with patch("rabbit_cli.config.load_config", return_value={}):
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"port": 0}))
     assert adapter._history_tool_output_max_chars == 0
     result = _result()
@@ -41,7 +41,7 @@ def test_default_stores_tool_outputs_verbatim():
 
 def test_cap_trims_only_tool_rows_and_leaves_agent_transcript_intact():
     cfg = {"gateway": {"api_server": {"history_tool_output_max_chars": 1000}}}
-    with patch("hermes_cli.config.load_config", return_value=cfg):
+    with patch("rabbit_cli.config.load_config", return_value=cfg):
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"port": 0}))
     assert adapter._history_tool_output_max_chars == 1000
     result = _result()

@@ -1,4 +1,4 @@
-"""CLI commands for the google_meet plugin (``hermes meet <subcommand>``).
+"""CLI commands for the google_meet plugin (``rabbit meet <subcommand>``).
 
   setup / install — preflight and install prerequisites
   auth            — open a browser to sign into Google, save storage state
@@ -20,8 +20,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.browser_runtime import chromium_executable
-from hermes_constants import get_hermes_home
+from rabbit_cli.browser_runtime import chromium_executable
+from rabbit_constants import get_rabbit_home
 
 from plugins.google_meet import process_manager as pm
 from plugins.google_meet.meet_bot import _is_safe_meet_url
@@ -30,10 +30,10 @@ from plugins.google_meet.tools import resolve_node
 
 
 def _auth_state_path() -> Path:
-    return Path(get_hermes_home()) / "workspace" / "meetings" / "auth.json"
+    return Path(get_rabbit_home()) / "workspace" / "meetings" / "auth.json"
 
 
-# ``hermes meet <sub>`` in help order.
+# ``rabbit meet <sub>`` in help order.
 _SUBCOMMAND_HELP = (
     ("setup", "Preflight: playwright, chromium, auth"),
     ("install", "Install prerequisites (Python dependencies, Chromium, platform audio tools)"),
@@ -47,7 +47,7 @@ _SUBCOMMAND_HELP = (
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:
-    """Build the ``hermes meet`` argparse tree (called at plugin load time)."""
+    """Build the ``rabbit meet`` argparse tree (called at plugin load time)."""
     subs = subparser.add_subparsers(dest="meet_command")
     p = {name: subs.add_parser(name, help=help_) for name, help_ in _SUBCOMMAND_HELP}
     p["install"].add_argument("--realtime", action="store_true",
@@ -55,7 +55,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     p["install"].add_argument("--yes", "-y", action="store_true",
                               help="Answer yes to all prompts (use with care; will run sudo apt-get or brew without asking).")
     p["join"].add_argument("url", help="https://meet.google.com/...")
-    p["join"].add_argument("--guest-name", default="Hermes Agent")
+    p["join"].add_argument("--guest-name", default="Rabbit Agent")
     p["join"].add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
     p["join"].add_argument("--headed", action="store_true", help="show browser")
     p["join"].add_argument("--mode", choices=("transcribe", "realtime"), default="transcribe",
@@ -78,14 +78,14 @@ _DISPATCH = {
     "status": lambda a: _print_result(pm.status()),
     "transcript": lambda a: _cmd_transcript(last=a.last),
     "say": lambda a: _cmd_say(text=a.text, node=a.node),
-    "stop": lambda a: _print_result(pm.stop(reason="hermes meet stop")),
+    "stop": lambda a: _print_result(pm.stop(reason="rabbit meet stop")),
     "node": node_command}  # node subparsers are required=True, so a sub-command is always present
 
 
 def meet_command(args: argparse.Namespace) -> int:
     sub = args.meet_command
     if not sub:
-        print("usage: hermes meet {setup,auth,join,status,transcript,say,stop,node}")
+        print("usage: rabbit meet {setup,auth,join,status,transcript,say,stop,node}")
         return 2
     handler = _DISPATCH.get(sub)
     if handler is None:
@@ -100,7 +100,7 @@ def _cmd_setup() -> int:
     system_ok = system in {"Linux", "Darwin"}
     print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
     pw_ok = importlib.util.find_spec("playwright") is not None
-    print("  playwright     : " + ("installed" if pw_ok else "NOT installed — run: hermes meet install"))
+    print("  playwright     : " + ("installed" if pw_ok else "NOT installed — run: rabbit meet install"))
     chromium_ok, chromium_msg = False, "unknown"
     if pw_ok:
         try:
@@ -108,15 +108,15 @@ def _cmd_setup() -> int:
             with sync_playwright() as p:
                 exe = chromium_executable() or p.chromium.executable_path
             chromium_ok = bool(exe and Path(exe).exists())
-            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: hermes meet install"
+            chromium_msg = f"ok ({exe})" if chromium_ok else "not installed — run: rabbit meet install"
         except Exception as e:
             chromium_msg = f"probe failed: {e}"
     print(f"  chromium       : {chromium_msg}")
     auth_path = _auth_state_path()
-    print("  google auth    : " + (f"ok ({auth_path})" if auth_path.is_file() else "not saved — run: hermes meet auth"))
+    print("  google auth    : " + (f"ok ({auth_path})" if auth_path.is_file() else "not saved — run: rabbit meet auth"))
     print()
     all_ok = system_ok and pw_ok and chromium_ok
-    print("ready. Join a meeting:  hermes meet join https://meet.google.com/abc-defg-hij" if all_ok
+    print("ready. Join a meeting:  rabbit meet join https://meet.google.com/abc-defg-hij" if all_ok
           else "not ready yet — fix the items above.")
     return 0 if all_ok else 1
 
@@ -187,8 +187,8 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
                               "  brew install failed — install them manually")
             print("\n  NOTE: macOS does not auto-route audio. Open\n    System Settings → Sound → "
                   "Input\n  and select 'BlackHole 2ch' before starting a realtime meeting.\n  "
-                  "hermes will not switch your default input for you.")
-    print("\ndone. verify with: hermes meet setup")
+                  "rabbit will not switch your default input for you.")
+    print("\ndone. verify with: rabbit meet setup")
     return 0
 
 
@@ -197,7 +197,7 @@ def _cmd_auth() -> int:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("playwright is not installed. Run: hermes meet install")
+        print("playwright is not installed. Run: rabbit meet install")
         return 1
     path = _auth_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,7 +217,7 @@ def _cmd_auth() -> int:
     except Exception as e:
         print(f"auth failed: {e}")
         return 1
-    print("saved. you can now run: hermes meet join <url>")
+    print("saved. you can now run: rabbit meet join <url>")
     return 0
 
 
@@ -276,6 +276,6 @@ def _cmd_transcript(last: Optional[int]) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    parser = argparse.ArgumentParser(prog="hermes meet")
+    parser = argparse.ArgumentParser(prog="rabbit meet")
     register_cli(parser)
     sys.exit(meet_command(parser.parse_args()))

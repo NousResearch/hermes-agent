@@ -7,7 +7,7 @@
 ** substring search but needs >=3 chars per query term — 2-char Korean
 ** words (일본, 구글, 우리, ...) fall through to a full-table LIKE scan,
 ** measured at 3-6s per query on a 6.8GB messages table and the #1 driver
-** of hermes session_search latency.
+** of rabbit session_search latency.
 **
 ** What: wrap unicode61. Every token it emits is re-examined; maximal CJK
 ** runs inside the token are re-emitted as overlapping character BIGRAMS

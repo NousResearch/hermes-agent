@@ -2,7 +2,7 @@
 
 One real HTTP server on 127.0.0.1 that speaks the OpenAI Chat Completions
 wire format (JSON and SSE streaming). Every request body is recorded so a test
-can assert on exactly what Hermes sent (history integrity, prompt-cache prefix
+can assert on exactly what Rabbit sent (history integrity, prompt-cache prefix
 stability, routing/credential isolation), and every response is scripted so a
 test can drive tool calls, reasoning, long streams and provider faults through
 the real client stack instead of mocking the agent loop.
@@ -15,8 +15,8 @@ turn. When the script is exhausted, main turns answer ``default_text``.
 Usage::
 
     with FakeLLMServer([ToolCall("terminal", {"command": "echo hi"}), Text("done")]) as srv:
-        write_hermes_home(home, srv.base_url)
-        ...run hermes...
+        write_rabbit_home(home, srv.base_url)
+        ...run rabbit...
         assert srv.main_requests()[1]["messages"][-1]["role"] == "tool"
 
 Run standalone for manual probes: ``python -m tests.fakes.fake_llm_provider 8765``.
@@ -405,10 +405,10 @@ def _message_for(
     return message, "tool_calls", usage
 
 
-# HERMES_HOME wiring ---------------------------------------------------------
+# RABBIT_HOME wiring ---------------------------------------------------------
 
 
-def write_hermes_home(
+def write_rabbit_home(
     home: Path,
     base_url: str,
     *,

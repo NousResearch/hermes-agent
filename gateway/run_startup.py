@@ -42,7 +42,7 @@ def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
     *home*'s runtime scope (its config, secrets and allow_lazy_installs); once per process per home.
     Blocking: call it off the event loop."""
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.left_core_migration import recover_at_startup
+    from rabbit_cli.left_core_migration import recover_at_startup
     with _profile_runtime_scope(Path(home), hydrate_secrets=hydrate_secrets):
         recover_at_startup()
 
@@ -52,11 +52,11 @@ def recover_left_core_at_gateway_start() -> None:
     home and the default root (the multiplex primary; a named launcher is then served as a
     secondary). Every secondary runs :func:`recover_left_core_in` before its plugins are discovered,
     so a platform plugin it gets starts its adapter in the same gateway start."""
-    from hermes_cli.left_core_migration import recover_at_startup
-    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from rabbit_cli.left_core_migration import recover_at_startup
+    from rabbit_constants import get_default_rabbit_root, get_rabbit_home
     recover_at_startup()
-    root = Path(get_default_hermes_root())
-    if root.resolve() != Path(get_hermes_home()).resolve():
+    root = Path(get_default_rabbit_root())
+    if root.resolve() != Path(get_rabbit_home()).resolve():
         recover_left_core_in(root)
 
 
@@ -66,12 +66,12 @@ class GatewayStartupMixin:
     @staticmethod
     def _log_agent_budget() -> None:
         """Report the ENFORCED per-turn budget: ``agent.max_turns`` is bridged into
-        ``HERMES_MAX_ITERATIONS`` before this runs, so the env slot already carries the config value;
+        ``RABBIT_MAX_ITERATIONS`` before this runs, so the env slot already carries the config value;
         resolve it the same way the turn loop does (``none``/``unlimited`` spellings included) instead of
         ``int()`` on the raw string with an invented ``500`` default (#116888)."""
-        from hermes_cli.config import TURN_LIMIT_UNLIMITED, resolve_turn_limit
-        limit = resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
-        logger.info("Agent budget: max_iterations=%s (agent.max_turns from config.yaml, else the HERMES_MAX_ITERATIONS bridge)",
+        from rabbit_cli.config import TURN_LIMIT_UNLIMITED, resolve_turn_limit
+        limit = resolve_turn_limit(os.getenv("RABBIT_MAX_ITERATIONS"))
+        logger.info("Agent budget: max_iterations=%s (agent.max_turns from config.yaml, else the RABBIT_MAX_ITERATIONS bridge)",
                     "unlimited" if limit == TURN_LIMIT_UNLIMITED else limit)
 
     # A configured platform failed non-retryably this boot and is parked: every "we are serving"
@@ -129,7 +129,7 @@ class GatewayStartupMixin:
                     continue
                 # Mark the replay so _handle_message does not re-queue it while the restore gate is closed.
                 with suppress(Exception):
-                    setattr(event, "_hermes_startup_restore_replay", True)
+                    setattr(event, "_rabbit_startup_restore_replay", True)
                 await adapter.handle_message(event)
             except Exception:
                 # One bad replay must not abort the drain: the remaining queued
@@ -139,13 +139,6 @@ class GatewayStartupMixin:
                 continue
             drained += 1
         return drained
-
-    @staticmethod
-    def _start_free_tier_bootstrap() -> None:
-        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
-        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
-        from hermes_cli.free_tier_bootstrap import run_bootstrap
-        run_bootstrap(announce=False)
 
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
@@ -165,9 +158,9 @@ class GatewayStartupMixin:
         loop = asyncio.get_running_loop()
         if getattr(self.config, "multiplex_profiles", False):
             from gateway.run import _async_profile_runtime_scope
-            from hermes_constants import get_hermes_home
+            from rabbit_constants import get_rabbit_home
             try:
-                async with _async_profile_runtime_scope(get_hermes_home()):
+                async with _async_profile_runtime_scope(get_rabbit_home()):
                     return await loop.run_in_executor(None, copy_context().run, fn)
             except Exception:
                 # Same fallback as load_gateway_config_for_runner: a scope that cannot be built must not
@@ -175,11 +168,6 @@ class GatewayStartupMixin:
                 logger.debug("multiplex launch-scope entry failed for boot probe %s; running unscoped",
                              getattr(fn, "__name__", fn), exc_info=True)
         return await loop.run_in_executor(None, copy_context().run, fn)
-
-    async def _run_free_tier_bootstrap(self) -> None:
-        """The free-tier bootstrap mints the Portal identity through the same profile-scoped routing
-        overrides the warm-up resolves, so it takes the same launch-profile binding."""
-        await self._run_boot_probe_in_launch_scope(self._start_free_tier_bootstrap)
 
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
@@ -741,7 +729,7 @@ class GatewayStartupMixin:
         ledgered)."""
         from gateway.run import _float_env
         resumed = ledgered = 0
-        max_age = max(60 * 60, int(max(1.0, _float_env("HERMES_AGENT_TIMEOUT", 1800)) * 2))
+        max_age = max(60 * 60, int(max(1.0, _float_env("RABBIT_AGENT_TIMEOUT", 1800)) * 2))
         with _log_suppressed(logging.WARNING, "Crash-left reply recovery on startup failed: %s"):
             ledgered = await self._ledger_crash_left_replies(max_age)
         with _log_suppressed(logging.WARNING, "Exact active-turn recovery on startup failed: %s"):
@@ -796,7 +784,7 @@ class GatewayStartupMixin:
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _unexpected_silence_reply
         from gateway.warning_notifications import diagnostic_turn_muted
-        from hermes_cli.timefmt import coerce_epoch
+        from rabbit_cli.timefmt import coerce_epoch
         visible = [m for m in history if m.get("role") not in ("session_meta", "system")]
         last = visible[-1] if visible else {}
         if (last.get("role") != "assistant" or last.get("tool_calls") or not isinstance(last.get("content"), str)
@@ -864,15 +852,15 @@ class GatewayStartupMixin:
                 )
             )
             # PERMANENT watcher tag so the scale-to-zero idle check doesn't count it as busy forever.
-            task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
+            task._rabbit_supervised_watcher = True  # type: ignore[attr-defined]
             _bg = getattr(self, "_background_tasks", None)
             if _bg is not None:
                 self._track_task_in(_bg, task)
 
     def _open_faulthandler_log(self):
         """Open (append) ``<log_dir>/gateway_faulthandler.log``, creating the directory."""
-        from gateway.run import get_hermes_home
-        log_dir = getattr(self.config, "log_dir", None) or os.path.join(str(get_hermes_home()), "logs")
+        from gateway.run import get_rabbit_home
+        log_dir = getattr(self.config, "log_dir", None) or os.path.join(str(get_rabbit_home()), "logs")
         os.makedirs(log_dir, exist_ok=True)
         return open(os.path.join(log_dir, "gateway_faulthandler.log"), "a", encoding="utf-8")  # windows-footgun: ok (append log writer, not a read)
 
@@ -908,7 +896,7 @@ class GatewayStartupMixin:
             # Loop live: the loop-liveness watchdog takes over from the startup watchdog. Disarm even
             # when loop guards are config-disabled; only inside this branch (no live loop = stay armed).
             with _log_suppressed(logging.DEBUG, "Startup watchdog disarm failed", exc_info=True):
-                from hermes_startup_watchdog import disarm_startup_watchdog
+                from rabbit_startup_watchdog import disarm_startup_watchdog
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
@@ -918,7 +906,7 @@ class GatewayStartupMixin:
         # so this line is the source of truth for the process lifetime.
         with suppress(Exception):
             # Redaction status: ON by default (#17691).
-            _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
+            _redact_raw = os.getenv("RABBIT_REDACT_SECRETS", "true")
             if _redact_raw.lower() in {"1", "true", "yes", "on"}:
                 logger.info(
                     "Secret redaction: ENABLED (tool output, logs, and chat "
@@ -926,12 +914,12 @@ class GatewayStartupMixin:
                 )
             else:
                 logger.warning(
-                    "Secret redaction: DISABLED (HERMES_REDACT_SECRETS=%s). API keys and tokens may appear "
+                    "Secret redaction: DISABLED (RABBIT_REDACT_SECRETS=%s). API keys and tokens may appear "
                     "verbatim in chat output, session JSONs, and logs. Set security.redact_secrets: true "
                     "in config.yaml to re-enable.", _redact_raw,
                 )
         with suppress(Exception):
-            from hermes_cli.profiles import get_active_profile_name
+            from rabbit_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()  # launch profile, pre-identity (boot log)
             if _profile and _profile != "default":
                 logger.info("Active profile: %s", _profile)
@@ -950,26 +938,26 @@ class GatewayStartupMixin:
         except Exception:
             logger.debug("Initial gateway runtime-status write failed", exc_info=True)
         with _log_suppressed(logging.DEBUG, "gateway health OTLP export startup failed", exc_info=True):
-            from hermes_cli.config import load_config
+            from rabbit_cli.config import load_config
             from agent.monitoring.gateway_health_export import start_gateway_health_export
             self._gateway_health_export_runtime = start_gateway_health_export(load_config())
             if getattr(self._gateway_health_export_runtime, "enabled", False):
                 logger.info("Gateway health OTLP export: enabled")
         # Supply-chain advisories: log only (never block startup or surface to users; only the operator can act).
         with _log_suppressed(logging.DEBUG, "security advisory check failed at gateway startup", exc_info=True):
-            from hermes_cli.security_advisories import detect_compromised, gateway_log_message
+            from rabbit_cli.security_advisories import detect_compromised, gateway_log_message
             _adv_msg = gateway_log_message(detect_compromised())
             if _adv_msg:
                 logger.warning("%s", _adv_msg)
-                logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
+                logger.warning("Run `rabbit doctor` on the gateway host for full remediation steps.")
 
     def _start_log_retired_session_reset(self) -> None:
         """Warn per served profile whose config still declares an idle/daily ``session_reset``,
         unless the plugin that honours it is enabled. Never raises."""
         with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
             from gateway.config_loader import read_yaml_layers
-            from hermes_cli.profiles import profiles_to_serve
-            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+            from rabbit_cli.profiles import profiles_to_serve
+            from rabbit_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
             hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
                     if (found := retired_reset_policy(read_yaml_layers(home)))]
             if hits and not reset_plugin_enabled():
@@ -989,7 +977,7 @@ class GatewayStartupMixin:
                 logger.warning(
                     "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but drain_timeout=%.0fs "
                     "cron_drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the gateway "
-                    "mid-drain. Run `hermes gateway install --force` to regenerate the unit, or shorten "
+                    "mid-drain. Run `rabbit gateway install --force` to regenerate the unit, or shorten "
                     "agent.restart_drain_timeout / agent.cron_drain_timeout.",
                     _alignment.get("unit", "(unknown)"), _alignment["timeout_stop_sec"],
                     _alignment["drain_timeout"],
@@ -1060,7 +1048,7 @@ class GatewayStartupMixin:
         # Discover plugins before shell hooks (plugin block decisions win ties). Explicit: the gateway
         # lazily imports run_agent, so model_tools' discover_plugins() side-effect may not have run.
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
-            from hermes_cli.plugins import discover_plugins
+            from rabbit_cli.plugins import discover_plugins
             discover_plugins()
         # Relay entrypoints share the effective profile opt-out, including when a
         # deployment injects a URL. No URL or explicitly disabled -> no side effects.
@@ -1092,8 +1080,8 @@ class GatewayStartupMixin:
                 "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
             return
         from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_process_hermes_home
-        with _profile_runtime_scope(get_process_hermes_home()):
+        from rabbit_constants import get_process_rabbit_home
+        with _profile_runtime_scope(get_process_rabbit_home()):
             GatewayStartupMixin._register_config_hooks(
                 "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
 
@@ -1101,12 +1089,12 @@ class GatewayStartupMixin:
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:
         """Register declarative shell hooks + outbound webhooks from the CURRENT scope's config.
 
-        Gateway has no TTY, so consent must come from --accept-hooks, HERMES_ACCEPT_HOOKS, or
+        Gateway has no TTY, so consent must come from --accept-hooks, RABBIT_ACCEPT_HOOKS, or
         hooks_auto_accept: true; ``accept_hooks=False`` lets register_from_config resolve env + config.
         Never raises (logged at ``level``).
         """
         try:
-            from hermes_cli.config import load_config
+            from rabbit_cli.config import load_config
             from agent.shell_hooks import register_from_config
             from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
             _hooks_cfg = load_config()
@@ -1121,8 +1109,8 @@ class GatewayStartupMixin:
         if not getattr(self.config, "multiplex_profiles", False):
             return 0
         from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        from hermes_constants import get_hermes_home
-        launch_home = get_hermes_home().resolve()
+        from rabbit_constants import get_rabbit_home
+        launch_home = get_rabbit_home().resolve()
         recovered = 0
         for profile_name, profile_home in _multiplex_profile_homes(self.config):
             if Path(profile_home).resolve() == launch_home:
@@ -1136,11 +1124,11 @@ class GatewayStartupMixin:
 
     async def _start_recover_previous_run(self) -> None:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
-        from gateway.run import _hermes_home
+        from gateway.run import _rabbit_home
         self._start_register_plugins_relay_hooks()
         # Plugins that load later (force re-discovery, install/enable nudge) re-wire live adapters (#87770).
         with _log_suppressed(logging.WARNING, "plugin re-wire subscription failed", exc_info=True):
-            from hermes_cli.plugins import get_plugin_manager
+            from rabbit_cli.plugins import get_plugin_manager
             self._subscribe_plugin_rewire(get_plugin_manager())
         self.hooks.discover_and_load()
         # Recover background processes from checkpoint (crash recovery). ``_checkpoint_path`` is
@@ -1154,7 +1142,7 @@ class GatewayStartupMixin:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
         # Recover the turns the last process left marked (in flight, or reply not yet ledgered).
         # SKIP after a clean exit — the previous process already drained.
-        _clean_marker = _hermes_home / ".clean_shutdown"
+        _clean_marker = _rabbit_home / ".clean_shutdown"
         if _clean_marker.exists():
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
@@ -1418,7 +1406,7 @@ class GatewayStartupMixin:
                 self._startup_parked_platforms = True
                 logger.error(
                     "%d configured platform(s) failed to start and are parked (fix the reported error, "
-                    "then `hermes gateway restart`): %s. The gateway is DEGRADED — it serves the "
+                    "then `rabbit gateway restart`): %s. The gateway is DEGRADED — it serves the "
                     "remaining platform(s) with those unserved.",
                     len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
                 )
@@ -1472,7 +1460,7 @@ class GatewayStartupMixin:
 
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
-        from gateway.run import _hermes_home
+        from gateway.run import _rabbit_home
         try:
             await self._ensure_hosted_room_worker()
         except Exception:
@@ -1500,7 +1488,7 @@ class GatewayStartupMixin:
         # Restarting after a /update still in progress: keep watching so we notify when it finishes.
         notified = await self._send_update_notification()
         if not notified and any(
-            (_hermes_home / name).exists()
+            (_rabbit_home / name).exists()
             for name in (".update_pending.json", ".update_pending.claimed.json")
         ):
             self._schedule_update_notification_watch()
@@ -1606,7 +1594,7 @@ class GatewayStartupMixin:
             await self._start_flush_runtime_status()
 
     async def _start_impl(self) -> bool:
-        logger.info("Starting Hermes Gateway...")
+        logger.info("Starting Rabbit Gateway...")
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
@@ -1614,12 +1602,6 @@ class GatewayStartupMixin:
         if self._start_check_access_policy():
             return True
         await self._start_recover_previous_run()
-        # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
-        # demand-time site (provider resolution, /login, the connector token) is a read that needs the
-        # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
-        # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
-        # inventory and no network.
-        await self._run_free_tier_bootstrap()
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True
@@ -1667,7 +1649,7 @@ class GatewayStartupMixin:
         self._update_runtime_status(self._serving_state())
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
-        from hermes_cli.observability.shared_metrics_startup import record_process_ready
+        from rabbit_cli.observability.shared_metrics_startup import record_process_ready
         record_process_ready("gateway_boot", background=True)
         logger.info("Press Ctrl+C to stop")
         return True

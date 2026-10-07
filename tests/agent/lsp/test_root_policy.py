@@ -34,7 +34,7 @@ def _git_repo(tmp_path: Path, name: str) -> Path:
 
 
 def _service_from(lsp_cfg: dict) -> LSPService:
-    with patch("hermes_cli.config.load_config_readonly", return_value={"lsp": lsp_cfg}):
+    with patch("rabbit_cli.config.load_config_readonly", return_value={"lsp": lsp_cfg}):
         svc = LSPService.create_from_config()
     assert svc is not None
     return svc

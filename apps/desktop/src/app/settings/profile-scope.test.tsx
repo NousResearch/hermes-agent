@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProfileInfo } from '@/types/hermes'
+import type { ProfileInfo } from '@/types/rabbit'
 
 // Keep store/profile's side-effecting imports inert — same seam as
 // store/profile.test.ts / profile-tag.test.tsx.
@@ -13,7 +13,7 @@ vi.mock('@/store/gateway', () => ({
   ensureGatewayForProfile: vi.fn(async () => undefined),
   openGatewayForProfile: vi.fn(async () => undefined)
 }))
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
 }))

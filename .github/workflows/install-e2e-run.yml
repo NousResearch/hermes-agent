@@ -5,7 +5,7 @@ name: Install & Update E2E (reusable)
 # it.
 #
 # Reusable so callers can fan out over the combinations that matter --
-# update from the tip vs. from an older release, `hermes update` vs.
+# update from the tip vs. from an older release, `rabbit update` vs.
 # re-running the installer -- without duplicating the runner setup. Each leg
 # is independent: its own isolated HOME, its own install, nothing rewound
 # or shared.
@@ -18,7 +18,7 @@ name: Install & Update E2E (reusable)
 # workflow OS-agnostic: the same driver runs on ubuntu and macos runners.
 #
 # Method ids come from scripts/sandbox/generate-e2e-matrix.mjs. Supported
-# today: install via installer-script, update via hermes-update or
+# today: install via installer-script, update via rabbit-update or
 # installer-script (re-run the one-liner).
 # Anything else NATIVELY SKIPS (grey check, no runner): capability
 # knowledge lives here, next to the driver, so the caller can dispatch
@@ -31,7 +31,7 @@ name: Install & Update E2E (reusable)
 #       uses: ./.github/workflows/install-e2e-run.yml
 #       with:
 #         install-method: installer-script
-#         update-method: hermes-update
+#         update-method: rabbit-update
 #         install-ref: refs/heads/main
 
 on:
@@ -42,7 +42,7 @@ on:
         required: true
         type: string
       update-method:
-        description: 'How the install updates to HEAD. Supported: hermes-update (the updater), installer-script (re-run the one-liner), installer-script+desktop (re-run with --include-desktop), hermes-desktop-app-update (launch via hermes desktop under Playwright, click Update now). open-app-update runs only where an OS entry point exists (see the per-OS run workflows); pairs without one skip.'
+        description: 'How the install updates to HEAD. Supported: rabbit-update (the updater), installer-script (re-run the one-liner), installer-script+desktop (re-run with --include-desktop), rabbit-desktop-app-update (launch via rabbit desktop under Playwright, click Update now). open-app-update runs only where an OS entry point exists (see the per-OS run workflows); pairs without one skip.'
         required: true
         type: string
       install-ref:
@@ -83,13 +83,13 @@ jobs:
     name: install & update
     # The pairs the driver can run today; anything else natively skips.
     # Desktop-surface methods (+desktop installs,
-    # hermes-desktop-app-update) also need the starting tag to ship
+    # rabbit-desktop-app-update) also need the starting tag to ship
     # apps/desktop (their flags shipped with it).
     if: >-
       (inputs.install-method == 'installer-script'
         || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
+      && (contains(fromJSON('["rabbit-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "rabbit-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
@@ -135,7 +135,7 @@ jobs:
         env:
           # Outside the workspace on purpose: logs written into the repo
           # would trip the driver's own dirty-tree guard.
-          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          RABBIT_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
       - name: Stop screen recording
         if: always()

@@ -6,7 +6,7 @@ session-bound multi-step opt-out gates (e.g. PeopleConnect guided-mode) -- must 
 operator's OWN browser: real fingerprint, residential IP, and the operator's signed-in sessions.
 A headless cloud browser (Browserbase) is the wrong tool there (it has no webmail session and is
 itself anti-bot-gated on those exact flows). This module launches the operator's real Chrome with
-remote debugging on a DEDICATED profile so Hermes's browser tools can attach at 127.0.0.1:<port>.
+remote debugging on a DEDICATED profile so Rabbit's browser tools can attach at 127.0.0.1:<port>.
 
 Stdlib only; cross-platform (macOS / Linux / Windows). Nothing here touches a password or PII.
 """
@@ -37,9 +37,9 @@ def default_profile() -> Path:
     """Dedicated debug profile dir, NOT the operator's Default Chrome profile.
 
     Chrome refuses remote-debugging on a profile that is already open in another Chrome instance,
-    so we isolate the debug session in its own user-data-dir under HERMES_HOME.
+    so we isolate the debug session in its own user-data-dir under RABBIT_HOME.
     """
-    return paths.hermes_home() / "chrome-debug"
+    return paths.rabbit_home() / "chrome-debug"
 
 
 def _mac_candidates() -> list[str]:

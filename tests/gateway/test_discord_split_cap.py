@@ -75,7 +75,7 @@ class TestCapSplitChunks:
 class TestSendCap:
     @pytest.mark.asyncio
     async def test_send_caps_split_flood(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         adapter = _make_adapter()
         sends = []
 
@@ -99,7 +99,7 @@ class TestSendCap:
 class TestForumCap:
     @pytest.mark.asyncio
     async def test_send_to_forum_caps_followup_chunks(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         adapter = _make_adapter()
         thread_sends = []
 
@@ -131,7 +131,7 @@ class TestForumCap:
 class TestEditOverflowCap:
     @pytest.mark.asyncio
     async def test_edit_overflow_split_capped(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         adapter = _make_adapter()
         edits = []
         sends = []

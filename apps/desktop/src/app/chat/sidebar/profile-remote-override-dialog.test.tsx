@@ -16,7 +16,6 @@ const applyConnectionConfig = vi.fn()
 const list = vi.fn()
 
 const localScope = {
-  cloudOrg: '',
   envOverride: false,
   mode: 'local',
   profile: 'work',
@@ -35,7 +34,7 @@ beforeEach(() => {
   getConnectionConfig.mockResolvedValue(localScope)
   applyConnectionConfig.mockResolvedValue({ ...localScope, mode: 'remote', remoteUrl: 'https://box.example.com' })
   list.mockResolvedValue(emptyRegistry)
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'rabbitDesktop', {
     configurable: true,
     value: { applyConnectionConfig, connections: { list }, getConnectionConfig }
   })

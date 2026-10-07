@@ -11,8 +11,8 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import type { HermesConnection } from '@/global'
-import { saveHermesConfigRecord } from '@/hermes'
+import type { RabbitConnection } from '@/global'
+import { saveRabbitConfigRecord } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Check, Globe } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
@@ -25,7 +25,7 @@ import {
 } from '@/store/real-profile-consent'
 import { $connection } from '@/store/session'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../../hooks/use-config-record'
+import { rabbitConfigCacheWriter, useRabbitConfigRecord } from '../../hooks/use-config-record'
 
 interface RealProfileConsentDialogProps {
   /** The Browser tab this pane renders — used only to claim the prompt so
@@ -36,7 +36,7 @@ interface RealProfileConsentDialogProps {
 interface RealProfilePromptGate {
   claim: null | string
   configLoaded: boolean
-  connection: HermesConnection | null
+  connection: RabbitConnection | null
   dismissed: boolean
   enabled: boolean
   muted: boolean
@@ -48,7 +48,7 @@ interface RealProfilePromptGate {
  *
  * Only for a backend on THIS machine: real-profile mode snapshots the
  * backend host's default browser, and the prompt promises "your" profile and
- * "nothing leaves this computer". Over a remote/SSH/cloud connection that is
+ * "nothing leaves this computer". Over a remote/SSH connection that is
  * another machine's browser (often a headless box with none), and "Enable"
  * would write `browser.use_real_profile` into the remote config.yaml — which
  * unregisters its browser tools and re-appears after every reset (#119398).
@@ -87,8 +87,8 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
   const muted = useStore($realProfilePromptMuted)
   const claim = useStore($realProfilePromptClaim)
   const connection = useStore($connection)
-  const { data: config, writeScope } = useHermesConfigRecord()
-  const setConfig = hermesConfigCacheWriter()
+  const { data: config, writeScope } = useRabbitConfigRecord()
+  const setConfig = rabbitConfigCacheWriter()
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -117,7 +117,7 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     try {
       // Sparse patch: PUT /api/config deep-merges, and echoing the cached
       // snapshot would overwrite keys other surfaces changed since it loaded.
-      await saveHermesConfigRecord({ browser: { use_real_profile: true } }, writeScope)
+      await saveRabbitConfigRecord({ browser: { use_real_profile: true } }, writeScope)
 
       notify({ kind: 'info', title: copy.enabledTitle, message: copy.enabledMessage })
     } catch (err) {

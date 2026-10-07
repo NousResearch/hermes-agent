@@ -209,7 +209,7 @@ class TestWhatsAppChatIdIdentityMatching:
         (mapping_dir / f"lid-mapping-{self.LID}_reverse.json").write_text(
             json.dumps(f"{self.PHONE}@s.whatsapp.net")
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     def test_number_route_matches_jid_and_mapped_lid_forms(self, tmp_path, monkeypatch):
         self._write_lid_mapping(tmp_path, monkeypatch)

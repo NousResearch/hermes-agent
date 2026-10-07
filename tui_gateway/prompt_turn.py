@@ -64,7 +64,7 @@ def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
 
 def _active_goal_manager(session: dict):
     """The session's GoalManager when a goal is active, else None."""
-    from hermes_cli.goals import GoalManager
+    from rabbit_cli.goals import GoalManager
     try:
         max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
     except Exception:
@@ -204,7 +204,7 @@ class _TurnScopes:
 
     approval: Any = None
     session_tokens: list = dataclasses.field(default_factory=list)
-    home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
+    home: Any = None  # per-turn RABBIT_HOME override for a resumed remote profile
     secret: Any = None
     terminal: Any = None
 
@@ -215,7 +215,7 @@ def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
     Decision table: agent/image_routing.py."""
     try:
         from agent.image_routing import build_native_content_parts, decide_image_input_mode
-        from hermes_cli.config import load_config as _tui_load_config
+        from rabbit_cli.config import load_config as _tui_load_config
         _provider, _model = _active_image_routing_identity(agent)
         mode = decide_image_input_mode(
             _provider, _model, _tui_load_config(),
@@ -258,7 +258,7 @@ def _start_turn_voice() -> tuple[Any, bool]:
             if is_audio_output_active():
                 return False
             try:
-                from hermes_cli.voice import is_continuous_active
+                from rabbit_cli.voice import is_continuous_active
                 return not is_continuous_active()
             except Exception:
                 return True
@@ -361,7 +361,7 @@ def _goal_followup_after_turn(
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
             _active_deleg = 0
             try:
-                from hermes_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
+                from rabbit_cli.goals import count_active_delegations, gather_background_processes as _gather_bg
                 # Only THIS session's processes (TUI turns register under session_key): subagents'
                 # pollers must not park the parent's goal. Same rule as the CLI and gateway loops.
                 _bg_procs = _gather_bg(owner_task_id=session.get("session_key") or None)
@@ -383,7 +383,7 @@ def _goal_followup_after_turn(
 def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> None:
     """Hooks for a ``complete`` turn: /loop tick evaluation, pending title, voice fallback."""
     try:
-        from hermes_cli.loops import LoopManager
+        from rabbit_cli.loops import LoopManager
         loop_sid_key = session.get("session_key") or ""
         if loop_sid_key:
             loop_mgr = LoopManager(session_id=loop_sid_key)
@@ -413,7 +413,7 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
         try:
             threading.Thread(target=_speak_text_with_barge, args=(raw,), daemon=True).start()
         except ImportError:
-            logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
+            logger.warning("voice TTS skipped: rabbit_cli.voice unavailable")
         except Exception as e:
             logger.warning("voice TTS dispatch failed: %s", e)
 
@@ -636,12 +636,12 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
     """
     try:
         from agent.onboarding import first_contact_turn_note
-        from hermes_cli.config import load_config as _load_onboarding_config
-        from hermes_constants import get_hermes_home
+        from rabbit_cli.config import load_config as _load_onboarding_config
+        from rabbit_constants import get_rabbit_home
 
         note = first_contact_turn_note(
             _load_onboarding_config() or {},
-            get_hermes_home() / "config.yaml",
+            get_rabbit_home() / "config.yaml",
             session_history_empty=history_empty,
             install_has_prior_sessions=_install_has_prior_sessions(session),
         )
@@ -1067,15 +1067,15 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
 
 def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
     """Best-effort tail AFTER the turn settled: a slow trim must not hold the bookend (#131740)."""
-    try:  # while the profile HERMES_HOME override is still active (session's own config)
-        from hermes_cli.mem_trim import trim_memory
+    try:  # while the profile RABBIT_HOME override is still active (session's own config)
+        from rabbit_cli.mem_trim import trim_memory
         # Every OTHER session must be idle (#58576).
         if _sessions_quiescent(exclude=sid):
             trim_memory(reason="tui turn completion")
     except Exception:
         logger.debug("post-turn memory trim failed", exc_info=True)
     if st.scopes.home is not None:
-        reset_hermes_home_override(st.scopes.home)
+        reset_rabbit_home_override(st.scopes.home)
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
@@ -1190,7 +1190,7 @@ def _run_prompt_submit(
             _recover_turn_exception(sid, session, st, e)
         finally:
             _release_turn_scopes(sid, session, st)
-            try:  # a raising settle step must not skip the trim / HERMES_HOME reset
+            try:  # a raising settle step must not skip the trim / RABBIT_HOME reset
                 _current_runtime_session_record.reset(runtime_session_token)
                 reset_transport(transport_token)
                 # A stale interim closure must not fire during a later turn.

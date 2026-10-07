@@ -1,7 +1,7 @@
 // connect() must reject before WebSocket coerces garbage into
 // `ws://<origin>/[object%20Object]` (#68250 stale-emit boot loop).
 
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { JsonRpcGatewayClient } from '@rabbit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 class FakeSocket {

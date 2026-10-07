@@ -25,17 +25,17 @@ from unittest import mock
 import pytest
 
 import tui_gateway.server as srv
-from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+from rabbit_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
 from tui_gateway import methods_bot_relay
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    h = tmp_path / ".hermes"
+    h = tmp_path / ".rabbit"
     (h / "profiles" / "ops").mkdir(parents=True)
     (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
-    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setenv("RABBIT_HOME", str(h))
     return h
 
 
@@ -64,7 +64,7 @@ def test_outbox_drain_returns_each_envelope_once(home):
     target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
               "connection_label": "", "title": "", "description": ""}
     env = bot_relay.enqueue_envelope(
-        home, target=target, message="m", sender_profile="default", sender_handle="hermes"
+        home, target=target, message="m", sender_profile="default", sender_handle="rabbit"
     )
     first = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in first["envelopes"]] == [env["id"]]
@@ -124,7 +124,7 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
         calls["kwargs"] = kwargs
         return _Proc()
 
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _result(
         srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
     )
@@ -137,11 +137,11 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     argv = calls["argv"]
     # argv[0] may be a resolved venv path (#93590) — match by basename.
     assert argv[1:3] == ["-p", "ops"]
-    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
+    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("rabbit", "rabbit.exe")
     assert "Bot Chat" in argv and "--query-file" in argv
 
-    # 'hermes' alias resolves to default
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
+    # 'rabbit' alias resolves to default
+    _result(srv._methods["bot_relay.deliver"](2, {"profile": "rabbit", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
     # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
@@ -160,7 +160,7 @@ def test_deliver_requires_params(home):
 
 def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypatch):
     """#103731: the sender signs with its bare @handle, which for another machine's ``default`` is
-    ``@hermes`` — the recipient's OWN default. The delivered text names the sender by the form this
+    ``@rabbit`` — the recipient's OWN default. The delivered text names the sender by the form this
     gateway resolves back to it: its title slug when the local relay roster carries it, else
     ``handle@connection``. A stamp that is not the relay's is left alone."""
     seen = []
@@ -174,20 +174,20 @@ def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypa
 
     # The deliver child's runner, whichever this tree has: subprocess.run today, and
     # quiet_single_query.run_reported_turn once the relay books turns from their report
-    # (#114980) — patching only the first would spawn a real ``hermes chat -Q`` child there.
+    # (#114980) — patching only the first would spawn a real ``rabbit chat -Q`` child there.
     monkeypatch.setattr("subprocess.run", _fake_run)
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
     bot_relay.write_remote_roster(home, [
-        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "vps-1", "title": "CoS Bot"},
     ])
-    stamp = "Message from 🤖 CoS Bot (@hermes): are we done?"
-    sender = {"from_profile": "default", "from_handle": "hermes", "from_connection": "vps-1"}
+    stamp = "Message from 🤖 CoS Bot (@rabbit): are we done?"
+    sender = {"from_profile": "default", "from_handle": "rabbit", "from_connection": "vps-1"}
     _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": stamp, **sender}))
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": stamp, **sender, "from_connection": "lan-2"}))
-    _result(srv._methods["bot_relay.deliver"](3, {"profile": "ops", "message": "plain text (@hermes): x", **sender}))
+    _result(srv._methods["bot_relay.deliver"](3, {"profile": "ops", "message": "plain text (@rabbit): x", **sender}))
     assert seen == ["Message from 🤖 CoS Bot (@cos-bot): are we done?",
-                    "Message from 🤖 CoS Bot (@hermes@lan-2): are we done?",
-                    "plain text (@hermes): x"]
+                    "Message from 🤖 CoS Bot (@rabbit@lan-2): are we done?",
+                    "plain text (@rabbit): x"]
 
 
 def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
@@ -197,7 +197,7 @@ def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch)
         returncode, stderr = 0, ""
         stdout = " *NO_REPLY* "
 
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", lambda *_a, **_k: _Proc())
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", lambda *_a, **_k: _Proc())
     assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
 
     _Proc.stdout = "The NO_REPLY marker means do not answer."
@@ -221,12 +221,12 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
 
     def _fake_run(argv, *a, **k):
         # The server module's import-time update prefetch runs `git ...` on a
-        # daemon thread; only the relay's `hermes` CLI spawn is under test.
+        # daemon thread; only the relay's `rabbit` CLI spawn is under test.
         if argv and argv[0] != "git":
             spawned.append(argv)
         return _Proc()
 
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", _fake_run)
     monkeypatch.setitem(
         srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
     )
@@ -254,8 +254,8 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
 def _lease_open_bot_chat(home, *, live_session_id="live-in-other-process"):
     """A Bot Chat leased by a mailbox-capable live owner in the target's home (real state.db row,
     real lease) — what a Desktop-opened Bot Chat looks like from the relay handler's side."""
-    from hermes_cli.active_sessions import try_acquire_active_session
-    from hermes_state import SessionDB
+    from rabbit_cli.active_sessions import try_acquire_active_session
+    from rabbit_state import SessionDB
 
     ops_home = home / "profiles" / "ops"
     db = SessionDB(db_path=ops_home / "state.db")
@@ -277,9 +277,9 @@ def _no_cli_transport(monkeypatch, spawned):
 
     # Guard the deliver child's runner, whichever this tree has: subprocess.run today, and
     # quiet_single_query.run_reported_turn once the relay books turns from their report
-    # (#114980) — guarding only the first would let a real ``hermes chat -Q`` child spawn there.
+    # (#114980) — guarding only the first would let a real ``rabbit chat -Q`` child spawn there.
     monkeypatch.setattr("subprocess.run", _fake_run)
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
 
 
 def _owner_settles(ops_home, outcome: dict) -> threading.Thread:
@@ -417,7 +417,7 @@ def test_deliver_write_failure_still_removes_tempfile(home, monkeypatch, tmp_pat
     err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
     assert "error" in err
     assert made, "mkstemp was never reached"
-    assert not glob.glob(str(tmp_path / "hermes-relay-dm-*")), "tempfile leaked"
+    assert not glob.glob(str(tmp_path / "rabbit-relay-dm-*")), "tempfile leaked"
 
 
 @pytest.fixture
@@ -434,7 +434,7 @@ def fake_runs(monkeypatch):
 
         return _Proc()
 
-    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
+    monkeypatch.setattr("rabbit_cli.quiet_single_query.run_reported_turn", _fake_run)
     return calls, outcomes
 
 
@@ -445,13 +445,13 @@ def fake_runs(monkeypatch):
     ({}, None),
 ], ids=["sender fields", "sender on another connection", "no sender fields"])
 def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, monkeypatch, fake_runs, sender, expected):
-    """HERMES_TURN_AUTHOR on the child comes from the envelope's sender fields alone: the retry gets the same
+    """RABBIT_TURN_AUTHOR on the child comes from the envelope's sender fields alone: the retry gets the same
     author, and without sender fields a stale author on the gateway's own environment never reaches the child."""
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, outcomes = fake_runs
     outcomes.extend([(1, "HTTP 429 rate limit"), (0, "")])
-    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv("RABBIT_RELAY_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:stale", "name": "stale", "is_bot": True}))
 
     _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender}))
@@ -459,7 +459,7 @@ def test_deliver_child_env_carries_the_envelope_sender_on_every_attempt(home, mo
     envs = [c["env"] for c in calls]
     assert len(envs) == 2
     assert [json.loads(e[TURN_AUTHOR_ENV]) if TURN_AUTHOR_ENV in e else None for e in envs] == [expected, expected]
-    assert all(e["HERMES_RELAY_TEST_MARKER"] == "kept" for e in envs)
+    assert all(e["RABBIT_RELAY_TEST_MARKER"] == "kept" for e in envs)
 
 
 class _Client:
@@ -496,7 +496,7 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_r
     """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
 
     NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
-    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    gateway that requires sign-in (``rabbit_cli/dashboard_auth/routes.py``), so it is a login
     identity and takes the principal-author branch above.
     """
     from agent.turn_author import TURN_AUTHOR_ENV
@@ -545,23 +545,23 @@ def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to
 
 @pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
 def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
-    """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
-    The writer side (``message_agent``'s ``_hermes_root``) and the drain side
+    """Both ends of the relay mailbox derive the install root from RABBIT_HOME with ONE formula.
+    The writer side (``message_agent``'s ``_rabbit_root``) and the drain side
     (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
-    arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
-    from tools.bot_mode_probe import _default_home, _hermes_root
+    arbitrary subdir of the native ``~/.rabbit`` — a split here is silent non-delivery."""
+    from tools.bot_mode_probe import _default_home, _rabbit_root
     from tui_gateway import methods_bot_relay
 
     monkeypatch.setenv("HOME", str(tmp_path))
-    home = tmp_path / ".hermes" / subdir
+    home = tmp_path / ".rabbit" / subdir
     home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
-    writer_root = _hermes_root(Path(_default_home()))
+    writer_root = _rabbit_root(Path(_default_home()))
     target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
               "connection_label": "", "title": "", "description": ""}
     env = bot_relay.enqueue_envelope(
-        writer_root, target=target, message="m", sender_profile="default", sender_handle="hermes")
+        writer_root, target=target, message="m", sender_profile="default", sender_handle="rabbit")
 
     assert methods_bot_relay._relay_root() == writer_root
     drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
@@ -572,7 +572,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 
 
 def _child_argv(monkeypatch, body: str) -> dict:
-    """Stand in a Python child for the ``hermes`` transport; it imports ``hermes_cli`` from this checkout."""
+    """Stand in a Python child for the ``rabbit`` transport; it imports ``rabbit_cli`` from this checkout."""
     argv = [sys.executable, "-c", textwrap.dedent(body)]
     monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: argv)
     return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p)}
@@ -595,7 +595,7 @@ def test_reported_turn_still_lingering_at_the_cap_is_booked_from_its_latest_repo
     exit code 0, never delivery_timeout — and is NOT killed, so its own handoff survives."""
     env = _child_argv(monkeypatch, """
         import os, time
-        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        from rabbit_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
         path = os.environ.pop(TURN_REPORT_FILE_ENV)
         write_turn_report(path, exit_code=0, reply="asking the teammate")
         time.sleep(0.5)

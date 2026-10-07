@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { BackendUpdateCheckResponse } from '@/types/hermes'
+import type { BackendUpdateCheckResponse } from '@/types/rabbit'
 
 import { mapBackendCheck } from './updates'
 
@@ -65,10 +65,10 @@ describe('mapBackendCheck', () => {
   it('leaves a backend that cannot self-update to the unsupported branch', () => {
     // pip/nix and managed runtimes also answer `behind: null`, but `can_apply: false` renders
     // the "not available" copy first — those must not be turned into failures.
-    const status = mapBackendCheck(response({ can_apply: false, behind: null, message: 'pip install -U hermes-agent' }))
+    const status = mapBackendCheck(response({ can_apply: false, behind: null, message: 'pip install -U rabbit-agent' }))
 
     expect(status.supported).toBe(false)
     expect(status.error).toBeUndefined()
-    expect(status.message).toBe('pip install -U hermes-agent')
+    expect(status.message).toBe('pip install -U rabbit-agent')
   })
 })

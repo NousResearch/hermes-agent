@@ -171,7 +171,7 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
 
 
 def test_host_local_background_command_bypasses_configured_backend(tmp_path, monkeypatch):
-    """Hermes control-plane children stay on the host when tools use Docker."""
+    """Rabbit control-plane children stay on the host when tools use Docker."""
     calls = []
 
     class FakeEnv:

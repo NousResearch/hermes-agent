@@ -1,10 +1,10 @@
-"""The external action must never install Hermes into the plugin checkout."""
+"""The external action must never install Rabbit into the plugin checkout."""
 import os
 from pathlib import Path
 import subprocess
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 @pytest.mark.platforms("posix")
@@ -23,9 +23,9 @@ def test_external_validator_checkout_uses_requested_ref_and_preserves_caller(tmp
     output = tmp_path / "output"
     env_file = tmp_path / "env"
     env = {**os.environ, "RUNNER_TEMP": str(runner), "RUNNER_OS": "Linux",
-           "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(env_file), "_HERMES_REF": ref,
+           "GITHUB_OUTPUT": str(output), "GITHUB_ENV": str(env_file), "_RABBIT_REF": ref,
            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": f"url.{repo.as_uri()}.insteadOf",
-           "GIT_CONFIG_VALUE_0": "https://github.com/NousResearch/hermes-agent.git"}
+           "GIT_CONFIG_VALUE_0": "https://github.com/seven0070/Rabbit-.git"}
     subprocess.run(["bash", "-c", source_step["run"]], cwd=caller, env=env, check=True,
                    capture_output=True, text=True, timeout=60)
     outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())

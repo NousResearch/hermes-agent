@@ -9,7 +9,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from plugins.platforms.discord.adapter import DiscordAdapter
 from tools import async_delegation as delegation
 

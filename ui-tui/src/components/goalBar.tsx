@@ -1,4 +1,4 @@
-import { stringWidth, Text } from '@hermes/ink'
+import { stringWidth, Text } from '@rabbit/ink'
 import { useStore } from '@nanostores/react'
 
 import { type GoalLine, useGoalLine } from '../app/goalStatus.js'

@@ -30,7 +30,7 @@ afterEach(() => {
   setFrost.mockClear()
 })
 
-Object.assign(window, { hermesDesktop: { hud: { setFrost } } })
+Object.assign(window, { rabbitDesktop: { hud: { setFrost } } })
 
 describe('useHudGlass', () => {
   // The bug this replaced: the caller widened the gate to "recent or held", so

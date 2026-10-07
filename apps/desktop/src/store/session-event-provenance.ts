@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 
 // A profile name received over the wire is descriptive, not an ownership
 // claim: primary and arbitrary synthetic events can carry one. The secondary

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 
 _BASE_URL = "http://127.0.0.1:59999/v1"
@@ -51,8 +51,8 @@ def homes(monkeypatch, tmp_path):
                         f"custom_providers:\n  - name: Local-Code\n    base_url: {_BASE_URL}\n    api_key: k-a\n")
     _write_home(secondary, "model:\n  default: local-code\n  provider: custom:local-vllm\n"
                            f"providers:\n  local-vllm:\n    api: {_BASE_URL}\n    api_key: k-b\n")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
-    monkeypatch.setattr(server, "_hermes_home", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", str(launch))
     monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
     monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)

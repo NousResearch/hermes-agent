@@ -8,7 +8,7 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat
+from rabbit_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat
 from evals.heartbeat_idle_wire import WireAdapter
 
 

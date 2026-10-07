@@ -19,7 +19,7 @@ afterEach(() => {
   vi.useRealTimers()
   $queuedPromptsBySession.set({})
   // Queue mutations build on the persisted map, not the atom.
-  window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+  window.localStorage.removeItem('rabbit.desktop.composerQueue.v1')
   $parkedQueueSessions.set({})
   $sessions.set([])
   setSessionsLoading(true)

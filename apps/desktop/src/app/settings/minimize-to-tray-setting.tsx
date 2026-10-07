@@ -9,7 +9,7 @@ import { ToggleRow } from './primitives'
 export function MinimizeToTraySetting() {
   const { t } = useI18n()
   const c = t.settings.config
-  const bridge = window.hermesDesktop?.minimizeToTray
+  const bridge = window.rabbitDesktop?.minimizeToTray
   const [status, setStatus] = useState<{ enabled: boolean; available: boolean } | null>(null)
   const [saving, setSaving] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)

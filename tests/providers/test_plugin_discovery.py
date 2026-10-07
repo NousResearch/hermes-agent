@@ -2,7 +2,7 @@
 
 Verifies that:
  1. All bundled providers at plugins/model-providers/<name>/ are discovered
- 2. User plugins at $HERMES_HOME/plugins/model-providers/<name>/ override bundled
+ 2. User plugins at $RABBIT_HOME/plugins/model-providers/<name>/ override bundled
  3. plugin.yaml manifests with kind=model-provider are correctly categorized
 """
 
@@ -27,7 +27,7 @@ def _clear_provider_caches():
     for mod in list(sys.modules.keys()):
         if (
             mod.startswith("plugins.model_providers")
-            or mod.startswith("_hermes_user_provider")
+            or mod.startswith("_rabbit_user_provider")
         ):
             del sys.modules[mod]
 
@@ -69,15 +69,15 @@ def test_all_profiles_register():
 
 def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     """A user plugin with the same name must override the bundled profile."""
-    # Point HERMES_HOME at a fresh temp dir
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    # get_hermes_home() may be module-cached depending on codebase; ensure the
+    # Point RABBIT_HOME at a fresh temp dir
+    rabbit_home = tmp_path / ".rabbit"
+    rabbit_home.mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+    # get_rabbit_home() may be module-cached depending on codebase; ensure the
     # env var is the source of truth. Most code paths re-read it each call.
 
     # Drop a user plugin that replaces 'gmi'
-    user_gmi = hermes_home / "plugins" / "model-providers" / "gmi"
+    user_gmi = rabbit_home / "plugins" / "model-providers" / "gmi"
     user_gmi.mkdir(parents=True)
     (user_gmi / "__init__.py").write_text(
         "from providers import register_provider\n"

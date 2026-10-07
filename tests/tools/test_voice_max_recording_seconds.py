@@ -1,7 +1,7 @@
 """Regression test: voice.max_recording_seconds is actually enforced.
 
 Before this fix, ``voice.max_recording_seconds`` was defined in the default
-config (hermes_cli/config.py) and documented, but no code read it — the
+config (rabbit_cli/config.py) and documented, but no code read it — the
 AudioRecorder had no total-length cap, so the setting was dead config. This
 test pins the enforcement contract on the recorder:
 

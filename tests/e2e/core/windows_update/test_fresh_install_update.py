@@ -1,4 +1,4 @@
-"""Fresh source install on native Windows, then ``hermes update`` HEAD -> NEXT.
+"""Fresh source install on native Windows, then ``rabbit update`` HEAD -> NEXT.
 
 Failure class: the first things a new Windows user does. ``install.ps1 -NonInteractive``
 on a clean profile (no git, no Python, no uv on PATH), the first agent launch, then the
@@ -31,7 +31,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 
 def _installed_state(machine) -> dict:
-    marker = machine.install_dir / ".hermes-bootstrap-complete"
+    marker = machine.install_dir / ".rabbit-bootstrap-complete"
     pinned = (json.loads(marker.read_text(encoding="utf-8-sig")).get("pinnedCommit")
               if marker.is_file() else None)
     return {"head": machine.installed_head(), "marker": marker.is_file(), "pinned": pinned}
@@ -46,7 +46,7 @@ def journey(tmp_path_factory):
             j.step("install", machine.install)
             # Snapshot what the installer left before the update moves the checkout on.
             j.step("installed", lambda: _installed_state(machine))
-            j.step("version", lambda: machine.hermes("--version"))
+            j.step("version", lambda: machine.rabbit("--version"))
             j.step("first_turn", lambda: one_shot_turn(machine, srv, "first-turn"))
             machine.advance()
             j.step("update", machine.update)
@@ -56,7 +56,7 @@ def journey(tmp_path_factory):
             machine.teardown()
 
 
-def test_install_lands_on_head_and_publishes_hermes(journey: Journey) -> None:
+def test_install_lands_on_head_and_publishes_rabbit(journey: Journey) -> None:
     m, run = journey.machine, journey["install"]
     assert run.returncode == 0, fail_with(m, f"install.ps1 exited {run.returncode}", run)
     installed = journey["installed"]
@@ -66,8 +66,8 @@ def test_install_lands_on_head_and_publishes_hermes(journey: Journey) -> None:
     pinned = installed["pinned"]
     assert pinned == m.head, fail_with(m, f"bootstrap marker pins {pinned}, expected {m.head}", run)
     version = journey["version"]
-    assert version.returncode == 0 and "Hermes Agent v" in version.stdout, fail_with(
-        m, "the published hermes.exe cannot report its version", version)
+    assert version.returncode == 0 and "Rabbit Agent v" in version.stdout, fail_with(
+        m, "the published rabbit.exe cannot report its version", version)
 
 
 def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
@@ -84,13 +84,13 @@ def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
 def test_update_moves_checkout_to_next(journey: Journey) -> None:
     m, run = journey.machine, journey["update"]
     assert run.returncode == 0, fail_with(
-        m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
+        m, f"rabbit update exited {run.returncode}: {failure_line(run)}", run)
     head = m.installed_head()
     assert head == m.next, fail_with(
-        m, f"after hermes update the checkout is at {head}, expected NEXT {m.next}", run)
+        m, f"after rabbit update the checkout is at {head}, expected NEXT {m.next}", run)
     assert (m.install_dir / NEXT_MARKER).is_file(), fail_with(
         m, "NEXT's marker file is missing from the checkout", run)
-    receipt_path = m.hermes_home / "logs" / "update_receipts" / "latest.json"
+    receipt_path = m.rabbit_home / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.is_file() else {}
     assert receipt.get("outcome") == "success", fail_with(
         m, f"update receipt outcome is {receipt.get('outcome')!r}, expected 'success'", run)

@@ -4,35 +4,35 @@
 # Differences from docker-compose.yml:
 #   - Removes `network_mode: host` (not supported on Docker Desktop for Windows)
 #   - Uses explicit port mappings instead
-#   - Uses Windows-style volume path for ~/.hermes
+#   - Uses Windows-style volume path for ~/.rabbit
 #
 # Usage:
 #   docker compose -f docker-compose.windows.yml up -d
 #
 services:
   gateway:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes
+    image: seven0070/Rabbit-:latest
+    container_name: rabbit
     restart: unless-stopped
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - ${USERPROFILE}/.rabbit:/opt/data
     environment:
-      - HERMES_UID=10000
-      - HERMES_GID=10000
+      - RABBIT_UID=10000
+      - RABBIT_GID=10000
     command: ["gateway", "run"]
 
   dashboard:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes-dashboard
+    image: seven0070/Rabbit-:latest
+    container_name: rabbit-dashboard
     restart: unless-stopped
     depends_on:
       - gateway
     volumes:
-      - ${USERPROFILE}/.hermes:/opt/data
+      - ${USERPROFILE}/.rabbit:/opt/data
     environment:
-      - HERMES_UID=10000
-      - HERMES_GID=10000
-      - HERMES_DASHBOARD_HOST=0.0.0.0
+      - RABBIT_UID=10000
+      - RABBIT_GID=10000
+      - RABBIT_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
     command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]

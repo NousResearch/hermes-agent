@@ -39,7 +39,7 @@ it('retains a close when the same runtime owner is refined from profile-only to 
 })
 
 it('tolerates malformed persisted scope keys and keeps Windows aliases identical', () => {
-  window.localStorage.setItem('hermes.desktop.previewDismissals.v1', '{"__proto__":["x"],"constructor":["y"]}')
+  window.localStorage.setItem('rabbit.desktop.previewDismissals.v1', '{"__proto__":["x"],"constructor":["y"]}')
   expect(() => migrateTilesForProfile('old-profile', 'new-profile')).not.toThrow()
   recordPreviewArtifact('windows-alias', './report.html', 'C:\\work')
   const item = $previewStatusBySession.get()['windows-alias'][0]

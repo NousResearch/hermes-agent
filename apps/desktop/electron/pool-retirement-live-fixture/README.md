@@ -1,17 +1,17 @@
 # Native pool retirement integration
 
 From `apps/desktop`, after installing the repository-pinned Node dependencies and a
-Hermes Python environment (including the serve dependencies):
+Rabbit Python environment (including the serve dependencies):
 
 ```sh
-HERMES_TEST_REAL_SERVE=1 \
-HERMES_TEST_PYTHON=/absolute/path/to/venv/bin/python \
-HERMES_TEST_ELECTRON=/absolute/path/to/native/electron \
+RABBIT_TEST_REAL_SERVE=1 \
+RABBIT_TEST_PYTHON=/absolute/path/to/venv/bin/python \
+RABBIT_TEST_ELECTRON=/absolute/path/to/native/electron \
 node ../../node_modules/vitest/vitest.mjs run \
   --config electron/pool-retirement-live-fixture/vitest.config.ts
 ```
 
-`HERMES_TEST_ELECTRON` is optional when Electron resolves from the desktop/root
+`RABBIT_TEST_ELECTRON` is optional when Electron resolves from the desktop/root
 Node installation. Point it at the native executable, not `electron/cli.js`.
 The Python interpreter supplies dependencies; imports use this checkout's source.
 The test is opt-in and POSIX-only (real process-group signals), not a Windows proof.
@@ -36,14 +36,14 @@ fixture entry points and their production imports into a fresh temporary directo
   The event receipt asserts commit → park → signal → held shutdown → actual exit →
   lease release → acquisition → successor spawn, and OS liveness is false at release.
 - A hidden, sandboxed native renderer imports the real `src/store/gateway.ts` and
-  `HermesGateway`. It opens four actual WebSockets (legacy and registry-local scopes
+  `RabbitGateway`. It opens four actual WebSockets (legacy and registry-local scopes
   for both idle children). Main sends retirement over fixture IPC before signalling.
   Both scopes stay parked after socket closure and ordinary/forced wake sweeps;
   no new descriptor request is made. Renderer Node integration is disabled.
 - The cron process and script remain alive and its heartbeat advances after both
   retirements. Releasing the script completes the real job and restores HTTP idle.
 - Cleanup waits for every owned backend exit and verifies the coordinator has zero
-  live leases. The temporary HOME, per-child HERMES_HOME, Electron userData,
+  live leases. The temporary HOME, per-child RABBIT_HOME, Electron userData,
   sessionData, config/cache, random auth tokens, and OS-assigned ports are isolated.
   The launch environment is allowlisted; no real credentials are copied.
 

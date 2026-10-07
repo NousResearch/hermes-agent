@@ -105,7 +105,7 @@ vi.mock('../scope', () => ({
 // The ambient selection resolveOwnerNow reads; tests flip it mid-conversation.
 const ambient = { connectionId: 'gateway-a' as null | string, profile: 'worker_alpha' as null | string }
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   resolveOwnerNow: (owner?: { connectionId?: string; profile?: string }) => ({
     connectionId: owner?.connectionId || ambient.connectionId,
     profile: owner?.profile || ambient.profile

@@ -34,7 +34,7 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
         tmpdir: base temp directory
         session_name: name like "h_abc1234567" or "cdp_abc1234567"
         pid: daemon PID to write to <session>.pid (None = no file)
-        owner_pid: owning hermes PID to write to <session>.owner_pid
+        owner_pid: owning rabbit PID to write to <session>.owner_pid
                    (None = no file; tests the legacy path)
     """
     d = tmpdir / f"agent-browser-{session_name}"
@@ -106,7 +106,7 @@ class TestReapOrphanedBrowserSessions:
         assert not d.exists()
 
     def test_real_profile_attach_daemon_is_reaped_when_owner_is_dead(self, fake_tmpdir):
-        """#100855: the shared ``hermes-real-profile`` attach daemon is not ``<prefix>_<hex>``
+        """#100855: the shared ``rabbit-real-profile`` attach daemon is not ``<prefix>_<hex>``
         named, so the reaper's glob never saw it and a wedged daemon + headless Chrome outlived
         gateway restarts. Same owner-liveness rule as every other lane: dead owner => reaped."""
         import tools.browser_tool as bt
@@ -116,7 +116,7 @@ class TestReapOrphanedBrowserSessions:
         terminate_calls = []
 
         def _pid_exists(pid):
-            return pid == 4242  # daemon alive, owning hermes gone
+            return pid == 4242  # daemon alive, owning rabbit gone
 
         with patch("gateway.status._pid_exists", side_effect=_pid_exists), \
              patch("gateway.status.get_process_start_time", return_value=777), \
@@ -165,8 +165,8 @@ class TestReapOrphanedBrowserSessions:
 class TestOwnerPidCrossProcess:
     """Tests for owner_pid-based cross-process safe reaping.
 
-    The owner_pid file records which hermes process owns a daemon so that
-    concurrent hermes processes don't reap each other's active browser
+    The owner_pid file records which rabbit process owns a daemon so that
+    concurrent rabbit processes don't reap each other's active browser
     sessions.  Added to fix orphan accumulation from crashed processes.
     """
 
@@ -374,7 +374,7 @@ class TestLeakedDaemonWithLiveOwner:
     tracking is lost on any exception path between spawn and registration,
     yet the owner PID stays up, so the reaper skipped it forever.  Observed in
     the wild — five agent-browser daemons accumulated over 10 days inside one
-    long-lived hermes process, pinning ~5 CPU cores and driving load to 100+.
+    long-lived rabbit process, pinning ~5 CPU cores and driving load to 100+.
 
     The daemon-side ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` is not a backstop here:
     it does not fire when the daemon itself is wedged (e.g. Chrome's framework
@@ -494,7 +494,7 @@ class TestPeriodicOrphanReap:
     """The reaper must run repeatedly, not only at cleanup-thread startup.
 
     A startup-only reap can never recover from a leak that appears *after*
-    boot — which is exactly what happens in a hermes process that stays up
+    boot — which is exactly what happens in a rabbit process that stays up
     for days.
     """
 

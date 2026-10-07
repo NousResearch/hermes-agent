@@ -37,8 +37,8 @@ def _install_secondary(monkeypatch, runner, stamps):
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("rabbit_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
+    monkeypatch.setattr("rabbit_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
         lambda: GatewayConfig(
@@ -69,14 +69,14 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
     assert infos and "'work'" in infos[0].getMessage() and "default profile" in infos[0].getMessage()
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("relay" in w and "not being served" in w and "work" in w for w in warnings), warnings
-    # Stamped so `hermes gateway status --profile work` / the dashboard can show the reason.
+    # Stamped so `rabbit gateway status --profile work` / the dashboard can show the reason.
     assert ("work:relay", {
         "platform_state": "disabled", "error_code": "multiplex_shared_ingress",
         "error_message": "not served under multiplex (shared ingress owned by default)",
     }) in stamps
     # ...and the CLI reader turns that stamp into the status line.
     from gateway.status import write_runtime_status
-    from hermes_cli import gateway_multiplex_served as served
+    from rabbit_cli import gateway_multiplex_served as served
     key, kw = next(s for s in stamps if s[0] == "work:relay")
     write_runtime_status(platform=key, **kw)
     monkeypatch.setattr(served, "live_default_gateway_pid", lambda: 4242)
@@ -107,7 +107,7 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
     reads ``completion_queue`` directly, so the launch profile's durable completions must already
     be queued by the boot hook — in the LAUNCH scope, before any secondary is bound (#123265)."""
     from tools import async_delegation, process_registry as pr_mod
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "launch"))
     monkeypatch.setattr(pr_mod.process_registry, "_completions_restored", False)
     order = []
     monkeypatch.setattr(async_delegation, "restore_undelivered_completions",

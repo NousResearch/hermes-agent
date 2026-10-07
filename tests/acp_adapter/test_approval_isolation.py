@@ -1,14 +1,14 @@
 """Tests for GHSA-96vc-wcxf-jjff and GHSA-qg5c-hvr5-hjgr.
 
 Two related ACP approval-flow issues:
-- 96vc: ACP didn't set HERMES_EXEC_ASK, so `check_all_command_guards`
+- 96vc: ACP didn't set RABBIT_EXEC_ASK, so `check_all_command_guards`
   took the non-interactive auto-approve path and never consulted the
   ACP-supplied callback.
 - qg5c: `_approval_callback` was a module-global in terminal_tool;
   overlapping ACP sessions overwrote each other's callback slot.
 
 Both fixed together by:
-1. Setting HERMES_EXEC_ASK inside _run_agent (wraps the agent call).
+1. Setting RABBIT_EXEC_ASK inside _run_agent (wraps the agent call).
 2. Storing the callback in thread-local state so concurrent executor
    threads don't collide.
 """
@@ -24,7 +24,7 @@ def _isolate_approval_state(monkeypatch):
     """Keep these security regression tests hermetic.
 
     Earlier tests (e.g. tests/acp_adapter/test_permissions.py) lazily load the
-    developer's real ``~/.hermes/config.yaml`` command allowlist into
+    developer's real ``~/.rabbit/config.yaml`` command allowlist into
     ``tools.approval._permanent_approved``. If that allowlist contains a
     pattern like "recursive delete", ``rm -rf …`` is auto-approved before
     the interactive callback fires and the GHSA regression assertions fail
@@ -136,23 +136,23 @@ class TestThreadLocalApprovalCallback:
 
 
 class TestAcpExecAskGate:
-    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
+    """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set RABBIT_INTERACTIVE so
     that tools.approval.check_all_command_guards takes the CLI-interactive
     path (consults the registered callback via prompt_dangerous_approval)
     instead of the non-interactive auto-approve shortcut.
 
-    (HERMES_EXEC_ASK takes the gateway-queue path which requires a
+    (RABBIT_EXEC_ASK takes the gateway-queue path which requires a
     notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
     which uses a direct callback shape.)"""
 
     def test_interactive_env_var_routes_to_callback(self, monkeypatch):
-        """When HERMES_INTERACTIVE is set and an approval callback is
+        """When RABBIT_INTERACTIVE is set and an approval callback is
         registered, a dangerous command must route through the callback."""
         # Clean env
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("RABBIT_INTERACTIVE", raising=False)
+        monkeypatch.delenv("RABBIT_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("RABBIT_EXEC_ASK", raising=False)
+        monkeypatch.delenv("RABBIT_YOLO_MODE", raising=False)
 
         from tools.approval import check_all_command_guards
 
@@ -162,24 +162,24 @@ class TestAcpExecAskGate:
             called_with.append((command, description))
             return "once"
 
-        # Without HERMES_INTERACTIVE: takes auto-approve path, callback NOT called
+        # Without RABBIT_INTERACTIVE: takes auto-approve path, callback NOT called
         result = check_all_command_guards(
             "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
         )
         assert result["approved"] is True
         assert called_with == [], (
-            "without HERMES_INTERACTIVE the non-interactive auto-approve "
+            "without RABBIT_INTERACTIVE the non-interactive auto-approve "
             "path should fire without consulting the callback"
         )
 
-        # With HERMES_INTERACTIVE: callback IS called, approval flows through it
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        # With RABBIT_INTERACTIVE: callback IS called, approval flows through it
+        monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
         called_with.clear()
         result = check_all_command_guards(
             "rm -rf /tmp/test-exec-ask", "local", approval_callback=fake_cb,
         )
         assert called_with, (
-            "with HERMES_INTERACTIVE the approval path should consult the "
+            "with RABBIT_INTERACTIVE the approval path should consult the "
             "registered callback — this was the ACP bypass in "
             "GHSA-96vc-wcxf-jjff"
         )

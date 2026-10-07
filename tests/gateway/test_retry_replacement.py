@@ -38,9 +38,9 @@ def _seed_pending_recovery(store, session_id):
 def test_rewrite_transcript_keeps_pending_recovery_state_when_lease_rejects(
     tmp_path, monkeypatch
 ):
-    import hermes_state
+    import rabbit_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewrite-pending-lease"
     store._db.create_session(session_id=session_id, source="test")
@@ -77,9 +77,9 @@ def test_rewrite_transcript_keeps_pending_recovery_state_when_lease_rejects(
 def test_rewind_session_keeps_pending_recovery_state_when_lease_rejects(
     tmp_path, monkeypatch
 ):
-    import hermes_state
+    import rabbit_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-pending-lease"
     store._db.create_session(session_id=session_id, source="test")
@@ -115,10 +115,10 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
 ):
     """/retry re-sends exactly what was stored: a carrier split across text parts comes back as the
     parts' concatenation (``"".join``), not the "\\n"-joined display flattening."""
-    import hermes_state
+    import rabbit_state
     from agent.context_compressor import retryable_user_text
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-composite-multipart"
     store._db.create_session(session_id=session_id, source="test")
@@ -144,9 +144,9 @@ def test_rewind_session_retry_text_is_the_stored_bytes_for_multipart_carriers(
 def test_rewind_session_surfaces_unretryable_media_before_mutation(
     tmp_path, monkeypatch
 ):
-    import hermes_state
+    import rabbit_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "rewind-composite-media"
     store._db.create_session(session_id=session_id, source="test")
@@ -171,9 +171,9 @@ def test_rewind_session_surfaces_unretryable_media_before_mutation(
 def test_transcript_mutation_serializes_pending_queue_drain(
     operation, tmp_path, monkeypatch
 ):
-    import hermes_state
+    import rabbit_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = f"serialized-{operation}"
     store._db.create_session(session_id=session_id, source="test")
@@ -254,10 +254,10 @@ def test_transcript_mutation_serializes_pending_queue_drain(
 
 @pytest.mark.asyncio
 async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, monkeypatch):
-    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.hermes/state.db.
+    # Pin DEFAULT_DB_PATH so SessionDB() doesn't write to the real ~/.rabbit/state.db.
     # (Module-level constant snapshot, see test_load_transcript_db_only.)
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import rabbit_state
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -313,8 +313,8 @@ async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, mon
 async def test_gateway_retry_redispatches_live_carrier_text_and_keeps_scaffold(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import rabbit_state
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -365,8 +365,8 @@ async def test_gateway_retry_does_not_rewind_a_newer_plain_turn(
     tmp_path, monkeypatch
 ):
     """The carrier selected for retry must still be latest at commit time."""
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import rabbit_state
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)
@@ -510,8 +510,8 @@ async def test_gateway_retry_stops_when_transcript_rewrite_fails():
 def test_gateway_undo_prefills_live_carrier_text_and_keeps_scaffold(
     tmp_path, monkeypatch
 ):
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import rabbit_state
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     session_id = "undo-carrier-session"
@@ -547,8 +547,8 @@ async def test_gateway_retry_preserves_archived_compaction_rows_when_probe_fails
     purge archived history, so it must pass active_only=True unconditionally:
     a separate existence probe can fail open or race with the rewrite.
     """
-    import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    import rabbit_state
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path, config=config)

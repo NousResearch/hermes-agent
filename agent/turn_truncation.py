@@ -22,7 +22,7 @@ from agent.turn_api_call import stop_thinking_spinner
 from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from agent.usage_pricing import normalize_usage
-from hermes_constants import PARTIAL_STREAM_STUB_ID
+from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -371,7 +371,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 
 
 def _model_output_limit(agent: Any) -> Optional[int]:
-    """The model's real max output tokens when Hermes knows it, else None."""
+    """The model's real max output tokens when Rabbit knows it, else None."""
     if getattr(agent, "api_mode", None) != "anthropic_messages":
         return None
     # Local: only Anthropic-Messages turns need the adapter module.

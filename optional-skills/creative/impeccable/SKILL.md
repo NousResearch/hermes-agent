@@ -6,21 +6,21 @@ author: Paul Bakaus (pbakaus)
 license: Apache-2.0
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [design, frontend, ui, ux, web-design, anti-slop]
     category: creative
     related_skills: [claude-design, popular-web-designs]
     upstream:
       repo: pbakaus/impeccable
-      path: .hermes/skills/impeccable
+      path: .rabbit/skills/impeccable
 ---
 
 # Impeccable (upstream-maintained)
 
 > **Catalog stub.** This entry is maintained upstream at
 > [pbakaus/impeccable](https://github.com/pbakaus/impeccable): the project
-> ships and verifies a Hermes-native skill bundle under `.hermes/skills/`.
-> `hermes skills install impeccable` pulls the current bundle live from that
+> ships and verifies a Rabbit-native skill bundle under `.rabbit/skills/`.
+> `rabbit skills install impeccable` pulls the current bundle live from that
 > repo (quarantined and scanned like any hub install) — this directory holds
 > only the catalog metadata, so the vendored copy can never go stale.
 

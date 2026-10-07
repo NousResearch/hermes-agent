@@ -1,6 +1,6 @@
 """Shared oracle helpers for the chaos (agent-turn liveness) E2E lane.
 
-The chaos suites drive a REAL Hermes surface (AIAgent child process, GatewayRunner,
+The chaos suites drive a REAL Rabbit surface (AIAgent child process, GatewayRunner,
 tui_gateway JSON-RPC subprocess) against ``tests/fakes/fake_llm_provider`` in a fault
 mode and then check the same liveness invariants everywhere:
 
@@ -99,29 +99,29 @@ def chaos_config(
 
 
 def write_chaos_home(root: Path, base_url: str, **cfg: Any) -> tuple[Path, Path]:
-    """Create ``root/home`` (fake $HOME) and ``root/home/.hermes`` (HERMES_HOME)."""
+    """Create ``root/home`` (fake $HOME) and ``root/home/.rabbit`` (RABBIT_HOME)."""
     home = root / "home"
-    hermes_home = home / ".hermes"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "config.yaml").write_text(chaos_config(base_url, **cfg), encoding="utf-8")
-    (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-chaos\n", encoding="utf-8")
-    return home, hermes_home
+    rabbit_home = home / ".rabbit"
+    rabbit_home.mkdir(parents=True, exist_ok=True)
+    (rabbit_home / "config.yaml").write_text(chaos_config(base_url, **cfg), encoding="utf-8")
+    (rabbit_home / ".env").write_text("OPENAI_API_KEY=sk-fake-chaos\n", encoding="utf-8")
+    return home, rabbit_home
 
 
-def hermetic_env(home: Path, hermes_home: Path, tag: str) -> dict[str, str]:
-    """Child env: fake HOME/HERMES_HOME, no real credentials, repo importable, and a
+def hermetic_env(home: Path, rabbit_home: Path, tag: str) -> dict[str, str]:
+    """Child env: fake HOME/RABBIT_HOME, no real credentials, repo importable, and a
     tag every descendant inherits so the orphan scan can find it after reparenting."""
     env = {
         k: v for k, v in os.environ.items()
         if not (
             k.endswith(("_API_KEY", "_TOKEN", "_SECRET"))
-            or k.startswith(("HERMES_", "OPENROUTER", "ANTHROPIC", "OPENAI", "NOUS_"))
+            or k.startswith(("RABBIT_", "OPENROUTER", "ANTHROPIC", "OPENAI", "NOUS_"))
             or k in {"PYTEST_CURRENT_TEST"}
         )
     }
     env.update({
         "HOME": str(home),
-        "HERMES_HOME": str(hermes_home),
+        "RABBIT_HOME": str(rabbit_home),
         "OPENAI_API_KEY": "sk-fake-chaos",
         "PYTHONPATH": str(REPO_ROOT),
         "PYTHONUNBUFFERED": "1",
@@ -129,7 +129,7 @@ def hermetic_env(home: Path, hermes_home: Path, tag: str) -> dict[str, str]:
         "CHAOS_TAG": tag,
         # HOME *is* the tmp root, so the live-DB guard (pytest ancestry) would read the
         # tmp state.db as "production"; the documented child opt-out is safe here.
-        "HERMES_STATE_DB_GUARD_BYPASS": "1",
+        "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         "TZ": "UTC",
         "NO_COLOR": "1",
     })

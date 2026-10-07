@@ -1,6 +1,6 @@
 /**
  * Runtime SDK injection — the other half of the vscode-module model. Bundled
- * plugins resolve `@hermes/plugin-sdk` through the vite alias; RUNTIME-loaded
+ * plugins resolve `@rabbit/plugin-sdk` through the vite alias; RUNTIME-loaded
  * plugins (disk / fetched) import the same specifier and get the same object:
  * the loader rewrites bare specifiers to shim modules that re-export the
  * live namespaces installed here. React ships as the app's singletons —
@@ -15,20 +15,20 @@ import * as sdk from './index'
 
 // Resolved LAZILY, never as a module-scope literal. This module sits in an
 // import cycle — `sdk/index` → `contrib/*` → `contrib/runtime-loader` →
-// `sdk/runtime` — so a module-scope `{ __HERMES_PLUGIN_SDK__: sdk, … }` is
+// `sdk/runtime` — so a module-scope `{ __RABBIT_PLUGIN_SDK__: sdk, … }` is
 // evaluated BEFORE `sdk/index`'s own body runs. In the bundled app that read
 // yields `undefined` (the bundler emits the namespace as a hoisted `var`), so
-// `Object.keys(GLOBALS.__HERMES_PLUGIN_SDK__)` threw
+// `Object.keys(GLOBALS.__RABBIT_PLUGIN_SDK__)` threw
 // "Cannot convert undefined or null to object" and EVERY runtime (disk)
 // plugin failed to load. Reading them at call time — installPluginSdk() and
 // the shim builder only ever run once the app is up — gets the live
 // namespaces.
 function pluginNamespaces() {
   return {
-    __HERMES_PLUGIN_SDK__: sdk,
-    __HERMES_REACT__: React,
-    __HERMES_REACT_JSX__: jsxRuntime,
-    __HERMES_REACT_JSX_DEV__: jsxDevRuntime
+    __RABBIT_PLUGIN_SDK__: sdk,
+    __RABBIT_REACT__: React,
+    __RABBIT_REACT_JSX__: jsxRuntime,
+    __RABBIT_REACT_JSX_DEV__: jsxDevRuntime
   }
 }
 
@@ -60,10 +60,10 @@ let cached: Record<string, string> | null = null
 /** Specifier -> shim URL map for the runtime loader (longest keys first). */
 export function sdkImportMap(): Record<string, string> {
   cached ??= {
-    '@hermes/plugin-sdk': shimUrl('__HERMES_PLUGIN_SDK__'),
-    'react/jsx-dev-runtime': shimUrl('__HERMES_REACT_JSX_DEV__'),
-    'react/jsx-runtime': shimUrl('__HERMES_REACT_JSX__'),
-    react: shimUrl('__HERMES_REACT__')
+    '@rabbit/plugin-sdk': shimUrl('__RABBIT_PLUGIN_SDK__'),
+    'react/jsx-dev-runtime': shimUrl('__RABBIT_REACT_JSX_DEV__'),
+    'react/jsx-runtime': shimUrl('__RABBIT_REACT_JSX__'),
+    react: shimUrl('__RABBIT_REACT__')
   }
 
   return cached

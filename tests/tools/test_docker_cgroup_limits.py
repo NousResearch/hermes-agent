@@ -34,12 +34,12 @@ def test_probe_returns_true_when_container_starts(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    assert docker_env._cgroup_limits_available("hermes-agent:latest") is True
+    assert docker_env._cgroup_limits_available("rabbit-agent:latest") is True
     # Probes all three controllers together against the real sandbox image.
     assert "--cpus" in captured["cmd"]
     assert "--memory" in captured["cmd"]
     assert "--pids-limit" in captured["cmd"]
-    assert "hermes-agent:latest" in captured["cmd"]
+    assert "rabbit-agent:latest" in captured["cmd"]
 
 
 def test_probe_result_is_cached(monkeypatch):

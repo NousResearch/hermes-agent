@@ -132,7 +132,7 @@ class TestCommandCodeAnthropicBearerAuth:
 class TestCommandCodeFetchModelsPickerContract:
     """``fetch_models`` must accept the kwargs the model picker passes.
 
-    Regression: the generic live-fetch path in ``hermes_cli/models.py``
+    Regression: the generic live-fetch path in ``rabbit_cli/models.py``
     (``provider_model_ids``) calls ``profile.fetch_models(api_key=...,
     base_url=...)``. The original CommandCode overrides only accepted
     ``api_key``/``timeout``, so every picker open raised TypeError, which
@@ -148,7 +148,7 @@ class TestCommandCodeFetchModelsPickerContract:
         "Unknown provider" on /model switches even though the picker listed
         them.
         """
-        from hermes_cli.providers import resolve_provider_full
+        from rabbit_cli.providers import resolve_provider_full
 
         chat = resolve_provider_full("commandcode", {}, [])
         assert chat is not None and chat.id == "commandcode"

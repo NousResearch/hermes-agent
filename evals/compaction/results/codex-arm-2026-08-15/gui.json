@@ -26,7 +26,7 @@
  },
  "results": [
   {
-   "q": "What is the PR number for the authored fix addressing mid-turn message ordering bugs in Hermes Desktop?",
+   "q": "What is the PR number for the authored fix addressing mid-turn message ordering bugs in Rabbit Desktop?",
    "gold": "#86617",
    "answer": "PR **#86617**.",
    "score": 2,
@@ -41,7 +41,7 @@
   },
   {
    "q": "What specific file and line number were identified as the cause of an AssertionError (assert 56 == 55) in the Python tests?",
-   "gold": "tests/hermes_cli/test_session_recovery_lost_and_found.py:327",
+   "gold": "tests/rabbit_cli/test_session_recovery_lost_and_found.py:327",
    "answer": "**UNKNOWN** \u2014 best guess: a schema-width assertion in a Python schema/config test, expecting 55 fields but receiving 56 after `git_metadata_generation` was added.",
    "score": 0,
    "why": "The answer fails to provide the specific file and line number requested, which are present in the gold answer. It instead provides a guess about the context of the error without identifying the location."
@@ -75,14 +75,14 @@
    "why": "The answer states the answer is unknown and provides a guess that does not match the gold answer."
   },
   {
-   "q": "What error message does the Hermes terminal tool return when a git command is blocked to prevent rewriting the live source checkout?",
-   "gold": "Blocked: `git <op>` would rewrite Hermes's live source checkout",
+   "q": "What error message does the Rabbit terminal tool return when a git command is blocked to prevent rewriting the live source checkout?",
+   "gold": "Blocked: `git <op>` would rewrite Rabbit's live source checkout",
    "answer": "**UNKNOWN** \u2014 best guess: an error stating that the git command was blocked because it would rewrite the live source checkout.",
    "score": 2,
    "why": "The answer correctly identifies the core substance of the error message (blocked git command because it would rewrite the live source checkout) which matches the gold answer."
   },
   {
-   "q": "What is the core design principle regarding 'Narrow Waist' in Hermes development?",
+   "q": "What is the core design principle regarding 'Narrow Waist' in Rabbit development?",
    "gold": "The core is a narrow waist; capability lives at the edges.",
    "answer": "Keep a small, stable core interface\u2014the \u201cnarrow waist\u201d\u2014through which different clients, providers, and integrations communicate, avoiding duplicated business logic across surfaces.",
    "score": 2,

@@ -308,7 +308,7 @@ def test_member_mention_joins_the_next_round_not_the_current_round(
 def test_member_control_frames_are_relabelled_before_the_next_prompt(
     room_db: tuple[Path, dict],
 ):
-    """#111564: a member reply that reproduces a Hermes control frame (mid-turn steer marker, compaction
+    """#111564: a member reply that reproduces a Rabbit control frame (mid-turn steer marker, compaction
     handoff, runtime/system notes) must not reach a peer's role=user prompt in its exact trusted shape.
     The genuine user line and the stored member event stay verbatim."""
     from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN

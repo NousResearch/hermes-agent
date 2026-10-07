@@ -39,8 +39,8 @@ def _fast_time(monkeypatch, tmp_path):
 def test_reparked_server_logs_once_not_per_probe(monkeypatch, tmp_path, caplog):
     """First park warns; every failed self-probe that re-parks the same dead
     server logs at DEBUG only — the parked state is already visible via
-    ``hermes mcp list`` (#115713)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    ``rabbit mcp list`` (#115713)."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 
@@ -89,7 +89,7 @@ def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
     """A server that revived (session proven → ``_was_parked`` cleared) and then
     fails again must warn on its next park: a fresh outage is a state
     transition, not probe chatter."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 

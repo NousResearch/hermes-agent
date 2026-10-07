@@ -19,7 +19,7 @@ required_environment_variables:
     prompt: Shopify API version (default 2026-01)
     help: "Stable quarterly version. Override if you need an older one."
 metadata:
-  hermes:
+  rabbit:
     tags: [Shopify, E-commerce, Commerce, API, GraphQL]
     related_skills: [airtable, xurl]
     homepage: https://shopify.dev/docs/api/admin-graphql
@@ -36,7 +36,7 @@ The REST Admin API is legacy since 2024-04 and only receives security fixes. **U
 1. In Shopify admin: **Settings → Apps and sales channels → Develop apps → Create an app**.
 2. Click **Configure Admin API scopes**, select what you need (examples below), save.
 3. **Install app** → the Admin API access token appears ONCE. Copy it immediately — Shopify will never show it again. Tokens start with `shpat_`.
-4. Save to `${HERMES_HOME:-~/.hermes}/.env`:
+4. Save to `${RABBIT_HOME:-~/.rabbit}/.env`:
    ```
    SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
    SHOPIFY_STORE_DOMAIN=my-store.myshopify.com
@@ -138,7 +138,7 @@ mutation($input: ProductCreateInput!) {
     product { id handle }
     userErrors { field message }
   }
-}' '{"input":{"title":"Test Hoodie","status":"DRAFT","vendor":"Hermes","productType":"Apparel","tags":["test"]}}'
+}' '{"input":{"title":"Test Hoodie","status":"DRAFT","vendor":"Rabbit","productType":"Apparel","tags":["test"]}}'
 ```
 
 Variants now have their own mutations in recent versions:

@@ -121,7 +121,7 @@ def _launch_turn_policy(launch_home):
         raise _StopAfterPolicy()
 
     try:
-        with patch.object(server, "_hermes_home", launch_home), \
+        with patch.object(server, "_rabbit_home", launch_home), \
                 patch.object(server, "_served_profile_homes", {launch_home.parent / "other"}), \
                 patch.object(server, "_wire_callbacks", stop):
             with pytest.raises(_StopAfterPolicy):
@@ -136,7 +136,7 @@ def _launch_turn_policy(launch_home):
         if st.scopes.secret is not None:
             server.reset_secret_scope(st.scopes.secret)
         if st.scopes.home is not None:
-            server.reset_hermes_home_override(st.scopes.home)
+            server.reset_rabbit_home_override(st.scopes.home)
         if st.scopes.approval is not None:
             reset_current_session_key(st.scopes.approval)
         server._clear_session_context(st.scopes.session_tokens)
@@ -146,7 +146,7 @@ def test_launch_turn_keeps_env_only_ssh_policy_once_multiplexing_is_active(tmp_p
     launch = tmp_path / "launch"
     launch.mkdir()
     (launch / "config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "example.test")
     ltp.activate_multi_profile_hosting()  # multiplex activation: first secondary served
@@ -160,7 +160,7 @@ def test_launch_turn_ignores_ambient_terminal_env_written_after_activation(tmp_p
     launch = tmp_path / "launch"
     launch.mkdir()
     (launch / "config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "example.test")
     ltp.activate_multi_profile_hosting()

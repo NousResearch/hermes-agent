@@ -1,24 +1,24 @@
 # A2A (Agent-to-Agent)
 
-[A2A](https://a2a-protocol.org) is the open Agent2Agent protocol (v1.0, stewarded by the Linux Foundation) for communication between independent AI agents. The Hermes A2A plugin works in **both directions**: your agent can call other A2A agents as tools, and other agents can send tasks to your Hermes over HTTP.
+[A2A](https://a2a-protocol.org) is the open Agent2Agent protocol (v1.0, stewarded by the Linux Foundation) for communication between independent AI agents. The Rabbit A2A plugin works in **both directions**: your agent can call other A2A agents as tools, and other agents can send tasks to your Rabbit over HTTP.
 
-It interoperates with any A2A-compliant peer — another Hermes, LangChain, CrewAI, Google ADK agents, or anything built on the official `a2a-sdk`.
+It interoperates with any A2A-compliant peer — another Rabbit, LangChain, CrewAI, Google ADK agents, or anything built on the official `a2a-sdk`.
 
 ## When to use A2A
 
-- **Hermes ↔ Hermes across machines** — let your desktop agent hand tasks to a Hermes on a server, or vice versa, each with its own memory, tools, and credentials.
+- **Rabbit ↔ Rabbit across machines** — let your desktop agent hand tasks to a Rabbit on a server, or vice versa, each with its own memory, tools, and credentials.
 - **Delegating to specialist agents** — a peer that advertises `web_search`/`research`/`coding` skills on its Agent Card can be discovered and called mid-conversation.
-- **Being a callable service** — expose your Hermes so other frameworks' agents can send it tasks.
+- **Being a callable service** — expose your Rabbit so other frameworks' agents can send it tasks.
 
 When you want multiple agents on the **same machine**, prefer [delegation](../features/delegation.md) (in-process subagents) or the [kanban board](../features/kanban.md) (durable multi-profile work queue) — A2A is for crossing process/machine/framework boundaries.
 
 ## Enable
 
 ```bash
-hermes gateway setup      # pick A2A
+rabbit gateway setup      # pick A2A
 ```
 
-Or in `~/.hermes/config.yaml`:
+Or in `~/.rabbit/config.yaml`:
 
 ```yaml
 gateway:
@@ -32,9 +32,9 @@ gateway:
 The outbound client tools ship as the `a2a` toolset, **off by default** — enable it per platform:
 
 ```bash
-hermes tools enable a2a --platform cli        # CLI/TUI sessions
-hermes tools enable a2a --platform telegram   # or any messaging platform
-hermes tools enable a2a --platform a2a        # let inbound A2A tasks call peers (agent chaining)
+rabbit tools enable a2a --platform cli        # CLI/TUI sessions
+rabbit tools enable a2a --platform telegram   # or any messaging platform
+rabbit tools enable a2a --platform a2a        # let inbound A2A tasks call peers (agent chaining)
 ```
 
 The tools are available in every process type — CLI, TUI, gateway, and cron — without the inbound platform needing to be enabled.
@@ -66,7 +66,7 @@ Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."*
 
 ## Inbound: being callable
 
-With the platform enabled, Hermes serves:
+With the platform enabled, Rabbit serves:
 
 - **Agent Card** at `GET /.well-known/agent-card.json` (canonical v1.0 path; the legacy `agent.json` also answers) — advertises your agent's name, skills (derived from enabled toolsets), and auth requirements.
 - **JSON-RPC 2.0** at `POST /` — canonical v1.0 methods (`SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, push-notification config CRUD) plus the pre-1.0 path-style aliases (`message/send`, …).
@@ -85,7 +85,7 @@ Secure by default; every widening step is explicit:
 - **Per-peer tokens** — `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each peer its own credential; the authenticated name drives rate limiting, trust, and audit.
 - **Prompt-injection filtering** — inbound text is filtered and framed as untrusted peer input. Remote peers cannot invoke operator slash commands.
 - **Outbound redaction** — credential-shaped strings (API keys, JWTs, tokens) are scrubbed from replies.
-- **Audit log** — every exchange appends to `~/.hermes/a2a_audit.jsonl`.
+- **Audit log** — every exchange appends to `~/.rabbit/a2a_audit.jsonl`.
 - **Anti-loop** — per-context turn caps stop two agents ping-ponging forever.
 
 ## Configuration reference

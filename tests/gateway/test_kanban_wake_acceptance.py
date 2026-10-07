@@ -10,9 +10,9 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
 from gateway.wake import admit_internal_event, deliver_wake
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db_notify as kbn
 
 
 def setup_route(raft=False):
@@ -96,7 +96,7 @@ async def test_push_receipt_requires_real_admission_without_displacing_user(raft
 
 @pytest.mark.asyncio
 async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "board.db"))
     runner, adapter, source, key = setup_route()
     conn = kbc.connect()
     tids = {}
@@ -156,8 +156,8 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
 
 @pytest.mark.asyncio
 async def test_suppressed_ping_has_no_sent_receipt_but_wake_executes(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "board.db"))
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
     runner, adapter, source, key = setup_route()
     conn = kbc.connect()

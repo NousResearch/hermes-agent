@@ -1,6 +1,6 @@
 import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
-import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import type { ConfigFieldSchema, RabbitConfigRecord, ToolsetInfo } from '@/types/rabbit'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
@@ -27,7 +27,7 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
 
 // The backend wraps stored-key previews in a write-guard sentinel
-// (hermes_cli/web_routers/_common.redacted_credential_preview): show the inner
+// (rabbit_cli/web_routers/_common.redacted_credential_preview): show the inner
 // preview, and a plain mask for the label-less forms.
 export const credentialPreview = (value: null | string | undefined): null | string => {
   if (!value?.startsWith('«redacted')) {
@@ -93,7 +93,7 @@ function safeSet(target: Record<string, unknown>, key: string, value: unknown): 
   })
 }
 
-export function getNested(obj: HermesConfigRecord, path: string): unknown {
+export function getNested(obj: RabbitConfigRecord, path: string): unknown {
   let cur: unknown = obj
 
   for (const part of configPathParts(path)) {
@@ -122,13 +122,13 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
  * values.
  *
  * The autosave path sends this instead of the full draft so a field the user
- * never touched — one an agent may have changed via `hermes config set`
+ * never touched — one an agent may have changed via `rabbit config set`
  * while Settings was open with a stale snapshot — is never resent with its
  * now-stale value. `PUT /api/config` deep-merges onto disk, so an omitted
  * key keeps whatever is currently there.
  */
-export function diffConfig(base: HermesConfigRecord, next: HermesConfigRecord): HermesConfigRecord {
-  const patch: HermesConfigRecord = {}
+export function diffConfig(base: RabbitConfigRecord, next: RabbitConfigRecord): RabbitConfigRecord {
+  const patch: RabbitConfigRecord = {}
 
   for (const key of Object.keys(next)) {
     const baseValue = base[key]
@@ -164,7 +164,7 @@ export function diffConfig(base: HermesConfigRecord, next: HermesConfigRecord): 
  * use this to confirm the destructive transition before applying it. Any edit
  * that keeps at least one toolset — or that never had one — returns false.
  */
-export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConfigRecord): boolean {
+export function clearsEnabledToolsets(prev: RabbitConfigRecord, next: RabbitConfigRecord): boolean {
   const prevToolsets = getNested(prev, 'toolsets')
   const nextToolsets = getNested(next, 'toolsets')
   const hadToolsets = Array.isArray(prevToolsets) && prevToolsets.length > 0
@@ -175,7 +175,7 @@ export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConf
 
 // Voice renders only fields for the selected TTS/STT provider. Search and the
 // page share this rule so every indexed field can actually mount when opened.
-export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+export function voiceFieldVisible(key: string, config: RabbitConfigRecord): boolean {
   const match = /^(tts|stt)\.([^.]+)\./.exec(key)
 
   if (!match) {
@@ -215,7 +215,7 @@ export function inferFieldSchema(value: unknown): ConfigFieldSchema {
 // Backend schema omits some declared keys; config presence is the availability signal.
 export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
-  config: HermesConfigRecord
+  config: RabbitConfigRecord
 ): Map<string, [string, ConfigFieldSchema][]> {
   return new Map(
     SECTIONS.map(s => [
@@ -230,7 +230,7 @@ export function sectionFieldEntries(
   )
 }
 
-export function setNested(obj: HermesConfigRecord, path: string, value: unknown): HermesConfigRecord {
+export function setNested(obj: RabbitConfigRecord, path: string, value: unknown): RabbitConfigRecord {
   const clone = structuredClone(obj)
   const parts = configPathParts(path)
   let cur: Record<string, unknown> = clone
@@ -256,8 +256,8 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   return clone
 }
 
-function personalityOptions(config: HermesConfigRecord): string[] {
-  // The Python runtime (`hermes_cli.personality.available_personalities`) honours both
+function personalityOptions(config: RabbitConfigRecord): string[] {
+  // The Python runtime (`rabbit_cli.personality.available_personalities`) honours both
   // the root-level `personalities` block and `agent.personalities` (agent wins on a name
   // clash). Read both so a root-registered persona the CLI/gateway resolve also appears in
   // the dropdown (#123297).
@@ -356,7 +356,7 @@ function isCommandProvider(value: unknown): boolean {
 // name the runtime would actually resolve as a command provider — built-ins are
 // excluded case-insensitively, matching the runtime's `provider.lower().strip()`
 // guard, so a ``providers.EDGE`` command block is not offered.
-function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'): string[] {
+function commandProviderNames(config: RabbitConfigRecord, section: 'tts' | 'stt'): string[] {
   const builtins = section === 'tts' ? BUILTIN_TTS_PROVIDERS : BUILTIN_STT_PROVIDERS
   const names = new Set<string>()
 
@@ -386,7 +386,7 @@ const OPENAI_TTS1_VOICES = new Set(['alloy', 'ash', 'coral', 'echo', 'fable', 'n
 export function enumOptionsFor(
   key: string,
   value: unknown,
-  config: HermesConfigRecord,
+  config: RabbitConfigRecord,
   dynamicOptions?: string[]
 ): string[] | undefined {
   let opts = dynamicOptions ?? (key === 'display.personality' ? personalityOptions(config) : ENUM_OPTIONS[key])

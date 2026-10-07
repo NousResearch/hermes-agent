@@ -8,7 +8,7 @@ import sys
 def test_enqueue_during_retention_never_recreates_delivered_request(tmp_path, monkeypatch):
     from cron import delivery_queue as queue
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     db = tmp_path / "deliveries.db"
     monkeypatch.setattr(queue, "DELIVERY_DB", db)
     queue.enqueue("execution", {"id": "job"}, "original")

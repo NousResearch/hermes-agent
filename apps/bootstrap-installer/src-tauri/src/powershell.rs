@@ -141,14 +141,14 @@ pub type CancelRx = mpsc::Receiver<()>;
 /// It exists because pipe EOF is not the child's to give. The write end of a
 /// redirected pipe is handed to the child as an inheritable handle, so every
 /// descendant spawned without its own redirection holds a duplicate, and the
-/// read side does not see EOF until the last of them closes it. `hermes update`
+/// read side does not see EOF until the last of them closes it. `rabbit update`
 /// deliberately runs its build steps with stdout inherited, so the tree under a
 /// child is arbitrarily deep and not something the caller can enumerate. When
 /// one of those descendants is a resident gateway, the pipe stays open for the
 /// life of the gateway — and every obligation downstream of the read is
 /// stranded with it.
 ///
-/// Same bound `Invoke-HermesStep` grew in `scripts/desktop-update/windows.ps1`
+/// Same bound `Invoke-RabbitStep` grew in `scripts/desktop-update/windows.ps1`
 /// (#90455), and the same shape as Go's `exec.Cmd.WaitDelay`.
 pub(crate) const DRAIN_GRACE: Duration = Duration::from_secs(20);
 
@@ -280,13 +280,13 @@ where
 
 /// Spawns install.ps1 / install.sh with the given args and streams output.
 ///
-/// `hermes_home_override` propagates to the child as $HERMES_HOME so the
+/// `rabbit_home_override` propagates to the child as $RABBIT_HOME so the
 /// install script writes to the same directory the installer is reading from.
 pub async fn run_script(
     script_path: &Path,
     args: &[String],
     sink: StreamSink,
-    hermes_home_override: Option<&str>,
+    rabbit_home_override: Option<&str>,
     cancel_rx: &mut Option<CancelRx>,
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
@@ -295,12 +295,12 @@ pub async fn run_script(
     // during self-update. Pin child scripts to a stable directory so bash/zsh
     // never starts from a deleted cwd and emits getcwd/job-working-directory
     // errors at the end of an otherwise successful install.
-    if let Some(cwd) = stable_script_cwd(script_path, hermes_home_override) {
+    if let Some(cwd) = stable_script_cwd(script_path, rabbit_home_override) {
         cmd.current_dir(cwd);
     }
 
-    if let Some(home) = hermes_home_override {
-        cmd.env("HERMES_HOME", home);
+    if let Some(home) = rabbit_home_override {
+        cmd.env("RABBIT_HOME", home);
     }
 
     cmd.stdin(Stdio::null())
@@ -366,8 +366,8 @@ pub async fn run_script(
     })
 }
 
-fn stable_script_cwd<'a>(script_path: &'a Path, hermes_home_override: Option<&'a str>) -> Option<&'a Path> {
-    if let Some(home) = hermes_home_override {
+fn stable_script_cwd<'a>(script_path: &'a Path, rabbit_home_override: Option<&'a str>) -> Option<&'a Path> {
+    if let Some(home) = rabbit_home_override {
         let path = Path::new(home);
         if path.is_dir() {
             return Some(path);
@@ -551,7 +551,7 @@ info line
     }
 
     #[test]
-    fn stable_script_cwd_prefers_existing_hermes_home() {
+    fn stable_script_cwd_prefers_existing_rabbit_home() {
         let script = Path::new("/tmp/install.sh");
         let cwd = stable_script_cwd(script, Some("/"));
         assert_eq!(cwd, Some(Path::new("/")));
@@ -744,7 +744,7 @@ info line
     /// A chatty child must stream at pipe speed, not at one buffer per tick.
     /// The PowerShell port of this pump regressed exactly here: idling after
     /// every chunk it *did* read metered the drain and backpressured the running
-    /// child. `hermes update` is this shape -- the Electron build alone is
+    /// child. `rabbit update` is this shape -- the Electron build alone is
     /// megabytes.
     #[cfg(unix)]
     #[tokio::test]

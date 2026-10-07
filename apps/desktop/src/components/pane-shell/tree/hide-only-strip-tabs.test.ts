@@ -28,11 +28,11 @@ function registerPane(id: string, data: Record<string, unknown>) {
 /** The SESSIONS | BOTS shape: both hide-only chrome tabs stacked in one zone. */
 function sessionsBotsTree() {
   registerPane('sessions', { placement: 'left', hideOnly: true })
-  registerPane('hermes-bots:pane', { placement: 'left', hideOnly: true })
+  registerPane('rabbit-bots:pane', { placement: 'left', hideOnly: true })
   registerPane('workspace', { placement: 'main', uncloseable: true })
   $layoutTree.set(
     split('row', [
-      group(['sessions', 'hermes-bots:pane'], { active: 'sessions', id: 'g-side' }),
+      group(['sessions', 'rabbit-bots:pane'], { active: 'sessions', id: 'g-side' }),
       group(['workspace'], { active: 'workspace', id: 'g-main' })
     ])
   )
@@ -52,35 +52,35 @@ afterEach(() => {
 describe('hide-only strip tabs', () => {
   it('labels the zone menu rows from the pane string localizer, not the register-time title', () => {
     registerPane('sessions', { placement: 'left', hideOnly: true, tabTitleText: () => 'Сеансы' })
-    registerPane('hermes-bots:pane', { placement: 'left', hideOnly: true })
+    registerPane('rabbit-bots:pane', { placement: 'left', hideOnly: true })
     registerPane('workspace', { placement: 'main', uncloseable: true })
     $layoutTree.set(
       split('row', [
-        group(['sessions', 'hermes-bots:pane'], { active: 'sessions', id: 'g-side' }),
+        group(['sessions', 'rabbit-bots:pane'], { active: 'sessions', id: 'g-side' }),
         group(['workspace'], { active: 'workspace', id: 'g-main' })
       ])
     )
 
-    expect(hideOnlyZoneTabs('g-side').map(tab => tab.title)).toEqual(['Сеансы', 'hermes-bots:pane'])
+    expect(hideOnlyZoneTabs('g-side').map(tab => tab.title)).toEqual(['Сеансы', 'rabbit-bots:pane'])
   })
 
   it('hides and shows a chrome tab, keeping the pane in the tree', () => {
     sessionsBotsTree()
 
-    expect(setStripTabHidden('hermes-bots:pane', true)).toBe(true)
-    expect($hiddenTreePanes.get()).toContain('hermes-bots:pane')
-    expect($hiddenStripTabs.get()).toContain('hermes-bots:pane')
+    expect(setStripTabHidden('rabbit-bots:pane', true)).toBe(true)
+    expect($hiddenTreePanes.get()).toContain('rabbit-bots:pane')
+    expect($hiddenStripTabs.get()).toContain('rabbit-bots:pane')
     // Hidden, not dismissed: the pane stays in the layout tree.
-    expect(allPaneIds($layoutTree.get()!)).toContain('hermes-bots:pane')
+    expect(allPaneIds($layoutTree.get()!)).toContain('rabbit-bots:pane')
 
-    expect(setStripTabHidden('hermes-bots:pane', false)).toBe(true)
-    expect($hiddenTreePanes.get()).not.toContain('hermes-bots:pane')
-    expect($hiddenStripTabs.get()).not.toContain('hermes-bots:pane')
+    expect(setStripTabHidden('rabbit-bots:pane', false)).toBe(true)
+    expect($hiddenTreePanes.get()).not.toContain('rabbit-bots:pane')
+    expect($hiddenStripTabs.get()).not.toContain('rabbit-bots:pane')
   })
 
   it('refuses to hide the zone last visible tab', () => {
     sessionsBotsTree()
-    setStripTabHidden('hermes-bots:pane', true)
+    setStripTabHidden('rabbit-bots:pane', true)
 
     // Sessions is now the only visible tab in the zone — the hide is refused
     // and the user is told, so the zone can never become an empty dead strip.
@@ -91,36 +91,36 @@ describe('hide-only strip tabs', () => {
 
   it('persists hides and clears them on reveal', () => {
     sessionsBotsTree()
-    setStripTabHidden('hermes-bots:pane', true)
+    setStripTabHidden('rabbit-bots:pane', true)
 
-    const persisted = JSON.parse(window.localStorage.getItem('hermes.desktop.hiddenStripTabs.v1') ?? '[]')
+    const persisted = JSON.parse(window.localStorage.getItem('rabbit.desktop.hiddenStripTabs.v1') ?? '[]')
 
-    expect(persisted).toContain('hermes-bots:pane')
+    expect(persisted).toContain('rabbit-bots:pane')
 
     // Reveal intent (⌘K toggle on, a programmatic reveal) beats the hide —
     // including the persisted record, so the tab can't pop back hidden on the
     // next launch while visibly on screen now.
-    revealTreePane('hermes-bots:pane')
-    expect($hiddenTreePanes.get()).not.toContain('hermes-bots:pane')
-    expect(window.localStorage.getItem('hermes.desktop.hiddenStripTabs.v1')).toBeNull()
+    revealTreePane('rabbit-bots:pane')
+    expect($hiddenTreePanes.get()).not.toContain('rabbit-bots:pane')
+    expect(window.localStorage.getItem('rabbit.desktop.hiddenStripTabs.v1')).toBeNull()
   })
 
   it('lists the zone hide-only tabs with live hidden state for the menu', () => {
     sessionsBotsTree()
-    setStripTabHidden('hermes-bots:pane', true)
+    setStripTabHidden('rabbit-bots:pane', true)
 
     expect(hideOnlyZoneTabs('g-side')).toEqual([
       { hidden: false, id: 'sessions', title: 'sessions' },
-      { hidden: true, id: 'hermes-bots:pane', title: 'hermes-bots:pane' }
+      { hidden: true, id: 'rabbit-bots:pane', title: 'rabbit-bots:pane' }
     ])
     expect(hideOnlyZoneTabs('g-main')).toEqual([])
   })
 
   it('excludes hide-only tabs from every close verb', () => {
     registerPane('sessions', { placement: 'left', hideOnly: true })
-    registerPane('hermes-bots:pane', { placement: 'left', hideOnly: true })
+    registerPane('rabbit-bots:pane', { placement: 'left', hideOnly: true })
     registerPane('session-tile:x', { placement: 'main' })
-    $layoutTree.set(group(['sessions', 'hermes-bots:pane', 'session-tile:x'], { active: 'sessions', id: 'g-mixed' }))
+    $layoutTree.set(group(['sessions', 'rabbit-bots:pane', 'session-tile:x'], { active: 'sessions', id: 'g-mixed' }))
 
     expect(isHideOnlyPane('sessions')).toBe(true)
     // Close-others measured from the tile must not sweep standing chrome.
@@ -128,7 +128,7 @@ describe('hide-only strip tabs', () => {
     // Close-all leaves both chrome tabs in the tree.
     closeAllTreeTabs('sessions')
     expect(allPaneIds($layoutTree.get()!)).toContain('sessions')
-    expect(allPaneIds($layoutTree.get()!)).toContain('hermes-bots:pane')
+    expect(allPaneIds($layoutTree.get()!)).toContain('rabbit-bots:pane')
     expect(allPaneIds($layoutTree.get()!)).not.toContain('session-tile:x')
   })
 })

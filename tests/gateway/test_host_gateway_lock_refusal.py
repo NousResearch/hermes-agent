@@ -10,12 +10,12 @@ import sys
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 @pytest.fixture
 def host_lock_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     from gateway import host_rendezvous as hr
     hr._lock_handles.clear()
     yield tmp_path
@@ -43,9 +43,9 @@ def test_second_host_gateway_is_refused_with_75_naming_the_owner_and_the_migrate
     from gateway import host_rendezvous as hr
     from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, GATEWAY_SERVICE_RESTART_EXIT_CODE
     from gateway.run import _claim_host_gateway_role
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from rabbit_cli.gateway_migrate import MIGRATE_COMMAND
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_rabbit_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
     assert owner is not None
     handle = _hold_host_lock_from_another_description(hr)
@@ -73,7 +73,7 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
     from gateway import host_rendezvous as hr
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(get_hermes_home()))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(get_rabbit_home()))
     handle = _hold_host_lock_from_another_description(hr)
     try:
         _claim_host_gateway_role(force=True)  # no SystemExit
@@ -106,7 +106,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     from gateway import host_rendezvous as hr
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_rabbit_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
     assert owner is not None
     # The owner answers the rescan the way a STANDALONE gateway does: "I do not multiplex."
@@ -127,7 +127,7 @@ def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinn
     finally:
         handle.close()
 
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from rabbit_cli.gateway_migrate import MIGRATE_COMMAND
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "standalone gateway owns this host" in logged
     assert MIGRATE_COMMAND in logged, "the bounded outcome must name the command that converges"
@@ -141,7 +141,7 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
     from gateway.run import _claim_host_gateway_role
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_hermes_home()))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(get_rabbit_home()))
     owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
     assert owner is not None
     # Another process holds the record (our own pid would short-circuit _owner_is_standalone before
@@ -178,7 +178,7 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
         return HostAttachDecision(START, "")
 
     monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
-    monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
+    monkeypatch.setattr("rabbit_cli.profiles.profile_is_standalone", lambda home: True)
     monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
     handle = _hold_host_lock_from_another_description(hr)
     try:
@@ -193,7 +193,7 @@ def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
 async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_loses_the_lock(
     host_lock_dir, tmp_path, monkeypatch,
 ):
-    """Every unit Hermes generates (launchd, systemd, s6) runs ``gateway run --replace``. When the
+    """Every unit Rabbit generates (launchd, systemd, s6) runs ``gateway run --replace``. When the
     attach check saw no owner yet (the record lands a moment after the owner's claim) nothing was
     replaced, and the lock is the only arbiter of the race. Reading ``--replace`` as ``--force``
     there started a second gateway beside the multiplexer, and the two fought for the same bot
@@ -206,7 +206,7 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
     from gateway.run import start_gateway
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
 
     class _RunnerMustNotStart:
@@ -223,15 +223,15 @@ async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_los
     monkeypatch.setattr("gateway.run._host_attach_or_none", AsyncMock(return_value=None))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("rabbit_logging.setup_logging", lambda rabbit_home, mode: tmp_path)
+    monkeypatch.setattr("rabbit_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotStart)
     # The lock holder is a multiplexer: the standalone start-beside carve-out must not rescue a
     # --replace unit. Patched where _claim_host_gateway_role reads it; the request_serve_profile
     # patch this used to carry was unreachable (_owner_is_standalone short-circuits on our own pid).
     monkeypatch.setattr("gateway.run._owner_is_standalone", lambda: False)
 
-    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_hermes_home()))
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(get_rabbit_home()))
     handle = _hold_host_lock_from_another_description(hr)
     try:
         with pytest.raises(SystemExit) as exc:

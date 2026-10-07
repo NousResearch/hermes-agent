@@ -1,6 +1,6 @@
 // Spoken stop-word detection for the voice conversation loop.
 //
-// When someone is in a hands-free "Hey Hermes" voice chat, the natural way to
+// When someone is in a hands-free "Hey Rabbit" voice chat, the natural way to
 // end it is to SAY "stop" — not reach for the mouse. Without this, a spoken
 // "stop" is just transcribed and sent to the agent as a normal turn, so the
 // conversation never ends (the reported bug). This matcher recognises a short
@@ -8,7 +8,7 @@
 // instead of submitting it.
 //
 // Deliberately conservative: it only fires when the WHOLE utterance is a stop
-// phrase (optionally addressed to Hermes), so a real turn that merely contains
+// phrase (optionally addressed to Rabbit), so a real turn that merely contains
 // the word "stop" — e.g. "stop the docker container" or "how do I stop a
 // running process" — is never swallowed.
 //
@@ -40,9 +40,9 @@ const STOP_PHRASES: readonly string[] = [
   'cancel'
 ]
 
-// Optional address prefixes so "hermes stop" / "ok stop" / "hey hermes, stop"
+// Optional address prefixes so "rabbit stop" / "ok stop" / "hey rabbit, stop"
 // still count. Stripped before matching the core phrase.
-const ADDRESS_PREFIXES: readonly string[] = ['hey hermes', 'hey hermes,', 'hermes', 'hermes,', 'ok', 'okay', 'hey']
+const ADDRESS_PREFIXES: readonly string[] = ['hey rabbit', 'hey rabbit,', 'rabbit', 'rabbit,', 'ok', 'okay', 'hey']
 
 // Normalise: Unicode-compose (so an NFD "отбой" from STT equals the NFC phrase
 // in config.yaml), lowercase, turn punctuation from ANY script into spaces
@@ -61,7 +61,7 @@ function normalize(text: string): string {
 function stripAddress(text: string): string {
   for (const prefix of ADDRESS_PREFIXES) {
     if (text === prefix) {
-      // Bare address ("hermes") is not a stop command on its own.
+      // Bare address ("rabbit") is not a stop command on its own.
       continue
     }
 
@@ -89,7 +89,7 @@ function phrasesForConfig(config: VoiceStopPhraseConfig): readonly string[] | nu
 
 /**
  * True when the entire spoken utterance is a stop command (optionally addressed
- * to Hermes). Returns false for anything that merely contains "stop" as part of
+ * to Rabbit). Returns false for anything that merely contains "stop" as part of
  * a longer, substantive request.
  *
  * Pass `config` in tests; production reads `$voiceStopPhraseConfig`.

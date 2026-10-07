@@ -17,17 +17,17 @@ import pytest
 
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
-    """Isolated HERMES_HOME with a running task; returns the task id."""
-    home = tmp_path / ".hermes"
+    """Isolated RABBIT_HOME with a running task; returns the task id."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PROFILE", "test-worker")
-    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_PROFILE", "test-worker")
+    monkeypatch.delenv("RABBIT_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kbc.connect()
@@ -37,8 +37,8 @@ def worker_env(monkeypatch, tmp_path):
         run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", tid)
+    monkeypatch.setenv("RABBIT_KANBAN_RUN_ID", str(run_id))
     return tid
 
 
@@ -49,8 +49,8 @@ def worker_env(monkeypatch, tmp_path):
 def test_kanban_comment_body_scrubbed_github_pat(worker_env):
     """ghp_ PAT in comment body must be masked before DB write."""
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     secret = "ghp_" + "A" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
     conn = kbc.connect()
@@ -67,8 +67,8 @@ def test_kanban_comment_body_scrubbed_github_pat(worker_env):
 def test_kanban_block_reason_scrubbed_jwt(worker_env):
     """JWT in block reason must be masked before DB write."""
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     # Minimal valid-ish JWT (header.payload.sig)
     jwt = (
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
@@ -95,8 +95,8 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
 def test_kanban_comment_no_secret_passthrough(worker_env):
     """Plain text without credential patterns must pass through unchanged."""
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     plain = "hello from the pipeline — no secrets here"
     kt._handle_comment({"task_id": worker_env, "body": plain})
     conn = kbc.connect()
@@ -109,15 +109,15 @@ def test_kanban_comment_no_secret_passthrough(worker_env):
 
 
 # ---------------------------------------------------------------------------
-# Negative test — force=True bypasses HERMES_REDACT_SECRETS=false
+# Negative test — force=True bypasses RABBIT_REDACT_SECRETS=false
 # ---------------------------------------------------------------------------
 
 def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch):
-    """force=True must fire even when HERMES_REDACT_SECRETS=false is set."""
-    monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
+    """force=True must fire even when RABBIT_REDACT_SECRETS=false is set."""
+    monkeypatch.setenv("RABBIT_REDACT_SECRETS", "false")
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     secret = "ghp_" + "C" * 40
     kt._handle_comment({"task_id": worker_env, "body": f"token: {secret}"})
     conn = kbc.connect()
@@ -136,8 +136,8 @@ def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch)
 def test_kanban_complete_result_field_scrubbed(worker_env):
     """Legacy result field must be scrubbed just like summary."""
     from tools import kanban_tools as kt
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
     secret = "sk-" + "D" * 48
     kt._handle_complete({"result": f"finished with key={secret}"})
     conn = kbc.connect()

@@ -14,7 +14,7 @@ description: "基于 PyTorch 的高层框架，提供 Trainer 类、自动分布
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/pytorch-lightning` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/pytorch-lightning` 安装 |
 | 路径 | `optional-skills/mlops/pytorch-lightning` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "基于 PyTorch 的高层框架，提供 Trainer 类、自动分布
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # PyTorch Lightning - 高层训练框架
@@ -334,11 +334,11 @@ trainer = L.Trainer(accelerator='gpu', devices=1)
 
 ## 进阶主题
 
-**回调**：参见 [references/callbacks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/pytorch-lightning/references/callbacks.md)，了解 EarlyStopping、ModelCheckpoint、自定义回调及回调钩子（hook）。
+**回调**：参见 [references/callbacks.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/pytorch-lightning/references/callbacks.md)，了解 EarlyStopping、ModelCheckpoint、自定义回调及回调钩子（hook）。
 
-**分布式策略**：参见 [references/distributed.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/pytorch-lightning/references/distributed.md)，了解 DDP、FSDP、DeepSpeed ZeRO 集成及多节点配置。
+**分布式策略**：参见 [references/distributed.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/pytorch-lightning/references/distributed.md)，了解 DDP、FSDP、DeepSpeed ZeRO 集成及多节点配置。
 
-**超参数调优**：参见 [references/hyperparameter-tuning.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/pytorch-lightning/references/hyperparameter-tuning.md)，了解与 Optuna、Ray Tune 及 WandB sweeps 的集成。
+**超参数调优**：参见 [references/hyperparameter-tuning.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/pytorch-lightning/references/hyperparameter-tuning.md)，了解与 Optuna、Ray Tune 及 WandB sweeps 的集成。
 
 ## 硬件要求
 

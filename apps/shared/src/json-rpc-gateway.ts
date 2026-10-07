@@ -53,7 +53,7 @@ const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.rea
 // guard open; generous enough for a 512-frame ring to drain.
 const REPLAY_REQUEST_TIMEOUT_MS = 10_000
 // A reconnect after sleep/wake must not hang forever in 'connecting' (which
-// keeps the composer disabled and stuck on "Starting Hermes..."). If the open
+// keeps the composer disabled and stuck on "Starting Rabbit..."). If the open
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 

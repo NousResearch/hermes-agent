@@ -202,7 +202,7 @@ def test_planned_stop_marker_targets_self_probe_is_non_destructive(tmp_path, mon
 
 
 def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, monkeypatch):
-    """`hermes gateway stop` writes the marker, THEN signals. When the watcher fires in between and
+    """`rabbit gateway stop` writes the marker, THEN signals. When the watcher fires in between and
     consumes the marker, the trailing SIGTERM must not read as an external kill (exit 1 → a
     Restart=on-failure supervisor revives the gateway the operator stopped). A bare SIGTERM with no
     planned stop before it is still an external kill."""

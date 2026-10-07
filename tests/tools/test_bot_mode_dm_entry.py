@@ -1,14 +1,14 @@
-"""The ``bot_mode_dm.py`` runner entry boots Hermes' dependency environment itself.
+"""The ``bot_mode_dm.py`` runner entry boots Rabbit' dependency environment itself.
 
 ``message_agent`` spawns ``<sys.executable> tools/bot_mode_dm.py --run-delivery …`` and the relay
 spawns ``… --wait-reply …`` (``bot_relay.waiter_command``). Under a PM-managed install
 ``sys.executable`` is the bare store interpreter: dependencies are activated in-process at boot,
-and the terminal backend strips the Hermes-owned ``PYTHONPATH``, so a runner that does not boot
+and the terminal backend strips the Rabbit-owned ``PYTHONPATH``, so a runner that does not boot
 like every other entry point dies on its first third-party import. Live, every local Bot Chat DM
 came back ``Live admission outcome unknown: No module named 'ruamel'. Do not resend.``
 
 Each test launches the real script under ``-I -S`` (no site-packages, no ``PYTHON*`` env), with a
-PM-committed dependency record in a temp ``HERMES_HOME`` as the only way to reach the packages.
+PM-committed dependency record in a temp ``RABBIT_HOME`` as the only way to reach the packages.
 """
 
 import json
@@ -33,14 +33,14 @@ BARE = [sys.executable, "-I", "-S"]
 
 @pytest.fixture
 def committed_home(tmp_path, monkeypatch):
-    """A temp ``HERMES_HOME`` whose install state commits a dependency generation for REPO.
+    """A temp ``RABBIT_HOME`` whose install state commits a dependency generation for REPO.
 
     The generation's site-packages carries a ``.pth`` naming this interpreter's own package
     directories, so activating it (and only activating it) makes the real dependencies importable.
     """
-    home = tmp_path / "hermes-home"
+    home = tmp_path / "rabbit-home"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     venv = install_state_dir(REPO) / "environments" / "gen" / "venv"
     venv.mkdir(parents=True)
     (venv / "pyvenv.cfg").write_text(
@@ -48,16 +48,16 @@ def committed_home(tmp_path, monkeypatch):
     packages = site_packages(venv)
     packages.mkdir(parents=True)
     dirs = [p for p in sys.path if p and Path(p).is_dir() and Path(p).resolve() != REPO]
-    (packages / "hermes-test-deps.pth").write_text("\n".join(dirs) + "\n", encoding="utf-8")
+    (packages / "rabbit-test-deps.pth").write_text("\n".join(dirs) + "\n", encoding="utf-8")
     return home, _commit(home, venv)
 
 
 @pytest.fixture
 def uncommittable_home(tmp_path, monkeypatch):
-    """A temp ``HERMES_HOME`` whose committed generation is gone, so activation cannot succeed."""
-    home = tmp_path / "hermes-home"
+    """A temp ``RABBIT_HOME`` whose committed generation is gone, so activation cannot succeed."""
+    home = tmp_path / "rabbit-home"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     install_state_dir(REPO).mkdir(parents=True)
     return home, _commit(home, install_state_dir(REPO) / "environments" / "missing" / "venv")
 
@@ -66,7 +66,7 @@ def _commit(home, venv):
     runtime_facts_path(REPO).write_text(
         json.dumps({"packages": {"venv": {"environment": str(venv)}}}), encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
-    env["HERMES_HOME"] = str(home)
+    env["RABBIT_HOME"] = str(home)
     return env
 
 
@@ -76,7 +76,7 @@ def _run(argv, env):
 
 
 def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, committed_home):
-    """Live admission (``_admit_live_dm``) imports Hermes' third-party graph. Launched bare, the
+    """Live admission (``_admit_live_dm``) imports Rabbit' third-party graph. Launched bare, the
     runner must activate the committed environment, find no live owner, and hand the DM to the
     transport, which consumes the file — never report an ``ambiguous`` import failure."""
     _home, env = committed_home
@@ -98,7 +98,7 @@ def test_delivery_runner_admits_through_dependencies_it_activates(tmp_path, comm
 
 def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, uncommittable_home):
     """When the committed environment cannot be activated, the runner exits with PM's
-    ``hermes pm repair`` remedy before touching the DM, instead of an ambiguous
+    ``rabbit pm repair`` remedy before touching the DM, instead of an ambiguous
     ``No module named …`` outcome the sender is told not to resend."""
     _home, env = uncommittable_home
     dm_file = tmp_path / "dm.txt"
@@ -108,7 +108,7 @@ def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, 
                    sys.executable, "-c", "pass"], env)
 
     assert result.returncode == 1, result
-    assert "hermes pm repair" in result.stderr
+    assert "rabbit pm repair" in result.stderr
     assert "No module named" not in result.stdout + result.stderr
     assert result.stdout == ""  # nothing was handed over, so no "do not resend" outcome
     assert dm_file.read_text(encoding="utf-8") == "hello teammate"
@@ -128,7 +128,7 @@ def test_delivery_runner_that_cannot_activate_after_live_admission_stays_ambiguo
                    "--profile-home", str(tmp_path), sys.executable, "-c", "pass"], env)
 
     assert result.returncode == 1, result
-    assert "hermes pm repair" in result.stderr
+    assert "rabbit pm repair" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "ambiguous"
     assert payload["delivery_id"] == _dm_delivery_id(str(dm_file))

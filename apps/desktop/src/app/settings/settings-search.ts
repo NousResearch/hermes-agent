@@ -1,6 +1,6 @@
 import type { IconComponent } from '@/lib/icons'
 import { normalize } from '@/lib/text'
-import type { ConfigFieldSchema, EnvVarInfo, HermesConfigRecord } from '@/types/hermes'
+import type { ConfigFieldSchema, EnvVarInfo, RabbitConfigRecord } from '@/types/rabbit'
 
 import { FIELD_LABELS, SECTIONS } from './constants'
 import { credentialRowLabel } from './credential-key-ui'
@@ -72,7 +72,7 @@ function configFieldDescription(key: string, field: ConfigFieldSchema, copy: Con
 
 export function buildConfigSearchEntries(
   schema: Record<string, ConfigFieldSchema> | null | undefined,
-  config: HermesConfigRecord | null | undefined,
+  config: RabbitConfigRecord | null | undefined,
   copy: ConfigSearchCopy,
   sections: DesktopConfigSection[] = SECTIONS
 ): SettingsSearchEntry[] {

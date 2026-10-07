@@ -15,7 +15,7 @@ Pins:
 
 from datetime import timedelta
 
-from cron.jobs import ONESHOT_GRACE_SECONDS, _hermes_now
+from cron.jobs import ONESHOT_GRACE_SECONDS, _rabbit_now
 from cron.scheduler_provider import fire_overdue_jobs
 
 
@@ -66,14 +66,14 @@ def _run_backstop(monkeypatch, jobs):
 
 class TestMisfireBackstopOneShotGrace:
     def test_stale_oneshot_beyond_grace_is_not_fired(self, monkeypatch):
-        now = _hermes_now()
+        now = _rabbit_now()
         stale = _job("stale-once", "once", now - timedelta(hours=2))
         provider, fired = _run_backstop(monkeypatch, [stale])
         assert fired == 0
         assert provider.claimed == []
 
     def test_overdue_recurring_job_still_fires(self, monkeypatch):
-        now = _hermes_now()
+        now = _rabbit_now()
         overdue = _job("overdue-cron", "cron", now - timedelta(hours=2))
         provider, fired = _run_backstop(monkeypatch, [overdue])
         assert provider.claimed == ["overdue-cron"]
@@ -84,7 +84,7 @@ class TestMisfireBackstopOneShotGrace:
         # misfire grace patched to ~0 so a 60s-late one-shot is "overdue" for
         # the backstop but still inside ONESHOT_GRACE_SECONDS -> must fire.
         assert ONESHOT_GRACE_SECONDS > 60
-        now = _hermes_now()
+        now = _rabbit_now()
         recent = _job("recent-once", "once", now - timedelta(seconds=60))
         provider = _RecordingProvider()
         monkeypatch.setattr("cron.jobs.load_jobs", lambda: [recent])

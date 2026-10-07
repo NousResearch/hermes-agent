@@ -74,26 +74,26 @@ test.skipIf(process.platform === 'win32')(
 
     const env: NodeJS.ProcessEnv = Object.fromEntries(
       Object.entries(process.env).filter(
-        ([key]: [string, string | undefined]): boolean => !/^(HERMES_|PYTHON|UV_|VIRTUAL_ENV|XDG_)/.test(key)
+        ([key]: [string, string | undefined]): boolean => !/^(RABBIT_|PYTHON|UV_|VIRTUAL_ENV|XDG_)/.test(key)
       )
     )
 
     Object.assign(env, {
       HOME: home,
       USERPROFILE: home,
-      HERMES_HOME: path.join(home, '.hermes'),
-      HERMES_RUNTIME_DIR: path.join(temp, 'tools'),
-      HERMES_DISABLE_LAZY_INSTALLS: '1',
+      RABBIT_HOME: path.join(home, '.rabbit'),
+      RABBIT_RUNTIME_DIR: path.join(temp, 'tools'),
+      RABBIT_DISABLE_LAZY_INSTALLS: '1',
       XDG_CONFIG_HOME: path.join(temp, 'config'),
       XDG_CONFIG_DIRS: path.join(temp, 'config'),
       PYTHONDONTWRITEBYTECODE: '1',
       UV_CACHE_DIR: path.join(temp, 'cache'),
       UV_OFFLINE: '1'
     })
-    const python: string = process.env.HERMES_PYTHON || 'python3'
+    const python: string = process.env.RABBIT_PYTHON || 'python3'
     const fixtureScript: string = path.join(import.meta.dirname, 'fixtures', 'source-backend.py')
     const token: string = 'desktop-pm-contract'
-    env.HERMES_DASHBOARD_SESSION_TOKEN = token
+    env.RABBIT_DASHBOARD_SESSION_TOKEN = token
     vi.stubEnv('HOME', home)
 
     try {
@@ -134,7 +134,7 @@ test.skipIf(process.platform === 'win32')(
         }
 
         const backend: SourceBackend | null = await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), {
-          hermesHome: env.HERMES_HOME,
+          rabbitHome: env.RABBIT_HOME,
           env
         })
 
@@ -161,7 +161,7 @@ test.skipIf(process.platform === 'win32')(
           const port: number = (await waitForDashboardPort(child, 45_000)) as number
 
           const response: Response = await fetch(`http://127.0.0.1:${port}/api/health`, {
-            headers: { 'X-Hermes-Session-Token': token }
+            headers: { 'X-Rabbit-Session-Token': token }
           })
 
           assert.equal(response.status, 200, output)
@@ -190,7 +190,7 @@ test.skipIf(process.platform === 'win32')(
               encoding: 'utf8',
               timeout: 15_000
             }),
-            /Hermes/
+            /Rabbit/
           )
           assert.equal(fs.existsSync(poison), false)
         }
@@ -198,7 +198,7 @@ test.skipIf(process.platform === 'win32')(
 
       fs.unlinkSync(fixture.launcher)
       assert.equal(
-        await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), { hermesHome: env.HERMES_HOME, env }),
+        await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), { rabbitHome: env.RABBIT_HOME, env }),
         null,
         'a missing PM command must not fall back to the stale venv'
       )

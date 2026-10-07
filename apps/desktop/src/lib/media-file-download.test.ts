@@ -24,7 +24,7 @@ const lastToast = () => $notifications.get()[0]
 
 describe('captured gateway file download', () => {
   it('reports an unavailable desktop bridge', async () => {
-    vi.stubGlobal('hermesDesktop', {})
+    vi.stubGlobal('rabbitDesktop', {})
 
     await expect(captureGatewayFileDownload()('/persisted/file.md', 'file.md')).resolves.toBeUndefined()
 
@@ -34,7 +34,7 @@ describe('captured gateway file download', () => {
 
   it('rejects an absent stored path before invoking the bridge', async () => {
     const saveGatewayFile = vi.fn()
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile })
 
     await captureGatewayFileDownload()('  ', 'file.md')
 
@@ -44,7 +44,7 @@ describe('captured gateway file download', () => {
 
   it('confirms a completed save and stays quiet on cancel', async () => {
     const saveGatewayFile = vi.fn().mockResolvedValueOnce({ path: '/Users/me/Downloads/file.md', saved: true })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile })
     const download = captureGatewayFileDownload()
 
     await download('/persisted/file.md', 'file.md')
@@ -58,7 +58,7 @@ describe('captured gateway file download', () => {
 
   it('preserves legacy primary routing instead of inventing a default profile', async () => {
     const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile })
     const download = captureGatewayFileDownload()
     setApiRequestConnection('remote')
     setApiRequestProfile('work')
@@ -70,7 +70,7 @@ describe('captured gateway file download', () => {
 
   it('keeps explicit local ownership even after switching to a remote', async () => {
     const saveGatewayFile = vi.fn().mockResolvedValue({ canceled: true, saved: false })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile })
     setApiRequestConnection('local')
     setApiRequestProfile('personal')
     const download = captureGatewayFileDownload()

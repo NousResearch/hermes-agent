@@ -59,7 +59,7 @@ def test_stage2_discovers_chromium_binary(
         container_name,
         "python3", "-c",
         "import json; from pathlib import Path; "
-        "root = Path('/opt/hermes/tools'); "
+        "root = Path('/opt/rabbit/tools'); "
         "packages = json.loads((root / 'facts.json').read_text())['packages']; "
         "print(json.dumps({'packages': list(packages), 'shell_entries': "
         "[p.name for p in root.glob('*headless*shell*')]}))",

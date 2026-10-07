@@ -25,9 +25,9 @@ method = _registry.method
 def _relay_root() -> Path:
     """Install root shared by every profile (relay state is install-wide). Same formula as the
     writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
-    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
-    from tools.bot_mode_probe import _default_home, _hermes_root
-    return _hermes_root(Path(_default_home()))
+    every RABBIT_HOME, including non-``profiles/`` subdirs of ``~/.rabbit``."""
+    from tools.bot_mode_probe import _default_home, _rabbit_root
+    return _rabbit_root(Path(_default_home()))
 
 
 def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
@@ -37,11 +37,11 @@ def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
     child that exits under the cap is booked from its streams as before; one still lingering at the
     cap is booked from its turn report — its answer and outcome, never a timeout — and left to finish
     the linger that protects its own handoff. Only a turn that never ends is a timeout."""
-    from hermes_cli.quiet_single_query import run_reported_turn
+    from rabbit_cli.quiet_single_query import run_reported_turn
     from tools.bot_relay import local_delivery_command
     report = f"{tmp}.turn.json"
     try:
-        # The relay pins UTF-8 on every platform (#93590): its child is the bootstrapped hermes_cli
+        # The relay pins UTF-8 on every platform (#93590): its child is the bootstrapped rabbit_cli
         # and its answer is relayed verbatim, unlike the cron lane's locale-decoded tails.
         return run_reported_turn(
             local_delivery_command(profile, tmp), env=os.environ if env is None else env,
@@ -91,7 +91,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
       _failure_reason=delivery_failure_reason) -> dict:
     """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
-    GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
+    GATEWAY via the one-turn ``rabbit -p <profile> chat -c "Bot Chat"`` transport local DMs use →
     ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
     import tempfile
     profile = str(params.get("profile") or "").strip()
@@ -106,10 +106,10 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         root = _root()
         from tools.bot_mode_probe import _roster
         known = {name for name, _ in _roster(root)}
-        resolved = "default" if profile.lower() == "hermes" else profile
+        resolved = "default" if profile.lower() == "rabbit" else profile
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
-        # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
+        # The sender stamped itself with its bare @handle; a relayed "@rabbit" is ANOTHER machine's
         # default, so re-stamp it with the form this gateway can reply to (#103731).
         from tools.bot_mode_probe import local_taken_forms
         from tools.bot_relay import qualify_sender_stamp, read_remote_roster
@@ -136,7 +136,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
             # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
             # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
-            # hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
+            # rabbit_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
             # for exactly the auth-gated gateways it serves; only ``?internal=`` callers are
             # identity-exempt and the Desktop cannot present one. Nor is the author dropped: an
             # unattributed turn is the HUMAN's to the recipient's memory (Honcho routes it into the
@@ -159,7 +159,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         # target's answer rather than a receipt when its Bot Chat happens to be open.
         from tools.bot_live_delivery import await_delivery, deliver_to_live_owner, find_canonical_live_owner
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
-        owner_home = live_home if live_home is not None else Path(_hermes_home)
+        owner_home = live_home if live_home is not None else Path(_rabbit_home)
         owner = find_canonical_live_owner(owner_home)
         if owner is not None:
             record = deliver_to_live_owner(owner_home, owner, message, author=author)
@@ -197,7 +197,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
 
         turn_env = delivery_env(author, live_home)
 
-        fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
+        fd, tmp = tempfile.mkstemp(prefix="rabbit-relay-dm-", suffix=".txt", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(message)

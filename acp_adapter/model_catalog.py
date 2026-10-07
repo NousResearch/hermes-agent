@@ -1,4 +1,4 @@
-"""ACP model picker: deduplicated ``provider:model`` rows from the Hermes inventory + named endpoints."""
+"""ACP model picker: deduplicated ``provider:model`` rows from the Rabbit inventory + named endpoints."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ def _named_custom_provider_catalogs() -> list[tuple[str, str, list[tuple[str, st
     discovery (some endpoints have no ``/models`` route). Slugs use the ``custom:<name>`` shape
     ``parse_model_input``/``resolve_runtime_provider`` resolve, so choice ids round-trip."""
     try:
-        from hermes_cli.config import (get_compatible_custom_providers, is_provider_enabled, load_config)
-        from hermes_cli.model_switch import _declared_model_ids, _entry_models_discovered, _models_config_is_allowlist
-        from hermes_cli.model_switch_providers import _NativePickerModelList, _fetch_picker_live_models
-        from hermes_cli.model_switch_providers import _discover_flag
-        from hermes_cli.models_local import should_use_ollama_native_catalog
-        from hermes_cli.providers import custom_provider_slug
+        from rabbit_cli.config import (get_compatible_custom_providers, is_provider_enabled, load_config)
+        from rabbit_cli.model_switch import _declared_model_ids, _entry_models_discovered, _models_config_is_allowlist
+        from rabbit_cli.model_switch_providers import _NativePickerModelList, _fetch_picker_live_models
+        from rabbit_cli.model_switch_providers import _discover_flag
+        from rabbit_cli.models_local import should_use_ollama_native_catalog
+        from rabbit_cli.providers import custom_provider_slug
     except ImportError:
         return []
 
@@ -131,7 +131,7 @@ def _choice_provider(model_id: str) -> str:
     """Provider prefix of an encoded choice id; longest configured ``custom:`` slug wins."""
     parts = model_id.split(":")
     if parts[:1] == ["custom"] and len(parts) > 1:
-        from hermes_cli.models import _configured_custom_provider_ids
+        from rabbit_cli.models import _configured_custom_provider_ids
 
         lowered = model_id.lower()
         for candidate in sorted(
@@ -238,8 +238,8 @@ class _ModelCatalog:
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
-    from hermes_cli.inventory import build_models_payload, load_picker_context
-    from hermes_cli.models import normalize_provider, provider_label
+    from rabbit_cli.inventory import build_models_payload, load_picker_context
+    from rabbit_cli.models import normalize_provider, provider_label
 
     normalized_provider = normalize_provider(provider)
     context = load_picker_context().with_overrides(

@@ -53,11 +53,11 @@ function resolveThresholds(criticalBytes?: number, highBytes?: number) {
   return { critical, high }
 }
 
-// Deferred @hermes/ink import: loading `@hermes/ink` at module top-level
+// Deferred @rabbit/ink import: loading `@rabbit/ink` at module top-level
 // pulls the full ~414KB Ink bundle (React, renderer, components, hooks) onto
 // the critical path before the Python gateway can even be spawned. That
 // serialised roughly 150ms of Node work in front of gw.start() on every
-// cold `hermes --tui` launch.
+// cold `rabbit --tui` launch.
 //
 // evictInkCaches only runs inside `tick()`, which fires on a 10s timer and
 // only when heap pressure crosses the high-water mark — by then Ink has
@@ -73,7 +73,7 @@ async function _ensureEvictInkCaches(): Promise<(level: 'all' | 'half') => unkno
     return _evictInkCaches
   }
 
-  _evictInkCachesPromise ??= import('@hermes/ink')
+  _evictInkCachesPromise ??= import('@rabbit/ink')
     .then(mod => {
       _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
 
@@ -115,7 +115,7 @@ export function startMemoryMonitor({
   // Cooldown prevents repeated auto dumps when heap oscillates around the
   // threshold (issue #21767). `dumped` alone is not enough — it clears on
   // every transition back to `normal`.
-  const cooldownRaw = process.env.HERMES_AUTO_HEAPDUMP_COOLDOWN_MS?.trim()
+  const cooldownRaw = process.env.RABBIT_AUTO_HEAPDUMP_COOLDOWN_MS?.trim()
   const cooldownParsed = cooldownRaw ? Number(cooldownRaw) : NaN
   const cooldownMs = Number.isFinite(cooldownParsed) && cooldownParsed >= 0 ? cooldownParsed : 600_000
   let lastAutoDumpAt = 0
@@ -157,7 +157,7 @@ export function startMemoryMonitor({
 
     // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
     // full on 'critical' (post-dump RSS reduction, keeps user running).
-    // Deferred import keeps `@hermes/ink` off the cold-start critical path;
+    // Deferred import keeps `@rabbit/ink` off the cold-start critical path;
     // by the time a tick fires 10s after launch the app has already loaded
     // the same module, so this resolves instantly from the ESM cache.
     try {

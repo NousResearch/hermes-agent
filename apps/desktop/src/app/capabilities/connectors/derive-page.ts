@@ -31,7 +31,7 @@ const GROUP_OF = {
 const GROUP_ORDER: readonly ConnectorGroupId[] = ['connected', 'local', 'available', 'off']
 
 export function groupIdOf(card: ConnectorCardModel): ConnectorGroupId {
-  return card.residency === 'local' && card.state !== 'available' ? 'local' : GROUP_OF[card.state]
+  return card.state !== 'available' ? 'local' : GROUP_OF[card.state]
 }
 
 function byStateThenName(a: ConnectorCardModel, b: ConnectorCardModel): number {

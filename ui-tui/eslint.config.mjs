@@ -3,7 +3,7 @@ import shared from '../eslint.config.shared.mjs'
 export default [
   ...shared,
   {
-    files: ['packages/hermes-ink/**/*.{ts,tsx}'],
+    files: ['packages/rabbit-ink/**/*.{ts,tsx}'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'off',
       'no-constant-condition': 'off',

@@ -90,22 +90,22 @@ describe('themePrelude', () => {
 describe('collectThemeBridge', () => {
   afterEach(() => {
     document.documentElement.className = ''
-    delete document.documentElement.dataset.hermesMode
+    delete document.documentElement.dataset.rabbitMode
   })
 
   // #123048: the frame's color-scheme must come from the same resolved
   // appearance as the injected tokens, not from the separate `.dark` class
   // React's useIsDark() reads — that class can still hold last render's
-  // value for a paint after applyTheme() has already updated data-hermes-mode.
-  it('reads color-scheme from data-hermes-mode, not the .dark class', () => {
-    document.documentElement.dataset.hermesMode = 'dark'
+  // value for a paint after applyTheme() has already updated data-rabbit-mode.
+  it('reads color-scheme from data-rabbit-mode, not the .dark class', () => {
+    document.documentElement.dataset.rabbitMode = 'dark'
     document.documentElement.classList.remove('dark')
 
     expect(collectThemeBridge().colorScheme).toBe('dark')
   })
 
   it('falls back to light when the mode attribute disagrees the other way', () => {
-    document.documentElement.dataset.hermesMode = 'light'
+    document.documentElement.dataset.rabbitMode = 'light'
     document.documentElement.classList.add('dark')
 
     expect(collectThemeBridge().colorScheme).toBe('light')
@@ -114,7 +114,7 @@ describe('collectThemeBridge', () => {
 
 describe('frameSizeFromMessage', () => {
   const msg = (over: Record<string, unknown> = {}) => ({
-    type: 'hermes-inline-preview-size',
+    type: 'rabbit-inline-preview-size',
     token: 'tok',
     height: 500,
     width: 300,
@@ -148,7 +148,7 @@ describe('frameSizeFromMessage', () => {
 
 describe('evaluateIntent', () => {
   const msg = (over: Record<string, unknown> = {}) => ({
-    type: 'hermes-inline-preview-intent',
+    type: 'rabbit-inline-preview-intent',
     token: 'tok',
     id: 7,
     prompt: 'get-price eth',
@@ -202,7 +202,7 @@ describe('evaluateIntent', () => {
 
   it('ignores wrong token, wrong type, and hostile shapes without a reply', () => {
     expect(evaluateIntent(msg({ token: 'stolen' }), 'tok', NOW, 0)).toBeNull()
-    expect(evaluateIntent(msg({ type: 'hermes-inline-preview-size' }), 'tok', NOW, 0)).toBeNull()
+    expect(evaluateIntent(msg({ type: 'rabbit-inline-preview-size' }), 'tok', NOW, 0)).toBeNull()
     expect(evaluateIntent(null, 'tok', NOW, 0)).toBeNull()
     expect(evaluateIntent('str', 'tok', NOW, 0)).toBeNull()
   })
@@ -215,7 +215,7 @@ describe('intentScript', () => {
     const posted: Array<Record<string, unknown>> = []
     const listeners: Record<string, Array<(e: unknown) => void>> = {}
     const parent = { postMessage: (data: Record<string, unknown>) => posted.push(data) }
-    const win: { hermes?: { maxLength: number; send: (p: unknown) => Promise<unknown> } } = {}
+    const win: { rabbit?: { maxLength: number; send: (p: unknown) => Promise<unknown> } } = {}
 
     const addEventListener = (type: string, fn: (e: unknown) => void) => {
       ;(listeners[type] ??= []).push(fn)
@@ -229,7 +229,7 @@ describe('intentScript', () => {
 
     const reply = (data: unknown, source: unknown = parent) => listeners.message?.forEach(fn => fn({ data, source }))
 
-    return { posted, reply, send: win.hermes!.send, win }
+    return { posted, reply, send: win.rabbit!.send, win }
   }
 
   it('posts the full prompt, never a truncated one', () => {
@@ -239,7 +239,7 @@ describe('intentScript', () => {
     void send(long)
 
     expect(posted).toHaveLength(1)
-    expect(posted[0]).toMatchObject({ prompt: long, token: 'tok', type: 'hermes-inline-preview-intent' })
+    expect(posted[0]).toMatchObject({ prompt: long, token: 'tok', type: 'rabbit-inline-preview-intent' })
   })
 
   it('resolves send() with the parent ack for that call', async () => {
@@ -275,6 +275,6 @@ describe('intentScript', () => {
 
     await expect(send('   ')).resolves.toEqual({ error: 'invalid', ok: false })
     expect(posted).toHaveLength(0)
-    expect(win.hermes?.maxLength).toBe(MAX_INTENT_LENGTH)
+    expect(win.rabbit?.maxLength).toBe(MAX_INTENT_LENGTH)
   })
 })

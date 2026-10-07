@@ -3,7 +3,7 @@
 An MCP server (a tiny stdio JSON-RPC process) exposes one tool whose ``inputSchema`` uses JSON
 Schema keywords that Google's ``FunctionDeclaration`` parser does not accept (``$schema``,
 ``$ref``/``$defs``, ``additionalProperties``, ``oneOf``, ``const``, list-valued ``type``, integer
-``enum``, a ``required`` entry naming no property). A real ``hermes chat -q`` turn declares it to
+``enum``, a ``required`` entry naming no property). A real ``rabbit chat -q`` turn declares it to
 the fake Google endpoint, which rejects anything Google would (HTTP 400 INVALID_ARGUMENT) and
 then drives a call to the tool so the round trip is proven end to end.
 
@@ -25,7 +25,7 @@ import pytest
 
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
-from tests.fakes.providers.gemini_native import HERMES_ENV, Call, Calls, GeminiFake, Recorded, Text, hermes_model
+from tests.fakes.providers.gemini_native import RABBIT_ENV, Call, Calls, GeminiFake, Recorded, Text, rabbit_model
 
 KNOWN: dict[str, tuple[str, str]] = {
     "ref_dropped_v1": (r"\$ref-typed parameter lost its shape on the v1 wire",
@@ -115,7 +115,7 @@ def _scenario(root: Path, schema: dict[str, Any], base_url: str | None) -> Outco
         "mcp_servers": {"hostile": {"command": sys.executable,
                                     "args": [str(server), json.dumps(tools), MCP_CANARY]}},
     }
-    home = nh.make_home(root, hermes_model(base_url), env_file=HERMES_ENV, extra_config=extra)
+    home = nh.make_home(root, rabbit_model(base_url), env_file=RABBIT_ENV, extra_config=extra)
     script = [Calls([Call(TOOL, {"query": "q1", "mode": "fast"})]), Text(DONE)]
     with GeminiFake(root / "fake", script) as fake:
         result = nh.run_chat(home, "Use the lookup tool for q1.", env=fake.child_env())

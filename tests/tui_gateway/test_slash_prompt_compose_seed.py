@@ -1,6 +1,6 @@
 """Worker-routed slash commands that queue a next-turn prompt must actually send it.
 
-The persistent slash worker runs ``HermesCLI.process_command`` headlessly. Commands
+The persistent slash worker runs ``RabbitCLI.process_command`` headlessly. Commands
 like ``/prompt``/``/compose`` (and ``/blueprint``) park the composed prompt on the
 one-shot ``_pending_agent_seed`` for the interactive REPL loop to run — but the worker
 has no REPL loop, so the seed was silently dropped: Desktop/TUI ``/prompt`` returned

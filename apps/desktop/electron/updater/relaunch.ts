@@ -1,4 +1,4 @@
-// Electron userData isolates installations that share HERMES_HOME.
+// Electron userData isolates installations that share RABBIT_HOME.
 // The marker survives a package swap and records the version that started it.
 // The separate waiter owns automatic relaunch. Cancelling an update stops
 // that waiter and removes its marker, including when startup stays manual.

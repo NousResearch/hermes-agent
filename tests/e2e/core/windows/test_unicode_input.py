@@ -2,7 +2,7 @@
 
 Three real input paths a Windows user hits:
 
-* ``hermes chat -q "<text>"`` — argv (CreateProcessW) into the oneshot turn; the reply,
+* ``rabbit chat -q "<text>"`` — argv (CreateProcessW) into the oneshot turn; the reply,
   with its own emoji, is printed back through a pipe (Windows code-page territory).
 * the TUI gateway's stdio JSON-RPC — UTF-8 frames from the Ink TUI (Node writes literal
   non-ASCII, never ``\\u`` escapes).
@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.core.windows._helpers import (
-    hermes,
-    hermes_argv,
+    rabbit,
+    rabbit_argv,
     kill_tree,
     last_user,
     make_home,
@@ -45,7 +45,7 @@ def test_chat_q_argv_non_ascii_reaches_wire_and_state_db(tmp_path: Path) -> None
     tag = nonce("ARGV")
     with FakeLLMServer([Text(f"{REPLY} {tag}")]) as srv:
         home = make_home(tmp_path, srv.base_url)
-        res = hermes(home, "chat", "-q", f"{TEXT} {tag}", "-Q")
+        res = rabbit(home, "chat", "-q", f"{TEXT} {tag}", "-Q")
         assert res.returncode == 0, res.tail()
         user = last_user(srv.main_requests()[0])
     assert f"{TEXT} {tag}" in user, f"prompt altered before the wire: {user!r}"
@@ -57,7 +57,7 @@ def test_chat_q_non_ascii_reply_printed_intact(tmp_path: Path) -> None:
     tag = nonce("REPLY")
     with FakeLLMServer([Text(f"{REPLY} {tag}")]) as srv:
         home = make_home(tmp_path, srv.base_url)
-        res = hermes(home, "chat", "-q", "Reply with the code.", "-Q")
+        res = rabbit(home, "chat", "-q", "Reply with the code.", "-Q")
     assert res.returncode == 0, res.tail()
     assert tag in res.stdout, f"reply not printed at all:\n{res.tail()}"
     assert f"{REPLY} {tag}" in res.stdout, f"reply printed with its non-ASCII mangled: {res.stdout[-500:]!r}"
@@ -127,11 +127,11 @@ def test_classic_cli_console_non_ascii_reaches_wire(tmp_path: Path) -> None:
     """Typed into the classic CLI composer through a real ConPTY: Latin-1 + CJK letters.
     Symbols (✓, emoji) typed this way never reached the composer (not echoed before Enter);
     without a harness control proving pywinpty delivers them, that loss can't be pinned on
-    Hermes, so they are left out here (#120776 is the submit-time half)."""
+    Rabbit, so they are left out here (#120776 is the submit-time half)."""
     tag = nonce("CONPTY")
     with FakeLLMServer([Text(f"ack {tag}")]) as srv:
         home = make_home(tmp_path, srv.base_url)
-        console = _Console(hermes_argv("chat"), home.project, home.env({"TERM": "xterm-256color"}))
+        console = _Console(rabbit_argv("chat"), home.project, home.env({"TERM": "xterm-256color"}))
         try:
             wait_until(lambda: console.quiet_for(3.0), 120, "the classic CLI to finish painting its prompt")
             console.proc.write(f"{BMP} {tag}")

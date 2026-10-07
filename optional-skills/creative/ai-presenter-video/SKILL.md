@@ -2,12 +2,12 @@
 name: ai-presenter-video
 description: "Make a verified AI presenter video from script + image."
 version: 1.0.0
-author: cclank (https://github.com/cclank/lanshu-create-ai-presenter-video), ported by Hermes Agent
+author: cclank (https://github.com/cclank/lanshu-create-ai-presenter-video), ported by Rabbit Agent
 license: MIT
 platforms: [linux, macos]
 required_commands: [ffmpeg, ffprobe, python3]
 metadata:
-  hermes:
+  rabbit:
     tags: [video, presenter, avatar, lipsync, tts, captions, creative]
     category: creative
     homepage: https://github.com/cclank/lanshu-create-ai-presenter-video
@@ -29,17 +29,17 @@ is actually available in the session (FAL video/image models via
 the whisper/STT tooling, ffmpeg for everything deterministic).
 
 > Ported from cclank/lanshu-create-ai-presenter-video (MIT). Upstream body
-> kept substantively verbatim in `references/`; Hermes adaptations live in
+> kept substantively verbatim in `references/`; Rabbit adaptations live in
 > this hub file. Scripts are deterministic (no network, no credentials).
 
-## Hermes adaptations (read first)
+## Rabbit adaptations (read first)
 
 - **Skill dir resolution** — upstream hardcoded its own agent's skills path.
-  In Hermes the loader expands `${HERMES_SKILL_DIR}` to this skill's installed
+  In Rabbit the loader expands `${RABBIT_SKILL_DIR}` to this skill's installed
   directory, so every command below uses that token directly:
 
   ```bash
-  SKILL_DIR="${HERMES_SKILL_DIR}"
+  SKILL_DIR="${RABBIT_SKILL_DIR}"
   ```
 
   Shell variables do not persist between tool calls — re-paste the assignment

@@ -87,7 +87,7 @@ def _category_skill_dirs(directory: Path) -> List[str]:
     Vendored/cache/progressive-disclosure paths are pruned via
     :func:`is_excluded_skill_path` so a lone ``node_modules`` or
     ``references/pkg/SKILL.md`` does not make the directory a category.
-    Shared with ``hermes_cli.skills_hub._existing_categories``.
+    Shared with ``rabbit_cli.skills_hub._existing_categories``.
     """
     return [
         entry.name for entry in directory.iterdir()
@@ -219,7 +219,7 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
-    from hermes_cli.observability.shared_metrics_disabled import record_skill_removed
+    from rabbit_cli.observability.shared_metrics_disabled import record_skill_removed
     record_skill_removed(skill_name)
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 

@@ -10,13 +10,13 @@ from pathlib import Path
 
 
 def test_persist_branch_copies_the_parent_system_prompt(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from tui_gateway import server
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     with SessionDB(home / "state.db") as db:
         db.create_session("parent", source="desktop", model="test-model")

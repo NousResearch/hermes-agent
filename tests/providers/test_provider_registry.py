@@ -79,7 +79,7 @@ def test_provider_lookups_reuse_the_home_plugin_stamp_within_its_ttl(tmp_path, m
         stamp_calls += 1
         return original_stamps(home)
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "rabbit"))
     monkeypatch.setattr(providers, "_HOME_LAYERS", {})
     monkeypatch.setattr(providers, "_plugin_dir_stamps", count_stamps)
     monkeypatch.setattr(providers, "_scan_home_layer", lambda *_: None)

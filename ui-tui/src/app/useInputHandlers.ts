@@ -1,4 +1,4 @@
-import { forceRedraw, useInput } from '@hermes/ink'
+import { forceRedraw, useInput } from '@rabbit/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
@@ -284,14 +284,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.petPicker) {
       return patchOverlayState({ petPicker: false })
-    }
-
-    if (overlay.billing) {
-      return patchOverlayState({ billing: null })
-    }
-
-    if (overlay.subscription) {
-      return patchOverlayState({ subscription: null })
     }
 
     if (overlay.skillsHub) {

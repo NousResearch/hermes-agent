@@ -333,13 +333,13 @@ class Run:
 
     def _execute(self, rep: dict[str, Any]) -> None:
         sc = self.sc
-        home, hermes_home = write_chaos_home(self.root, self.srv.base_url, **sc.cfg)
+        home, rabbit_home = write_chaos_home(self.root, self.srv.base_url, **sc.cfg)
         work = self.root / "work"
         work.mkdir()
         spec = self.root / "spec.json"
         spec.write_text(json.dumps({
             "session_id": self.session_id, "turns": [self.fault_msg, self.probe_msg]}), encoding="utf-8")
-        env = hermetic_env(home, hermes_home, self.tag)
+        env = hermetic_env(home, rabbit_home, self.tag)
         env["TERMINAL_CWD"] = str(work)
         stderr = open(self.root / "driver.stderr", "wb")
         self.proc = subprocess.Popen(
@@ -390,13 +390,13 @@ class Run:
         except subprocess.TimeoutExpired:
             rep["exit_code"] = None
         rep["orphans"] = describe_pids(wait_no_tagged(self.tag, PROCESS_REAP_S))
-        log = hermes_home / "logs" / "agent.log"
+        log = rabbit_home / "logs" / "agent.log"
         if rep["orphans"] and log.exists():
             rep["agent_log_tail"] = log.read_text(errors="replace")[-6000:]
         # Stale-kill timeline: tells a PROBE refused by the cross-turn breaker apart from a slow probe.
         rep["stale_log"] = [ln[:110] for ln in (log.read_text(errors="replace").splitlines() if log.exists() else [])
                             if "stale" in ln.lower() and ("WARNING" in ln or "ERROR" in ln)][-12:]
-        db = hermes_home / "state.db"
+        db = rabbit_home / "state.db"
         rep["persisted"] = persisted_messages(db, self.session_id) if db.exists() else None
         rep["integrity"] = integrity_ok(db) if db.exists() else "missing"
         probes = self.probe_requests()

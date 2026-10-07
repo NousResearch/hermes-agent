@@ -1,18 +1,18 @@
 """File tools keep the documented write sandbox, write denylist and read denylist under ../ and symlink spellings.
 
-Hermes documents three file-tool boundaries (website/docs/user-guide/security.md, "File write safety"):
+Rabbit documents three file-tool boundaries (website/docs/user-guide/security.md, "File write safety"):
 
-* ``HERMES_WRITE_SAFE_ROOT``: ``write_file`` / ``patch`` may only land inside the listed roots.
-* Protected paths: the Hermes-home ``.env`` / OAuth stores, ``~/.ssh`` keys and ``authorized_keys`` are
+* ``RABBIT_WRITE_SAFE_ROOT``: ``write_file`` / ``patch`` may only land inside the listed roots.
+* Protected paths: the Rabbit-home ``.env`` / OAuth stores, ``~/.ssh`` keys and ``authorized_keys`` are
   never written; ``~/.ssh/config`` is approval-gated (a ``-q`` run has no approver, so it is blocked).
-* Read denylist: ``auth.json`` / ``.env`` under the Hermes home and project-local ``.env`` files are never
+* Read denylist: ``auth.json`` / ``.env`` under the Rabbit home and project-local ``.env`` files are never
   returned by ``read_file`` / ``search_files``.
 
 There is no read confinement to a workspace (reads outside the cwd are allowed), so none is asserted.
 Each boundary is judged on the RESOLVED target, so spelling the same file through ``../``, an absolute
 path, a symlink inside the workspace, or a symlinked parent directory must get the same verdict as the
-direct spelling. Everything runs through the real agent tool path: ``hermes chat -q`` with the loopback
-model issuing the tool calls; outcomes are read on disk and in the tool results Hermes sent back.
+direct spelling. Everything runs through the real agent tool path: ``rabbit chat -q`` with the loopback
+model issuing the tool calls; outcomes are read on disk and in the tool results Rabbit sent back.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks 
 CONFINED_SCENARIOS = (
     "write_dotdot", "write_absolute", "write_symlink_file", "write_symlink_parent", "patch_symlink_file",
     "patch_dotdot", "v4a_add_symlink_parent", "v4a_add_absolute", "v4a_delete_symlink_parent")
-# Hermes quarantines an unparseable auth.json as auth.json.corrupt at startup; the copy holds the same secrets.
+# Rabbit quarantines an unparseable auth.json as auth.json.corrupt at startup; the copy holds the same secrets.
 QUARANTINE_SCENARIOS = ("read_quarantined_auth_copy", "search_quarantined_auth_copy")
 PROTECTED_SCENARIOS = (
     "env_direct_patch", "env_symlink_patch", "env_dotdot_patch", "oauth_dangling_symlink_write",
@@ -69,13 +69,13 @@ class Layout:
 
     def __post_init__(self) -> None:
         self.home, self.out = self.root / "home", self.root / "outside"
-        self.ws, self.hh = self.home / "work", self.home / ".hermes"
+        self.ws, self.hh = self.home / "work", self.home / ".rabbit"
         for d in (self.ws, self.out, self.hh, self.home / ".ssh"):
             d.mkdir(parents=True, exist_ok=True)
 
     def plant(self, path: Path, label: str, *, json_store: bool = False) -> str:
         """Write a canary file. ``json_store`` writes a well-formed auth store (a malformed auth.json is
-        quarantined by Hermes at startup, which would move the canary elsewhere)."""
+        quarantined by Rabbit at startup, which would move the canary elsewhere)."""
         self.marks[label] = mark = H.canary(label)
         path.parent.mkdir(parents=True, exist_ok=True)
         body = json.dumps({"version": 1, "providers": {}, "credential_pool": {}, "e2e_mark": mark}) if json_store else mark
@@ -89,7 +89,7 @@ class Layout:
 @dataclass
 class Step:
     """One tool call. Each spelling gets its own subject where the layout allows it; the protected rows
-    that cannot (there is one Hermes-home ``.env`` and one ``authorized_keys``) share it, and a breach of a
+    that cannot (there is one Rabbit-home ``.env`` and one ``authorized_keys``) share it, and a breach of a
     shared subject is charged to the spellings whose tool result was not a refusal (see ``_culprits``).
     ``expect``: ``absent`` (subject must not exist after), ``unchanged`` (subject bytes identical), ``hidden``
     (the protected file's canary never appears in the tool result), ``setup`` (no check)."""
@@ -110,7 +110,7 @@ def _replace(path: str, old: str) -> dict[str, Any]:
 
 
 def _confined_steps(lay: Layout) -> list[Step]:
-    """HERMES_WRITE_SAFE_ROOT=<workspace>: every write whose resolved target is outside is refused.
+    """RABBIT_WRITE_SAFE_ROOT=<workspace>: every write whose resolved target is outside is refused.
     Every spelling has its own outside target, so a red names exactly the spelling that escaped."""
     t_write, t_patch, t_dotdot = (lay.out / f"target-{n}.txt" for n in ("symlink-write", "symlink-patch", "dotdot-patch"))
     lay.plant(t_write, "outside-symlink-write")
@@ -145,8 +145,8 @@ def _confined_steps(lay: Layout) -> list[Step]:
              "absent", lay.out / "new-v4a-abs.txt"),
         Step("v4a_delete_symlink_parent", "patch", _v4a("Delete", "linkdir/doomed.txt"),
              "unchanged", lay.out / "doomed.txt"),
-        Step("read_quarantined_auth_copy", "read_file", {"path": "../.hermes/auth.json.corrupt"}, "hidden", quarantined),
-        Step("search_quarantined_auth_copy", "search_files", {"pattern": token, "path": "../.hermes"}, "hidden",
+        Step("read_quarantined_auth_copy", "read_file", {"path": "../.rabbit/auth.json.corrupt"}, "hidden", quarantined),
+        Step("search_quarantined_auth_copy", "search_files", {"pattern": token, "path": "../.rabbit"}, "hidden",
              quarantined),
         Step("control_write_inside", "write_file", {"path": "sub/inside.txt", "content": "inside-ok"}, "setup"),
         Step("setup_read_innerlink", "read_file", {"path": "innerlink.txt"}, "setup"),
@@ -174,7 +174,7 @@ def _protected_steps(lay: Layout) -> list[Step]:
     return [
         Step("env_direct_patch", "patch", _replace(str(env), env_mark), "unchanged", env),
         Step("env_symlink_patch", "patch", _replace("envlink", env_mark), "unchanged", env),
-        Step("env_dotdot_patch", "patch", _replace("../.hermes/.env", env_mark), "unchanged", env),
+        Step("env_dotdot_patch", "patch", _replace("../.rabbit/.env", env_mark), "unchanged", env),
         Step("oauth_dangling_symlink_write", "write_file", {"path": "oauthlink", "content": "{}"},
              "absent", lay.hh / ".anthropic_oauth.json"),
         Step("setup_read_keys", "read_file", {"path": "sshdir/authorized_keys"}, "setup"),
@@ -188,7 +188,7 @@ def _protected_steps(lay: Layout) -> list[Step]:
         Step("ssh_config_symlink_parent_gated", "write_file", {"path": "sshdir/config", "content": "Host evil\n"},
              "unchanged", ssh_config),
         Step("read_auth_symlink", "read_file", {"path": "authlink.txt"}, "hidden", (lay.hh / "auth.json", auth)),
-        Step("read_webhooks_dotdot", "read_file", {"path": "../.hermes/webhook_subscriptions.json"}, "hidden",
+        Step("read_webhooks_dotdot", "read_file", {"path": "../.rabbit/webhook_subscriptions.json"}, "hidden",
              (lay.hh / "webhook_subscriptions.json", hooks)),
         Step("read_google_oauth_symlink_dir", "read_file", {"path": "hhdir/auth/google_oauth.json"}, "hidden",
              (lay.hh / "auth" / "google_oauth.json", google)),
@@ -215,7 +215,7 @@ def _run(root: Path, build: Callable[[Layout], list[Step]], expected: tuple[str,
     assert [s.scenario for s in steps if s.expect != "setup"] == list(expected), "scenario table drifted"
     before: dict[str, str | None] = {}
 
-    def snapshot() -> None:  # after the home (incl. .env) is written, before Hermes starts
+    def snapshot() -> None:  # after the home (incl. .env) is written, before Rabbit starts
         before.update({s.scenario: digest(s.subject) for s in steps if s.expect == "unchanged"})
         assert None not in before.values(), f"an 'unchanged' subject was not planted: {before}"
 
@@ -227,7 +227,7 @@ def _run(root: Path, build: Callable[[Layout], list[Step]], expected: tuple[str,
 @pytest.fixture(scope="module")
 def confined(tmp_path_factory: pytest.TempPathFactory) -> Run:
     return _run(tmp_path_factory.mktemp("confined"), _confined_steps, CONFINED_SCENARIOS + QUARANTINE_SCENARIOS,
-                lambda lay: {"HERMES_WRITE_SAFE_ROOT": str(lay.ws)})
+                lambda lay: {"RABBIT_WRITE_SAFE_ROOT": str(lay.ws)})
 
 
 @pytest.fixture(scope="module")

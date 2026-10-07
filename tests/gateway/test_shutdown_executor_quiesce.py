@@ -244,13 +244,13 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
     join above the close block never sees them; the close has to consult their counters too.
     The executor must still be sealed on this path (#101118).
     """
-    import hermes_state_registry
+    import rabbit_state_registry
 
     events = []
     gw = _FakeGateway(events)
     arm(gw)
     monkeypatch.setattr(
-        hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
+        rabbit_state_registry, "close_all", lambda: events.append("close_all") or 0
     )
 
     await gw_mod.GatewayRunner.stop(gw)
@@ -270,13 +270,13 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     close gate must consult it alongside the handler snapshot -- and must not close until the
     worker itself exits.
     """
-    import hermes_state_registry
+    import rabbit_state_registry
     from gateway.platforms import api_server_runs as api_runs
 
     events = []
     gw = _FakeGateway(events)
     monkeypatch.setattr(
-        hermes_state_registry, "close_all", lambda: events.append("close_all") or 0
+        rabbit_state_registry, "close_all", lambda: events.append("close_all") or 0
     )
 
     release = threading.Event()

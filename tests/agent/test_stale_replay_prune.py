@@ -6,7 +6,7 @@ assistant messages whose reasoning items must replay together), and the
 newest native compaction checkpoint (type="compaction") is exempt because
 it carries already-pruned history, not per-turn reasoning.  Checkpoints a
 newer carrier shadows are pruned: the wire builder discards them anyway
-(#102374; the durable twin lives in tests/hermes_state/test_append_messages_batch.py).
+(#102374; the durable twin lives in tests/rabbit_state/test_append_messages_batch.py).
 """
 
 from agent.context_compressor import (

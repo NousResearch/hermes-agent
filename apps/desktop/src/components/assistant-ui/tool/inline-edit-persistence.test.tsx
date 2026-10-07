@@ -7,7 +7,7 @@ import { parseAnsi } from '@/lib/ansi'
 import { type ChatMessage, type GatewayEventPayload, toChatMessages, upsertToolPart } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $toolDisclosureStates, setHideCodeDiffs, setToolViewMode } from '@/store/tool-view'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
 import { Thread } from '../thread'

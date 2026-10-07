@@ -34,7 +34,7 @@ _REQUEST_TIMEOUT_S = 30.0
 
 # Discord's CDN (and other public hosts) 403 urllib's default UA, which
 # silently killed every CDN pass-through download. Always send a descriptive UA.
-_MEDIA_USER_AGENT = "HermesAgent-Relay/1.0 (+https://github.com/NousResearch/hermes-agent)"
+_MEDIA_USER_AGENT = "RabbitAgent-Relay/1.0 (+https://github.com/seven0070/Rabbit-)"
 
 
 def media_base_url(relay_dial_url: str) -> str:

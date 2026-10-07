@@ -6,7 +6,7 @@ author: Memento AI
 license: MIT
 platforms: [macos, linux]
 metadata:
-  hermes:
+  rabbit:
     tags: [Education, Flashcards, Spaced Repetition, Learning, Quiz, YouTube]
     requires_toolsets: [terminal]
     category: productivity
@@ -61,7 +61,7 @@ Do not use this skill for general Q&A, coding help, or non-memory tasks.
 Cards are stored in a JSON file at:
 
 ```
-~/.hermes/skills/productivity/memento-flashcards/data/cards.json
+~/.rabbit/skills/productivity/memento-flashcards/data/cards.json
 ```
 
 **Never edit this file directly.** Always use `memento_cards.py` subcommands. The script handles atomic writes (write to temp file, then rename) to prevent corruption.
@@ -100,7 +100,7 @@ Rules:
 **Step 2:** Call the script to store the card:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add \
   --question "What year did World War 2 end?" \
   --answer "1945" \
   --collection "History"
@@ -124,13 +124,13 @@ Then call `memento_cards.py add` as above.
 When the user wants to review, fetch all due cards:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due
 ```
 
 This returns a JSON array of cards where `next_review_at <= now`. If a collection filter is needed:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due --collection "History"
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due --collection "History"
 ```
 
 **Review flow (free-text grading):**
@@ -163,7 +163,7 @@ Here is an example of the EXACT interaction pattern you must follow. The user an
 5. Then show the next question.
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
   --id CARD_ID --rating easy --user-answer "what the user said"
 ```
 
@@ -197,13 +197,13 @@ When the user sends a YouTube URL and wants a quiz:
 **Step 2:** Fetch the transcript:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/youtube_quiz.py fetch VIDEO_ID
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/youtube_quiz.py fetch VIDEO_ID
 ```
 
 This returns `{"title": "...", "transcript": "..."}` or an error.
 
 If the script reports `missing_dependency`, use `terminal` with a PM-prepared
-Hermes checkout to prepare the declared `youtube` extra, then reactivate:
+Rabbit checkout to prepare the declared `youtube` extra, then reactivate:
 
 ```bash
 python -c "import pm; pm.sync_venv(['youtube'], explicit=True)"
@@ -212,11 +212,11 @@ python -c "import youtube_transcript_api; print(youtube_transcript_api.__file__)
 ```
 
 Follow the isolated development-home setup in
-[Package Management](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+[Package Management](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/package-management#developer-workflow)
 before preparation. Retry `youtube_quiz.py` with that Python and the actual
 skill directory returned by `skill_view`. For a remote or sandbox terminal,
 prepare an independent helper environment on that host. Never pip-install into
-Hermes's selected environment.
+Rabbit's selected environment.
 
 **Step 3:** Generate 5 quiz questions from the transcript. Use these rules:
 
@@ -250,7 +250,7 @@ Use the first 15,000 characters of the transcript as context. Generate the quest
 **Step 5:** Store quiz cards:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add-quiz \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add-quiz \
   --video-id "VIDEO_ID" \
   --questions '[{"question":"...","answer":"..."},...]' \
   --collection "Quiz - Episode Title"
@@ -265,7 +265,7 @@ The script deduplicates by `video_id` — if cards for that video already exist,
 4. **IMPORTANT: You MUST reply to the user with feedback before doing anything else.** Show the grade, the correct answer, and when the card is next due. Do NOT silently skip to the next question. Keep it short and plain-text. Example: "Not quite. Answer: {answer}. Next review tomorrow."
 5. **After showing feedback**, call the rate command and then show the next question in the same message:
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py rate \
   --id CARD_ID --rating easy --user-answer "what the user said"
 ```
 6. Repeat. Every answer MUST receive visible feedback before the next question.
@@ -274,7 +274,7 @@ python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.p
 
 **Export:**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py export \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py export \
   --output ~/flashcards.csv
 ```
 
@@ -282,7 +282,7 @@ Produces a 3-column CSV: `question,answer,collection` (no header row).
 
 **Import:**
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py import \
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py import \
   --file ~/flashcards.csv \
   --collection "Imported"
 ```
@@ -292,7 +292,7 @@ Reads a CSV with columns: question, answer, and optionally collection (column 3)
 ### Statistics
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
 ```
 
 Returns JSON with:
@@ -315,9 +315,9 @@ Returns JSON with:
 Verify the helper scripts directly:
 
 ```bash
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py add --question "Capital of France?" --answer "Paris" --collection "General"
-python3 ~/.hermes/skills/productivity/memento-flashcards/scripts/memento_cards.py due
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py stats
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py add --question "Capital of France?" --answer "Paris" --collection "General"
+python3 ~/.rabbit/skills/productivity/memento-flashcards/scripts/memento_cards.py due
 ```
 
 If you are testing from the repo checkout, run:

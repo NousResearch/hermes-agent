@@ -1,10 +1,10 @@
-"""A running gateway across ``hermes update`` on native Windows.
+"""A running gateway across ``rabbit update`` on native Windows.
 
 Failure class: gateway hand-off. A user (or the Desktop / login item) hosts
-``hermes gateway run`` through the published ``hermes.exe``; ``hermes update`` must stop
+``rabbit gateway run`` through the published ``rabbit.exe``; ``rabbit update`` must stop
 it, update the checkout, relaunch it on the new commit, and leave it where every later
-command can find it: ``hermes gateway status``, ``hermes gateway stop`` and the next
-``hermes update``'s own pause step.
+command can find it: ``rabbit gateway status``, ``rabbit gateway stop`` and the next
+``rabbit update``'s own pause step.
 """
 
 from __future__ import annotations
@@ -65,16 +65,16 @@ def journey(tmp_path_factory):
                 with machine.gateway_phase():
                     j.step("spawn", machine.spawn_gateway)
                     before = j.step("state_before", machine.wait_gateway_running)
-                    j.step("status_before", lambda: machine.hermes("gateway", "status", label="status-before"))
+                    j.step("status_before", lambda: machine.rabbit("gateway", "status", label="status-before"))
                     machine.advance()
                     j.step("update", machine.update)
                     old_pid = int(before.get("pid") or 0) if isinstance(before, dict) else None
                     j.step("state_after", lambda: machine.wait_gateway_running(not_pid=old_pid))
-                    j.step("status_after", lambda: machine.hermes("gateway", "status", label="status-after"))
-                    j.step("pidfile_after", lambda: (machine.hermes_home / "gateway.pid").exists())
+                    j.step("status_after", lambda: machine.rabbit("gateway", "status", label="status-after"))
+                    j.step("pidfile_after", lambda: (machine.rabbit_home / "gateway.pid").exists())
                     j.step("update_again", lambda: machine.update(label="update-again"))
                     last = j.step("state_before_stop", machine.gateway_state)
-                    j.step("stop", lambda: machine.hermes("gateway", "stop", label="stop"))
+                    j.step("stop", lambda: machine.rabbit("gateway", "stop", label="stop"))
                     last_pid = int(last.get("pid") or 0) if isinstance(last, dict) else 0
                     j.step("stopped", lambda: _exits(last_pid, 90))
                     machine.kill_owned()  # nothing of this machine outlives its gateway phase
@@ -87,7 +87,7 @@ def test_launcher_started_gateway_is_visible_before_update(journey: Journey) -> 
     m, state, status = journey.machine, journey["state_before"], journey["status_before"]
     line = _status_line(status.stdout)
     assert status.returncode == 0 and line.startswith("✓") and str(state.get("pid")) in line, fail_with(
-        m, f"the launcher-started gateway (pid {state.get('pid')}) is invisible to `hermes gateway status` "
+        m, f"the launcher-started gateway (pid {state.get('pid')}) is invisible to `rabbit gateway status` "
            f"before any update: {_status_line(status.stdout)!r}", status)
 
 
@@ -96,7 +96,7 @@ def test_update_with_running_gateway_succeeds(journey: Journey) -> None:
     journey["state_before"]  # the precondition: a gateway was running when the update began
     failure = _RESTART_FAILURE.search(run.stdout)
     assert run.returncode == 0 and failure is None, fail_with(
-        m, f"hermes update with a running gateway reported a failed gateway restart "
+        m, f"rabbit update with a running gateway reported a failed gateway restart "
            f"(rc={run.returncode}): {failure.group(0).strip() if failure else '<no restart message>'}", run)
 
 
@@ -112,7 +112,7 @@ def test_gateway_discoverable_after_update(journey: Journey) -> None:
     pid, pidfile = int(state.get("pid") or 0), journey["pidfile_after"]
     line = _status_line(status.stdout)
     assert status.returncode == 0 and str(pid) in line and pidfile, fail_with(
-        m, f"after update the serving gateway (pid {pid}) is invisible: `hermes gateway status` says "
+        m, f"after update the serving gateway (pid {pid}) is invisible: `rabbit gateway status` says "
            f"{line!r}; gateway.pid present={pidfile}", status)
 
 
@@ -121,7 +121,7 @@ def test_next_update_is_not_blocked(journey: Journey) -> None:
     journey["state_after"]  # a gateway was running (the relaunched one)
     blocked = "Could not map Windows gateway PIDs" in run.stdout
     assert run.returncode == 0 and not blocked, fail_with(
-        m, f"the next hermes update is blocked at the gateway pause step (rc={run.returncode}, "
+        m, f"the next rabbit update is blocked at the gateway pause step (rc={run.returncode}, "
            f"'Could not map Windows gateway PIDs' printed={blocked})", run)
 
 
@@ -130,5 +130,5 @@ def test_gateway_stop_after_update(journey: Journey) -> None:
     pid = int(state.get("pid") or 0)
     assert pid, fail_with(m, f"no gateway recorded before stop: {state}")
     assert journey["stopped"], fail_with(
-        m, f"after update `hermes gateway stop` left the serving gateway (pid {pid}) running", stop)
-    assert stop.returncode == 0, fail_with(m, f"hermes gateway stop exited {stop.returncode}", stop)
+        m, f"after update `rabbit gateway stop` left the serving gateway (pid {pid}) running", stop)
+    assert stop.returncode == 0, fail_with(m, f"rabbit gateway stop exited {stop.returncode}", stop)

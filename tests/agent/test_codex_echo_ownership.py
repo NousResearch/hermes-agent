@@ -8,7 +8,7 @@ from agent.codex_runtime import _persist_projected_messages
 from agent.message_metadata import append_message
 from agent.session_persistence import SessionPersistenceMixin
 from agent.transports.codex_event_projector import CodexEventProjector
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 @pytest.mark.parametrize("platform_id", ["2146", None])

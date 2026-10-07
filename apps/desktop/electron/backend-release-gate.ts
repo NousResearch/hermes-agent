@@ -5,9 +5,9 @@
  * backends, decide when it is actually safe to hand off to the updater.
  *
  * Why this exists (#74805): `taskkill /T /F` returns once termination is
- * INITIATED, not completed. A dying `python.exe -m hermes_cli.main serve`
+ * INITIATED, not completed. A dying `python.exe -m rabbit_cli.main serve`
  * stays in the process table while it unmaps .pyd files (AV / NTFS filter
- * drivers stretch this out), and it need not hold the venv `hermes.exe` shim
+ * drivers stretch this out), and it need not hold the venv `rabbit.exe` shim
  * at all — so a gate that only probes the shim can pass on its very first
  * iteration, with zero dwell, while the killed pythons are still
  * terminating. Waiting for the PIDs prevents handing control to the updater
@@ -24,7 +24,7 @@
  */
 
 export interface ReleaseGateDeps {
-  /** Probe the venv hermes.exe shim (real: O_RDWR open attempt). */
+  /** Probe the venv rabbit.exe shim (real: O_RDWR open attempt). */
   isShimLocked: () => boolean
   /** True while `pid` is still enumerable in the process table. */
   isPidAlive: (pid: number) => boolean

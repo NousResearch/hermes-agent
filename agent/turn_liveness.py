@@ -143,7 +143,7 @@ class TurnLivenessWatchdog:
         # Stop renewing the lease so a wedge the interrupt cannot unwind expires via TTL.
         self._deactivate_turn()
         self._surface_committed_abort(snapshot)
-        from hermes_cli.observability.shared_metrics_process import record_watchdog_turn_abort
+        from rabbit_cli.observability.shared_metrics_process import record_watchdog_turn_abort
         record_watchdog_turn_abort(self._agent)
         return False
 

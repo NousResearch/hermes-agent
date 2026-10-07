@@ -420,7 +420,7 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # (injected as a fallback upstream). Prepend, since thinking must precede text/tool_use. Skip
     # when reasoning_details already supplied (signed) thinking blocks: a duplicate unsigned one
     # would be downgraded to a spurious text block on the last assistant message.
-    # See hermes-agent#13848. Accept empty string "" — _copy_reasoning_content_for_api() injects "" as a
+    # See rabbit-agent#13848. Accept empty string "" — _copy_reasoning_content_for_api() injects "" as a
     # tier-3 fallback for Kimi tool-call messages that had no reasoning.
     reasoning_content = m.get("reasoning_content")
     if isinstance(reasoning_content, str) and not _has_block_type(blocks, _THINKING_TYPES):
@@ -577,7 +577,7 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     (400 "Invalid signature in thinking block"). Native preserved-thinking models keep valid signed
     blocks on every assistant turn; older Claude models retain the established latest-turn-only
     policy. Signatures are proprietary: third-party endpoints strip all thinking. Kimi replays as-is;
-    DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous Portal proxies Claude
+    DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Hosted Claude proxies
     with sticky sessions and validates the same signatures, so it takes the native path despite not
     being anthropic.com.
     """

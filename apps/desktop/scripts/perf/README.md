@@ -9,7 +9,7 @@ client, arg parsing, stats, and output (and never had a baseline).
 
 ```bash
 # Isolated instance (recommended) — no running app or LLM credits needed.
-# Its own --user-data-dir + HERMES_HOME means it never collides with `hgui`.
+# Its own --user-data-dir + RABBIT_HOME means it never collides with `hgui`.
 npm run perf -- --spawn
 
 # Or: launch an isolated instance once, attach repeatedly (faster iteration).
@@ -29,9 +29,9 @@ npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-b
 ## Profiling an existing workspace
 
 ```bash
-node scripts/perf/run.mjs live-window --seconds 15 --json ~/.hermes/cache/scratch/live-window.json
+node scripts/perf/run.mjs live-window --seconds 15 --json ~/.rabbit/cache/scratch/live-window.json
 # Attribution is a separate pass, not an FPS comparison:
-node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.hermes/cache/scratch
+node scripts/perf/run.mjs live-window --seconds 10 --cpuprofile ~/.rabbit/cache/scratch
 ```
 
 `live-window` never opens/closes tabs, seeds messages, moves focus, or forces GC.
@@ -54,7 +54,7 @@ captured with `--prod`.
 The measurement this harness exists to run was historically blocked: a running
 `hgui` holds the Electron single-instance lock, so a second instance quit
 immediately. `--spawn` / `perf:serve` launch with their own `--user-data-dir`
-(separate lock scope), their own `HERMES_HOME` (separate backend + sessions),
+(separate lock scope), their own `RABBIT_HOME` (separate backend + sessions),
 and their own `--remote-debugging-port`. Synthetic scenarios drive `$messages`
 directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 

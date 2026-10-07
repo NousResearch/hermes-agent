@@ -1,13 +1,13 @@
 import { PassThrough } from 'node:stream'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync } from '@rabbit/ink'
 import chalk from 'chalk'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
-import { renderToScreen } from '../../packages/hermes-ink/src/ink/render-to-screen.js'
-import { cellAtIndex } from '../../packages/hermes-ink/src/ink/screen.js'
+import { renderToScreen } from '../../packages/rabbit-ink/src/ink/render-to-screen.js'
+import { cellAtIndex } from '../../packages/rabbit-ink/src/ink/screen.js'
 import { AgentsPanelView } from '../components/agentsPanel.js'
 import { buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
 import { DARK_THEME, DEFAULT_THEME, LIGHT_THEME } from '../theme.js'

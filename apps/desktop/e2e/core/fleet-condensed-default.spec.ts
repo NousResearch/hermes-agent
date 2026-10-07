@@ -7,7 +7,7 @@
  * ACTIVE gateway's own, so on the usual setup the local default vanished
  * while the remote one stayed.
  *
- * Real app, real local backend, real second `hermes serve` registered as a
+ * Real app, real local backend, real second `rabbit serve` registered as a
  * remote connection; checked from both sides of a switch.
  */
 
@@ -27,10 +27,10 @@ const REMOTE_LABEL = 'Linux host'
 const LOCAL_NAMED = Array.from({ length: 12 }, (_, i) => `local${i + 1}`)
 const REMOTE_NAMED = ['inbox', 'research']
 
-function seedProfiles(hermesHome: string, names: string[]): void {
+function seedProfiles(rabbitHome: string, names: string[]): void {
   for (const name of names) {
-    fs.mkdirSync(path.join(hermesHome, 'profiles', name), { recursive: true })
-    fs.writeFileSync(path.join(hermesHome, 'profiles', name, 'config.yaml'), '')
+    fs.mkdirSync(path.join(rabbitHome, 'profiles', name), { recursive: true })
+    fs.writeFileSync(path.join(rabbitHome, 'profiles', name, 'config.yaml'), '')
   }
 }
 
@@ -85,10 +85,10 @@ test("the condensed fleet menu lists the active gateway's default on both sides 
   const provider = await startScriptedProvider()
   const clientBox = createCoreSandbox('fleet-default-client')
   const remoteBox = createCoreSandbox('fleet-default-remote')
-  writeProviderHome(clientBox.hermesHome, provider.url)
-  writeProviderHome(remoteBox.hermesHome, provider.url)
-  seedProfiles(clientBox.hermesHome, LOCAL_NAMED)
-  seedProfiles(remoteBox.hermesHome, REMOTE_NAMED)
+  writeProviderHome(clientBox.rabbitHome, provider.url)
+  writeProviderHome(remoteBox.rabbitHome, provider.url)
+  seedProfiles(clientBox.rabbitHome, LOCAL_NAMED)
+  seedProfiles(remoteBox.rabbitHome, REMOTE_NAMED)
   const remote = await startRemoteBackend(remoteBox)
   writeConnectionsRegistry(clientBox.userDataDir, remote.url, remote.token)
 

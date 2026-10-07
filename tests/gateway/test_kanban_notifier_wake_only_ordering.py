@@ -14,9 +14,9 @@ import asyncio
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -112,7 +112,7 @@ def _subs(tid):
 
 def test_wake_only_success_advances_cursor_single_wake(tmp_path, monkeypatch):
     """Wake succeeds: exactly one wake, no text ping, cursor advanced."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-ok.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "wake-ok.db"))
     kb.init_db()
     tid = _make_completed_task("wake")
 
@@ -130,7 +130,7 @@ def test_wake_only_success_advances_cursor_single_wake(tmp_path, monkeypatch):
 
 def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
     """Wake fails: cursor rewound, counter bumped, event retried next tick."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-fail.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "wake-fail.db"))
     kb.init_db()
     tid = _make_completed_task("wake")
 
@@ -160,7 +160,7 @@ def test_wake_only_failure_rewinds_and_redelivers(tmp_path, monkeypatch):
 
 def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatch):
     """notify+wake requires both deliveries, retaining the sent-ping checkpoint."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "notify-wake.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "notify-wake.db"))
     kb.init_db()
     tid = _make_completed_task("notify+wake")
 
@@ -181,7 +181,7 @@ def test_notify_wake_failure_retries_without_repeating_ping(tmp_path, monkeypatc
 
 def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     """After MAX_SEND_FAILURES consecutive wake failures the sub is dropped."""
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-cap.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "wake-cap.db"))
     kb.init_db()
     tid = _make_completed_task("wake")
 

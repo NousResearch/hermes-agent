@@ -96,7 +96,7 @@ test('real spawn failures finalize before a pending identity claim settles', asy
       const release = await coordinator.acquire('profile')
 
       const child = spawn(command, ['-e', 'process.exit(17)'], {
-        env: { ...process.env, HERMES_HOME: home },
+        env: { ...process.env, RABBIT_HOME: home },
         stdio: 'ignore'
       })
 

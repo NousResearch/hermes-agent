@@ -44,7 +44,7 @@ class _FakeAgent:
 def test_routing_auto_inherits_parent_and_downgrades_codex_app_server():
     agent = _FakeAgent()
     cfg = {"auxiliary": {"background_review": {"provider": "auto", "model": ""}}}
-    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+    with patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False
     assert rt["provider"] == "openai-codex"
@@ -64,8 +64,8 @@ def test_routing_to_different_model_marks_routed_and_resolves_credentials():
         "request_overrides": {"extra_body": {"store": False}},
         "max_output_tokens": 2048,
     }
-    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_rp):
+    with patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg), \
+         patch("rabbit_cli.runtime_provider.resolve_runtime_provider", return_value=fake_rp):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is True
     assert rt["provider"] == "openrouter"
@@ -81,7 +81,7 @@ def test_unrouted_runtime_keeps_parent_pool_and_overrides():
     agent._credential_pool = "parent-pool"
     agent.request_overrides = {"service_tier": "priority"}
     agent.max_tokens = 4096
-    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+    with patch("rabbit_cli.config.load_config", return_value={}), patch("rabbit_cli.config.load_config_readonly", return_value={}):
         rt = br._resolve_review_runtime(agent)
     assert rt["credential_pool"] == "parent-pool"
     assert rt["request_overrides"] == {"service_tier": "priority"}
@@ -93,7 +93,7 @@ def test_routing_same_model_as_parent_is_not_routed():
     cfg = {"auxiliary": {"background_review": {
         "provider": "openrouter", "model": "anthropic/claude-opus-4.8",
     }}}
-    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+    with patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False  # same model/provider → keep full-replay path
 
@@ -103,8 +103,8 @@ def test_routing_resolution_failure_falls_back_to_parent():
     cfg = {"auxiliary": {"background_review": {
         "provider": "openrouter", "model": "google/gemini-3-flash-preview",
     }}}
-    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+    with patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg), \
+         patch("rabbit_cli.runtime_provider.resolve_runtime_provider",
                side_effect=RuntimeError("boom")):
         rt = br._resolve_review_runtime(agent)
     assert rt["routed"] is False
@@ -155,7 +155,7 @@ def test_digest_does_not_open_tail_on_a_tool_message():
 
 def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
-    with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+    with patch("rabbit_cli.config.load_config_readonly", return_value=cfg):
         assert br.load_background_review_settings()[0] is False
 
 
@@ -168,7 +168,7 @@ def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
     emitted = []
     agent._emit_warning = emitted.append
     cfg = {"auxiliary": {"background_review": {"provider": "no-such-provider", "model": "review-model"}}}
-    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+    with patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg):
         with caplog.at_level(logging.WARNING, logger="agent.background_review"):
             rt = br._resolve_review_runtime(agent)
             br._resolve_review_runtime(agent)

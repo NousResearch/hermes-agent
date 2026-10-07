@@ -1,6 +1,6 @@
 """C6: every shipped module and every entrypoint works in a FRESH process after an update.
 
-The ``hermes update`` failure class this guards (issue_classes.md C6): after the pull every
+The ``rabbit update`` failure class this guards (issue_classes.md C6): after the pull every
 command dies with ``ImportError: cannot import name 'file_signature'`` (#111942, #111943,
 #112522, #114616), a module-level ``NameError``/circular import only shows up in a clean
 interpreter, or the restart phase of a pre-hand-off updater imports new code into a stale
@@ -14,10 +14,10 @@ interpreter, or the restart phase of a pre-hand-off updater imports new code int
   tolerated; every first-party ``ImportError``/``NameError``/``AttributeError``/
   ``SyntaxError``/circular import fails.
 * **Stale graph** – the newest release whose updater still finished in the pre-pull
-  interpreter (no ``hermes_cli/update_handoff.py``) is extracted from git, its updater graph
+  interpreter (no ``rabbit_cli/update_handoff.py``) is extracted from git, its updater graph
   is imported, the checkout is swapped in place, the OLD release's own reload + purge run,
   and every module that updater imports after its purge must import from the new tree.
-* **Entrypoints** – ``python -m hermes_cli.main`` and every ``[project.scripts]`` console
+* **Entrypoints** – ``python -m rabbit_cli.main`` and every ``[project.scripts]`` console
   script run as real sandboxed processes (isolated HOME, only a loopback fake provider)
   with shared invariants: bounded termination, documented rc, no traceback, no
   service-manager calls, no model call unless the command is a turn. ``-z`` must persist
@@ -55,7 +55,7 @@ from tests.e2e.core.upgrade._helpers import (
     sandbox_required_reason,
     wait_for,
 )
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_rabbit_home
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="fork()-based import isolation and bwrap sandbox are Linux-only"),
@@ -106,20 +106,20 @@ _PRELOAD = (
 )
 
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER
-# its purge in the pre-pull interpreter: the restart phase (``hermes_cli.gateway`` and what
+# its purge in the pre-pull interpreter: the restart phase (``rabbit_cli.gateway`` and what
 # it pulls), the maintenance/summary steps, and the atexit browser cleanup that re-imports
-# ``tools.browser_tool`` -> ``hermes_cli.config`` (#112522). Entry points that only ever start
+# ``tools.browser_tool`` -> ``rabbit_cli.config`` (#112522). Entry points that only ever start
 # in a NEW process (gateway.run, tui_gateway.entry, cron.scheduler) are covered by the
 # fresh-interpreter smoke instead.
 _POST_PURGE_IMPORTS = (
-    "hermes_cli.config", "hermes_cli.managed_scope", "hermes_cli.gateway", "gateway.status",
-    "hermes_cli.gateway_migrate", "hermes_cli.profiles", "hermes_cli.backup", "hermes_cli.model_catalog",
-    "hermes_cli.plugin_compat", "agent.curator", "tools.skills_sync", "tools.browser_tool",
+    "rabbit_cli.config", "rabbit_cli.managed_scope", "rabbit_cli.gateway", "gateway.status",
+    "rabbit_cli.gateway_migrate", "rabbit_cli.profiles", "rabbit_cli.backup", "rabbit_cli.model_catalog",
+    "rabbit_cli.plugin_compat", "agent.curator", "tools.skills_sync", "tools.browser_tool",
 )
-# What the pre-hand-off ``hermes update`` process had imported before the pull.
-_OLD_UPDATER_GRAPH = ("hermes_cli.main", "hermes_cli.update_cmd", "hermes_cli.config", "hermes_cli.gateway")
+# What the pre-hand-off ``rabbit update`` process had imported before the pull.
+_OLD_UPDATER_GRAPH = ("rabbit_cli.main", "rabbit_cli.update_cmd", "rabbit_cli.config", "rabbit_cli.gateway")
 
-_READY_RE = re.compile(r"^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)", re.M)  # electron/backend-ready.ts
+_READY_RE = re.compile(r"^RABBIT_(?:BACKEND|DASHBOARD)_READY port=(\d+)", re.M)  # electron/backend-ready.ts
 
 
 # --------------------------------------------------------------------------- packaging model
@@ -134,7 +134,7 @@ def _requirements():
 
     core = [Requirement(r) for r in PYPROJECT["project"]["dependencies"]]
     extras = {_canonical(Requirement(r).name) for reqs in PYPROJECT["project"]["optional-dependencies"].values()
-              for r in reqs if not r.startswith("hermes-agent")}
+              for r in reqs if not r.startswith("rabbit-agent")}
     return core, extras
 
 
@@ -160,7 +160,7 @@ def _tracked(prefix: str = "") -> set[str] | None:
 
 def _root_py_modules() -> list[str]:
     """``setup.py::_root_py_modules()`` — the list the wheel build ships."""
-    spec = importlib.util.spec_from_file_location("_hermes_setup_py_c6", WORKTREE / "setup.py")
+    spec = importlib.util.spec_from_file_location("_rabbit_setup_py_c6", WORKTREE / "setup.py")
     mod = importlib.util.module_from_spec(spec)
     saved = sys.argv
     sys.argv = ["setup.py", "--name"]  # setup() must not build anything on import
@@ -188,7 +188,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
     ``__main__`` modules (executed, never imported). Files a parallel test drops at the repo
     root (``_test_*``) and untracked scratch files are not part of a release checkout.
     Directory plugins whose path is not a Python identifier (``plugins/model-providers/nous``)
-    are imported the way ``hermes_cli.plugins_loader`` imports them.
+    are imported the way ``rabbit_cli.plugins_loader`` imports them.
     """
     tracked = _tracked()
     roots = [n for n in _root_py_modules()
@@ -206,7 +206,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
                 continue
             # This frozen old-updater shim exits at import time to force a relaunch.
             # Importing it is neither safe nor an import-graph smoke test.
-            if rel == "hermes_cli/psutil_android.py":
+            if rel == "rabbit_cli/psutil_android.py":
                 continue
             if tracked is not None and rel not in tracked:
                 continue
@@ -222,7 +222,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
                 entries.append({"id": rel, "kind": "plugin", "root": str(plugin_root), "slug": slug, "sub": sub})
             else:
                 entries.append({"id": rel, "kind": "file", "file": str(f), "slug": re.sub(r"\W", "_", rel[:-3])})
-    first_party = set(roots) | {p.split(".")[0] for p in pkgs} | {"hermes_plugins"}
+    first_party = set(roots) | {p.split(".")[0] for p in pkgs} | {"rabbit_plugins"}
     return entries, first_party
 
 
@@ -268,11 +268,11 @@ def _import(entry):
     if entry["kind"] == "name":
         importlib.import_module(entry["name"])
         return
-    ns = types.ModuleType("hermes_plugins")  # plugins_loader's synthetic namespace parent
+    ns = types.ModuleType("rabbit_plugins")  # plugins_loader's synthetic namespace parent
     ns.__path__ = []
-    ns.__package__ = "hermes_plugins"
-    sys.modules.setdefault("hermes_plugins", ns)
-    name = "hermes_plugins." + entry["slug"]
+    ns.__package__ = "rabbit_plugins"
+    sys.modules.setdefault("rabbit_plugins", ns)
+    name = "rabbit_plugins." + entry["slug"]
     if entry["kind"] == "plugin":
         _load_file_module(name, os.path.join(entry["root"], "__init__.py"), [entry["root"]])
         if entry["sub"]:
@@ -349,14 +349,14 @@ checkout = spec["checkout"]
 sys.path.insert(0, checkout)
 for name in spec["old_graph"]:
     importlib.import_module(name)
-main = sys.modules["hermes_cli.main"]
+main = sys.modules["rabbit_cli.main"]
 
 # The pull, in place: the same path now holds the new tree (running frames keep old objects).
 os.rename(checkout, checkout + ".pre-pull")
 os.rename(spec["new_tree"], checkout)
 
 # The OLD updater's own post-pull steps, called the way it calls them (``_m()._...``).
-for step in ("_reload_updated_runtime_modules", "_purge_stale_hermes_modules"):
+for step in ("_reload_updated_runtime_modules", "_purge_stale_rabbit_modules"):
     fn = getattr(main, step, None)
     if fn is not None:
         fn()
@@ -461,13 +461,13 @@ def _sandbox_or_skip() -> None:
 
 
 def test_relaunch_shim_is_excluded_only_while_it_exits_on_import():
-    shim = WORKTREE / "hermes_cli" / "psutil_android.py"
+    shim = WORKTREE / "rabbit_cli" / "psutil_android.py"
     top_level = ast.parse(shim.read_text(encoding="utf-8")).body
     assert any(isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
                and isinstance(node.value.func, ast.Name) and node.value.func.id == "stop_for_relaunch"
                for node in top_level)
     entries, _ = _shipped_modules()
-    assert "hermes_cli.psutil_android" not in {entry["id"] for entry in entries}
+    assert "rabbit_cli.psutil_android" not in {entry["id"] for entry in entries}
 
 def test_optional_import_table_only_names_optional_or_platform_deps():
     """The tolerance table cannot launder a missing CORE dependency into a skip."""
@@ -492,7 +492,7 @@ def test_every_shipped_module_imports_from_a_clean_first_party_graph(tmp_path):
     ids = [e["id"] for e in entries]
     # Non-vacuous: the list really is the packaging config (every root module, every package).
     assert len(ids) == len(set(ids)), "duplicate module ids in the enumeration"
-    assert {"hermes_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry"} <= set(ids)
+    assert {"rabbit_cli.main", "run_agent", "gateway.run", "tui_gateway.entry", "acp_adapter.entry"} <= set(ids)
     find_tops = {p.split(".")[0] for p in PYPROJECT["tool"]["setuptools"]["packages"]["find"]["include"]}
     covered_tops = {i.split(".")[0] if not i.endswith(".py") else i.split("/")[0] for i in ids}
     assert find_tops <= covered_tops, f"packages.find tops with no module enumerated: {find_tops - covered_tops}"
@@ -539,9 +539,9 @@ def _pre_handoff_tag() -> tuple[str, str] | None:
     cp = _git("for-each-ref", "--merged=HEAD", "--sort=-version:refname",
               "--format=%(refname:short)", "refs/tags/v20*")
     for tag in cp.stdout.split()[:15] if cp.returncode == 0 else []:
-        if _git("cat-file", "-e", f"{tag}:hermes_cli/update_handoff.py").returncode == 0:
+        if _git("cat-file", "-e", f"{tag}:rabbit_cli/update_handoff.py").returncode == 0:
             continue
-        grep = _git("grep", "-l", "def _purge_stale_hermes_modules", tag, "--", "hermes_cli")
+        grep = _git("grep", "-l", "def _purge_stale_rabbit_modules", tag, "--", "rabbit_cli")
         return (tag, grep.stdout.strip()) if grep.returncode == 0 and grep.stdout.strip() else None
     return None
 
@@ -564,8 +564,8 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
 
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
-    modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.
-    Retire this leg together with ``hermes_cli/stale_modules.py``."""
+    modules (``utils``, ``rabbit_constants``) cached, then imports new restart-phase code.
+    Retire this leg together with ``rabbit_cli/stale_modules.py``."""
     _sandbox_or_skip()
     found = _pre_handoff_tag()
     if found is None:
@@ -635,7 +635,7 @@ def _console_script(bin_dir: Path, name: str) -> Path:
 
 @dataclass(frozen=True)
 class Entry:
-    via: str                 # "module" (python -m hermes_cli.main) or a [project.scripts] name
+    via: str                 # "module" (python -m rabbit_cli.main) or a [project.scripts] name
     args: tuple[str, ...]
     rcs: frozenset[int]
     prints_version: bool = False
@@ -649,11 +649,11 @@ _ENTRIES = {
     "module-oneshot": Entry("module", ("-z",), frozenset({0}), turn=True),
     # The #111942 symptom: the interactive CLI died at startup whenever config.yaml existed.
     "module-interactive-cli": Entry("module", (), frozenset({0}), tty=True),
-    "hermes-version": Entry("hermes", ("--version",), frozenset({0}), prints_version=True),
-    "hermes-help": Entry("hermes", ("--help",), frozenset({0})),
-    "hermes-acp-version": Entry("hermes-acp", ("--version",), frozenset({0}), prints_version=True),
-    "hermes-acp-help": Entry("hermes-acp", ("--help",), frozenset({0})),
-    "hermes-agent-help": Entry("hermes-agent", ("--help",), frozenset({0})),
+    "rabbit-version": Entry("rabbit", ("--version",), frozenset({0}), prints_version=True),
+    "rabbit-help": Entry("rabbit", ("--help",), frozenset({0})),
+    "rabbit-acp-version": Entry("rabbit-acp", ("--version",), frozenset({0}), prints_version=True),
+    "rabbit-acp-help": Entry("rabbit-acp", ("--help",), frozenset({0})),
+    "rabbit-agent-help": Entry("rabbit-agent", ("--help",), frozenset({0})),
 }
 def _run_on_tty(argv: list[str], *, env: dict[str, str], cwd: Path, writable: list[Path],
                 timeout: float) -> subprocess.CompletedProcess:
@@ -718,13 +718,13 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
     reply = f"FAKE-REPLY-{uuid.uuid4().hex[:12]}"
     env = isolated_env(tmp_path, pythonpath=WORKTREE,
                        extra={"TERM": "xterm-256color", "COLUMNS": "120", "LINES": "40"} if entry.tty else None)
-    hermes_home = Path(env["HERMES_HOME"])
+    rabbit_home = Path(env["RABBIT_HOME"])
     with FakeLLMServer([Text(reply)]) as srv:
-        write_hermes_home(hermes_home, srv.base_url)
-        config_before = (hermes_home / "config.yaml").read_bytes()
+        write_rabbit_home(rabbit_home, srv.base_url)
+        config_before = (rabbit_home / "config.yaml").read_bytes()
         args = [*entry.args, canary] if entry.turn else list(entry.args)
         if entry.via == "module":
-            argv = [PY, "-m", "hermes_cli.main", *args]
+            argv = [PY, "-m", "rabbit_cli.main", *args]
         else:
             argv = [PY, str(_console_script(tmp_path / "bin", entry.via)), *args]
         launcher = _run_on_tty if entry.tty else run
@@ -738,15 +738,15 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
     assert not shim_log.exists() or not shim_log.read_text(encoding="utf-8").strip(), (
         f"{case} called a service manager: {shim_log.read_text(encoding='utf-8')}")
     if entry.prints_version:
-        from hermes_cli.version_info import get_version_info
+        from rabbit_cli.version_info import get_version_info
         commit = get_version_info().commit
         assert commit and commit[:7] in cp.stdout, describe(cp)
-    db = hermes_home / "state.db"
+    db = rabbit_home / "state.db"
     if db.exists():
         assert _db_rows(db, "PRAGMA integrity_check") == [("ok",)], f"{case} left a corrupt state.db"
     if case == "module-doctor":
         assert cp.stdout.strip(), describe(cp)
-        assert (hermes_home / "config.yaml").read_bytes() == config_before, "doctor without --fix rewrote config.yaml"
+        assert (rabbit_home / "config.yaml").read_bytes() == config_before, "doctor without --fix rewrote config.yaml"
     if not entry.turn:
         assert main_requests == [], f"{case} made {len(main_requests)} model call(s)"
         return
@@ -767,14 +767,14 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
     _sandbox_or_skip()
     psutil = pytest.importorskip("psutil")
     lock_dir = tmp_path / "host-locks"
-    env = isolated_env(tmp_path, pythonpath=WORKTREE, extra={"HERMES_GATEWAY_LOCK_DIR": str(lock_dir)})
+    env = isolated_env(tmp_path, pythonpath=WORKTREE, extra={"RABBIT_GATEWAY_LOCK_DIR": str(lock_dir)})
     reaper = _write_script(tmp_path / "runner", "subreaper.py", _SUBREAPER)
     report_path = tmp_path / "reaper.json"
     stdout_path, stderr_path = tmp_path / "serve.out", tmp_path / "serve.err"
     with FakeLLMServer() as srv, open(stdout_path, "w", encoding="utf-8") as out, open(stderr_path, "w", encoding="utf-8") as err:
-        write_hermes_home(Path(env["HERMES_HOME"]), srv.base_url)
+        write_rabbit_home(Path(env["RABBIT_HOME"]), srv.base_url)
         argv = [PY, str(reaper), str(report_path),
-                PY, "-m", "hermes_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"]
+                PY, "-m", "rabbit_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"]
         proc = subprocess.Popen(sandbox_argv(argv, writable=[tmp_path]), env=env, cwd=str(WORKTREE),
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True)
 
@@ -789,7 +789,7 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
                 assert proc.poll() is None, f"serve exited rc={proc.returncode} before READY\n{_logs()}"
                 return None
 
-            port = wait_for(_ready, timeout=180, what="HERMES_BACKEND_READY on stdout")
+            port = wait_for(_ready, timeout=180, what="RABBIT_BACKEND_READY on stdout")
             socket.create_connection(("127.0.0.1", port), timeout=10).close()
             record_file = lock_dir / "host-serve.json"
             record = json.loads(record_file.read_text(encoding="utf-8"))
@@ -799,7 +799,7 @@ def test_serve_announces_ready_and_stops_cleanly_on_sigterm(tmp_path):
             root = psutil.Process(proc.pid)
             reaper_proc = next(p for p in [root, *root.children(recursive=True)]
                                if p.cmdline()[1:2] == [str(reaper)])
-            serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "hermes_cli.main"])
+            serve = next(p for p in reaper_proc.children() if p.cmdline()[1:3] == ["-m", "rabbit_cli.main"])
             descendants = [p.pid for p in serve.children(recursive=True)]
             serve.send_signal(signal.SIGTERM)
             wait_for(lambda: report_path.exists() and report_path.stat().st_size > 0, timeout=120,

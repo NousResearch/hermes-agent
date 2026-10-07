@@ -17,8 +17,8 @@ import base64
 import re
 from typing import Optional
 
-READ_SENTINEL_RE = re.compile(r"__HERMES_RF_[0-9a-f]{32}__")
-WRITE_SENTINEL_RE = re.compile(r"__HERMES_WF_[0-9a-f]{32}__")
+READ_SENTINEL_RE = re.compile(r"__RABBIT_RF_[0-9a-f]{32}__")
+WRITE_SENTINEL_RE = re.compile(r"__RABBIT_WF_[0-9a-f]{32}__")
 
 
 def compound_read_output(

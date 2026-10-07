@@ -206,10 +206,10 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
 def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
     """The common case (no MCP / discovery done) pays ~0s regardless of bound."""
     import time
-    from hermes_cli import mcp_startup
+    from rabbit_cli import mcp_startup
 
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     monkeypatch.setattr(cfg, "load_config", lambda: {"mcp_discovery_timeout": 999.0})
 
     t0 = time.time()
@@ -341,8 +341,8 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     bytes for the SAME tools (tool_search's per-surface deferred catalog, per-surface dynamic
     PARAMETERS like delegate_task's, the one-shot footprint pruning skill_manage). tools[] heads
     every request, so a pin written by the same code hands back exactly what the session sent;
-    one written by other code (``hermes update``) takes the current definitions instead."""
-    from hermes_state import SessionDB
+    one written by other code (``rabbit update``) takes the current definitions instead."""
+    from rabbit_state import SessionDB
     from tools import registry as registry_mod
 
     def _described(name, description, **params):
@@ -353,7 +353,7 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
 
     sent = _agent([])
     sent.tools = [_tool("read_file"), _described("delegate_task", "delegate", group={"type": "string"}),
-                  _described("skill_manage", "lands in /home/u/.hermes/skills"),
+                  _described("skill_manage", "lands in /home/u/.rabbit/skills"),
                   _described("tool_search", "Search 6 additional tools.")]
     static = {"skill_manage": _described("skill_manage", "lands in the profile's skills dir")["function"]}
     monkeypatch.setattr(registry_mod.registry, "get_all_entries",
@@ -378,7 +378,7 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
         repinned = db.get_session("s1")["tool_names"]
 
         # The pin came from other code: every tool built here takes this build's definition.
-        monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-hermes-update")
+        monkeypatch.setattr(_mcp_agent, "tool_pin_version", lambda: "sha-after-rabbit-update")
         updated = _agent([])
         updated.tools, updated._session_db, updated.session_id = list(this_surface), db, "s2"
         _mcp_agent.restore_agent_tool_prefix(updated, json.loads(db.get_session("s2")["tool_names"]))
@@ -390,7 +390,7 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     assert json.loads(repinned)["tools"] == sent.tools  # unchanged pin, no rewrite per hop
     assert updated.tools == [*this_surface[:2], {"type": "function", "function": {**static["skill_manage"]}},
                              this_surface[2]]
-    assert upgraded_pin == {"version": "sha-after-hermes-update", "tools": updated.tools}
+    assert upgraded_pin == {"version": "sha-after-rabbit-update", "tools": updated.tools}
 
 
 def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
@@ -402,7 +402,7 @@ def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
     monkeypatch.setattr(_mcp_agent, "persist_agent_tool_names", lambda agent: None)
     pin = {"version": _mcp_agent.tool_pin_version(),
            "tools": [_tool(n) for n in ("read_file", "terminal", "browser_exec", "focus_pane")]}
-    agent = _agent(["read_file"], enabled=["hermes-cli"], disabled=["terminal"])
+    agent = _agent(["read_file"], enabled=["rabbit-cli"], disabled=["terminal"])
 
     _mcp_agent.restore_agent_tool_prefix(agent, pin)
 
@@ -449,11 +449,11 @@ class _BotModeDB:
 
 @pytest.fixture
 def managed_bot_home(tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     profile = home / "profiles" / "researcher"
     profile.mkdir(parents=True)
     (profile / "profile.yaml").write_text(
-        "ui_meta:\n  hermes-bots:\n    shape: cloud\n",
+        "ui_meta:\n  rabbit-bots:\n    shape: cloud\n",
         encoding="utf-8",
     )
     return home

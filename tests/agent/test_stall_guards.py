@@ -41,7 +41,7 @@ def test_fires_on_third_consecutive_identical_call_and_result():
     assert notices[0] is None
     assert notices[1] is None
     assert notices[2] is not None
-    assert "hermes note" in notices[2]
+    assert "rabbit note" in notices[2]
     assert "3rd" in notices[2]
     assert "web_search" in notices[2]
 
@@ -145,22 +145,22 @@ def _fake_agent(stall_guards=True):
 
 def test_notice_appended_to_third_identical_result():
     agent = _fake_agent()
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     r1 = agent._append("web_search", args, "results")
     r2 = agent._append("web_search", args, "results")
     r3 = agent._append("web_search", args, "results")
-    assert "hermes note" not in r1
-    assert "hermes note" not in r2
-    assert "hermes note" in r3
+    assert "rabbit note" not in r1
+    assert "rabbit note" not in r2
+    assert "rabbit note" in r3
     assert r3.startswith("results")  # notice appended, result preserved
 
 
 def test_config_gate_disables_notice():
     agent = _fake_agent(stall_guards=False)
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     for _ in range(4):
         result = agent._append("web_search", args, "results")
-    assert "hermes note" not in result
+    assert "rabbit note" not in result
 
 
 def test_notice_streak_keys_on_raw_result_not_annotated_result():
@@ -172,7 +172,7 @@ def test_notice_streak_keys_on_raw_result_not_annotated_result():
     agent = _fake_agent()
     args = {"path": "/tmp/x"}
     outs = [agent._append("read_file", args, "contents") for _ in range(3)]
-    assert "hermes note" in outs[2]
+    assert "rabbit note" in outs[2]
 
 
 # ── result-reference stubbing (byte-identical duplicate results) ──────────
@@ -183,7 +183,7 @@ _BIG = "x" * IDENTICAL_RESULT_STUB_MIN_CHARS  # exactly at the stub threshold
 
 def test_stub_on_second_identical_call_first_full():
     agent = _fake_agent()
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     r1 = agent._append("web_search", args, _BIG, tool_call_id="call_1")
     r2 = agent._append("web_search", args, _BIG, tool_call_id="call_2")
     assert r1 == _BIG  # first occurrence always enters context whole
@@ -196,7 +196,7 @@ def test_stub_on_second_identical_call_first_full():
 
 def test_no_stub_when_fresh_result_differs():
     agent = _fake_agent()
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     agent._append("web_search", args, _BIG, tool_call_id="call_1")
     changed = "y" + _BIG
     r2 = agent._append("web_search", args, changed, tool_call_id="call_2")
@@ -218,7 +218,7 @@ def test_changed_result_resets_streak_then_stub_references_new_first():
 def test_no_stub_below_min_chars():
     agent = _fake_agent()
     small = "x" * (IDENTICAL_RESULT_STUB_MIN_CHARS - 1)
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     agent._append("web_search", args, small, tool_call_id="c1")
     r2 = agent._append("web_search", args, small, tool_call_id="c2")
     assert "byte-identical" not in r2
@@ -250,7 +250,7 @@ def test_pollers_get_stub_but_never_loop_notice():
 
 def test_third_identical_call_gets_stub_plus_loop_notice():
     agent = _fake_agent()
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     agent._append("web_search", args, _BIG, tool_call_id="c1")
     agent._append("web_search", args, _BIG, tool_call_id="c2")
     r3 = agent._append("web_search", args, _BIG, tool_call_id="c3")
@@ -263,21 +263,21 @@ def test_stub_carries_spillover_path_when_first_result_persisted():
     agent = _fake_agent()
     args = {"query": "big"}
     agent._tool_guardrails.record_persisted_result(
-        "c1", "/home/u/.hermes/cache/spillover/c1.txt"
+        "c1", "/home/u/.rabbit/cache/spillover/c1.txt"
     )
     agent._append("web_search", args, _BIG, tool_call_id="c1")
     r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
-    assert "/home/u/.hermes/cache/spillover/c1.txt" in r2
+    assert "/home/u/.rabbit/cache/spillover/c1.txt" in r2
 
 
 def test_stub_includes_args_summary_for_compression_safety():
     agent = _fake_agent()
-    args = {"query": "hermes result stubbing", "limit": 5}
+    args = {"query": "rabbit result stubbing", "limit": 5}
     agent._append("web_search", args, _BIG, tool_call_id="c1")
     r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
     # Canonical-args preview so the model knows WHAT the call was even if
     # the referenced message is later evicted by compression.
-    assert "hermes result stubbing" in r2
+    assert "rabbit result stubbing" in r2
 
 
 def test_stub_args_summary_truncated_to_120_chars():
@@ -292,7 +292,7 @@ def test_stub_args_summary_truncated_to_120_chars():
 
 def test_config_off_disables_stub():
     agent = _fake_agent(stall_guards=False)
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     agent._append("web_search", args, _BIG, tool_call_id="c1")
     r2 = agent._append("web_search", args, _BIG, tool_call_id="c2")
     assert "byte-identical" not in r2
@@ -301,7 +301,7 @@ def test_config_off_disables_stub():
 
 def test_streak_reset_by_different_call_means_next_identical_is_full():
     agent = _fake_agent()
-    args = {"query": "hermes"}
+    args = {"query": "rabbit"}
     agent._append("web_search", args, _BIG, tool_call_id="c1")
     agent._append("read_file", {"path": "/a"}, "other", tool_call_id="c2")
     r3 = agent._append("web_search", args, _BIG, tool_call_id="c3")

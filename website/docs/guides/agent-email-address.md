@@ -8,7 +8,7 @@ description: "Set up a dedicated mailbox your agent can read and send from using
 A dedicated email address turns your agent into something you (and services) can email: newsletters it summarises, receipts it files, booking confirmations it tracks, and outbound mail it sends on your behalf. This guide sets that up with the bundled [Himalaya email skill](../user-guide/skills/bundled/email/email-himalaya.md), which drives the `himalaya` CLI over IMAP/SMTP from the agent's terminal tools.
 
 :::info Two different email features
-This is **not** the same as the [Email gateway adapter](../user-guide/messaging/email.md), which lets people chat with Hermes *by* emailing it (send a mail, get a reply in-thread). This guide is about the agent *operating a mailbox* — reading, searching, composing, and organising mail as part of its tasks. You can run both, ideally on separate accounts.
+This is **not** the same as the [Email gateway adapter](../user-guide/messaging/email.md), which lets people chat with Rabbit *by* emailing it (send a mail, get a reply in-thread). This guide is about the agent *operating a mailbox* — reading, searching, composing, and organising mail as part of its tasks. You can run both, ideally on separate accounts.
 :::
 
 ## 1. Create a dedicated account
@@ -22,7 +22,7 @@ Create a fresh mailbox for the agent — never hand it your personal inbox:
 
 ## 2. Install and configure Himalaya
 
-Ask Hermes to do this for you — the skill contains the full procedure — or do it manually:
+Ask Rabbit to do this for you — the skill contains the full procedure — or do it manually:
 
 ```bash
 # Pre-built binary (Linux/macOS)
@@ -36,7 +36,7 @@ Then create `~/.config/himalaya/config.toml` with the account's IMAP/SMTP settin
 [accounts.agent]
 default = true
 email = "my-agent@example.com"
-display-name = "My Hermes Agent"
+display-name = "My Rabbit Agent"
 
 backend.type = "imap"
 backend.host = "imap.example.com"
@@ -67,7 +67,7 @@ Once `himalaya` works from your own shell, the agent can use it too — the bund
 The Himalaya path is pull-based: the agent only sees mail when it looks. Add a [cron job](automate-with-cron.md) so it looks regularly:
 
 ```
-hermes cron add
+rabbit cron add
 ```
 
 A prompt along these lines works well:
@@ -88,6 +88,6 @@ Email is an unauthenticated inbound channel — anyone can write to the agent's 
 ## See also
 
 - [Himalaya skill reference](../user-guide/skills/bundled/email/email-himalaya.md) — full command set the agent uses
-- [Email gateway adapter](../user-guide/messaging/email.md) — chat with Hermes over email instead
+- [Email gateway adapter](../user-guide/messaging/email.md) — chat with Rabbit over email instead
 - [Automate with Cron](automate-with-cron.md) — scheduling patterns
 - [Security](../user-guide/security.md) — the wider prompt-injection and credential-handling picture

@@ -427,8 +427,8 @@ _FOREIGN_ITEM_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 # The codex app-server overflows the Responses 64-char call_id limit for
-# MCP-routed tools, e.g. codex_mcp__hermes-tools__web_search_exec-<uuid> (#73492).
-_OVERSIZED_CALL_ID = "codex_mcp__hermes-tools__web_search_exec-" + "0" * 43
+# MCP-routed tools, e.g. codex_mcp__rabbit-tools__web_search_exec-<uuid> (#73492).
+_OVERSIZED_CALL_ID = "codex_mcp__rabbit-tools__web_search_exec-" + "0" * 43
 
 
 def test_chat_messages_to_responses_input_clamps_oversized_call_id():
@@ -830,7 +830,7 @@ def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
     kwargs = _preflight_codex_api_kwargs(
         {
             "model": "gpt-5.5",
-            "instructions": "You are Hermes.",
+            "instructions": "You are Rabbit.",
             "input": [
                 {"role": "user", "content": "ping"},
                 {
@@ -984,7 +984,7 @@ def _xai_reasoning_only_response(reasoning_text):
 def test_codex_preflight_passes_text_verbosity_through():
     """The preflight whitelist must let the Responses ``text`` block reach the wire (#20203).
 
-    Before it was allowed, ``text.verbosity`` died inside Hermes with
+    Before it was allowed, ``text.verbosity`` died inside Rabbit with
     "unsupported field(s): text" before the request ever left the process.
     """
     kwargs = {

@@ -13,7 +13,7 @@ def generations(tmp_path, monkeypatch):
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     state = install_state_dir(repo)
     for name in ("first", "second"):
         venv = state / "environments" / name / "venv"
@@ -31,7 +31,7 @@ def generations(tmp_path, monkeypatch):
 
 
 def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generations, monkeypatch):
-    from hermes_cli import runtime_state
+    from rabbit_cli import runtime_state
     from pm.environments import activate_dependencies
 
     repo, state, select = generations
@@ -65,7 +65,7 @@ def test_unlocked_reader_releases_a_lease_the_installer_moved_away_from(generati
 
 
 def test_release_removes_the_lease_file(generations):
-    from hermes_cli.runtime_state import lease_generation
+    from rabbit_cli.runtime_state import lease_generation
 
     _, state, select = generations
     environment = select("first")

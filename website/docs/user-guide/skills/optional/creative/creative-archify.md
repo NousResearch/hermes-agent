@@ -14,7 +14,7 @@ Validated interactive HTML diagrams, upstream-maintained.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/archify` |
+| Source | Optional — install with `rabbit skills install official/creative/archify` |
 | Path | `optional-skills/creative/archify` |
 | Version | `2.17.0` |
 | Author | tt-a1i |
@@ -26,7 +26,7 @@ Validated interactive HTML diagrams, upstream-maintained.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Archify (upstream-maintained)
@@ -34,7 +34,7 @@ The following is the complete skill definition that Hermes loads when this skill
 > **Catalog stub.** This entry is maintained upstream at
 > [tt-a1i/archify](https://github.com/tt-a1i/archify): the project ships a
 > self-contained skill directory (`archify/`) with the Node CLI, schemas,
-> renderers, examples and references. `hermes skills install
+> renderers, examples and references. `rabbit skills install
 > official/creative/archify` pulls the current tree live from that repo
 > (quarantined and scanned like any hub install) — this directory holds only
 > the catalog metadata, so the vendored copy can never go stale.

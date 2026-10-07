@@ -1,7 +1,7 @@
 name: Bootstrap installer build
 
 # Hand-dispatched, signed builds of the Tauri bootstrap installer
-# (apps/bootstrap-installer, "Hermes-Setup"): Windows x64 exe signed with
+# (apps/bootstrap-installer, "Rabbit-Setup"): Windows x64 exe signed with
 # Azure Trusted Signing, macOS arm64 dmg signed with the Developer ID cert and
 # notarized. Uploaded as run artifacts only; nothing is published.
 #
@@ -16,11 +16,11 @@ on:
         required: true
         default: main
       pin_branch:
-        description: Branch the installer follows at install time (HERMES_BUILD_PIN_BRANCH)
+        description: Branch the installer follows at install time (RABBIT_BUILD_PIN_BRANCH)
         required: true
         default: main
       pin_commit:
-        description: Optional commit pin baked in instead (HERMES_BUILD_PIN_COMMIT)
+        description: Optional commit pin baked in instead (RABBIT_BUILD_PIN_COMMIT)
         required: false
         default: ''
 
@@ -33,14 +33,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HERMES_BUILD_PIN_BRANCH: ${{ inputs.pin_branch }}
-  HERMES_BUILD_PIN_COMMIT: ${{ inputs.pin_commit }}
+  RABBIT_BUILD_PIN_BRANCH: ${{ inputs.pin_branch }}
+  RABBIT_BUILD_PIN_COMMIT: ${{ inputs.pin_commit }}
   CARGO_INCREMENTAL: '0'
   SCCACHE_DISABLE: '1'
 
 jobs:
   windows-x64:
-    name: Hermes-Setup.exe (windows x64, signed)
+    name: Rabbit-Setup.exe (windows x64, signed)
     runs-on: windows-latest
     environment: release-signing
     timeout-minutes: 90
@@ -90,9 +90,9 @@ jobs:
           npm ci --workspace apps/bootstrap-installer --include-workspace-root=false --prefer-online --no-audit --no-fund
           cd apps/bootstrap-installer
           npx tauri build --target x86_64-pc-windows-msvc --no-bundle
-          exe="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/Hermes-Setup.exe"
+          exe="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/Rabbit-Setup.exe"
           mkdir -p "$RUNNER_TEMP/out"
-          cp "$exe" "$RUNNER_TEMP/out/Hermes-Setup.exe"
+          cp "$exe" "$RUNNER_TEMP/out/Rabbit-Setup.exe"
 
       - name: Azure login (OIDC)
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
@@ -128,7 +128,7 @@ jobs:
         run: |
           npm ci --workspace apps/desktop --include-workspace-root=false --prefer-online --no-audit --no-fund
           # shellcheck disable=SC2016 # JS template literal, not shell
-          EXE="$(cygpath -w "$RUNNER_TEMP/out/Hermes-Setup.exe")" node --input-type=module -e '
+          EXE="$(cygpath -w "$RUNNER_TEMP/out/Rabbit-Setup.exe")" node --input-type=module -e '
             import { pathToFileURL } from "node:url"
             const m = await import(pathToFileURL("apps/desktop/scripts/batch-sign-binaries.mjs").href)
             const r = await m.batchSignBinaries([process.env.EXE], { cache: null })
@@ -138,19 +138,19 @@ jobs:
       - name: Verify signature
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature "$env:RUNNER_TEMP\out\Hermes-Setup.exe"
+          $sig = Get-AuthenticodeSignature "$env:RUNNER_TEMP\out\Rabbit-Setup.exe"
           $sig | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
           if ($sig.Status -ne 'Valid') { throw "signature status: $($sig.Status)" }
           if (-not $sig.TimeStamperCertificate) { throw "signature is not timestamped" }
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Hermes-Setup-windows-x64
-          path: ${{ runner.temp }}/out/Hermes-Setup.exe
+          name: Rabbit-Setup-windows-x64
+          path: ${{ runner.temp }}/out/Rabbit-Setup.exe
           if-no-files-found: error
 
   macos-arm64:
-    name: Hermes-Setup.dmg (macos arm64, signed + notarized)
+    name: Rabbit-Setup.dmg (macos arm64, signed + notarized)
     runs-on: macos-latest
     environment: release-signing
     timeout-minutes: 90
@@ -247,7 +247,7 @@ jobs:
           dmgs=("$bundle"/dmg/*.dmg)
           test ${#dmgs[@]} -eq 1
           mkdir -p "$RUNNER_TEMP/out"
-          dmg="$RUNNER_TEMP/out/Hermes-Setup.dmg"
+          dmg="$RUNNER_TEMP/out/Rabbit-Setup.dmg"
           # Tauri always uses the app icns as the volume icon; give the DMG the
           # same drive artwork as the desktop installer before signing.
           scripts/bundles/set_dmg_volume_icon.sh "${dmgs[0]}" apps/desktop/packaging/dmg-volume.icns "$dmg"
@@ -271,7 +271,7 @@ jobs:
           # so prove the catalog and its plist key made it into the bundle.
           test -f "${apps[0]}/Contents/Resources/Assets.car"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "${apps[0]}/Contents/Info.plist")" = "Icon"
-          dmg="$RUNNER_TEMP/out/Hermes-Setup.dmg"
+          dmg="$RUNNER_TEMP/out/Rabbit-Setup.dmg"
           codesign --verify --verbose=2 "$dmg"
           xcrun stapler validate "$dmg"
           spctl -a -vv -t open --context context:primary-signature "$dmg"
@@ -281,6 +281,6 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Hermes-Setup-macos-arm64
-          path: ${{ runner.temp }}/out/Hermes-Setup.dmg
+          name: Rabbit-Setup-macos-arm64
+          path: ${{ runner.temp }}/out/Rabbit-Setup.dmg
           if-no-files-found: error

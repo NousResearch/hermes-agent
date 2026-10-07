@@ -5,11 +5,11 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 root = Path(sys.argv[1]).resolve()
-home = tempfile.mkdtemp(prefix="hermes-104359-")
+home = tempfile.mkdtemp(prefix="rabbit-104359-")
 os.environ.clear()
 os.environ.update(
     HOME=home,
-    HERMES_HOME=home + "/.hermes",
+    RABBIT_HOME=home + "/.rabbit",
     PATH="/usr/bin:/bin",
     PYTHONDONTWRITEBYTECODE="1",
     NO_PROXY="*",
@@ -17,7 +17,7 @@ os.environ.update(
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(root))
 os.chdir(home)
-Path(os.environ["HERMES_HOME"]).mkdir()
+Path(os.environ["RABBIT_HOME"]).mkdir()
 # Prevent accidental provider/model metadata egress, even during production imports.
 connect = socket.socket.connect
 blocked = []
@@ -121,17 +121,17 @@ config = {
     },
     "prompt_caching": {"enabled": False},
 }
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-Path(os.environ["HERMES_HOME"], "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
-from hermes_state import SessionDB
+Path(os.environ["RABBIT_HOME"], "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+from rabbit_state import SessionDB
 from agent.moa_loop import MoAClient
 from agent.turn_request_assembly import _prepare_moa_request
 from agent.transports.chat_completions import ChatCompletionsTransport
 from types import SimpleNamespace
 from openai import OpenAI
 
-db = SessionDB(Path(os.environ["HERMES_HOME"]) / "state.db")
+db = SessionDB(Path(os.environ["RABBIT_HOME"]) / "state.db")
 db.create_session("probe-session", source="cli")
 db.append_message("probe-session", "user", "Remember this token")
 db.append_message("probe-session", "assistant", "Acknowledged")
@@ -186,7 +186,7 @@ print(
             "production_imports": {
                 name: sys.modules[name].__file__
                 for name in [
-                    "hermes_state",
+                    "rabbit_state",
                     "agent.moa_loop",
                     "agent.auxiliary_client",
                     "agent.turn_request_assembly",

@@ -22,7 +22,7 @@ def resolve_cli(*args, **kwargs):
 
 def is_dir(path):
     global armed, raised
-    if armed and path == Path(os.environ["HERMES_HOME"]) / "profiles" / "beta":
+    if armed and path == Path(os.environ["RABBIT_HOME"]) / "profiles" / "beta":
         armed = False
         raised += 1
         raise PermissionError("controlled target traversal denied after discovery")

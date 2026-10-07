@@ -104,11 +104,11 @@ const MAINTENANCE_ROUTE = '/command-center?section=maintenance'
 /** One-click recoveries reused by several rules. */
 export const RECOVERY_ACTIONS = {
   openUpdates: (): NotificationAction => ({
-    label: translateNow('notifications.updateHermes'),
+    label: translateNow('notifications.updateRabbit'),
     onClick: () => void import('@/store/updates').then(({ openUpdatesWindow }) => openUpdatesWindow())
   }),
-  restartHermes: (): NotificationAction => ({
-    label: translateNow('notifications.actions.restartHermes'),
+  restartRabbit: (): NotificationAction => ({
+    label: translateNow('notifications.actions.restartRabbit'),
     onClick: requestBackendRestart
   }),
   openKeys: (envKey: string): NotificationAction => ({
@@ -126,7 +126,7 @@ export const RECOVERY_ACTIONS = {
 }
 
 /** Structured storage failure codes the backend puts in RPC/HTTP error data
- *  (`hermes_state_errors.classify_persistence_error`). */
+ *  (`rabbit_state_errors.classify_persistence_error`). */
 const STORAGE_CODE_RE = /['"]code['"]\s*:\s*['"](storage_[a-z_]+|disk_full)['"]/i
 
 interface ErrorSummaryRule {
@@ -191,7 +191,7 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     category: 'method_not_allowed',
     test: msg => /method not allowed/i.test(msg),
     summarize: () => translateNow('notifications.errors.methodNotAllowed'),
-    action: () => RECOVERY_ACTIONS.restartHermes()
+    action: () => RECOVERY_ACTIONS.restartRabbit()
   },
   {
     category: 'microphone_permission',
@@ -208,7 +208,7 @@ const ERROR_SUMMARIES: ErrorSummaryRule[] = [
     category: 'restart_required',
     test: msg => /Restart required:/i.test(msg),
     summarize: () => translateNow('notifications.errors.codeSkewRestartRequired'),
-    action: () => RECOVERY_ACTIONS.restartHermes()
+    action: () => RECOVERY_ACTIONS.restartRabbit()
   }
 ]
 
@@ -300,7 +300,7 @@ function logErrorToDesktopLog(error: unknown, fallback: string): void {
     const raw: string =
       error instanceof Error ? (error.stack ?? error.message) : typeof error === 'string' ? error : fallback
 
-    window.hermesDesktop?.logLine?.(`[renderer error:${label}] ${fallback}: ${raw}`)
+    window.rabbitDesktop?.logLine?.(`[renderer error:${label}] ${fallback}: ${raw}`)
   } catch {
     // A missing or closed IPC bridge must not prevent the error toast.
   }

@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 import run_agent
 
@@ -190,7 +190,7 @@ class TestHTTP413Compression:
 
         Browser vision tool results can contain base64 image parts. A 413 can
         persist even after summarisation when the remaining recent tool result
-        still carries binary data; Hermes should evict the image payload and
+        still carries binary data; Rabbit should evict the image payload and
         keep the text/placeholder context instead of failing immediately.
         """
         err_413 = _make_413_error()

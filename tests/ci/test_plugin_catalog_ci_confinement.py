@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 pytestmark = pytest.mark.platforms("linux")
@@ -49,7 +49,7 @@ def _commit(repo: Path, msg: str = "x") -> str:
 
 def _run(script_text: str, tmp_path: Path, cwd: Path, env: dict) -> subprocess.CompletedProcess:
     # bash <file>, not bash -c: the run text mentions "update", which trips the
-    # live-system guard's hermes-update heuristic when it sits inside the argv.
+    # live-system guard's rabbit-update heuristic when it sits inside the argv.
     script = tmp_path / "step.sh"
     script.write_text(script_text, encoding="utf-8")
     return subprocess.run(
@@ -86,11 +86,11 @@ def _planted(tmp_path: Path) -> Path:
 
 
 def _gate(tmp_path: Path, origin: Path, entries: list[Path],
-          hermes_stub: str = "#!/bin/sh\nexit 0\n") -> subprocess.CompletedProcess:
+          rabbit_stub: str = "#!/bin/sh\nexit 0\n") -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    stub = bin_dir / "hermes"
-    stub.write_text(hermes_stub, encoding="utf-8")
+    stub = bin_dir / "rabbit"
+    stub.write_text(rabbit_stub, encoding="utf-8")
     stub.chmod(0o755)
     env = {
         **os.environ,
@@ -99,7 +99,7 @@ def _gate(tmp_path: Path, origin: Path, entries: list[Path],
         # The test interpreter first: the step's `python3 -I` parser needs
         # ruamel.yaml from site-packages, as setup-pm provides it in CI.
         "PATH": f"{bin_dir}:{Path(sys.executable).parent}:{os.environ['PATH']}",
-        # CI runs the step from the hermes-agent checkout; `-I` must ignore this.
+        # CI runs the step from the rabbit-agent checkout; `-I` must ignore this.
         "PYTHONPATH": str(ROOT),
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_CONFIG_COUNT": "1",
@@ -205,7 +205,7 @@ def test_one_entry_cannot_skip_or_impersonate_the_others(tmp_path, origin):
         encoding="utf-8")
     python_stub.chmod(0o755)
     res = _gate(tmp_path, origin, [ok, crash, ok2],
-                hermes_stub="#!/bin/sh\ncat >/dev/null\nexit 0\n")
+                rabbit_stub="#!/bin/sh\ncat >/dev/null\nexit 0\n")
     assert res.returncode != 0, res.stdout + res.stderr
     assert "catalog entry parser failed" in res.stdout
     assert f"PASS: {ok}" in res.stdout

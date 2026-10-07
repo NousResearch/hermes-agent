@@ -16,7 +16,7 @@ def _reset_session_context() -> None:
 @pytest.fixture(autouse=True)
 def _clean_session_platform(monkeypatch):
     _reset_session_context()
-    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_PLATFORM", raising=False)
     yield
     _reset_session_context()
 
@@ -55,7 +55,7 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
 
     convert = Mock(side_effect=fake_convert)
 
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("RABBIT_SESSION_PLATFORM", "telegram")
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
     monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
     monkeypatch.setattr(tts_tool, "_generate_edge_tts", _write_edge_output)
@@ -82,7 +82,7 @@ def test_edge_matrix_converts_to_opus_voice(tmp_path, monkeypatch):
 
     convert = Mock(side_effect=fake_convert)
 
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "matrix")
+    monkeypatch.setenv("RABBIT_SESSION_PLATFORM", "matrix")
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
     monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
     monkeypatch.setattr(tts_tool, "_generate_edge_tts", _write_edge_output)

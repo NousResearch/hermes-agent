@@ -2,12 +2,12 @@
 name: draw-your-font
 description: "Turn a handwriting photo into an installable TTF font."
 version: 0.1.0
-author: Danilo Znamerovszkij (https://github.com/danilo-znamerovszkij/draw-your-font), ported by Hermes Agent
+author: Danilo Znamerovszkij (https://github.com/danilo-znamerovszkij/draw-your-font), ported by Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 required_commands: [node, npx]
 metadata:
-  hermes:
+  rabbit:
     tags: [font, handwriting, typography, ttf, woff, vision, creative]
     category: creative
     homepage: https://github.com/danilo-znamerovszkij/draw-your-font
@@ -20,7 +20,7 @@ Photo of handwritten letters in → installable font out. You do the seeing
 (find and label letters, judge quality); the CLI does all geometry (trace,
 metrics, font assembly). Never edit SVG paths or coordinates yourself.
 
-## Setup in Hermes (once per session)
+## Setup in Rabbit (once per session)
 
 The CLI is the pinned npm package `draw-your-font@0.1.0` — run it via npx (Node ≥ 18 required, no global install needed):
 
@@ -30,7 +30,7 @@ npx -y draw-your-font@0.1.0 --help
 
 Wherever the examples below show `$DYF`, use `npx -y draw-your-font@0.1.0`. Shell variables do not persist between tool calls, so paste the full command each time. Everything runs locally; the user's handwriting never leaves the machine.
 
-Photos arrive in Hermes either as a file path in the message or via the gateway image cache — use the actual file path with the CLI. When a photo lands in the conversation with no path, ask the user for the file (the CLI needs a real file, not your memory of the image).
+Photos arrive in Rabbit either as a file path in the message or via the gateway image cache — use the actual file path with the CLI. When a photo lands in the conversation with no path, ask the user for the file (the CLI needs a real file, not your memory of the image).
 
 Do the visual steps (contact sheets, previews, glyph sheets) by loading the PNGs with `vision_analyze`.
 

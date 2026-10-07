@@ -15,14 +15,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Resolve the skill's scripts dir across layouts: standalone dev repo (tests/) and hermes-agent
+# Resolve the skill's scripts dir across layouts: standalone dev repo (tests/) and rabbit-agent
 # (tests/skills/ -> optional-skills/security/unbroker/scripts).
 _HERE = Path(__file__).resolve()
 _REL = ("optional-skills", "security", "unbroker", "scripts")
 _CANDIDATES = [
     _HERE.parent.parent / "skill" / "scripts",           # standalone dev repo
     _HERE.parent.parent.joinpath(*_REL),                 # standalone layout
-    _HERE.parent.parent.parent.joinpath(*_REL),          # hermes-agent (tests/skills/)
+    _HERE.parent.parent.parent.joinpath(*_REL),          # rabbit-agent (tests/skills/)
 ]
 SCRIPTS = next((c for c in _CANDIDATES if (c / "pdd.py").exists()), _CANDIDATES[0])
 sys.path.insert(0, str(SCRIPTS))

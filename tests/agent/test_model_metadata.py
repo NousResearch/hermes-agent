@@ -13,7 +13,7 @@ Coverage levels:
 import time
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 from unittest.mock import patch, MagicMock
 
 from agent.model_metadata import (
@@ -555,7 +555,7 @@ class TestCodexOAuthContextLength:
         base_url = "https://chatgpt.com/backend-api/codex"
         stale_key = f"gpt-5.5@{base_url}"
         other_key = "other-model@https://api.openai.com/v1/"
-        import hermes_yaml as _yaml
+        import rabbit_yaml as _yaml
         cache_file.write_text(_yaml.safe_dump({"context_lengths": {
             stale_key: stale_context,
             other_key: 128_000,
@@ -952,137 +952,6 @@ class TestFetchEndpointModelMetadata:
 # Nous Portal context-window resolution (provider="nous")
 # =========================================================================
 
-class TestNousPortalContextResolution:
-    """Nous Portal /v1/models is authoritative for what Nous infra enforces
-    and may diverge from the OpenRouter catalog.
-
-    Invariants this class pins down:
-      1. Portal value wins over the OR fallback.
-      2. Portal-derived values are persisted to disk.
-      3. OR-fallback values are NEVER persisted — otherwise a single portal
-         blip would freeze the wrong value in via step-1 cache short-circuit.
-      4. Pre-fix persistent-cache entries (seeded from the OR catalog) are
-         bypassed at step 1 and overwritten once the portal responds.
-      5. Pre-fix persistent-cache entries SURVIVE on disk when the portal
-         is unreachable — no opportunistic invalidation that loses the only
-         value we have.
-    """
-
-    def setup_method(self):
-        import agent.model_metadata as mm
-        mm._endpoint_model_metadata_cache.clear()
-        mm._endpoint_model_metadata_cache_time.clear()
-
-
-    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_empty_model_never_fuzzy_matches_endpoint_catalog(self, mock_fetch):
-        """An empty model name must not substring-match arbitrary catalog
-        entries — '' is a substring of every key, so pre-fix it "matched"
-        whatever the endpoint listed first (e.g. a 32K embedding model on
-        the Nous portal) and poisoned the resolved context length."""
-        import agent.model_metadata as mm
-        mock_fetch.return_value = {
-            "voyageai/voyage-code-4": {"context_length": 32_000},
-            "x-ai/grok-4.6": {"context_length": 500_000},
-        }
-        assert mm._resolve_endpoint_context_length(
-            "", "https://inference-api.nousresearch.com/v1"
-        ) is None
-        # Non-empty names still fuzzy-match.
-        assert mm._resolve_endpoint_context_length(
-            "grok-4.6", "https://inference-api.nousresearch.com/v1"
-        ) == 500_000
-        # Single-model endpoints still resolve even with an empty name.
-        mock_fetch.return_value = {"only-model": {"context_length": 131_072}}
-        assert mm._resolve_endpoint_context_length(
-            "", "http://localhost:8080/v1"
-        ) == 131_072
-
-    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    @patch("agent.model_metadata.fetch_model_metadata")
-    def test_openrouter_fallback_is_not_persisted(
-        self, mock_or, mock_portal, tmp_path, monkeypatch
-    ):
-        """When the portal can't resolve a model (network blip, auth glitch,
-        model not yet listed) we fall back to the OR catalog so the agent
-        keeps working — but we must NOT write the OR value to disk.  Once
-        cached on disk, step-1 short-circuits forever and the user is stuck
-        with the wrong number until they manually clear the cache."""
-        import agent.model_metadata as mm
-        cache_file = tmp_path / "context_length_cache.yaml"
-        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
-
-        mock_portal.return_value = {}  # portal unreachable / model unknown
-        mock_or.return_value = {
-            "qwen/qwen3.6-plus": {"context_length": 1_000_000},
-        }
-
-        base_url = "https://inference-api.nousresearch.com/v1"
-        ctx = mm.get_model_context_length(
-            model="qwen3.6-plus",
-            base_url=base_url,
-            api_key="fake",
-            provider="nous",
-        )
-        assert ctx == 1_000_000, "OR fallback should still serve the request"
-        assert not cache_file.exists() or not yaml.safe_load(
-            cache_file.read_text(encoding="utf-8")
-        ).get("context_lengths", {}), (
-            "OR-fallback values must NOT be persisted — a single portal blip "
-            "would otherwise freeze the wrong value in via step-1 cache hit"
-        )
-
-    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    @patch("agent.model_metadata.fetch_model_metadata")
-    def test_stale_cache_is_bypassed_and_overwritten_by_portal(
-        self, mock_or, mock_portal, tmp_path, monkeypatch
-    ):
-        """Users upgrading from pre-fix builds have ``qwen3.6-plus@…nous… =
-        1000000`` (OR-derived) sitting in their cache file.  Step 1 must
-        NOT short-circuit on that entry — step 5b reconciles against the
-        portal and overwrites the persistent value with 262144."""
-        import agent.model_metadata as mm
-        cache_file = tmp_path / "context_length_cache.yaml"
-        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
-
-        base_url = "https://inference-api.nousresearch.com/v1"
-        stale_key = f"qwen3.6-plus@{base_url}"
-        other_key = "other-model@https://api.openai.com/v1"
-        cache_file.write_text(yaml.safe_dump({"context_lengths": {
-            stale_key: 1_000_000,     # pre-fix OR-derived value
-            other_key: 128_000,       # unrelated, must survive
-        }}))
-
-        mock_portal.return_value = {
-            "qwen3.6-plus": {"context_length": 262_144},
-        }
-        mock_or.return_value = {}
-
-        ctx = mm.get_model_context_length(
-            model="qwen3.6-plus",
-            base_url=base_url,
-            api_key="fake",
-            provider="nous",
-        )
-        assert ctx == 262_144, (
-            f"Stale OR-derived cache entry should not have leaked through; got {ctx}"
-        )
-
-        remaining = yaml.safe_load(cache_file.read_text(encoding="utf-8")).get(
-            "context_lengths", {}
-        )
-        assert remaining.get(stale_key) == 262_144, (
-            "Portal value should have overwritten the stale entry on disk"
-        )
-        assert remaining.get(other_key) == 128_000, (
-            "Unrelated cache entries must not be touched"
-        )
-
-
-# =========================================================================
-# get_model_context_length — resolution order
-# =========================================================================
-
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_known_model_from_api(self, mock_fetch):
@@ -1233,7 +1102,7 @@ class TestGetModelContextLength:
         "provider, custom_providers",
         [
             ("custom:codex-proxy", [{"name": "codex-proxy", "base_url": "http://127.0.0.1:8317/v1", "api_mode": "codex_responses"}]),
-            ("openai-codex", None),  # HERMES_CODEX_BASE_URL / model.base_url proxy per #115902
+            ("openai-codex", None),  # RABBIT_CODEX_BASE_URL / model.base_url proxy per #115902
         ],
     )
     def test_codex_route_behind_proxy_resolves_codex_oauth_window(self, provider, custom_providers):
@@ -1743,7 +1612,7 @@ class TestGrok43StaleCacheGuard:
 
 
     def test_stale_grok_4_3_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
@@ -1756,7 +1625,7 @@ class TestGrok43StaleCacheGuard:
 
 
     def test_grok_4_not_clobbered(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
@@ -1826,8 +1695,8 @@ class TestMoAContextLength:
             yaml.safe_dump(payload, f)
 
     def test_moa_resolves_from_aggregator(self, tmp_path, monkeypatch):
-        home = str(tmp_path / ".hermes")
-        monkeypatch.setenv("HERMES_HOME", home)
+        home = str(tmp_path / ".rabbit")
+        monkeypatch.setenv("RABBIT_HOME", home)
         self._write_moa_config(home, {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"})
 
         # The MoA preset name + virtual base_url would otherwise fall through to
@@ -1845,8 +1714,8 @@ class TestMoAContextLength:
         from agent.context_compressor import ContextCompressor
 
         configured_context = 600_000
-        home = str(tmp_path / ".hermes")
-        monkeypatch.setenv("HERMES_HOME", home)
+        home = str(tmp_path / ".rabbit")
+        monkeypatch.setenv("RABBIT_HOME", home)
         self._write_moa_config(
             home,
             {"provider": "custom:example", "model": "example-model"},

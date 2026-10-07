@@ -10,7 +10,7 @@ from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 
 
-# These fields describe Hermes' durable record and timeline display, not
+# These fields describe Rabbit' durable record and timeline display, not
 # provider-visible message content. The request builder strips them from every
 # outgoing copy and the token estimator ignores them: one set, so an estimate
 # never prices bytes the provider never receives (an edit's inline_diff in
@@ -33,7 +33,7 @@ MESSAGE_UID = "message_uid"
 # absorption order (the uid sibling of ``_absorbed_row_ids``; persisted as ``messages.absorbed_message_uids``).
 # The survivor keeps the FIRST constituent's uid.
 ABSORBED_MESSAGE_UIDS = "_absorbed_message_uids"
-# Per-occurrence tool-call identity. Provider tool-call ids repeat (Hermes mints deterministic ``call_<12hex>``
+# Per-occurrence tool-call identity. Provider tool-call ids repeat (Rabbit mints deterministic ``call_<12hex>``
 # ids for identical calls, and models reuse ids), so an assistant row carries ``{provider id: uid}`` for its
 # ``tool_calls`` (``messages.tool_call_uids``) and its tool-result rows carry the matching uid
 # (``messages.tool_call_uid``). The provider-facing ``id`` is untouched; these never reach the wire.

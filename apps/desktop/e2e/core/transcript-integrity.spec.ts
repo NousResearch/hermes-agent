@@ -2,7 +2,7 @@
  * C2 core: transcript integrity across every transition that has shipped a
  * duplicate / vanishing / reordered message bug.
  *
- * One real Electron app + one real `hermes serve` backend (only the LLM is
+ * One real Electron app + one real `rabbit serve` backend (only the LLM is
  * faked, by a scripted recording provider). After every transition the
  * transcript oracle (./oracle.ts) asserts: each persisted user/assistant
  * message is rendered exactly once, in order, nothing unpersisted is
@@ -69,8 +69,8 @@ async function openSession(page: Page, sessionId: string, mustShow: string) {
 test('transcript oracle holds across every transition', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('transcript')
-  writeProviderHome(sandbox.hermesHome, provider.url)
-  writeProviderHome(path.join(sandbox.hermesHome, 'profiles', 'p2'), provider.url)
+  writeProviderHome(sandbox.rabbitHome, provider.url)
+  writeProviderHome(path.join(sandbox.rabbitHome, 'profiles', 'p2'), provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
   const proxies: { close: () => Promise<void> }[] = []

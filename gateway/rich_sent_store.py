@@ -30,8 +30,8 @@ _LOCK = threading.Lock()
 
 
 def _store_path() -> str:
-    from hermes_constants import get_hermes_home  # honors the active profile override
-    return os.path.join(str(get_hermes_home()), "state", "rich_sent_index.json")
+    from rabbit_constants import get_rabbit_home  # honors the active profile override
+    return os.path.join(str(get_rabbit_home()), "state", "rich_sent_index.json")
 
 
 def _load(path: str) -> dict:

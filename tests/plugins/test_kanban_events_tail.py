@@ -20,7 +20,7 @@ def _load_plugin_module():
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     spec = importlib.util.spec_from_file_location(
-        "hermes_dashboard_plugin_kanban_events_tail_test", plugin_file
+        "rabbit_dashboard_plugin_kanban_events_tail_test", plugin_file
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)

@@ -8,11 +8,11 @@ responsive (p99 < 1s) with zero event-loop stalls.
 
 What it does
 ------------
-1. Spawns a SCRATCH dashboard (``hermes dashboard``) bound to loopback on a
-   free port, with an ISOLATED ``HERMES_HOME`` (temp dir, minimal seeded state).
-   It NEVER touches the live :9119 dashboard / ai.hermes.dashboard / live
+1. Spawns a SCRATCH dashboard (``rabbit dashboard``) bound to loopback on a
+   free port, with an ISOLATED ``RABBIT_HOME`` (temp dir, minimal seeded state).
+   It NEVER touches the live :9119 dashboard / ai.rabbit.dashboard / live
    state.db. Loopback bind ⇒ no auth gate (web_server.should_require_auth).
-2. Arms the synthetic GIL-heavy turn seam (``HERMES_ISO_CERTIFY_SYNTH_TURN=1``,
+2. Arms the synthetic GIL-heavy turn seam (``RABBIT_ISO_CERTIFY_SYNTH_TURN=1``,
    see ``tui_gateway/synthetic_turn.py``) so 6 concurrent turns reproduce the
    ``take_gil`` interpreter-contention regime WITHOUT real model calls. A
    network/sleep stub would release the GIL and NOT reproduce the incident, so
@@ -32,7 +32,7 @@ window. ``--dry-run`` runs ONE short light turn as a plumbing smoke test and is
 explicitly NOT a verdict (a dry-run green is a fake green — the spec says so).
 
 Turn isolation is controlled by the ``dashboard.turn_isolation`` config knob in
-the scratch HERMES_HOME; ``--isolation on|off`` sets it. Run BOTH:
+the scratch RABBIT_HOME; ``--isolation on|off`` sets it. Run BOTH:
     iso-certify --isolation off   # baseline: expect stalls
     iso-certify --isolation on    # the measurement that decides AC-4
 """
@@ -63,7 +63,7 @@ except Exception as exc:  # pragma: no cover - dependency guard
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-_READY_RE = re.compile(r"HERMES_(?:DASHBOARD|BACKEND)_READY port=(\d+)")
+_READY_RE = re.compile(r"RABBIT_(?:DASHBOARD|BACKEND)_READY port=(\d+)")
 _STALL_LOG_RE = re.compile(r"event loop stalled|ws write slow \(loop stalled")
 
 
@@ -97,7 +97,7 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
-# ── scratch HERMES_HOME ─────────────────────────────────────────────────
+# ── scratch RABBIT_HOME ─────────────────────────────────────────────────
 def seed_scratch_home(home: Path, *, isolation: str, heartbeat_secs: int, respawn_max: int) -> None:
     """Write a minimal config.yaml with the isolation knob set."""
     home.mkdir(parents=True, exist_ok=True)
@@ -121,7 +121,7 @@ def seed_scratch_home(home: Path, *, isolation: str, heartbeat_secs: int, respaw
         "memory": {"enabled": False},
     }
     # config.yaml is the canonical config; write it directly.
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     # A stub .env so credential resolution doesn't spelunk the real home.
@@ -168,13 +168,13 @@ class ScratchDashboard:
         python = str(venv_py) if venv_py.exists() else sys.executable
         env = dict(os.environ)
         env.update(self.env_extra)
-        env["HERMES_HOME"] = str(self.home)
+        env["RABBIT_HOME"] = str(self.home)
         env["HOME"] = str(self.home.parent) if str(self.home.parent) else env.get("HOME", "")
-        env["HERMES_HOME"] = str(self.home)
+        env["RABBIT_HOME"] = str(self.home)
         env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-        env["HERMES_ISO_CERTIFY_SYNTH_TURN"] = "1"
+        env["RABBIT_ISO_CERTIFY_SYNTH_TURN"] = "1"
         cmd = [
-            python, "-m", "hermes_cli.main", "dashboard",
+            python, "-m", "rabbit_cli.main", "dashboard",
             "--no-open", "--host", "127.0.0.1", "--port", str(self.port),
         ]
         self.proc = subprocess.Popen(
@@ -430,7 +430,7 @@ def run_certify(args: argparse.Namespace) -> dict[str, Any]:
     import secrets
     token = secrets.token_urlsafe(24)
     parent_tmp = Path(tempfile.mkdtemp(prefix="iso-certify-"))
-    home = parent_tmp / "hermes-home"
+    home = parent_tmp / "rabbit-home"
     seed_scratch_home(
         home,
         isolation=args.isolation,
@@ -464,7 +464,7 @@ def run_certify(args: argparse.Namespace) -> dict[str, Any]:
     try:
         with ScratchDashboard(
             home=home, port=port, isolation=args.isolation,
-            env_extra={"HERMES_DASHBOARD_SESSION_TOKEN": token},
+            env_extra={"RABBIT_DASHBOARD_SESSION_TOKEN": token},
         ) as dash:
             actual_port = dash.actual_port
             result["port"] = actual_port
@@ -586,7 +586,7 @@ def probe_thread_samples_ok(ws_samples: list[float], rest_samples: list[float]) 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="AC-4 dashboard turn-isolation certify harness")
     p.add_argument("--isolation", choices=["on", "off"], default="on",
-                   help="set dashboard.turn_isolation in the scratch HERMES_HOME")
+                   help="set dashboard.turn_isolation in the scratch RABBIT_HOME")
     p.add_argument("--dry-run", action="store_true",
                    help="1 short light turn plumbing smoke — NOT an AC-4 verdict")
     p.add_argument("--concurrency", type=int, default=6, help="concurrent heavy-turn lanes (AC-4: 6)")
@@ -604,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="serving p99 threshold (AC-4: <1s)")
     p.add_argument("--heartbeat-secs", type=int, default=15, dest="heartbeat_secs")
     p.add_argument("--respawn-max", type=int, default=3, dest="respawn_max")
-    p.add_argument("--keep-home", action="store_true", help="do not delete the scratch HERMES_HOME on exit")
+    p.add_argument("--keep-home", action="store_true", help="do not delete the scratch RABBIT_HOME on exit")
     p.add_argument("--json-out", type=Path, help="write JSON metrics to this path")
     args = p.parse_args(argv)
 

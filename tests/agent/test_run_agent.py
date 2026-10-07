@@ -52,15 +52,11 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
-
-
-
-
 @pytest.fixture(autouse=True)
 def _mock_plugin_discovery(monkeypatch):
     # Tool definitions are supplied by these unit fixtures. Scanning every
     # bundled plugin again for each isolated test home adds no coverage.
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("rabbit_cli.plugins.discover_plugins", lambda: None)
 
 
 @pytest.fixture()
@@ -191,7 +187,7 @@ def test_malformed_memory_config_still_builds_default_store():
     malformed = {"memory": "not-a-mapping"}
     with (
         patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value=malformed,
         ),
         patch(
@@ -243,7 +239,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
-    error_log_path = (run_agent._hermes_home / "logs" / "errors.log").resolve()
+    error_log_path = (run_agent._rabbit_home / "logs" / "errors.log").resolve()
 
     try:
         for handler in list(root_logger.handlers):
@@ -616,7 +612,7 @@ class TestInit:
             patch("model_tools.get_tool_definitions", return_value=[]),
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
-            patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}),
+            patch("rabbit_cli.config.load_config", return_value={}), patch("rabbit_cli.config.load_config_readonly", return_value={}),
         ):
             a = AIAgent(
                 api_key="test-k...7890",
@@ -639,11 +635,11 @@ class TestInit:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": falsy_value}},
             ),
             patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"prompt_caching": {"cache_ttl": falsy_value}},
             ),
         ):
@@ -667,11 +663,11 @@ class TestInit:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"prompt_caching": {"cache_ttl": False}},
             ),
             patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"prompt_caching": {"cache_ttl": False}},
             ),
         ):
@@ -698,10 +694,10 @@ class TestInit:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"model": {"max_tokens": 4096}},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"model": {"max_tokens": 4096}},
             ),
         ):
@@ -989,10 +985,10 @@ class TestToolUseEnforcementConfig:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"agent": {"tool_use_enforcement": True}},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"agent": {"tool_use_enforcement": True}},
             ),
         ):
@@ -1025,10 +1021,10 @@ class TestExecutionGuidanceConfig:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"agent": agent_cfg},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"agent": agent_cfg},
             ),
         ):
@@ -1086,10 +1082,10 @@ class TestTaskCompletionGuidance:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"agent": agent_cfg},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"agent": agent_cfg},
             ),
         ):
@@ -1123,10 +1119,10 @@ class TestTaskCompletionGuidance:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"agent": {"task_completion_guidance": True}},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"agent": {"task_completion_guidance": True}},
             ),
         ):
@@ -1158,10 +1154,10 @@ class TestEnvironmentProbeIntegration:
             patch("model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
-                "hermes_cli.config.load_config",
+                "rabbit_cli.config.load_config",
                 return_value={"agent": {"environment_probe": environment_probe}},
             ), patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"agent": {"environment_probe": environment_probe}},
             ),
         ):
@@ -1351,7 +1347,7 @@ class TestBuildApiKwargs:
     def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
         """The core GitHub Responses path must preserve a supported xhigh."""
         monkeypatch.setattr(
-            "hermes_cli.models.github_model_reasoning_efforts",
+            "rabbit_cli.models.github_model_reasoning_efforts",
             lambda _model: ["none", "low", "medium", "high", "xhigh"],
         )
         agent.model = "gpt-5.5"
@@ -1605,8 +1601,8 @@ class TestExecuteToolCalls:
             hook_calls.append((hook_name, kwargs))
             return []
 
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.invoke_hook", _capture_hook)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
 
         with (
             patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
@@ -1634,9 +1630,9 @@ class TestExecuteToolCalls:
         messages = []
         hook_calls = []
 
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
 
@@ -1661,9 +1657,9 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         hook_calls = []
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
         with patch("model_tools.handle_function_call", return_value="ok") as mock_hfc:
@@ -1687,9 +1683,9 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         hook_calls = []
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
 
@@ -1721,8 +1717,8 @@ class TestExecuteToolCalls:
         assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+        (tmp_path / ".rabbit").mkdir()
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
@@ -2044,7 +2040,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: ("Blocked by policy", None),
         )
         agent._checkpoint_mgr.enabled = True
@@ -2089,12 +2085,12 @@ class TestConcurrentToolExecution:
             "tool_request": [],
             "tool_execution": [execution_middleware],
         })
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("rabbit_cli.plugins.get_plugin_manager", lambda: manager)
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
 
         with patch(
             "model_tools.handle_function_call",
@@ -2118,7 +2114,7 @@ class TestConcurrentToolExecution:
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: ("Blocked", None),
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
@@ -2136,18 +2132,18 @@ class TestConcurrentToolExecution:
         dispatched = []
         duplicate_errors = []
         monkeypatch.setattr(
-            "hermes_cli.middleware.apply_tool_request_middleware",
+            "rabbit_cli.middleware.apply_tool_request_middleware",
             lambda _name, args, **_kwargs: SimpleNamespace(
                 payload=args,
                 trace=[],
             ),
         )
         monkeypatch.setattr(
-            "hermes_cli.middleware.run_tool_execution_middleware",
+            "rabbit_cli.middleware.run_tool_execution_middleware",
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *_args, **_kwargs: (None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
@@ -2189,18 +2185,18 @@ class TestConcurrentToolExecution:
         errors = []
         barrier = threading.Barrier(2)
         monkeypatch.setattr(
-            "hermes_cli.middleware.apply_tool_request_middleware",
+            "rabbit_cli.middleware.apply_tool_request_middleware",
             lambda _name, args, **_kwargs: SimpleNamespace(
                 payload=args,
                 trace=[],
             ),
         )
         monkeypatch.setattr(
-            "hermes_cli.middleware.run_tool_execution_middleware",
+            "rabbit_cli.middleware.run_tool_execution_middleware",
             lambda _name, args, callback, **_kwargs: callback(args),
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *_args, **_kwargs: (None, None),
         )
         monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
@@ -2271,14 +2267,14 @@ class TestAgentRuntimePostHookOwnershipSync:
 
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: (None, None),
         )
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
             "tools.todo_tool.todo_tool",
             lambda **kwargs: '{"ok":true}',
@@ -2370,12 +2366,12 @@ class TestRuntimeToolTransformToolResult:
     @staticmethod
     def _install_rewriting_transform(agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            "rabbit_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: (None, None),
         )
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
+            "rabbit_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: (
                 [f'REWRITTEN[{kwargs["tool_name"]}]{kwargs["result"]}']
                 if hook_name == "transform_tool_result"
@@ -3061,7 +3057,7 @@ class TestHandleMaxIterations:
         output ...'. The sanitizer renames the blank name to a non-empty
         sentinel so the call and its result stay PAIRED (no orphaned output,
         no 400) while the result content is preserved — it must NOT drop the
-        call, because hermes' dispatch loop keeps empty-name calls paired with
+        call, because rabbit' dispatch loop keeps empty-name calls paired with
         an anti-priming result for self-correction (#47967). (#12807)"""
         messages = [
             {
@@ -3130,11 +3126,11 @@ class TestRunConversation:
                 return_value="/profile",
             ),
             patch(
-                "hermes_cli.observability.relay_shared_metrics.start_task_run",
+                "rabbit_cli.observability.relay_shared_metrics.start_task_run",
                 side_effect=start_error,
             ),
             patch(
-                "hermes_cli.observability.relay_shared_metrics.finish_task_run"
+                "rabbit_cli.observability.relay_shared_metrics.finish_task_run"
             ) as finish_task_run,
             patch("agent.conversation_loop.run_conversation") as run_conversation,
         ):
@@ -3330,10 +3326,10 @@ class TestRunConversation:
         with (
             patch("model_tools.handle_function_call", return_value="search result"),
             patch(
-                "hermes_cli.lifecycle.has_hook",
+                "rabbit_cli.lifecycle.has_hook",
                 side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
             ),
-            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
+            patch("rabbit_cli.lifecycle.invoke_hook", side_effect=_record_hook),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3377,10 +3373,10 @@ class TestRunConversation:
                 return_value=failed_result,
             ),
             patch(
-                "hermes_cli.observability.relay_shared_metrics.start_task_run",
+                "rabbit_cli.observability.relay_shared_metrics.start_task_run",
             ),
             patch(
-                "hermes_cli.observability.relay_shared_metrics.finish_task_run",
+                "rabbit_cli.observability.relay_shared_metrics.finish_task_run",
                 side_effect=lambda **_kwargs: order.append("metrics"),
             ),
             patch.object(
@@ -3417,12 +3413,12 @@ class TestRunConversation:
             payload_counts["response"] += 1
             return {}
 
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", _has_hook)
+        monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", _has_hook)
         monkeypatch.setattr(agent, "_api_request_payload_for_hook", _request_payload)
         monkeypatch.setattr(agent, "_api_response_payload_for_hook", _response_payload)
 
         with (
-            patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
+            patch("rabbit_cli.lifecycle.invoke_hook", return_value=[]),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4142,47 +4138,6 @@ class TestRunConversation:
         assert all(len(n) <= 64 and n.replace("_", "").replace("-", "").isalnum() for n in wire_names)
         assert [tc["function"]["name"] for tc in history[1]["tool_calls"]] == ["multi_tool_use.parallel", long_name, ""]
 
-    def test_nous_401_refreshes_after_remint_and_retries(self, agent):
-        self._setup_agent(agent)
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-
-        calls = {"api": 0, "refresh": 0}
-
-        class _UnauthorizedError(RuntimeError):
-            def __init__(self):
-                super().__init__("Error code: 401 - unauthorized")
-                self.status_code = 401
-
-        def _fake_api_call(api_kwargs):
-            calls["api"] += 1
-            if calls["api"] == 1:
-                raise _UnauthorizedError()
-            return _mock_response(
-                content="Recovered after remint", finish_reason="stop"
-            )
-
-        def _fake_refresh(*, force=True):
-            calls["refresh"] += 1
-            assert force is True
-            return True
-
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(
-                agent, "_try_refresh_nous_client_credentials", side_effect=_fake_refresh
-            ),
-        ):
-            result = agent.run_conversation("hello")
-
-        assert calls["api"] == 2
-        assert calls["refresh"] == 1
-        assert result["completed"] is True
-        assert result["final_response"] == "Recovered after remint"
-
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
         self._setup_agent(agent)
@@ -4218,7 +4173,7 @@ class TestRunConversation:
 
         Regression test for #20316: when running below the threshold_tokens
         cutoff, run_conversation must still consult the engine's
-        should_compress_preflight() hook so engines like hermes-lcm can
+        should_compress_preflight() hook so engines like rabbit-lcm can
         perform incremental maintenance (e.g. leaf-chunk compaction)
         without waiting for the 75% context fill threshold.
         """
@@ -4465,7 +4420,7 @@ class TestRunConversation:
         network drop — that wording sends the user chasing a network
         problem a stream_diag log with finish_reason_seen=False would
         already have ruled out."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
@@ -4503,7 +4458,7 @@ class TestRunConversation:
         keep printing the original 'stream ended before completion'
         wording — issue #102766 asks that this case's existing wording
         stay as-is, only the clean-EOF case gets new wording."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         bad_tc = _mock_tool_call(
@@ -4574,7 +4529,7 @@ class TestRunConversation:
         retry up to 3 times rather than hard-failing after one — and recover
         if a retry produces a complete tool call. Regression for the false
         'model hit max output tokens' on Opus when the stream simply dropped."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
@@ -4619,7 +4574,7 @@ class TestRunConversation:
         carries a tool_calls list). Confirms the zero-byte trigger is wired
         end-to-end through the retry loop, not just detected at the
         chat_completion_helpers unit level."""
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
         self._setup_agent(agent)
         agent.valid_tool_names.add("write_file")
@@ -4705,7 +4660,7 @@ class TestRunConversation:
         self._setup_agent(agent)
         agent.max_iterations = 2
 
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_test_task_123")
 
         # Return a tool call for every iteration to exhaust the budget.
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -4725,9 +4680,9 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db_dispatch._record_task_failure",
+            patch("rabbit_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
-            patch("hermes_cli.kanban_db_connect.connect", mock_connect),
+            patch("rabbit_cli.kanban_db_connect.connect", mock_connect),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4752,12 +4707,12 @@ class TestRunConversation:
         assert call.kwargs.get("end_run") is True
 
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
-        """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
+        """The exhaustion bridge must NOT fire when RABBIT_KANBAN_TASK
         is unset (non-kanban runs are unaffected by #29747 gap 2)."""
         self._setup_agent(agent)
         agent.max_iterations = 2
 
-        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.delenv("RABBIT_KANBAN_TASK", raising=False)
 
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tool_resp = _mock_response(
@@ -4774,7 +4729,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value="ok"),
-            patch("hermes_cli.kanban_db_dispatch._record_task_failure",
+            patch("rabbit_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -5362,135 +5317,6 @@ class TestConversationHistoryNotMutated:
 # ---------------------------------------------------------------------------
 # _max_tokens_param consistency
 # ---------------------------------------------------------------------------
-
-
-class TestNousCredentialRefresh:
-    """Verify Nous credential refresh rebuilds the runtime client."""
-
-    def test_try_refresh_nous_client_credentials_rebuilds_client(
-        self, agent, monkeypatch
-    ):
-        agent.provider = "nous"
-        agent.api_mode = "chat_completions"
-
-        closed = {"value": False}
-        retired = {"value": False}
-        rebuilt = {"kwargs": None}
-        captured = {}
-
-        class _ExistingClient:
-            def close(self):
-                closed["value"] = True
-
-        class _RebuiltClient:
-            pass
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "new-nous-key",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        def _fake_openai(**kwargs):
-            rebuilt["kwargs"] = kwargs
-            return _RebuiltClient()
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-
-        existing = _ExistingClient()
-        agent.client = existing
-
-        _orig_retire = agent._retire_shared_openai_client
-
-        def _spy_retire(client, *, reason):
-            if client is existing:
-                retired["value"] = True
-            return _orig_retire(client, reason=reason)
-
-        monkeypatch.setattr(agent, "_retire_shared_openai_client", _spy_retire)
-
-        with patch("agent.process_bootstrap.OpenAI", side_effect=_fake_openai):
-            ok = agent._try_refresh_nous_client_credentials(force=True)
-
-        assert ok is True
-        # #70773: the replaced shared client is RETIRED (sockets shutdown,
-        # FD release deferred to GC), never hard-closed from the refreshing
-        # thread — close() releasing pool FDs cross-thread was the
-        # TLS-FD→SQLite corruption vector.
-        assert retired["value"] is True
-        assert closed["value"] is False
-        assert captured["force_refresh"] is True
-        assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
-        assert (
-            rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
-        )
-        assert "default_headers" not in rebuilt["kwargs"]
-        assert isinstance(agent.client, _RebuiltClient)
-
-    def test_try_refresh_nous_client_credentials_rebuilds_anthropic_client(
-        self, agent, monkeypatch
-    ):
-        """Portal anthropic/* sessions hold an Anthropic client, not OpenAI.
-
-        A 401 on the Messages wire must refresh the invoke JWT into
-        ``_anthropic_api_key`` / ``_anthropic_base_url`` and rebuild that
-        client — swapping only ``agent.client`` would leave the turn stuck
-        on the expired Bearer token.
-        """
-        agent.provider = "nous"
-        agent.api_mode = "anthropic_messages"
-        agent.model = "anthropic/claude-opus-4.8"
-        agent.api_key = "stale-nous-key"
-        agent.base_url = "https://inference-api.nousresearch.com/v1"
-        agent._anthropic_api_key = "stale-nous-key"
-        agent._anthropic_base_url = "https://inference-api.nousresearch.com/v1"
-        agent._client_kwargs = {}
-        agent.client = None
-
-        captured = {}
-        rebuild_calls = {"count": 0}
-
-        class _RebuiltAnthropic:
-            pass
-
-        def _fake_resolve(**kwargs):
-            captured.update(kwargs)
-            return {
-                "api_key": "fresh-portal-jwt",
-                "base_url": "https://inference-api.nousresearch.com/v1",
-            }
-
-        def _fake_rebuild():
-            rebuild_calls["count"] += 1
-            agent._anthropic_client = _RebuiltAnthropic()
-
-        monkeypatch.setattr(
-            "hermes_cli.auth.resolve_nous_runtime_credentials", _fake_resolve
-        )
-        monkeypatch.setattr(agent, "_rebuild_anthropic_client", _fake_rebuild)
-        monkeypatch.setattr(
-            agent,
-            "_replace_primary_openai_client",
-            MagicMock(side_effect=AssertionError("OpenAI client must not be rebuilt")),
-        )
-
-        ok = agent._try_refresh_nous_client_credentials(force=True)
-
-        assert ok is True
-        assert captured["force_refresh"] is True
-        assert agent.api_key == "fresh-portal-jwt"
-        assert agent.base_url == "https://inference-api.nousresearch.com/v1"
-        assert agent._anthropic_api_key == "fresh-portal-jwt"
-        assert agent._anthropic_base_url == (
-            "https://inference-api.nousresearch.com/v1"
-        )
-        assert rebuild_calls["count"] == 1
-        assert isinstance(agent._anthropic_client, _RebuiltAnthropic)
-        assert agent.client is None
-        agent._replace_primary_openai_client.assert_not_called()
 
 
 class TestCredentialPoolRecovery:
@@ -6397,7 +6223,7 @@ class TestStreamingApiCall:
         # (id=PARTIAL_STREAM_STUB_ID, tool_calls=None so it can't execute,
         # finish_reason=length so the loop's continuation machinery fires with
         # chunking guidance) rather than stamping a normal 'length' truncation.
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
         ]
@@ -6434,7 +6260,7 @@ class TestStreamingApiCall:
         # Cut after the first digit of "timeout": 600. Every string is closed, so the
         # prefix repairs to valid JSON that carries timeout=6. Without a finish_reason
         # nothing says the model was done: retry, never run what happened to arrive.
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
         raw = '{"command": "make deploy", "timeout": 6'
         chunks = [_make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "terminal", raw)])]
         if finish_reason:

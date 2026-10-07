@@ -4,7 +4,7 @@ A named-profile backend serving RPCs about a different profile (desktop app-glob
 mode, profile switcher) used to acquire() a WRITER on that profile's state.db per RPC and
 close it in the handler's finally. Reads never need that lock, and the writer's close
 participated in the deleted-WAL incident class. Read paths now open read-only, mirroring
-hermes_cli.web_routers.profiles._read_profile_db; the few RPCs that genuinely write
+rabbit_cli.web_routers.profiles._read_profile_db; the few RPCs that genuinely write
 (move-cwd, delete, set_hidden, foreign import) opt in with writer=True, and the two
 opportunistic writes reachable from read RPCs (repo-root backfill, Bot Chat unarchive)
 either skip or escalate to a short-lived writer instead of writing on the reader.
@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import tui_gateway.server as server
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _seed_store(home: Path) -> Path:

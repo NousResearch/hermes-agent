@@ -98,11 +98,11 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
     source = Path(__file__).resolve().parents[2]
     repo = tmp_path / "source"
     repo.mkdir()
-    for name in ("pm", "hermes_cli"):
+    for name in ("pm", "rabbit_cli"):
         shutil.copytree(source / name, repo / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for name in ("utils.py", "hermes_constants.py", "hermes_yaml.py",
-                 "hermes_bootstrap.py"):
+    for name in ("utils.py", "rabbit_constants.py", "rabbit_yaml.py",
+                 "rabbit_bootstrap.py"):
         shutil.copy2(source / name, repo / name)
     # No production application lock or metadata enters this source snapshot.
     recipe = tomllib.loads((repo / "pm" / "pyproject.toml").read_text())
@@ -116,21 +116,21 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
         '[tool.uv]\npackage=false\n', encoding="utf-8",
     )
     home = tmp_path / "home"
-    hermes_home = home / ".hermes"
-    plugin = hermes_home / "plugins" / "cold-proof"
+    rabbit_home = home / ".rabbit"
+    plugin = rabbit_home / "plugins" / "cold-proof"
     plugin.mkdir(parents=True)
-    config = hermes_home / "config.yaml"
+    config = rabbit_home / "config.yaml"
     config.write_text("plugins:\n  enabled: [cold-proof]\n", encoding="utf-8")
     (plugin / "plugin.yaml").write_text(
         "name: cold-proof\nversion: 1.0.0\npip_dependencies: [idna==3.10]\n",
         encoding="utf-8",
     )
-    store = hermes_home / "tools"
+    store = rabbit_home / "tools"
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     env = {
-        "HOME": str(home), "HERMES_HOME": str(hermes_home),
-        "HERMES_RUNTIME_DIR": str(store), "PATH": os.defpath,
+        "HOME": str(home), "RABBIT_HOME": str(rabbit_home),
+        "RABBIT_RUNTIME_DIR": str(store), "PATH": os.defpath,
         "TMPDIR": str(scratch), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
         "UV_PYTHON_DOWNLOADS": "never", "UV_NO_CONFIG": "1",
         "UV_CACHE_DIR": str(tmp_path / "seed-cache"),
@@ -182,13 +182,13 @@ assert importlib.util.find_spec('yaml') is None
 assert importlib.util.find_spec('packaging') is None
 assert importlib.util.find_spec('idna') is None
 """
-    cli = "\nsys.argv = ['hermes', 'pm', {action!r}]; import hermes_cli.main\n"
+    cli = "\nsys.argv = ['rabbit', 'pm', {action!r}]; import rabbit_cli.main\n"
     try:
         assert not store.exists()
-        assert not (hermes_home / "installs").exists()
+        assert not (rabbit_home / "installs").exists()
         result = _bare(bootstrap_python, repo, bootstrap + cli.format(action="install"), env=env)
         assert "✓ venv" in result.stdout
-        assert "Preparing the isolated Hermes runtime" in result.stderr
+        assert "Preparing the isolated Rabbit runtime" in result.stderr
         if bootstrap_name:
             # The installed launcher still starts on the old interpreter after
             # a source swap. Completion must re-exec before importing the app.
@@ -200,7 +200,7 @@ assert importlib.util.find_spec('idna') is None
             lock.write_bytes(lock.read_bytes() + b"\n# source update\n")
             entry = repo / "launch_probe.py"
             entry.write_text(
-                "import hermes_bootstrap\n"
+                "import rabbit_bootstrap\n"
                 "import idna, json, sys\n"
                 "print(json.dumps({'python': sys.executable, 'version': list(sys.version_info[:2]), "
                 "'idna': idna.__file__}))\n", encoding="utf-8",
@@ -209,7 +209,7 @@ assert importlib.util.find_spec('idna') is None
             launch_report = json.loads(launched.stdout)
             assert Path(launch_report["python"]).is_relative_to(store)
             assert launch_report["version"] == list(sys.version_info[:2])
-            assert Path(launch_report["idna"]).is_relative_to(hermes_home / "installs")
+            assert Path(launch_report["idna"]).is_relative_to(rabbit_home / "installs")
             assert launched.stderr.count("completing source-update dependencies") == 1
             # The launch finished the update's shared tail, whose maintenance migrates
             # config.yaml; `pm repair` below must then leave that migrated file alone.
@@ -231,7 +231,7 @@ print(json.dumps({'state': str(state), 'app': str(selected_venv(root)),
 """
     report = json.loads(_bare(python, repo, report_code, env=env).stdout)
     state, app = Path(report["state"]), Path(report["app"])
-    assert state.is_relative_to(hermes_home)
+    assert state.is_relative_to(rabbit_home)
     pm_root = state / "pm-runtime"
     selection = (pm_root / "selected.json").read_bytes()
     runtime = pm_root / json.loads(selection)["generation"]
@@ -285,7 +285,7 @@ print(json.dumps({'yaml': ruamel.yaml.__file__, 'idna': idna.__file__,
     assert "ModuleNotFoundError" in broken.stderr
     assert "ruamel.yaml" in broken.stderr
     repaired = _bare(python, repo, bootstrap + cli.format(action="repair"), env=env)
-    assert "Restart Hermes" in repaired.stdout
+    assert "Restart Rabbit" in repaired.stdout
     restored = json.loads(_bare(python, repo, app_code, env=env).stdout)
     repaired_app = Path(restored["app"])
     assert repaired_app != app

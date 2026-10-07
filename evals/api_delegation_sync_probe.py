@@ -1,4 +1,4 @@
-"""Model-free API delegation delivery probe; run in an isolated HERMES_HOME.
+"""Model-free API delegation delivery probe; run in an isolated RABBIT_HOME.
 
 Uses real request-context binding, dispatch policy and SQLite persistence. This
 is local mechanism evidence, not provider inference or native Windows evidence.
@@ -15,7 +15,7 @@ async def probe():
     from gateway.platforms.api_server import APIServerAdapter
     from gateway.session_context import clear_session_vars
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
     decisions = {}
@@ -31,7 +31,7 @@ async def probe():
             decisions[name] = _resolve_async_wake_sid(*args)
         finally:
             clear_session_vars(tokens)
-    db = SessionDB(db_path=Path(os.environ["HERMES_HOME"]) / "state.db")
+    db = SessionDB(db_path=Path(os.environ["RABBIT_HOME"]) / "state.db")
     db.create_session("api-parent", source="api_server")
     db.create_session("stranger", source="api_server")
     adapter = SimpleNamespace(_ensure_session_db=lambda: db)

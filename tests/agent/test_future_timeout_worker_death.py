@@ -9,7 +9,7 @@ commit wait). #117261 / #63892.
 
 Budgets here are tiny so the red-on-base run FAILS fast instead of hanging. The commit-wait
 loop has no ceiling, so on base it never returns; the runner's per-file timeout
-(``scripts/run_tests.sh``, ``HERMES_TEST_FILE_TIMEOUT``) is what bounds that hang —
+(``scripts/run_tests.sh``, ``RABBIT_TEST_FILE_TIMEOUT``) is what bounds that hang —
 pytest-timeout is not a project dependency, so a ``pytest.mark.timeout`` marker would be inert.
 """
 

@@ -295,7 +295,7 @@ export function HudShell() {
   // growth bug); the handle is the one sanctioned way to change size, driving
   // the same flip-resizable-for-the-call pattern the pet overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
-  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const hudWindowing = window.rabbitDesktop?.hud?.windowing
   const resizeDirections = hudResizeDirections(hudWindowing?.clientPlacement !== false)
   // Linux X11 cannot ignore-mouse; a visible band that also ignores the
   // pointer just eats the click. The stylesheet keys off this.

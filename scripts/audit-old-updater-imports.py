@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""What an OLD `hermes update` can still import from a NEW tree.
+"""What an OLD `rabbit update` can still import from a NEW tree.
 
-`hermes update` swaps the checkout under its own feet. The process keeps
+`rabbit update` swaps the checkout under its own feet. The process keeps
 running the code it started with, but the files underneath it are the
 ones we just pulled. Anything it loads from disk after that point is a
 contract with every released updater in the wild: delete one of those
 names and the users on that release get a traceback halfway through an
 update, on a tree that is already half-new.
 
-`managed_uv._reload_hermes_constants` is the scar tissue proving this is
+`managed_uv._reload_rabbit_constants` is the scar tissue proving this is
 real: an updater hit ``cannot import name 'venv_python_path' from
-'hermes_constants'`` while the file on disk plainly contained the name.
+'rabbit_constants'`` while the file on disk plainly contained the name.
 
 WHY THIS OVER-APPROXIMATES, ON PURPOSE
 --------------------------------------
@@ -41,12 +41,12 @@ are recorded. Unresolved expressions remain visible for manual review:
 * ``importlib.reload(m)`` — RE-EXECUTES the new file in the old process.
   This is the most dangerous load in the whole flow and it looks like
   nothing to an import walker. ``_UPDATE_RUNTIME_RELOAD_MODULES`` and
-  ``_reload_config_modules`` reload ``hermes_constants``,
-  ``hermes_cli.config`` and friends by name. Treated as a whole-module
+  ``_reload_config_modules`` reload ``rabbit_constants``,
+  ``rabbit_cli.config`` and friends by name. Treated as a whole-module
   requirement.
 * ``getattr(module, "name")`` — a symbol requirement with no import
   statement. ``managed_uv._windows_runtime_holders`` looks up
-  ``_detect_venv_python_processes`` on ``hermes_cli.main`` this way, and
+  ``_detect_venv_python_processes`` on ``rabbit_cli.main`` this way, and
   silently refuses the update when it is absent.
 * ``importlib.import_module(x)`` with a non-literal argument — cannot be
   resolved statically. Reported as UNRESOLVED rather than ignored.
@@ -103,9 +103,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Known entrypoint seeds, not a history path filter. Discovery also scans
 # every reachable Python blob for entrypoint definitions at other addresses.
 UPDATE_MODULE_CANDIDATES = (
-    "hermes_cli/main.py",
-    "hermes_cli/subcommands/update.py",
-    "hermes_cli/update_cmd.py",
+    "rabbit_cli/main.py",
+    "rabbit_cli/subcommands/update.py",
+    "rabbit_cli/update_cmd.py",
 )
 
 # Known post-swap helpers: every function counts. Historical filenames are
@@ -113,13 +113,13 @@ UPDATE_MODULE_CANDIDATES = (
 # and statically referenced imported functions (including extractions).
 # This list is a conservative seed, not the universe of audited paths.
 POST_SWAP_HELPER_MODULES = (
-    "hermes_cli/post_update.py",
-    "hermes_cli/update_lock.py",
+    "rabbit_cli/post_update.py",
+    "rabbit_cli/update_lock.py",
     # Read every historical home of these helpers.
-    "hermes_cli/backup.py",
-    "hermes_cli/backup_restore.py",
-    "hermes_cli/managed_uv.py",
-    "hermes_cli/psutil_android.py",
+    "rabbit_cli/backup.py",
+    "rabbit_cli/backup_restore.py",
+    "rabbit_cli/managed_uv.py",
+    "rabbit_cli/psutil_android.py",
     # Diagnostic tree audits also inspect the PM updater. These seeds do
     # not extend the historical cutoff: files absent there are skipped.
     "pm/__init__.py",
@@ -139,8 +139,8 @@ POST_SWAP_HELPER_MODULES = (
 # Historical module-object calls that need explicit review, not a guessed
 # receiver type. Keep the witness so regeneration cannot discard the contract.
 REVIEWED_DYNAMIC_LOADS = (
-    ("hermes_cli._subprocess_compat", "run", "2ecca1e7d3e7",
-     "hermes_cli/managed_uv.py:_install_uv_windows"),
+    ("rabbit_cli._subprocess_compat", "run", "2ecca1e7d3e7",
+     "rabbit_cli/managed_uv.py:_install_uv_windows"),
 )
 
 # Only OUR packages matter: a third-party import is pinned by the
@@ -149,9 +149,9 @@ FIRST_PARTY_ROOTS = frozenset(
     {
         "agent",
         "gateway",
-        "hermes_cli",
-        "hermes_constants",
-        "hermes_state",
+        "rabbit_cli",
+        "rabbit_constants",
+        "rabbit_state",
         "installation",
         "plugins",
         "pm",
@@ -216,7 +216,7 @@ def _called_names(node: ast.AST) -> set[str]:
 
     Covers the three shapes this codebase uses: ``foo()``,
     ``module.foo()``, and ``_m().foo()`` — update_cmd's lazy
-    ``hermes_cli.main`` handle, which re-exports these same helpers.
+    ``rabbit_cli.main`` handle, which re-exports these same helpers.
     Attribute calls that are not ours simply find no match in the
     module's own function table.
     """
@@ -411,7 +411,7 @@ def _requirements_in(
 def _module_of(node: ast.AST) -> str | None:
     """Best-effort: which module a getattr target refers to.
 
-    Handles the one real shape — ``sys.modules.get("hermes_cli.main")``
+    Handles the one real shape — ``sys.modules.get("rabbit_cli.main")``
     stashed in a local and then getattr'd (managed_uv does exactly this).
     """
     if isinstance(node, ast.Call):
@@ -927,7 +927,7 @@ def _audit_versions(index: HistoryIndex, entrypaths: set[str], read_sources, *, 
         enqueue(path, set(UPDATE_ENTRYPOINTS))
     for path in sorted(set(POST_SWAP_HELPER_MODULES) | {
         p for p in index.versions
-        if p.startswith("hermes_cli/update_cmd_") and p.endswith(".py")
+        if p.startswith("rabbit_cli/update_cmd_") and p.endswith(".py")
     }):
         enqueue(path, None)
 
@@ -1081,7 +1081,7 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
     if symbol is None:
         return True, ""
 
-    # `from hermes_cli import gateway_windows` names a SUBMODULE, not an
+    # `from rabbit_cli import gateway_windows` names a SUBMODULE, not an
     # attribute of the package body.
     submodule = root / rel / symbol
     if submodule.with_suffix(".py").is_file() or (submodule / "__init__.py").is_file():
@@ -1172,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "_comment": (
                 "Generated by scripts/audit-old-updater-imports.py --ref PRE_PM_COMMIT --freeze. "
-                "Names an already-running `hermes update` loads from the NEW "
+                "Names an already-running `rabbit update` loads from the NEW "
                 "tree after the checkout swap. Deleting a bare name bricks "
                 "every release that loads it, mid-update, on a half-new "
                 "tree. The pre-PM cutoff is recorded in stats.history_ref; "

@@ -21,7 +21,7 @@ INSTALL_SH = ROOT / "scripts/install.sh"
 pytestmark = pytest.mark.platforms("posix")
 
 
-@pytest.mark.parametrize("option", ["--branch", "--commit", "--dir", "--hermes-home", "--stage"])
+@pytest.mark.parametrize("option", ["--branch", "--commit", "--dir", "--rabbit-home", "--stage"])
 @pytest.mark.parametrize("suffix", [[], ["--manifest"], [""]])
 def test_missing_value_fails_before_any_install_work(option: str, suffix: list[str]) -> None:
     result = subprocess.run(["bash", str(INSTALL_SH), option, *suffix],
@@ -50,7 +50,7 @@ def test_browser_skip_becomes_the_pm_opt_out(tmp_path: Path, flags: list[str], e
               'bootstrap_python() { boot_py="$FIXTURE_PY"; }; bootstrap_pm; '
               'printf "noninteractive=%s\\n" "$NON_INTERACTIVE"')
     result = subprocess.run([bash, "-c", script, "test", str(INSTALL_SH), str(tmp_path), str(boot), *flags],
-                            env={**os.environ, "HERMES_HOME": str(tmp_path / "home")},
+                            env={**os.environ, "RABBIT_HOME": str(tmp_path / "home")},
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert record.read_text(encoding="utf-8").splitlines() == expected
@@ -70,8 +70,8 @@ def _environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         assert real, f"the shell bootstrap requires {tool}"
         (bin_dir / tool).symlink_to(real)
     env = {**os.environ, "HOME": str(tmp_path / "home"),
-           "HERMES_HOME": str(tmp_path / "home/.hermes"),
-           "HERMES_RUNTIME_DIR": str(tmp_path / "tools"),
+           "RABBIT_HOME": str(tmp_path / "home/.rabbit"),
+           "RABBIT_RUNTIME_DIR": str(tmp_path / "tools"),
            "UV_PYTHON_INSTALL_DIR": str(tmp_path / "managed-python"),
            "UV_CACHE_DIR": str(tmp_path / "uv-cache"), "UV_OFFLINE": "1",
            "PATH": str(bin_dir)}

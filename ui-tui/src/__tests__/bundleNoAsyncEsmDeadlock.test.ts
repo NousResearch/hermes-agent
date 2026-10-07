@@ -7,9 +7,9 @@
  * the top-level `await Promise.all([...])` in src/entry.tsx — the user
  * sees only 141 bytes of ANSI reset sequences and a blank screen forever.
  *
- * Root cause: re-exporting `ink-text-input` from `@hermes/ink`'s
+ * Root cause: re-exporting `ink-text-input` from `@rabbit/ink`'s
  * entry-exports drags the upstream `ink` package into the bundle. That
- * `ink` graph and our in-tree `@hermes/ink` graph reference each other
+ * `ink` graph and our in-tree `@rabbit/ink` graph reference each other
  * via React/`ink-text-input`, producing the circular async cycle that
  * `__esm` cannot resolve.
  *
@@ -46,7 +46,7 @@ function bundleIsFresh(): boolean {
   try {
     const bundleMtime = statSync(bundlePath).mtimeMs
 
-    const sourceMtime = statSync(resolve(uiTuiRoot, 'packages/hermes-ink/src/entry-exports.ts')).mtimeMs
+    const sourceMtime = statSync(resolve(uiTuiRoot, 'packages/rabbit-ink/src/entry-exports.ts')).mtimeMs
 
     return bundleMtime >= sourceMtime
   } catch {

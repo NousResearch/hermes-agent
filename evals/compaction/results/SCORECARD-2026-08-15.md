@@ -62,9 +62,9 @@ same 15-question banks and scored by the same judge.
 
 policy                  sweep   gui    prmerge  acp    AVG     retained state
 codex (real, post-cmp)  26.7%   40.0%  43.3%    36.7%  36.7%   ~4.5K (opaque blob + user msgs)
-hermes current          93.3%*  26.7%* 33.3%    30.0%  45.8%   ~162K
-hermes lean closed-book 40.0%   60.0%  23.3%    36.7%  40.0%   ~49K
-hermes lean+recovery    70.0%   80.0%  43.3%    80.0%  68.3%   ~49K
+rabbit current          93.3%*  26.7%* 33.3%    30.0%  45.8%   ~162K
+rabbit lean closed-book 40.0%   60.0%  23.3%    36.7%  40.0%   ~49K
+rabbit lean+recovery    70.0%   80.0%  43.3%    80.0%  68.3%   ~49K
 
 Notes:
 - codex answers from its own post-compaction session — the honest analog of
@@ -110,7 +110,7 @@ mining, per-epoch anchor windows) before default flip.
    gold: `~60GB`
 3. **Which specific Electron setting is suspected of causing the Windows occlusion freeze in issue #83420?**  
    gold: `backgroundThrottling`
-4. **What exact error message is returned when 'gh pr merge --auto' is attempted on the NousResearch/hermes-agent repository?**  
+4. **What exact error message is returned when 'gh pr merge --auto' is attempted on the seven0070/Rabbit- repository?**  
    gold: `Auto merge is not allowed for this repository (enablePullRequestAutoMerge)`
 5. **What is the specified 'Rule 0' that must be included in a subagent brief?**  
    gold: `load the skill first`
@@ -155,10 +155,10 @@ mining, per-epoch anchor windows) before default flip.
    gold: `do NOT cherry-pick. Surgical reapply as maintainer-authored commit, Co-authored-by the GitHub PR author`
 8. **How should an agent handle a 'gh pr merge' 502 error?**  
    gold: `retry the same command once after the "Merge already in progress" settles (~45s); check PR state between attempts`
-9. **Which two properties shape almost every design decision in Hermes according to the Development Guide?**  
+9. **Which two properties shape almost every design decision in Rabbit according to the Development Guide?**  
    gold: `Per-conversation prompt caching is sacred and The core is a narrow waist; capability lives at the edges.`
 10. **What error message does the live-checkout git guard display when blocking a history-rewriting command?**  
-   gold: `Blocked: `git <op>` would rewrite Hermes's live source checkout (/home/teknium/.hermes/hermes-agent) and can mix module `
+   gold: `Blocked: `git <op>` would rewrite Rabbit's live source checkout (/home/teknium/.rabbit/rabbit-agent) and can mix module `
 11. **What happened to the Desktop cluster's 'npm ci' command that resulted in an error writing to /tmp/ccH06T4r.s?**  
    gold: `No space left on device`
 12. **What was the GraphQL API rate limit remaining for the user when the 'API rate limit already exceeded' error first occurred?**  
@@ -168,7 +168,7 @@ mining, per-epoch anchor windows) before default flip.
 14. **Why did PR #79268 fix invisible overlays in the TUI?**  
    gold: `renderNodeToOutput skips boxes Yoga squeezes to height 0`
 15. **What was the specific ModuleNotFoundError message caused by the wheel subpackage discovery trap in #34701?**  
-   gold: `ModuleNotFoundError: No module named 'hermes_cli.dashboard_auth'`
+   gold: `ModuleNotFoundError: No module named 'rabbit_cli.dashboard_auth'`
 
 </details>
 
@@ -181,12 +181,12 @@ mining, per-epoch anchor windows) before default flip.
 
 <details><summary>15 exam questions (questions-36d3d87e0b.json)</summary>
 
-1. **What is the PR number for the authored fix addressing mid-turn message ordering bugs in Hermes Desktop?**  
+1. **What is the PR number for the authored fix addressing mid-turn message ordering bugs in Rabbit Desktop?**  
    gold: `#86617`
 2. **According to the contribution rubric in AGENTS.md, which type of config belongs in '.env' and which belongs in 'config.yaml'?**  
    gold: `.env is for secrets only (API keys, tokens, passwords). All behavioral settings... go in config.yaml.`
 3. **What specific file and line number were identified as the cause of an AssertionError (assert 56 == 55) in the Python tests?**  
-   gold: `tests/hermes_cli/test_session_recovery_lost_and_found.py:327`
+   gold: `tests/rabbit_cli/test_session_recovery_lost_and_found.py:327`
 4. **What was the root cause of issue #73793 regarding mid-turn message rendering?**  
    gold: `redirect/steer paths spliced the mid-turn user bubble BEFORE the active assistant stream row`
 5. **Which PR was verified to already be on 'main', resulting in nothing needing to be salvaged for it?**  
@@ -195,9 +195,9 @@ mining, per-epoch anchor windows) before default flip.
    gold: `pane sash grab band made asymmetric 1px/7px`
 7. **Which contributor's email was mapped to 'baihemax' during the attribution audit of PR #86588?**  
    gold: `602028@ky-tech.com.cn`
-8. **What error message does the Hermes terminal tool return when a git command is blocked to prevent rewriting the live source checkout?**  
-   gold: `Blocked: `git <op>` would rewrite Hermes's live source checkout`
-9. **What is the core design principle regarding 'Narrow Waist' in Hermes development?**  
+8. **What error message does the Rabbit terminal tool return when a git command is blocked to prevent rewriting the live source checkout?**  
+   gold: `Blocked: `git <op>` would rewrite Rabbit's live source checkout`
+9. **What is the core design principle regarding 'Narrow Waist' in Rabbit development?**  
    gold: `The core is a narrow waist; capability lives at the edges.`
 10. **What was the result of the rebase-merge attempt for PR #86589?**  
    gold: `GraphQL: Pull Request has merge conflicts (mergePullRequest)`
@@ -225,7 +225,7 @@ mining, per-epoch anchor windows) before default flip.
 4. **Which contributor is credited with adding the 'Brazilian Portuguese localization' in PR #86292?**  
    gold: `@gui8515`
 5. **What specific error message is reported in issue #83562 regarding the Windows Desktop update?**  
-   gold: `Hermes backend exited (0)`
+   gold: `Rabbit backend exited (0)`
 6. **What is the 'core problem' identified in the parallel-subagent-salvage-orchestration.md reference?**  
    gold: `subagents share the parent's worktree + main checkout`
 7. **Why was the 'nix (macos-latest)' build failing in the salvage batches according to the orchestration reference?**  
@@ -309,20 +309,20 @@ mining, per-epoch anchor windows) before default flip.
 2. **On which specific PR did Teknium say, 'tf are you saying to me. Stop giving me such random verbose details'?**  
    gold: `PR #6391`
 3. **Which file path should be checked for the canonical list of provider models?**  
-   gold: `hermes_cli/models.py`
+   gold: `rabbit_cli/models.py`
 4. **What was the identified bug in PR #2314 regarding provider names?**  
    gold: `checking for "alibaba-coding-plan"`
 5. **What is the mandatory line limit for PR reviews requested by Teknium?**  
    gold: `<= 15 lines`
 6. **What exact error message did the agent receive when attempting to checkout a worktree while in the live source directory?**  
-   gold: `Blocked: `git checkout` would rewrite Hermes's live source checkout (/home/teknium/.hermes/hermes-agent) and can mix mod`
+   gold: `Blocked: `git checkout` would rewrite Rabbit's live source checkout (/home/teknium/.rabbit/rabbit-agent) and can mix mod`
 7. **Why was PR #74658 necessary to fix Slack 'broken on main'?**  
    gold: `SlackResponse isn't a dict subclass, so every gate is always False.`
 8. **What was the final merge commit SHA for the Slack SDK response fix on main?**  
    gold: `24ba86627515ad5fda69a39ef338c365713448bc`
 9. **In the 'Pop-laboratory' style infographic for the Auxiliary Client fix, what were the two specific outcomes shown in cell 2?**  
    gold: `Messages wrapper keeps /anthropic and OpenAI fallback keeps /v1`
-10. **What specific SQL update was added to the migration path in hermes_cli/kanban_db.py to prevent losing active wake on upgrade?**  
+10. **What specific SQL update was added to the migration path in rabbit_cli/kanban_db.py to prevent losing active wake on upgrade?**  
    gold: `UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' WHERE platform != 'tui'`
 11. **Which test failed in CI slice 5/12 for the kanban delivery modes PR?**  
    gold: `tests/gateway/test_kanban_notifier_apiserver_wake.py::test_apiserver_sub_wakes_real_session_via_self_post`

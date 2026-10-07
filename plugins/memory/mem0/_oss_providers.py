@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 LLM_PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {"label": "OpenAI", "needs_key": True, "env_var": "OPENAI_API_KEY", "default_model": "gpt-5-mini", "base_url_key": "openai_base_url"},
@@ -19,8 +19,8 @@ EMBEDDER_PROVIDERS: dict[str, dict[str, Any]] = {
 
 VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
     # Resolved lazily (see ``vector_default_config``): the profile home is a ContextVar at call time,
-    # not an import-time constant, and ``~/.hermes`` is wrong on Windows and under profiles.
-    "qdrant": {"label": "Qdrant", "default_config": {"path": lambda: str(get_hermes_home() / "mem0_qdrant")}, "pip_dep": "qdrant-client"},
+    # not an import-time constant, and ``~/.rabbit`` is wrong on Windows and under profiles.
+    "qdrant": {"label": "Qdrant", "default_config": {"path": lambda: str(get_rabbit_home() / "mem0_qdrant")}, "pip_dep": "qdrant-client"},
     "pgvector": {
         "label": "PGVector",
         "default_config": {"host": "localhost", "port": 5432, "user": os.getenv("USER", "postgres"), "dbname": "postgres"},

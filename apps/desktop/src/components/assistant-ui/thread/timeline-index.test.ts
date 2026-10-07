@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { api } = vi.hoisted(() => ({ api: vi.fn() }))
 vi.mock('@/api/client', () => ({
   capabilityScoped: (scope: object) => scope,
-  hermesApi: api,
+  rabbitApi: api,
   // No owner pin in these tests: reads ride the caller's scope verbatim.
   sessionReadOwnerPin: () => ({})
 }))

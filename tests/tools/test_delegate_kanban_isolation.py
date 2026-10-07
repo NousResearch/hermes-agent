@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 # The subprocess-boundary tests below spawn ``sys.executable -c`` with a tmp
-# cwd. Without an explicit PYTHONPATH the child resolves ``hermes_cli`` /
+# cwd. Without an explicit PYTHONPATH the child resolves ``rabbit_cli`` /
 # ``agent`` through whatever install is on sys.path (in a worktree that is the
 # MAIN checkout's editable install, which may not contain the code under
 # test). Pin the repo root so the child always imports the tree being tested.
@@ -27,18 +27,18 @@ def _python_with_repo_path(code: str) -> str:
 
 
 def _make_running_kanban_task(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     attachments_root = tmp_path / "attachments"
     workspace = tmp_path / "parent-workspace"
     workspace.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_PROFILE", "parent-worker")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
-    monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(attachments_root))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_PROFILE", "parent-worker")
+    monkeypatch.setenv("RABBIT_KANBAN_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RABBIT_KANBAN_ATTACHMENTS_ROOT", str(attachments_root))
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli import kanban_db_connect as kbc
 
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
@@ -57,22 +57,22 @@ def _make_running_kanban_task(monkeypatch, tmp_path):
     finally:
         conn.close()
 
-    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", tid)
+    monkeypatch.setenv("RABBIT_KANBAN_RUN_ID", str(run_id))
     return kb, tid, workspace, attachments_root
 
 
 def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, tmp_path):
     """A delegate_task child must not inherit the parent's Kanban tool schema.
 
-    The parent process may be a dispatcher worker with HERMES_KANBAN_TASK set;
+    The parent process may be a dispatcher worker with RABBIT_KANBAN_TASK set;
     the child is only a subagent, not the run owner.
     """
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
-    home = tmp_path / ".hermes"
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_parent")
+    monkeypatch.setenv("RABBIT_KANBAN_RUN_ID", "123")
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     import tools.kanban_tools  # noqa: F401 - ensure registered
     from agent.delegation_context import delegated_child_context
@@ -141,18 +141,18 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
 
     Regression coverage for the vulnerable path: delegate_task marks child
     execution with a ContextVar, while execute_code used to scrub plain
-    ``os.environ`` and therefore never wrote HERMES_DELEGATED_CHILD_CONTEXT into
+    ``os.environ`` and therefore never wrote RABBIT_DELEGATED_CHILD_CONTEXT into
     the sandbox env.
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path / "parent-workspace"))
-    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock")
-    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_parent")
+    monkeypatch.setenv("RABBIT_KANBAN_RUN_ID", "123")
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(home / "kanban.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_WORKSPACE", str(tmp_path / "parent-workspace"))
+    monkeypatch.setenv("RABBIT_KANBAN_CLAIM_LOCK", "lock")
+    monkeypatch.delenv("RABBIT_DELEGATED_CHILD_CONTEXT", raising=False)
 
     from agent.delegation_context import delegated_child_context
     from tools.code_execution_env import _scrub_child_env
@@ -160,19 +160,19 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     with delegated_child_context():
         env = _scrub_child_env(
             dict(os.environ),
-            is_passthrough=lambda k: k.startswith("HERMES_KANBAN_"),
+            is_passthrough=lambda k: k.startswith("RABBIT_KANBAN_"),
             is_windows=False,
         )
 
-    assert os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
-    assert env["HERMES_HOME"] == str(home)
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_CLAIM_LOCK" not in env
+    assert os.environ.get("RABBIT_DELEGATED_CHILD_CONTEXT") is None
+    assert env["RABBIT_HOME"] == str(home)
+    assert env["RABBIT_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
+    assert "RABBIT_KANBAN_TASK" not in env
+    assert "RABBIT_KANBAN_RUN_ID" not in env
+    assert "RABBIT_KANBAN_CLAIM_LOCK" not in env
     # Board location and workspace routing ride along with the fence marker.
-    assert env["HERMES_KANBAN_DB"] == str(home / "kanban.db")
-    assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
+    assert env["RABBIT_KANBAN_DB"] == str(home / "kanban.db")
+    assert env["RABBIT_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
 
 
 def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
@@ -185,14 +185,14 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
     delegate child stays fenced too, quietly, without consuming the worker's heartbeat window."""
     kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from agent.delegation_context import delegated_child_context
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db_connect as kbc
     from tools import kanban_tools
 
     conn = kbc.connect()
     try:
         task_before = kb.get_task(conn, tid)
         events_before = kb.list_events(conn, tid)
-        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("RABBIT_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".rabbit"))
         monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
         # raising=False: a regression that drops the module flag must fail on the
         # symptom assertions below, not on this attribute probe.
@@ -202,10 +202,10 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
             assert kanban_tools.heartbeat_current_worker_from_env() is False
             monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
             assert kanban_tools.heartbeat_current_worker_from_env() is False
-        fence_warnings = [r for r in caplog.records if "HERMES_DELEGATED_CHILD_CONTEXT" in r.getMessage()]
+        fence_warnings = [r for r in caplog.records if "RABBIT_DELEGATED_CHILD_CONTEXT" in r.getMessage()]
         assert len(fence_warnings) == 1 and tid in fence_warnings[0].getMessage()
 
-        monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT")
+        monkeypatch.delenv("RABBIT_DELEGATED_CHILD_CONTEXT")
         monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
         with delegated_child_context("child-1"):
             assert kanban_tools.heartbeat_current_worker_from_env() is False
@@ -234,7 +234,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     from tools.environments.local import LocalEnvironment
 
     code = (
-        "from hermes_cli import kanban; "
+        "from rabbit_cli import kanban; "
         "import argparse; "
         "p=argparse.ArgumentParser(); "
         "sub=p.add_subparsers(dest='cmd'); "
@@ -260,7 +260,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
 
 def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_path):
     kb, tid, _workspace, attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db_connect as kbc
 
     from agent.delegation_context import delegated_child_context
     from tools import kanban_tools
@@ -295,7 +295,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 ):
     """Deterministic E2E: a delegated child cannot complete its parent task."""
     kb, tid, workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
-    from hermes_cli import kanban_db_connect as kbc
+    from rabbit_cli import kanban_db_connect as kbc
     from tools import delegate_tool
     from tools import kanban_tools
 

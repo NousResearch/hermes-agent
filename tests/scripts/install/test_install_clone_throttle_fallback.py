@@ -23,8 +23,8 @@ def test_clone_retries_and_publishes_only_materialized_tree(tmp_path, materializ
     git("commit", "-m", "fixture")
     dest = tmp_path / "install"
     attempts = tmp_path / "attempts"
-    env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
-               HERMES_INSTALL_DIR=dest.as_posix(), HERMES_REPO_URL=origin.as_posix())
+    env = dict(os.environ, HOME=tmp_path.as_posix(), RABBIT_HOME=(tmp_path / "home").as_posix(),
+               RABBIT_INSTALL_DIR=dest.as_posix(), RABBIT_REPO_URL=origin.as_posix())
     # Inject throttling at the network boundary; the fallback and checkout use real Git.
     script = f'''source {shlex.quote((ROOT / 'scripts/install.sh').as_posix())} --manifest
 sleep() {{ :; }}
@@ -48,4 +48,4 @@ stage_repository
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         assert (dest / "README").read_text() == "complete checkout\n"
-    assert not list(tmp_path.glob(".hermes-clone-*"))
+    assert not list(tmp_path.glob(".rabbit-clone-*"))

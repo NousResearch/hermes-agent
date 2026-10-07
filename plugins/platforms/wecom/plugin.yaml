@@ -3,10 +3,10 @@ label: WeCom (Enterprise WeChat)
 kind: platform
 version: 1.0.0
 description: >
-  WeCom / Enterprise WeChat gateway adapter for Hermes Agent. Registers two
+  WeCom / Enterprise WeChat gateway adapter for Rabbit Agent. Registers two
   platforms: ``wecom`` (Smart Robot over WebSocket) and ``wecom_callback``
   (self-built apps over an HTTP callback endpoint with AES message crypto).
-  Relays messages between WeCom chats and the Hermes agent.
+  Relays messages between WeCom chats and the Rabbit agent.
 author: NousResearch
 requires_env:
   - name: WECOM_BOT_ID

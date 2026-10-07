@@ -17,10 +17,10 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 # (``cmd_update``, ``kill_gateway_processes``, ``stop_profile_gateway``).
 # When a single test forgets to mock either ``os.kill`` or the global
 # ``find_gateway_pids`` helper, the real call leaks out of the hermetic
-# environment and finds the developer's live ``hermes-gateway`` process
+# environment and finds the developer's live ``rabbit-gateway`` process
 # via ``psutil`` — sending it SIGTERM mid-test. The shutdown forensics in
 # PR #23285 caught this happening 5+ times in 3 days, every time
-# correlated with a ``tests/hermes_cli/`` pytest run starting up.
+# correlated with a ``tests/rabbit_cli/`` pytest run starting up.
 #
 # This fixture makes the leak impossible by intercepting the two
 # primitives that actually do damage:
@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 #    a hard ``RuntimeError`` so the offending test gets a stack trace
 #    instead of silently murdering the real gateway.
 #  • ``subprocess.run`` / ``subprocess.Popen`` / ``call`` / ``check_call`` /
-#    ``check_output`` reject any ``systemctl ... <verb> hermes-gateway``
+#    ``check_output`` reject any ``systemctl ... <verb> rabbit-gateway``
 #    invocation that would mutate the live unit. Read-only systemctl
 #    calls (``status``, ``show``, ``list-units``) still pass through.
 #
@@ -64,10 +64,10 @@ def _live_system_guard(request, monkeypatch):
       • pty.spawn
       • asyncio.create_subprocess_exec / create_subprocess_shell
     Subprocess inspection looks at the WHOLE command string (not just
-    tokens[0]), so ``bash -c "systemctl restart hermes-gateway"``,
+    tokens[0]), so ``bash -c "systemctl restart rabbit-gateway"``,
     ``sudo systemctl ...``, ``env systemctl ...``, ``setsid systemctl ...``
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
-    targeting hermes/python patterns are also blocked. Bare ``git``
+    targeting rabbit/python patterns are also blocked. Bare ``git``
     commands may not mutate a protected checkout. Git writes against
     temporary repositories and read-only Git commands remain allowed.
     """
@@ -168,13 +168,13 @@ def _live_system_guard(request, monkeypatch):
         monkeypatch.setattr(_os, "killpg", _guarded_killpg)
 
     # ── Subprocess command-string inspection (whole-line) ──────────
-    _HERMES_TOKENS = (
-        "hermes-gateway",
-        "hermes.service",
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
+    _RABBIT_TOKENS = (
+        "rabbit-gateway",
+        "rabbit.service",
+        "rabbit_cli.main gateway",
+        "rabbit_cli/main.py gateway",
         "gateway/run.py",
-        "hermes gateway",
+        "rabbit gateway",
     )
     _MUTATING_VERBS = (
         "restart", "start", "stop", "kill", "reload",
@@ -214,15 +214,15 @@ def _live_system_guard(request, monkeypatch):
                 return ""
         return str(cmd)
 
-    def _matches_hermes_gateway(cmd_str: str) -> bool:
+    def _matches_rabbit_gateway(cmd_str: str) -> bool:
         low = cmd_str.lower()
-        return any(tok in low for tok in _HERMES_TOKENS)
+        return any(tok in low for tok in _RABBIT_TOKENS)
 
     def _is_blocked_systemctl(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
         if "systemctl" not in cmd_str:
             return False
-        if not _matches_hermes_gateway(cmd_str):
+        if not _matches_rabbit_gateway(cmd_str):
             return False
         try:
             tokens = _shlex.split(cmd_str)
@@ -252,11 +252,11 @@ def _live_system_guard(request, monkeypatch):
             head = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             if head in _PROCESS_KILLERS:
                 low = cmd_str.lower()
-                # pkill -f pattern: catch hermes-themed patterns + a
+                # pkill -f pattern: catch rabbit-themed patterns + a
                 # plain "python" -f which would catch the live gateway
-                # whose cmdline contains "python -m hermes_cli.main".
+                # whose cmdline contains "python -m rabbit_cli.main".
                 if (
-                    "hermes" in low
+                    "rabbit" in low
                     or "gateway" in low
                     or ("python" in low and "-f" in tokens)
                 ):
@@ -278,7 +278,7 @@ def _live_system_guard(request, monkeypatch):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — would mutate the "
-                "live hermes-gateway systemd unit. Mock "
+                "live rabbit-gateway systemd unit. Mock "
                 "subprocess.run / _run_systemctl in the test, or "
                 "mark with @pytest.mark.live_system_guard_bypass."
             )
@@ -286,12 +286,12 @@ def _live_system_guard(request, monkeypatch):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — process-killer command "
-                "targeting hermes/python could hit the live gateway. "
+                "targeting rabbit/python could hit the live gateway. "
                 "Mark with @pytest.mark.live_system_guard_bypass if "
                 "intentional."
             )
-        # Block any subprocess that would run `hermes update` (or the
-        # equivalent `python -m hermes_cli.main update`).  These commands
+        # Block any subprocess that would run `rabbit update` (or the
+        # equivalent `python -m rabbit_cli.main update`).  These commands
         # run `git fetch origin + git pull` against the REAL checkout,
         # overwriting files like pyproject.toml mid-test-run and corrupting
         # every subsequent subprocess that reads them.  The corruption is
@@ -303,19 +303,19 @@ def _live_system_guard(request, monkeypatch):
         cmd_str = _cmd_to_string(cmd)
         low = cmd_str.lower()
         if "update" in low and (
-            # hermes update / hermes update --gateway / setsid bash -c ... hermes update
-            ("hermes" in low and "update" in low.split())
+            # rabbit update / rabbit update --gateway / setsid bash -c ... rabbit update
+            ("rabbit" in low and "update" in low.split())
             or
-            # python -m hermes_cli.main update --gateway
-            ("hermes_cli" in low and "update" in low.split())
+            # python -m rabbit_cli.main update --gateway
+            ("rabbit_cli" in low and "update" in low.split())
             or
-            # venv/bin/hermes update  (absolute path variant used in tests)
-            (".venv/bin/hermes" in low and "update" in low)
+            # venv/bin/rabbit update  (absolute path variant used in tests)
+            (".venv/bin/rabbit" in low and "update" in low)
         ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this command would run "
-                "`hermes update` against the real checkout, fetching "
+                "`rabbit update` against the real checkout, fetching "
                 "from origin and overwriting repo files (e.g. "
                 "pyproject.toml) mid-test-run. This corrupts every "
                 "subsequent subprocess in the same runner. "
@@ -325,17 +325,17 @@ def _live_system_guard(request, monkeypatch):
                 "needed (e.g. an integration test testing the update "
                 "flow against a dedicated throwaway repo)."
             )
-        # Block spawning a REAL gateway runtime (``python -m hermes_cli.main
-        # gateway run|start|restart``). ``_spawn_hermes_action`` launches it
+        # Block spawning a REAL gateway runtime (``python -m rabbit_cli.main
+        # gateway run|start|restart``). ``_spawn_rabbit_action`` launches it
         # with start_new_session=True, so it outlives the pytest worker; the
-        # child inherits the pytest-tmp HERMES_HOME, resolves the DEVELOPER's
-        # ``hermes-gateway`` systemd unit (a tmp home hashes to no profile
+        # child inherits the pytest-tmp RABBIT_HOME, resolves the DEVELOPER's
+        # ``rabbit-gateway`` systemd unit (a tmp home hashes to no profile
         # suffix), restarts the live gateway, and the survivors squat the
         # webhook port. 2026-09-03: 39 such orphans lived 6 days after a
         # sibling refactor moved the spawn seam and left tests patching the
         # facade. The canonical matcher, never an argv substring.
         from gateway.status import gateway_spawn_intent_subcommand
-        # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
+        # A gateway launched INSIDE a container (`docker exec … rabbit gateway start`) cannot
         # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
         in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES
         if (
@@ -346,11 +346,11 @@ def _live_system_guard(request, monkeypatch):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this would spawn a REAL "
-                "hermes gateway runtime that outlives the test (it is "
+                "rabbit gateway runtime that outlives the test (it is "
                 "detached), restarts the developer's live gateway, and "
                 "holds the webhook port. Patch the spawn seam where "
-                "production reads it (hermes_cli.web_server_gateway."
-                "_spawn_hermes_action), or mark with "
+                "production reads it (rabbit_cli.web_server_gateway."
+                "_spawn_rabbit_action), or mark with "
                 "@pytest.mark.spawns_gateway_lookalike a test that spawns "
                 "and reaps its own stub child."
             )

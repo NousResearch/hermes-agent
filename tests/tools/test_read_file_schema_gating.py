@@ -33,22 +33,22 @@ class TestReadFileSchemaStatic(unittest.TestCase):
 
         # direct key → True
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
-            with patch("hermes_cli.config.load_config_readonly",
+            with patch("rabbit_cli.config.load_config_readonly",
                        return_value={}):
                 self.assertTrue(rx.hosted_ocr_available())
         # config false beats key
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
-            with patch("hermes_cli.config.load_config_readonly",
+            with patch("rabbit_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": False}}):
                 self.assertFalse(rx.hosted_ocr_available())
         # config true WITHOUT key → False (key is the one gate)
         with patch.dict(rx.os.environ, {}, clear=False):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
-            with patch("hermes_cli.config.load_config_readonly",
+            with patch("rabbit_cli.config.load_config_readonly",
                        return_value={"file_tools": {"hosted_ocr": True}}):
                 self.assertFalse(rx.hosted_ocr_available())
         # nothing → False (Nous gateway alone must NOT unlock)
-        with patch("hermes_cli.config.load_config_readonly",
+        with patch("rabbit_cli.config.load_config_readonly",
                    return_value={}):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
             self.assertFalse(rx.hosted_ocr_available())
@@ -60,13 +60,13 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         import tools.read_extract as rx
 
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
-            with patch("hermes_cli.config.load_config_readonly",
+            with patch("rabbit_cli.config.load_config_readonly",
                        return_value={}):
                 enabled, key, url = rx._hosted_ocr_config()
         self.assertTrue(enabled)
         self.assertEqual(key, "fc-x")
         self.assertIsNone(url)
-        with patch("hermes_cli.config.load_config_readonly",
+        with patch("rabbit_cli.config.load_config_readonly",
                    return_value={}):
             rx.os.environ.pop("FIRECRAWL_API_KEY", None)
             enabled, key, url = rx._hosted_ocr_config()

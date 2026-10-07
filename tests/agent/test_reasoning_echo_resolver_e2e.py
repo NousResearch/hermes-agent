@@ -14,24 +14,24 @@ feature silently dies and no current test catches it. This test closes that gap.
 
 It also pins the named-custom-provider case: a provider declared under
 `providers.<name>` resolves at runtime to `provider == "custom"` (see
-`hermes_cli/runtime_provider.py`), and the echo flag must still take effect for
+`rabbit_cli/runtime_provider.py`), and the echo flag must still take effect for
 it. A future refactor keying the flag on provider *name* would reintroduce that
 miss; this test is the tripwire.
 
-Uses a temp HERMES_HOME + real `load_config_readonly` (the config cache is
+Uses a temp RABBIT_HOME + real `load_config_readonly` (the config cache is
 path-keyed, so this is hermetic) — no live server, no hand-set flag.
 """
 
 from __future__ import annotations
 
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from rabbit_cli.runtime_provider import resolve_runtime_provider
 from agent.agent_runtime_helpers import copy_reasoning_content_for_api
 from run_agent import AIAgent
 
 
 def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
-    """Point HERMES_HOME at a temp profile declaring a named custom provider."""
-    home = tmp_path / "hermes"
+    """Point RABBIT_HOME at a temp profile declaring a named custom provider."""
+    home = tmp_path / "rabbit"
     home.mkdir()
     lines = [
         "model:",
@@ -47,10 +47,10 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
         "    key_env: LLAMACPP_KEY",
     ]
     (home / "config.yaml").write_text("\n".join(lines) + "\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     # Drop any path-keyed config cache from a prior test.
     try:
-        from hermes_cli import config as _cfg
+        from rabbit_cli import config as _cfg
         for name in ("_CONFIG_CACHE", "_config_cache"):
             if hasattr(_cfg, name):
                 getattr(_cfg, name).clear()
@@ -60,7 +60,7 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
 
 def _agent_with_init_flag() -> AIAgent:
     """Build an agent and materialize the echo flag the way init_agent does."""
-    from hermes_cli.config import load_config_readonly
+    from rabbit_cli.config import load_config_readonly
     agent = object.__new__(AIAgent)
     agent._reasoning_echo_flag = bool(
         (load_config_readonly().get("model") or {}).get("reasoning_echo")

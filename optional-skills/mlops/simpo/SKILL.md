@@ -7,7 +7,7 @@ license: MIT
 dependencies: [torch, transformers, datasets, trl, accelerate]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Post-Training, SimPO, Preference Optimization, Alignment, DPO Alternative, Reference-Free, LLM Alignment, Efficient Training]
 
 ---

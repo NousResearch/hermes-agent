@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from agent.learning_graph import memory_node_id
-from hermes_time import safe_strftime
+from rabbit_time import safe_strftime
 
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 # constants.ts AGE_GRADIENT — old quiet, recent bright.
@@ -334,7 +334,7 @@ def render_graph(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, rev
     reveal, cols, rows = _clamp(reveal, 0.0, 1.0), max(44, cols), max(14, rows)
     nodes = list(payload.get("nodes", []))
     if not nodes:
-        return {"grid": [[["no learning yet — keep using Hermes and it maps out here", STYLE_DIM, 0.7]]], "date": "", "reveal": reveal, "visible": 0}
+        return {"grid": [[["no learning yet — keep using Rabbit and it maps out here", STYLE_DIM, 0.7]]], "date": "", "reveal": reveal, "visible": 0}
 
     rec, cmap = compute_recency(nodes), category_color_map(payload)
     buckets = _build_chart_buckets(nodes, rec, max_rows=max(4, rows - 3))

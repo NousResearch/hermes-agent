@@ -18,10 +18,10 @@ function hasDashboardBundle(dir) {
 }
 
 /**
- * Resolve the web bundle served by `hermes dashboard` / `hermes serve` when it
+ * Resolve the web bundle served by `rabbit dashboard` / `rabbit serve` when it
  * is spawned by Desktop as the local backend.
  *
- * This must be the dashboard bundle (`hermes_cli/web_dist`), not the Electron
+ * This must be the dashboard bundle (`rabbit_cli/web_dist`), not the Electron
  * renderer bundle (`apps/desktop/dist` or the packaged `app.asar.unpacked/dist`).
  * The Electron renderer is loaded by BrowserWindow from file://; the dashboard
  * backend is also reachable in a normal browser, where serving the Desktop
@@ -29,7 +29,7 @@ function hasDashboardBundle(dir) {
  */
 function resolveDashboardWebDist(options: any = {}) {
   const env = options.env || process.env
-  const override = env.HERMES_DESKTOP_DASHBOARD_WEB_DIST
+  const override = env.RABBIT_DESKTOP_DASHBOARD_WEB_DIST
 
   if (override && directoryExists(path.resolve(override))) {
     return path.resolve(override)
@@ -37,15 +37,15 @@ function resolveDashboardWebDist(options: any = {}) {
 
   const candidates = []
 
-  if (options.activeHermesRoot) {
-    candidates.push(path.join(options.activeHermesRoot, 'hermes_cli', 'web_dist'))
+  if (options.activeRabbitRoot) {
+    candidates.push(path.join(options.activeRabbitRoot, 'rabbit_cli', 'web_dist'))
   }
 
   if (options.appRoot) {
     // Dev/source layout: <repo>/apps/desktop/electron/main.ts has APP_ROOT at
     // <repo>/apps/desktop. Packaged layout can put APP_ROOT under resources/app.asar;
     // this candidate is harmless there and useful in tests/source checkouts.
-    candidates.push(path.resolve(options.appRoot, '..', '..', 'hermes_cli', 'web_dist'))
+    candidates.push(path.resolve(options.appRoot, '..', '..', 'rabbit_cli', 'web_dist'))
   }
 
   for (const candidate of candidates) {
@@ -55,13 +55,13 @@ function resolveDashboardWebDist(options: any = {}) {
   }
 
   // Fall back to the canonical active install path even if it does not exist so
-  // the child `hermes dashboard --skip-build` fails with its explicit missing
+  // the child `rabbit dashboard --skip-build` fails with its explicit missing
   // dist error instead of silently serving the wrong Desktop bundle.
-  if (options.activeHermesRoot) {
-    return path.join(options.activeHermesRoot, 'hermes_cli', 'web_dist')
+  if (options.activeRabbitRoot) {
+    return path.join(options.activeRabbitRoot, 'rabbit_cli', 'web_dist')
   }
 
-  return path.resolve('hermes_cli', 'web_dist')
+  return path.resolve('rabbit_cli', 'web_dist')
 }
 
 export { resolveDashboardWebDist }

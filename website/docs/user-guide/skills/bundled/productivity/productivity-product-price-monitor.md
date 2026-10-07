@@ -17,7 +17,7 @@ Watch product, flight, or listing prices; alert on target.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/product-price-monitor` |
 | Version | `0.1.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Prices`, `Availability`, `Shopping`, `Travel`, `Alerts` |
@@ -26,7 +26,7 @@ Watch product, flight, or listing prices; alert on target.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Product Price Monitor
@@ -55,12 +55,12 @@ Specify currency, all-in vs pre-tax price, maximum price, availability/stock rul
 
 ### 3. Establish a live baseline, then schedule
 
-Fetch a bounded live result with `web_extract` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.hermes/price-watches/<watch-slug>.json`, then create the job:
+Fetch a bounded live result with `web_extract` or `browser_navigate` and record retrieval time, source price, fees/taxes, availability, and terms. Do not schedule until one foreground fetch works. Write the watch contract (item, condition, baseline observation) to a state file under `~/.rabbit/price-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",
         schedule="every 6h",
-        prompt="Load the product-price-monitor skill and run the tick for the watch contract at ~/.hermes/price-watches/<watch-slug>.json.",
+        prompt="Load the product-price-monitor skill and run the tick for the watch contract at ~/.rabbit/price-watches/<watch-slug>.json.",
         deliver=<user's destination>)
 ```
 

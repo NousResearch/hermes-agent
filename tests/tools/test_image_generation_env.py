@@ -33,9 +33,6 @@ def test_image_generate_tool_returns_actionable_error_when_no_backend(monkeypatc
     monkeypatch.setattr(
         image_generation_tool, "_resolve_managed_fal_gateway", lambda: None
     )
-    monkeypatch.setattr(
-        image_generation_tool, "managed_nous_tools_enabled", lambda: False
-    )
 
     result = json.loads(
         image_generation_tool.image_generate_tool(prompt="a cat")

@@ -14,25 +14,25 @@ Delegate coding to xAI Grok Build CLI (features, PRs).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/autonomous-ai-agents/grok` |
+| Source | Optional — install with `rabbit skills install official/autonomous-ai-agents/grok` |
 | Path | `optional-skills/autonomous-ai-agents/grok` |
 | Version | `0.1.1` |
-| Author | Matt Maximo (MattMaximo), Hermes Agent |
+| Author | Matt Maximo (MattMaximo), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Grok`, `xAI`, `Code-Review`, `Refactoring`, `Automation` |
-| Related skills | [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
+| Related skills | [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`rabbit-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent.md) |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Grok Build CLI — Hermes Orchestration Guide
+# Grok Build CLI — Rabbit Orchestration Guide
 
 Delegate coding tasks to [Grok Build](https://docs.x.ai/build/overview) (xAI's
-autonomous coding agent CLI, the `grok` command) via the Hermes terminal. Grok
+autonomous coding agent CLI, the `grok` command) via the Rabbit terminal. Grok
 can read files, write code, run shell commands, spawn subagents, and manage git
 workflows. It runs three ways: an interactive TUI, **headless** (`-p`), and as
 an **ACP agent** over JSON-RPC.
@@ -192,7 +192,7 @@ terminal(command="grok --no-auto-update -c -p 'What did you change last time?'",
 To have Grok review local artifacts and return a clean markdown note (for
 Obsidian or a repo) without mutating anything:
 
-1. Prepare stable input files first with Hermes tools (`read_file`,
+1. Prepare stable input files first with Rabbit tools (`read_file`,
    `write_file`). Snapshot only the relevant context into a temp file rather
    than dumping raw paths.
 2. Run Grok headless **without** `--always-approve` so it cannot auto-write, and
@@ -200,7 +200,7 @@ Obsidian or a repo) without mutating anything:
 3. Save Grok's stdout straight into the destination note with `write_file()`.
 
 ```
-grok --no-auto-update -p "Read ~/.hermes/cache/scratch/current.md and ~/.hermes/cache/scratch/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
+grok --no-auto-update -p "Read ~/.rabbit/cache/scratch/current.md and ~/.rabbit/cache/scratch/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
 ```
 
 **Pitfall (same as Claude Code):** for document rewrites, a loose "rewrite this"
@@ -233,22 +233,22 @@ terminal(command="gh pr comment 42 --body '<review text>'", workdir="/path/to/re
 
 ```
 # Create worktrees
-terminal(command="git worktree add -b fix/issue-78 ~/.hermes/cache/scratch/issue-78 main", workdir="~/project")
-terminal(command="git worktree add -b fix/issue-99 ~/.hermes/cache/scratch/issue-99 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-78 ~/.rabbit/cache/scratch/issue-78 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-99 ~/.rabbit/cache/scratch/issue-99 main", workdir="~/project")
 
 # Launch Grok headless in each (background)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-78", background=true, notify_on_complete=true)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-99", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="~/.rabbit/cache/scratch/issue-78", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="~/.rabbit/cache/scratch/issue-99", background=true, notify_on_complete=true)
 
 # Monitor
 process(action="list")
 
 # After completion: push and open PRs
-terminal(command="cd ~/.hermes/cache/scratch/issue-78 && git push -u origin fix/issue-78")
+terminal(command="cd ~/.rabbit/cache/scratch/issue-78 && git push -u origin fix/issue-78")
 terminal(command="gh pr create --repo user/repo --head fix/issue-78 --title 'fix: ...' --body '...'")
 
 # Cleanup
-terminal(command="git worktree remove ~/.hermes/cache/scratch/issue-78", workdir="~/project")
+terminal(command="git worktree remove ~/.rabbit/cache/scratch/issue-78", workdir="~/project")
 ```
 
 ## Useful Subcommands & TUI Commands
@@ -289,7 +289,7 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
 1. **Auth is subscription-gated.** `grok login` requires a SuperGrok or X
    Premium+ subscription. If login fails or there's no `~/.grok/auth.json`,
    confirm the subscription is active before falling back to `XAI_API_KEY`.
-2. **Don't conflate Hermes' xAI auth with the `grok` CLI's auth.** Hermes'
+2. **Don't conflate Rabbit' xAI auth with the `grok` CLI's auth.** Rabbit'
    `x_search` runs on its own xAI OAuth; the standalone `grok` CLI has a
    separate token in `~/.grok/auth.json`. A working `x_search` does NOT mean
    `grok` is logged in.
@@ -308,7 +308,7 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
    `mktemp -d && git init` for scratch commit tasks.
 9. **Clean up tmux sessions** with `tmux kill-session -t <name>` when done.
 
-## Rules for Hermes Agents
+## Rules for Rabbit Agents
 
 1. **Prefer headless `-p`** for single tasks — cleanest integration, structured
    output via `--output-format json`.
@@ -321,6 +321,6 @@ Put global preferences in `~/.grok/config.toml` (not project-scoped
 6. **Use tmux for multi-turn interactive work** and monitor with
    `tmux capture-pane -t <session> -p -S -50`.
 7. **Verify auth before relying on it** — check `~/.grok/auth.json` or run a
-   cheap `grok -p "Say ok."` smoke test; don't assume Hermes' xAI auth carries
+   cheap `grok -p "Say ok."` smoke test; don't assume Rabbit' xAI auth carries
    over.
 8. **Report results to the user** — summarize what Grok changed and what's left.

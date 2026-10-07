@@ -2,7 +2,7 @@
 
 tests/install/e2e-assets/verify-plugin-preservation.py is the standalone
 hook the release E2E drivers call before and after a real upgrade. These
-tests exercise it against a real temp HERMES_HOME (real files, real
+tests exercise it against a real temp RABBIT_HOME (real files, real
 symlinks) — no source-reading, no mocks of the filesystem.
 
 The verifier must be read-only against the scanned home and must catch
@@ -53,13 +53,13 @@ def _remove_link(link):
 
 @pytest.fixture()
 def home(tmp_path):
-    """A controlled temp HERMES_HOME with a non-dependency directory wrapper
+    """A controlled temp RABBIT_HOME with a non-dependency directory wrapper
     plugin: marker + payload + a symlink to an external runtime whose witness
     file lives OUTSIDE the home (externally-owned), plus a second plugin in a
     profile tree. No pyproject anywhere in the scanned root — the fixture is
     directory-only, so the scanner cannot recurse into a dependency graph and
     the test needs no network/Torch."""
-    h = tmp_path / "hermes-home"
+    h = tmp_path / "rabbit-home"
     if os.name != "nt":
         vpp.seed_fixtures(h, tmp_path / "external-mnemosyne-runtime")
         (h / "profiles/e2e-preserve").rename(h / "profiles/work")

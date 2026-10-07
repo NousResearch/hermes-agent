@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from hermes_cli.version_info import get_version_info
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_cli.version_info import get_version_info
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 CODEX_URL = "https://chatgpt.com/backend-api/codex"
@@ -33,12 +33,12 @@ def profile(tmp_path, monkeypatch):
     home = tmp_path / "profile"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    token = set_hermes_home_override(home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    token = set_rabbit_home_override(home)
     try:
         yield home
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def _set_legacy_attribution(profile, enabled):
@@ -54,7 +54,7 @@ def _set_legacy_attribution(profile, enabled):
 
 @pytest.fixture
 def wire(profile, monkeypatch):
-    """Replace only HTTP transports; use Hermes routing and the real SDK."""
+    """Replace only HTTP transports; use Rabbit routing and the real SDK."""
     from agent import auxiliary_client
     from run_agent import AIAgent
 
@@ -108,8 +108,8 @@ def wire(profile, monkeypatch):
 
 
 def _assert_identity(request, account_id="acct-attribution-test"):
-    assert request.headers["originator"] == "hermes-agent"
-    assert request.headers["user-agent"] == f"HermesAgent/{get_version_info().base_version}"
+    assert request.headers["originator"] == "rabbit-agent"
+    assert request.headers["user-agent"] == f"RabbitAgent/{get_version_info().base_version}"
     assert request.headers["chatgpt-account-id"] == account_id
     assert "extra_headers" not in json.loads(request.content)
 
@@ -139,10 +139,10 @@ def test_new_identity_is_limited_to_the_official_endpoint(base_url, attributed):
 
     headers = _codex_cloudflare_headers(_jwt(), base_url=base_url)
 
-    assert headers["originator"] == ("hermes-agent" if attributed else "codex_cli_rs")
+    assert headers["originator"] == ("rabbit-agent" if attributed else "codex_cli_rs")
     assert headers["User-Agent"] == (
-        f"HermesAgent/{get_version_info().base_version}"
-        if attributed else "codex_cli_rs/0.0.0 (Hermes Agent)"
+        f"RabbitAgent/{get_version_info().base_version}"
+        if attributed else "codex_cli_rs/0.0.0 (Rabbit Agent)"
     )
 
 
@@ -180,7 +180,7 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
         agent.client.responses.create(model=MODEL, input="test")
         assert "originator" not in wire[-1].headers
         assert "chatgpt-account-id" not in wire[-1].headers
-        assert not wire[-1].headers["user-agent"].startswith("HermesAgent/")
+        assert not wire[-1].headers["user-agent"].startswith("RabbitAgent/")
     finally:
         for client in clients:
             client.close()
@@ -247,7 +247,7 @@ def test_credential_pool_custom_endpoint_keeps_existing_identity(
         )
         assert wire[-1].url.host == "proxy.example"
         assert wire[-1].headers["originator"] == "codex_cli_rs"
-        assert wire[-1].headers["user-agent"] == "codex_cli_rs/0.0.0 (Hermes Agent)"
+        assert wire[-1].headers["user-agent"] == "codex_cli_rs/0.0.0 (Rabbit Agent)"
         assert wire[-1].headers["chatgpt-account-id"] == "acct-attribution-test"
     finally:
         client.close()
@@ -338,7 +338,7 @@ def test_required_identity_wins_over_configured_header_defaults(
         proxy.responses.create(model=MODEL, input="test")
         assert wire[-1].headers["originator"] == "codex_cli_rs"
         assert "custom-client" in wire[-1].headers.get_list("user-agent")
-        assert "HermesAgent/" not in wire[-1].headers["user-agent"]
+        assert "RabbitAgent/" not in wire[-1].headers["user-agent"]
         assert wire[-1].headers["x-test-header"] == "preserved"
         assert "chatgpt-account-id" not in wire[-1].headers
     finally:

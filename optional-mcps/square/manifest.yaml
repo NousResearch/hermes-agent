@@ -7,9 +7,9 @@ description: >-
   Catalog, orders, and payments via Square's hosted MCP.
 source: https://developer.squareup.com/docs/mcp
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
-# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# Rabbit's MCP client + mcp_oauth_manager handle discovery, PKCE, token
 # exchange, and refresh.
 # "square" the English word is everywhere ("square brackets") — only the
 # unambiguous brand form triggers a suggestion.
@@ -28,6 +28,6 @@ suggest:
     - squareup.com
 
 post_install: |
-  On first connection Hermes opens a browser to authorize with
-  Square (or run `hermes mcp login square`). Approve access,
+  On first connection Rabbit opens a browser to authorize with
+  Square (or run `rabbit mcp login square`). Approve access,
   then restart the session so tools load.

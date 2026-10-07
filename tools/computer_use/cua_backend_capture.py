@@ -291,7 +291,7 @@ class _CaptureMixin:
         tree, window_title = _tree_and_title(gws_out)
         # Prefer the canonical structuredContent.elements (real frames); the markdown regex fallback yields
         # (0,0,0,0) bounds.
-        # Surface 2 of NousResearch/hermes-agent#47072: prefer the canonical structuredContent.elements
+        # Surface 2 of seven0070/Rabbit-#47072: prefer the canonical structuredContent.elements
         # array (trycua/cua#1961). Falls back to markdown regex parsing for cua-driver builds that didn't
         # carry the structured shape — those bounds come back (0,0,0,0); the structured path preserves real
         # frames.

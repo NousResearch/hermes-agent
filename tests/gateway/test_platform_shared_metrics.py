@@ -10,10 +10,10 @@ from gateway.platforms.base import BasePlatformAdapter, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from hermes_cli.observability import relay_shared_metrics as rsm
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_gateway as smg
-from hermes_constants import get_hermes_home
+from rabbit_cli.observability import relay_shared_metrics as rsm
+from rabbit_cli.observability import shared_metrics_contract as contract
+from rabbit_cli.observability import shared_metrics_gateway as smg
+from rabbit_constants import get_rabbit_home
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def rows(monkeypatch):
     got = []
     monkeypatch.setattr(rsm, "enabled", lambda: True)
     monkeypatch.setattr(rsm, "record_process_mark",
-                        lambda mark, data: got.append((mark, dict(data), str(get_hermes_home()))))
+                        lambda mark, data: got.append((mark, dict(data), str(get_rabbit_home()))))
     monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda *_: 0.0)
     smg._reply_clocks.clear()
     smg._chat_homes.clear()
@@ -75,7 +75,7 @@ def test_every_connect_attempt_records_one_health_row_with_a_closed_error_class(
     assert _connect(_Adapter(), is_reconnect=True) is True
     assert _connect(_Adapter(connect=False)) is False
     assert _connect(_Adapter(connect=ConnectionResetError("peer reset by 10.0.0.1"))) == "ConnectionResetError"
-    assert rows("hermes.platform.health") == [
+    assert rows("rabbit.platform.health") == [
         {"error_class": "none", "event": "connect_ok", "platform": "telegram"},
         {"error_class": "none", "event": "reconnect", "platform": "telegram"},
         {"error_class": "config", "event": "connect_failed", "platform": "telegram"},
@@ -88,7 +88,7 @@ def test_one_logical_delivery_is_one_row_whatever_the_retries(rows):
     assert asyncio.run(flaky._send_with_retry("42", "hi", base_delay=0)).success
     blocked = _Adapter([SendResult(success=False, error="Forbidden: bot was blocked", error_kind="forbidden")] * 3)
     assert not asyncio.run(blocked._send_with_retry("42", "hi", base_delay=0)).success
-    assert rows("hermes.platform.delivery") == [
+    assert rows("rabbit.platform.delivery") == [
         {"failure_class": "none", "outcome": "sent", "platform": "telegram"},
         {"failure_class": "forbidden", "outcome": "failed", "platform": "telegram"},
     ]
@@ -98,7 +98,7 @@ def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows
     adapter = _Adapter()
     smg.start_reply_clock(SimpleNamespace(platform=Platform.TELEGRAM, chat_id="42"))
     asyncio.run(adapter._send_with_retry("42", "⏳ still working on the previous message"))  # busy ack
-    assert rows("hermes.gateway.reply_latency") == []
+    assert rows("rabbit.gateway.reply_latency") == []
     consumer = GatewayStreamConsumer(adapter, "42", StreamConsumerConfig(cursor=""))
     assert asyncio.run(consumer._send_or_edit("first streamed chunk"))
     asyncio.run(consumer._send_or_edit("first streamed chunk, more"))  # later edits are not the first reply
@@ -109,7 +109,7 @@ def test_first_reply_latency_is_one_row_per_turn_stopped_only_by_reply_text(rows
     asyncio.run(adapter.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
     smg.start_reply_clock(SimpleNamespace(platform=Platform.TELEGRAM, chat_id="7"), internal=True)
     asyncio.run(adapter.send_final_ledgered(event, "k", "background notice", {}, reply_to=None))
-    assert rows("hermes.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "telegram"}] * 2
+    assert rows("rabbit.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "telegram"}] * 2
 
 
 def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
@@ -122,26 +122,26 @@ def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
                          source=SimpleNamespace(platform=Platform.SLACK, chat_id="C2", thread_id=None))
     smg.start_reply_clock(event.source)
     asyncio.run(relay.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
-    assert rows("hermes.gateway.reply_latency") == [
+    assert rows("rabbit.gateway.reply_latency") == [
         {"first_response_bucket": "lt_2s", "platform": "discord"}, {"first_response_bucket": "lt_2s", "platform": "slack"}]
     assert not smg._reply_clocks
 
 
 def test_a_delivery_sent_after_the_routed_scope_resets_lands_in_the_owning_profile(rows, tmp_path):
     # Multiplexed gateway: the turn starts in profile B's scope, the final send runs after it is reset.
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     home_b = tmp_path / "profiles" / "b"
-    token = set_hermes_home_override(str(home_b))
+    token = set_rabbit_home_override(str(home_b))
     try:
         smg.start_reply_clock(SimpleNamespace(platform=Platform.SLACK, chat_id="C9"))
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     asyncio.run(_Adapter(platform=Platform.SLACK)._send_with_retry("C9", "final answer", base_delay=0))
     asyncio.run(_Adapter()._send_with_retry("unseen", "hi", base_delay=0))  # no turn: the caller's scope
-    assert rows("hermes.platform.delivery", with_home=True) == [
+    assert rows("rabbit.platform.delivery", with_home=True) == [
         (str(home_b), {"failure_class": "none", "outcome": "sent", "platform": "slack"}),
-        (str(get_hermes_home()), {"failure_class": "none", "outcome": "sent", "platform": "telegram"}),
+        (str(get_rabbit_home()), {"failure_class": "none", "outcome": "sent", "platform": "telegram"}),
     ]
 
 
@@ -178,8 +178,8 @@ def test_fatal_handlers_count_lost_connections_in_the_owning_profile_only(rows, 
         primary = _fatal(_Adapter(platform=Platform.RELAY), code)
         runner.adapters[Platform.RELAY] = primary
         asyncio.run(runner._handle_adapter_fatal_error_impl(primary))
-    launch_home = str(get_hermes_home())
-    assert rows("hermes.platform.health", with_home=True) == [
+    launch_home = str(get_rabbit_home())
+    assert rows("rabbit.platform.health", with_home=True) == [
         (str(home_b), {"error_class": "network", "event": "disconnect", "platform": "telegram"}),
         (launch_home, {"error_class": "auth", "event": "disconnect", "platform": "relay"}),
     ]
@@ -211,5 +211,5 @@ def test_classifying_a_connect_failure_never_replaces_the_adapters_exception(row
         warnings.simplefilter("error")
         seen = asyncio.run(attempt())
     assert seen is raised and seen.__context__ is None
-    assert rows("hermes.platform.health") == [
+    assert rows("rabbit.platform.health") == [
         {"error_class": "network", "event": "connect_failed", "platform": "telegram"}]

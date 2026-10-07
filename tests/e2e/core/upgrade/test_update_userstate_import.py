@@ -1,6 +1,6 @@
-"""`hermes import` of a broken backup archive must report failure, never "restored".
+"""`rabbit import` of a broken backup archive must report failure, never "restored".
 
-The archive is made by the real ``hermes backup`` from a populated home, then damaged the ways
+The archive is made by the real ``rabbit backup`` from a populated home, then damaged the ways
 archives really break (a download cut off half-way, a file that is not a zip at all, one member
 whose bytes rotted, a target directory the importer cannot write). Each import runs as a fresh
 sandboxed CLI over a home that already holds the user's current config; the contract is the
@@ -43,14 +43,14 @@ def _home(root: Path, name: str) -> dict:
 
 
 def _cli(root: Path, env: dict, *args: str):
-    return H.run([PY, "-m", "hermes_cli.main", *args], env=env, cwd=root, writable=[root], timeout=300)
+    return H.run([PY, "-m", "rabbit_cli.main", *args], env=env, cwd=root, writable=[root], timeout=300)
 
 
 @pytest.fixture(scope="module")
 def archive(tmp_path_factory) -> tuple[Path, Path]:
     root = tmp_path_factory.mktemp("import")
     env = _home(root, "src")
-    hh = Path(env["HERMES_HOME"])
+    hh = Path(env["RABBIT_HOME"])
     (hh / "config.yaml").write_text("# from the backup\nmodel:\n  default: backup-model\n", encoding="utf-8")
     (hh / "SOUL.md").write_text("soul from the backup\n", encoding="utf-8")
     (hh / "skills" / "demo").mkdir(parents=True)
@@ -96,7 +96,7 @@ def test_import_of_a_broken_archive_fails_and_leaves_the_home_alone(archive, kin
     bad = root / f"{kind}.zip"
     BROKEN[kind](good, bad)
     env = _home(root, f"dst-{kind}")
-    hh = Path(env["HERMES_HOME"])
+    hh = Path(env["RABBIT_HOME"])
     (hh / "config.yaml").write_text(CURRENT_CONFIG, encoding="utf-8")
     cp = _cli(root, env, "import", str(bad), "--force")
     out = cp.stdout + cp.stderr
@@ -114,10 +114,10 @@ def test_import_of_a_broken_archive_fails_and_leaves_the_home_alone(archive, kin
 def test_import_that_skips_members_reports_incomplete(archive):
     root, good = archive
     env = _home(root, "dst-partial")
-    hh = Path(env["HERMES_HOME"])
+    hh = Path(env["RABBIT_HOME"])
     locked = hh / "skills" / "demo"
     locked.mkdir(parents=True)
-    locked.chmod(0o555)  # left behind root-owned by an earlier `sudo hermes ...`
+    locked.chmod(0o555)  # left behind root-owned by an earlier `sudo rabbit ...`
     try:
         cp = _cli(root, env, "import", str(good), "--force")
     finally:

@@ -48,7 +48,7 @@ def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional
             f"action must be one of {', '.join(ALL_ACTIONS)}. "
             f"{', '.join(MCP_ACTIONS)} apply to local MCP servers "
             "(targets {\"name\": ..., \"mcp\": true}); the rest apply to managed connectors. "
-            "Disconnecting an account is done by the user in the Nous Portal dashboard, not "
+            "Disconnecting an account is a user-only action in the app, not available "
             "through this tool."
         )
     if action in MCP_ACTIONS:
@@ -73,7 +73,7 @@ def validate_action(action: str, managed: List[str], mcp: List[str]) -> Optional
 
 def catalog_names() -> Set[str]:
     try:
-        from hermes_cli.mcp_catalog import list_catalog
+        from rabbit_cli.mcp_catalog import list_catalog
 
         return {e.name for e in list_catalog()}
     except Exception as exc:
@@ -82,17 +82,8 @@ def catalog_names() -> Set[str]:
 
 
 def hosted_names() -> Optional[Set[str]]:
-    try:
-        from tools.connectors.gateway.client import ConnectorClient
-        from tools.connectors.gateway.config import connectors_available
-
-        if not connectors_available():
-            return None
-        return {str(item.get("connector", "")).lower()
-                for item in ConnectorClient().list_connectors() if isinstance(item, dict)}
-    except Exception as exc:
-        logger.debug("connector list for the routing check failed: %s", exc)
-        return None
+    """There is no hosted tool gateway in this build, so no name is hosted."""
+    return None
 
 
 def misrouted_to_hosted_error(name: str) -> str:

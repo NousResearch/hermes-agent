@@ -1,8 +1,8 @@
-"""Curator snapshot + rollback. Before any mutating curator pass, ``~/.hermes/skills/`` is tar.gz'd under
-``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a ``manifest.json``. Rollback first snapshots the CURRENT tree (so it is
+"""Curator snapshot + rollback. Before any mutating curator pass, ``~/.rabbit/skills/`` is tar.gz'd under
+``~/.rabbit/skills/.curator_backups/<utc-iso>/`` with a ``manifest.json``. Rollback first snapshots the CURRENT tree (so it is
 itself undoable), then extracts the chosen snapshot into place. Excluded: ``.curator_backups/``, ``.hub/`` (hub-managed), ``.git/``.
 Included: skill dirs, ``.usage.json``, ``.archive/``, ``.curator_state`` (so rollback also restores last-run-at and the curator
-doesn't re-fire), ``.bundled_manifest``, ``.curator_suppressed``. Each snapshot also copies ``~/.hermes/cron/jobs.json`` as
+doesn't re-fire), ``.bundled_manifest``, ``.curator_suppressed``. Each snapshot also copies ``~/.rabbit/cron/jobs.json`` as
 ``cron-jobs.json``: the consolidation pass rewrites cron ``skills``/``skill`` references in place, so rollback restores those two
 fields (only) — the rest is live state."""
 
@@ -20,10 +20,10 @@ from itertools import chain, count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from agent.skill_utils import is_excluded_skill_path
 from agent.curator import _read_config_section
-from hermes_cli.sizefmt import format_bytes
+from rabbit_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ _UNRESTORED_PREFIX = ".rollback-unrestored-"  # retained staging; outside _STAGI
 
 
 def _skills_dir() -> Path:
-    return get_hermes_home() / "skills"
+    return get_rabbit_home() / "skills"
 
 
 def _backups_dir() -> Path:
@@ -75,9 +75,9 @@ def _jobs_list(parsed: Any) -> Optional[list]:
 
 
 def _backup_cron_jobs_into(dest: Path) -> Dict[str, Any]:
-    """Copy the live ``~/.hermes/cron/jobs.json`` into ``dest`` as ``cron-jobs.json``. Never raises: a missing/unreadable
+    """Copy the live ``~/.rabbit/cron/jobs.json`` into ``dest`` as ``cron-jobs.json``. Never raises: a missing/unreadable
     file yields ``backed_up=False`` plus a reason, and the snapshot proceeds."""
-    src = get_hermes_home() / "cron" / "jobs.json"
+    src = get_rabbit_home() / "cron" / "jobs.json"
     info: Dict[str, Any] = {"backed_up": False, "jobs_count": 0}
     if not src.exists():
         return {**info, "reason": "no cron/jobs.json present"}
@@ -151,7 +151,7 @@ def _mkdir(path: Path, what: str, *, exist_ok: bool) -> bool:
 
 
 def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] = None) -> Optional[Path]:
-    """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones. Returns the snapshot dir, or None when
+    """Create a tar.gz snapshot of ``~/.rabbit/skills/`` and prune old ones. Returns the snapshot dir, or None when
     skipped (disabled, skills dir missing, IO error) — logged at debug so the curator never aborts a pass over a
     backup failure. ``protect_ids`` survive the prune step (rollback protects its target)."""
     if not is_enabled():
@@ -159,7 +159,7 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         return None
     skills, backups = _skills_dir(), _backups_dir()
     if not skills.exists():
-        logger.debug("No ~/.hermes/skills/ directory — nothing to back up")
+        logger.debug("No ~/.rabbit/skills/ directory — nothing to back up")
         return None
     if not _mkdir(backups, "backups dir", exist_ok=True):
         return None
@@ -404,12 +404,12 @@ def _cron_summary(cron_report: Dict[str, Any]) -> Optional[str]:
 
 
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
-    """Restore ``~/.hermes/skills/`` from a snapshot (explicit id or newest): safety-snapshot the CURRENT tree; stage
+    """Restore ``~/.rabbit/skills/`` from a snapshot (explicit id or newest): safety-snapshot the CURRENT tree; stage
     current top-level entries; extract; on failure move staged entries back. Returns ``(ok, message, snapshot_path)``."""
     target = _resolve_backup(backup_id)
     if target is None:
         return (False, "no matching backup found" + (f" for id '{backup_id}'" if backup_id else "")
-                + " (use `hermes curator rollback --list` to see available snapshots)", None)
+                + " (use `rabbit curator rollback --list` to see available snapshots)", None)
     archive = target / _ARCHIVE_NAME
     if not archive.exists():
         return (False, f"snapshot {target.name} has no skills.tar.gz — corrupted?", None)

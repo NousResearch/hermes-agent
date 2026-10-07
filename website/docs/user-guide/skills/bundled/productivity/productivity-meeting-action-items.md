@@ -17,7 +17,7 @@ Turn meeting notes into cited decisions, owners, tickets.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/meeting-action-items` |
 | Version | `0.1.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Meetings`, `Action-Items`, `Follow-Up`, `Productivity` |
@@ -26,7 +26,7 @@ Turn meeting notes into cited decisions, owners, tickets.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Meeting Action Items

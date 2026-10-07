@@ -1,15 +1,15 @@
-"""Secret-scrub policy for Hermes child processes: pure data + predicates for which env
-names are Hermes-managed credentials. The env *builders* applying it (``_make_run_env``,
-``_sanitize_subprocess_env``, ``hermes_subprocess_env``) live in ``tools.environments.local``."""
+"""Secret-scrub policy for Rabbit child processes: pure data + predicates for which env
+names are Rabbit-managed credentials. The env *builders* applying it (``_make_run_env``,
+``_sanitize_subprocess_env``, ``rabbit_subprocess_env``) live in ``tools.environments.local``."""
 
 import functools
 import os
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
-_HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+_RABBIT_PROVIDER_ENV_FORCE_PREFIX = "_RABBIT_FORCE_"
 
-# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
+# Rabbit-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
 # only the Bedrock bearer token, which no aws/terraform/boto3 toolchain uses. The
 # general AWS chain stays inheritable on purpose — the local terminal is the user's
 # trusted operator shell (SECURITY.md §3.2) and env_passthrough can never re-allow a
@@ -34,28 +34,28 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS", "SIGNAL_HOME_CHANNEL",
     "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST",
-    "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "RABBIT_DASHBOARD_SESSION_TOKEN",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
-    # Keys the OAuth provider profiles (nous, qwen-oauth) also accept when pasted. The auth
+    # Keys the OAuth provider profiles (qwen-oauth) also accept when pasted. The auth
     # registry mirrors env_vars only for api_key profiles, and discovering the provider plugins
     # from here, at import, would re-mirror them over a plugin's own registry entry.
-    "NOUS_API_KEY", "QWEN_API_KEY",
-    # Hermes' own secrets read in code: the anonymous-inference secret, dashboard auth
+    "QWEN_API_KEY",
+    # Rabbit' own secrets read in code: the anonymous-inference secret, dashboard auth
     # (basic, OIDC, drain) and the Google Meet realtime key.
-    "HERMES_ANON_API_SECRET", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
-    "HERMES_DASHBOARD_BASIC_AUTH_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
-    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_MEET_REALTIME_KEY",
+    "RABBIT_ANON_API_SECRET", "RABBIT_DASHBOARD_BASIC_AUTH_PASSWORD",
+    "RABBIT_DASHBOARD_BASIC_AUTH_SECRET", "RABBIT_DASHBOARD_DRAIN_SECRET",
+    "RABBIT_DASHBOARD_OIDC_CLIENT_SECRET", "RABBIT_MEET_REALTIME_KEY",
 })
 
 
 def _left_core_env(*, secrets_only: bool) -> frozenset:
-    """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
+    """Env of features that left core for a catalog plugin (``rabbit_cli.left_core_migration``):
     stripped exactly as when core shipped them, plugin installed or not."""
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from rabbit_cli.left_core_migration import LEFT_CORE
     return frozenset(name for feature in LEFT_CORE
                      for name in feature.secret_env + (() if secrets_only else feature.private_env))
 
@@ -64,7 +64,7 @@ def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
     blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from rabbit_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
             if pconfig.auth_type == "aws_sdk":
@@ -74,7 +74,7 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
     try:
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from rabbit_cli.config import OPTIONAL_ENV_VARS
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"} or (
@@ -83,14 +83,14 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
     # CLAUDE_CODE_OAUTH_TOKEN (via the anthropic registry entry) belongs to the user's
-    # Claude Code install, not Hermes: stripping it made agent-spawned ``claude`` CLIs
+    # Claude Code install, not Rabbit: stripping it made agent-spawned ``claude`` CLIs
     # fall through to the shared Keychain / ~/.claude store and, on auth failure, wipe
     # it — logging the user out. BUZZ_* is deliberately NOT discarded: this list feeds
     # every scrub surface, so an import-time discard would leak BUZZ_PRIVATE_KEY into
     # non-terminal children; the Buzz carve-out is terminal-only and context-gated
     # (``_is_terminal_first_party_env``).
-    # It is set and owned by the user's Claude Code install (subscription OAuth), not a Hermes-managed
-    # inference credential — Claude subscription auth is not a working Hermes provider path. It arrives via
+    # It is set and owned by the user's Claude Code install (subscription OAuth), not a Rabbit-managed
+    # inference credential — Claude subscription auth is not a working Rabbit provider path. It arrives via
     # the registry loop above (anthropic api_key_env_vars), so remove it explicitly. See #55878.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     # BUZZ_* is deliberately NOT discarded here, even for Buzz-managed agents (BUZZ_MANAGED_AGENT set by the
@@ -102,13 +102,13 @@ def _build_adapter_secret_env() -> frozenset:
     """Secrets the messaging adapters declare, process-wide: core ``password`` messaging entries
     of OPTIONAL_ENV_VARS, the bundled platform plugin manifests' secret entries, and the
     secret-named keys the gateway env-override table reads (WEIXIN_TOKEN, FEISHU_ENCRYPT_KEY, ...).
-    Declared names only: a user's own ``SLACK_USER_TOKEN`` or ``LOCAL_LLM_API_KEY`` is not Hermes's.
+    Declared names only: a user's own ``SLACK_USER_TOKEN`` or ``LOCAL_LLM_API_KEY`` is not Rabbit's.
     A profile's user-installed platform plugins are per home: :func:`_home_adapter_secret_env`.
     Nothing here fails soft: an unreadable bundled manifest or env table fails the import rather
     than dropping its secrets from the policy."""
-    from hermes_cli.config import (
+    from rabbit_cli.config import (
         CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
-    from hermes_cli.profile_channels import config_env_table_keys
+    from rabbit_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
     # clientState, and the QQ bot's speech-to-text key.
     names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
@@ -120,11 +120,11 @@ def _build_adapter_secret_env() -> frozenset:
     return frozenset(names)
 
 
-# Provider blocklist first: it imports hermes_cli.auth before hermes_cli.config, whose import
+# Provider blocklist first: it imports rabbit_cli.auth before rabbit_cli.config, whose import
 # discovers provider plugins that expect a fully initialized auth registry.
 _PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 _ADAPTER_SECRET_ENV = _build_adapter_secret_env()
-_HERMES_PROVIDER_ENV_BLOCKLIST = _PROVIDER_ENV_BLOCKLIST | _ADAPTER_SECRET_ENV
+_RABBIT_PROVIDER_ENV_BLOCKLIST = _PROVIDER_ENV_BLOCKLIST | _ADAPTER_SECRET_ENV
 
 _HOME_ADAPTER_SECRET_CACHE: dict[str, tuple] = {}
 
@@ -137,10 +137,10 @@ def _home_adapter_secret_env() -> frozenset:
     manifest under ``plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
-    from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
-    from hermes_constants import get_hermes_home, hermes_home_key
-    home = get_hermes_home()
-    key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
+    from rabbit_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
+    from rabbit_constants import get_rabbit_home, rabbit_home_key
+    home = get_rabbit_home()
+    key, stamp = rabbit_home_key(home), platform_manifest_stamp(home)
     cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
     if cached is None or cached[0] is None or cached[0] != stamp:
         names, complete = platform_manifest_secret_scan(home)
@@ -158,7 +158,7 @@ def _registry_adapter_secret_env() -> frozenset:
     must not strip it from credentialed children. No blanket fallback: a registry error surfaces
     instead of an empty (fail-open) set."""
     from gateway.platform_registry import platform_registry
-    from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
+    from rabbit_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
     return frozenset(n.upper() for n in platform_registry.required_env_names()
                      if n.upper().endswith(PLATFORM_SECRET_ENV_SUFFIXES))
 
@@ -174,17 +174,17 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
-    ``_is_hermes_internal_secret``, which already folds (``key.upper()``). Loops pass
+    ``_is_rabbit_internal_secret``, which already folds (``key.upper()``). Loops pass
     ``_registered`` so the registry is read once per env, not once per key."""
     upper = name.upper()
-    if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+    if name in _RABBIT_PROVIDER_ENV_BLOCKLIST or upper in _RABBIT_PROVIDER_ENV_BLOCKLIST:
         return True
     return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
 
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
-# ``_sanitize_subprocess_env``); execute_code, hermes_subprocess_env, docker and
+# ``_sanitize_subprocess_env``); execute_code, rabbit_subprocess_env, docker and
 # env_passthrough registration stay sealed (GHSA-rhgp-j443-p4rf). CONTEXT-GATED via
 # ``_buzz_terminal_context_active``: a Telegram/CLI/cron session on a host that also
 # runs a Buzz gateway must not get the signing key. Values are used directly, never
@@ -197,14 +197,14 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
 # the terminal scrub. CONTEXT-GATED: the carve-out applies ONLY when this process/session is actually
 # operating as a Buzz agent — either the process is a Buzz-ACP managed agent (``BUZZ_MANAGED_AGENT`` is set,
 # only by Buzz Desktop's buzz-acp harness; see #76243 / #78511) or the current session's platform is
-# ``buzz`` (the gateway's ``HERMES_SESSION_PLATFORM`` ContextVar; concurrency safe under a multi-session
+# ``buzz`` (the gateway's ``RABBIT_SESSION_PLATFORM`` ContextVar; concurrency safe under a multi-session
 # host). A Telegram/CLI/cron session on a host that also runs a Buzz gateway does NOT get BUZZ_PRIVATE_KEY
 # in its terminal children — blanket passthrough of a signing key to every terminal child on the host would
 # be wrong (maintainer triage note on #76243: don't expose the key to unrelated shell commands).
 # ``_sanitize_subprocess_env`` is also consumed by search workers (e.g. the ddgs web-search subprocess), the
 # computer-use driver binary, and user-script runners (bang ``!`` commands, quick commands, cron scripts,
 # webhook-filter scripts), so those children receive the vars too — matching the approved background/PTY
-# scope. Every other surface stays sealed — execute_code scrubbing, :func:`hermes_subprocess_env` (browser /
+# scope. Every other surface stays sealed — execute_code scrubbing, :func:`rabbit_subprocess_env` (browser /
 # TUI host / copilot-executor spawns), docker children, and ``env_passthrough`` registration (skills/config
 # still cannot register these names). The GHSA-rhgp-j443-p4rf seal is preserved because no registration path
 # is opened; this is a scrub-path exemption, not an allowlist addition. First-party matches use the merged
@@ -214,7 +214,7 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
 # treats these names like profile-scoped passthrough names (see
 # ``LocalEnvironment._additional_profile_scoped_passthrough_names``) so they never persist in the shared
 # terminal snapshot across profiles. Contrast with CLAUDE_CODE_OAUTH_TOKEN above, which is discarded from
-# the blocklist entirely because it is NOT a Hermes credential; these ARE Hermes-managed first-party
+# the blocklist entirely because it is NOT a Rabbit credential; these ARE Rabbit-managed first-party
 # platform credentials, so they stay IN the blocklist for every non-terminal surface. See issue #78026 (Buzz
 # agents could not use ``buzz`` from the terminal tool) and #76243 (Buzz Desktop managed agent wakes but
 # cannot reply).
@@ -243,7 +243,7 @@ def _buzz_terminal_context_active() -> bool:
     try:
         from gateway.session_context import get_session_env
 
-        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "buzz"
+        return get_session_env("RABBIT_SESSION_PLATFORM", "").strip().lower() == "buzz"
     except Exception:
         return False
 
@@ -255,26 +255,26 @@ def _is_terminal_first_party_env(name: str) -> bool:
 
 
 # Active-venv markers that must NOT leak: VIRTUAL_ENV/CONDA_PREFIX make uv/poetry sync
-# ANOTHER project's deps into the Hermes venv (still reachable via PATH, so stripping
-# is safe); PYTHONHOME redirects a child interpreter's stdlib to the Hermes venv
-# (version-mismatch crashes). PYTHONPATH is handled separately (Hermes-owned entries only).
+# ANOTHER project's deps into the Rabbit venv (still reachable via PATH, so stripping
+# is safe); PYTHONHOME redirects a child interpreter's stdlib to the Rabbit venv
+# (version-mismatch crashes). PYTHONPATH is handled separately (Rabbit-owned entries only).
 # The gateway runs inside its own venv, so its process environment carries VIRTUAL_ENV (and possibly
 # CONDA_PREFIX). If those leak into commands the agent runs against OTHER Python projects, tools like
 # ``uv``/``poetry`` treat the inherited value as the active environment and build/sync that other project's
-# dependencies into the Hermes venv path instead of the project's own ``.venv`` — silently clobbering the
-# Hermes environment (e.g. a project pinned to a different Python version overwrites it and breaks the
+# dependencies into the Rabbit venv path instead of the project's own ``.venv`` — silently clobbering the
+# Rabbit environment (e.g. a project pinned to a different Python version overwrites it and breaks the
 # gateway). PYTHONHOME is included because a gateway-inherited value redirects the standard-library search
-# of ANY child interpreter — including unrelated system/venv Pythons — to the Hermes venv's stdlib, which
-# crashes with version-mismatch errors before a child script even imports a package (#75018). Hermes itself
+# of ANY child interpreter — including unrelated system/venv Pythons — to the Rabbit venv's stdlib, which
+# crashes with version-mismatch errors before a child script even imports a package (#75018). Rabbit itself
 # treats PYTHONHOME as contamination in its own child processes (managed_uv.py, sqlite_runtime.py), so
 # stripping it from subprocess envs is consistent. Users who need PYTHONHOME for a specific child can set it
 # explicitly in the command. PYTHONPATH is NOT included here — it's handled by
-# _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
+# _strip_rabbit_owned_pythonpath() which removes only Rabbit-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
 
-def _is_hermes_internal_secret(key: str) -> bool:
-    """True for Hermes-internal secrets injected under *dynamic* names the static
+def _is_rabbit_internal_secret(key: str) -> bool:
+    """True for Rabbit-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
     auth; non-secret routing hints stay visible). Stripped on every spawn path
@@ -293,9 +293,9 @@ def _is_hermes_internal_secret(key: str) -> bool:
 # A's channel/user/role list as its own (#113270). The suffix is matched by shape so a gate
 # added to any adapter is covered without a second edit, but ONLY under a platform prefix
 # (``DISCORD_``, ``GATEWAY_``, a plugin adapter's name): an operator's own ``DEMO_ALLOWED_SENDER``
-# is script data, not a Hermes gate, and deleting it by name shape broke routed ``no_agent``
-# cron scripts (#119539). ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
-# ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
+# is script data, not a Rabbit gate, and deleting it by name shape broke routed ``no_agent``
+# cron scripts (#119539). ``RABBIT_*`` never counts (``RABBIT_MEDIA_ALLOW_DIRS``,
+# ``RABBIT_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
 _PROFILE_GATE_ENV_MARKERS = (
     "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
     "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
@@ -340,7 +340,7 @@ def is_profile_gate_env(name: str, _prefixes: Optional[frozenset] = None) -> boo
     for ANOTHER profile must never inherit. A gate is a platform prefix AND a gate-shaped suffix;
     an operator variable that merely contains ``_ALLOWED_`` is not one."""
     upper = name.upper()
-    if upper.startswith("HERMES_") or upper.startswith("_"):
+    if upper.startswith("RABBIT_") or upper.startswith("_"):
         return False
     if not any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS):
         return False
@@ -379,15 +379,15 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",
     # Gateway relay auth triplet. _SECRET/_DELIVERY_KEY are also matched by
-    # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
+    # _is_rabbit_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
-    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_PASSWORD", "RABBIT_DASHBOARD_SESSION_TOKEN",
     # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
     # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
     # child (credentialed CLIs included) consumes them.
-    "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
-    "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
+    "RABBIT_DASHBOARD_BASIC_AUTH_PASSWORD", "RABBIT_DASHBOARD_BASIC_AUTH_SECRET",
+    "RABBIT_DASHBOARD_OIDC_CLIENT_SECRET", "RABBIT_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
 }) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1

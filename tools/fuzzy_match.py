@@ -405,7 +405,7 @@ def _note_edit_match(strategy: Optional[str], miss: Optional[str] = None) -> Non
     """Report to shared metrics which strategy landed (or why none did); a no-op unless a
     metered patch tool call is in progress."""
     try:
-        from hermes_cli.observability.shared_metrics_harness import note_edit_match
+        from rabbit_cli.observability.shared_metrics_harness import note_edit_match
     except Exception:
         return
     note_edit_match(strategy, miss)

@@ -9,7 +9,7 @@ interface CustomWindowControlsOptions {
 // WSL detection kept fs-free on purpose: this module is bundled into the
 // sandboxed preload (sandbox: true), where importing node:fs — even
 // transitively via bootstrap-platform — throws when the preload module loads
-// and tears down the whole `window.hermesDesktop` bridge. The preload only
+// and tears down the whole `window.rabbitDesktop` bridge. The preload only
 // needs the env-var signal (WSLg always sets WSL_INTEROP/WSL_DISTRO_NAME), and
 // the authoritative flag still reaches the renderer through the main process's
 // getWindowState (IS_WSL, which keeps the /proc kernel-release fallback). The
@@ -95,7 +95,7 @@ export function registerWindowControlIpc(
   ipcMain: WindowControlIpc,
   resolveWindow: (sender: Electron.WebContents) => ControllableWindow | null | undefined
 ): void {
-  ipcMain.on('hermes:window-control', (event, action) => {
+  ipcMain.on('rabbit:window-control', (event, action) => {
     performWindowControl(resolveWindow(event.sender), typeof action === 'string' ? action : '')
   })
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Advisory lint: profile-scope hazard patterns on the lines a change adds.
 
-One Hermes process may serve many profiles (multiplex gateway, Desktop/dashboard ``serve``), and
+One Rabbit process may serve many profiles (multiplex gateway, Desktop/dashboard ``serve``), and
 ``os.environ`` / module globals hold only the LAUNCH profile's values. Every pattern in
 ``scripts/ci/profile_scope_patterns.json`` is a call-site shape that turned out to be
 profile-sensitive at least once — a child env built from ``os.environ``, a raw ``os.getenv`` of a
@@ -9,7 +9,7 @@ platform credential, an RPC decorator that binds the home but not the secret sco
 liveness check. The invariant itself is in the root ``AGENTS.md`` (§ Rules that apply everywhere).
 
 Advisory by construction: it prints ``file:line  <id>/<class>  why`` for every hit and ALWAYS
-exits 0, because most patterns have legitimate sites (a standalone ``hermes -p x`` process where
+exits 0, because most patterns have legitimate sites (a standalone ``rabbit -p x`` process where
 environ IS the profile). The reviewer reads each finding against its ``scope_hint``.
 
 Usage:

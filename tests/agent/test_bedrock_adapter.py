@@ -133,7 +133,7 @@ class TestScopedAwsSessionKwargs:
         Control: a standalone run keeps the ambient chain (``{}`` + process-env bearer)."""
         from agent import bedrock_adapter, secret_scope
         from agent.bedrock_adapter import _cached_client, resolve_bedrock_bearer_token, scoped_aws_session_kwargs
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
         for home in (home_a, home_b):
@@ -151,13 +151,13 @@ class TestScopedAwsSessionKwargs:
         monkeypatch.setattr(bedrock_adapter, "_require_boto3", boom)
 
         def in_scope(home, fn):
-            h_tok = set_hermes_home_override(str(home))
+            h_tok = set_rabbit_home_override(str(home))
             s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
             try:
                 return fn()
             finally:
                 secret_scope.reset_secret_scope(s_tok)
-                reset_hermes_home_override(h_tok)
+                reset_rabbit_home_override(h_tok)
 
         # Control: standalone keeps the ambient chain.
         assert scoped_aws_session_kwargs() == {}
@@ -1087,7 +1087,7 @@ class TestBedrockContextLength:
         Anthropic id, so a model added to the picker can't silently land on the 128K default."""
         from agent.bedrock_adapter import get_bedrock_context_length
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
-        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from rabbit_cli.models_catalog_static import _PROVIDER_MODELS
 
         mismatched = []
         for model_id in _PROVIDER_MODELS["bedrock"]:
@@ -1488,7 +1488,7 @@ class TestRequireBoto3VersionCheck:
         from agent.bedrock_adapter import _require_boto3
         from pm.package import InstallError
 
-        restart = InstallError("venv", "bedrock installed; restart Hermes to activate the new dependency environment")
+        restart = InstallError("venv", "bedrock installed; restart Rabbit to activate the new dependency environment")
 
         def ensure_import(extra):
             raise restart
@@ -1552,7 +1552,7 @@ class TestBearerTokenRoutesToConverse:
     def _resolve(self, monkeypatch, *, bearer: bool):
         import os
 
-        from hermes_cli import runtime_provider as rp
+        from rabbit_cli import runtime_provider as rp
 
         if bearer:
             monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token-123")

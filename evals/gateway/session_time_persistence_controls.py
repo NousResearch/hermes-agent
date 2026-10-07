@@ -15,18 +15,18 @@ from types import SimpleNamespace
 repo = Path(sys.argv[1]).resolve()
 home = Path(tempfile.mkdtemp(prefix="idle-controls-"))
 for key in list(os.environ):
-    if key.startswith("HERMES_") or key.endswith(("_API_KEY", "_TOKEN")):
+    if key.startswith("RABBIT_") or key.endswith(("_API_KEY", "_TOKEN")):
         os.environ.pop(key, None)
-os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"), SESSION_IDLE_MINUTES="1", SESSION_RESET_HOUR="0")
+os.environ.update(HOME=str(home), RABBIT_HOME=str(home / ".rabbit"), SESSION_IDLE_MINUTES="1", SESSION_RESET_HOUR="0")
 sys.path.insert(0, str(repo))
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 from gateway.config import load_gateway_config, GatewayConfig, Platform
 from gateway.session import SessionStore, SessionSource
 from gateway.run import GatewayRunner
 from gateway.agent_cache_pressure import AgentCacheBounds
 
-Path(os.environ["HERMES_HOME"]).mkdir(exist_ok=True)
-Path(os.environ["HERMES_HOME"], "config.yaml").write_text(yaml.safe_dump({"session_reset": {"mode": "both", "idle_minutes": 1}, "gateway": {"session_reset": {"mode": "daily", "at_hour": 0}}}), encoding="utf-8")
+Path(os.environ["RABBIT_HOME"]).mkdir(exist_ok=True)
+Path(os.environ["RABBIT_HOME"], "config.yaml").write_text(yaml.safe_dump({"session_reset": {"mode": "both", "idle_minutes": 1}, "gateway": {"session_reset": {"mode": "daily", "at_hour": 0}}}), encoding="utf-8")
 config = load_gateway_config()
 assert "default_reset_policy" not in config.to_dict()
 source = SessionSource(platform=Platform.TELEGRAM, chat_id="cache", user_id="control")
@@ -98,7 +98,7 @@ assert fenced.session_id != suspended.session_id
 results["historical_expiry_fence_preserved"] = True
 store._db.close()
 
-spec = importlib.util.spec_from_file_location("migration_probe", repo / "optional-skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py")
+spec = importlib.util.spec_from_file_location("migration_probe", repo / "optional-skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py")
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
@@ -115,7 +115,7 @@ assert json.loads((migrator.archive_dir / "session-config.json").read_text(encod
 results["migration_timers_ignored_advanced_archived"] = True
 from contextlib import redirect_stdout
 from io import StringIO
-from hermes_cli.cli_info_mixin import CLIInfoMixin
+from rabbit_cli.cli_info_mixin import CLIInfoMixin
 status_output = StringIO()
 with redirect_stdout(status_output):
     CLIInfoMixin._show_gateway_status(object.__new__(CLIInfoMixin))

@@ -41,11 +41,11 @@ def generate(tmp_path_factory):
             out = root / str(next(sequence))
             # The runtime interpreter renders with its own packages: foreign
             # interpreter paths must not leak in, and nothing may be installed.
-            env = {**os.environ, "HERMES_HOME": str(root / "home"),
-                   "HERMES_RUNTIME_DIR": str(root / "tools"),
-                   "HERMES_PAYLOAD_TAG": tag, "HERMES_BUILD_COMMIT": commit,
-                   "HERMES_PYTHON": str(python), "PYTHONPATH": str(root / "foreign-site"),
-                   "PYTHONHOME": str(root / "foreign-python"), "HERMES_DISABLE_LAZY_INSTALLS": "1"}
+            env = {**os.environ, "RABBIT_HOME": str(root / "home"),
+                   "RABBIT_RUNTIME_DIR": str(root / "tools"),
+                   "RABBIT_PAYLOAD_TAG": tag, "RABBIT_BUILD_COMMIT": commit,
+                   "RABBIT_PYTHON": str(python), "PYTHONPATH": str(root / "foreign-site"),
+                   "PYTHONHOME": str(root / "foreign-python"), "RABBIT_DISABLE_LAZY_INSTALLS": "1"}
             command = [node, str(ROOT / "scripts/generate-icons.mjs"),
                        "--source", str(source), "--out", str(out)]
             result = subprocess.run(command, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
@@ -133,7 +133,7 @@ def test_renderer_canary_rule_is_the_canonical_one(monkeypatch):
     its own copy of the canary rule; both rules must agree on every tag shape."""
     import importlib.util
     import types
-    from hermes_cli.update_channel import is_canary_tag
+    from rabbit_cli.update_channel import is_canary_tag
 
     monkeypatch.setitem(sys.modules, "resvg_py", types.ModuleType("resvg_py"))
     spec = importlib.util.spec_from_file_location("generate_icons", ROOT / "scripts/generate_icons.py")
@@ -203,30 +203,24 @@ def test_commit_icons_are_red_and_print_only_the_actual_seven_digit_prefix(gener
             assert changed_box[3] <= bbox[1] + (bbox[3] - bbox[1]) * 0.25 + 3
     # At full resolution, read back each glyph's bitmap from pixels. These
     # digit forms spell 0123456, not a generic badge or a hash of the SHA.
+    # The badge is scaled into the free band above the logo rect, so every
+    # cell of every glyph is judged: no art ever crosses the badge.
+    tx, ty, badge_scale = module.BADGE_TRANSFORM
     expected = (
         (14, 17, 19, 21, 25, 17, 14), (4, 12, 4, 4, 4, 4, 14),
         (14, 17, 1, 2, 4, 8, 31), (30, 1, 1, 14, 1, 1, 30),
         (2, 6, 10, 18, 31, 2, 2), (31, 16, 16, 30, 1, 1, 30),
         (14, 16, 16, 30, 17, 17, 14),
     )
-    # The portrait renders in front of the badge (her hair crosses its lower rows), so a
-    # cell is only judged where the stable icon shows no art at that spot; every glyph
-    # must still be identified by a majority of its uncovered cells.
     for name in ("icon.png", "icon-dark.png"):
         image = Image.open(first / "apps/desktop/assets" / name).convert("RGB")
-        unbadged = Image.open(stable / "apps/desktop/assets" / name).convert("RGB")
-        art = (0, 0, 0) if name == "icon.png" else (255, 255, 255)
         for digit, rows in enumerate(expected):
-            judged = 0
             for y, row in enumerate(rows):
                 for x in range(5):
-                    point = (gx + (digit * 6 + x) * 16 + 8, gy + y * 16 + 8)
-                    if unbadged.getpixel(point) == art:
-                        continue
-                    judged += 1
+                    point = (round(tx + (gx + (digit * 6 + x) * 16 + 8) * badge_scale),
+                             round(ty + (gy + y * 16 + 8) * badge_scale))
                     pixel = image.getpixel(point)
                     assert (min(pixel) > 240) == bool(row & (1 << (4 - x))), (name, digit, x, y)
-            assert judged >= 18, (name, digit, judged)
     assert_unbranded_outputs(stable, first)
 
 
@@ -272,10 +266,11 @@ def manifest_fills(package):
 
 
 def test_layered_macos_icon_mono_layer_and_flavor_stays_in_the_fill(generate, monkeypatch):
-    """macOS 26 masks the layers itself. The girl is dragged past the plate edge
-    so the mask crops her (no gap below), the mono layer is one image of two
-    materials — near-black frosted ink and white — so nothing stacks, and build
-    flavors recolour the fill in icon.json only; the layers never change."""
+    """macOS 26 masks the layers itself. The logo sits at the masters'
+    registered rect (the system supplies the grid and the mask), the mono
+    layer is one white silhouette — the two arts share one shape, so the
+    white material covers the frosted ink — and build flavors recolour the
+    fill in icon.json only; the layers never change."""
     module = load_generator(monkeypatch)
     stable = generate("v1.2.3") / "apps/desktop/assets" / LAYERED_ICON
     canary = generate("v1.2.3+canary.20260911T010203Z") / "apps/desktop/assets" / LAYERED_ICON
@@ -285,20 +280,23 @@ def test_layered_macos_icon_mono_layer_and_flavor_stays_in_the_fill(generate, mo
     for name in ("art-light.png", "art-dark.png"):
         layer = Image.open(stable / "Assets" / name).convert("RGBA")
         assert layer.size == (canvas, canvas)
-        bottom_row = layer.crop((0, canvas - 1, canvas, canvas)).getchannel("A").getbbox()
-        assert bottom_row is not None, f"{name}: the girl must reach the plate edge"
+        # The logo sits at the masters' registered rect: vertically it spans the
+        # rect's band, horizontally it stays centred on the canvas.
+        bbox = layer.getchannel("A").getbbox()
+        assert bbox is not None, f"{name}: the layer carries the logo"
+        assert bbox[1] <= canvas * 0.11 and bbox[3] >= canvas * 0.89, (name, bbox)
+        assert abs((bbox[0] + bbox[2]) / 2 - canvas / 2) <= 2, (name, bbox)
     mono = Image.open(stable / "Assets" / "mono.png").convert("RGBA")
-    ink_tone = round(module.MONO_INK[0] * 255)
-    tones = {px[0] for px in mono.getdata() if px[3] > 127}
-    assert tones == {ink_tone, 255}, tones
-    light_art = Image.open(stable / "Assets" / "art-light.png").convert("RGBA")
+    # Both arts share one silhouette alpha (the dark art's outline and face are
+    # opaque), so the white material covers the frosted ink everywhere: the mono
+    # layer is one white silhouette, which Clear and Tinted colour themselves.
+    tones = {px[:3] for px in mono.getdata() if px[3] > 127}
+    assert tones == {(255, 255, 255)}, tones
     dark_art = Image.open(stable / "Assets" / "art-dark.png").convert("RGBA")
     for x, y in ((canvas // 2, canvas // 2), (canvas // 3, canvas // 3), (2 * canvas // 3, canvas // 2)):
-        px = mono.getpixel((x, y))
-        if dark_art.getpixel((x, y))[3] > 200:      # the girl's white parts stay white and opaque
+        if dark_art.getpixel((x, y))[3] > 200:
+            px = mono.getpixel((x, y))
             assert px[:3] == (255, 255, 255) and px[3] == 255, (x, y, px)
-        elif light_art.getpixel((x, y))[3] > 200:   # her black parts become the frosted ink
-            assert px[0] == ink_tone and abs(px[3] - round(module.MONO_INK[1] * 255)) <= 1, (x, y, px)
 
     for name in ("art-light.png", "art-dark.png", "mono.png"):
         assert (stable / "Assets" / name).read_bytes() == (canary / "Assets" / name).read_bytes(), name

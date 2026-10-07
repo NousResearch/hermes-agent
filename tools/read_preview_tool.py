@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read the in-app browser / preview pane in the Hermes desktop GUI.
+"""Read the in-app browser / preview pane in the Rabbit desktop GUI.
 
 The preview's content lives in the renderer (a sandboxed ``<webview>``), so this
 round-trips through the gateway's blocking-prompt bridge like ``read_terminal``
@@ -17,7 +17,7 @@ def read_preview_tool(
 ) -> str:
     """Return the active preview tab's contents (+ metadata) as a JSON string."""
     return read_pane(callback, (("start", start, 0), ("count", count, 1)), (
-        "read_preview is only available in the Hermes desktop app.",
+        "read_preview is only available in the Rabbit desktop app.",
         "start and count must be integers.",
         "Failed to read the preview pane: ",
         "No preview tab answered: no page is loaded (call open_preview first), "

@@ -5,7 +5,7 @@ call at the bottom of the module), and `load_permanent()` only ever unions into
 `_permanent_approved` — nothing removes. `save_permanent_allowlist()` then wrote
 that in-memory set straight back over `config["command_allowlist"]`.
 
-So a hand edit made while a Hermes process is live was undone by the next
+So a hand edit made while a Rabbit process is live was undone by the next
 `[a]lways`, in both directions at once: an entry the operator ADDED on disk was
 deleted, and an entry they REMOVED — the documented way to withdraw a standing
 approval — came back.
@@ -32,8 +32,8 @@ def fake_config(monkeypatch):
     def _save(config):
         store["command_allowlist"] = list(config.get("command_allowlist", []))
 
-    monkeypatch.setattr("hermes_cli.config.load_config", _load, raising=False)
-    monkeypatch.setattr("hermes_cli.config.save_config", _save, raising=False)
+    monkeypatch.setattr("rabbit_cli.config.load_config", _load, raising=False)
+    monkeypatch.setattr("rabbit_cli.config.save_config", _save, raising=False)
 
     saved_approved = set(approval._permanent_approved)
     saved_baseline = dict(approval._permanent_baseline_by_home)
@@ -97,7 +97,7 @@ def test_a_revoked_entry_stops_being_honoured_in_memory_after_the_save(fake_conf
 
 
 def test_a_second_process_writing_first_does_not_lose_this_ones_approval(fake_config):
-    """Two live Hermes processes. Whoever writes second must not drop the first."""
+    """Two live Rabbit processes. Whoever writes second must not drop the first."""
     _start_process_with(fake_config, ["ls *"])
     # The other process approved something and wrote it out.
     fake_config["command_allowlist"] = ["ls *", "cargo *"]
@@ -115,7 +115,7 @@ def test_save_failure_is_logged_not_raised(fake_config, monkeypatch, caplog):
     def _boom():
         raise OSError("disk full")
 
-    monkeypatch.setattr("hermes_cli.config.load_config", _boom, raising=False)
+    monkeypatch.setattr("rabbit_cli.config.load_config", _boom, raising=False)
     approval.approve_permanent("docker *")
     with caplog.at_level(logging.WARNING, logger=approval.logger.name):
         approval.save_permanent_allowlist(approval._permanent_approved)   # must not raise

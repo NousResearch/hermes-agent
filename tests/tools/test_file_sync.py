@@ -24,7 +24,7 @@ def tmp_files(tmp_path):
     return files
 
 
-def _make_get_files(tmp_files, remote_base="/root/.hermes"):
+def _make_get_files(tmp_files, remote_base="/root/.rabbit"):
     """Return a get_files_fn that maps local files to remote paths."""
     mapping = [(hp, f"{remote_base}/{name}") for name, hp in tmp_files.items()]
 
@@ -34,7 +34,7 @@ def _make_get_files(tmp_files, remote_base="/root/.hermes"):
     return get_files
 
 
-def _make_manager(tmp_files, remote_base="/root/.hermes", upload=None, delete=None):
+def _make_manager(tmp_files, remote_base="/root/.rabbit", upload=None, delete=None):
     """Create a FileSyncManager with test callbacks."""
     return FileSyncManager(
         get_files_fn=_make_get_files(tmp_files, remote_base),
@@ -231,7 +231,7 @@ class TestEdgeCases:
 
         upload = MagicMock()
         mgr = FileSyncManager(
-            get_files_fn=lambda: [(str(f), "/root/.hermes/ephemeral.txt")],
+            get_files_fn=lambda: [(str(f), "/root/.rabbit/ephemeral.txt")],
             upload_fn=upload,
             delete_fn=MagicMock(),
         )
@@ -257,12 +257,12 @@ class TestConcurrency:
 
         def get_files():
             return [
-                (str(path), f"/root/.hermes/cache/images/{path.name}")
+                (str(path), f"/root/.rabbit/cache/images/{path.name}")
                 for path in sorted(tmp_path.glob("*.png"))
             ]
 
         def upload(_host_path, remote_path):
-            if remote_path == f"/root/.hermes/cache/images/{new_file.name}":
+            if remote_path == f"/root/.rabbit/cache/images/{new_file.name}":
                 upload_started.set()
                 sync_back_transport_started.wait(timeout=1.0)
                 release_upload.set()
@@ -288,7 +288,7 @@ class TestConcurrency:
             sync_future = executor.submit(mgr.sync, force=True)
             assert upload_started.wait(timeout=2.0)
 
-            sync_back_future = executor.submit(mgr.sync_back, hermes_home=tmp_path)
+            sync_back_future = executor.submit(mgr.sync_back, rabbit_home=tmp_path)
 
             sync_future.result(timeout=3.0)
             sync_back_future.result(timeout=3.0)
@@ -310,13 +310,13 @@ class TestSyncBackSecurity:
             lambda: [
                 {
                     "host_path": str(credential),
-                    "container_path": "/root/.hermes/credentials/token.json",
+                    "container_path": "/root/.rabbit/credentials/token.json",
                 }
             ],
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_skills_files",
-            lambda container_base="/root/.hermes": [
+            lambda container_base="/root/.rabbit": [
                 {
                     "host_path": str(skill),
                     "container_path": f"{container_base}/skills/skill.py",
@@ -325,28 +325,28 @@ class TestSyncBackSecurity:
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_cache_files",
-            lambda container_base="/root/.hermes": [],
+            lambda container_base="/root/.rabbit": [],
         )
 
         def bulk_download(dest: Path) -> None:
             with tarfile.open(dest, "w") as tar:
                 for name, data in {
-                    "root/.hermes/credentials/token.json": b"remote-token",
-                    "root/.hermes/skills/skill.py": b"remote-skill",
+                    "root/.rabbit/credentials/token.json": b"remote-token",
+                    "root/.rabbit/skills/skill.py": b"remote-skill",
                 }.items():
                     info = tarfile.TarInfo(name)
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
 
         mgr = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            get_files_fn=lambda: iter_sync_files("/root/.rabbit"),
             upload_fn=MagicMock(),
             delete_fn=MagicMock(),
             bulk_download_fn=bulk_download,
         )
 
         mgr.sync(force=True)
-        mgr.sync_back(hermes_home=tmp_path)
+        mgr.sync_back(rabbit_home=tmp_path)
 
         assert credential.read_text(encoding="utf-8") == "host-token"
         assert skill.read_text(encoding="utf-8") == "remote-skill"

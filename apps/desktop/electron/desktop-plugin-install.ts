@@ -316,7 +316,7 @@ function sparseCheckoutPattern(subdir: string): string {
 // a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise downloads every
 // file in the repository and times out on slow connections.
 async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null): Promise<string> {
-  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'hermes-plugin-'))
+  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'rabbit-plugin-'))
 
   try {
     if (!subdir) {

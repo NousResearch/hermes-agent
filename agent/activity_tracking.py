@@ -71,7 +71,7 @@ class ActivityTrackingMixin:
             # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must abandon
             # itself at the final mutation edge.
             self._turn_liveness_abort_claim = None
-        if os.environ.get("HERMES_KANBAN_TASK"):
+        if os.environ.get("RABBIT_KANBAN_TASK"):
             # Never let the bridge break the loop; this guard covers import-time failures.
             with suppress(Exception):
                 from tools.kanban_tools import (

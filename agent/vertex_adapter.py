@@ -26,7 +26,7 @@ except ImportError:
 def _ensure_google_auth() -> bool:
     """Bind ``google.auth`` on first use, installing the [vertex] extra through PM if needed.
 
-    The extra left [all] under the lazy-install policy (2026-05-12) so a plain ``hermes-agent``
+    The extra left [all] under the lazy-install policy (2026-05-12) so a plain ``rabbit-agent``
     install still reaches Vertex after selecting a Gemini model. This runs at the first
     credential request, never at import: an import-time sync would rebuild the dependency
     environment of whatever process happens to import this module.
@@ -58,7 +58,7 @@ _creds_cache: dict = {}
 def _vertex_config() -> dict:
     """Return the ``vertex:`` section of config.yaml, or {} on any failure."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
 
         section = load_config().get("vertex")
         return section if isinstance(section, dict) else {}
@@ -203,10 +203,10 @@ def has_vertex_credentials() -> bool:
 
 
 def has_explicit_vertex_config() -> bool:
-    """True only when the user deliberately pointed Hermes at Vertex.
+    """True only when the user deliberately pointed Rabbit at Vertex.
 
     Stricter than :func:`has_vertex_credentials`: an ambient ``GOOGLE_APPLICATION_CREDENTIALS``
-    must NOT gate the model picker open (unknowing spend). Only Hermes-scoped signals count.
+    must NOT gate the model picker open (unknowing spend). Only Rabbit-scoped signals count.
     """
     if _resolve_project_override():
         return True

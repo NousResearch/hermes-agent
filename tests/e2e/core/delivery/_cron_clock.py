@@ -3,9 +3,9 @@
 What is virtual and what stays real:
 
 * ``VirtualClock`` is ONE epoch value in a file shared by every process of a scenario. It is
-  installed at the single wall-clock seam — ``hermes_time.datetime`` (every ``_hermes_now``
+  installed at the single wall-clock seam — ``rabbit_time.datetime`` (every ``_rabbit_now``
   binding in cron/jobs.py, scheduler.py, executions.py, occurrences via jobs, ... resolves
-  ``hermes_time.now()`` -> ``datetime.now(tz)`` at call time) — plus the ``time.time()`` reads of
+  ``rabbit_time.now()`` -> ``datetime.now(tz)`` at call time) — plus the ``time.time()`` reads of
   cron.jobs / cron.scheduler / cron.executions (in-flight ages, ledger handoff grace, ticker
   heartbeat marker). ``time.monotonic`` stays real on purpose: it only paces REAL waits (lock
   deadlines, heartbeat thread cadence, reap/GC throttles).
@@ -19,7 +19,7 @@ What is virtual and what stays real:
 
 ``SchedulerHost`` runs the real ticker loop in a thread with a stepping ``stop_event``; running
 this file as a script runs the same loop in a separate OS process (``ChildHost``), stepped via
-files, so two processes can share one ``HERMES_HOME`` and one can be SIGKILLed mid-run. Two
+files, so two processes can share one ``RABBIT_HOME`` and one can be SIGKILLed mid-run. Two
 tickers never contend for a FIRE: the tick lock admits one per instant and the winner advances
 ``next_run_at`` before it releases. Fire-claim contention is the external-provider path
 (``CronScheduler.fire_due``, "exactly one of N replicas runs a job"): ``ReplicaHost`` runs a
@@ -238,10 +238,10 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     import cron.executions as executions
     import cron.jobs as jobs
     import cron.scheduler as scheduler
-    import hermes_time
+    import rabbit_time
     import tools.send_message_tool as send_message_tool
 
-    setattr_fn(hermes_time, "datetime", _virtual_datetime_class(clock))
+    setattr_fn(rabbit_time, "datetime", _virtual_datetime_class(clock))
     proxy = _TimeProxy(clock)
     for module in (jobs, scheduler, executions):
         setattr_fn(module, "time", proxy)
@@ -251,7 +251,7 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     # Durability is not under test (SIGKILL keeps the page cache); per-write fsync of
     # jobs.json/markers dominates wall time at virtual cadence. Atomic renames stay real.
     setattr_fn(os, "fsync", lambda _fd: None)
-    import hermes_cli.sqlite_util as sqlite_util
+    import rabbit_cli.sqlite_util as sqlite_util
 
     real_open_db = sqlite_util.open_db
 
@@ -264,7 +264,7 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     setattr_fn(sqlite_util, "open_db", open_db_no_full_sync)
     # Worktree GC prunes the REAL git checkout the test runs from; hygiene, not scheduling.
     setattr_fn(scheduler, "_maybe_run_worktree_maintenance", lambda: None)
-    hermes_time.reset_cache()
+    rabbit_time.reset_cache()
 
 
 # --- stepping ticker hosts -------------------------------------------------------------------
@@ -391,7 +391,7 @@ class _FileGate:
 
 
 class ChildHost:
-    """Same real ticker loop in a separate OS process sharing the scenario's HERMES_HOME."""
+    """Same real ticker loop in a separate OS process sharing the scenario's RABBIT_HOME."""
 
     label = "child"
 

@@ -2,7 +2,7 @@
 
 The MCP spec allows servers to paginate ``tools/list``, ``resources/list``,
 and ``prompts/list`` via an opaque ``nextCursor`` token. The Python SDK
-fetches one page per call, so hermes must follow the cursor to see items
+fetches one page per call, so rabbit must follow the cursor to see items
 past page 1. Port of the invariant behind anomalyco/opencode#35439/#35500.
 """
 

@@ -5,7 +5,7 @@ animated pixel effects (stars, rain, fireflies, etc.), then encodes to MP4
 (and optionally GIF) via ffmpeg.
 
 Scene animations ported from pixel-art-studio (MIT) — see ATTRIBUTION.md.
-The generative/Pollinations code is intentionally dropped — Hermes uses
+The generative/Pollinations code is intentionally dropped — Rabbit uses
 `image_generate` + `pixel_art()` for base frames instead.
 
 Usage (import):

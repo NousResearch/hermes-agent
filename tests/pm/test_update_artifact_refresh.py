@@ -61,7 +61,7 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
     monkeypatch.setattr(paths, "repo_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "partials_root", lambda: tmp_path / "partials")
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(store))
     syncs = []
     engine = importlib.import_module("pm.install")
     monkeypatch.setattr(engine, "sync_venv", lambda **kwargs: syncs.append(kwargs))

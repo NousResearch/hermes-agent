@@ -1,21 +1,4 @@
-export type ConnectorResidency = 'hosted' | 'local'
-
 export type LocalServerStatus = 'error' | 'needs-auth' | 'off' | 'ok' | 'probing' | 'unknown'
-
-export interface HostedConnectorInput {
-  accountLabel?: string
-  connected: boolean
-  connectedAt?: string
-  connectionStatus?: string
-  description?: string
-  disabledTools?: readonly string[]
-  enabled: boolean
-  inCatalog?: boolean
-  orgLocked?: boolean
-  slug: string
-  statusReason?: string
-  toolsOff?: number
-}
 
 export interface LocalServerInput {
   canAuthenticate?: boolean
@@ -55,17 +38,10 @@ export interface ToolInput {
 
 export type ConnectorState = 'available' | 'broken' | 'connected' | 'connecting' | 'expired' | 'off' | 'unknown'
 
-export type ConnectorOffBy = 'me' | 'org'
-
 export type ConnectorStateWord =
-  | 'accessExpired'
   | 'available'
   | 'connected'
   | 'connecting'
-  | 'connectionUnknown'
-  | 'couldNotConnect'
-  | 'offByYourOrganisation'
-  | 'offForYou'
   | 'serverConnecting'
   | 'serverError'
   | 'serverNeedsAuth'
@@ -73,7 +49,7 @@ export type ConnectorStateWord =
   | 'serverOn'
   | 'serverOnUnused'
 
-export type ConnectorFactKey = 'tools' | 'toolsOff' | 'toolsOn' | 'toolsSomeOn'
+export type ConnectorFactKey = 'tools' | 'toolsOn' | 'toolsSomeOn'
 
 export interface ConnectorFact {
   count: number
@@ -82,24 +58,11 @@ export interface ConnectorFact {
 }
 
 export interface ConnectorReason {
-  key: 'finishSignIn' | 'reconnect' | 'serverError' | 'serverNeedsAuth'
+  key: 'serverError' | 'serverNeedsAuth'
   text?: string
 }
 
-export type ConnectorVerb =
-  'authenticate' | 'connect' | 'install' | 'openLogs' | 'reconnect' | 'stopWaiting' | 'tryAgain' | 'turnBackOn'
-
-export interface ConnectorWayHosted {
-  accountLabel?: string
-  connected: boolean
-  connectedAt?: string
-  disabledTools?: readonly string[]
-  fact?: ConnectorFact
-  offBy?: ConnectorOffBy
-  reason?: ConnectorReason
-  state: ConnectorState
-  verb?: ConnectorVerb
-}
+export type ConnectorVerb = 'authenticate' | 'install' | 'openLogs'
 
 export interface ConnectorWayLocal {
   authType?: ConnectorAuthType
@@ -118,23 +81,18 @@ export interface ConnectorWayLocal {
   verb?: ConnectorVerb
 }
 
-export type ConnectorWays =
-  { hosted: ConnectorWayHosted; local: ConnectorWayLocal | null } | { hosted: null; local: ConnectorWayLocal }
-
 export interface ConnectorCardModel {
   description?: string
   fact?: ConnectorFact
   inCatalog: boolean
   name: string
-  offBy?: ConnectorOffBy
   plugin?: string
   reason?: ConnectorReason
-  residency: ConnectorResidency
   slug: string
   state: ConnectorState
   stateWord: ConnectorStateWord
   verb?: ConnectorVerb
-  ways: ConnectorWays
+  ways: ConnectorWayLocal
 }
 
 export type ConnectorGroupId = 'available' | 'connected' | 'local' | 'off'
@@ -162,8 +120,6 @@ export interface ConnectorPageModel {
   segment: ConnectorSegmentId
   segments: ConnectorSegmentModel[]
 }
-
-export type HostedPhase = 'failed' | 'loading' | 'ready' | 'signedOut' | 'unavailable'
 
 export interface ToolRowModel {
   categories: string[]

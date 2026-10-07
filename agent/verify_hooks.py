@@ -1,7 +1,7 @@
 """Verification-loop helpers for the ``pre_verify`` round-end gate.
 
 After code edits the loop fires ``pre_verify`` (directives resolved by
-:func:`hermes_cli.plugins.get_pre_verify_continue_message`). The shipped coding
+:func:`rabbit_cli.plugins.get_pre_verify_continue_message`). The shipped coding
 guidance rides on the evidence-based verification-stop nudge rather than a second
 default stop gate, so default token cost stays tied to the "missing verification
 evidence" decision while ``pre_verify`` remains free for user/plugin policy.
@@ -44,7 +44,7 @@ def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[
 def _agent_cfg(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            from rabbit_cli.config import load_config
 
             config = load_config()
         except Exception:

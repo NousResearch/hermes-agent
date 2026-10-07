@@ -32,8 +32,8 @@ def _build_agent(model, base_url, provider="", max_tokens=None, window=131072):
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("hermes_cli.config.load_config", return_value=CFG),
-        patch("hermes_cli.config.load_config_readonly", return_value=CFG),
+        patch("rabbit_cli.config.load_config", return_value=CFG),
+        patch("rabbit_cli.config.load_config_readonly", return_value=CFG),
         patch(
             "agent.model_metadata.get_model_context_length", return_value=window,
         ),

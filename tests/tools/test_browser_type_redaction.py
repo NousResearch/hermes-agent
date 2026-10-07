@@ -15,7 +15,7 @@ from tools.browser_tool import browser_type
 def test_browser_type_redacts_api_key_in_output(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    monkeypatch.setenv("RABBIT_REDACT_SECRETS", "true")
     secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(
@@ -35,7 +35,7 @@ def test_browser_type_redacts_api_key_in_output(monkeypatch):
 def test_browser_type_keeps_normal_text_in_output(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    monkeypatch.setenv("RABBIT_REDACT_SECRETS", "true")
     text = "hello world search query"
 
     with patch(
@@ -53,7 +53,7 @@ def test_browser_type_keeps_normal_text_in_output(monkeypatch):
 def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    monkeypatch.setenv("RABBIT_REDACT_SECRETS", "true")
     secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(

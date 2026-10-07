@@ -102,14 +102,14 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     # --replace instance is killing us". Filenames mirror gateway.status; literals keep the signal-
     # handler path import-light.
     with contextlib.suppress(Exception):  # noqa: BLE001 — never raise from a signal handler
-        hermes_home_str = os.path.expanduser(os.environ.get("HERMES_HOME", ""))
-        if hermes_home_str:
-            raw = _read_marker(Path(hermes_home_str) / ".gateway-takeover.json")
+        rabbit_home_str = os.path.expanduser(os.environ.get("RABBIT_HOME", ""))
+        if rabbit_home_str:
+            raw = _read_marker(Path(rabbit_home_str) / ".gateway-takeover.json")
             if raw is not None:
                 ctx["takeover_marker"] = raw[:300]
                 ctx["takeover_marker_for_self"] = (f'"target_pid": {pid}' in raw
                                                    or f"'target_pid': {pid}" in raw)
-            raw = _read_marker(Path(hermes_home_str) / ".gateway-planned-stop.json")
+            raw = _read_marker(Path(rabbit_home_str) / ".gateway-planned-stop.json")
             if raw is not None:
                 ctx["planned_stop_marker"] = raw[:300]
     return ctx
@@ -201,14 +201,14 @@ def check_systemd_timing_alignment(
     drain_timeout: float, cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
 ) -> Optional[Dict[str, Any]]:
     """At startup, sanity-check that systemd's TimeoutStopSec covers stop. A stale unit file
-    (upgraded without re-running ``hermes setup``) can have ``TimeoutStopSec`` below the stop
+    (upgraded without re-running ``rabbit setup``) can have ``TimeoutStopSec`` below the stop
     budget, so systemd SIGKILLs the cgroup mid-drain (a phantom ``code=killed status=9`` in the
     journal). ``None`` when aligned OR undeterminable (not under systemd, no ``systemctl``);
     otherwise a dict with ``timeout_stop_sec``/``drain_timeout``/``expected_min``/``mismatch``.
     """
     if not os.environ.get("INVOCATION_ID"):
         return None  # Not running under systemd (or at least not directly)
-    # /proc/self/cgroup: "0::/user.slice/.../hermes-gateway.service"
+    # /proc/self/cgroup: "0::/user.slice/.../rabbit-gateway.service"
     unit_name: Optional[str] = None
     with contextlib.suppress(OSError), open("/proc/self/cgroup", encoding="utf-8") as fh:
         for line in fh:
@@ -226,7 +226,7 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (rabbit' usual)."""
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
@@ -248,7 +248,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
 def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds. Covers us, ms, s, min,
     h, d, w, month, y; a bare number is seconds. None on anything unexpected; never raises. Public: also consumed by
-    hermes_cli.gateway's restart-wait sizing.
+    rabbit_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None

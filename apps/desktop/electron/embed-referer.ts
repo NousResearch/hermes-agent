@@ -1,6 +1,6 @@
 import { session } from 'electron'
 
-const EMBED_SESSION_PARTITION = 'persist:hermes-embed'
+const EMBED_SESSION_PARTITION = 'persist:rabbit-embed'
 const EMBED_REFERER = 'https://www.youtube.com/'
 
 const YOUTUBE_REFERER_HOST_RE =

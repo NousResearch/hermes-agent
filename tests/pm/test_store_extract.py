@@ -130,7 +130,7 @@ def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
 
 
 def test_target_uses_shared_native_arch(monkeypatch):
-    from hermes_platform.host import facts
+    from rabbit_platform.host import facts
     from pm import store
 
     monkeypatch.setattr(facts, "native_arch", lambda: "arm64")

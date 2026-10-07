@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 from websockets.sync.client import connect
 
 p = argparse.ArgumentParser()
@@ -74,9 +74,9 @@ for label in ['default', 'alpha', 'beta', 'unapproved']:
            'curator': {'enabled': False}, 'compression': {'enabled': False}, 'terminal': {'cwd': str(out)}}
     (h / 'config.yaml').write_text(yaml.safe_dump(cfg))
     (h / '.env').write_text('OPENAI_API_KEY=fixture-key\nOPENAI_BASE_URL=http://127.0.0.1:' + str(a.port+1) + '/v1\n')
-env = {k: v for k, v in os.environ.items() if not (k.startswith('HERMES_') or k.endswith(('_API_KEY', '_TOKEN')))}
-env.update(HOME=str(out / 'os-home'), HERMES_HOME=str(home), HERMES_DASHBOARD_SESSION_TOKEN='hooks-fixture-token', HERMES_IGNORE_RULES='1', PYTHONPATH=str(a.repo))
-cmd = [sys.executable, '-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(a.port), '--skip-build']
+env = {k: v for k, v in os.environ.items() if not (k.startswith('RABBIT_') or k.endswith(('_API_KEY', '_TOKEN')))}
+env.update(HOME=str(out / 'os-home'), RABBIT_HOME=str(home), RABBIT_DASHBOARD_SESSION_TOKEN='hooks-fixture-token', RABBIT_IGNORE_RULES='1', PYTHONPATH=str(a.repo))
+cmd = [sys.executable, '-m', 'rabbit_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(a.port), '--skip-build']
 log = (out / 'serve.log').open('w')
 proc = subprocess.Popen(cmd, cwd=a.repo, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
 events = []

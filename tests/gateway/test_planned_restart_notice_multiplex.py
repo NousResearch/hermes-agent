@@ -17,7 +17,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 
-ONLINE_NOTICE = "♻️ Gateway online — Hermes is back and ready."
+ONLINE_NOTICE = "♻️ Gateway online — Rabbit is back and ready."
 
 
 def _adapter():
@@ -42,8 +42,8 @@ def _home_config(platform: Platform, chat_id: str) -> GatewayConfig:
 @pytest.fixture
 def multiplex_runner(tmp_path, monkeypatch):
     """A host multiplexer: launch profile on Discord, served profile ``coder`` on Telegram."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.DISCORD, "launch-home")
     runner.config.sessions_dir = tmp_path / "sessions"
@@ -137,8 +137,8 @@ async def test_profiles_sharing_one_home_chat_get_one_notice(tmp_path, monkeypat
     A single Telegram group as the home channel of both the launch profile and a served profile
     is a common setup; keyed per profile it received two "Gateway online" messages.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.TELEGRAM, "-100999")
     runner.config.sessions_dir = tmp_path / "sessions"
@@ -189,7 +189,7 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     ``owed`` is built from ``_profile_configs`` while delivery needs a live transport, so a stale
     entry makes ``owed <= delivered`` permanently false and ``.restart_pending.json`` immortal.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.config = _home_config(Platform.DISCORD, "launch-home")
     runner._profile_configs = {"ghost": _home_config(Platform.TELEGRAM, "-200")}
@@ -200,7 +200,7 @@ async def test_unserved_profile_config_is_pruned_from_the_fan_out(tmp_path, monk
     runner._restore_secondary_completion_ledgers = Mock()
     runner._start_one_profile_adapters = AsyncMock(side_effect=RuntimeError("adapters failed"))
     monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda cfg: [("ghost", tmp_path / "ghost")])
-    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.setattr("rabbit_cli.profiles.get_active_profile_name", lambda: "default")
     monkeypatch.setattr(
         "gateway.run_profile_reconcile.profile_serve_signature", lambda home: ("sig",))
 

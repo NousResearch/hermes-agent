@@ -18,7 +18,7 @@ const TITLE_ERROR_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|not found|request blocked|too many requests)\b/i
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
-const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
+const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|rabbit):/i
 const LOCAL_HOSTNAME_RE = /^(?:localhost|localhost\.localdomain)$/i
 const LOCAL_HOST_SUFFIXES = ['.corp', '.home', '.internal', '.lan', '.local', '.localdomain']
 const STATUS_PERMALINK_HOST_RE = /^(?:mobile\.)?(?:x|twitter)\.com$/i

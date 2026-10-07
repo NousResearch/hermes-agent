@@ -1,9 +1,9 @@
 """disk_cleanup — ephemeral file cleanup library behind the disk-cleanup plugin.
 
 Rules: test files delete at task end (age >= 0); temp after 7 days; cron-output
-after 14 days; empty dirs under HERMES_HOME always. Prompt-only: research
+after 14 days; empty dirs under RABBIT_HOME always. Prompt-only: research
 (keep 10 newest, > 30 days), chrome-profile > 14 days, any file > 500 MB.
-Scope: strictly HERMES_HOME and /tmp/hermes-*; never ~/.hermes/logs/ or system dirs.
+Scope: strictly RABBIT_HOME and /tmp/rabbit-*; never ~/.rabbit/logs/ or system dirs.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
@@ -25,27 +25,27 @@ _LARGE_FILE_BYTES = 500 * 1024 * 1024
 
 
 def _state_file(name: str) -> Path:
-    """``$HERMES_HOME/disk-cleanup/<name>`` — deliberately outside ``$HERMES_HOME/logs/``."""
-    return get_hermes_home() / "disk-cleanup" / name
+    """``$RABBIT_HOME/disk-cleanup/<name>`` — deliberately outside ``$RABBIT_HOME/logs/``."""
+    return get_rabbit_home() / "disk-cleanup" / name
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*``.
+    """Accept only paths under RABBIT_HOME or ``/tmp/rabbit-*``.
 
     Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
     """
-    hermes_home = get_hermes_home()
+    rabbit_home = get_rabbit_home()
     try:
         resolved = path.resolve()
     except (OSError, RuntimeError):
         return False
     try:
-        resolved.relative_to(hermes_home)
+        resolved.relative_to(rabbit_home)
         return True
     except ValueError:
         pass
 
-    # Allow /tmp/hermes-* explicitly. Compare resolved roots rather than raw
+    # Allow /tmp/rabbit-* explicitly. Compare resolved roots rather than raw
     # path parts because macOS resolves /tmp to /private/tmp.
     try:
         # Deliberate /tmp alias detection (#98854): we resolve the POSIX root
@@ -53,7 +53,7 @@ def is_safe_path(path: Path) -> bool:
         relative_tmp = resolved.relative_to(Path("/tmp").resolve())  # no-tmp: ok — alias detection, not a scratch path
     except (ValueError, OSError):
         return False
-    return bool(relative_tmp.parts and relative_tmp.parts[0].startswith("hermes-"))
+    return bool(relative_tmp.parts and relative_tmp.parts[0].startswith("rabbit-"))
 
 
 def _log(message: str) -> None:
@@ -102,11 +102,11 @@ def save_tracked(tracked: List[Dict[str, Any]]) -> None:
 ALLOWED_CATEGORIES = {
     "temp", "test", "research", "download", "chrome-profile", "cron-output", "other"}
 
-# Top-level HERMES_HOME dirs whose empty subdirs are never swept (last row: user project trees).
+# Top-level RABBIT_HOME dirs whose empty subdirs are never swept (last row: user project trees).
 _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
+    "rabbit-agent", "backups", "profiles", ".worktrees",
     "patches", "projects", "skins", "themes", "contributors",
     # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "workspace", "plans", "home",
@@ -116,12 +116,12 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
 
-# Top-level HERMES_HOME entries guess_category() never auto-tracks: state, logs, memory,
+# Top-level RABBIT_HOME entries guess_category() never auto-tracks: state, logs, memory,
 # sessions, config/secrets, and user project trees (test_* inside projects/ is not disposable).
 _NEVER_TRACK_TOP_LEVEL = frozenset({
     "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
     "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
-    "auth.json", "hermes-agent",
+    "auth.json", "rabbit-agent",
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
     # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
@@ -134,12 +134,12 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
 
 
 def _is_protected_dir(p: Path) -> bool:
-    """A tracked DIRECTORY that is HERMES_HOME itself or lives under a protected top-level tree
+    """A tracked DIRECTORY that is RABBIT_HOME itself or lives under a protected top-level tree
     (``cache/terminal`` holds terminal snapshots) is never rmtree'd; only its files age out."""
     if not p.is_dir():
         return False
     with contextlib.suppress(ValueError, OSError):
-        rel = p.resolve().relative_to(get_hermes_home())
+        rel = p.resolve().relative_to(get_rabbit_home())
         return not rel.parts or rel.parts[0] in _EMPTY_DIR_PROTECTED_TOP_LEVEL
     return False
 
@@ -153,10 +153,10 @@ def _protected_cron_paths(home: Path) -> frozenset:
                      for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
 
 
-# Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
+# Paths under $RABBIT_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
+    return str(p.resolve()) in _protected_cron_paths(get_rabbit_home())
 
 
 def fmt_size(n: float) -> str:
@@ -183,7 +183,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"SKIP: {path} (does not exist)")
         return False
     if not is_safe_path(path):
-        _log(f"REJECT: {path} (outside HERMES_HOME)")
+        _log(f"REJECT: {path} (outside RABBIT_HOME)")
         return False
     size = path.stat().st_size if path.is_file() else 0
     tracked = load_tracked()
@@ -297,7 +297,7 @@ def quick() -> Dict[str, Any]:
         else:
             errors.append(err)
             new_tracked.append(item)
-    empty_removed = _sweep_empty_dirs(get_hermes_home())
+    empty_removed = _sweep_empty_dirs(get_rabbit_home())
     save_tracked(new_tracked)
     _log(f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, {fmt_size(freed)}")
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
@@ -310,13 +310,13 @@ def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
         return []
 
 
-def _sweep_empty_dirs(hermes_home: Path) -> int:
-    """Remove empty dirs under HERMES_HOME without recursing into durable/heavy trees (a full
-    rglob over a checkout+venv under HERMES_HOME can stall the gateway loop for minutes).
+def _sweep_empty_dirs(rabbit_home: Path) -> int:
+    """Remove empty dirs under RABBIT_HOME without recursing into durable/heavy trees (a full
+    rglob over a checkout+venv under RABBIT_HOME can stall the gateway loop for minutes).
     Iterative post-order so parents emptied by child removal are caught."""
     removed = 0
     stack: List[Tuple[Path, bool]] = [
-        (top, False) for top in _subdirs(hermes_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
+        (top, False) for top in _subdirs(rabbit_home, _EMPTY_DIR_PROTECTED_TOP_LEVEL | _EMPTY_DIR_SWEEP_PRUNE_DIRS)]
     while stack:
         dirpath, visited = stack.pop()
         if visited:
@@ -370,13 +370,13 @@ def _git_tracks(path: Path) -> bool:
     Asked per candidate: ``guess_category`` only reaches this for ``test_*``/``tmp_*``
     names, so one ``ls-files --error-unmatch`` is cheap, needs no cache that could outlive
     the index (a file committed after first classification is seen immediately), and covers
-    both a HERMES_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
-    dotfiles repo tracking ``~/.hermes/scripts/test_x.py``). Unlike a bare ``.git`` probe
-    above HERMES_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
+    both a RABBIT_HOME that IS a checkout and one nested in an enclosing repo (a ``~/.git``
+    dotfiles repo tracking ``~/.rabbit/scripts/test_x.py``). Unlike a bare ``.git`` probe
+    above RABBIT_HOME, an exact tracked check cannot make untracked scratch look Git-owned.
     ``:(literal)`` stops git globbing the name (``test_[1].py`` must not match ``test_1.py``).
     Git missing / not a repo / file untracked all mean "not tracked".
     """
-    from hermes_cli.source_check import _git_ok
+    from rabbit_cli.source_check import _git_ok
 
     return _git_ok(["-C", str(path.parent), "ls-files", "--error-unmatch", "--",
                     ":(literal)" + path.name], timeout=5)
@@ -384,22 +384,22 @@ def _git_tracks(path: Path) -> bool:
 
 def _inside_git_worktree(path: Path) -> bool:
     """True if *path* is Git-owned: a ``.git`` entry (a directory in a normal checkout, a
-    pointer FILE in a linked worktree) exists on the directory chain below HERMES_HOME, or
-    an enclosing repo (HERMES_HOME itself, or one above it) actually TRACKS the file.
+    pointer FILE in a linked worktree) exists on the directory chain below RABBIT_HOME, or
+    an enclosing repo (RABBIT_HOME itself, or one above it) actually TRACKS the file.
 
     Files whose repo tracks them are Git-owned — a ``test_*`` file in a worktree is typically
     a committed regression test, not session scratch (#115295).
 
-    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for the parent-chain probe: a
+    Only ``.git`` entries strictly BELOW ``RABBIT_HOME`` count for the parent-chain probe: a
     home kept in a dotfiles repo (``~/.git``) would otherwise make every scratch file look
-    Git-owned. Git is only asked when a ``.git`` exists at or above HERMES_HOME; otherwise no
+    Git-owned. Git is only asked when a ``.git`` exists at or above RABBIT_HOME; otherwise no
     repo can track the file and the spawn is skipped.
     """
     resolved = path.resolve()
     parents = list(resolved.parents)
     above: List[Path] = []
     with contextlib.suppress(ValueError):
-        i = parents.index(get_hermes_home())
+        i = parents.index(get_rabbit_home())
         parents, above = parents[:i], parents[i:]
     if any((parent / ".git").exists() for parent in parents):
         return True
@@ -410,8 +410,8 @@ def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
         return None
-    with contextlib.suppress(ValueError):  # not under HERMES_HOME (/tmp/hermes-*) — name rules only
-        rel = path.resolve().relative_to(get_hermes_home())
+    with contextlib.suppress(ValueError):  # not under RABBIT_HOME (/tmp/rabbit-*) — name rules only
+        rel = path.resolve().relative_to(get_rabbit_home())
         top = rel.parts[0] if rel.parts else ""
         if top in _NEVER_TRACK_TOP_LEVEL or _is_protected_dir(path):
             return None

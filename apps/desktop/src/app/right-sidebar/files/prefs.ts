@@ -12,7 +12,7 @@ import { Codecs } from '@/lib/persisted'
 // different repos on two backends, and the connection scope keeps those apart
 // (see lib/connection-scoped). Presence in the list means "show"; absence is
 // the default, so an untouched install persists nothing at all.
-const SHOW_IGNORED_KEY = 'hermes.desktop.files.showIgnored'
+const SHOW_IGNORED_KEY = 'rabbit.desktop.files.showIgnored'
 
 export const $showIgnoredRoots = connectionScopedAtom<string[]>(SHOW_IGNORED_KEY, [], Codecs.stringArray)
 

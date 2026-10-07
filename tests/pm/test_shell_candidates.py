@@ -30,7 +30,7 @@ def test_per_user_and_32bit_git_roots_are_candidates():
     })
     assert r"D:\Progs32\Git\bin\bash.exe" in candidates
     assert r"C:\Users\u\AppData\Local\Programs\Git\bin\bash.exe" in candidates
-    assert r"C:\Users\u\AppData\Local\hermes\git\usr\bin\bash.exe" in candidates
+    assert r"C:\Users\u\AppData\Local\rabbit\git\usr\bin\bash.exe" in candidates
 
 def test_nonstarting_bash_is_rejected(monkeypatch):
     import subprocess

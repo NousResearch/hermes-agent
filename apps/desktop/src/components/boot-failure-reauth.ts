@@ -27,8 +27,8 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
   withProvider: provider => `Sign in with ${provider}`
 }
 
-// True when the app is pointed at a remote/cloud backend (either resolves to a
-// remote URL). Any boot failure in this shape is fixable from Settings →
+// True when the app is pointed at a remote backend. Any boot failure in this
+// shape is fixable from Settings →
 // Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
 // the bundled backend and can't help. Drives the escape-hatch emphasis.
 export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
@@ -38,10 +38,7 @@ export function isRemoteConfig(config: DesktopConnectionConfig | null | undefine
 
   const ssh = config as DesktopConnectionConfig & { sshHost?: string }
 
-  return (
-    ((config.mode === 'remote' || config.mode === 'cloud') && Boolean(config.remoteUrl)) ||
-    ((config.mode as string) === 'ssh' && Boolean(ssh.sshHost))
-  )
+  return (config.mode === 'remote' && Boolean(config.remoteUrl)) || ((config.mode as string) === 'ssh' && Boolean(ssh.sshHost))
 }
 
 // True when a boot error is auth-shaped — the refresh token was rejected or the
@@ -63,7 +60,7 @@ export function isRemoteReauthError(error: string | null | undefined): boolean {
 
 /**
  * After a healthy cold boot, main may still re-emit boot-progress errors when a
- * post-boot startHermes()/ticket mint fails (liveness reset → rebuild, wake
+ * post-boot startRabbit()/ticket mint fails (liveness reset → rebuild, wake
  * recovery, etc.). Only CONFIRMED reauth should take over the full-screen
  * recovery overlay then — transient "could not reach … WebSocket ticket"
  * blips must stay in the reconnect loop so reading/drafting is not locked out
@@ -76,8 +73,7 @@ export function shouldApplyPostBootProgressError(error: string | null | undefine
 // A remote, gated (oauth-bucket) gateway is a remote-reauth boot failure when the
 // session isn't connected OR the boot error is auth-shaped (connected-but-expired
 // — see isRemoteReauthError). Only re-establishing the remote session fixes it;
-// the local Retry/Repair buttons can't. 'cloud' counts as remote (it resolves to
-// a remote oauth backend), so a lapsed cloud session is the same failure.
+// the local Retry/Repair buttons can't.
 export function sshFailureMessage(
   config: DesktopConnectionConfig | null | undefined,
   error: string | null | undefined,

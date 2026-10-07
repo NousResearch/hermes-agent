@@ -5,7 +5,7 @@ description: "Jev-style comparative classifier for OrdaPilot. It compares all to
 maintainer: aska-digital
 tier: community
 category: automation
-requires_hermes: ">=0.21"
+requires_rabbit: ">=0.21"
 docs_url: https://github.com/aska-digital/protean-ordaprompt
 version: "1.0.0"
 readme: true

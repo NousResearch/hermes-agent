@@ -27,13 +27,13 @@ def _response(content: str = "ok"):
     return SimpleNamespace(choices=[choice], usage=None, model="fake")
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
-def test_aggregator_call_never_receives_reference_max_tokens(hermes_home, monkeypatch):
+def test_aggregator_call_never_receives_reference_max_tokens(rabbit_home, monkeypatch):
     """reference_max_tokens must cap only the reference fan-out — the
     aggregator's own call_llm invocation must not receive max_tokens at all
     (call_llm omits it entirely when None; see its own docstring)."""

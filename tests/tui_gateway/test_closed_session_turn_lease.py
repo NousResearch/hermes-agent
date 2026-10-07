@@ -4,7 +4,7 @@
 lease. A turn thread that outlives the grace (typically the first prompt, still waiting for the
 deferred agent build) used to claim a fresh lease when it finally reached admission, see the
 session was closing, and return with the lease still registered. Reopening the chat in another
-runtime was then refused as "open in another Hermes window/terminal" until the idle reaper's orphan
+runtime was then refused as "open in another Rabbit window/terminal" until the idle reaper's orphan
 sweep, about five minutes later.
 """
 
@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from hermes_cli.active_sessions import active_session_registry_snapshot
+from rabbit_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
 
 SID = "closing-sid"

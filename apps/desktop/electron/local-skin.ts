@@ -4,7 +4,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
+import type { RabbitSkin, SkinColors } from '@rabbit/shared/skin'
 import { parse } from 'yaml'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -12,7 +12,7 @@ const SKIN_FILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/
 const MAX_CONFIG_BYTES = 1_000_000
 const MAX_SKIN_BYTES = 256_000
 
-// Custom skin files are overlays in hermes_cli/skin_engine.py. Keep this in
+// Custom skin files are overlays in rabbit_cli/skin_engine.py. Keep this in
 // step with its default `colors` block so a partial local skin paints exactly
 // like the resolved gateway payload when Desktop starts offline.
 const DEFAULT_SKIN_COLORS: SkinColors = {
@@ -105,21 +105,21 @@ const stringMap = (value: unknown): SkinColors | undefined => {
   return entries
 }
 
-/** The profile key mirrors `hermes --profile <name>` and is safe for a path. */
+/** The profile key mirrors `rabbit --profile <name>` and is safe for a path. */
 export function localSkinProfileKey(profile: null | string | undefined): string {
   const name = typeof profile === 'string' ? profile.trim() : ''
 
   return name && name !== 'default' && PROFILE_NAME_RE.test(name) ? name : 'default'
 }
 
-/** The profile home mirrors `hermes --profile <name>`: `<root>/profiles/<name>`. */
-export function localSkinHome(hermesHome: string, profile: null | string): string {
+/** The profile home mirrors `rabbit --profile <name>`: `<root>/profiles/<name>`. */
+export function localSkinHome(rabbitHome: string, profile: null | string): string {
   const name = localSkinProfileKey(profile)
 
-  return name === 'default' ? hermesHome : path.join(hermesHome, 'profiles', name)
+  return name === 'default' ? rabbitHome : path.join(rabbitHome, 'profiles', name)
 }
 
-function skinFromFile(filePath: string, configuredName: string): HermesSkin | null {
+function skinFromFile(filePath: string, configuredName: string): RabbitSkin | null {
   const parsed = parseRecord(readText(filePath, MAX_SKIN_BYTES))
 
   if (!parsed) {
@@ -148,8 +148,8 @@ function skinFromFile(filePath: string, configuredName: string): HermesSkin | nu
  * renderer never gets arbitrary file paths or config contents, and a broken
  * local config simply leaves the normal desktop theme in place.
  */
-export function readLocalDisplaySkin(hermesHome: string, profile: null | string): HermesSkin | null {
-  const home = localSkinHome(hermesHome, profile)
+export function readLocalDisplaySkin(rabbitHome: string, profile: null | string): RabbitSkin | null {
+  const home = localSkinHome(rabbitHome, profile)
   const config = parseRecord(readText(path.join(home, 'config.yaml'), MAX_CONFIG_BYTES))
   const display = config && isRecord(config.display) ? config.display : null
   const configuredName = text(display?.skin)
@@ -181,12 +181,12 @@ export function readLocalDisplaySkin(hermesHome: string, profile: null | string)
 
 /** The one small payload preload needs for a window's first theme paint. */
 export function readLocalSkinPayload(
-  hermesHome: string,
+  rabbitHome: string,
   routedProfile: null | string | undefined,
   fallbackProfile: null | string | undefined
-): { profile: string; skin: HermesSkin } | null {
+): { profile: string; skin: RabbitSkin } | null {
   const profile = localSkinProfileKey(routedProfile ?? fallbackProfile)
-  const skin = readLocalDisplaySkin(hermesHome, profile)
+  const skin = readLocalDisplaySkin(rabbitHome, profile)
 
   return skin ? { profile, skin } : null
 }

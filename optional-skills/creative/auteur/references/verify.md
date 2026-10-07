@@ -161,7 +161,7 @@ The output of this pass is one line in the report: what the reference did better
 - **build register:** the rubric table above, inline in your final report.
 - **system register:** the rubric table, plus systemscan's verdict quoted verbatim (variant counts per control, focus failures, one-off variants) and confirmation that you looked at `components.png`.
 - Report honestly and concretely: "slopscan 0 fails / 2 accepted warns (reasons logged); 21+6 screenshots reviewed — fixed S4 headline overflow at 390; LCP 1.8s; CLS 0.02; reduced-motion cut verified." If something is unverified (e.g. no local server to measure LCP), say so explicitly rather than implying a pass.
-- Optional second opinion: an outside UI critique (upstream used a separate 'impeccable' skill, not vendored; in Hermes, `vision_analyze` on the shoot.mjs screenshots works) — it measures UX heuristics auteur doesn't; disagreement between the two is signal, not noise.
+- Optional second opinion: an outside UI critique (upstream used a separate 'impeccable' skill, not vendored; in Rabbit, `vision_analyze` on the shoot.mjs screenshots works) — it measures UX heuristics auteur doesn't; disagreement between the two is signal, not noise.
 
 ## When verification keeps failing
 

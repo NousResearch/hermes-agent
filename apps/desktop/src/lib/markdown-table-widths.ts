@@ -14,7 +14,7 @@
 
 import { readJson, writeJson } from './storage'
 
-const STORAGE_KEY = 'hermes.desktop.mdTableColumns.v1'
+const STORAGE_KEY = 'rabbit.desktop.mdTableColumns.v1'
 const STORE_VERSION = 1
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_ENTRIES = 64

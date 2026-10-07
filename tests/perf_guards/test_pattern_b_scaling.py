@@ -28,7 +28,7 @@ class TestListSessionsRichQueryBound:
 
     @pytest.fixture()
     def chain_db(self, tmp_path: Path):
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
         for i in range(self.N_CHAINS):

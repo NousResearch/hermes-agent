@@ -16,8 +16,8 @@ from agent.verification_evidence import (
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.delenv("HERMES_VERIFY_ON_STOP", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    monkeypatch.delenv("RABBIT_VERIFY_ON_STOP", raising=False)
     root = tmp_path / "project"
     root.mkdir()
     (root / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
@@ -25,7 +25,7 @@ def project(tmp_path, monkeypatch):
 
 
 def test_disabled_guard_never_touches_the_ledger(project, tmp_path):
-    db = tmp_path / ".hermes" / "verification_evidence.db"
+    db = tmp_path / ".rabbit" / "verification_evidence.db"
 
     assert record_terminal_result(command="npm test", cwd=project, session_id="s1", exit_code=0) is None
     assert mark_workspace_edited(session_id="s1", cwd=project, paths=[str(project / "app.ts")]) is None
@@ -35,8 +35,8 @@ def test_disabled_guard_never_touches_the_ledger(project, tmp_path):
 
 
 def test_enabled_guard_records_into_the_ledger(project, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    monkeypatch.setenv("RABBIT_VERIFY_ON_STOP", "1")
 
     assert record_terminal_result(command="npm test", cwd=project, session_id="s1", exit_code=0)
     assert verification_status(session_id="s1", cwd=project)["status"] == "passed"
-    assert Path(tmp_path / ".hermes" / "verification_evidence.db").exists()
+    assert Path(tmp_path / ".rabbit" / "verification_evidence.db").exists()

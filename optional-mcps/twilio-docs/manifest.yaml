@@ -6,7 +6,7 @@ name: twilio-docs
 description: 'Twilio developer docs search (public beta, read-only).'
 source: https://www.twilio.com/docs/ai/mcp
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). No authentication required (verified live:
 # initialize succeeds anonymously).
 

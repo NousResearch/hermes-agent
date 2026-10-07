@@ -22,9 +22,9 @@ def _build_artifact(kind: str, tmp_path, *, nix_build: bool) -> subprocess.Compl
     # a distributable artifact.
     env["NIX_BUILD_TOP"] = "/build/devshell"
     if nix_build:
-        env["HERMES_NIX_BUILD"] = "1"
+        env["RABBIT_NIX_BUILD"] = "1"
     else:
-        env.pop("HERMES_NIX_BUILD", None)
+        env.pop("RABBIT_NIX_BUILD", None)
     # Redirect setuptools' scratch dirs (build/, *.egg-info) into tmp_path so
     # the allowed-marker build doesn't litter the real worktree.
     scratch = tmp_path / "scratch"
@@ -55,4 +55,4 @@ def test_artifact_build_rejects_nix_development_shell_environment(kind, tmp_path
     result = _build_artifact(kind, tmp_path, nix_build=False)
 
     assert result.returncode != 0
-    assert "Building wheels or sdists for hermes-agent is not supported" in result.stderr
+    assert "Building wheels or sdists for rabbit-agent is not supported" in result.stderr

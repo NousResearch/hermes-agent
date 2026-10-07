@@ -4,11 +4,11 @@ manifest loaded through the real discovery path — no loader mocks."""
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 from agent import i18n, i18n_layers
-from hermes_cli.plugins import PluginManager
+from rabbit_cli.plugins import PluginManager
 
 # A bundled key every test can lean on (approval prompts ship in every locale).
 _KEY = "approval.denied"
@@ -29,22 +29,22 @@ def clean_layers():
 
 @pytest.fixture
 def home(tmp_path, monkeypatch, clean_layers):
-    """A temp HERMES_HOME with no plugins and an empty bundled plugin dir."""
-    from hermes_cli import plugins as plugins_mod
+    """A temp RABBIT_HOME with no plugins and an empty bundled plugin dir."""
+    from rabbit_cli import plugins as plugins_mod
 
     home = tmp_path / "home"
     (home / "locales").mkdir(parents=True)
     empty_bundled = tmp_path / "bundled"
     empty_bundled.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.delenv("RABBIT_LANGUAGE", raising=False)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
     i18n.reset_language_cache()
     return home
 
 
-def _write_pack_plugin(home, name="hermes-lang-pl", *, lang="pl", core=None, tui=None, desktop=None,
+def _write_pack_plugin(home, name="rabbit-lang-pl", *, lang="pl", core=None, tui=None, desktop=None,
                        manifest_extra=None, with_init=False):
     plugin = home / "plugins" / name
     (plugin / "locales").mkdir(parents=True)
@@ -94,23 +94,23 @@ def test_overlay_only_language_is_supported_and_falls_back_to_english(home):
 
 def test_overlay_is_profile_scoped_across_two_homes(tmp_path, monkeypatch, clean_layers):
     """Home A overlays de; home B does not. A → B → A must never serve A's overlay to B or B's miss to A."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     (home_a / "locales").mkdir(parents=True)
     home_b.mkdir()
     (home_a / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Nur A"}}), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    monkeypatch.setenv("RABBIT_HOME", str(home_a))
     i18n.reset_language_cache()
     bundled_de = i18n_layers.parse_locale_file(i18n._locales_dir() / "de.yaml")[_KEY]
 
     assert i18n.t(_KEY, lang="de") == "Nur A"
-    token = set_hermes_home_override(home_b)
+    token = set_rabbit_home_override(home_b)
     try:
         assert i18n.t(_KEY, lang="de") == bundled_de
         assert "eo" not in i18n.supported_languages()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     assert i18n.t(_KEY, lang="de") == "Nur A"
 
 
@@ -123,7 +123,7 @@ def test_manifest_only_pack_registers_language_and_display_language_resolves(hom
     assert "pl" not in i18n.supported_languages()
 
     manager = _load(home)
-    loaded = manager._plugins["hermes-lang-pl"]
+    loaded = manager._plugins["rabbit-lang-pl"]
     assert loaded.enabled, loaded.error
 
     assert "pl" in i18n.supported_languages()
@@ -138,31 +138,31 @@ def test_manifest_only_pack_registers_language_and_display_language_resolves(hom
     # Registration never touches display.language; setting it makes the pack the active language.
     assert i18n.get_language() == "en"
     (home / "config.yaml").write_text(
-        yaml.safe_dump({"plugins": {"enabled": ["hermes-lang-pl"]}, "display": {"language": "pl"}}), encoding="utf-8")
+        yaml.safe_dump({"plugins": {"enabled": ["rabbit-lang-pl"]}, "display": {"language": "pl"}}), encoding="utf-8")
     i18n.reset_language_cache()
     assert i18n.get_language() == "pl"
     assert i18n.t(_KEY) == "Zatwierdzenie"
     option = next(o for o in i18n.language_options() if o["id"] == "pl")
-    assert option == {"id": "pl", "endonym": "pl", "rtl": False, "source": "plugin:hermes-lang-pl"}
+    assert option == {"id": "pl", "endonym": "pl", "rtl": False, "source": "plugin:rabbit-lang-pl"}
 
 
 def test_pack_with_register_function_and_metadata(home):
     _write_pack_plugin(home, core={"approval": {"denied": "Zatwierdzenie"}}, with_init=True,
                        manifest_extra={"provides_locales": [{"id": "pl", "endonym": "Polski", "rtl": False}]})
     manager = _load(home)
-    assert manager._plugins["hermes-lang-pl"].enabled
+    assert manager._plugins["rabbit-lang-pl"].enabled
     option = next(o for o in i18n.language_options() if o["id"] == "pl")
-    assert option["endonym"] == "Polski" and option["source"] == "plugin:hermes-lang-pl"
+    assert option["endonym"] == "Polski" and option["source"] == "plugin:rabbit-lang-pl"
 
 
 def test_pack_overrides_overlay_and_unload_drops_it(home):
     (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Overlay"}}), encoding="utf-8")
-    _write_pack_plugin(home, "hermes-lang-de", lang="de", core={"approval": {"denied": "Pack"}})
+    _write_pack_plugin(home, "rabbit-lang-de", lang="de", core={"approval": {"denied": "Pack"}})
     i18n.reset_language_cache()
     assert i18n.t(_KEY, lang="de") == "Overlay"
 
     manager = _load(home)
-    assert manager._plugins["hermes-lang-de"].enabled
+    assert manager._plugins["rabbit-lang-de"].enabled
     assert i18n.t(_KEY, lang="de") == "Pack"
 
     manager.unload()
@@ -190,8 +190,8 @@ def test_later_pack_wins_over_earlier_pack(home):
 
 
 def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
-    from hermes_cli.plugins import PluginContext
-    from hermes_cli.plugins_manifest import PluginManifest
+    from rabbit_cli.plugins import PluginContext
+    from rabbit_cli.plugins_manifest import PluginManifest
 
     manager = PluginManager()
     ctx = PluginContext(PluginManifest(name="inline-pack", source="user", path=str(home)), manager)

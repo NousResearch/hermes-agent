@@ -14,7 +14,7 @@ description: "用于 LLM 训练的 GPU 加速数据整理工具"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/nemo-curator` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/nemo-curator` 安装 |
 | 路径 | `optional-skills/mlops/nemo-curator` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "用于 LLM 训练的 GPU 加速数据整理工具"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # NeMo Curator - GPU 加速数据整理
@@ -390,8 +390,8 @@ cluster.close()
 
 ## 参考资料
 
-- **[过滤指南](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/nemo-curator/references/filtering.md)** - 30+ 质量过滤器与启发式规则
-- **[去重指南](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/nemo-curator/references/deduplication.md)** - 精确、模糊、语义去重方法
+- **[过滤指南](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/nemo-curator/references/filtering.md)** - 30+ 质量过滤器与启发式规则
+- **[去重指南](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/nemo-curator/references/deduplication.md)** - 精确、模糊、语义去重方法
 
 ## 资源
 

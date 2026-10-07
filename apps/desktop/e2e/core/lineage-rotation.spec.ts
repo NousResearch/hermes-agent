@@ -1,5 +1,5 @@
 /**
- * #121148 with REAL rotated session rows: one Electron app + one `hermes serve`,
+ * #121148 with REAL rotated session rows: one Electron app + one `rabbit serve`,
  * only the LLM is faked. `compression.in_place: false` + a low
  * `threshold_tokens` make the backend's own auto-compaction rotate the live
  * conversation mid-turn (parent sealed with end_reason='compression', a
@@ -144,7 +144,7 @@ test('lineage: a real compression rotation is one sidebar row per conversation (
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('rotation')
   writeProviderHome(
-    sandbox.hermesHome,
+    sandbox.rabbitHome,
     provider.url,
     'compression:\n  in_place: false\n  protect_first_n: 1\n  protect_last_n: 1\n  threshold_tokens: 24000\n'
   )
@@ -161,7 +161,7 @@ test('lineage: a real compression rotation is one sidebar row per conversation (
   try {
     await waitForInteractive(app, page)
     // Project grouping, as the sidebar's grouping menu persists it.
-    await page.evaluate(() => localStorage.setItem('hermes.desktop.agentsGroupedByWorkspace', 'true'))
+    await page.evaluate(() => localStorage.setItem('rabbit.desktop.agentsGroupedByWorkspace', 'true'))
     await page.reload()
     await waitForInteractive(app, page)
 

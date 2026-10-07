@@ -144,7 +144,7 @@ def build_wheels(build_set: list[str], specs: dict[str, str], wheelhouse: Path,
             continue
         if name == "uvloop":
             print(f"==> building {name} (download + extract + pre-build fixups)")
-            with tempfile.TemporaryDirectory(prefix=f"hermes-build-{name}-") as tmp:
+            with tempfile.TemporaryDirectory(prefix=f"rabbit-build-{name}-") as tmp:
                 tmp = Path(tmp)
                 sdist_dir = tmp / "sdist"
                 sdist_dir.mkdir()
@@ -358,7 +358,7 @@ def wheelhouse_gates(resolved: Path, wheelhouse: Path, build_set: list[str]) -> 
     2. imports: every NATIVE wheel we built must import (the py3-none-any
        wheels are PyPI bytes; OUR builds are what this gate proves).
     """
-    with tempfile.TemporaryDirectory(prefix="hermes-wheelhouse-gate-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="rabbit-wheelhouse-gate-") as tmp:
         tmp = Path(tmp)
         from pm import build_requirements_environment
 

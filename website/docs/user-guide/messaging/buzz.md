@@ -1,6 +1,6 @@
 # Buzz
 
-The Buzz adapter connects Hermes to a [Buzz](https://github.com/block/buzz) community — Block's open-source human+agent collaboration platform built on the Nostr protocol — and relays messages between Buzz channels (or DMs) and the agent. Outbound traffic shells out to the `buzz` CLI binary ("JSON in, JSON out"); inbound uses a native Nostr WebSocket subscription (via the already-bundled `websockets` package) with CLI polling as fallback. **No extra Python packages are required** — just the `buzz` binary.
+The Buzz adapter connects Rabbit to a [Buzz](https://github.com/block/buzz) community — Block's open-source human+agent collaboration platform built on the Nostr protocol — and relays messages between Buzz channels (or DMs) and the agent. Outbound traffic shells out to the `buzz` CLI binary ("JSON in, JSON out"); inbound uses a native Nostr WebSocket subscription (via the already-bundled `websockets` package) with CLI polling as fallback. **No extra Python packages are required** — just the `buzz` binary.
 
 Buzz renders markdown, so agent replies keep their formatting. Images are delivered as uploads (local files) or links (URLs). Replies can thread onto an existing message via its event id. When progress or status messages are enabled, they inherit the triggering Buzz event as their reply anchor instead of appearing as unrelated top-level channel posts.
 
@@ -8,7 +8,7 @@ Files sent **to** the agent are fetched back off the relay with the agent's auth
 
 Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket subscription by default (near-instant delivery), with automatic fallback to CLI polling when the WebSocket can't be established. Outbound messages always go through the `buzz` CLI. Control it with `transport` / `BUZZ_TRANSPORT`: `auto` (default), `websocket` (require WS, fail otherwise), or `poll`. If your relay membership uses NIP-OA owner attestation, set `BUZZ_AUTH_TAG` to the four-string auth tag JSON.
 
-> Run `hermes gateway setup` and pick **Buzz** for a guided walk-through.
+> Run `rabbit gateway setup` and pick **Buzz** for a guided walk-through.
 
 ## Prerequisites
 
@@ -16,9 +16,9 @@ Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket s
 - A Buzz community relay URL (e.g. `https://mycommunity.communities.buzz.xyz`)
 - A Nostr private key (nsec or hex) whose identity is already a **member** of that community
 
-## Configure Hermes
+## Configure Rabbit
 
-You can configure Buzz two ways — the `gateway` block in `config.yaml` (canonical) or environment variables (which override it). The private key is a **secret** and always belongs in `~/.hermes/.env`.
+You can configure Buzz two ways — the `gateway` block in `config.yaml` (canonical) or environment variables (which override it). The private key is a **secret** and always belongs in `~/.rabbit/.env`.
 
 ### Option A — config.yaml
 
@@ -39,7 +39,7 @@ gateway:
         allowed_users: []          # empty = allow all; hex pubkeys or npubs
 ```
 
-Plus, in `~/.hermes/.env`:
+Plus, in `~/.rabbit/.env`:
 
 ```
 BUZZ_PRIVATE_KEY=nsec1...
@@ -133,7 +133,7 @@ Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel
 ## Inbound attachments
 
 Buzz messages with native NIP-94 `imeta` tags can deliver images, audio,
-video, and documents to the agent. Hermes downloads attachments only after
+video, and documents to the agent. Rabbit downloads attachments only after
 the message has passed self-echo, addressing, and sender authorization checks.
 Each file must use HTTPS and declare an exact byte size and SHA-256 digest;
 redirects, URL credentials, fragments, oversized payloads, and integrity
@@ -148,10 +148,10 @@ retrieval through the Buzz CLI is not handled by this native public-URL path.
 ## Run the gateway
 
 ```bash
-hermes gateway start
+rabbit gateway start
 ```
 
-Check status with `hermes gateway status` — Buzz connection state is reported there, including for env-only setups.
+Check status with `rabbit gateway status` — Buzz connection state is reported there, including for env-only setups.
 
 ## Notes and limitations
 

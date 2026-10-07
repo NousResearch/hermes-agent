@@ -27,5 +27,5 @@ export function skillCatalogInstallIdentifier(skill: SkillCatalogTarget): string
 export function skillCatalogInstallUrl(skill: SkillCatalogTarget): string | null {
   const identifier = skillCatalogInstallIdentifier(skill)
 
-  return identifier ? `hermes://skill/install?${new URLSearchParams({ identifier })}` : null
+  return identifier ? `rabbit://skill/install?${new URLSearchParams({ identifier })}` : null
 }

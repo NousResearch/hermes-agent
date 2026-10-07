@@ -49,7 +49,7 @@ class TestMem0V3Tools:
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
         provider._user_id = "u123"
-        provider._agent_id = "hermes"
+        provider._agent_id = "rabbit"
         provider._backend = backend
         return provider
 
@@ -63,7 +63,7 @@ class TestMem0V3Tools:
         call = backend.captured[0]
         assert call[2]["infer"] is False
         assert call[2]["user_id"] == "u123"
-        assert call[2]["agent_id"] == "hermes"
+        assert call[2]["agent_id"] == "rabbit"
         assert "event_id" in result
 
 
@@ -75,7 +75,7 @@ class TestMem0UpdateDelete:
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
         provider._user_id = "u123"
-        provider._agent_id = "hermes"
+        provider._agent_id = "rabbit"
         provider._backend = backend
         return provider
 
@@ -107,7 +107,7 @@ class TestMem0V3Internal:
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
         provider._user_id = "u123"
-        provider._agent_id = "hermes"
+        provider._agent_id = "rabbit"
         provider._backend = backend
         return provider
 
@@ -119,7 +119,7 @@ class TestMem0V3Internal:
         assert len(backend.captured) == 1
         call = backend.captured[0]
         assert call[2]["user_id"] == "u123"
-        assert call[2]["agent_id"] == "hermes"
+        assert call[2]["agent_id"] == "rabbit"
         assert call[2]["infer"] is True
 
 
@@ -132,7 +132,7 @@ class TestSyncTurnTruncation:
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
         provider._user_id = "u123"
-        provider._agent_id = "hermes"
+        provider._agent_id = "rabbit"
         provider._backend = backend
         return provider
 
@@ -184,7 +184,7 @@ class TestSyncTurnTruncation:
 
     def test_sync_max_chars_config_raises_cap(self, monkeypatch, tmp_path):
         """8k-token embedders should not be stuck at the 512-token default (#106235)."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         (tmp_path / "mem0.json").write_text('{"sync_max_chars": 3000}')
         backend = FakeBackend()
@@ -207,7 +207,7 @@ class TestMem0Prefetch:
         provider = Mem0MemoryProvider()
         provider.initialize("test-session")
         provider._user_id = "u123"
-        provider._agent_id = "hermes"
+        provider._agent_id = "rabbit"
         provider._backend = backend
         return provider
 
@@ -295,7 +295,7 @@ class TestMem0ModeSwitch:
     def test_oss_mode_initializes_without_platform_key_in_scope(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
         (tmp_path / "mem0.json").write_text(
             json.dumps(
@@ -328,7 +328,7 @@ class TestMem0ModeSwitch:
     def test_platform_config_still_fails_closed_without_profile_scope(
         self, monkeypatch, tmp_path
     ):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
 
         token = secret_scope.set_secret_scope(None)
@@ -345,7 +345,7 @@ class TestMem0ModeSwitch:
     ):
         """A scope-less multiplex caller is a spawn-site bug: identity/mode reads must surface it,
         not degrade to '' and route the turn's memories into the default profile's account."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         (tmp_path / "mem0.json").write_text(json.dumps({"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}))
 
         token = secret_scope.set_secret_scope(None)
@@ -358,7 +358,7 @@ class TestMem0ModeSwitch:
             secret_scope.reset_secret_scope(token)
 
     def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "env-key")
         (tmp_path / "mem0.json").write_text(
             json.dumps({"api_key": "file-key"})
@@ -369,7 +369,7 @@ class TestMem0ModeSwitch:
 
     def test_missing_mode_key_defaults_platform(self, monkeypatch, tmp_path):
         """Backward compat: old mem0.json without mode key works."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         config_path = tmp_path / "mem0.json"
         config_path.write_text('{"user_id": "old-user"}')
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
@@ -379,7 +379,7 @@ class TestMem0ModeSwitch:
         assert provider._user_id == "old-user"
 
     def test_is_available_platform_needs_key(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
         provider = Mem0MemoryProvider()
         assert provider.is_available() is False
@@ -394,7 +394,7 @@ class TestMem0UserIdResolution:
     """
 
     def _provider(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         provider = Mem0MemoryProvider()
         # Skip backend instantiation — we only care about identity resolution.
@@ -422,11 +422,11 @@ class TestMem0UserIdResolution:
 
 
     def test_legacy_placeholder_in_config_does_not_override_kwargs(self, monkeypatch, tmp_path):
-        # Setup wizard historically wrote {"user_id": "hermes-user"} as the
+        # Setup wizard historically wrote {"user_id": "rabbit-user"} as the
         # suggested default. Treat that placeholder as unset so users on
         # gateways still get gateway-native ids — not silent collisions.
         monkeypatch.delenv("MEM0_USER_ID", raising=False)
-        (tmp_path / "mem0.json").write_text('{"user_id": "hermes-user"}')
+        (tmp_path / "mem0.json").write_text('{"user_id": "rabbit-user"}')
         provider = self._provider(monkeypatch, tmp_path)
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "123456789"

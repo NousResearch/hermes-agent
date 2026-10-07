@@ -25,7 +25,7 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
   latest.current = { onAttachImageBlob, copy: t.settings.screenshot }
 
   useLayoutEffect(() => {
-    const api = window.hermesDesktop?.screenshot
+    const api = window.rabbitDesktop?.screenshot
 
     if (!api || !surfaceId || !visible) {
       return

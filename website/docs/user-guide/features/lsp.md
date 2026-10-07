@@ -6,7 +6,7 @@ description: "Real language servers (pyright, gopls, rust-analyzer, …) wired i
 
 # Language Server Protocol (LSP)
 
-Hermes runs full language servers — pyright, gopls, rust-analyzer,
+Rabbit runs full language servers — pyright, gopls, rust-analyzer,
 typescript-language-server, clangd, and ~20 more — as background
 subprocesses and feeds their semantic diagnostics into the post-write
 lint check used by `write_file` and `patch`. When the agent edits a
@@ -14,7 +14,7 @@ file, it sees exactly the errors that edit introduced — not just
 syntax errors, but **type errors, undefined names, missing imports,
 and project-wide semantic issues** the language server detects.
 
-This is the same architecture top-tier coding agents use. Hermes
+This is the same architecture top-tier coding agents use. Rabbit
 ships it self-contained: no editor host required, no plugins to
 install, no separate daemon to manage.
 
@@ -33,7 +33,7 @@ falls back silently to the syntax-only result.
 
 Concretely, on every successful `write_file` or `patch`:
 
-1. Hermes captures a baseline of current diagnostics for the file.
+1. Rabbit captures a baseline of current diagnostics for the file.
 2. Performs the write.
 3. Re-queries the language server, filters out diagnostics that were
    already in the baseline, and surfaces only the new ones.
@@ -69,10 +69,10 @@ evaluate the project's build files (Gradle, `mix.exs`, `build.zig`,
 Cabal/Stack) when they start. That is fine for your own project, but
 not for a repository the agent has just cloned.
 
-Hermes therefore treats every workspace as untrusted unless it is:
+Rabbit therefore treats every workspace as untrusted unless it is:
 
-- the git worktree of a directory you pointed Hermes at: where you
-  launched it (`cd my-app && hermes`), the worktree `hermes -w`
+- the git worktree of a directory you pointed Rabbit at: where you
+  launched it (`cd my-app && rabbit`), the worktree `rabbit -w`
   created, the project a Desktop or TUI session is opened in, or a
   gateway's `terminal.cwd`, or
 - a directory listed under `lsp.trusted_workspaces` (or any
@@ -85,27 +85,27 @@ trust under `lsp.trusted_workspaces`. A checkout nested inside a trusted
 worktree has its own `.git`, so it is not trusted, and neither is a git
 repository at or above your home directory (a dotfiles repo there would
 otherwise trust everything below it). Trust covers the whole directory
-you pointed Hermes at, including anything later cloned into it, and
-lasts until Hermes exits.
+you pointed Rabbit at, including anything later cloned into it, and
+lasts until Rabbit exits.
 
-In an untrusted workspace Hermes **denies by default**: only the
-servers below start, each with settings that keep it on Hermes-side
+In an untrusted workspace Rabbit **denies by default**: only the
+servers below start, each with settings that keep it on Rabbit-side
 tools. Every other server is skipped, including rust-analyzer, gopls,
 jdtls, kotlin-language-server, elixir-ls, zls, clojure-lsp,
 haskell-language-server, lua-language-server, terraform-ls, prisma,
 astro, vue-language-server (it loads the `vueCompilerOptions.plugins`
 a project's `tsconfig.json` names) and any server you declare under `lsp.servers`. The diagnostics
 log records `skipped: untrusted workspace …; add it to
-lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
+lsp.trusted_workspaces`, and `rabbit lsp status` marks those servers
 `[trusted workspaces only]`.
 
 | Server | Untrusted workspace |
 |---|---|
-| pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
+| pyright | `VIRTUAL_ENV` or the Rabbit-managed Python, never the project's `.venv`/`venv` |
 | typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
 | svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
 | bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they run no project code (yaml-language-server may fetch the JSON schemas a file names) |
-| clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
+| clangd | unchanged: Rabbit never passes `--query-driver`, so no project compiler runs |
 
 On a local backend, the post-write shell linters that would use the
 checkout's own toolchain are skipped the same way whenever the terminal's
@@ -160,8 +160,8 @@ lsp:
 
 For "manual" entries, install the server through whatever toolchain
 manager makes sense for that language (rustup, ghcup, opam, brew,
-…). Hermes auto-detects the binary on PATH or in
-`<HERMES_HOME>/lsp/bin/`.
+…). Rabbit auto-detects the binary on PATH or in
+`<RABBIT_HOME>/lsp/bin/`.
 
 ### PowerShell
 
@@ -174,14 +174,14 @@ host. Setup:
 2. Download the latest release zip from
    [PowerShellEditorServices releases](https://github.com/PowerShell/PowerShellEditorServices/releases)
    and extract it.
-3. Point Hermes at the extracted bundle — the directory that contains
+3. Point Rabbit at the extracted bundle — the directory that contains
    `PowerShellEditorServices/Start-EditorServices.ps1`. Either:
    - set `lsp.servers.powershell.command: ["/path/to/bundle"]` in
      `config.yaml`, or
-   - extract it to `<HERMES_HOME>/lsp/PowerShellEditorServices`, or
+   - extract it to `<RABBIT_HOME>/lsp/PowerShellEditorServices`, or
    - export `PSES_BUNDLE_PATH=/path/to/bundle`.
 
-`hermes lsp status` reports `installed` once `pwsh` is found; if the
+`rabbit lsp status` reports `installed` once `pwsh` is found; if the
 bundle is missing you'll see a one-time warning in the logs with the
 download link.
 
@@ -197,40 +197,40 @@ composer global require laravel/lsp
 export PATH="$HOME/.config/composer/vendor/bin:$PATH"
 ```
 
-Hermes launches it as `laravel-lsp lsp` (stdio). There is no
-auto-install recipe; `hermes lsp status` shows `manual-only` until the
+Rabbit launches it as `laravel-lsp lsp` (stdio). There is no
+auto-install recipe; `rabbit lsp status` shows `manual-only` until the
 binary is found.
 
 A few servers are installed alongside a peer dependency that npm
 won't auto-pull. `typescript-language-server` and `@vue/language-server`
 require the `typescript` SDK importable from the same `node_modules`
-tree — Hermes installs `typescript@6` (the last JavaScript-based line;
+tree — Rabbit installs `typescript@6` (the last JavaScript-based line;
 TypeScript 7 is the Go port and ships no `tsserver.js`) together with
-the server when you run `hermes lsp install typescript` /
-`hermes lsp install vue-language-server` or auto-install fires on first use.
+the server when you run `rabbit lsp install typescript` /
+`rabbit lsp install vue-language-server` or auto-install fires on first use.
 
 Vue is pinned to `@vue/language-server@2`, started with
 `vue.hybridMode: false` so it hosts its own TypeScript service. The 3.x
 line only works behind a client-hosted `tsserver` tunnel (the VS Code /
-Neovim setup) that Hermes's generic client does not run, so it never
-publishes diagnostics. If an earlier Hermes installed 3.x, the log shows a
+Neovim setup) that Rabbit's generic client does not run, so it never
+publishes diagnostics. If an earlier Rabbit installed 3.x, the log shows a
 one-time `vue-language-server: ... 3.x` warning; delete
-`<HERMES_HOME>/lsp/node_modules/@vue` and `<HERMES_HOME>/lsp/bin/vue-language-server*`,
-then run `hermes lsp install vue-language-server` (the recipe co-installs the
+`<RABBIT_HOME>/lsp/node_modules/@vue` and `<RABBIT_HOME>/lsp/bin/vue-language-server*`,
+then run `rabbit lsp install vue-language-server` (the recipe co-installs the
 TypeScript SDK).
 
 ## CLI
 
 ```
-hermes lsp status          # service state + per-server install status
-hermes lsp list            # registry, optionally --installed-only
-hermes lsp install <id>    # eagerly install one server
-hermes lsp install-all     # try every server with a known recipe
-hermes lsp restart         # tear down running clients
-hermes lsp which <id>      # print resolved binary path
+rabbit lsp status          # service state + per-server install status
+rabbit lsp list            # registry, optionally --installed-only
+rabbit lsp install <id>    # eagerly install one server
+rabbit lsp install-all     # try every server with a known recipe
+rabbit lsp restart         # tear down running clients
+rabbit lsp which <id>      # print resolved binary path
 ```
 
-`hermes lsp status` is the best starting point — it shows which
+`rabbit lsp status` is the best starting point — it shows which
 languages will get semantic diagnostics today and which need a
 binary installed.
 
@@ -266,7 +266,7 @@ lsp:
 
   # After a server fails for a workspace (spawn error, or the request
   # outran its budget) that (server, root) pair is skipped. 0 = for the
-  # rest of the process (until `hermes lsp restart`); N = retried after
+  # rest of the process (until `rabbit lsp restart`); N = retried after
   # N seconds, so one transient stall does not silence a workspace
   # forever. Skips are logged once per root at INFO with the retry time.
   broken_retry_seconds: 0
@@ -283,28 +283,28 @@ lsp:
 
   # Directories whose projects a language server may load code from
   # (see "Workspace trust" above). ~ expanded; everything under an
-  # entry counts. The worktree of the directory you launched Hermes in,
+  # entry counts. The worktree of the directory you launched Rabbit in,
   # or opened the session in, is always trusted.
   trusted_workspaces: []
   # trusted_workspaces: ["~/code/my-app"]
 
   # How to handle missing server binaries.
-  #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
+  #   auto    — install via npm/pip/go install into <RABBIT_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
   # Node package manager for the npm-based servers: npm (default), pnpm
-  # or yarn. Installs still land in <HERMES_HOME>/lsp/node_modules; a
+  # or yarn. Installs still land in <RABBIT_HOME>/lsp/node_modules; a
   # manager that is configured but not installed — or a value outside
   # npm|pnpm|yarn — skips the install with a warning instead of silently
   # using npm, so a pnpm/yarn supply-chain policy (minimumReleaseAge,
   # allowBuilds, …) is never bypassed. Yarn Berry (2+): its default PnP
   # linker writes no node_modules/.bin, so set `nodeLinker: node-modules`
-  # in <HERMES_HOME>/lsp/.yarnrc.yml. pnpm 11 blocks git-hosted transitive
+  # in <RABBIT_HOME>/lsp/.yarnrc.yml. pnpm 11 blocks git-hosted transitive
   # deps by default (ERR_PNPM_EXOTIC_SUBDEP); @vue/language-server 2.x pulls
   # one in, so under pnpm that server is skipped with the pnpm error in the
   # log — install it once with npm, or relax block-exotic-subdeps in
-  # <HERMES_HOME>/lsp/.npmrc if your policy allows it.
+  # <RABBIT_HOME>/lsp/.npmrc if your policy allows it.
   package_manager: npm
 
   # How long an unused language-server client stays alive (seconds).
@@ -335,7 +335,7 @@ lsp:
 * `command: [bin, ...args]` — pin a custom binary path. Bypasses
   auto-install.
 * `env: {KEY: value}` — extra env vars passed to the spawned process.
-  Servers and the npm / `go install` auto-installers start from Hermes'
+  Servers and the npm / `go install` auto-installers start from Rabbit'
   scrubbed child environment (no gateway tokens or provider API keys),
   so a server that needs one of those gets it only through this key.
 * `initialization_options: {...}` — merged into the LSP
@@ -347,7 +347,7 @@ lsp:
 Any `lsp.servers` key that is **not** a built-in server id declares
 your own language server. It needs `command` and `extensions`; the
 other keys are optional. Custom servers are matched *before* the
-built-ins, so they can also take over an extension Hermes already
+built-ins, so they can also take over an extension Rabbit already
 handles.
 
 ```yaml
@@ -364,20 +364,20 @@ lsp:
 ```
 
 Custom servers are never auto-installed: put the binary on PATH (or
-give an absolute path) and `hermes lsp status` lists it as
+give an absolute path) and `rabbit lsp status` lists it as
 `installed`. A malformed entry is logged and skipped without
 affecting the other servers.
 
 ## Installation locations
 
-When `install_strategy: auto`, Hermes installs binaries into
-`<HERMES_HOME>/lsp/bin/`. NPM packages land in
-`<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
+When `install_strategy: auto`, Rabbit installs binaries into
+`<RABBIT_HOME>/lsp/bin/`. NPM packages land in
+`<RABBIT_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the
 staging dir.
 
 Nothing is ever installed to `/usr/local/`, `~/.local/`, or any other
-shared location — the staging dir is fully Hermes-owned and is
+shared location — the staging dir is fully Rabbit-owned and is
 removed when you reset the profile.
 
 ## Performance characteristics
@@ -404,7 +404,7 @@ which would let every later edit block for the cold-build duration.
 A server that fails for a workspace — spawn error, or a request that
 outran its budget — marks that `(server, root)` pair broken and every
 later request for it is skipped (logged once per root at INFO). By
-default the pair stays broken until `hermes lsp restart` or process
+default the pair stays broken until `rabbit lsp restart` or process
 exit; `lsp.broken_retry_seconds: N` retries it after N seconds so one
 transient stall does not cost the workspace its diagnostics for good.
 A root you never want served — one monorepo whose server cannot finish
@@ -427,17 +427,17 @@ respawned automatically on the next relevant file operation. Set
 for the life of the process.
 
 Servers are also released when their workspace goes away, even if they
-are not idle: removing a Hermes-managed worktree (`hermes -w` session
+are not idle: removing a Rabbit-managed worktree (`rabbit -w` session
 end, Kanban task cleanup, a delegated subagent's pruned worktree) shuts
 down that tree's language servers before `git worktree remove` runs, and
 the periodic sweep shuts down any server whose project root no longer
-exists on disk (deleted outside Hermes). The sweep is part of the idle
+exists on disk (deleted outside Rabbit). The sweep is part of the idle
 reaper, so `idle_timeout: 0` also disables deleted-root reaping; the
 worktree-removal release always runs. A multi-root server only drops the
 vanished folder and keeps serving its sibling roots.
 
 Servers that support multi-root workspaces (currently pyright) run as a
-**single process** per Hermes process: the first Python project spawns
+**single process** per Rabbit process: the first Python project spawns
 it, and every further project root — for example sibling git worktrees
 edited by parallel subagents — is attached to that same server as an
 additional workspace folder instead of starting another copy.
@@ -460,19 +460,19 @@ lsp:
 
 ## Troubleshooting
 
-**`hermes lsp status` shows a server as "missing"**
+**`rabbit lsp status` shows a server as "missing"**
 
-The binary isn't on PATH and isn't in `<HERMES_HOME>/lsp/bin/`. Run
-`hermes lsp install <server_id>` to attempt an auto-install, or
+The binary isn't on PATH and isn't in `<RABBIT_HOME>/lsp/bin/`. Run
+`rabbit lsp install <server_id>` to attempt an auto-install, or
 install the binary manually through the language's normal toolchain.
 
-**`Backend warnings` section in `hermes lsp status`**
+**`Backend warnings` section in `rabbit lsp status`**
 
 Some servers ship as thin wrappers around an external CLI for actual
 diagnostics — they spawn cleanly and accept requests but never emit
 errors when the sidecar binary is missing. The most common case is
 `bash-language-server`, which delegates diagnostics to `shellcheck`.
-When `hermes lsp status` shows a `Backend warnings` section, install
+When `rabbit lsp status` shows a `Backend warnings` section, install
 the named tool through your OS package manager:
 
 ```
@@ -482,11 +482,11 @@ scoop install shellcheck    # Windows
 ```
 
 The same warning is logged once at server spawn time in
-`~/.hermes/logs/agent.log`.
+`~/.rabbit/logs/agent.log`.
 
 **Server starts but never returns diagnostics**
 
-Check `~/.hermes/logs/agent.log` for `[agent.lsp.client]` entries —
+Check `~/.rabbit/logs/agent.log` for `[agent.lsp.client]` entries —
 both stderr from the language server and protocol errors land
 there. Some servers (rust-analyzer especially) need to finish a
 project-wide index before they emit per-file diagnostics; the first
@@ -496,7 +496,7 @@ subsequent edits picking them up.
 **Server crashed**
 
 A crashed server is added to the broken-set and won't be retried for
-the rest of the session. Run `hermes lsp restart` to clear the set;
+the rest of the session. Run `rabbit lsp restart` to clear the set;
 the next edit re-spawns.
 
 **Editing a file outside any git repo**

@@ -173,7 +173,7 @@ class TestRelayDeliveryGate:
 
     def test_relay_fronted_without_live_gateway_errors_accurately(self, monkeypatch):
         """A relay-fronted platform with NO live relay transport (manual
-        in-process `hermes cron run`) fails with the accurate 'gateway required'
+        in-process `rabbit cron run`) fails with the accurate 'gateway required'
         message — never the native 'not configured/enabled' gate, which
         misdiagnoses relay-fronted deployments whose credential lives in the
         connector, not natively."""

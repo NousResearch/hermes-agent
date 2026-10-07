@@ -33,13 +33,13 @@ def test_selected_interpreter_environment_and_real_rpc(child_env, project_python
     before = dict(os.environ)
     result = run_code(f'''
 import importlib.util, json, os, sys
-import hermes_tools, user_probe
-from hermes_tools import read_file
+import rabbit_tools, user_probe
+from rabbit_tools import read_file
 print(json.dumps({{
     "executable": sys.executable, "prefix": sys.prefix, "cwd": os.getcwd(),
     "pythonpath": os.environ["PYTHONPATH"].split(os.pathsep),
     "sys_path": sys.path,
-    "staging": os.path.dirname(hermes_tools.__file__),
+    "staging": os.path.dirname(rabbit_tools.__file__),
     "encoding": [os.environ.get("PYTHONIOENCODING"), os.environ.get("PYTHONUTF8")],
     "essentials": {{k: os.environ.get(k) for k in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT")}},
     "secret": os.environ.get("OPENAI_API_KEY"),
@@ -65,7 +65,7 @@ print(json.dumps({{
     assert Path(result["cwd"]).resolve() == expected_cwd.resolve()
     controlled = [result["staging"]] + ([str(repo)] if mode == "strict" else [])
     # macOS: the staging dir is minted under /var/tmp (a symlink to /private/var/tmp) and
-    # `hermes_tools.__file__` reports the resolved path, so compare realpaths.
+    # `rabbit_tools.__file__` reports the resolved path, so compare realpaths.
     def _canon(path: str) -> str:
         return os.path.normcase(os.path.realpath(path))
     assert list(map(_canon, result["pythonpath"])) == list(map(_canon, controlled + [str(user_lib)] * 2))
@@ -80,18 +80,18 @@ def test_credential_policy_and_whitelist_in_real_child(child_env, monkeypatch, m
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MY_SECRET",
         "DB_PASSWORD", "VAULT_CREDENTIAL", "LDAP_PASSWD", "AUTH_TOKEN",
         "SENTRY_DSN", "SLACK_WEBHOOK", "HOME_APIKEY", "USER_CREDS", "TERM_BEARER",
-        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "BUZZ_PRIVATE_KEY", "RANDOM_UNKNOWN",
+        "RABBIT_BASE_URL", "RABBIT_INTERACTIVE", "BUZZ_PRIVATE_KEY", "RANDOM_UNKNOWN",
     )
-    allowed = ("HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV", "LC_ENV_TEST", "TENOR_API_KEY")
+    allowed = ("RABBIT_PROFILE", "RABBIT_CONFIG", "RABBIT_ENV", "LC_ENV_TEST", "TENOR_API_KEY")
     for name in blocked + allowed:
         monkeypatch.setenv(name, "fake-" + name)
     # Registration is real: a skill cannot tunnel a provider or Buzz credential.
     register_env_passthrough(["TENOR_API_KEY", "OPENAI_API_KEY", "BUZZ_PRIVATE_KEY"])
     result = run_code(f'''
-import json, os, hermes_tools
+import json, os, rabbit_tools
 print(json.dumps({{"env": {{k: os.environ.get(k) for k in {blocked + allowed!r}}},
-                  "recursive": hasattr(hermes_tools, "execute_code"),
-                  "delegation": hasattr(hermes_tools, "delegate_task")}}))
+                  "recursive": hasattr(rabbit_tools, "execute_code"),
+                  "delegation": hasattr(rabbit_tools, "delegate_task")}}))
 ''', mode, enabled_tools=("read_file", "execute_code", "delegate_task"))
     assert result["env"] == {**dict.fromkeys(blocked), **{k: "fake-" + k for k in allowed}}
     assert result["recursive"] is False
@@ -133,7 +133,7 @@ def test_unknown_prefix_is_not_cached(outcome):
 
 def test_current_interpreter_needs_no_probe():
     with patch("subprocess.run", side_effect=AssertionError("unexpected probe")):
-        assert ce._uses_hermes_python_environment(sys.executable)
+        assert ce._uses_rabbit_python_environment(sys.executable)
 
 
 def test_project_without_active_venv_falls_back(child_env):

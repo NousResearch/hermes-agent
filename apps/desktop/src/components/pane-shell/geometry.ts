@@ -63,7 +63,7 @@ interface ConnectionLike {
  * hidden controls).
  */
 export function windowControlsRect(connection: ConnectionLike | null, viewportWidth: number): Rect | null {
-  const inElectron = typeof window !== 'undefined' && 'hermesDesktop' in window
+  const inElectron = typeof window !== 'undefined' && 'rabbitDesktop' in window
 
   if (!inElectron) {
     return null

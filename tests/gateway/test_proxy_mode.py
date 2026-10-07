@@ -272,7 +272,7 @@ class TestRunAgentViaProxy:
         assert session.captured_headers["Authorization"] == "Bearer test-key-123"
 
         # Verify session ID header
-        assert session.captured_headers["X-Hermes-Session-Id"] == "session-abc"
+        assert session.captured_headers["X-Rabbit-Session-Id"] == "session-abc"
 
         # Verify messages include system, history, and current message
         messages = session.captured_json["messages"]

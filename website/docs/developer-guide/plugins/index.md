@@ -1,16 +1,16 @@
 ---
 sidebar_label: "Build a Plugin"
 slug: /developer-guide/plugins
-title: "Build a Hermes Plugin"
-description: "Step-by-step guide to building a complete Hermes plugin with tools, hooks, data files, and skills"
+title: "Build a Rabbit Plugin"
+description: "Step-by-step guide to building a complete Rabbit plugin with tools, hooks, data files, and skills"
 ---
 
-# Build a Hermes Plugin
+# Build a Rabbit Plugin
 
-This guide walks through building a complete Hermes plugin from scratch. By the end you'll have a working plugin with multiple tools, lifecycle hooks, shipped data files, and a bundled skill — everything the plugin system supports.
+This guide walks through building a complete Rabbit plugin from scratch. By the end you'll have a working plugin with multiple tools, lifecycle hooks, shipped data files, and a bundled skill — everything the plugin system supports.
 
 :::info Not sure which guide you need?
-Hermes has several distinct pluggable interfaces — some use Python `register_*` APIs, others are config-driven or drop-in directories. Use this map first:
+Rabbit has several distinct pluggable interfaces — some use Python `register_*` APIs, others are config-driven or drop-in directories. Use this map first:
 
 | If you want to add… | Read |
 |---|---|
@@ -28,25 +28,25 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
 | A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
 | A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
-| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
+| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — set `RABBIT_LOCAL_STT_COMMAND` to an argv-tokenized template |
 | **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](../../user-guide/features/mcp.md) — declare `mcp_servers.<name>` in `config.yaml` |
-| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
+| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.rabbit/hooks/<name>/` |
 | **Shell hooks** (run a shell command on events) | [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks) — declare under `hooks:` in `config.yaml` |
-| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](../../user-guide/features/skills.md) — `hermes skills tap add <repo>` · [Publishing a tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
+| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](../../user-guide/features/skills.md) — `rabbit skills tap add <repo>` · [Publishing a tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
 | A first-class **core** inference provider (not a plugin) | [Adding Providers](../adding-providers.md) |
 
 See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
 :::
 
 :::caution Third-party-product plugins ship standalone — not into the core tree
-Plugins that integrate **someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins — are built and distributed as **standalone plugin repos**, not merged into `NousResearch/hermes-agent`. Users install them into `~/.hermes/plugins/` or via a pip entry point; everything in this guide works the same way from a standalone repo. This is a coupling-and-maintenance decision (the core moves fast and we don't own your backend), not a quality bar — a plugin can be excellent and still belong in its own repo. Promote it in the Nous Research Discord `#plugins-skills-and-skins` channel. See [CONTRIBUTING.md](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md) for the policy.
+Plugins that integrate **someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins — are built and distributed as **standalone plugin repos**, not merged into `seven0070/Rabbit-`. Users install them into `~/.rabbit/plugins/` or via a pip entry point; everything in this guide works the same way from a standalone repo. This is a coupling-and-maintenance decision (the core moves fast and we don't own your backend), not a quality bar — a plugin can be excellent and still belong in its own repo. Promote it in the Sanath Patil Discord `#plugins-skills-and-skins` channel. See [CONTRIBUTING.md](https://github.com/seven0070/Rabbit-/blob/main/CONTRIBUTING.md) for the policy.
 :::
 
 ## Portable Agent Plugins v1 packages
 
-Hermes can also install and load directory packages that target the Agent
+Rabbit can also install and load directory packages that target the Agent
 Plugins v1.0.0 format. This is a compatibility adapter for the portable
-components Hermes already owns. It does not replace native `plugin.yaml` plus
+components Rabbit already owns. It does not replace native `plugin.yaml` plus
 `register(ctx)` plugins.
 
 ```text
@@ -62,9 +62,9 @@ my-portable-plugin/
 Install and activate a portable package through the normal workflow:
 
 ```bash
-hermes plugins install owner/repository --no-enable
-hermes plugins list
-hermes plugins enable <plugin-name>
+rabbit plugins install owner/repository --no-enable
+rabbit plugins list
+rabbit plugins enable <plugin-name>
 ```
 
 Portable packages are disabled after installation unless you explicitly enable
@@ -82,17 +82,17 @@ name is a load-time conflict: a `config.yaml` server wins over a package, and th
 first-loaded package wins over the next; the loser is skipped with a warning
 naming both.
 
-Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
+Rabbit validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does
 not fetch JSON schemas while loading a package. A bad skill or MCP entry is
 skipped at its own boundary when valid sibling components can still load.
 `PLUGIN_ROOT` points to the resolved package root. `PLUGIN_DATA` points to a
-profile-scoped writable directory managed by Hermes.
+profile-scoped writable directory managed by Rabbit.
 Values declared in portable MCP `env` are visible package data, not a secret
 storage mechanism. Do not place credentials in `mcp.json`.
 
 The current portable subset supports stdio and Streamable HTTP MCP entries.
-Portable `streamable-http` entries are routed through Hermes' existing native
+Portable `streamable-http` entries are routed through Rabbit' existing native
 remote MCP client (the same runtime that powers URL-based `mcp_servers`
 config), with the v1 boundary rules enforced: the URL must be absolute
 http(s) with no user information or fragment, plain HTTP is accepted only
@@ -100,22 +100,22 @@ for `localhost`/loopback hosts, and configured headers are never forwarded
 across a cross-origin redirect. Legacy `sse` entries are reported and
 skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
-same full-trust posture as other installed Hermes plugins.
+same full-trust posture as other installed Rabbit plugins.
 
 The [rendered specification](https://agent-plugins.org/specification) currently
 labels v1.0.0 a Working Draft, while the
 [versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
-records it as Published. Hermes keys behavior on the canonical v1.0.0 schema
+records it as Published. Rabbit keys behavior on the canonical v1.0.0 schema
 identifiers and normative text, not either mutable status label. This is an
 explicit supported subset, not a claim of full Agent Plugins conformance.
 
 ## Native plugin compatibility contract
 
 Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
-not by one global plugin API number. Hermes does not expose a
+not by one global plugin API number. Rabbit does not expose a
 `PLUGIN_API_VERSION`, require a manifest-wide `api:` match, or attach an API
 version to unrelated values. A plugin that uses a documented behavior should
-continue to work after a normal Hermes upgrade.
+continue to work after a normal Rabbit upgrade.
 
 The compatibility rules are:
 
@@ -124,12 +124,12 @@ The compatibility rules are:
   keyword-only. Existing return fields are not removed or silently retyped.
 - **Hook payloads are keyword payloads.** New hook data is added as keyword
   fields, never by changing the meaning or position of an existing field.
-  Hermes inspects callback signatures: a legacy callback receives the fields it
+  Rabbit inspects callback signatures: a legacy callback receives the fields it
   declares, while a callback with `**kwargs` receives the complete current
   payload. New plugins should accept `**kwargs` so they can opt into additive
   data without another signature change.
 - **Manifests are open to additions.** Unknown `plugin.yaml` fields are ignored.
-  Older Hermes releases can therefore load a plugin whose manifest contains
+  Older Rabbit releases can therefore load a plugin whose manifest contains
   metadata introduced by a newer release, provided the plugin code itself uses
   supported runtime behavior.
 - **Provider interfaces grow through defaults.** New provider methods have a
@@ -147,10 +147,10 @@ The compatibility rules are:
 
 The contract covers documented surfaces only. Replacing or wrapping core
 functions, methods, module attributes or private tables at runtime (assigning
-`AIAgent.<method>`, `setattr` on a Hermes module, writing into
+`AIAgent.<method>`, `setattr` on a Rabbit module, writing into
 `sys.modules` or a core dict) is not a supported extension point. It breaks
 whenever the internals move, and it collides with every other plugin patching
-the same seam. The plugin catalog refuses it at admission (`hermes plugins
+the same seam. The plugin catalog refuses it at admission (`rabbit plugins
 validate`, `no core override` check). If a public hook you need is missing,
 open an issue describing it.
 
@@ -172,21 +172,21 @@ Removal after the window must include any migration needed for persisted data
 or resumable sessions. In practice, additive aliases and adapters are preferred
 to removal.
 
-Hermes enforces this contract with frozen external-plugin fixtures discovered
-from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
+Rabbit enforces this contract with frozen external-plugin fixtures discovered
+from an isolated `RABBIT_HOME`. Those tests load and invoke the plugin through
 `PluginManager`; they assert real registration and callback outcomes rather
 than internal symbol lists or source-code shape.
 
 ### Sep 2026 module decomposition: old import paths removed
 
-Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
+Rabbit's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
 import paths were never part of the plugin contract** above. A temporary compatibility layer kept the old
 paths resolving until 2026-09-14; it has been removed, so a plugin that still imports an old path fails to
-load with an `ImportError` (the reason shows in `hermes plugins list`).
+load with an `ImportError` (the reason shows in `rabbit plugins list`).
 
 To fix such a plugin, import the name from the module that defines it now, or better, use `ctx` and the
 documented ABCs instead of internals. The full old-to-new map is the
-[`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
+[`COMPAT_MANIFEST.md`](https://github.com/seven0070/Rabbit-/blob/5912ed81ed9/COMPAT_MANIFEST.md)
 from the last commit that shipped the layer.
 
 ## What you're building
@@ -202,23 +202,23 @@ Plus a hook that logs every tool call, and a bundled skill file.
 Create a directory and continue with Step 2:
 
 ```bash
-mkdir -p ~/.hermes/plugins/calculator
-cd ~/.hermes/plugins/calculator
+mkdir -p ~/.rabbit/plugins/calculator
+cd ~/.rabbit/plugins/calculator
 ```
 
 ### Validate with Plugin Doctor
 
-`hermes plugins doctor [path-or-id]` runs the same directory discovery,
+`rabbit plugins doctor [path-or-id]` runs the same directory discovery,
 manifest parser, namespaced import, `register(ctx)`, hook registry, and tool
-registry used by Hermes itself. It reports invalid hook names, callbacks that do
+registry used by Rabbit itself. It reports invalid hook names, callbacks that do
 not accept `**kwargs`, registration failures, and drift between declared and
 registered tools/hooks. Pass `--ci` to exit non-zero on an error:
 
 ```bash
-hermes plugins doctor . --ci
+rabbit plugins doctor . --ci
 ```
 
-Doctor uses a temporary `HERMES_HOME`, restores plugin registration state after
+Doctor uses a temporary `RABBIT_HOME`, restores plugin registration state after
 the check, and blocks direct Python socket connections to catch accidental
 network access while registration runs. This is not a sandbox: plugin code still
 executes in-process with the current user's permissions and can spawn subprocesses,
@@ -239,7 +239,7 @@ provides_hooks:
   - post_tool_call
 ```
 
-This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
+This tells Rabbit: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
 
 Optional fields you could add:
 ```yaml
@@ -274,7 +274,7 @@ def register(ctx):
 
 Known capability ids: `tools.override`, `llm.provider_override`,
 `llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
-`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+`llm.task_override` (see `rabbit_cli/plugin_capabilities.py` for the
 canonical registry). Unknown ids are ignored. The older per-capability
 config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
@@ -283,20 +283,20 @@ sandbox**: they gate host API surfaces, nothing more.
 
 **Pip-distributed plugins** have no `plugin.yaml` directory once installed,
 so declare capabilities in distribution metadata instead, via the companion
-`hermes_agent.plugin_capabilities` entry-point group. Each declaration is
+`rabbit_agent.plugin_capabilities` entry-point group. Each declaration is
 named `<plugin-id>.<capability-id>` and points at the same object as your
-`hermes_agent.plugins` entry point:
+`rabbit_agent.plugins` entry point:
 
 ```toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."rabbit_agent.plugins"]
 calculator = "my_pkg:register"
 
-[project.entry-points."hermes_agent.plugin_capabilities"]
+[project.entry-points."rabbit_agent.plugin_capabilities"]
 "calculator.tools.override" = "my_pkg:register"
 ```
 
-Hermes reads these from installed metadata without importing your code, so
-`hermes plugins capabilities` and the consent flow stay accurate for pip
+Rabbit reads these from installed metadata without importing your code, so
+`rabbit plugins capabilities` and the consent flow stay accurate for pip
 installs.
 
 ### Manifest v2 reference
@@ -305,7 +305,7 @@ installs.
 optional; a manifest without `manifest_version` is a v1 manifest and stays
 fully supported forever. Unknown fields never break loading — they are ignored
 with a warning (forward compatibility), and a `manifest_version` newer than
-this Hermes understands still loads with a warning.
+this Rabbit understands still loads with a warning.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -313,7 +313,7 @@ this Hermes understands still loads with a warning.
 | `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
 | `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
-| `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
+| `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Rabbit installs nothing and leaves any `pyproject.toml` alone. |
 | `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
@@ -346,7 +346,7 @@ active plugin requests consent against its staged declaration before publication
 A refusal preserves the installed plugin and selected environment.
 
 The installer and PM admission reject unsupported `manifest_version` values
-and unmet `requires_hermes` constraints before publication.
+and unmet `requires_rabbit` constraints before publication.
 :::
 
 ### Python dependencies
@@ -365,21 +365,21 @@ dependencies = [
 ]
 ```
 
-When both exist the `pyproject.toml` wins. What Hermes does with them:
+When both exist the `pyproject.toml` wins. What Rabbit does with them:
 
 - **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
-  across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
+  across every profile sharing the dependency home, including custom `RABBIT_HOME` roots.
   A new plugin is downloaded disabled; Python dependency consent precedes enablement.
   `pyproject.toml` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
 - **Atomic publication** — PM prepares a fresh environment generation before publishing
   an enablement or an active plugin replacement. Resolution, download, or build failure
   preserves the previous environment and plugin selection; no existing plugin is sacrificed.
-- **Updates retain the union** — `hermes update` includes enabled plugins while preparing
-  its new generation. There is no post-update pip reinstall. `hermes plugins update` prepares
+- **Updates retain the union** — `rabbit update` includes enabled plugins while preparing
+  its new generation. There is no post-update pip reinstall. `rabbit plugins update` prepares
   active replacements before swapping their code and dependency generation together.
 - **Requirement hygiene** — malformed PEP 508 requirements are refused. Environment markers
-  remain intact for the target interpreter to evaluate. `hermes-agent` self-dependencies are
-  omitted because the checkout supplies Hermes. Direct-URL requirements are not managed;
+  remain intact for the target interpreter to evaluate. `rabbit-agent` self-dependencies are
+  omitted because the checkout supplies Rabbit. Direct-URL requirements are not managed;
   use a plugin-owned external runtime for them.
 - **`--no-deps`** downloads a new plugin without dependency consent and leaves it disabled,
   even with `--enable`. It cannot bypass PM admission when replacing an active plugin.
@@ -387,26 +387,26 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
   automation, a container entrypoint) prepares the declared dependencies instead of being refused.
   It is mutually exclusive with `--no-deps`.
 - **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
-  Hermes does not install that Python runtime or modify its declaration.
-- **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
+  Rabbit does not install that Python runtime or modify its declaration.
+- **Nothing to load is an error** — `rabbit plugins validate` rejects `plugin.yaml` without
   `__init__.py`, `desktop/plugin.js`, or `plugin.json` beside it. Pip-layout packages need
   a directory-plugin wrapper.
 - `security.allow_lazy_installs: false` blocks on-demand acquisition. Explicit dependency
   consent and explicit enablement authorize PM preparation; discovery never installs.
 
-`HERMES_HOME/plugins/` survives `hermes update` and Desktop updates: the updater only rebuilds the
+`RABBIT_HOME/plugins/` survives `rabbit update` and Desktop updates: the updater only rebuilds the
 venv and the checkout, never the home directory.
 
 ### Dependency security policy
 
-Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
-keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
+Rabbit quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
+keeps a freshly published release of any package Rabbit itself depends on out of `rabbit update`
 and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
-reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
-resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
+reaches users. **That quarantine does not apply to your plugin's dependencies.** When Rabbit
+resolves your plugin into its environment, the cutoff stays on the packages Rabbit itself locks
 and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
-plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
-version of a package Hermes itself depends on still waits out that package's window.)
+plugin's author, not Rabbit, is responsible for what that pulls in. (A plugin that needs a newer
+version of a package Rabbit itself depends on still waits out that package's window.)
 
 Set your own policy and hold yourself to it. Strongly recommended:
 
@@ -573,7 +573,7 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
+4. **Accept `**kwargs`:** Rabbit injects context keywords (`task_id`, `session_id`, `user_task`,
    `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
    works; `**kwargs` is how you opt into the full, additively growing context.
 
@@ -616,11 +616,11 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
-- `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
+- `ctx.register_cli_command()` registers a CLI subcommand (e.g. `rabbit my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
-- If this function crashes, the plugin is disabled but Hermes continues fine
+- If this function crashes, the plugin is disabled but Rabbit continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
 
@@ -643,7 +643,7 @@ The dispatched tool goes through the normal approval, redaction, and budget pipe
 
 ### Store settings and runtime state
 
-Use plugin-relative config keys for user-visible behavior. Hermes resolves them
+Use plugin-relative config keys for user-visible behavior. Rabbit resolves them
 under `plugins.entries.<plugin-id>.settings` and rejects global, cross-plugin,
 and traversal paths:
 
@@ -672,7 +672,7 @@ Windows-safe namespace. Malformed existing state is reported and preserved.
 
 Config and state have different owners: settings are user-visible behavior in
 `config.yaml`, while state is plugin-owned runtime data under
-`<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
+`<RABBIT_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
 ### Settings form in the Desktop
 
@@ -711,10 +711,10 @@ or `choices` disagree with the schema.
 
 ## Step 6: Test it
 
-Start Hermes:
+Start Rabbit:
 
 ```bash
-hermes
+rabbit
 ```
 
 You should see `calculator: calculate, unit_convert` in the banner's tool list.
@@ -740,10 +740,10 @@ Plugins (1):
 
 ### Debugging plugin discovery
 
-If your plugin doesn't show up — or shows up but isn't loading — set `HERMES_PLUGINS_DEBUG=1` to get verbose discovery logs on stderr:
+If your plugin doesn't show up — or shows up but isn't loading — set `RABBIT_PLUGINS_DEBUG=1` to get verbose discovery logs on stderr:
 
 ```bash
-HERMES_PLUGINS_DEBUG=1 hermes plugins list
+RABBIT_PLUGINS_DEBUG=1 rabbit plugins list
 ```
 
 You'll see, for every plugin source (bundled, user, project, entry-points):
@@ -755,23 +755,23 @@ You'll see, for every plugin source (bundled, user, project, entry-points):
 - on parse failure: a full traceback for the exception (YAML scanner errors, etc.)
 - on `register()` failure: a full traceback pointing at the line in your `__init__.py` that raised
 
-The same logs are always written to `~/.hermes/logs/agent.log` at WARNING level (failures only) and DEBUG level (everything) when the env var is set. So if you can't run with the env var (e.g. from inside the gateway), tail the log file instead:
+The same logs are always written to `~/.rabbit/logs/agent.log` at WARNING level (failures only) and DEBUG level (everything) when the env var is set. So if you can't run with the env var (e.g. from inside the gateway), tail the log file instead:
 
 ```bash
-hermes logs --level WARNING | grep -i plugin
+rabbit logs --level WARNING | grep -i plugin
 ```
 
 Common reasons a plugin doesn't appear:
 
-- **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
-- **Wrong directory layout:** Native packages use `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or one category level. Portable packages use root `plugin.json` in the same locations. Anything deeper is ignored.
+- **Not enabled in config** — plugins are opt-in. Run `rabbit plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
+- **Wrong directory layout:** Native packages use `~/.rabbit/plugins/<plugin-name>/plugin.yaml` (flat) or one category level. Portable packages use root `plugin.json` in the same locations. Anything deeper is ignored.
 - **Missing `__init__.py`:** Native packages need both `plugin.yaml` and `__init__.py` with a `register(ctx)` function. Portable packages do not import Python and do not require `__init__.py`.
 - **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
 
 ## Your plugin's final structure
 
 ```
-~/.hermes/plugins/calculator/
+~/.rabbit/plugins/calculator/
 ├── plugin.yaml      # "I'm calculator, I provide tools and hooks"
 ├── __init__.py      # Wiring: schemas → handlers, register hooks
 ├── schemas.py       # What the LLM reads (descriptions + parameter specs)
@@ -808,14 +808,14 @@ section.
 ### Store durable state
 
 Never write runtime state into your plugin directory: that's the install
-tree, and `hermes plugins update` / `remove` git-pull or delete it — your
+tree, and `rabbit plugins update` / `remove` git-pull or delete it — your
 users' data dies with it. The sanctioned home is the per-plugin data root,
 which survives both and follows the active profile:
 
 ```python
 from plugins.plugin_storage import plugin_data_dir, plugin_db
 
-# <hermes home>/plugin-data/<name>/ — created on first use
+# <rabbit home>/plugin-data/<name>/ — created on first use
 state_file = plugin_data_dir("my-plugin") / "state.json"
 
 # Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
@@ -832,7 +832,7 @@ the standard `.env` / secret-scope path like everywhere else.
 Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
 
 ```
-~/.hermes/plugins/my-plugin/
+~/.rabbit/plugins/my-plugin/
 ├── __init__.py
 ├── plugin.yaml
 └── skills/
@@ -861,23 +861,23 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 ```
 
 **Key properties:**
-- Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
+- Plugin skills are **read-only** — they don't enter `~/.rabbit/skills/` and can't be edited via `skill_manage`.
 - Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
 - Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
 - When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
 
 :::tip Legacy pattern
-The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
+The old `shutil.copy2` pattern (copying a skill into `~/.rabbit/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
-Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
+Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `rabbit --tui`
 interface and the Desktop app. Declare `provides_locales` and ship the YAML; **no Python is needed**:
 
 ```
-~/.hermes/plugins/hermes-lang-pl/
+~/.rabbit/plugins/rabbit-lang-pl/
 ├── plugin.yaml
 └── locales/
     ├── pl.yaml            # core (Python) strings — same key tree as the bundled locales/en.yaml
@@ -886,7 +886,7 @@ interface and the Desktop app. Declare `provides_locales` and ship the YAML; **n
 ```
 
 ```yaml
-name: hermes-lang-pl
+name: rabbit-lang-pl
 version: 1.0.0
 description: Polish language pack
 provides_locales:
@@ -897,7 +897,7 @@ provides_locales:
 
 When `provides_locales` is declared the loader calls `ctx.register_locale_dir(<plugin>/locales)` before
 `register()` (a manifest-only pack with no `__init__.py` loads like a manifest-only Desktop plugin).
-Catalogs are **layered and partial**: pack → user overlay (`<HERMES_HOME>/locales/`) → bundled →
+Catalogs are **layered and partial**: pack → user overlay (`<RABBIT_HOME>/locales/`) → bundled →
 English → key; a pack only needs the keys it changes, and the last pack loaded wins per key.
 Core values keep English's named `{placeholders}`; TUI/Desktop entries whose English value is a
 function are written as strings with positional `{0}`, `{1}` placeholders.
@@ -914,7 +914,7 @@ def register(ctx):
     ctx.register_locale_dir(here / "locales")                                         # every <lang>[.surface].yaml
 ```
 
-`hermes plugins validate` checks each declared id has a parseable, text-only `locales/<id>.yaml`
+`rabbit plugins validate` checks each declared id has a parseable, text-only `locales/<id>.yaml`
 (a non-text leaf is an error) and **warns** with the names of keys absent from the English catalog of
 that surface. Renderers fetch the pack layer through the `i18n.languages` / `i18n.catalog` RPCs.
 User-facing guide: [Language Packs](../../user-guide/features/language-packs.md).
@@ -931,7 +931,7 @@ requires_env:
 
 If `WEATHER_API_KEY` isn't set, the plugin is disabled with a clear message. No crash, no error in the agent — just "Plugin weather disabled (missing: WEATHER_API_KEY)".
 
-When users run `hermes plugins install`, they're **prompted interactively** for any missing `requires_env` variables. Values are saved to `.env` automatically.
+When users run `rabbit plugins install`, they're **prompted interactively** for any missing `requires_env` variables. Values are saved to `.env` automatically.
 
 For a better install experience, use the rich format with descriptions and signup URLs:
 
@@ -955,7 +955,7 @@ Both formats can be mixed in the same list. Already-set variables are skipped si
 
 ### Lazy-install optional Python dependencies
 
-For an SDK covered by a Hermes project extra, use `pm.ensure_import` at the
+For an SDK covered by a Rabbit project extra, use `pm.ensure_import` at the
 operation that needs it. Use `pm.available` for a read-only availability check.
 Do not install dependencies from a frequently polled `check_fn`.
 
@@ -996,7 +996,7 @@ previous selection. PM does not automatically disable other plugins.
 Dependencies installed manually with pip are not durable PM declarations.
 A later environment replacement need not retain them. Wrapper plugins whose
 Python runtimes remain outside PM can use the
-[memory-provider survival contract](../memory-provider-plugin.md#hermes_home-survival-contract-what-wrappers-can-rely-on).
+[memory-provider survival contract](../memory-provider-plugin.md#rabbit_home-survival-contract-what-wrappers-can-rely-on).
 See [Package management](../../reference/package-management.md) for the
 runtime layout and lazy-install policy.
 
@@ -1017,7 +1017,7 @@ def get_client():
     return _client
 ```
 
-This is a footgun. Hermes runs multiple threads in one process (delegated tool calls, background workers, the self-improvement fork), so two threads can hit `get_client()` before `_client` is set, **both** pass the `is not None` check, **both** run the expensive build, and the second write clobbers the first — leaking whatever resource the loser opened (connection, file handle, background thread).
+This is a footgun. Rabbit runs multiple threads in one process (delegated tool calls, background workers, the self-improvement fork), so two threads can hit `get_client()` before `_client` is set, **both** pass the `is not None` check, **both** run the expensive build, and the second write clobbers the first — leaking whatever resource the loser opened (connection, file handle, background thread).
 
 Don't hand-roll the lock. Use the helpers in `plugins/plugin_utils.py`:
 
@@ -1043,7 +1043,7 @@ def reset_client():
     _slot.reset()
 ```
 
-Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The [Honcho memory plugin](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) (`client.py`) is the reference consumer.
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The [Honcho memory plugin](https://github.com/plastic-labs/honcho/tree/main/rabbit-plugin-honcho) (`client.py`) is the reference consumer.
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
@@ -1086,31 +1086,31 @@ requires the operator to opt in via
 `plugins.entries.<plugin_id>.allow_tool_override: true` in `config.yaml`;
 without that gate, `register_tool(override=True)` raises
 `PluginToolOverrideError`. The override is logged so it's
-auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
+auditable in `~/.rabbit/logs/agent.log`. Plugins load after built-in
 tools, so the registration order is correct: your handler replaces the
 built-in one.
 
 **Non-bundled plugins also need an operator grant.** For any plugin that
-does not ship with Hermes core (user, project, or pip source),
+does not ship with Rabbit core (user, project, or pip source),
 `override=True` against an existing built-in tool additionally requires a
 per-plugin opt-in in `config.yaml`:
 
 ```yaml
 plugins:
   entries:
-    my-plugin:                    # the plugin's registry key from `hermes plugins list`
+    my-plugin:                    # the plugin's registry key from `rabbit plugins list`
       allow_tool_override: true
 ```
 
 Without the grant, `ctx.register_tool(..., override=True)` raises
 `PluginToolOverrideError`; since `register()` exceptions are caught by the
-loader, the plugin is disabled and Hermes continues. The gate exists
+loader, the plugin is disabled and Rabbit continues. The gate exists
 because an enabled plugin that silently replaces a privileged built-in
 like `shell_exec` or `write_file` could intercept everything the model
 routes through it. Bundled plugins are exempt: an override there is a
 maintainer decision. If config cannot be loaded, the gate fails closed.
 
-You normally never edit this key by hand. `hermes plugins enable <name>`
+You normally never edit this key by hand. `rabbit plugins enable <name>`
 asks whether to grant the capability only when the plugin's manifest
 declares it under `capabilities:` (the consent screen, defaulting to no);
 a plugin that declares no capabilities is enabled without any grant
@@ -1160,19 +1160,19 @@ Most hooks are fire-and-forget observers — their return values are ignored. Th
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
-The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `rabbit -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 
 The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
 ### `pre_llm_call` context injection
 
-This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Hermes injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
+This is the only hook whose return value matters. When a `pre_llm_call` callback returns a dict with a `"context"` key (or a plain string), Rabbit injects that text into the **current turn's user message**. This is the mechanism for memory plugins, RAG integrations, guardrails, and any plugin that needs to provide the model with additional context.
 
 #### Return format
 
 ```python
 # Dict with context key
-return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project: hermes-agent"}
+return {"context": "Recalled memories:\n- User prefers dark mode\n- Last project: rabbit-agent"}
 
 # Plain string (equivalent to the dict form above)
 return "Recalled memories:\n- User prefers dark mode"
@@ -1185,7 +1185,7 @@ Any non-None, non-empty return with a `"context"` key (or a plain non-empty stri
 
 #### Oversized-context spill
 
-Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$HERMES_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
+Per-hook context is capped at `10,000` characters by default. Anything above the cap is written to `$RABBIT_HOME/hook_outputs/<session_id>/<uuid>.txt` and replaced with a head/tail preview plus the saved path. The model can read the full content via `read_file` or `terminal` if it genuinely needs it. This keeps a runaway plugin from inflating every subsequent turn's prompt and blowing out the prompt cache prefix. Tune in `config.yaml`:
 
 ```yaml
 hooks:
@@ -1194,7 +1194,7 @@ hooks:
     max_chars: 10000       # default; set higher to opt out of spilling
     preview_head: 500      # chars shown at the top of the preview
     preview_tail: 500      # chars shown at the bottom of the preview
-    # directory: null      # default: $HERMES_HOME/hook_outputs
+    # directory: null      # default: $RABBIT_HOME/hook_outputs
 ```
 
 #### How injection works
@@ -1203,7 +1203,7 @@ Injected context is appended to the **user message**, not the system prompt. Thi
 
 - **Prompt cache preservation** — the system prompt stays identical across turns. Anthropic and OpenRouter cache the system prompt prefix, so keeping it stable saves 75%+ on input tokens in multi-turn conversations. If plugins modified the system prompt, every turn would be a cache miss.
 - **Ephemeral** — the injection happens at API call time only. The original user message in the conversation history is never mutated, and nothing is persisted to the session database.
-- **The system prompt is Hermes's territory** — it contains model-specific guidance, tool enforcement rules, personality instructions, and cached skill content. Plugins contribute context alongside the user's input, not by altering the agent's core instructions.
+- **The system prompt is Rabbit's territory** — it contains model-specific guidance, tool enforcement rules, personality instructions, and cached skill content. Plugins contribute context alongside the user's input, not by altering the agent's core instructions.
 
 #### Example: Memory recall plugin
 
@@ -1295,12 +1295,12 @@ def register(ctx):
     ctx.register_middleware("tool_request", cap_find_output)
 ```
 
-The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
+The canonical list of kinds is `VALID_MIDDLEWARE` in `rabbit_cli/middleware.py`:
 
 | Kind | Receives | Return contract |
 |------|----------|-----------------|
 | `tool_request` | `tool_name`, `args`, `original_args`, context kwargs | Return `{"args": {...}}` to replace the effective tool arguments before hooks, guardrails, approvals, and execution see them. Return `None` to leave the call unchanged. |
-| `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
+| `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Rabbit sends them. |
 | `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
 | `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
 
@@ -1310,26 +1310,26 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 - You can include `source`, `reason`, and `name` strings in the returned dict. They land in the middleware trace, which downstream observer hooks receive as the `middleware_trace` kwarg.
 - `next_call` in execution middleware is **single-use**. Calling it twice raises, because it would re-run the provider or tool.
 - A middleware callback that raises is logged and skipped; the chain continues. A downstream failure raised after your `next_call` propagates as itself. Middleware can never break the base runtime path.
-- Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
-- Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
+- Middleware payloads carry `middleware_schema_version` (`rabbit.middleware.v1`) alongside the observer telemetry fields.
+- Unknown kinds register with a warning instead of failing, so a plugin written against a newer Rabbit still loads on an older one.
 
 ### Register CLI commands
 
-Plugins can add their own `hermes <plugin>` subcommand tree:
+Plugins can add their own `rabbit <plugin>` subcommand tree:
 
 ```python
 def _my_command(args):
-    """Handler for hermes my-plugin <subcommand>."""
+    """Handler for rabbit my-plugin <subcommand>."""
     sub = getattr(args, "my_command", None)
     if sub == "status":
         print("All good!")
     elif sub == "config":
         print("Current config: ...")
     else:
-        print("Usage: hermes my-plugin <status|config>")
+        print("Usage: rabbit my-plugin <status|config>")
 
 def _setup_argparse(subparser):
-    """Build the argparse tree for hermes my-plugin."""
+    """Build the argparse tree for rabbit my-plugin."""
     subs = subparser.add_subparsers(dest="my_command")
     subs.add_parser("status", help="Show plugin status")
     subs.add_parser("config", help="Show plugin config")
@@ -1345,7 +1345,7 @@ def register(ctx):
     )
 ```
 
-After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
+After registration, users can run `rabbit my-plugin status`, `rabbit my-plugin config`, etc.
 
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 
@@ -1384,7 +1384,7 @@ After registration, users can type `/mystatus` in any session. The command appea
 
 | | `register_command()` | `register_cli_command()` |
 |---|---|---|
-| Invoked as | `/name` in a session | `hermes name` in a terminal |
+| Invoked as | `/name` in a session | `rabbit name` in a terminal |
 | Where it works | CLI sessions, Telegram, Discord, etc. | Terminal only |
 | Handler receives | Raw args string | argparse `Namespace` |
 | Use case | Diagnostics, status, quick actions | Complex subcommand trees, setup wizards |
@@ -1443,9 +1443,9 @@ This is the public, stable interface for tool dispatch from plugin commands. Plu
 
 ### Act from inside a hook (profile + tools)
 
-`ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `hermes chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Two stable, session-agnostic APIs cover what hooks actually need:
+`ctx._cli_ref` is only populated in an **interactive CLI** session. It is `None` in the gateway, in non-interactive `rabbit chat -q` runs, and in **kanban-spawned worker sessions** — so any plugin logic that reaches through `_cli_ref` silently no-ops in exactly those contexts. Two stable, session-agnostic APIs cover what hooks actually need:
 
-- **`ctx.profile_name`** — the active profile name (e.g. `"default"`, or the assignee profile in a kanban worker). Derived from `HERMES_HOME`, so it works everywhere with no `_cli_ref` dependency.
+- **`ctx.profile_name`** — the active profile name (e.g. `"default"`, or the assignee profile in a kanban worker). Derived from `RABBIT_HOME`, so it works everywhere with no `_cli_ref` dependency.
 - **`ctx.dispatch_tool(name, args)`** — invoke any registered tool (built-in or plugin), including the `kanban_*` tools, `delegate_task`, `terminal`, `read_file`, etc. Works from hook callbacks regardless of which process the hook fires in.
 
 Together these let a kanban lifecycle hook observe a transition and act on the board without touching framework internals:
@@ -1461,7 +1461,7 @@ def register(ctx):
     ctx.register_hook("kanban_task_blocked", on_blocked)
 ```
 
-For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
+For running a full `rabbit <subcommand>` (e.g. `rabbit kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "rabbit kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Rabbit from a hook.
 
 ### Know which cron run you are in
 
@@ -1470,13 +1470,13 @@ For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out 
 | Field | Meaning |
 |---|---|
 | `job_id`, `job_name` | The cron job. |
-| `execution_id` | This run's row in the executions ledger (`hermes cron runs`). |
-| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `hermes cron run`), or an external scheduler's name. |
+| `execution_id` | This run's row in the executions ledger (`rabbit cron runs`). |
+| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `rabbit cron run`), or an external scheduler's name. |
 | `scheduled_instant` | The schedule occurrence this run fires. `None` for a manual or other off-schedule run, so check this field to tell a scheduled run from a manual one. |
 | `started_at` | When the run started. |
 | `profile` | The profile that owns the job. |
 
-The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Hermes, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
+The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Rabbit, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
 
 ```python
 def register(ctx):
@@ -1600,11 +1600,11 @@ def register(ctx):
 
 ### Mid-run plugin loading: what activates now vs next session
 
-A plugin can load while the gateway (or the TUI/Desktop server) is already running: `hermes plugins
+A plugin can load while the gateway (or the TUI/Desktop server) is already running: `rabbit plugins
 install`/`enable`, a Desktop or dashboard install, a catalog re-pin, or a tool-triggered force
 re-discovery. Every one of those paths runs a **real forced rescan** (`discover_plugins(force=True)`) and
 `PluginManager.on_plugin_loaded(callback)` fires from inside it with one summary per **newly** loaded plugin
-(`hermes_cli/plugins_activation.py`):
+(`rabbit_cli/plugins_activation.py`):
 
 ```python
 {"name": "late-mcp", "key": "late-mcp",
@@ -1624,7 +1624,7 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
 - There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
   restarts, and the surfaces say so.
 
-Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
+Install surfaces report exactly this split: `rabbit plugins install/enable` prints it after nudging the running
 gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
 `gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
@@ -1634,7 +1634,7 @@ This guide covers **general plugins** (tools, hooks, slash commands, CLI command
 
 ## Specialized plugin types
 
-Hermes has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.hermes/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
+Rabbit has five specialized plugin types beyond the general surface. Each ships as a directory under `plugins/<category>/<name>/` (bundled) or `~/.rabbit/plugins/<category>/<name>/` (user). The contract differs by category — pick the one you need, then read its full guide.
 
 ### Model provider plugins — add an LLM backend
 
@@ -1701,7 +1701,7 @@ def register(ctx):
         check_fn=check_requirements,
         required_env=["MYPLATFORM_TOKEN"],
         # Auto-populate PlatformConfig.extra from env so env-only setups
-        # show up in `hermes gateway status` without SDK instantiation.
+        # show up in `rabbit gateway status` without SDK instantiation.
         env_enablement_fn=_env_enablement,
         # Opt in to cron delivery: `deliver=myplatform` routes to this var.
         cron_deliver_env_var="MYPLATFORM_HOME_CHANNEL",
@@ -1829,11 +1829,11 @@ description: Custom image generation backend
 
 ## Non-Python extension surfaces
 
-Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
+Rabbit also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
 
 ### MCP servers — register external tools
 
-Model Context Protocol (MCP) servers register their own tools into Hermes without any Python plugin. Declare them in `~/.hermes/config.yaml`:
+Model Context Protocol (MCP) servers register their own tools into Rabbit without any Python plugin. Declare them in `~/.rabbit/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -1848,14 +1848,14 @@ mcp_servers:
       type: "oauth"
 ```
 
-Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](../../user-guide/features/mcp.md).
+Rabbit connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](../../user-guide/features/mcp.md).
 
 ### Gateway event hooks — fire on lifecycle events
 
-Drop a manifest + handler into `~/.hermes/hooks/<name>/`. Unlike plugins there is no `plugins.enabled` step: the gateway imports every valid hook directory at startup, so placing the files **is** the opt-in ([trust model](../../user-guide/features/hooks.md#gateway-hook-trust)):
+Drop a manifest + handler into `~/.rabbit/hooks/<name>/`. Unlike plugins there is no `plugins.enabled` step: the gateway imports every valid hook directory at startup, so placing the files **is** the opt-in ([trust model](../../user-guide/features/hooks.md#gateway-hook-trust)):
 
 ```yaml
-# ~/.hermes/hooks/long-task-alert/HOOK.yaml
+# ~/.rabbit/hooks/long-task-alert/HOOK.yaml
 name: long-task-alert
 description: Send a push notification when a long task finishes
 events:
@@ -1863,7 +1863,7 @@ events:
 ```
 
 ```python
-# ~/.hermes/hooks/long-task-alert/handler.py
+# ~/.rabbit/hooks/long-task-alert/handler.py
 async def handle(event_type: str, context: dict) -> None:
     if context.get("duration_seconds", 0) > 120:
         # send notification …
@@ -1895,9 +1895,9 @@ Supports all the same events as Python plugin hooks (`pre_tool_call`, `post_tool
 If you maintain a GitHub repo of skills (or want to pull from a community index beyond the built-in sources), add it as a **tap**:
 
 ```bash
-hermes skills tap add myorg/skills-repo
-hermes skills search my-workflow --source myorg/skills-repo
-hermes skills install myorg/skills-repo/my-workflow
+rabbit skills tap add myorg/skills-repo
+rabbit skills search my-workflow --source myorg/skills-repo
+rabbit skills install myorg/skills-repo/my-workflow
 ```
 
 Publishing your own tap is just a GitHub repo with `skills/<skill-name>/SKILL.md` directories — no server or registry signup needed.
@@ -1919,7 +1919,7 @@ tts:
       voice_compatible: true
 ```
 
-For STT, point `HERMES_LOCAL_STT_COMMAND` at an argv-tokenized template. It runs without implicit shell interpretation; wrap it in `sh -c`, `cmd /c`, or PowerShell explicitly if the trusted local command requires shell syntax. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
+For STT, point `RABBIT_LOCAL_STT_COMMAND` at an argv-tokenized template. It runs without implicit shell interpretation; wrap it in `sh -c`, `cmd /c`, or PowerShell explicitly if the trusted local command requires shell syntax. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
 
 **Full guides:** [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) · [STT](../../user-guide/features/tts.md#voice-message-transcription-stt).
 
@@ -1929,7 +1929,7 @@ For sharing plugins publicly, add an entry point to your Python package:
 
 ```toml
 # pyproject.toml
-[project.entry-points."hermes_agent.plugins"]
+[project.entry-points."rabbit_agent.plugins"]
 my-plugin = "my_plugin_package"
 ```
 
@@ -1937,9 +1937,9 @@ Entry-point discovery remains supported when the distribution is present in the
 environment supplied by the installation owner (for example, a Nix derivation).
 It is discovery, not permission to inject packages into a PM-selected generation.
 For managed installs, distribute a directory plugin with `pyproject.toml` or
-manifest Python requirements and use `hermes plugins install` / `enable` so PM
-can admit it transactionally. Restart Hermes after a new environment is selected.
-`hermes pm install` accepts managed tool names, not arbitrary PyPI packages.
+manifest Python requirements and use `rabbit plugins install` / `enable` so PM
+can admit it transactionally. Restart Rabbit after a new environment is selected.
+`rabbit pm install` accepts managed tool names, not arbitrary PyPI packages.
 
 ## Distribute for NixOS
 
@@ -1952,28 +1952,28 @@ NixOS users can install your plugin declaratively if you provide a `pyproject.to
 **Entry-point plugins** (recommended for distribution):
 ```nix
 # User's configuration.nix
-services.hermes-agent.extraPythonPackages = [
-  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
+services.rabbit-agent.extraPythonPackages = [
+  (config.services.rabbit-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
       owner = "you";
-      repo = "hermes-my-plugin";
+      repo = "rabbit-my-plugin";
       rev = "v1.0.0";
       hash = "sha256-...";  # nix-prefetch-url --unpack
     };
     format = "pyproject";
-    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
+    build-system = [ config.services.rabbit-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
 
 **Directory plugins** (no `pyproject.toml` needed):
 ```nix
-services.hermes-agent.extraPlugins = [
+services.rabbit-agent.extraPlugins = [
   (pkgs.fetchFromGitHub {
     owner = "you";
-    repo = "hermes-my-plugin";
+    repo = "rabbit-my-plugin";
     rev = "v1.0.0";
     hash = "sha256-...";
   })

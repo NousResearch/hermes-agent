@@ -1,8 +1,8 @@
 """Atomic writers must not resurrect a deleted named profile home.
 
-``hermes profile delete`` removes the tree and writes a tombstone under
+``rabbit profile delete`` removes the tree and writes a tombstone under
 ``profiles/.deleted/<name>``. Background writers that still carry the dead
-profile as their Hermes home (reasoning-caps warm thread, models.dev refresh,
+profile as their Rabbit home (reasoning-caps warm thread, models.dev refresh,
 gateway lifecycle ledger, MCP OAuth token writes, memory store mutations) used
 to re-create ``profiles/<name>/`` with a bare ``mkdir(parents=True)`` right
 before an atomic write — the exact resurrection class the tombstone guard
@@ -19,10 +19,10 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import (
+from rabbit_constants import (
     mark_named_profile_deleted,
     named_profile_home,
-    set_hermes_home_override,
+    set_rabbit_home_override,
 )
 from utils import atomic_json_write, atomic_write_text
 
@@ -51,10 +51,10 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
     def test_late_models_cache_save_after_delete(self, tmp_path):
-        from hermes_cli.models import _write_json_cache
+        from rabbit_cli.models import _write_json_cache
 
         profile = _tombstoned_profile(tmp_path)
-        token = set_hermes_home_override(profile)
+        token = set_rabbit_home_override(profile)
         try:
             with pytest.raises(
                 FileNotFoundError, match="Named profile home does not exist"
@@ -66,9 +66,9 @@ class TestAtomicWritersRefuseDeletedProfileHome:
                     separators=(",", ":"),
                 )
         finally:
-            from hermes_constants import reset_hermes_home_override
+            from rabbit_constants import reset_rabbit_home_override
 
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert not profile.exists()
 
     def test_lifecycle_sentinel_write_after_delete(self, tmp_path):
@@ -92,7 +92,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         from tools.memory_tool_store import MemoryStore
 
         profile = _tombstoned_profile(tmp_path)
-        token = set_hermes_home_override(profile)
+        token = set_rabbit_home_override(profile)
         try:
             store = MemoryStore(memory_char_limit=100, user_char_limit=100)
             with pytest.raises(
@@ -100,9 +100,9 @@ class TestAtomicWritersRefuseDeletedProfileHome:
             ):
                 store.add("memory", "entry")
         finally:
-            from hermes_constants import reset_hermes_home_override
+            from rabbit_constants import reset_rabbit_home_override
 
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert not profile.exists()
 
     def test_roundtrip_yaml_update_does_not_recreate_home(self, tmp_path):

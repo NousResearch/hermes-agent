@@ -1,13 +1,12 @@
 /**
- * First-run funnel telemetry (hermes.desktop.onboarding). Observes the
- * onboarding stores' own transitions — the provider picker, the guided intro,
- * free-tier sign-in — and maps them onto the closed step set; nothing here
+ * First-run funnel telemetry (rabbit.desktop.onboarding). Observes the
+ * onboarding stores' own transitions — the provider picker and the guided intro —
+ * and maps them onto the closed step set; nothing here
  * changes onboarding behavior. Manual (Settings "add provider") flows are not
  * first run and are ignored.
  */
 
 import { closeOnboardingStep, recordDislike, recordOnboarding } from '@/store/desktop-metrics'
-import { $freeTierSignIn, type FreeTierSignInState } from '@/store/free-tier-sign-in'
 import { $desktopOnboarding, type DesktopOnboardingState } from '@/store/onboarding'
 import { $onboardingGate, type OnboardingPhase } from '@/store/onboarding-gate'
 
@@ -80,9 +79,6 @@ export function onboardingTransition(prev: DesktopOnboardingState, next: Desktop
     }
   }
 
-  if (next.freeTierReady !== prev.freeTierReady) {
-    recordOnboarding('free_tier_ready', next.freeTierReady ? 'reached' : 'completed')
-  }
 }
 
 export function guidePhaseTransition(prev: OnboardingPhase, next: OnboardingPhase): void {
@@ -100,28 +96,10 @@ export function guidePhaseTransition(prev: OnboardingPhase, next: OnboardingPhas
   }
 }
 
-const SIGN_IN_OPEN = new Set(['code', 'failed', 'finishing', 'requested', 'setting_up'])
-
-export function signInTransition(prev: FreeTierSignInState, next: FreeTierSignInState): void {
-  if (prev.status === next.status) {
-    return
-  }
-
-  if (next.status === 'requested') {
-    recordOnboarding('sign_in', 'reached')
-  } else if (next.status === 'completed' || next.status === 'already_signed_in') {
-    recordOnboarding('sign_in', 'completed')
-  } else if (next.status === 'closed' && SIGN_IN_OPEN.has(prev.status)) {
-    recordDislike('cancelled', 'free_tier_sign_in')
-    closeOnboardingStep('sign_in')
-  }
-}
-
-/** Subscribe the three first-run stores; returns the unsubscribe. */
+/** Subscribe the first-run stores; returns the unsubscribe. */
 export function observeOnboardingMetrics(): () => void {
   let onboarding = $desktopOnboarding.get()
   let phase = $onboardingGate.get().phase
-  let signIn = $freeTierSignIn.get()
 
   const stops = [
     $desktopOnboarding.listen(next => {
@@ -135,12 +113,6 @@ export function observeOnboardingMetrics(): () => void {
 
       phase = next.phase
       guidePhaseTransition(prev, next.phase)
-    }),
-    $freeTierSignIn.listen(next => {
-      const prev = signIn
-
-      signIn = next
-      signInTransition(prev, next)
     })
   ]
 

@@ -12,7 +12,7 @@ def _response(content="done", *, tool_calls=None):
 
 
 def test_moa_virtual_provider_aggregator_is_actor(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
@@ -29,7 +29,7 @@ moa:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     calls = []
 
     def fake_call_llm(**kwargs):
@@ -71,7 +71,7 @@ moa:
 
 
 def test_moa_runtime_provider_uses_virtual_endpoint():
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from rabbit_cli.runtime_provider import resolve_runtime_provider
 
     runtime = resolve_runtime_provider(requested="moa", target_model="review")
 
@@ -88,7 +88,7 @@ def test_moa_primary_restore_rebuilds_virtual_facade(monkeypatch, tmp_path):
     client from MoA's empty client_kwargs, raising "api_key client option must be
     set" and then "Failed to recreate closed OpenAI client".
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
@@ -105,7 +105,7 @@ moa:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
@@ -149,7 +149,7 @@ def test_moa_restored_facade_still_emits_reference_events(monkeypatch, tmp_path)
     display events for the rest of the session. The shared ``build_moa_facade``
     factory rewires the relay to ``agent.tool_progress_callback`` on restore.
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
@@ -166,7 +166,7 @@ moa:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
@@ -224,7 +224,7 @@ def test_moa_generic_client_rebuild_preserves_virtual_facade(monkeypatch, tmp_pa
     from agent.chat_completion_helpers import _dispatch_nonstreaming_api_request
     from agent.moa_loop import MoAClient
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
@@ -241,7 +241,7 @@ moa:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     agent = AIAgent(
         api_key="moa-virtual-provider",
@@ -427,7 +427,7 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     from agent.moa_loop import _reference_messages
 
     messages = [
-        {"role": "system", "content": "huge hermes system prompt"},
+        {"role": "system", "content": "huge rabbit system prompt"},
         {"role": "user", "content": "do the thing"},
         {
             "role": "assistant",
@@ -444,7 +444,7 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     assert all(m["role"] in ("user", "assistant") for m in view)
     assert all("tool_calls" not in m for m in view)
     # System prompt is gone.
-    assert all("huge hermes system prompt" not in m["content"] for m in view)
+    assert all("huge rabbit system prompt" not in m["content"] for m in view)
     # The agent's action and the tool result are PRESERVED as text.
     joined = "\n".join(m["content"] for m in view)
     assert "[called tool: f(" in joined
@@ -657,7 +657,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
         }
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve
+        "rabbit_cli.runtime_provider.resolve_runtime_provider", fake_resolve
     )
 
     # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
@@ -805,8 +805,8 @@ def test_reference_messages_flattens_cache_decorated_content():
     from agent.prompt_caching import apply_anthropic_cache_control
 
     plain = [
-        {"role": "system", "content": "hermes system prompt"},
-        {"role": "user", "content": "Can we get codex usage resets into hermes?"},
+        {"role": "system", "content": "rabbit system prompt"},
+        {"role": "user", "content": "Can we get codex usage resets into rabbit?"},
     ]
     decorated = apply_anthropic_cache_control(plain, native_anthropic=False)
     # Premise: decoration really converts the user turn to a content-part list.
@@ -815,7 +815,7 @@ def test_reference_messages_flattens_cache_decorated_content():
     view = _reference_messages(decorated)
 
     assert view == [
-        {"role": "user", "content": "Can we get codex usage resets into hermes?"}
+        {"role": "user", "content": "Can we get codex usage resets into rabbit?"}
     ]
     # Invariant: decorated and undecorated transcripts produce the SAME
     # advisory view — so decoration can never change what references see,
@@ -1084,7 +1084,7 @@ def test_facade_does_not_cache_interrupted_reference_results(monkeypatch, tmp_pa
     from agent import moa_loop
     from agent.usage_pricing import CanonicalUsage
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         """
@@ -1101,7 +1101,7 @@ moa:
 """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     interrupted_outputs = [
         (

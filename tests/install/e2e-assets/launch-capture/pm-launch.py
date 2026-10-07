@@ -27,7 +27,7 @@ def main() -> int:
     capture = Path(__file__).with_name("sitecustomize.py")
     command[3] = f"import runpy; runpy.run_path({str(capture)!r}); " + command[3]
     env = os.environ.copy()
-    env["HERMES_E2E_CAPTURE_LAUNCH"] = spec
+    env["RABBIT_E2E_CAPTURE_LAUNCH"] = spec
     return subprocess.run(command, env=env).returncode
 
 

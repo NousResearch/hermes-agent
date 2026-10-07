@@ -7,9 +7,9 @@ import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { azureSignFile } from './sign-msix.mjs'
 
 test('signing validates once per packager, including concurrent file hooks, never process-wide', async () => {
-  const previous = process.env.HERMES_PREPARED_PACKAGING
+  const previous = process.env.RABBIT_PREPARED_PACKAGING
   const previousDotnet = process.env.DOTNET_ROOT
-  process.env.HERMES_PREPARED_PACKAGING = 'operation-selection.json'
+  process.env.RABBIT_PREPARED_PACKAGING = 'operation-selection.json'
   let admissions = 0
   const signed = []
   const dependencies = {
@@ -28,21 +28,21 @@ test('signing validates once per packager, including concurrent file hooks, neve
     assert.equal(admissions, 2)
     assert.deepEqual(signed, ['first.exe', 'second.msix', 'third.msix'])
   } finally {
-    if (previous === undefined) delete process.env.HERMES_PREPARED_PACKAGING
-    else process.env.HERMES_PREPARED_PACKAGING = previous
+    if (previous === undefined) delete process.env.RABBIT_PREPARED_PACKAGING
+    else process.env.RABBIT_PREPARED_PACKAGING = previous
     if (previousDotnet === undefined) delete process.env.DOTNET_ROOT
     else process.env.DOTNET_ROOT = previousDotnet
   }
 })
 
 test('the per-file Azure signer admits the same prepared selection before constructing its manager', async () => {
-  const previous = process.env.HERMES_PREPARED_PACKAGING
-  process.env.HERMES_PREPARED_PACKAGING = path.join(os.tmpdir(), 'absent-signing-selection.json')
+  const previous = process.env.RABBIT_PREPARED_PACKAGING
+  process.env.RABBIT_PREPARED_PACKAGING = path.join(os.tmpdir(), 'absent-signing-selection.json')
   try {
     await assert.rejects(azureSignFile('output.msix', { config: {}, buildResourcesDir: os.tmpdir() }), /run preparation again/)
   } finally {
-    if (previous === undefined) delete process.env.HERMES_PREPARED_PACKAGING
-    else process.env.HERMES_PREPARED_PACKAGING = previous
+    if (previous === undefined) delete process.env.RABBIT_PREPARED_PACKAGING
+    else process.env.RABBIT_PREPARED_PACKAGING = previous
   }
 })
 

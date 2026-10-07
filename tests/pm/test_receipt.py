@@ -15,7 +15,7 @@ import pm.receipt as receipt
 
 @pytest.fixture(autouse=True)
 def _isolated_receipt_context():
-    import hermes_cli.update_receipt as update_receipt
+    import rabbit_cli.update_receipt as update_receipt
     variables = (receipt._current, receipt._completed_by_update, update_receipt._current)
     tokens = [variable.set(None) for variable in variables]
     yield
@@ -25,10 +25,10 @@ def _isolated_receipt_context():
 
 @pytest.fixture
 def homed(tmp_path, monkeypatch):
-    """Receipt dir inside a temp hermes home."""
-    import hermes_constants
+    """Receipt dir inside a temp rabbit home."""
+    import rabbit_constants
 
-    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(rabbit_constants, "get_rabbit_home", lambda: tmp_path)
     return tmp_path
 
 
@@ -81,7 +81,7 @@ def test_bare_python_can_report_a_failed_bootstrap(tmp_path, monkeypatch):
     import subprocess
     import sys
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     repo = Path(__file__).resolve().parents[2]
     code = """
 import json
@@ -263,7 +263,7 @@ def test_nested_begin_with_token_restores_outer():
 def test_sync_begin_after_update_finalized_has_no_update_id(homed, monkeypatch):
     """The correlation id comes from the OPEN update receipt: after its
     finalize pops it, a sync begun is standalone."""
-    import hermes_cli.update_receipt as ur
+    import rabbit_cli.update_receipt as ur
 
     monkeypatch.setattr(ur, "_receipt_dir", lambda: homed / "logs" / "update_receipts")
     ur.begin_update_receipt()
@@ -274,7 +274,7 @@ def test_sync_begin_after_update_finalized_has_no_update_id(homed, monkeypatch):
 
 
 def test_last_for_update_returns_a_copy(homed):
-    import hermes_cli.update_receipt as ur
+    import rabbit_cli.update_receipt as ur
 
     ur.begin_update_receipt()
     my_id = ur.current_correlation_id()

@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ToolsetConfig } from '@/types/hermes'
+import type { ToolsetConfig } from '@/types/rabbit'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { ToolsetConfigPanel } from './toolset-config-panel'
@@ -42,14 +42,14 @@ const runToolsetPostSetup = vi.fn()
 const getActionStatus = vi.fn()
 const startOAuthLogin = vi.fn()
 const pollOAuthSession = vi.fn()
-const getHermesConfigRecord = vi.fn()
-const getHermesConfigSchema = vi.fn()
-const saveHermesConfig = vi.fn()
-const saveHermesConfigRecord = vi.fn()
+const getRabbitConfigRecord = vi.fn()
+const getRabbitConfigSchema = vi.fn()
+const saveRabbitConfig = vi.fn()
+const saveRabbitConfigRecord = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
-vi.mock('@/hermes', () => ({
-  // useHermesConfigRecord (via VoiceProviderFields) reads these from the barrel.
+vi.mock('@/rabbit', () => ({
+  // useRabbitConfigRecord (via VoiceProviderFields) reads these from the barrel.
   peekConfigReadOrigin: () => undefined,
   retainConfigReadOrigin: (next: unknown) => next,
   getToolsetConfig: (name: string) => getToolsetConfig(name),
@@ -66,10 +66,10 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (name: string, lines?: number) => getActionStatus(name, lines),
   startOAuthLogin: (providerId: string) => startOAuthLogin(providerId),
   pollOAuthSession: (providerId: string, sessionId: string) => pollOAuthSession(providerId, sessionId),
-  getHermesConfigRecord: () => getHermesConfigRecord(),
-  getHermesConfigSchema: () => getHermesConfigSchema(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
-  saveHermesConfigRecord: (config: unknown, profile?: unknown) => saveHermesConfigRecord(config, profile),
+  getRabbitConfigRecord: () => getRabbitConfigRecord(),
+  getRabbitConfigSchema: () => getRabbitConfigSchema(),
+  saveRabbitConfig: (config: unknown) => saveRabbitConfig(config),
+  saveRabbitConfigRecord: (config: unknown, profile?: unknown) => saveRabbitConfigRecord(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
   // use-config-record keys its query cache by scope via profileScopeKey; a
   // scoped panel reaches it, so the full-replacement mock must provide it.
@@ -105,7 +105,6 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
         tag: 'No API key needed',
         env_vars: [],
         post_setup: null,
-        requires_nous_auth: false,
         is_active: false
       },
       {
@@ -116,7 +115,6 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
           { key: 'ELEVENLABS_API_KEY', prompt: 'ElevenLabs API key', url: 'https://x', default: null, is_set: false }
         ],
         post_setup: null,
-        requires_nous_auth: false,
         is_active: false
       }
     ],
@@ -153,7 +151,7 @@ beforeEach(() => {
   selectToolsetProvider.mockResolvedValue({ ok: true, name: 'tts', provider: 'ElevenLabs' })
   setEnvVar.mockResolvedValue({ ok: true })
   deleteEnvVar.mockResolvedValue({ ok: true })
-  getHermesConfigRecord.mockResolvedValue({
+  getRabbitConfigRecord.mockResolvedValue({
     tts: {
       provider: 'edge',
       edge: { voice: 'en-US-AriaNeural' },
@@ -161,9 +159,9 @@ beforeEach(() => {
       elevenlabs: { voice_id: 'pNInz6obpgDQGcFmaJgB', model_id: 'eleven_multilingual_v2' }
     }
   })
-  getHermesConfigSchema.mockResolvedValue({ fields: {}, category_order: [] })
-  saveHermesConfig.mockResolvedValue({ ok: true })
-  saveHermesConfigRecord.mockResolvedValue({ ok: true })
+  getRabbitConfigSchema.mockResolvedValue({ fields: {}, category_order: [] })
+  saveRabbitConfig.mockResolvedValue({ ok: true })
+  saveRabbitConfigRecord.mockResolvedValue({ ok: true })
   getElevenLabsVoices.mockResolvedValue({ available: false, voices: [] })
 })
 
@@ -190,8 +188,7 @@ describe('ToolsetConfigPanel', () => {
               { key: 'VOICE_TOOLS_OPENAI_KEY', prompt: 'OpenAI API key', url: 'https://x', default: null, is_set: true }
             ],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: true,
+                is_active: true,
             tts_provider: 'openai'
           }
         ]
@@ -207,9 +204,9 @@ describe('ToolsetConfigPanel', () => {
     // closed Select.
     const voiceInput = screen.getByDisplayValue('alloy')
     fireEvent.change(voiceInput, { target: { value: 'marin' } })
-    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    await waitFor(() => expect(saveRabbitConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
 
-    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<
+    const saved = saveRabbitConfigRecord.mock.calls.at(-1)?.[0] as Record<
       string,
       Record<string, Record<string, string>>
     >
@@ -217,7 +214,7 @@ describe('ToolsetConfigPanel', () => {
     expect(saved.tts.openai.voice).toBe('marin')
     // Unscoped panel (no Capabilities override) → profile rides as undefined,
     // preserving the active-profile default. A scoped panel forwards its scope.
-    expect(saveHermesConfigRecord.mock.calls.at(-1)?.[1]).toBeUndefined()
+    expect(saveRabbitConfigRecord.mock.calls.at(-1)?.[1]).toBeUndefined()
   })
 
   it('autosaves the inline voice fields into the profile the panel is scoped to', async () => {
@@ -233,8 +230,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'High quality voices',
             env_vars: [],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: true,
+                is_active: true,
             tts_provider: 'openai'
           }
         ]
@@ -245,9 +241,9 @@ describe('ToolsetConfigPanel', () => {
     render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} profile={scope} toolset="tts" />)
 
     fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
-    await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+    await waitFor(() => expect(saveRabbitConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
 
-    const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
+    const [saved, forwarded] = saveRabbitConfigRecord.mock.calls.at(-1) as [
       Record<string, Record<string, Record<string, string>>>,
       unknown
     ]
@@ -311,8 +307,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'Multi-model image generation',
             env_vars: [],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: true
+                is_active: true
           }
         ]
       })
@@ -377,8 +372,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'No API key needed',
             env_vars: [],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: false
+                is_active: false
           },
           {
             name: 'ElevenLabs',
@@ -394,8 +388,7 @@ describe('ToolsetConfigPanel', () => {
               }
             ],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: true
+                is_active: true
           }
         ]
       })
@@ -423,8 +416,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'Stealth local browser',
             env_vars: [],
             post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
+                is_active: true
           }
         ]
       })
@@ -471,8 +463,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'Stealth local browser',
             env_vars: [],
             post_setup: 'camofox',
-            requires_nous_auth: false,
-            is_active: true
+                is_active: true
           }
         ]
       })
@@ -504,7 +495,7 @@ describe('ToolsetConfigPanel', () => {
 
   describe('readiness pills', () => {
     it('renders the server status instead of assuming keyless rows are Ready', async () => {
-      // The false-Ready bug: a logged-out Nous Subscription row and a
+      // The false-Ready bug: a logged-out subscription row and a
       // never-installed local TTS both have zero env vars — the old client
       // heuristic pilled every such row "Ready". The server now sends an
       // honest per-provider status; the pill must follow it.
@@ -517,17 +508,15 @@ describe('ToolsetConfigPanel', () => {
               tag: 'No API key needed',
               env_vars: [],
               post_setup: null,
-              requires_nous_auth: false,
-              is_active: true,
+                    is_active: true,
               status: 'ready'
             },
             {
-              name: 'Nous Subscription',
+              name: 'Hosted TTS',
               badge: 'subscription',
               tag: 'Managed OpenAI TTS',
               env_vars: [],
               post_setup: null,
-              requires_nous_auth: true,
               is_active: false,
               status: 'needs_auth'
             },
@@ -537,8 +526,7 @@ describe('ToolsetConfigPanel', () => {
               tag: 'Lightweight local ONNX TTS',
               env_vars: [],
               post_setup: 'kittentts',
-              requires_nous_auth: false,
-              is_active: false,
+                    is_active: false,
               status: 'needs_setup'
             }
           ]
@@ -588,8 +576,7 @@ describe('ToolsetConfigPanel', () => {
                 }
               ],
               post_setup: null,
-              requires_nous_auth: false,
-              is_active: false,
+                    is_active: false,
               status: 'needs_keys'
             }
           ]
@@ -630,8 +617,7 @@ describe('ToolsetConfigPanel', () => {
               tag: 'Headless Chromium, no API key needed',
               env_vars: [],
               post_setup: 'agent_browser',
-              requires_nous_auth: false,
-              is_active: true,
+                    is_active: true,
               status: 'ready'
             }
           ]
@@ -658,8 +644,7 @@ describe('ToolsetConfigPanel', () => {
               tag: 'Headless Chromium, no API key needed',
               env_vars: [],
               post_setup: 'agent_browser',
-              requires_nous_auth: false,
-              is_active: true,
+                    is_active: true,
               status: 'ready'
             }
           ]
@@ -679,138 +664,6 @@ describe('ToolsetConfigPanel', () => {
       fireEvent.click(await screen.findByRole('button', { name: /Re-run setup/ }))
 
       await waitFor(() => expect(runToolsetPostSetup).toHaveBeenCalledWith('browser', 'agent_browser'))
-    })
-  })
-
-  describe('managed Nous provider activation', () => {
-    const nousBrowserConfig = () =>
-      config({
-        name: 'browser',
-        active_provider: null,
-        providers: [
-          {
-            name: 'Nous Subscription (Browser Use cloud)',
-            badge: 'subscription',
-            tag: 'Managed Browser Use billed to your subscription',
-            env_vars: [],
-            post_setup: 'agent_browser',
-            requires_nous_auth: true,
-            is_active: false,
-            status: 'needs_auth'
-          }
-        ]
-      })
-
-    it('surfaces a sign-in notice when the PUT reports needs_nous_auth', async () => {
-      // Regression (Windows 11 Capabilities journey): the GUI wrote
-      // browser.cloud_provider but skipped the Portal entitlement handshake,
-      // so the managed row silently never activated. The endpoint now
-      // reports needs_nous_auth and the panel must surface a sign-in action
-      // instead of the misleading "provider selected" success toast.
-      const { notify } = await import('@/store/notifications')
-
-      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
-      selectToolsetProvider.mockResolvedValue({
-        ok: true,
-        name: 'browser',
-        provider: 'Nous Subscription (Browser Use cloud)',
-        needs_nous_auth: true,
-        feature: 'browser'
-      })
-
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-      // The single Nous row auto-expands; activate via the explicit button.
-      await screen.findByRole('button', { name: /Nous Subscription/ })
-      fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
-
-      await waitFor(() =>
-        expect(selectToolsetProvider).toHaveBeenCalledWith('browser', 'Nous Subscription (Browser Use cloud)')
-      )
-      await waitFor(() =>
-        expect(notify).toHaveBeenCalledWith(
-          expect.objectContaining({
-            kind: 'warning',
-            action: expect.objectContaining({ label: expect.any(String) })
-          })
-        )
-      )
-      // No success toast — the row is not active yet.
-      expect(notify).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
-    })
-
-    it('drives the existing Nous OAuth device-code flow from the sign-in action and refetches', async () => {
-      const { notify } = await import('@/store/notifications')
-
-      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
-      selectToolsetProvider.mockResolvedValue({
-        ok: true,
-        name: 'browser',
-        provider: 'Nous Subscription (Browser Use cloud)',
-        needs_nous_auth: true,
-        feature: 'browser'
-      })
-      startOAuthLogin.mockResolvedValue({
-        flow: 'device_code',
-        session_id: 'sess-1',
-        user_code: 'NOUS-1234',
-        verification_url: 'https://portal.nousresearch.com/device?user_code=NOUS-1234',
-        poll_interval: 5,
-        expires_in: 600
-      })
-      pollOAuthSession.mockResolvedValue({ session_id: 'sess-1', status: 'approved' })
-      const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
-
-      try {
-        render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-        await screen.findByRole('button', { name: /Nous Subscription/ })
-        fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
-
-        // Grab the sign-in action off the warning notification and invoke it —
-        // this is the affordance the toast renders as a button.
-        await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' })))
-
-        const warning = vi
-          .mocked(notify)
-          .mock.calls.map(call => call[0])
-          .find(input => input.kind === 'warning')
-
-        expect(warning?.action).toBeTruthy()
-        getToolsetConfig.mockClear()
-        warning!.action!.onClick()
-
-        await waitFor(() => expect(startOAuthLogin).toHaveBeenCalledWith('nous'))
-        expect(openSpy).toHaveBeenCalledWith(
-          'https://portal.nousresearch.com/device?user_code=NOUS-1234',
-          '_blank',
-          'noopener,noreferrer'
-        )
-        // Approved poll → the panel refetches the config so status flips.
-        await waitFor(() => expect(pollOAuthSession).toHaveBeenCalledWith('nous', 'sess-1'), { timeout: 8000 })
-        await waitFor(() => expect(getToolsetConfig).toHaveBeenCalled(), { timeout: 8000 })
-      } finally {
-        openSpy.mockRestore()
-      }
-    }, 20000)
-
-    it('shows the plain success toast when the managed row is already entitled', async () => {
-      const { notify } = await import('@/store/notifications')
-
-      getToolsetConfig.mockResolvedValue(nousBrowserConfig())
-      selectToolsetProvider.mockResolvedValue({
-        ok: true,
-        name: 'browser',
-        provider: 'Nous Subscription (Browser Use cloud)'
-      })
-
-      render(<ToolsetConfigPanel onConfiguredChange={vi.fn()} toolset="browser" />)
-
-      await screen.findByRole('button', { name: /Nous Subscription/ })
-      fireEvent.click(await screen.findByRole('button', { name: /Use this backend/ }))
-
-      await waitFor(() => expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' })))
-      expect(startOAuthLogin).not.toHaveBeenCalled()
     })
   })
 
@@ -834,8 +687,7 @@ describe('ToolsetConfigPanel', () => {
                 }
               ],
               post_setup: null,
-              requires_nous_auth: false,
-              is_active: true,
+                    is_active: true,
               status: 'ready'
             }
           ]
@@ -886,8 +738,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'Free metasearch',
             env_vars: [],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: true,
+                is_active: true,
             status: 'ready',
             web_backend: 'searxng',
             capabilities: ['search']
@@ -898,8 +749,7 @@ describe('ToolsetConfigPanel', () => {
             tag: 'Full search + extract',
             env_vars: [],
             post_setup: null,
-            requires_nous_auth: false,
-            is_active: false,
+                is_active: false,
             status: 'ready',
             web_backend: 'firecrawl',
             capabilities: ['search', 'extract']

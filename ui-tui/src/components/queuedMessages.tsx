@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@rabbit/ink'
 
 import { useT } from '../i18n/useT.js'
 import { compactPreview } from '../lib/text.js'

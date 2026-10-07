@@ -168,7 +168,7 @@ class SessionTranscriptMixin:
                     "pending fallback failed for replaced state.db transcript on %s", session_id,
                     exc_info=True)
         try:
-            from hermes_state import divert_session_transcript_jsonl
+            from rabbit_state import divert_session_transcript_jsonl
             divert_session_transcript_jsonl(session_id, remaining)
         except Exception:
             logger.warning(
@@ -250,8 +250,8 @@ class SessionTranscriptMixin:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import StateDbCorruptError, StateDbReplacedError
-                from hermes_state_errors import CompressionSessionClosedError
+                from rabbit_state import StateDbCorruptError, StateDbReplacedError
+                from rabbit_state_errors import CompressionSessionClosedError
                 if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
                     self._divert_transcript_after_db_replaced(session_id, queue_session_id, exc)
                     return
@@ -406,7 +406,7 @@ class SessionTranscriptMixin:
         if "messages_fts" in str(exc).lower():
             return True
         import sqlite3
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
 
     def _rebuild_fts_once(self) -> bool:
@@ -605,7 +605,7 @@ class SessionTranscriptMixin:
         db = self._db_for_session_id(session_id)
         if not db:
             return None
-        from hermes_state_rewind import RewindTargetUnavailableError
+        from rabbit_state_rewind import RewindTargetUnavailableError
         with self._get_transcript_drain_lock():
             try:
                 outcome = db.rewind_user_turn(

@@ -3,9 +3,9 @@ label: Slack
 kind: platform
 version: 1.0.0
 description: >
-  Slack gateway adapter for Hermes Agent.
+  Slack gateway adapter for Rabbit Agent.
   Connects to Slack via slack-bolt in Socket Mode and relays messages
-  between Slack channels/DMs and the Hermes agent. Supports slash
+  between Slack channels/DMs and the Rabbit agent. Supports slash
   commands, threads, mrkdwn rendering, approval blocks, free-response
   channels, mention gating, and channel skill bindings.
 author: NousResearch

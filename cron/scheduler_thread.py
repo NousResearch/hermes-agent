@@ -23,7 +23,7 @@ class SupervisedTickerThread:
                  stop_event: threading.Event, name: str = "cron-scheduler") -> None:
         self._target, self._args, self._kwargs = target, args, dict(kwargs or {})
         self._stop_event, self._name = stop_event, name
-        # An external provider's start() (Chronos) arms remote one-shots and RETURNS by design;
+        # An external provider's start() arms remote one-shots and RETURNS by design;
         # only a target that escaped with an exception is a dead ticker worth respawning.
         self._crashed = False
         self._thread = self._spawn()

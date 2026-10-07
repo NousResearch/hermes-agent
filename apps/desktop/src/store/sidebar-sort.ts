@@ -1,6 +1,6 @@
 import { computed, type ReadableAtom } from 'nanostores'
 
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 
 import { $sidebarOrdering, type SidebarOrdering } from './layout'
 import { $sessions } from './session'

@@ -28,7 +28,7 @@ export const zhHantAssistant = {
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',
-      loadingResponse: 'Hermes 正在載入回覆',
+      loadingResponse: 'Rabbit 正在載入回覆',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '背景工作完成後將自動繼續' : `${count} 個背景工作完成後將自動繼續`,
       thinking: '思考中',
@@ -46,9 +46,9 @@ export const zhHantAssistant = {
       dismissError: '关闭错误',
       errorGenericProvider: 'AI 服務',
       errorLayerBodies: {
-        generic: 'Hermes 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
+        generic: 'Rabbit 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
         provider: 'AI 服務無法完成此請求。請稍後重試或切換服務商。',
-        endpoint: 'Hermes 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
+        endpoint: 'Rabbit 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
         streaming: '回覆完成前連線已中斷。請重試以重新傳送。'
       },
       errorCodes: {
@@ -66,7 +66,7 @@ export const zhHantAssistant = {
         },
         invalid_response: {
           title: 'AI 服務傳回了無法讀取的回覆',
-          body: provider => `${provider} 傳回了 Hermes 無法讀取的內容。請稍後重試。`
+          body: provider => `${provider} 傳回了 Rabbit 無法讀取的內容。請稍後重試。`
         },
         empty_response: {
           title: 'AI 服務傳回了空回覆',
@@ -94,7 +94,7 @@ export const zhHantAssistant = {
         },
         ssl_cert_verification: {
           title: '安全連線失敗',
-          body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+          body: provider => `Rabbit 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
         }
       },
       errorLayers: {
@@ -121,7 +121,6 @@ export const zhHantAssistant = {
       errorOpenLogsFailed: '無法開啟日誌資料夾',
       errorOpenDesktopLogs: '開啟桌面端日誌',
       errorCopyDiagnostics: '複製錯誤詳細資訊',
-      errorSendDiagnostics: '傳送診斷資訊',
       filesChanged: count => `${count} 個檔案已變更`,
       reviewChanges: '檢視',
       readAloudFailed: '朗讀失敗',
@@ -144,7 +143,7 @@ export const zhHantAssistant = {
       attachingFile: '正在附加…'
     },
     approval: {
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: 'Rabbit 閘道未連線',
       sendFailed: '無法傳送核准回應',
       run: '執行',
       command: '指令',
@@ -155,12 +154,12 @@ export const zhHantAssistant = {
       reject: '拒絕',
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>
-        `這會將「${pattern}」模式加入永久允許清單（~/.hermes/config.yaml）。Hermes 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
+        `這會將「${pattern}」模式加入永久允許清單（~/.rabbit/config.yaml）。Rabbit 對類似指令將不再詢問，包括目前工作階段和未來工作階段。`,
       alwaysAllow: '一律允許'
     },
     clarify: {
       notReady: '澄清請求尚未就緒',
-      gatewayDisconnected: 'Hermes 閘道未連線',
+      gatewayDisconnected: 'Rabbit 閘道未連線',
       sendFailed: '無法傳送澄清回應',
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',

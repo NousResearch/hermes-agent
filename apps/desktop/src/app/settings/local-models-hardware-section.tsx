@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 
 import { useI18n } from '@/i18n'
 import { Cpu, Monitor, Package, Zap } from '@/lib/icons'
-import type { LocalHardware } from '@/types/hermes'
+import type { LocalHardware } from '@/types/rabbit'
 
 import { gbLabel } from './local-model-download-progress'
 import { Pill, SettingsSection } from './primitives'

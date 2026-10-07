@@ -22,7 +22,7 @@ def test_gateway_main_survives_pm_failure(monkeypatch, tmp_path):
     exited = []
     monkeypatch.setattr(gateway, "start_gateway", started)
     monkeypatch.setattr(gateway, "_exit_after_graceful_shutdown", exited.append)
-    monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda root: None)
+    monkeypatch.setattr("rabbit_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda root: None)
     monkeypatch.setattr("sys.argv", ["gateway"])
     gateway.main()
     started.assert_awaited_once()

@@ -15,7 +15,7 @@
 // Native terminals (Ghostty, iTerm2) and xterm.js embedders (VS Code,
 // Cursor) emit wheel events with different cadences, hence two paths.
 
-import { isXtermJs } from '@hermes/ink'
+import { isXtermJs } from '@rabbit/ink'
 
 // ── Native (ghostty, iTerm2, WezTerm, …) ───────────────────────────────
 const WHEEL_ACCEL_WINDOW_MS = 40
@@ -64,10 +64,10 @@ export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
   return { burstCount: 0, base, dir: 0, frac: 0, mult: base, pendingFlip: false, time: 0, wheelMode: false, xtermJs }
 }
 
-/** HERMES_TUI_SCROLL_SPEED (or CLAUDE_CODE_SCROLL_SPEED for portability).
+/** RABBIT_TUI_SCROLL_SPEED (or CLAUDE_CODE_SCROLL_SPEED for portability).
  *  Default 1, clamped (0, 20]. */
 export function readScrollSpeedBase(): number {
-  const n = parseFloat(process.env.HERMES_TUI_SCROLL_SPEED ?? process.env.CLAUDE_CODE_SCROLL_SPEED ?? '')
+  const n = parseFloat(process.env.RABBIT_TUI_SCROLL_SPEED ?? process.env.CLAUDE_CODE_SCROLL_SPEED ?? '')
 
   return Number.isFinite(n) && n > 0 ? Math.min(n, 20) : 1
 }

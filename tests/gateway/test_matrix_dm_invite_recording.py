@@ -1,7 +1,7 @@
 """Tests for Matrix DM room recording on invite (issue #44679).
 
 When the bot's Matrix account has no ``m.direct`` account data (common for
-accounts created solely for Hermes), DM rooms are silently treated as groups.
+accounts created solely for Rabbit), DM rooms are silently treated as groups.
 This tests the fix that records DM rooms in ``m.direct`` when the invite
 event carries ``is_direct: true``.
 """
@@ -24,7 +24,7 @@ def _make_adapter(tmp_path=None):
         token="syt_test_token",
         extra={
             "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
+            "user_id": "@rabbit:example.org",
         },
     )
     adapter = MatrixAdapter(config)

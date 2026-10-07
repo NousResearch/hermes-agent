@@ -5,7 +5,7 @@ description: Harness-neutral live session sharing, summaries, and branch queries
 maintainer: Sahil-SS9
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_rabbit: ">=0.21"
 docs_url: https://github.com/Sahil-SS9/spectator-mode
 platforms: []
 capabilities:

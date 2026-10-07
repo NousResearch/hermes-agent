@@ -77,7 +77,7 @@ def test_drain_grace_clamps_to_disconnect_budget(monkeypatch):
     adapter-disconnect budget (default 5s): grace = budget - 3*1.0s - margin."""
     from gateway.relay import ws_transport as wt
 
-    monkeypatch.delenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", raising=False)
     grace = wt._disconnect_drain_grace_s()
     budget = 5.0
     reserved = 3 * wt._TEARDOWN_AWAIT_TIMEOUT_S
@@ -92,10 +92,10 @@ def test_drain_grace_clamps_to_disconnect_budget(monkeypatch):
 def test_drain_grace_honors_env_budget(monkeypatch):
     from gateway.relay import ws_transport as wt
 
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "12")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "12")
     assert wt._disconnect_drain_grace_s() == wt._DISCONNECT_DRAIN_GRACE_S
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "3.5")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "3.5")
     grace = wt._disconnect_drain_grace_s()
     assert 0 <= grace <= 3.5 - 3 * wt._TEARDOWN_AWAIT_TIMEOUT_S
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "1")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "1")
     assert wt._disconnect_drain_grace_s() == 0.0

@@ -23,7 +23,7 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
     to 0 whenever a session is successfully established (``_reset_server_error``
     call sites in ``_run_stdio`` / ``_run_http``).
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_tool import MCPServerTask
@@ -129,7 +129,7 @@ def test_reconnect_counter_still_parks_on_consecutive_failures(monkeypatch, tmp_
     """The server must still park when failures are genuinely consecutive
     (no successful reconnection in between).
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_tool import MCPServerTask

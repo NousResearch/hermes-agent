@@ -36,7 +36,7 @@ function shellSections(
   const update = renderActionItem(kit, {
     icon: 'cloud-download',
     key: 'shell-update',
-    label: t.commandCenter.updateHermes,
+    label: t.commandCenter.updateRabbit,
     onSelect: requestActiveUpdate
   })
 

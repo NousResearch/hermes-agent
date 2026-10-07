@@ -2,7 +2,7 @@
 
 ``profiles_to_serve`` takes the multiplex flag as an ARGUMENT and never reads config, so the eager
 gate has to consult the operator's setting itself; and ``named_profile_has_identity`` accepts an
-empty ``.env``, which is all a crashed ``hermes profile create`` leaves behind. Both made a host
+empty ``.env``, which is all a crashed ``rabbit profile create`` leaves behind. Both made a host
 arm a one-way, process-wide guard it was never meant to arm.
 """
 import pytest
@@ -13,15 +13,15 @@ from tui_gateway import launch_profile_policy
 
 @pytest.fixture
 def two_profile_host(tmp_path, monkeypatch):
-    """Fake HOME so ``profiles/`` never resolves to the live install (see hermes-agent-dev)."""
-    home = tmp_path / "fakehome" / ".hermes"
+    """Fake HOME so ``profiles/`` never resolves to the live install (see rabbit-agent-dev)."""
+    home = tmp_path / "fakehome" / ".rabbit"
     (home / "profiles" / "b").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    from hermes_cli.profiles import _get_profiles_root
+    from rabbit_cli.profiles import _get_profiles_root
     assert str(_get_profiles_root()).startswith(str(tmp_path))
     return home / "profiles" / "b"
 
@@ -38,7 +38,7 @@ def test_the_retired_opt_out_no_longer_disarms_the_credential_guard(two_profile_
     would serve the second profile with the LAUNCH profile's credentials -- the exact fail-open
     the guard exists to prevent. The host is multi-profile; that is the whole question."""
     (two_profile_host / "config.yaml").write_text("{}\n", encoding="utf-8")
-    from hermes_cli import config as cfg_mod
+    from rabbit_cli import config as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "load_config", lambda *a, **k: {"gateway": {"multiplex_profiles": False}})
 
@@ -55,7 +55,7 @@ def test_a_crashed_profile_create_shell_is_not_a_second_tenant(two_profile_host)
 
 def test_unreadable_profiles_dir_fails_closed_and_says_so(two_profile_host, monkeypatch):
     """Silently returning False left the guard off for the process lifetime with zero log lines."""
-    from hermes_cli import profiles as profiles_mod
+    from rabbit_cli import profiles as profiles_mod
 
     def _boom(multiplex):
         raise PermissionError("profiles/ is unreadable")

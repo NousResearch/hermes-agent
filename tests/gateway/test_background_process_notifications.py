@@ -58,7 +58,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
 
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AdmittingHandler())
@@ -101,8 +101,8 @@ class TestLoadBackgroundNotificationsMode:
             "display:\n  background_process_notifications: bogus\n"
         )
         import gateway.run as gw
-        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
-        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
+        monkeypatch.setattr(gw, "_rabbit_home", tmp_path)
+        monkeypatch.delenv("RABBIT_BACKGROUND_NOTIFICATIONS", raising=False)
         assert GatewayRunner._load_background_notifications_mode() == "concise"
 
     def test_reads_config_yaml(self, monkeypatch, tmp_path):
@@ -110,8 +110,8 @@ class TestLoadBackgroundNotificationsMode:
             "display:\n  background_process_notifications: error\n"
         )
         import gateway.run as gw
-        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
-        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
+        monkeypatch.setattr(gw, "_rabbit_home", tmp_path)
+        monkeypatch.delenv("RABBIT_BACKGROUND_NOTIFICATIONS", raising=False)
         assert GatewayRunner._load_background_notifications_mode() == "error"
 
 

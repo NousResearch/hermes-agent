@@ -30,7 +30,7 @@ a masked password field. *Save & sign in* stores it and continues; *Don't save*
 tells the agent to stop asking for this turn.
 
 From then on the agent lists your saved logins, types the identifier itself and
-fills the password through Hermes. The tool result it sees is
+fills the password through Rabbit. The tool result it sees is
 `{filled_fields: 1, origin: "https://github.com"}`; the password is also
 registered with the redactor so a later page read cannot echo it back.
 
@@ -40,11 +40,11 @@ Sites that ask for a code after the password are handled the same way:
 
 - **Authenticator key saved with the login** (the "setup key" or `otpauth://`
   link a site shows when you enable 2FA; 1Password and Bitwarden items that
-  hold a TOTP seed count too): Hermes generates the current code and enters
+  hold a TOTP seed count too): Rabbit generates the current code and enters
   it. Nobody is asked. Add the key in **Settings → Passwords & Logins → Add**
-  or `hermes vault add`; the item shows a *2FA auto* badge.
+  or `rabbit vault add`; the item shows a *2FA auto* badge.
 - **Code sent to your phone or email**: a small prompt appears in your
-  surface ("Verification code for github.com"), you type the code, Hermes
+  surface ("Verification code for github.com"), you type the code, Rabbit
   enters it into the page. The code never enters the conversation either.
 - **Passkeys, hardware keys, app approvals** ("tap Approve in Duo"): nothing
   to type. The agent tells you to complete it on your device and waits for
@@ -53,10 +53,10 @@ Sites that ask for a code after the password are handled the same way:
 ## Already using 1Password or Bitwarden?
 
 Nothing to enable. If the `op` or `bw` command-line tool is installed and signed
-in, Hermes picks it up automatically and its website logins become fillable
+in, Rabbit picks it up automatically and its website logins become fillable
 alongside the local ones. The first time the agent needs one of those logins it
 asks you to unlock the manager with your master password (masked prompt; once
-per session, 30 minutes idle). Hermes hands the master password to the manager's
+per session, 30 minutes idle). Rabbit hands the master password to the manager's
 CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
 --passwordenv` in the child's environment) and keeps only the session token in
 memory. The agent never sees the master password, the token, or any login.
@@ -64,13 +64,13 @@ A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
 origins; nothing is inferred beyond the URLs saved on the item.
 
-Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
+Prefer not to use a detected manager? `rabbit vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →
-Passwords & Logins → Add**, or `hermes vault add`), bound to the checkout site,
+Passwords & Logins → Add**, or `rabbit vault add`), bound to the checkout site,
 and filled by the agent on that site only. **Every card fill asks you first**,
 with the same approval prompt as a dangerous command; declining writes nothing.
 Headless sessions (cron, webhooks, the API server) cannot confirm and are
@@ -81,17 +81,17 @@ cannot spend. Address fills need no confirmation.
 
 - **Desktop → Settings → Passwords & Logins**: everything saved, the detected
   password managers with Unlock/Lock, Add, Remove.
-- **CLI**: `hermes vault list`, `hermes vault add`, `hermes vault rm <handle>`,
-  `hermes vault sources`.
+- **CLI**: `rabbit vault list`, `rabbit vault add`, `rabbit vault rm <handle>`,
+  `rabbit vault sources`.
 
-Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
+Items live encrypted under `~/.rabbit/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are
 visible metadata; passwords and card values never leave the vault except into
 the page.
 
 ## Headless sessions
 
-Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
+Cron jobs, webhooks, the API server and `rabbit chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
@@ -109,7 +109,7 @@ vault:
 
 ## What this does and does not guarantee
 
-**Does:** the password never enters the model's context through Hermes: not in
+**Does:** the password never enters the model's context through Rabbit: not in
 tool results, logs, the session database, or the CLI arguments of any process.
 Fills happen over the supervised browser session's direct CDP socket and are
 refused unless the page origin exactly matches the saved origin, checked again

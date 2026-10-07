@@ -67,7 +67,7 @@ if result.parsed["urgency"] > 0.8:
 ## 此模式的优势
 
 * **一次调用，四种形态。** `complete()` 用于对话，`complete_structured()` 用于有类型的 JSON，`acomplete()` 和 `acomplete_structured()` 用于 asyncio。参数相同，结果对象相同。
-* **宿主持有凭据。** OAuth token、刷新流程、凭据池、每任务辅助覆盖——Hermes 已有的所有凭据概念均适用。Plugin 永远看不到 token；宿主通过 `result.audit` 将调用归因回溯。
+* **宿主持有凭据。** OAuth token、刷新流程、凭据池、每任务辅助覆盖——Rabbit 已有的所有凭据概念均适用。Plugin 永远看不到 token；宿主通过 `result.audit` 将调用归因回溯。
 * **有界。** 单次同步或异步调用。无流式输出，无工具循环，无需管理对话状态。给定输入，获取结果，返回。
 * **失败关闭信任。** 从未配置过的 plugin 无法自行选择 provider、模型、agent 或存储的凭据。默认行为是"使用用户正在使用的"。运营人员在 `config.yaml` 中按 plugin 逐一选择开启特定覆盖。
 
@@ -160,9 +160,9 @@ def _paste_to_tasks(ctx, raw_args: str) -> str:
 ```
 
 第三个完整示例（包含图像输入）位于
-[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)
-仓库（参考 plugin 的配套仓库——不随 hermes-agent 本体打包）。关于异步接口（`acomplete()` / `acomplete_structured()` 与 `asyncio.gather()` 配合使用），请参见同一仓库中的
-[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)。
+[`rabbit-example-plugins`](https://github.com/NousResearch/rabbit-example-plugins/tree/main/plugin-llm-example)
+仓库（参考 plugin 的配套仓库——不随 rabbit-agent 本体打包）。关于异步接口（`acomplete()` / `acomplete_structured()` 与 `asyncio.gather()` 配合使用），请参见同一仓库中的
+[`plugin-llm-async-example`](https://github.com/NousResearch/rabbit-example-plugins/tree/main/plugin-llm-async-example)。
 
 ## 何时使用哪种方式
 
@@ -185,7 +185,7 @@ def _paste_to_tasks(ctx, raw_args: str) -> str:
 ```python
 result = ctx.llm.complete(
     messages=[{"role": "user", "content": "Hi"}],
-    provider=None,         # 可选，受门控——Hermes provider id（如 "openrouter"）
+    provider=None,         # 可选，受门控——Rabbit provider id（如 "openrouter"）
     model=None,            # 可选，受门控——该 provider 期望的任意字符串
     temperature=None,
     max_tokens=None,
@@ -268,7 +268,7 @@ auxiliary:
     model: vendor/model-id
 ```
 
-Plugin 可以为自己注册的任务提供 provider/模型注册默认值。运营人员在 `auxiliary.<task>` 中的配置会覆盖这些默认值，并控制部署选择。Plugin 只能使用自己注册的任务；未知或属于其他 plugin 的任务名会在调用 provider 前失败。`allow_task_override: true` 是运营人员显式授予的权限，用于使用 Hermes 内置辅助任务；它不允许使用其他 plugin 的任务。省略 `task=`（或使用 `"auto"`）会继续使用当前主 provider/模型。
+Plugin 可以为自己注册的任务提供 provider/模型注册默认值。运营人员在 `auxiliary.<task>` 中的配置会覆盖这些默认值，并控制部署选择。Plugin 只能使用自己注册的任务；未知或属于其他 plugin 的任务名会在调用 provider 前失败。`allow_task_override: true` 是运营人员显式授予的权限，用于使用 Rabbit 内置辅助任务；它不允许使用其他 plugin 的任务。省略 `task=`（或使用 `"auto"`）会继续使用当前主 provider/模型。
 
 ### 结果属性
 
@@ -308,9 +308,9 @@ plugins:
   entries:
     my-plugin:
       llm:
-        # 允许此 plugin 选择不同的 Hermes provider
-        # （必须是 Hermes 已知的 provider——与
-        # `hermes model` 和 config.yaml model.provider 中的名称相同）
+        # 允许此 plugin 选择不同的 Rabbit provider
+        # （必须是 Rabbit 已知的 provider——与
+        # `rabbit model` 和 config.yaml model.provider 中的名称相同）
         allow_provider_override: true
 
         # 可选：限制允许的 provider。使用 ["*"] 表示任意。
@@ -323,7 +323,7 @@ plugins:
 
         # 可选：限制允许的模型。使用 ["*"] 表示任意。
         # 模型与 plugin 发送的字符串进行字面匹配——
-        # Hermes 不做任何查找。
+        # Rabbit 不做任何查找。
         allowed_models:
           - openai/gpt-4o-mini
           - anthropic/claude-3-5-haiku
@@ -362,9 +362,9 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 以下是 `ctx.llm` 为 plugin 代劳的完整列表，你无需自行处理：
 
 * **Provider 解析。** 从用户配置中读取 `model.provider` + `model.model`（或在受信任时读取显式覆盖值）。
-* **认证。** 从 `~/.hermes/auth.json` / 环境变量中提取 API 密钥、OAuth token 或刷新 token，包括配置了凭据池时的处理。Plugin 永远看不到这些内容。
+* **认证。** 从 `~/.rabbit/auth.json` / 环境变量中提取 API 密钥、OAuth token 或刷新 token，包括配置了凭据池时的处理。Plugin 永远看不到这些内容。
 * **视觉路由。** 当提供图像输入而用户当前激活的文本模型仅支持文本时，宿主自动回退到已配置的视觉模型。
-* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Hermes 常规的聚合器感知回退流程。
+* **回退链。** 若用户主 provider 返回 5xx 或 429，请求在向 plugin 返回错误前会经过 Rabbit 常规的聚合器感知回退流程。
 * **超时。** 遵循你的 `timeout=` 参数，回退到 `auxiliary.<task>.timeout` 配置或全局辅助默认值。
 * **JSON 塑形。** 在你请求 JSON 时向 provider 发送 `response_format`，若 provider 返回了代码围栏格式的响应则在本地重新解析。
 * **Schema 验证。** 安装了 `jsonschema` 时对你的 `json_schema` 进行验证；否则记录一行 debug 日志并跳过严格验证。
@@ -379,7 +379,7 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 
 ## 在 plugin 接口中的定位
 
-现有 `ctx.*` 方法各自扩展一个已有的 Hermes 子系统：
+现有 `ctx.*` 方法各自扩展一个已有的 Rabbit 子系统：
 
 | `ctx.register_tool` | 添加 agent 可调用的工具 |
 | `ctx.register_platform` | 接入新的 gateway 适配器 |
@@ -392,10 +392,10 @@ Plugin id 对于扁平 plugin 是 manifest 中的 `name:` 字段，对于嵌套 
 
 ## 参考资料
 
-* 实现：[`agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/plugin_llm.py)
-* 测试：[`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py)
+* 实现：[`agent/plugin_llm.py`](https://github.com/seven0070/Rabbit-/blob/main/agent/plugin_llm.py)
+* 测试：[`tests/agent/test_plugin_llm.py`](https://github.com/seven0070/Rabbit-/blob/main/tests/agent/test_plugin_llm.py)
 * 参考 plugin（配套仓库）：
-  * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — 带图像输入的同步结构化提取
-  * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — 使用 `asyncio.gather()` 的异步示例
+  * [`plugin-llm-example`](https://github.com/NousResearch/rabbit-example-plugins/tree/main/plugin-llm-example) — 带图像输入的同步结构化提取
+  * [`plugin-llm-async-example`](https://github.com/NousResearch/rabbit-example-plugins/tree/main/plugin-llm-async-example) — 使用 `asyncio.gather()` 的异步示例
 * 辅助客户端（底层引擎）：参见
   [Provider 运行时](./provider-runtime.md)。

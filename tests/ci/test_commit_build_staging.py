@@ -66,23 +66,23 @@ def shell_step(tmp_path, r2_server, job, name, env, *, script=None):
 def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_server, has_download):
     sha = 'a' * 40
     run_url = 'https://github.example/o/r/actions/runs/12345'
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    base = f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases'
     summary = tmp_path / 'summary.md'
     jobs = _workflow()['jobs']
     summary_job = commit_summary(jobs)
-    bundle_env = {'HERMES_HOME': None, 'HERMES_SKIP_INTRO': '',
-                  'HERMES_SHARED_AUTH_DIR': '<script>\n"café" & value</script>'}
-    env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
+    bundle_env = {'RABBIT_HOME': None, 'RABBIT_SKIP_INTRO': '',
+                  'RABBIT_SHARED_AUTH_DIR': '<script>\n"café" & value</script>'}
+    env = dict(RABBIT_BUILD_COMMIT=sha, RABBIT_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
                GITHUB_REPOSITORY='fixture-owner/fixture-repo',
-               HERMES_BUNDLE_ENV_JSON=json.dumps(bundle_env), CI_SECRET='must-not-appear',
+               RABBIT_BUNDLE_ENV_JSON=json.dumps(bundle_env), CI_SECRET='must-not-appear',
                RELEASE_PHASE='', TARGET='win32-x64', RUN_URL=run_url,
                GITHUB_STEP_SUMMARY=str(summary), CLOUDFLARE_R2_PUBLIC_URL=base,
                CLOUDFLARE_R2_ACCOUNT_ID='loopback', CLOUDFLARE_R2_ACCESS_KEY_ID='test-inert',
-               CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='hermes-releases',
+               CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='rabbit-releases',
                RELEASE_NEEDS=json.dumps({name: {'result': 'success' if name == 'validate' else 'failure'}
                                          for name in needs_of(jobs[summary_job])}))
     if has_download:
-        artifact = tmp_path / 'apps/desktop/release/HermesBundled-0.33.0-win-x64.msix'
+        artifact = tmp_path / 'apps/desktop/release/RabbitBundled-0.33.0-win-x64.msix'
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b'inert downloadable fixture')
         producer = jobs[native_builds(jobs)[('win32-x64', 'commit')]]
@@ -96,9 +96,9 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     with urlopen(f'{base}/{page_key}', timeout=5) as response:
         page = response.read().decode()
     assert f'href="https://github.com/fixture-owner/fixture-repo/commit/{sha}"' in page
-    assert 'Bundle environment' in page and 'HERMES_HOME' in page and 'Unset' in page
-    assert '<code>HERMES_SKIP_INTRO</code></td><td><code>&quot;&quot;</code>' in page
-    assert html.escape(json.dumps(bundle_env['HERMES_SHARED_AUTH_DIR'], ensure_ascii=False)) in page
+    assert 'Bundle environment' in page and 'RABBIT_HOME' in page and 'Unset' in page
+    assert '<code>RABBIT_SKIP_INTRO</code></td><td><code>&quot;&quot;</code>' in page
+    assert html.escape(json.dumps(bundle_env['RABBIT_SHARED_AUTH_DIR'], ensure_ascii=False)) in page
     assert '<script>' not in page and 'must-not-appear' not in page and 'CI_SECRET' not in page
     links = re.findall(r'\]\((https?://[^)]+)\)', text)
     download_links = [url for url in links if url.endswith('.msix')]
@@ -120,17 +120,17 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         assert jobs[name]['strategy']['fail-fast'] is False, name
     step = next(step for step in jobs[summary_job]['steps'] if 'run' in step)
     assert step['env']['RUN_URL'] == '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
-    assert step['env']['HERMES_BUNDLE_ENV_JSON'] == '${{ inputs.bundle_env }}'
+    assert step['env']['RABBIT_BUNDLE_ENV_JSON'] == '${{ inputs.bundle_env }}'
 
 
 def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tmp_path, r2_server):
     sha = 'a' * 40
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
-    env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
+    base = f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases'
+    env = dict(RABBIT_BUILD_COMMIT=sha, RABBIT_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
                GITHUB_REPOSITORY='o/r',
                RELEASE_PHASE='', GITHUB_SHA='b' * 40, CLOUDFLARE_R2_PUBLIC_URL=base,
                CLOUDFLARE_R2_ACCOUNT_ID='loopback', CLOUDFLARE_R2_ACCESS_KEY_ID='test-inert',
-               CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='hermes-releases')
+               CLOUDFLARE_R2_SECRET_ACCESS_KEY='test-inert', CLOUDFLARE_R2_BUCKET='rabbit-releases')
     release = tmp_path / 'apps/desktop/release'
     release.mkdir(parents=True)
     jobs = _workflow()['jobs']
@@ -138,15 +138,15 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     gates = selection_gates(jobs)
     summary_job = commit_summary(jobs)
     producers = [
-        (legs[('win32-x64', 'commit')], 'win32-x64', ['HermesBundled-0.33.0-win-x64.msix']),
-        (legs[('win32-arm64', 'commit')], 'win32-arm64', ['HermesBundled-0.33.0-win-arm64.msix']),
+        (legs[('win32-x64', 'commit')], 'win32-x64', ['RabbitBundled-0.33.0-win-x64.msix']),
+        (legs[('win32-arm64', 'commit')], 'win32-arm64', ['RabbitBundled-0.33.0-win-arm64.msix']),
         (legs[('darwin-arm64', 'commit')], 'darwin-arm64', [
-            'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
-            'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
+            'RabbitBundled-0.33.0-mac-arm64.dmg', 'RabbitBundled-0.33.0-mac-arm64.zip',
+            'RabbitBundled-0.33.0-mac-arm64.zip.blockmap']),
         (legs[('darwin-x64', 'commit')], 'darwin-x64', [
-            'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
-            'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
-        (universal_assembler(jobs), 'windows-universal', ['HermesBundled-0.33.0.0-win.msixbundle']),
+            'RabbitBundled-0.33.0-mac-x64.dmg', 'RabbitBundled-0.33.0-mac-x64.zip',
+            'RabbitBundled-0.33.0-mac-x64.zip.blockmap']),
+        (universal_assembler(jobs), 'windows-universal', ['RabbitBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
     for job, target, names in producers:
@@ -170,7 +170,7 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     missing = shell_step(tmp_path, r2_server, '', '', env, script=termux_stage)
     assert missing.returncode != 0
     assert r2_server.store == before
-    deb = tmp_path / 'termux-build/deb/hermes agent_0.33.0~commit.aaaaaaaaaaaa_aarch64.deb'
+    deb = tmp_path / 'termux-build/deb/rabbit agent_0.33.0~commit.aaaaaaaaaaaa_aarch64.deb'
     deb.parent.mkdir(parents=True)
     deb.write_bytes(b'transport fixture, not a native Debian package')
     staged = shell_step(tmp_path, r2_server, '', '', env, script=termux_stage)

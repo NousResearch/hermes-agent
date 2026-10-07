@@ -1,14 +1,14 @@
 name: done-bell
-repo: https://github.com/aydnOktay/hermes-done-bell-
+repo: https://github.com/aydnOktay/rabbit-done-bell-
 sha: 3fa519a291d91b0e6c44bd42762190363ce80c39
-description: Ring when a Hermes turn finishes so you can leave the window. OS
+description: Ring when a Rabbit turn finishes so you can leave the window. OS
   notification, optional chime, and a busy/done chip. Optional "needs you"
   when approval is waiting. No API keys.
 maintainer: aydnOktay
 tier: community
 category: desktop
-requires_hermes: ">=0.21"
-docs_url: https://github.com/aydnOktay/hermes-done-bell-
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/aydnOktay/rabbit-done-bell-
 version: "0.1.0"
 platforms: []
 capabilities:

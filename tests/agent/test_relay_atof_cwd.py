@@ -1,4 +1,4 @@
-"""Hermes scope cwd export through the real NeMo Relay ATOF plugin."""
+"""Rabbit scope cwd export through the real NeMo Relay ATOF plugin."""
 
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ def test_run_conversation_exports_session_and_turn_cwds(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
 
     from agent import relay_runtime
-    from hermes_cli.lifecycle import finalize_session
+    from rabbit_cli.lifecycle import finalize_session
     from run_agent import AIAgent
     from tools.terminal_tool import clear_session_cwd, record_session_cwd
 
-    hermes_home = tmp_path / "hermes-home"
+    rabbit_home = tmp_path / "rabbit-home"
     session_cwd = tmp_path / "session"
     turn_cwd = tmp_path / "task"
     atof_dir = tmp_path / "atof"
-    for directory in (hermes_home, session_cwd, turn_cwd, atof_dir):
+    for directory in (rabbit_home, session_cwd, turn_cwd, atof_dir):
         directory.mkdir()
 
     config = tmp_path / "plugins.toml"
@@ -48,7 +48,7 @@ mode = "overwrite"
     )
     session_id = "cwd-e2e-session"
     task_id = "cwd-e2e-task"
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     monkeypatch.chdir(session_cwd)
     monkeypatch.setattr(
@@ -95,10 +95,10 @@ mode = "overwrite"
         assert len(matches) == 1
         return matches[0]
 
-    session_start = only_event("hermes.session", "start")
-    turn_start = only_event("hermes.turn", "start")
-    session_end = only_event("hermes.session", "end")
-    turn_end = only_event("hermes.turn", "end")
+    session_start = only_event("rabbit.session", "start")
+    turn_start = only_event("rabbit.turn", "start")
+    session_end = only_event("rabbit.session", "end")
+    turn_end = only_event("rabbit.turn", "end")
 
     assert session_start["data"] == {"cwd": str(session_cwd)}
     assert turn_start["data"] == {"cwd": str(turn_cwd)}

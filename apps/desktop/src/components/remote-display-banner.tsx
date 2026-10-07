@@ -9,7 +9,7 @@ import { notify } from '@/store/notifications'
 // exact fixed coordinates, which could overlap a real toast.
 export function RemoteDisplayBanner() {
   useEffect(() => {
-    void window.hermesDesktop?.getRemoteDisplayReason?.().then(reason => {
+    void window.rabbitDesktop?.getRemoteDisplayReason?.().then(reason => {
       if (reason) {
         notify({
           durationMs: 0,

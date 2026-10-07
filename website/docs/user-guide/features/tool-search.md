@@ -10,16 +10,16 @@ session, their JSON schemas can consume a substantial fraction of the
 context window on every turn — even when only a few of them are relevant
 to what the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
+**Tool Search** is Rabbit' opt-in progressive-disclosure layer for that
 problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
 
 :::info Built-in tools and explicit deferral
-Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
+Rabbit keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
 `patch`, `search_files`, `todo`, `memory`, `browser_*`, `web_search`,
 `web_extract`, `clarify`, `execute_code`, `delegate_task`, and the rest of
-`_HERMES_CORE_TOOLS`) loaded directly by default. Cold, event-triggered built-ins
+`_RABBIT_CORE_TOOLS`) loaded directly by default. Cold, event-triggered built-ins
 may be deferred when they are named in `tools.tool_search.defer`; the shipped
 curated list covers tools such as `computer_use`, `session_search`, and selected
 desktop helpers. MCP and non-core plugin tools remain eligible automatically.
@@ -74,7 +74,7 @@ miss is not mistaken for a missing capability.
 `tool_describe` resolves every requested name in one call; unknown names
 are reported in `not_found` without failing the rest of the batch.
 
-When the model invokes `tool_call`, Hermes **unwraps the bridge** and
+When the model invokes `tool_call`, Rabbit **unwraps the bridge** and
 dispatches the underlying tool exactly as if the model had called it
 directly. Pre-tool-call hooks, guardrails, approval prompts, and
 post-tool-call hooks all run against the real tool name — not against
@@ -120,7 +120,7 @@ tools:
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed
-in `hermes_cli/config_defaults.py`. It is the single source of truth for the
+in `rabbit_cli/config_defaults.py`. It is the single source of truth for the
 shipped curated set; the runtime fallback uses the same value.
 
 | Key | Default | Meaning |
@@ -154,63 +154,6 @@ tools:
   tool_search: true   # equivalent to {enabled: auto}
 ```
 
-## Connectors (remote tools)
-
-When you are signed in to the Nous Portal, the bridge additionally reaches
-**connectors** — remote tools served by the managed tool gateway. They are
-never registered locally: `tool_search` sends each query to the gateway, adds
-the gateway's hits to the local catalog as documents (tagged
-`source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
-both with the same BM25 pass and the same rarest-token rule, so `limit`
-caps the group as a whole and a connector tool that answers the query is
-never pushed out by local tools that share one word with it. The gateway
-call is bounded at 30 seconds; a slow or dark gateway degrades to local
-results only. `tool_describe` fetches connector schemas from the gateway,
-and `tool_call` sends each connector entry in a batch as its own gateway
-request, in input order (a tool name the gateway does not know under its
-conventional slug is retried once under the literal slug, so an entry can
-cost two requests). If a connector ever shipped both `GMAIL_X` and a literal
-`X`, both would compose to `connectors__gmail__X`, which runs `GMAIL_X`;
-search keeps that twin, drops the other, and logs a warning. Results splice back into the batch's original order
-with recomputed counts.
-
-```yaml
-tools:
-  connectors:
-    enabled: true   # false — never touch connector routes; the bridge
-                    # behaves exactly as if the feature didn't exist
-```
-
-Signed out (or when the gateway does not serve connectors for your
-account), everything above is invisible: local search behaves exactly as
-described in the rest of this page, with no errors shown to the model.
-
-A connector call that needs an account you haven't linked returns a
-`CONNECTION_REQUIRED` error. The `manage_connections` tool lists connectors and
-their connection state and starts an authorization: in the desktop app the call
-shows a card, blocks until each app is connected or skipped, and reports the
-outcomes; elsewhere it returns a connect link per app for the user to open.
-Disconnecting an account is done by the user in the Portal. The same tool also installs, enables and authorizes
-local MCP servers from the catalog (targets with `mcp: true`), so it is
-present whether or not you are signed in; only the managed-connector actions
-need the sign-in.
-
-The desktop backend's account-list and disconnect APIs use the Portal's
-account-management service, including its organization membership checks and
-disconnect audit. An unavailable Portal does not fall back to direct gateway
-account management. Tool discovery, execution, and connection-status watching
-continue through the gateway; the model tool cannot disconnect an account.
-
-`tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
-entries (a single call is an array of one). Each connector entry in a batch
-is dispatched as its own gateway request, one after another; local deferred
-tools stay one entry per `tool_call`. A multi-entry batch that names a local
-tool is rejected with a correction that restates the valid shape using the
-caller's own first entry, and a `calls` value emitted as a JSON string is
-parsed like the array form. Approvals settle per entry before
-dispatch, and a `/stop` between entries leaves the unstarted ones unsent
-(their slots report `INTERRUPTED`).
-
 ## When NOT to use it
 
 Tool Search trades a fixed per-turn token cost (the three bridge tool
@@ -239,9 +182,9 @@ to any progressive-disclosure design, not specific to this implementation:
   prefix.
 - **No provider-native validation for deferred schemas.** `tool_describe`
   lets the model read a deferred tool's schema, but the provider still sees
-  only the generic `tool_call.arguments` object. Hermes therefore coerces and
+  only the generic `tool_call.arguments` object. Rabbit therefore coerces and
   validates the underlying arguments locally before dispatch; the concrete
-  tool or MCP server remains responsible for schemas Hermes cannot safely
+  tool or MCP server remains responsible for schemas Rabbit cannot safely
   validate, such as malformed schemas or external references.
 - **Model-quality dependence.** Tool Search assumes the model can write a
   reasonable search query for the tool it wants. Smaller models do this
@@ -292,7 +235,7 @@ to any progressive-disclosure design, not specific to this implementation:
   discover or call a tool outside that subset — the deferred catalog is
   the deferrable slice of the session's own enabled/disabled toolsets,
   not the whole process registry.
-- **No JS sandbox.** Hermes uses the simpler "structured tools" mode
+- **No JS sandbox.** Rabbit uses the simpler "structured tools" mode
   (search / describe / call as plain functions). The JS-sandbox "code
   mode" some other implementations offer is a large surface area; we
   skip it.

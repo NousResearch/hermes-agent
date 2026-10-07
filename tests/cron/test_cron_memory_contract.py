@@ -54,7 +54,7 @@ def _run_job_patches(tmp_path):
 
     Mirrors tests/cron/test_scheduler.py::_run_job_patches — every patch is
     entered via one ExitStack so none can be silently dropped.
-    ``cron.scheduler._hermes_home`` is pointed at ``tmp_path`` so run_job's
+    ``cron.scheduler._rabbit_home`` is pointed at ``tmp_path`` so run_job's
     config load reads ``tmp_path/config.yaml`` (write one to exercise config
     toggles).
     """
@@ -63,13 +63,13 @@ def _run_job_patches(tmp_path):
     mock_agent = MagicMock()
     mock_agent.run_conversation.return_value = {"final_response": "ok"}
     base = [
-        patch("cron.scheduler._hermes_home", tmp_path),
+        patch("cron.scheduler._rabbit_home", tmp_path),
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
-        patch("hermes_cli.env_loader.load_hermes_dotenv"),
-        patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state_registry.acquire", return_value=fake_db),
+        patch("rabbit_cli.env_loader.load_rabbit_dotenv"),
+        patch("rabbit_cli.env_loader.reset_secret_source_cache"),
+        patch("rabbit_state_registry.acquire", return_value=fake_db),
         patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "rabbit_cli.runtime_provider.resolve_runtime_provider",
             return_value={
                 "api_key": "test-key",
                 "base_url": "https://example.invalid/v1",

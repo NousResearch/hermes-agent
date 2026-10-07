@@ -14,7 +14,7 @@ Shop.app：商品搜索、订单追踪、退货、重新下单。
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/productivity/shop` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/productivity/shop` 安装 |
 | 路径 | `optional-skills/productivity/shop` |
 | 版本 | `0.0.28` |
 | 作者 | community |
@@ -26,7 +26,7 @@ Shop.app：商品搜索、订单追踪、退货、重新下单。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Shop.app — 个人购物助手
@@ -334,7 +334,7 @@ https://{shop_domain}/policies/refund-policy
 - 提供后续操作建议："需要追踪详情吗？"、"需要重新下单吗？"
 - 注意：覆盖范围是所有关联到 Shop 的店铺，不仅限于 Shopify。
 
-Hermes 的 gateway 适配器（Telegram、Discord、Slack、iMessage……）会自动渲染 markdown 和图片 URL。正常书写 markdown，图片 URL 单独成行 — 适配器负责处理平台特定的布局。**不要**虚构 `message()` 工具调用（那属于 Shop.app 自身的运行时，不属于 Hermes）。
+Rabbit 的 gateway 适配器（Telegram、Discord、Slack、iMessage……）会自动渲染 markdown 和图片 URL。正常书写 markdown，图片 URL 单独成行 — 适配器负责处理平台特定的布局。**不要**虚构 `message()` 工具调用（那属于 Shop.app 自身的运行时，不属于 Rabbit）。
 
 ---
 

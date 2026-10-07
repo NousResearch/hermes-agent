@@ -241,7 +241,7 @@ def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_
 
     import agent.conversation_compression as cc
     from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     session_id = "STALL_FALLBACK_SAME_TURN"
     db = SessionDB(db_path=Path(tmp_path) / "state.db")

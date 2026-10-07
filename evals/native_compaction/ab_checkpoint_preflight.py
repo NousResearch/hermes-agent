@@ -191,7 +191,7 @@ def scenario_capture(wire: _FakeResponses, *, usage_after: int, reload_history: 
 
 
 def scenario_restore(wire: _FakeResponses, tmp: Path) -> dict:
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     wire.requests.clear()
     wire.script[:] = [
@@ -241,7 +241,7 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="ab-native-"))
-    os.environ["HERMES_HOME"] = str(tmp / "home")
+    os.environ["RABBIT_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
     import subprocess
 

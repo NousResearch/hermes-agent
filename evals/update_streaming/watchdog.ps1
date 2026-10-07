@@ -5,7 +5,7 @@ $temp = Join-Path ([IO.Path]::GetTempPath()) ('update-watchdog-' + [guid]::NewGu
 New-Item -ItemType Directory $temp | Out-Null
 $env:HOME = $temp
 $env:USERPROFILE = $temp
-$env:HERMES_HOME = $temp
+$env:RABBIT_HOME = $temp
 $LogDir = Join-Path $temp 'logs'
 New-Item -ItemType Directory $LogDir | Out-Null
 $script:Ui = $null
@@ -27,7 +27,7 @@ try {
     foreach ($mode in @('progress', 'silent')) {
         Remove-Item -LiteralPath $script:StepProgressLogPath -ErrorAction SilentlyContinue
         $clock = [Diagnostics.Stopwatch]::StartNew()
-        $result = Invoke-HermesStep $Python @((Join-Path $PSScriptRoot 'live_output.py'), '--step', $mode) $mode
+        $result = Invoke-RabbitStep $Python @((Join-Path $PSScriptRoot 'live_output.py'), '--step', $mode) $mode
         $rows += @{ mode=$mode; code=$result.Code; seconds=$clock.Elapsed.TotalSeconds; tree_quiesced=$result.TreeQuiesced; job_assigned=$result.StartedAfterJobAssignment; output=$result.Output }
     }
     @{ platform='native Windows'; python=$Python; rows=$rows } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $Receipt -Encoding UTF8

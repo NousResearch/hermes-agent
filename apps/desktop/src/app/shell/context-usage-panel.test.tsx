@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ContextBreakdown, UsageStats } from '@/types/hermes'
+import type { ContextBreakdown, UsageStats } from '@/types/rabbit'
 
 import { ContextMeterDetail, ContextUsagePanel } from './context-usage-panel'
 import { useContextBreakdown } from './hooks/use-context-breakdown'

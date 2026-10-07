@@ -35,7 +35,7 @@ export function parseSingletonLockPid(linkTarget: string | null | undefined, hos
 
 /**
  * Field 3 of `/proc/<pid>/stat` is the process state — but field 2, the comm,
- * is parenthesized and may contain spaces AND parentheses (`(hermes (v8))`),
+ * is parenthesized and may contain spaces AND parentheses (`(rabbit (v8))`),
  * so splitting on whitespace is wrong. The state is the first token after the
  * final `)`. Returns null for an unparseable line.
  */

@@ -55,7 +55,7 @@ class TestConnectionGateScope:
         """A→B→A under multiplex: profile A (own A2A_PORT) connects, profile B (none) does not even though
         os.environ carries the launch value, then A again. The tools gate follows the same scope."""
         import agent.secret_scope as ss
-        import hermes_constants
+        import rabbit_constants
         from plugins.platforms import a2a
 
         monkeypatch.setenv("A2A_PORT", "9902")  # the launch profile's value, bridged into os.environ
@@ -66,13 +66,13 @@ class TestConnectionGateScope:
         try:
             seen = []
             for home in (home_a, home_b, home_a):
-                home_tok = hermes_constants.set_hermes_home_override(str(home))
+                home_tok = rabbit_constants.set_rabbit_home_override(str(home))
                 tok = ss.set_secret_scope(ss.build_profile_secret_scope(home), profile_home=str(home))
                 try:
                     seen.append((a2a.is_connected(SimpleNamespace(extra={})), tools._a2a_tools_available()))
                 finally:
                     ss.reset_secret_scope(tok)
-                    hermes_constants.reset_hermes_home_override(home_tok)
+                    rabbit_constants.reset_rabbit_home_override(home_tok)
         finally:
             ss.set_multiplex_active(prev)
         assert seen == [(True, True), (False, False), (True, True)]
@@ -275,7 +275,7 @@ class TestOutboundRedaction:
 
 class TestAudit:
     def test_audit_writes_jsonl(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         security.audit("inbound", "peer-y", "task-1", "hello world")
         audit_file = tmp_path / "a2a_audit.jsonl"
         assert audit_file.exists()
@@ -292,10 +292,10 @@ class TestAudit:
 class TestAgentCardV1:
     def test_card_shape(self):
         card = protocol.build_agent_card(
-            name="hermes-test", url="http://localhost:9900/",
+            name="rabbit-test", url="http://localhost:9900/",
             description="test", skills=[], streaming=False, auth_required=False,
         )
-        assert card["name"] == "hermes-test"
+        assert card["name"] == "rabbit-test"
         # v1.0: no top-level protocolVersion / preferredTransport —
         # consolidated into supportedInterfaces[].
         assert "protocolVersion" not in card
@@ -440,7 +440,7 @@ class TestV1Task:
 
 class TestPersistence:
     def test_persist_and_load(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         protocol.persist_message("ctx-abc", "user", "hello", "task-1")
         protocol.persist_message("ctx-abc", "agent", "hi back", "task-1")
         convo = protocol.load_conversation("ctx-abc")
@@ -449,18 +449,18 @@ class TestPersistence:
         assert convo[1]["text"] == "hi back"
 
     def test_list_conversations(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         protocol.persist_message("ctx-1", "user", "a", "t")
         protocol.persist_message("ctx-2", "user", "b", "t")
         assert set(protocol.list_conversations()) == {"ctx-1", "ctx-2"}
 
     def test_load_missing_is_empty(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         assert protocol.load_conversation("nope") == []
 
     def test_a2a_history_tool_recalls_conversation(self, monkeypatch, tmp_path):
         """load_conversation is wired to production via the a2a_history tool."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         protocol.persist_message("ctx-recall", "user", "what is 2+2", "t1")
         protocol.persist_message("ctx-recall", "agent", "4", "t1")
         out = tools.a2a_history({"context_id": "ctx-recall"})
@@ -555,7 +555,7 @@ class TestRegistryDispatchConvention:
     uses (`entry.handler(args, **kwargs)`), not keyword params."""
 
     def test_register_then_dispatch_via_registry(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         monkeypatch.setattr(tools, "_load_config", lambda: {})
         from tools.registry import registry
 
@@ -1577,7 +1577,7 @@ class TestV1SpecRegressionFixes:
         assert "two" not in adapter._agents
 
     @pytest.mark.platforms("linux")
-    def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
+    def test_forward_to_profile_first_contact_creates_then_resumes_fake_rabbit(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
 
@@ -1592,22 +1592,22 @@ class TestV1SpecRegressionFixes:
         fakebin = tmp_path / "bin"
         fakebin.mkdir()
         calls = tmp_path / "calls.jsonl"
-        hermes = fakebin / "hermes"
-        hermes.write_text("""#!/usr/bin/env python3
+        rabbit = fakebin / "rabbit"
+        rabbit.write_text("""#!/usr/bin/env python3
 import json, os, sqlite3, sys, time
-calls = os.environ['FAKE_HERMES_CALLS']
+calls = os.environ['FAKE_RABBIT_CALLS']
 with open(calls, 'a') as f:
     f.write(json.dumps(sys.argv[1:]) + '\\n')
-home = os.environ['HERMES_HOME']
+home = os.environ['RABBIT_HOME']
 con = sqlite3.connect(os.path.join(home, 'state.db'))
 if '--resume' not in sys.argv:
     con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
     con.commit()
 print('fake reply')
 """)
-        hermes.chmod(0o755)
+        rabbit.chmod(0o755)
         monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
-        monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
+        monkeypatch.setenv("FAKE_RABBIT_CALLS", str(calls))
         monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1733,7 +1733,7 @@ class TestMultiplexConstructionScope:
 def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
     """A scalar line in a conversation file must not break replay or pollute
     the list[dict] contract."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     protocol.persist_message("ctx-mixed", "user", "hello", "t1")
     path = protocol._conv_path("ctx-mixed")
     with open(path, "a", encoding="utf-8") as f:

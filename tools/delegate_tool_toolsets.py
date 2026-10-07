@@ -36,7 +36,7 @@ def _is_mcp_toolset_name(name: str) -> bool:
     return bool(target and str(target).startswith("mcp-"))
 
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
-    """Add every toolset whose tools are a subset of the parent's tools: a parent on a composite like ``hermes-cli``
+    """Add every toolset whose tools are a subset of the parent's tools: a parent on a composite like ``rabbit-cli``
     must still let a child request ``web``/``terminal``; bare name intersection would reject them. Both sides use
     the RESOLVED static surface: a composite's ``includes`` (``debugging`` -> ``web``/``file``, ``safe``) are tools
     the parent genuinely holds, and the child never gains a tool the parent lacks."""
@@ -80,7 +80,7 @@ def _resolve_child_toolsets(
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
     inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
-    ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
+    ``disabled_toolsets`` so blocked names inside mixed bundles (rabbit-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
     (role-granted, not inherited)."""
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.

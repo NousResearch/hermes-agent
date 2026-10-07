@@ -8,7 +8,7 @@ description: "Classic watchdog cron jobs that skip the LLM entirely — a script
 
 Sometimes you already know exactly what message you want to send. You don't need an agent to reason about it — you just need a script to run on a timer, and its output (if any) to land in Telegram / Discord / Slack / Signal.
 
-Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
+Rabbit calls this **no-agent mode**. It's the cron system minus the LLM.
 
 <!-- ascii-guard-ignore -->
 ```
@@ -28,7 +28,7 @@ Hermes calls this **no-agent mode**. It's the cron system minus the LLM.
 
 - **No LLM call.** Zero tokens, zero agent loop, zero model spend.
 - **Script is the job.** The script decides whether to alert. Emit output → message gets sent. Emit nothing → silent tick.
-- **Bash or Python.** `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash`; any other extension runs under the current Python interpreter. A Python script can also pin a **user-managed venv** via `--interpreter` (see [Using your own Python environment](#using-your-own-python-environment)). Paths must resolve inside `~/.hermes/scripts/` (relative, absolute, or `~` forms are OK if they stay in that directory). Cron scripts do **not** inherit provider credentials from the Hermes process environment.
+- **Bash or Python.** `.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash`; any other extension runs under the current Python interpreter. A Python script can also pin a **user-managed venv** via `--interpreter` (see [Using your own Python environment](#using-your-own-python-environment)). Paths must resolve inside `~/.rabbit/scripts/` (relative, absolute, or `~` forms are OK if they stay in that directory). Cron scripts do **not** inherit provider credentials from the Rabbit process environment.
 - **Same scheduler.** Lives in `cronjob` alongside LLM jobs — pausing, resuming, listing, logs, and delivery targeting all work the same way.
 
 ## When to Use It
@@ -45,13 +45,13 @@ Use a normal (LLM-driven) cron job when you need the agent to **decide** what to
 
 ## Create One from Chat
 
-The real win of no-agent mode is that the agent itself can set up the watchdog for you — no editor, no shell, no remembering CLI flags. You describe what you want, Hermes writes the script, schedules it, and tells you when it'll fire.
+The real win of no-agent mode is that the agent itself can set up the watchdog for you — no editor, no shell, no remembering CLI flags. You describe what you want, Rabbit writes the script, schedules it, and tells you when it'll fire.
 
 ### Example transcript
 
 > **You:** ping me on telegram if RAM is over 85% every 5 minutes
 >
-> **Hermes:** *(writes `~/.hermes/scripts/memory-watchdog.sh`, then calls `cronjob(...)` with `no_agent=true`)*
+> **Rabbit:** *(writes `~/.rabbit/scripts/memory-watchdog.sh`, then calls `cronjob(...)` with `no_agent=true`)*
 >
 > Set up. Runs every 5 min, alerts Telegram only when RAM is over 85%. Script: `memory-watchdog.sh`. Job ID: `abc123`.
 
@@ -60,7 +60,7 @@ Under the hood, the agent makes two tool calls:
 ```python
 # 1. Write the check script
 write_file(
-    path="~/.hermes/scripts/memory-watchdog.sh",
+    path="~/.rabbit/scripts/memory-watchdog.sh",
     content='''#!/usr/bin/env bash
 ram_pct=$(free | awk '/^Mem:/ {printf "%d", $3 * 100 / $2}')
 if [ "$ram_pct" -ge 85 ]; then
@@ -85,7 +85,7 @@ From that point on every tick is free: the scheduler runs the script, pipes its 
 
 ### What the agent decides for you
 
-When you phrase a request like "alert me when X" or "every N minutes check Y and tell me if Z", Hermes' `cronjob_manage` tool description tells it to reach for `no_agent=True` whenever the message content is fully determined by the script. It falls back to the normal LLM-driven path when the request needs reasoning (*"summarize the new issues"*, *"pick the most interesting headlines"*, *"draft a friendly reminder"*).
+When you phrase a request like "alert me when X" or "every N minutes check Y and tell me if Z", Rabbit' `cronjob_manage` tool description tells it to reach for `no_agent=True` whenever the message content is fully determined by the script. It falls back to the normal LLM-driven path when the request needs reasoning (*"summarize the new issues"*, *"pick the most interesting headlines"*, *"draft a friendly reminder"*).
 
 You don't have to specify `--no-agent` yourself. Just describe the behavior.
 
@@ -95,13 +95,13 @@ The agent can pause, resume, edit, and remove jobs the same way it creates them:
 
 > **You:** stop the memory watchdog for tonight
 >
-> **Hermes:** *(calls `cronjob(action='pause', job_id='abc123')`)*
+> **Rabbit:** *(calls `cronjob(action='pause', job_id='abc123')`)*
 >
-> Paused. Resume with "turn it back on" or via `hermes cron resume abc123`.
+> Paused. Resume with "turn it back on" or via `rabbit cron resume abc123`.
 
 > **You:** change it to every 15 minutes
 >
-> **Hermes:** *(calls `cronjob(action='update', job_id='abc123', schedule='every 15m')`)*
+> **Rabbit:** *(calls `cronjob(action='update', job_id='abc123', schedule='every 15m')`)*
 
 The full lifecycle (create / list / update / pause / resume / run-now / remove) is available to the agent without you learning any CLI commands.
 
@@ -111,7 +111,7 @@ Prefer the shell? The CLI path gives you the same result with three commands:
 
 ```bash
 # 1. Write your script
-cat > ~/.hermes/scripts/memory-watchdog.sh <<'EOF'
+cat > ~/.rabbit/scripts/memory-watchdog.sh <<'EOF'
 #!/usr/bin/env bash
 # Alert when RAM usage is over 85%. Silent otherwise.
 RAM_PCT=$(free | awk '/^Mem:/ {printf "%d", $3 * 100 / $2}')
@@ -120,18 +120,18 @@ if [ "$RAM_PCT" -ge 85 ]; then
 fi
 # Empty stdout = silent run; no message sent.
 EOF
-chmod +x ~/.hermes/scripts/memory-watchdog.sh
+chmod +x ~/.rabbit/scripts/memory-watchdog.sh
 
 # 2. Schedule it
-hermes cron create "every 5m" \
+rabbit cron create "every 5m" \
   --no-agent \
   --script memory-watchdog.sh \
   --deliver telegram \
   --name "memory-watchdog"
 
 # 3. Verify
-hermes cron list
-hermes cron run <job_id>    # fire it once to test
+rabbit cron list
+rabbit cron run <job_id>    # fire it once to test
 ```
 
 That's the whole thing. No prompt, no skill, no model.
@@ -151,7 +151,7 @@ The "silent when empty" behavior is the key to the classic watchdog pattern: the
 
 ## Script Rules
 
-Scripts must resolve inside `~/.hermes/scripts/`. This is enforced at run time — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; path traversal and symlink escapes are rejected. The same directory is shared with the pre-check script gate used by LLM jobs.
+Scripts must resolve inside `~/.rabbit/scripts/`. This is enforced at run time — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; path traversal and symlink escapes are rejected. The same directory is shared with the pre-check script gate used by LLM jobs.
 
 Interpreter choice is by file extension:
 
@@ -164,44 +164,44 @@ We intentionally do NOT honour `#!/...` shebangs — keeping the interpreter set
 
 ### Using your own Python environment
 
-By default a Python cron script runs under Hermes' own Python environment, which only carries Hermes' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed would fail with `ModuleNotFoundError`.
+By default a Python cron script runs under Rabbit' own Python environment, which only carries Rabbit' own dependencies — so a script that imports `openpyxl`, a database driver, or any other package you installed would fail with `ModuleNotFoundError`.
 
 You can point the job at a **user-managed venv** instead with `--interpreter`:
 
 ```bash
-# 1. Create a venv you own — it survives Hermes reinstalls/rebuilds.
-uv venv ~/venvs/hermes-reporting --python 3.11
-uv pip install --python ~/venvs/hermes-reporting/bin/python openpyxl
+# 1. Create a venv you own — it survives Rabbit reinstalls/rebuilds.
+uv venv ~/venvs/rabbit-reporting --python 3.11
+uv pip install --python ~/venvs/rabbit-reporting/bin/python openpyxl
 
 # 2. Schedule the job with that interpreter.
-hermes cron create "0 8 * * *" \
+rabbit cron create "0 8 * * *" \
   --no-agent \
   --script daily-report.py \
-  --interpreter ~/venvs/hermes-reporting/bin/python \
+  --interpreter ~/venvs/rabbit-reporting/bin/python \
   --deliver telegram
 ```
 
-Like `--model`, this is a user-owned setting: set it with `hermes cron create/edit`; the agent's `cronjob` tool can't.
+Like `--model`, this is a user-owned setting: set it with `rabbit cron create/edit`; the agent's `cronjob` tool can't.
 
 Rules:
 
-- The venv is **user-managed**. Hermes does not create, freeze, restore, or install packages into it — it just invokes the path you give.
+- The venv is **user-managed**. Rabbit does not create, freeze, restore, or install packages into it — it just invokes the path you give.
 - The path must be **absolute or `~`-prefixed** (e.g. `~/venvs/reporting/bin/python3`). Bare names like `python3` are rejected, because they are not stable across `PATH` changes.
 - It must be a **Python executable** (`python`, `python3`, `python3.12`, …), including a symlink's target — `/bin/bash` or other interpreters are refused.
 - Applies **only to Python scripts**. `.sh` / `.bash` always run under bash regardless.
 - The job-level setting applies to both `script` and `monitor_script` when they are Python files.
 - It is validated **at run time**, not at creation — a cron job is long-lived, and the venv may be rebuilt or moved between when you create the job and when it fires. A missing or non-executable interpreter produces a clear script failure that is delivered like any other error.
-- To clear it later: `hermes cron edit <job_id> --interpreter ""`.
+- To clear it later: `rabbit cron edit <job_id> --interpreter ""`.
 
 ## Schedule Syntax
 
 Same as all other cron jobs:
 
 ```bash
-hermes cron create "every 5m"        # interval
-hermes cron create "every 2h"
-hermes cron create "0 9 * * *"       # standard cron: 9am daily
-hermes cron create "30m"             # one-shot: run once in 30 minutes
+rabbit cron create "every 5m"        # interval
+rabbit cron create "every 2h"
+rabbit cron create "0 9 * * *"       # standard cron: 9am daily
+rabbit cron create "30m"             # one-shot: run once in 30 minutes
 ```
 
 See the [cron feature reference](../user-guide/features/cron.md) for the full syntax.
@@ -217,21 +217,21 @@ See the [cron feature reference](../user-guide/features/cron.md) for the full sy
 --deliver discord:#ops
 --deliver slack:#engineering
 --deliver signal:+15551234567
---deliver local                          # just save to ~/.hermes/cron/output/
+--deliver local                          # just save to ~/.rabbit/cron/output/
 ```
 
-No running gateway is required at script-run time for bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp) — the tool calls each platform's REST endpoint directly using the credentials already in `~/.hermes/.env` / `~/.hermes/config.yaml`.
+No running gateway is required at script-run time for bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp) — the tool calls each platform's REST endpoint directly using the credentials already in `~/.rabbit/.env` / `~/.rabbit/config.yaml`.
 
 ## Editing and Lifecycle
 
 ```bash
-hermes cron list                                    # see all jobs
-hermes cron pause <job_id>                          # stop firing, keep definition
-hermes cron resume <job_id>
-hermes cron edit <job_id> --schedule "every 10m"    # adjust cadence
-hermes cron edit <job_id> --agent                   # flip to LLM mode
-hermes cron edit <job_id> --no-agent --script …     # flip back
-hermes cron remove <job_id>                         # delete it
+rabbit cron list                                    # see all jobs
+rabbit cron pause <job_id>                          # stop firing, keep definition
+rabbit cron resume <job_id>
+rabbit cron edit <job_id> --schedule "every 10m"    # adjust cadence
+rabbit cron edit <job_id> --agent                   # flip to LLM mode
+rabbit cron edit <job_id> --no-agent --script …     # flip back
+rabbit cron remove <job_id>                         # delete it
 ```
 
 Everything that works on LLM jobs (pause, resume, manual trigger, delivery target changes) works on no-agent jobs too.
@@ -239,7 +239,7 @@ Everything that works on LLM jobs (pause, resume, manual trigger, delivery targe
 ## Worked Example: Disk Space Alert
 
 ```bash
-cat > ~/.hermes/scripts/disk-alert.sh <<'EOF'
+cat > ~/.rabbit/scripts/disk-alert.sh <<'EOF'
 #!/usr/bin/env bash
 # Alert when / or /home is over 90% full.
 THRESHOLD=90
@@ -249,9 +249,9 @@ df -h / /home 2>/dev/null | awk -v t="$THRESHOLD" '
   }
 '
 EOF
-chmod +x ~/.hermes/scripts/disk-alert.sh
+chmod +x ~/.rabbit/scripts/disk-alert.sh
 
-hermes cron create "*/15 * * * *" \
+rabbit cron create "*/15 * * * *" \
   --no-agent \
   --script disk-alert.sh \
   --deliver telegram \
@@ -264,11 +264,11 @@ Silent when both filesystems are under 90%; fires exactly one line per over-thre
 
 | Approach | What runs | When to use |
 |----------|-----------|-------------|
-| `cronjob --no-agent` (this page) | Your script on Hermes' schedule | Recurring watchdogs / alerts / metrics that don't need reasoning |
+| `cronjob --no-agent` (this page) | Your script on Rabbit' schedule | Recurring watchdogs / alerts / metrics that don't need reasoning |
 | `cronjob_manage` (default, LLM) | Agent with optional pre-check script | When the message content requires reasoning over data |
-| OS cron + `curl` to a [webhook subscription](../user-guide/messaging/webhooks.md) | Your script on the OS schedule | When Hermes might be unhealthy (the thing you're monitoring) |
+| OS cron + `curl` to a [webhook subscription](../user-guide/messaging/webhooks.md) | Your script on the OS schedule | When Rabbit might be unhealthy (the thing you're monitoring) |
 
-For critical system-health watchdogs that must fire *even when the gateway is down*, use OS-level cron with a plain `curl` to a Hermes webhook subscription (or any external alerting endpoint) — those run as independent OS processes and don't depend on Hermes being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
+For critical system-health watchdogs that must fire *even when the gateway is down*, use OS-level cron with a plain `curl` to a Rabbit webhook subscription (or any external alerting endpoint) — those run as independent OS processes and don't depend on Rabbit being up. The in-gateway scheduler is the right choice when the thing being monitored is external.
 
 ## Related
 

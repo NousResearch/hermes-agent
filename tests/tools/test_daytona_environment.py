@@ -143,7 +143,7 @@ class TestPersistence:
         env = make_env(get_side_effect=lambda name: existing, persistent=True,
                        task_id="mytask")
         existing.start.assert_called_once()
-        env._mock_client.get.assert_called_once_with("hermes-mytask")
+        env._mock_client.get.assert_called_once_with("rabbit-mytask")
         env._mock_client.create.assert_not_called()
 
 
@@ -303,7 +303,7 @@ class TestSyncSafety:
 
         host_file = tmp_path / "token.txt"
         host_file.write_text("secret", encoding="utf-8")
-        remote_path = "/root/.hermes/skills/evil; touch /tmp/daytona-owned/file.txt"
+        remote_path = "/root/.rabbit/skills/evil; touch /tmp/daytona-owned/file.txt"
 
         env._daytona_upload(str(host_file), remote_path)
 
@@ -311,8 +311,8 @@ class TestSyncSafety:
         # The whole parent dir is a single quoted argument — the ';' cannot
         # break out into a second command.
         assert mkdir_cmd == (
-            "mkdir -p '/root/.hermes/skills/evil; touch /tmp/daytona-owned'"
+            "mkdir -p '/root/.rabbit/skills/evil; touch /tmp/daytona-owned'"
         )
         assert "; touch" not in mkdir_cmd.replace(
-            "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
+            "'/root/.rabbit/skills/evil; touch /tmp/daytona-owned'", ""
         )

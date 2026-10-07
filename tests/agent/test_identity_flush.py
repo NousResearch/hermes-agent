@@ -38,7 +38,7 @@ class TestIdentityFlush:
             SUMMARY_PREFIX,
             _SUMMARY_END_MARKER,
         )
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -82,7 +82,7 @@ class TestIdentityFlush:
 
     def test_repair_shrunk_messages_below_history_length_still_persists_assistant(self):
         """When repair shortens messages below conversation_history, don't slice empty."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -121,7 +121,7 @@ class TestIdentityFlush:
 
     def test_repeated_flush_same_turn_writes_once(self):
         """Identity tracking preserves #860 same-turn dedup behavior."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -140,7 +140,7 @@ class TestIdentityFlush:
 
     def test_cursor_reset_starts_new_turn_identity_window(self):
         """Gateway resets _last_flushed_db_idx=0 before a cached-agent turn."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -176,7 +176,7 @@ class TestIdentityFlush:
         written to state.db. Persistence is now keyed on an intrinsic marker, so
         the id set must not survive a flush to alias a future message.
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -209,7 +209,7 @@ class TestIdentityFlush:
         the seed is a one-shot that is cleared after every flush and the message
         is written because it carries no _db_persisted marker.
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")
@@ -254,7 +254,7 @@ class TestFlushCursorMarkerPop:
         finalizer fills its content and pops the marker; with the cursor
         invalidated (as the pop site now does), the turn-end flush must
         persist the filled answer — not skip the row as already-stamped."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "t.db")

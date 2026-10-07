@@ -72,7 +72,7 @@ export const slashCmdCoreEn = {
     copy: {
       copiedCharsOne: (count: string) => `copied ${count} character`,
       copiedCharsOther: (count: string) => `copied ${count} characters`,
-      clipboardFailed: 'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence',
+      clipboardFailed: 'clipboard copy failed — try RABBIT_TUI_FORCE_OSC52=1 to force the escape sequence',
       usage: 'usage: /copy [number]',
       nothingToCopy: 'nothing to copy — start a conversation first',
       sentOsc52: 'sent OSC52 copy sequence (terminal support required)',
@@ -97,7 +97,7 @@ export const slashCmdCoreEn = {
     history: {
       noConversation: 'no conversation yet',
       youTag: (index: string) => `You #${index}`,
-      hermesTag: (index: string) => `Hermes #${index}`,
+      rabbitTag: (index: string) => `Rabbit #${index}`,
       toolCallsOne: (count: string) => `(${count} tool call)`,
       toolCallsOther: (count: string) => `(${count} tool calls)`,
       empty: '(empty)',

@@ -2,13 +2,13 @@
 name: shop
 description: "Shop catalog search, checkout, order tracking, returns."
 version: 1.0.1
-author: Joe Rinaldi Johnson (joerj123), Hermes Agent
+author: Joe Rinaldi Johnson (joerj123), Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
   commands: [curl, node]
 metadata:
-  hermes:
+  rabbit:
     tags: [Shopping, E-commerce, Shop, Products, Orders, Returns, Checkout, Reorder]
     related_skills: [shopify, maps]
     homepage: https://shop.app
@@ -158,7 +158,7 @@ Options: available in 4 colors.
 | WhatsApp | Image as a media message, then an interactive message with the product info. No markdown links. |
 | iMessage | Plain text only, no markdown. Never put CDN/image URLs in text. Send two messages per product: (1) image, (2) info. |
 | Telegram (Openclaw) | One single media message per product, no alt text. Inline "View Product" URL button if supported, else the template link; on send failure, fall back to text. |
-| Telegram (Hermes Agent + all other agents) | Do **not** send an image. Send separate messages — never one combined message. |
+| Telegram (Rabbit Agent + all other agents) | Do **not** send an image. Send separate messages — never one combined message. |
 
 ## Visualization
 When the item is visual (clothing, shoes, accessories, furniture, decor, art) **and** you have image-generation capability, offer it — e.g. "Send a photo and I'll show you how it could look. Also if you like it can save it locally on your device."

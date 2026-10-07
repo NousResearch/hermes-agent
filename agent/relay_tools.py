@@ -1,4 +1,4 @@
-"""Core NeMo Relay adapter for Hermes tool execution."""
+"""Core NeMo Relay adapter for Rabbit tool execution."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def execute(
             raise callback_error
         if isinstance(exc, Exception) and callback_error is None and "value" in raw_result:
             logger.warning(
-                "NeMo Relay tool post-processing failed after dispatch success; returning the Hermes tool result",
+                "NeMo Relay tool post-processing failed after dispatch success; returning the Rabbit tool result",
                 exc_info=True,
             )
             return raw_result["value"], observed_args
@@ -102,5 +102,5 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 def _run_awaitable(value: Any) -> Any:
     return relay_llm._run_awaitable(
-        value, loop_error="Synchronous Hermes Relay tool execution cannot run on an active event-loop thread",
+        value, loop_error="Synchronous Rabbit Relay tool execution cannot run on an active event-loop thread",
     )

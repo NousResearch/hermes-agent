@@ -8,7 +8,7 @@ import asyncio
 import time
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
@@ -26,7 +26,7 @@ def _home_with_threshold(root, name, seconds):
 def test_threshold_follows_bound_profile_scope_a_b_a(tmp_path, monkeypatch):
     home_a = _home_with_threshold(tmp_path, "a", 10)
     home_b = _home_with_threshold(tmp_path, "b", 100000)
-    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    monkeypatch.setenv("RABBIT_HOME", str(home_a))
     now = time.monotonic()
     queued_20s_ago = {"queued_at": now - 20}
 
@@ -47,7 +47,7 @@ async def test_secondary_reconnect_loop_escalates_under_own_profile(tmp_path, mo
     threshold — the launch profile's (100000 here) must not suppress it."""
     launch = _home_with_threshold(tmp_path, "launch", 100000)
     secondary = _home_with_threshold(tmp_path, "sec", 0.01)
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

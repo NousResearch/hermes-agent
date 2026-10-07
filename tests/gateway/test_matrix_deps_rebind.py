@@ -66,7 +66,7 @@ def test_failed_install_returns_false_with_hint_and_never_raises(
 
 def test_interactive_setup_explicitly_syncs_matrix(tmp_path, monkeypatch):
     import pm
-    from hermes_cli import cli_output, config
+    from rabbit_cli import cli_output, config
 
     answers = iter(["https://matrix.example.test", "test-token", "@bot:example.test", "@owner:example.test", "!home:example.test"])
     monkeypatch.setattr(cli_output, "prompt", lambda *args, **kwargs: next(answers))

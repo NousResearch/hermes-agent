@@ -1,6 +1,6 @@
 """Subprocess lifecycle manager for the google_meet bot.
 
-One active meeting at a time, recorded in ``$HERMES_HOME/workspace/meetings/.active.json``
+One active meeting at a time, recorded in ``$RABBIT_HOME/workspace/meetings/.active.json``
 (``pid, meeting_id, out_dir, url, started_at, session_id, log_path, mode``) so tool calls
 across turns can find the bot. The bot is a detached subprocess reached via files only
 (``<meeting-id>/status.json``, ``<meeting-id>/transcript.txt``), so the agent loop can't block.
@@ -19,13 +19,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 from utils import atomic_json_write
 
 
 def _root() -> Path:
-    return Path(get_hermes_home()) / "workspace" / "meetings"
+    return Path(get_rabbit_home()) / "workspace" / "meetings"
 
 
 def _active_file() -> Path:
@@ -61,7 +61,7 @@ _NO_ACTIVE = {"ok": False, "reason": "no active meeting"}
 
 
 def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
-          auth_state: Optional[str] = None, guest_name: str = "Hermes Agent", duration: Optional[str] = None,
+          auth_state: Optional[str] = None, guest_name: str = "Rabbit Agent", duration: Optional[str] = None,
           session_id: Optional[str] = None, mode: str = "transcribe", realtime_model: Optional[str] = None,
           realtime_voice: Optional[str] = None, realtime_instructions: Optional[str] = None,
           realtime_api_key: Optional[str] = None) -> Dict[str, Any]:
@@ -78,25 +78,25 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     for name in ("transcript.txt", "status.json"):
         with contextlib.suppress(OSError):
             (out / name).unlink()
-    env = {**os.environ, "HERMES_MEET_URL": url, "HERMES_MEET_OUT_DIR": str(out),
-           "HERMES_MEET_GUEST_NAME": guest_name}
+    env = {**os.environ, "RABBIT_MEET_URL": url, "RABBIT_MEET_OUT_DIR": str(out),
+           "RABBIT_MEET_GUEST_NAME": guest_name}
     for value, var in (
-        (headed and "1", "HERMES_MEET_HEADED"),
-        (auth_state, "HERMES_MEET_AUTH_STATE"),
-        (duration, "HERMES_MEET_DURATION"),
-        (mode, "HERMES_MEET_MODE"),  # bot defaults to transcribe when unset (v1 behavior)
-        (realtime_model, "HERMES_MEET_REALTIME_MODEL"),
-        (realtime_voice, "HERMES_MEET_REALTIME_VOICE"),
-        (realtime_instructions, "HERMES_MEET_REALTIME_INSTRUCTIONS")):
+        (headed and "1", "RABBIT_MEET_HEADED"),
+        (auth_state, "RABBIT_MEET_AUTH_STATE"),
+        (duration, "RABBIT_MEET_DURATION"),
+        (mode, "RABBIT_MEET_MODE"),  # bot defaults to transcribe when unset (v1 behavior)
+        (realtime_model, "RABBIT_MEET_REALTIME_MODEL"),
+        (realtime_voice, "RABBIT_MEET_REALTIME_VOICE"),
+        (realtime_instructions, "RABBIT_MEET_REALTIME_INSTRUCTIONS")):
         if value:
             env[var] = value
     # Resolve the realtime key at SPAWN time in the parent, where the profile secret scope
     # (a contextvar) is installed; the detached child inherits env, not scope.
     if not realtime_api_key:
         from agent.secret_scope import get_secret
-        realtime_api_key = get_secret("HERMES_MEET_REALTIME_KEY") or get_secret("OPENAI_API_KEY")
+        realtime_api_key = get_secret("RABBIT_MEET_REALTIME_KEY") or get_secret("OPENAI_API_KEY")
     if realtime_api_key:
-        env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
+        env["RABBIT_MEET_REALTIME_KEY"] = realtime_api_key
     log_path = out / "bot.log"
     # Detach: stdout/stderr → log file, new session so parent signals don't propagate.
     with open(log_path, "ab", buffering=0) as log_fh:

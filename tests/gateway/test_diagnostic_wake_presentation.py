@@ -28,7 +28,7 @@ class Adapter(BasePlatformAdapter):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("suppressed", [False, True])
 async def test_diagnostic_wake_executes_without_final_or_error_echo(tmp_path, monkeypatch, suppressed):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(suppressed).lower()}}}")
     adapter = Adapter(PlatformConfig(enabled=True), Platform.TELEGRAM)
     adapter.sent = []

@@ -1,4 +1,4 @@
-"""Two real ``hermes -z`` processes share one auth.json pool row and hit its expiry at the same moment.
+"""Two real ``rabbit -z`` processes share one auth.json pool row and hit its expiry at the same moment.
 
 Both processes load the same Anthropic OAuth pool row (single-use refresh
 token) and both get the vendor's 401 for the expired access token. The first to
@@ -8,7 +8,7 @@ auth.json and adopt it instead of presenting the refresh token that was just
 spent. Expected: exactly one refresh grant, no ``invalid_grant``, both turns
 answered with the new bearer, and the refresh token on disk still live.
 
-Everything is real Hermes (pool, persistence, locking, the Anthropic OAuth
+Everything is real Rabbit (pool, persistence, locking, the Anthropic OAuth
 refresh over TLS through the intercepting proxy); only the vendor endpoints are
 loopback fakes. The single-process variant of the stale-writer bug (#120815, fixed)
 is pinned by test_oauth_anthropic_refresh.py.
@@ -26,7 +26,7 @@ from tests.e2e.core.providers._oauth_helpers import (
     OLD_ACCESS,
     Hold,
     credential,
-    run_hermes,
+    run_rabbit,
     start_anthropic_rig,
     text,
     wait_until,
@@ -71,12 +71,12 @@ def test_concurrent_refresh_across_processes_spends_the_token_once(tmp_path) -> 
 
     rig.tokens.before_refresh_response = slow_token_endpoint
     box: dict = {}
-    thread_a = threading.Thread(target=lambda: box.setdefault("a", run_hermes(
+    thread_a = threading.Thread(target=lambda: box.setdefault("a", run_rabbit(
         rig.fh, ["-z", "PROCESS-ALPHA say hi"], extra_env=rig.child_env, timeout=150)), daemon=True)
     try:
         thread_a.start()
         wait_until(lambda: any(_who(r) == "A" for r in rig.messages.main_requests()), 90, "process A's first call")
-        proc_b = run_hermes(rig.fh, ["-z", "PROCESS-BRAVO say hi"], extra_env=rig.child_env, timeout=150)
+        proc_b = run_rabbit(rig.fh, ["-z", "PROCESS-BRAVO say hi"], extra_env=rig.child_env, timeout=150)
         thread_a.join(150)
     finally:
         for ev in (b_arrived, both_rejected):

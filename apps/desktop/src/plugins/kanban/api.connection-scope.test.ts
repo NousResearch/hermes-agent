@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const routed = vi.hoisted(() => ({ id: null as null | string }))
 
-vi.mock('@/hermes', () => ({ setApiRequestProfile: vi.fn() }))
+vi.mock('@/rabbit', () => ({ setApiRequestProfile: vi.fn() }))
 vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   activeGatewayConnectionId: () => routed.id

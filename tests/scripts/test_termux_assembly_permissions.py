@@ -50,7 +50,7 @@ docker run --rm --user 1000:1000 --network none \
     -v "$PAYLOAD_ABS/python:/assembly/tools/python:ro" \
     -v "$PAYLOAD_ABS/uv:/assembly/tools/uv:ro" \
     -v "$REPO:/app:ro" \
-    -e HERMES_HOME=/tmp/hermes \
+    -e RABBIT_HOME=/tmp/rabbit \
     "$IMAGE" sh -ec '
         python -B /app/scripts/termux/build_environment.py prepare-tools \
             --root /assembly --source-tools /assembly/tools

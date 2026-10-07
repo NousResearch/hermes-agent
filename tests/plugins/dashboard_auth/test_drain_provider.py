@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import plugins.dashboard_auth.drain as drain_plugin
-from hermes_cli.dashboard_auth import TokenPrincipal, assert_protocol_compliance
-from hermes_cli.dashboard_auth import token_auth
+from rabbit_cli.dashboard_auth import TokenPrincipal, assert_protocol_compliance
+from rabbit_cli.dashboard_auth import token_auth
 
 
 @pytest.fixture(scope="module")
@@ -25,7 +25,7 @@ def drain():
 
 @pytest.fixture(autouse=True)
 def _clean_env_and_routes(monkeypatch):
-    monkeypatch.delenv("HERMES_DASHBOARD_DRAIN_SECRET", raising=False)
+    monkeypatch.delenv("RABBIT_DASHBOARD_DRAIN_SECRET", raising=False)
     token_auth.clear_token_routes()
     yield
     token_auth.clear_token_routes()
@@ -118,11 +118,11 @@ class TestRegister:
         ctx = MagicMock()
         drain.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
-        assert "HERMES_DASHBOARD_DRAIN_SECRET" in drain.LAST_SKIP_REASON
+        assert "RABBIT_DASHBOARD_DRAIN_SECRET" in drain.LAST_SKIP_REASON
         assert not token_auth.is_token_route(drain.DRAIN_ROUTE_PATH)
 
     def test_skips_and_fails_closed_on_weak_secret(self, drain, monkeypatch):
-        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", "tooweak")
+        monkeypatch.setenv("RABBIT_DASHBOARD_DRAIN_SECRET", "tooweak")
         monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
         ctx = MagicMock()
         drain.register(ctx)
@@ -133,7 +133,7 @@ class TestRegister:
 
     def test_registers_with_strong_env_secret(self, drain, monkeypatch):
         s = _strong_secret()
-        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", s)
+        monkeypatch.setenv("RABBIT_DASHBOARD_DRAIN_SECRET", s)
         monkeypatch.setattr(drain, "_load_config_drain_auth_section", lambda: {})
         ctx = MagicMock()
         drain.register(ctx)
@@ -147,7 +147,7 @@ class TestRegister:
 
     def test_config_scope_applied(self, drain, monkeypatch):
         s = _strong_secret()
-        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", s)
+        monkeypatch.setenv("RABBIT_DASHBOARD_DRAIN_SECRET", s)
         monkeypatch.setattr(
             drain, "_load_config_drain_auth_section", lambda: {"scope": "lifecycle"}
         )
@@ -160,7 +160,7 @@ class TestRegister:
         self, drain, monkeypatch
     ):
         s = _strong_secret()  # 43 chars — fine by default, too short at 999
-        monkeypatch.setenv("HERMES_DASHBOARD_DRAIN_SECRET", s)
+        monkeypatch.setenv("RABBIT_DASHBOARD_DRAIN_SECRET", s)
         monkeypatch.setattr(
             drain,
             "_load_config_drain_auth_section",

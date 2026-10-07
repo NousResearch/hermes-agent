@@ -1,6 +1,6 @@
-"""``hermes lsp`` CLI subcommand: status / list / install / install-all / restart / which.
+"""``rabbit lsp`` CLI subcommand: status / list / install / install-all / restart / which.
 
-Handlers live here (not in ``hermes_cli/main.py``) so the LSP module ships self-contained.
+Handlers live here (not in ``rabbit_cli/main.py``) so the LSP module ships self-contained.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ _COMMANDS = {name: handler for name, _, _, handler in _SUBCOMMANDS}
 
 
 def register_subparser(subparsers: argparse._SubParsersAction) -> None:
-    """Wire the ``hermes lsp`` subcommand tree into the main argparse."""
+    """Wire the ``rabbit lsp`` subcommand tree into the main argparse."""
     parser = subparsers.add_parser(
         "lsp",
         help="Language Server Protocol management",
@@ -44,7 +44,7 @@ def register_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run_lsp_command(args: argparse.Namespace) -> int:
-    """Top-level dispatcher for ``hermes lsp <subcommand>``."""
+    """Top-level dispatcher for ``rabbit lsp <subcommand>``."""
     sub = getattr(args, "lsp_command", None) or "status"
     try:
         handler = _COMMANDS.get(sub)
@@ -59,7 +59,7 @@ def run_lsp_command(args: argparse.Namespace) -> int:
 def _all_servers() -> list:
     """Config-declared servers (``lsp.servers.<id>.extensions``) ahead of the built-in registry."""
     from agent.lsp.servers import SERVERS, custom_servers
-    from hermes_cli.config import load_config_readonly
+    from rabbit_cli.config import load_config_readonly
     try:
         lsp_cfg = load_config_readonly().get("lsp") or {}
     except Exception:  # noqa: BLE001 — a broken config still lists the built-ins

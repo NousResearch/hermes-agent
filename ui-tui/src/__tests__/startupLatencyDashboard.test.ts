@@ -5,7 +5,7 @@ import type * as EnvModule from '../config/env.js'
 
 // Its own file: the launch latch is module state, so a dashboard TUI must be the first reporter
 // this module ever sees for the test to prove anything. DASHBOARD_TUI_MODE resolves at module
-// load from HERMES_TUI_DASHBOARD, so the export itself is mocked.
+// load from RABBIT_TUI_DASHBOARD, so the export itself is mocked.
 vi.mock('../config/env.js', async importActual => ({
   ...(await importActual<typeof EnvModule>()),
   DASHBOARD_TUI_MODE: true
@@ -14,7 +14,7 @@ vi.mock('../config/env.js', async importActual => ({
 const ref = <T>(current: T) => ({ current })
 
 describe('startup latency in a dashboard-embedded TUI', () => {
-  it('never reports: each Chat-tab terminal spawns a TUI, which is not a Hermes launch', () => {
+  it('never reports: each Chat-tab terminal spawns a TUI, which is not a Rabbit launch', () => {
     const request = vi.fn(async () => ({ ok: true }))
 
     const ctx = {

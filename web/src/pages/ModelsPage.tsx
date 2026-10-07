@@ -28,7 +28,7 @@ import {
   DASHBOARD_MODAL_PANEL,
   shouldCloseOuterModalOnEscape,
 } from "@/lib/dashboard-modal-shell";
-import { compactNumber } from "@hermes/shared";
+import { compactNumber } from "@rabbit/shared";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
@@ -51,7 +51,7 @@ const PERIODS = [
   { label: "90d", days: 90 },
 ] as const;
 
-// Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
+// Must match _AUX_TASK_SLOTS in rabbit_cli/web_server.py.
 const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "vision", label: "Vision", hint: "Image analysis" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
@@ -1141,7 +1141,7 @@ export default function ModelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
-  // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
+  // rabbit_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
   const [showTokens, setShowTokens] = useState(false);
   const { t } = useI18n();

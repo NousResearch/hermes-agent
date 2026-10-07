@@ -81,7 +81,7 @@ def _allowed_image_extensions() -> frozenset[str]:
 
 def _session_home_dir(session: dict, name: str) -> Path:
     """``<session home>/<name>``, anchored on the session's stored ``profile_home``: attach
-    RPCs run BEFORE ``prompt.submit`` installs the profile HERMES_HOME override, while
+    RPCs run BEFORE ``prompt.submit`` installs the profile RABBIT_HOME override, while
     the sandbox mounts and the vision host-read allowlist resolve the *session profile's*
     dirs at run time — writing anywhere else means the agent can never see the file.
 
@@ -91,8 +91,8 @@ def _session_home_dir(session: dict, name: str) -> Path:
     profile_home = session.get("profile_home")
     if name == "attachments" and _profile_attachments_storage(profile_home) == "workspace":
         if workspace := _session_attachments_workspace(session):
-            return workspace / ".hermes" / "attachments"
-    return (Path(profile_home) if profile_home else _hermes_home) / name
+            return workspace / ".rabbit" / "attachments"
+    return (Path(profile_home) if profile_home else _rabbit_home) / name
 
 
 def _profile_attachments_storage(profile_home) -> str:
@@ -102,9 +102,9 @@ def _profile_attachments_storage(profile_home) -> str:
     installs the profile scope, so the process config still belongs to the launch profile
     (same reason as ``_profile_configured_cwd``)."""
     import contextlib as _contextlib
-    home = Path(profile_home) if profile_home else _hermes_home
+    home = Path(profile_home) if profile_home else _rabbit_home
     with _contextlib.suppress(Exception):
-        from hermes_cli.config_effective import load_user_config_effective
+        from rabbit_cli.config_effective import load_user_config_effective
         cfg_path = home / "config.yaml"
         if cfg_path.exists():
             attachments_cfg = load_user_config_effective(cfg_path).get("attachments")

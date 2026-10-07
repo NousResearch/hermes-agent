@@ -1,4 +1,4 @@
-"""hermes pm update: resolve the latest versions and re-pin the lockfile.
+"""rabbit pm update: resolve the latest versions and re-pin the lockfile.
 
 Each Package subclass declares how to find its own latest via
 ``latest_versions(target)`` (see pm/package.py); this module is the driver:
@@ -186,7 +186,7 @@ def resolve_package(package, targets: list[str], locked: Optional[str], *, artif
 # Upstream index helpers (small GETs; used by package latest_versions())
 # ---------------------------------------------------------------------------
 
-_UA = {"User-Agent": "hermes-pm"}
+_UA = {"User-Agent": "rabbit-pm"}
 
 
 def _github_headers() -> dict:
@@ -201,7 +201,7 @@ def _github_headers() -> dict:
 
 
 def _index_headers(url: str) -> dict:
-    from hermes_cli.urllib_security import url_origin
+    from rabbit_cli.urllib_security import url_origin
 
     origin = url_origin(url)
     if origin == ("https", "api.github.com", 443):
@@ -212,7 +212,7 @@ def _index_headers(url: str) -> dict:
 
 
 def _get_json(url: str) -> dict | list:
-    from hermes_cli.urllib_security import open_credentialed_url
+    from rabbit_cli.urllib_security import open_credentialed_url
 
     def request():
         headers = _index_headers(url)
@@ -232,7 +232,7 @@ def _get_json(url: str) -> dict | list:
 
 
 def _get_text(url: str, headers: Optional[dict] = None) -> str:
-    from hermes_cli.urllib_security import open_credentialed_url
+    from rabbit_cli.urllib_security import open_credentialed_url
 
     hdrs = _index_headers(url)
     if headers:

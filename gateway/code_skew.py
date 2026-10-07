@@ -18,9 +18,9 @@ _boot_fingerprint: str | None = None
 
 def _fingerprint() -> str | None:
     """Current checkout fingerprint via the CLI's worktree-aware git-rev reader
-    (``hermes_cli.main`` is always already imported in a gateway process)."""
+    (``rabbit_cli.main`` is always already imported in a gateway process)."""
     try:
-        from hermes_cli.main import _read_git_revision_fingerprint
+        from rabbit_cli.main import _read_git_revision_fingerprint
 
         return _read_git_revision_fingerprint(_PROJECT_ROOT)
     except Exception:

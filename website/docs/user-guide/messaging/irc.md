@@ -1,21 +1,21 @@
 # IRC
 
-The IRC adapter connects Hermes to any IRC server and relays messages between an IRC channel (or direct messages) and the agent. It speaks the IRC protocol over Python's stdlib `asyncio` — **no external dependencies, no SDK, no daemon**. It works with public networks like [Libera.Chat](https://libera.chat/) and any self-hosted ircd.
+The IRC adapter connects Rabbit to any IRC server and relays messages between an IRC channel (or direct messages) and the agent. It speaks the IRC protocol over Python's stdlib `asyncio` — **no external dependencies, no SDK, no daemon**. It works with public networks like [Libera.Chat](https://libera.chat/) and any self-hosted ircd.
 
 IRC is plain text: there is no voice, image, file, thread, reaction, typing, or streaming support — replies are sent as `PRIVMSG` lines, with long messages split to fit the IRC line limit.
 
-> Run `hermes gateway setup` and pick **IRC** for a guided walk-through.
+> Run `rabbit gateway setup` and pick **IRC** for a guided walk-through.
 
 ## Prerequisites
 
 - An IRC server to connect to (e.g. `irc.libera.chat`)
-- A channel to join (e.g. `#hermes`) — comma-separate to join several
-- A nickname for the bot (default: `hermes-bot`)
+- A channel to join (e.g. `#rabbit`) — comma-separate to join several
+- A nickname for the bot (default: `rabbit-bot`)
 - Optional: a registered nick + NickServ password if your network requires identification
 
-## Configure Hermes
+## Configure Rabbit
 
-You can configure IRC two ways — environment variables (for a quick env-only setup) or the `gateway` block in `~/.hermes/config.yaml`.
+You can configure IRC two ways — environment variables (for a quick env-only setup) or the `gateway` block in `~/.rabbit/config.yaml`.
 
 ### Option A — config.yaml
 
@@ -27,8 +27,8 @@ gateway:
       extra:
         server: irc.libera.chat
         port: 6697
-        nickname: hermes-bot
-        channel: "#hermes"
+        nickname: rabbit-bot
+        channel: "#rabbit"
         use_tls: true
         server_password: ""       # optional server password
         nickserv_password: ""     # optional NickServ identification
@@ -42,7 +42,7 @@ gateway:
 |----------|:--------:|-------------|
 | `IRC_SERVER` | ✅ | IRC server hostname (e.g. `irc.libera.chat`) |
 | `IRC_CHANNEL` | ✅ | Channel(s) to join — comma-separate for multiple |
-| `IRC_NICKNAME` | ✅ | Bot nickname (default: `hermes-bot`) |
+| `IRC_NICKNAME` | ✅ | Bot nickname (default: `rabbit-bot`) |
 | `IRC_PORT` | — | Server port (default: `6697` with TLS, `6667` without) |
 | `IRC_USE_TLS` | — | Use TLS (`true`/`false`; default `true` on port 6697) |
 | `IRC_SERVER_PASSWORD` | — | Server password for the `PASS` command |
@@ -53,7 +53,7 @@ gateway:
 
 ## Access control
 
-By default, only nicks listed in `allowed_users` (or `IRC_ALLOWED_USERS`) may talk to the bot. Leave the list empty **and** set `IRC_ALLOW_ALL_USERS=true` to let anyone in the channel chat with Hermes — useful for testing, but not recommended on public networks since IRC nicks are not authenticated unless the network enforces NickServ.
+By default, only nicks listed in `allowed_users` (or `IRC_ALLOWED_USERS`) may talk to the bot. Leave the list empty **and** set `IRC_ALLOW_ALL_USERS=true` to let anyone in the channel chat with Rabbit — useful for testing, but not recommended on public networks since IRC nicks are not authenticated unless the network enforces NickServ.
 
 If your network registers nicks, set `IRC_NICKSERV_PASSWORD` (or `nickserv_password`) so the bot identifies to NickServ on connect and keeps its registered nick.
 
@@ -67,12 +67,12 @@ Cron jobs and notifications are delivered to the **home channel** — `IRC_HOME_
 ## Run the gateway
 
 ```bash
-hermes gateway start
+rabbit gateway start
 ```
 
-Check status with `hermes gateway status` — IRC connection state is reported there, including for env-only setups.
+Check status with `rabbit gateway status` — IRC connection state is reported there, including for env-only setups.
 
 ## Notes
 
 - Long agent replies are automatically split into multiple `PRIVMSG` lines to stay within the IRC line limit (`max_message_length`, default 450 bytes after protocol overhead).
-- The adapter acquires a scoped credential lock per server+nick, so two Hermes profiles won't fight over the same IRC identity.
+- The adapter acquires a scoped credential lock per server+nick, so two Rabbit profiles won't fight over the same IRC identity.

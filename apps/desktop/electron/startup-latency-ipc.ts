@@ -21,5 +21,5 @@ export function createStartupLatencyClaim(uptimeSeconds: () => number = () => pr
 export function registerStartupLatencyIpc(): void {
   const claim = createStartupLatencyClaim()
 
-  ipcMain.handle('hermes:startup-latency:claim', () => claim())
+  ipcMain.handle('rabbit:startup-latency:claim', () => claim())
 }

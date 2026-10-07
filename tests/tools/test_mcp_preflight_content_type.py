@@ -180,7 +180,7 @@ def test_oauth_server_html_response_raises_without_skip():
     Real-world example: Hospitable's MCP server
     (``https://mcp.hospitable.com/mcp``) returns ``200 text/html`` to an
     unauthenticated httpx HEAD request.  With the guard removed, connecting
-    via ``hermes mcp add/login`` raises ``NonMcpEndpointError`` before the
+    via ``rabbit mcp add/login`` raises ``NonMcpEndpointError`` before the
     OAuth browser flow can begin.  With the guard in place, 63 tools are
     discovered and the server connects successfully.
     """

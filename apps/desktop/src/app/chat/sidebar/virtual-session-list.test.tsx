@@ -1,7 +1,7 @@
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import type { SidebarListRow } from '@/lib/session-date-groups'
 import { $sessionListDensity } from '@/store/session-list-density'
 

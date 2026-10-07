@@ -14,10 +14,10 @@ Build stunning 3D scenes via a concept-art fidelity loop.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/dream-loop` |
+| Source | Optional — install with `rabbit skills install official/creative/dream-loop` |
 | Path | `optional-skills/creative/dream-loop` |
 | Version | `1.0.0` |
-| Author | Anshu Chimala (adapted by Nous Research) |
+| Author | Anshu Chimala |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `3d`, `games`, `webgl`, `threejs`, `image-generation`, `visual-fidelity`, `creative` |
@@ -26,7 +26,7 @@ Build stunning 3D scenes via a concept-art fidelity loop.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Dream Loop Skill

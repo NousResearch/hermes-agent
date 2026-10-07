@@ -1,8 +1,8 @@
 {
-  "client_id": "https://nousresearch.github.io/hermes-agent/docs/oauth/client-metadata.json",
-  "client_name": "Hermes Agent",
-  "client_uri": "https://hermes-agent.nousresearch.com",
-  "logo_uri": "https://nousresearch.github.io/hermes-agent/docs/img/logo.png",
+  "client_id": "https://nousresearch.github.io/rabbit-agent/docs/oauth/client-metadata.json",
+  "client_name": "Rabbit Agent",
+  "client_uri": "https://github.com/seven0070/Rabbit-",
+  "logo_uri": "https://nousresearch.github.io/rabbit-agent/docs/img/logo.png",
   "application_type": "native",
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],

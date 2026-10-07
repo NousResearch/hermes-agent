@@ -25,7 +25,7 @@ from aiohttp import web
 from tests.fakes.platforms._standin import StandinServer, Visible, decode_value
 
 BOT_ID = 7000000001
-BOT_USERNAME = "hermes_standin_bot"
+BOT_USERNAME = "rabbit_standin_bot"
 MAX_TEXT = 4096
 # MarkdownV2 (https://core.telegram.org/bots/api#markdownv2-style): these must be escaped outside
 # entities; inside ``code``/```pre``` only ` and \ are special.
@@ -224,7 +224,7 @@ class TelegramStandin(StandinServer):
 
     # Bot API methods ---------------------------------------------------------------------------
     def _bot_user(self) -> Dict[str, Any]:
-        return {"id": BOT_ID, "is_bot": True, "first_name": "Hermes", "username": BOT_USERNAME,
+        return {"id": BOT_ID, "is_bot": True, "first_name": "Rabbit", "username": BOT_USERNAME,
                 "can_join_groups": True, "can_read_all_group_messages": True, "supports_inline_queries": False}
 
     def _chat(self, chat_id: Any) -> Dict[str, Any]:

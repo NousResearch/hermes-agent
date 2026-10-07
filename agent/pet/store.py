@@ -1,6 +1,6 @@
 """On-disk pet store — install / list / resolve pets.
 
-Pets live under ``get_hermes_home()/pets/<slug>/`` (profile-scoped; NOT petdex's
+Pets live under ``get_rabbit_home()/pets/<slug>/`` (profile-scoped; NOT petdex's
 ``~/.codex/pets``, which its CLI owns): ``pet.json`` ({id, displayName,
 description, spritesheetPath}) plus ``spritesheet.webp`` (or .png). The active
 pet comes from the caller-supplied ``display.pet.slug`` (no config loader here).
@@ -20,12 +20,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
 _DOWNLOAD_TIMEOUT = 60.0
-_HTTP_HEADERS = {"User-Agent": "hermes-agent-petdex"}
+_HTTP_HEADERS = {"User-Agent": "rabbit-agent-petdex"}
 _THUMB_FRAME_W = 192
 _THUMB_FRAME_H = 208
 _THUMB_W = 96  # rendered ~40px; 2x+ keeps it crisp on HiDPI
@@ -62,7 +62,7 @@ def _ensure_dir(path: Path) -> Path:
 
 def pets_dir() -> Path:
     """Return the profile-scoped pets directory (created on demand)."""
-    return _ensure_dir(get_hermes_home() / "pets")
+    return _ensure_dir(get_rabbit_home() / "pets")
 
 
 def _thumb_path(slug: str) -> Path:

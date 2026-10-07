@@ -14,7 +14,7 @@ Constrain LLM output with grammars; guarantee valid JSON.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/guidance` |
+| Source | Optional — install with `rabbit skills install official/mlops/guidance` |
 | Path | `optional-skills/mlops/guidance` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ Constrain LLM output with grammars; guarantee valid JSON.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Guidance: Constrained LLM Generation

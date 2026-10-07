@@ -1,36 +1,36 @@
 ---
 sidebar_position: 4
 title: "MCP (Model Context Protocol)"
-description: "Connect Hermes Agent to external tool servers via MCP — and control exactly which MCP tools Hermes loads"
+description: "Connect Rabbit Agent to external tool servers via MCP — and control exactly which MCP tools Rabbit loads"
 ---
 
 # MCP (Model Context Protocol)
 
 Python dependency commands on this page use a
 [PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
-After a dependency change, reactivate the checkout and restart Hermes.
+After a dependency change, reactivate the checkout and restart Rabbit.
 
-MCP lets Hermes Agent connect to external tool servers so the agent can use tools that live outside Hermes itself — GitHub, databases, file systems, browser stacks, internal APIs, and more.
+MCP lets Rabbit Agent connect to external tool servers so the agent can use tools that live outside Rabbit itself — GitHub, databases, file systems, browser stacks, internal APIs, and more.
 
-If you have ever wanted Hermes to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
+If you have ever wanted Rabbit to use a tool that already exists somewhere else, MCP is usually the cleanest way to do it.
 
 :::tip Coming from Claude Code?
-The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Hermes' `config.yaml` — and `hermes import-agent claude-code` migrates it (along with skills and instructions) automatically. See [Import from Other Agents](../import-from-other-agents.md).
+The `mcpServers` block in your `~/.claude.json` maps to `mcp_servers` in Rabbit' `config.yaml` — and `rabbit import-agent claude-code` migrates it (along with skills and instructions) automatically. See [Import from Other Agents](../import-from-other-agents.md).
 :::
 
 ## What MCP gives you
 
-- Access to external tool ecosystems without writing a native Hermes tool first
+- Access to external tool ecosystems without writing a native Rabbit tool first
 - Local stdio servers and remote HTTP MCP servers in the same config
 - Automatic tool discovery and registration at startup
 - Utility wrappers for MCP resources and prompts when supported by the server
-- Per-server filtering so you can expose only the MCP tools you actually want Hermes to see
+- Per-server filtering so you can expose only the MCP tools you actually want Rabbit to see
 
 ## Quick start
 
 1. MCP support ships with the standard install — no extra step needed.
 
-2. Add an MCP server to `~/.hermes/config.yaml`:
+2. Add an MCP server to `~/.rabbit/config.yaml`:
 
 ```yaml
 mcp_servers:
@@ -39,13 +39,13 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
 ```
 
-3. Start Hermes:
+3. Start Rabbit:
 
 ```bash
-hermes chat
+rabbit chat
 ```
 
-4. Ask Hermes to use the MCP-backed capability.
+4. Ask Rabbit to use the MCP-backed capability.
 
 For example:
 
@@ -53,18 +53,18 @@ For example:
 List the files in /home/user/projects and summarize the repo structure.
 ```
 
-Hermes will discover the MCP server's tools and use them like any other tool.
+Rabbit will discover the MCP server's tools and use them like any other tool.
 
-## Catalog: one-click install for Nous-approved MCPs
+## Catalog: one-click install for reviewed MCPs
 
-Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
+Rabbit ships a curated catalog of MCP servers that maintainers have reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
 You can also ask in chat: "add the Linear MCP". The agent calls
 `manage_connections` with an `mcp: true` target and a setup card appears. The
 card works the same way in the desktop app (a dialog), the terminal UI
-(`hermes --tui`, a callout above the composer) and the classic CLI (a panel):
+(`rabbit --tui`, a callout above the composer) and the classic CLI (a panel):
 
 1. **Fields.** If the entry declares setup values, the card shows all of them
    at once. A plain value is prefilled with its default. A secret is masked.
@@ -72,17 +72,17 @@ card works the same way in the desktop app (a dialog), the terminal UI
 2. **Connect or Cancel.** Cancel skips that one server; other servers in the
    same request continue.
 3. **Authorization.** For an OAuth entry the card shows the authorization link.
-   Hermes never opens the browser by itself: click **Open in browser** on the
+   Rabbit never opens the browser by itself: click **Open in browser** on the
    desktop, or press Enter in the terminal. Over SSH the card tells you how to
    reach the callback port or paste the redirected URL.
-4. **Save.** Hermes saves the server configuration, the tokens and your setup
+4. **Save.** Rabbit saves the server configuration, the tokens and your setup
    values together, once the server has accepted the new token and the first
    connection has returned. If the server rejects the token, or you cancel
    before that point, nothing from the attempt is kept, your earlier
    configuration and tokens stay as they were, and a failed form reopens with
    what you typed. A server that is already authorized connects with its saved
-   tokens; Hermes asks you to authorize again only when they no longer work.
-5. **Tools.** Hermes then lists the server's tools and registers them. The
+   tokens; Rabbit asks you to authorize again only when they no longer work.
+5. **Tools.** Rabbit then lists the server's tools and registers them. The
    agent can call them in the same turn. If authorization worked and the tool
    list failed, the card says "Authorized. Tools unavailable." and the agent can
    run discovery again later without asking you to authorize again.
@@ -90,9 +90,9 @@ card works the same way in the desktop app (a dialog), the terminal UI
 In messaging apps there is no card; the agent relays the commands below.
 
 ```bash
-hermes mcp                   # interactive picker (default)
-hermes mcp catalog           # plain-text list, scriptable
-hermes mcp install deepwiki  # install a catalog entry by name
+rabbit mcp                   # interactive picker (default)
+rabbit mcp catalog           # plain-text list, scriptable
+rabbit mcp install deepwiki  # install a catalog entry by name
 ```
 
 The picker shows each entry with its current status:
@@ -105,8 +105,8 @@ github       installed (disabled)   GitHub repo + PR tools
 
 Hit `Enter` on a row to install (and walk through any required credentials),
 enable, disable, or uninstall. Catalog entries are stored under
-`optional-mcps/` in the hermes-agent repo — presence in that directory means
-Nous approval. There is no community submission tier; entries are added by
+`optional-mcps/` in the rabbit-agent repo — presence in that directory means
+maintainer approval. There is no community submission tier; entries are added by
 merging a PR.
 
 The third-party n8n bridge is no longer available for catalog installation.
@@ -119,12 +119,12 @@ available. This change does not migrate existing connections to
 
 Catalog entries can require:
 
-- **API key** — Hermes prompts at install time and writes the value to
-  `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+- **API key** — Rabbit prompts at install time and writes the value to
+  `~/.rabbit/.env`. Non-secret values (base URLs) go to the same file.
 - **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
   client opens a browser on first connection.
-- **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
-  `hermes auth <provider>` if you haven't authenticated already.
+- **OAuth** (third-party provider like Google/GitHub) — Rabbit points you at
+  `rabbit auth <provider>` if you haven't authenticated already.
 
 ### n8n's official MCP server
 
@@ -136,13 +136,13 @@ API key is required.
 2. Open **Connect** and copy the full **Server URL** ending in
    `/mcp-server/http`, not the editor URL. Older versions show the endpoint
    directly on the MCP settings page.
-3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
-4. Complete browser OAuth. If needed, run `hermes mcp login n8n-official`
+3. Run `rabbit mcp install n8n-official` and enter that URL when prompted.
+4. Complete browser OAuth. If needed, run `rabbit mcp login n8n-official`
    or use **Authorize** on the configured server in Desktop or the dashboard.
-5. Review tools with `hermes mcp configure n8n-official`, then start a new
+5. Review tools with `rabbit mcp configure n8n-official`, then start a new
    session or use `/reload-mcp`.
 
-The Hermes backend must be able to reach the URL. n8n controls permissions
+The Rabbit backend must be able to reach the URL. n8n controls permissions
 and workflow exposure; some tools modify or run workflows. See
 [n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
 
@@ -152,7 +152,7 @@ installed files, and tool selections are not replaced.
 
 ### Tool selection at install time
 
-After credentials are configured, Hermes probes the MCP server to list every
+After credentials are configured, Rabbit probes the MCP server to list every
 tool it exposes and presents a checklist:
 
 ```
@@ -186,7 +186,7 @@ written (cleanest config shape, identical behavior).
 **If the probe fails** (server unreachable, OAuth not yet completed,
 backing service not running), the install still succeeds: the manifest's
 `tools.default_enabled` is applied directly (if declared), or no filter is
-written (if not). Re-run `hermes mcp configure <name>` once the server is
+written (if not). Re-run `rabbit mcp configure <name>` once the server is
 reachable to refine.
 
 ### Trust model
@@ -194,13 +194,13 @@ reachable to refine.
 Installing a catalog entry runs whatever the manifest specifies — `git clone`,
 the entry's `bootstrap` commands (`pip install`, `npm install`, etc.), and
 ultimately the MCP server's own code. Manifests are gated by PR review into
-the hermes-agent repo, so Nous has reviewed each entry before it shipped —
+the rabbit-agent repo, so a maintainer has reviewed each entry before it shipped —
 **but you should still read the manifest before installing**, especially the
 `source:` field's repository, the `install.bootstrap:` commands, and any
 `transport.command:` invocation.
 
 Manifests live at
-[`optional-mcps/<name>/manifest.yaml`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps)
+[`optional-mcps/<name>/manifest.yaml`](https://github.com/seven0070/Rabbit-/tree/main/optional-mcps)
 on GitHub. The picker also prints the manifest's `source:` URL at install
 time so you can quickly verify the upstream repo. The web dashboard's MCP
 page surfaces the same detail per catalog entry — transport, auth type, the
@@ -212,16 +212,16 @@ before clicking Install.
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a
-PR adds an entry with a newer `manifest_version` than your installed Hermes
+PR adds an entry with a newer `manifest_version` than your installed Rabbit
 understands, the picker will surface a warning (`⚠ '<name>' requires a newer
-Hermes`) for that entry instead of silently hiding it. Run `hermes update`
-to install the latest Hermes when you see that.
+Rabbit`) for that entry instead of silently hiding it. Run `rabbit update`
+to install the latest Rabbit when you see that.
 
 ### Runtime `${ENV_VAR}` substitution
 
 Inside an entry's `transport.command`, `transport.args`, `transport.url`,
 and `headers`, `${VAR}` placeholders are resolved at server-connect time
-from environment variables (which include everything in `~/.hermes/.env`).
+from environment variables (which include everything in `~/.rabbit/.env`).
 This is useful when a catalog entry wants to reference a value the user
 configured elsewhere — e.g. `${HOME}/foo` or `${MY_PROVIDER_TOKEN}`.
 
@@ -261,19 +261,19 @@ mcp_servers:
 ```
 
 Read the entry's `post_install` notes for the exact app type and redirect URL
-to register, then run `hermes mcp login <name>` and restart (or
+to register, then run `rabbit mcp login <name>` and restart (or
 `/reload-mcp`) the session or gateway that should expose the tools. The
 dashboard / Desktop **Authorize** button works too: because the client is
-pre-registered with a pinned `redirect_port`, Hermes keeps the registered
+pre-registered with a pinned `redirect_port`, Rabbit keeps the registered
 loopback callback (`http://localhost:27890/callback`) instead of the
 dashboard's own callback URL — so the browser you approve in must run on the
-same machine as the Hermes process. For a remote host, use `hermes mcp login`
+same machine as the Rabbit process. For a remote host, use `rabbit mcp login`
 over SSH port-forwarding.
 
 ### Updating tool selection later
 
 ```bash
-hermes mcp configure linear
+rabbit mcp configure linear
 ```
 
 Reopens the same checklist with your current selection pre-checked. Use this
@@ -282,11 +282,11 @@ you want to opt into.
 
 ### Updating the catalog manifest
 
-MCPs are never auto-updated. Re-run `hermes mcp install <name>` to refresh
-after a Hermes update if a manifest version changed.
+MCPs are never auto-updated. Re-run `rabbit mcp install <name>` to refresh
+after a Rabbit update if a manifest version changed.
 
 To add an MCP to the catalog, open a PR against
-[`optional-mcps/`](https://github.com/NousResearch/hermes-agent/tree/main/optional-mcps).
+[`optional-mcps/`](https://github.com/seven0070/Rabbit-/tree/main/optional-mcps).
 
 ### Suggestion metadata (`suggest:`)
 
@@ -301,7 +301,7 @@ declare it.
 
 GitHub is deliberately **not** in the catalog: its hosted MCP requires each
 client to bring its own OAuth app (generic dynamic client registration is
-rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
+rejected), and Rabbit's bundled `github/*` skills driving the `gh` CLI are a
 more capable integration. On Desktop, GitHub mentions instead offer the
 `github-auth` skill when `gh` isn't signed in yet.
 
@@ -327,7 +327,7 @@ Use stdio servers when:
 
 ### HTTP servers
 
-HTTP MCP servers are remote endpoints Hermes connects to directly.
+HTTP MCP servers are remote endpoints Rabbit connects to directly.
 
 ```yaml
 mcp_servers:
@@ -340,18 +340,18 @@ mcp_servers:
 Use HTTP servers when:
 - the MCP server is hosted elsewhere
 - your organization exposes internal MCP endpoints
-- you do not want Hermes spawning a local subprocess for that integration
+- you do not want Rabbit spawning a local subprocess for that integration
 
 HTTP and SSE servers honor the standard proxy settings: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (a `socks://` alias is normalized to `socks5://`), then the OS proxy (Windows registry, macOS system settings), with `NO_PROXY` hosts — including CIDR ranges and `*.example.com` patterns — connecting directly.
 
 ### OAuth-authenticated HTTP servers
 
-Most hosted MCP servers (Cloudflare, Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
+Most hosted MCP servers (Cloudflare, Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Rabbit handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.
 
-Hermes identifies itself with a [Client ID Metadata Document](../../reference/mcp-config-reference.md#client-identification-cimd-and-dcr) on servers that support one, and falls back to Dynamic Client Registration on those that don't. Both are automatic; there is nothing to configure.
+Rabbit identifies itself with a [Client ID Metadata Document](../../reference/mcp-config-reference.md#client-identification-cimd-and-dcr) on servers that support one, and falls back to Dynamic Client Registration on those that don't. Both are automatic; there is nothing to configure.
 
 :::tip Figma remote MCP
-Figma's hosted endpoint (`https://mcp.figma.com/mcp`) allowlists Dynamic Client Registration by **exact `client_name`** — bare `"Hermes Agent"` 403s, while `"Claude Code"` and `"Codex"` succeed. Hermes auto-sets `oauth.client_name: "Claude Code"` for `mcp.figma.com` so install/login works without a special trick:
+Figma's hosted endpoint (`https://mcp.figma.com/mcp`) allowlists Dynamic Client Registration by **exact `client_name`** — bare `"Rabbit Agent"` 403s, while `"Claude Code"` and `"Codex"` succeed. Rabbit auto-sets `oauth.client_name: "Claude Code"` for `mcp.figma.com` so install/login works without a special trick:
 
 ```yaml
 mcp_servers:
@@ -360,7 +360,7 @@ mcp_servers:
     auth: oauth
 ```
 
-Or: `hermes mcp install figma`, then `hermes mcp login figma`.
+Or: `rabbit mcp install figma`, then `rabbit mcp login figma`.
 :::
 
 ```yaml
@@ -370,23 +370,23 @@ mcp_servers:
     auth: oauth
 ```
 
-On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
+On first connect, Rabbit prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.rabbit/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 
-Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
+Refresh tokens are bound to the authorization server that granted them: Rabbit records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
 
-The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
+The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Rabbit fills the missing value from the discovered issuer for that one issuer and logs a warning, so `rabbit mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
 
 The authorization server's metadata document must name the server the resource advertised (RFC 8414 §3.3); a document for a different server is rejected before any registration or login. One shape is accepted without an exact match: a server advertised with a path (`https://host/path`) whose document, fetched from `https://host/.well-known/oauth-authorization-server/path`, names the origin `https://host` as its issuer — Strava's MCP connector publishes exactly that pair. Only the origin's operator controls that well-known location, so the document is treated as the advertised server's own; a document naming another origin or another path, or one reached only through a redirect or a fallback location, still fails with `Authorization server metadata issuer mismatch`.
 
-**Google-hosted servers (Gmail, Calendar).** Google only issues a refresh token when the authorization request carries `access_type=offline`, which MCP discovery never advertises. Hermes adds it (plus `prompt=consent`, so a repeat login is re-granted one) whenever the discovered authorization server is `accounts.google.com`, so the connection persists across restarts and works from `hermes gateway`. Other issuers' requests are untouched.
+**Google-hosted servers (Gmail, Calendar).** Google only issues a refresh token when the authorization request carries `access_type=offline`, which MCP discovery never advertises. Rabbit adds it (plus `prompt=consent`, so a repeat login is re-granted one) whenever the discovered authorization server is `accounts.google.com`, so the connection persists across restarts and works from `rabbit gateway`. Other issuers' requests are untouched.
 
-**Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
+**Remote / headless hosts.** When Rabbit runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
-- **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
-- **Paste-back (no setup):** on an interactive terminal Hermes prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.
-- **Device-code login (no callback at all):** if the server's authorization server advertises a device authorization endpoint, run `hermes mcp login <server> --flow device` on the machine running Hermes. It prints a verification URL and a short code; open the URL on any device, enter the code, and Hermes polls for approval. No browser is launched on the host and no callback listener is needed. Set `oauth.flow: device` on the server to make `login` and `reauth` use it by default. Details: [Device-code login](../../reference/mcp-config-reference.md#device-code-login-rfc-8628).
+- **Rabbit Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
+- **Paste-back (no setup):** on an interactive terminal Rabbit prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.
+- **Device-code login (no callback at all):** if the server's authorization server advertises a device authorization endpoint, run `rabbit mcp login <server> --flow device` on the machine running Rabbit. It prints a verification URL and a short code; open the URL on any device, enter the code, and Rabbit polls for approval. No browser is launched on the host and no callback listener is needed. Set `oauth.flow: device` on the server to make `login` and `reauth` use it by default. Details: [Device-code login](../../reference/mcp-config-reference.md#device-code-login-rfc-8628).
 - **SSH port forward:** `ssh -N -L <port>:127.0.0.1:<port> user@host` in a separate terminal, then let the redirect flow normally.
-- **Proxied callback (`redirect_uri`):** when a public HTTPS endpoint forwards to the host (e.g. a Tailscale Funnel or reverse proxy pointed at the callback port), set `oauth.redirect_uri` and the browser redirect reaches Hermes on its own — no tunnel or paste needed:
+- **Proxied callback (`redirect_uri`):** when a public HTTPS endpoint forwards to the host (e.g. a Tailscale Funnel or reverse proxy pointed at the callback port), set `oauth.redirect_uri` and the browser redirect reaches Rabbit on its own — no tunnel or paste needed:
 
 ```yaml
 mcp_servers:
@@ -398,13 +398,13 @@ mcp_servers:
       redirect_uri: "https://oauth.example.ts.net/callback"
 ```
 
-For fully headless gateways (messaging bot, no interactive terminal at all), the optional [`mcp-oauth-remote-gateway` skill](../skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) walks the agent through completing the flow manually and writing tokens where Hermes expects them.
+For fully headless gateways (messaging bot, no interactive terminal at all), the optional [`mcp-oauth-remote-gateway` skill](../skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) walks the agent through completing the flow manually and writing tokens where Rabbit expects them.
 
 **Pitfall — WAF rejects `127.0.0.1` redirect URIs.** A few providers front their authorization server with a WAF that 403s any authorize request whose query string contains a literal `127.0.0.1` (Reclaim.ai's AWS API Gateway is a known example — every attempt returns `{"message":"Forbidden"}` before reaching the OAuth app). Set `oauth.redirect_host: localhost` to use `http://localhost:<port>/callback` instead; the callback listener still binds `127.0.0.1` either way.
 
-See [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md#mcp-servers) for the full walkthrough, including DCR-less servers (e.g. Slack), pre-registered `client_id`/`client_secret`, scope customization, and re-auth via `hermes mcp login <server>`.
+See [OAuth over SSH / Remote Hosts](../../guides/oauth-over-ssh.md#mcp-servers) for the full walkthrough, including DCR-less servers (e.g. Slack), pre-registered `client_id`/`client_secret`, scope customization, and re-auth via `rabbit mcp login <server>`.
 
-**Pitfall — providers that don't support automatic registration (Google Drive, Atlassian).** Some servers reject the dynamic client registration step (RFC 7591) that bare `auth: oauth` relies on — Google's official Drive server (`https://drivemcp.googleapis.com/mcp/v1`) returns a `400 Bad Request`, so no OAuth client is created and no token is acquired. The symptom is subtle: these servers also serve `tools/list` *without* auth, so `hermes mcp login` can list the tools and look like it worked, but every real tool call later times out. `hermes mcp login` now detects this (it checks that a token actually landed on disk) and tells you to supply your own OAuth client. Create one in the provider's console and add it to config:
+**Pitfall — providers that don't support automatic registration (Google Drive, Atlassian).** Some servers reject the dynamic client registration step (RFC 7591) that bare `auth: oauth` relies on — Google's official Drive server (`https://drivemcp.googleapis.com/mcp/v1`) returns a `400 Bad Request`, so no OAuth client is created and no token is acquired. The symptom is subtle: these servers also serve `tools/list` *without* auth, so `rabbit mcp login` can list the tools and look like it worked, but every real tool call later times out. `rabbit mcp login` now detects this (it checks that a token actually landed on disk) and tells you to supply your own OAuth client. Create one in the provider's console and add it to config:
 
 ```yaml
 mcp_servers:
@@ -416,15 +416,15 @@ mcp_servers:
       client_secret: "<your-oauth-client-secret>"
 ```
 
-Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
+Then run `rabbit mcp login googledrive` — with the pre-registered client, Rabbit skips registration and runs the normal browser authorization flow.
 
-**Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+**Pitfall — config auto-reload race.** When you edit `~/.rabbit/config.yaml` from inside a running Rabbit session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `rabbit mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
-**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `hermes mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
+**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `rabbit mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
 
 ## mTLS / client certificates
 
-Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Rabbit passes the resolved certificate to the underlying HTTP client for the TLS handshake.
 
 `client_cert` accepts three shapes:
 
@@ -472,13 +472,13 @@ mcp_servers:
 ```
 
 - `value_from: static` sends the literal `value` from config.yaml.
-- `value_from: profile` sends the active Hermes profile name, resolved once at connect time — useful when multiple profiles on one machine talk to the same server and it needs to tell them apart.
+- `value_from: profile` sends the active Rabbit profile name, resolved once at connect time — useful when multiple profiles on one machine talk to the same server and it needs to tell them apart.
 
 An explicit entry in the server's `headers` mapping with the same name (any casing) always wins; the identity header never overrides your own header config. Invalid `identity_header` blocks are warned about and ignored — they never block the server from connecting. On stdio servers the key is ignored with a warning (stdio transports have no headers).
 
 ## Basic configuration reference
 
-Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
+Rabbit reads MCP config from `~/.rabbit/config.yaml` under `mcp_servers`.
 
 ### Common keys
 
@@ -487,7 +487,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
-| `cwd` | string | Working directory for the stdio server process. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Hermes process directory |
+| `cwd` | string | Working directory for the stdio server process. Default: the session working directory when one is pinned (ACP/gateway sessions, `terminal.cwd`), else the Rabbit process directory |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
 | `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
@@ -498,7 +498,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `lazy` | bool | If `true`, register the server's tools from the schema cache at startup and only start/connect it on the first tool call (default `false`). Needs one prior live connect to fill the cache. |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
-| `enabled` | bool | If `false`, Hermes skips the server entirely |
+| `enabled` | bool | If `false`, Rabbit skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
@@ -540,7 +540,7 @@ mcp_servers:
 
 ## Built-in presets
 
-For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fills in the transport details so you don't have to look up the command and args. The preset only supplies defaults — anything else (env vars, headers, filtering) you pass on the same command line still wins.
+For well-known MCP servers, `rabbit mcp add` accepts a `--preset` flag that fills in the transport details so you don't have to look up the command and args. The preset only supplies defaults — anything else (env vars, headers, filtering) you pass on the same command line still wins.
 
 | Preset | What it wires up |
 |---|---|
@@ -548,7 +548,7 @@ For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fill
 
 ```bash
 # Add Codex CLI as an MCP server in one line
-hermes mcp add codex --preset codex
+rabbit mcp add codex --preset codex
 ```
 
 That writes the equivalent of:
@@ -560,11 +560,11 @@ mcp_servers:
     args: ["mcp-server"]
 ```
 
-You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.
+You can pick any local name (`rabbit mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.
 
-## How Hermes registers MCP tools
+## How Rabbit registers MCP tools
 
-Hermes prefixes MCP tools so they do not collide with built-in names:
+Rabbit prefixes MCP tools so they do not collide with built-in names:
 
 ```text
 mcp_<server_name>_<tool_name>
@@ -578,18 +578,18 @@ Examples:
 | `github` | `create-issue` | `mcp_github_create_issue` |
 | `my-api` | `query.data` | `mcp_my_api_query_data` |
 
-In practice, you usually do not need to call the prefixed name manually — Hermes sees the tool and chooses it during normal reasoning.
+In practice, you usually do not need to call the prefixed name manually — Rabbit sees the tool and chooses it during normal reasoning.
 
 ### Tool-result sanitization and `_meta`
 
 Two behaviors apply to every MCP tool result before the model sees it:
 
-- **Invisible Unicode TAG characters are stripped.** Characters in the U+E0000–U+E007F range render as nothing in terminals and chat UIs but are fully visible to the model — a classic prompt-injection smuggling channel for a malicious or compromised server. Hermes strips them from tool results, resource content, and tool descriptions. Legitimate emoji tag sequences (regional flags like 🏴󠁧󠁢󠁳󠁣󠁴󠁿) are preserved.
-- **Vendor `_meta` is surfaced; protocol-reserved keys are not.** When a server attaches a `_meta` mapping to a tool result (vendor namespaces like `com.example/handoff`), Hermes passes it through to the model alongside the result content. Keys under protocol-reserved prefixes — a `modelcontextprotocol` or `mcp` label followed by another label, e.g. `modelcontextprotocol.io/...` or `tools.mcp.com/...` — are dropped, matching the MCP spec's key-name rules. If nothing model-facing remains, the `_meta` field is omitted entirely.
+- **Invisible Unicode TAG characters are stripped.** Characters in the U+E0000–U+E007F range render as nothing in terminals and chat UIs but are fully visible to the model — a classic prompt-injection smuggling channel for a malicious or compromised server. Rabbit strips them from tool results, resource content, and tool descriptions. Legitimate emoji tag sequences (regional flags like 🏴󠁧󠁢󠁳󠁣󠁴󠁿) are preserved.
+- **Vendor `_meta` is surfaced; protocol-reserved keys are not.** When a server attaches a `_meta` mapping to a tool result (vendor namespaces like `com.example/handoff`), Rabbit passes it through to the model alongside the result content. Keys under protocol-reserved prefixes — a `modelcontextprotocol` or `mcp` label followed by another label, e.g. `modelcontextprotocol.io/...` or `tools.mcp.com/...` — are dropped, matching the MCP spec's key-name rules. If nothing model-facing remains, the `_meta` field is omitted entirely.
 
 ## MCP utility tools
 
-When supported, Hermes also registers utility tools around MCP resources and prompts:
+When supported, Rabbit also registers utility tools around MCP resources and prompts:
 
 - `list_resources`
 - `read_resource`
@@ -604,14 +604,14 @@ These are registered per server with the same prefix pattern, for example:
 ### Important
 
 These utility tools are now capability-aware:
-- Hermes only registers resource utilities if the MCP session actually supports resource operations
-- Hermes only registers prompt utilities if the MCP session actually supports prompt operations
+- Rabbit only registers resource utilities if the MCP session actually supports resource operations
+- Rabbit only registers prompt utilities if the MCP session actually supports prompt operations
 
 So a server that exposes callable tools but no resources/prompts will not get those extra wrappers.
 
 ## Per-server filtering
 
-You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.
+You can control which tools each MCP server contributes to Rabbit, allowing fine-grained management of your tool namespace.
 
 ### Disable a server entirely
 
@@ -622,7 +622,7 @@ mcp_servers:
     enabled: false
 ```
 
-If `enabled: false`, Hermes skips the server completely and does not even attempt a connection.
+If `enabled: false`, Rabbit skips the server completely and does not even attempt a connection.
 
 ### Whitelist server tools
 
@@ -689,7 +689,7 @@ tools:
 
 ### Filter utility tools too
 
-You can also separately disable Hermes-added utility wrappers:
+You can also separately disable Rabbit-added utility wrappers:
 
 ```yaml
 mcp_servers:
@@ -732,7 +732,7 @@ mcp_servers:
 
 ## What happens if everything is filtered out?
 
-If your config filters out all callable tools and disables or omits all supported utilities, Hermes does not create an empty runtime MCP toolset for that server.
+If your config filters out all callable tools and disables or omits all supported utilities, Rabbit does not create an empty runtime MCP toolset for that server.
 
 That keeps the tool list clean.
 
@@ -740,7 +740,7 @@ That keeps the tool list clean.
 
 ### Discovery time
 
-Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
+Rabbit discovers MCP servers at startup and registers their tools into the normal tool registry.
 
 Servers are connected at most **4 at a time** per discovery pass (startup, `/reload-mcp`, config
 watcher). Every stdio server spawns its own child-process tree, so an unbounded pass with many servers
@@ -761,7 +761,7 @@ A server with `lazy: true` is registered from the on-disk schema cache instead: 
 
 ### Dynamic Tool Discovery
 
-MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.
+MCP servers can notify Rabbit when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Rabbit receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.
 
 This is useful for MCP servers whose capabilities change dynamically (e.g. a server that adds tools when a new database schema is loaded, or removes tools when a service goes offline).
 
@@ -777,9 +777,9 @@ If you change MCP config, use:
 
 This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, plugin credentials such as `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
-A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
+A running messaging gateway (`rabbit gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
-**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
+**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `rabbit mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
 
 ### Toolsets
 
@@ -795,7 +795,7 @@ That makes MCP servers easier to reason about at the toolset level.
 
 ### Stdio env filtering
 
-For stdio servers, Hermes does not blindly pass your full shell environment.
+For stdio servers, Rabbit does not blindly pass your full shell environment.
 
 Only explicitly configured `env` plus a safe baseline are passed through. This reduces accidental secret leakage.
 
@@ -870,13 +870,13 @@ Check:
 
 ```bash
 # Verify MCP deps are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
+cd ~/.rabbit/rabbit-agent && python -c "import pm; pm.sync_venv(['mcp'], explicit=True)"
 
 node --version
 npx --version
 ```
 
-Then verify your config and restart Hermes.
+Then verify your config and restart Rabbit.
 
 The startup summary in `agent.log` names every server that did not register, with the recorded
 connect error, so you never have to work out the failing one by elimination:
@@ -890,8 +890,8 @@ failure is listed as `not attempted (in retry cooldown)`.
 
 ### Remote (HTTP) server rejects the connection
 
-`hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
-`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Hermes appends
+`rabbit mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
+`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Rabbit appends
 the HTTP status, the URL it requested and the start of the response body:
 
 ```
@@ -902,7 +902,7 @@ Streamable HTTP: Server returned an error response (HTTP 400 from POST http://ho
 Read the status and body first: a `400`/`405` on the `initialize` POST usually means the endpoint
 speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the request; a `401`/`403`
 means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
-endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
+endpoint. `rabbit logs --level debug` additionally shows the exact endpoint each connect attempt used.
 
 ### Tools not appearing
 
@@ -917,7 +917,7 @@ If you are intentionally filtering, this is expected.
 
 ### Why didn't resource or prompt utilities appear?
 
-Because Hermes now only registers those wrappers when both are true:
+Because Rabbit now only registers those wrappers when both are true:
 1. your config allows them
 2. the server session actually supports the capability
 
@@ -934,7 +934,7 @@ mcp_servers:
     supports_parallel_tool_calls: true
 ```
 
-When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools from that server at the same time within a single tool-call batch, just like it does for built-in read-only tools (web_search, read_file, etc.).
+When `supports_parallel_tool_calls` is `true`, Rabbit may execute multiple tools from that server at the same time within a single tool-call batch, just like it does for built-in read-only tools (web_search, read_file, etc.).
 
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.
@@ -942,7 +942,7 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the sa
 
 ## MCP Sampling Support
 
-MCP servers can request LLM inference from Hermes via the `sampling/createMessage` protocol. This allows an MCP server to ask Hermes to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
+MCP servers can request LLM inference from Rabbit via the `sampling/createMessage` protocol. This allows an MCP server to ask Rabbit to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
 
 Sampling is **enabled by default** for all MCP servers (when the MCP SDK supports it). Configure it per-server under the `sampling` key:
 
@@ -975,7 +975,7 @@ mcp_servers:
 
 ## MCP Elicitation Support
 
-MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Hermes routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
+MCP servers can ask the user for structured input mid-tool-call via the `elicitation/create` protocol (mcp Python SDK ≥ 1.11.0). Rabbit routes **form-mode** elicitations through its existing approval surface — an interactive prompt in the CLI/TUI, or approval buttons on gateway platforms like Telegram and Slack — so the request reaches you wherever the session lives. **URL-mode** elicitations (where a server points you at an external URL) are declined as unsupported.
 
 Elicitation is **enabled by default** per server. Configure it under the `elicitation` key:
 
@@ -990,46 +990,46 @@ mcp_servers:
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
-## Running Hermes as an MCP server
+## Running Rabbit as an MCP server
 
-In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
+In addition to connecting **to** MCP servers, Rabbit can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Rabbit's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
 
 ### When to use this
 
-- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Hermes
-- You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
-- You already have a running Hermes gateway with connected platforms
+- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Rabbit
+- You want a single MCP server that bridges to all of Rabbit's connected messaging platforms at once
+- You already have a running Rabbit gateway with connected platforms
 
 ### Quick start
 
 ```bash
-hermes mcp serve
+rabbit mcp serve
 ```
 
 This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
 
 ### MCP client configuration
 
-Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+Add Rabbit to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "hermes": {
-      "command": "hermes",
+    "rabbit": {
+      "command": "rabbit",
       "args": ["mcp", "serve"]
     }
   }
 }
 ```
 
-Or if you installed Hermes in a specific location:
+Or if you installed Rabbit in a specific location:
 
 ```json
 {
   "mcpServers": {
-    "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
+    "rabbit": {
+      "command": "/home/user/.rabbit/rabbit-agent/venv/bin/rabbit",
       "args": ["mcp", "serve"]
     }
   }
@@ -1038,7 +1038,7 @@ Or if you installed Hermes in a specific location:
 
 ### Available tools
 
-The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
+The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Rabbit-specific channel browser:
 
 | Tool | Description |
 |------|-------------|
@@ -1055,7 +1055,7 @@ The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus
 
 ### Event system
 
-The MCP server includes a live event bridge that polls Hermes's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
+The MCP server includes a live event bridge that polls Rabbit's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
 
 ```
 # Poll for new events (non-blocking)
@@ -1072,26 +1072,26 @@ The event queue is in-memory and starts when the bridge connects. Older messages
 ### Options
 
 ```bash
-hermes mcp serve              # Normal mode
-hermes mcp serve --verbose    # Debug logging on stderr
+rabbit mcp serve              # Normal mode
+rabbit mcp serve --verbose    # Debug logging on stderr
 ```
 
 ### How it works
 
-The MCP server reads conversation data directly from Hermes's session store — `~/.hermes/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `hermes send` CLI.
+The MCP server reads conversation data directly from Rabbit's session store — `~/.rabbit/state.db` is the primary source, with `sessions.json` kept only as a legacy fallback. A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same internal send engine (`tools/send_message_tool.py`) that powers cron delivery and the `rabbit send` CLI.
 
 The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
 
 ### Current limits
 
-- The embedded `hermes mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Hermes, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
+- The embedded `rabbit mcp serve` exposes a **stdio-only** MCP server today. If you need an HTTP MCP server, run a separate adapter — or, much more commonly, use the MCP **client** side of Rabbit, which already speaks both stdio and HTTP (`url` + `headers` in `mcp_servers.yaml` / `config.yaml`; see [HTTP servers](#http-servers) above).
 - Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
 - No `claude/channel` push notification protocol yet
 - Text-only sends (no media/attachment sending through `messages_send`)
 
 ## Related docs
 
-- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md)
+- [Use MCP with Rabbit](../../guides/use-mcp-with-rabbit.md)
 - [CLI Commands](../../reference/cli-commands.md)
 - [Slash Commands](../../reference/slash-commands.md)
 - [FAQ](../../reference/faq.md)

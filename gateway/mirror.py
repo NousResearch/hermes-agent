@@ -11,22 +11,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config import get_hermes_home
+from rabbit_cli.config import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
-_SESSIONS_DIR = get_hermes_home() / "sessions"
+_SESSIONS_DIR = get_rabbit_home() / "sessions"
 _SESSIONS_INDEX = _SESSIONS_DIR / "sessions.json"
 _SESSIONS_INDEX_AT_IMPORT = _SESSIONS_INDEX
 
 
 def _resolve_sessions_index() -> Path:
     """Active profile's ``sessions.json`` at call time: the patched ``_SESSIONS_INDEX`` when a test
-    changed it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process
+    changed it, else live profile-scoped RABBIT_HOME — under the multiplexed gateway one process
     serves every profile, so the import-time constant would resolve every profile's pre-migration
     session lookup against the launch profile's index."""
     return (_SESSIONS_INDEX if _SESSIONS_INDEX != _SESSIONS_INDEX_AT_IMPORT
-            else get_hermes_home() / "sessions" / "sessions.json")
+            else get_rabbit_home() / "sessions" / "sessions.json")
 
 
 def _origin_user_id(entry: dict) -> str:
@@ -85,7 +85,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     for pre-migration databases.
     """
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from rabbit_state_registry import acquire, release_or_close
         db = acquire()
         try:
             finder = getattr(db, "find_session_by_origin", None)
@@ -132,7 +132,7 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     Raises on failure: ``mirror_to_session`` reports ``False`` (and warns) only when the
     exception reaches it — swallowing it here made every failed write look mirrored (#10130).
     """
-    from hermes_state_registry import acquire, release_or_close
+    from rabbit_state_registry import acquire, release_or_close
 
     db = acquire()
     try:

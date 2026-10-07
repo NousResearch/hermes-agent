@@ -2,7 +2,7 @@ import {
   atom, Button, createBudgetedLoop, GlyphSpinner, icons, Popover, PopoverContent, PopoverTrigger,
   RowButton, SearchField, STATUSBAR_AREAS, Tip, usePluginI18n,
   useQuery, useValue
-} from '@hermes/plugin-sdk'
+} from '@rabbit/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
@@ -43,52 +43,52 @@ const LOCALES = {
 // Disk plugins are not scanned by Tailwind. Only plugin layout lives here;
 // Button, SearchField and Popover own their own chrome.
 const CSS = `
-.hermes-radio-bar{display:flex;align-items:center;gap:2px;height:100%;color:var(--ui-text-tertiary)}
-.hermes-radio-waveform{position:relative;height:24px;width:100%;font-family:var(--font-mono,monospace);font-size:12px;line-height:12px;color:var(--ui-text-tertiary);opacity:.45;overflow:hidden;flex-shrink:0}
-.hermes-radio-waveform-layer{position:absolute;inset:0;display:grid;grid-template-columns:repeat(var(--radio-columns),minmax(0,1fr));grid-auto-rows:12px}
-.hermes-radio-waveform-layer>span{text-align:center;min-width:0}
-.hermes-radio-waveform-layer:nth-child(1){opacity:.12}
-.hermes-radio-waveform-layer:nth-child(2){opacity:.28}
-.hermes-radio-waveform[data-compact=true]{width:40px;height:12px;margin-inline:2px}
-.hermes-radio-next{display:flex;align-items:center;width:12px;height:12px}
-.hermes-radio-waveform[data-active=true]{color:var(--ui-accent);opacity:1}
-.hermes-radio-signal{height:48px;padding:5px 6px 0;min-width:0}
-.hermes-radio-track{display:flex;align-items:center;gap:5px;height:19px;min-width:0;font-size:11px;line-height:16px;color:var(--ui-text-secondary)}
-.hermes-radio-track-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0}
-.hermes-radio-track[data-track=true]{color:var(--ui-text-primary)}
-.hermes-radio-artist{min-width:0;max-width:55%;flex-shrink:1;font-size:inherit;font-weight:inherit}
-.hermes-radio-artist>span{overflow:hidden;text-overflow:ellipsis}
-.hermes-radio-track-separator{flex-shrink:0;color:var(--ui-text-quaternary)}
-.hermes-radio-bar .radio-name{max-width:112px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;text-align:left}
-.hermes-radio-bar .hermes-radio-action{width:16px;height:16px;padding:0;flex-shrink:0}
-.hermes-radio-action-icon{display:flex;align-items:center;justify-content:center;width:12px;height:12px;flex-shrink:0;overflow:hidden}
-.hermes-radio-website{display:flex;width:24px;height:24px;flex-shrink:0}
-.hermes-radio-panel{width:292px;max-width:calc(100vw - 24px)}
-.hermes-radio-search{display:flex;align-items:center;height:32px;padding:0 4px 4px}
-.hermes-radio-search-field{flex:1;min-width:0}
-.hermes-radio-search-field input{flex:1;width:0;min-width:0}
-.hermes-radio-search .hermes-radio-search-field{border:0}
-.hermes-radio-search-loader{display:flex;align-items:center;justify-content:center;width:16px;flex-shrink:0;font-size:12px;color:var(--ui-text-tertiary)}
-.hermes-radio-list{height:168px;max-height:calc(100dvh - 180px);min-height:80px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
-.hermes-radio-row{display:flex;align-items:center;gap:4px;border-radius:4px}
-.hermes-radio-row[data-current=true]{background:var(--chrome-action-hover)}
-.hermes-radio-row[data-current=true] .hermes-radio-row-name{color:var(--ui-accent)}
-.hermes-radio-row:hover{background:var(--chrome-action-hover)}
-.hermes-radio-row [aria-pressed=true]{color:var(--ui-accent)}
-.hermes-radio-pin{opacity:0;pointer-events:none}
-.hermes-radio-row:hover .hermes-radio-pin,.hermes-radio-row:focus-within .hermes-radio-pin{opacity:1;pointer-events:auto}
-@media(hover:none){.hermes-radio-pin{opacity:1;pointer-events:auto}}
-.hermes-radio-row-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;text-align:left;height:24px;padding:2px 6px;cursor:pointer;border-radius:4px}
-.hermes-radio-row-main:focus-visible{outline:1px solid var(--ui-accent);outline-offset:-1px}
-.hermes-radio-row-icon{display:flex;align-items:center;justify-content:center;width:14px;flex-shrink:0;color:var(--ui-text-tertiary);opacity:0}
-.hermes-radio-row:hover .hermes-radio-row-icon,.hermes-radio-row:focus-within .hermes-radio-row-icon,.hermes-radio-row[data-current=true] .hermes-radio-row-icon{opacity:1}
-.hermes-radio-row[data-current=true] .hermes-radio-row-icon{color:var(--ui-accent)}
-.hermes-radio-row-copy{min-width:0;flex:1}
-.hermes-radio-row-name{display:block;font-size:12px;line-height:17px;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hermes-radio-volume{display:flex;align-items:center;gap:4px;height:28px;padding:2px 2px 0}
-.hermes-radio-volume-space{flex:1;min-width:6px}
-.hermes-radio-volume input{width:76px;min-width:0;height:3px;accent-color:var(--ui-accent);cursor:pointer}
-.hermes-radio-error{font-size:11px;line-height:17px;color:var(--ui-text-secondary);padding:4px 4px 12px}
+.rabbit-radio-bar{display:flex;align-items:center;gap:2px;height:100%;color:var(--ui-text-tertiary)}
+.rabbit-radio-waveform{position:relative;height:24px;width:100%;font-family:var(--font-mono,monospace);font-size:12px;line-height:12px;color:var(--ui-text-tertiary);opacity:.45;overflow:hidden;flex-shrink:0}
+.rabbit-radio-waveform-layer{position:absolute;inset:0;display:grid;grid-template-columns:repeat(var(--radio-columns),minmax(0,1fr));grid-auto-rows:12px}
+.rabbit-radio-waveform-layer>span{text-align:center;min-width:0}
+.rabbit-radio-waveform-layer:nth-child(1){opacity:.12}
+.rabbit-radio-waveform-layer:nth-child(2){opacity:.28}
+.rabbit-radio-waveform[data-compact=true]{width:40px;height:12px;margin-inline:2px}
+.rabbit-radio-next{display:flex;align-items:center;width:12px;height:12px}
+.rabbit-radio-waveform[data-active=true]{color:var(--ui-accent);opacity:1}
+.rabbit-radio-signal{height:48px;padding:5px 6px 0;min-width:0}
+.rabbit-radio-track{display:flex;align-items:center;gap:5px;height:19px;min-width:0;font-size:11px;line-height:16px;color:var(--ui-text-secondary)}
+.rabbit-radio-track-text{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0}
+.rabbit-radio-track[data-track=true]{color:var(--ui-text-primary)}
+.rabbit-radio-artist{min-width:0;max-width:55%;flex-shrink:1;font-size:inherit;font-weight:inherit}
+.rabbit-radio-artist>span{overflow:hidden;text-overflow:ellipsis}
+.rabbit-radio-track-separator{flex-shrink:0;color:var(--ui-text-quaternary)}
+.rabbit-radio-bar .radio-name{max-width:112px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.rabbit-radio-bar .rabbit-radio-action{width:16px;height:16px;padding:0;flex-shrink:0}
+.rabbit-radio-action-icon{display:flex;align-items:center;justify-content:center;width:12px;height:12px;flex-shrink:0;overflow:hidden}
+.rabbit-radio-website{display:flex;width:24px;height:24px;flex-shrink:0}
+.rabbit-radio-panel{width:292px;max-width:calc(100vw - 24px)}
+.rabbit-radio-search{display:flex;align-items:center;height:32px;padding:0 4px 4px}
+.rabbit-radio-search-field{flex:1;min-width:0}
+.rabbit-radio-search-field input{flex:1;width:0;min-width:0}
+.rabbit-radio-search .rabbit-radio-search-field{border:0}
+.rabbit-radio-search-loader{display:flex;align-items:center;justify-content:center;width:16px;flex-shrink:0;font-size:12px;color:var(--ui-text-tertiary)}
+.rabbit-radio-list{height:168px;max-height:calc(100dvh - 180px);min-height:80px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.rabbit-radio-row{display:flex;align-items:center;gap:4px;border-radius:4px}
+.rabbit-radio-row[data-current=true]{background:var(--chrome-action-hover)}
+.rabbit-radio-row[data-current=true] .rabbit-radio-row-name{color:var(--ui-accent)}
+.rabbit-radio-row:hover{background:var(--chrome-action-hover)}
+.rabbit-radio-row [aria-pressed=true]{color:var(--ui-accent)}
+.rabbit-radio-pin{opacity:0;pointer-events:none}
+.rabbit-radio-row:hover .rabbit-radio-pin,.rabbit-radio-row:focus-within .rabbit-radio-pin{opacity:1;pointer-events:auto}
+@media(hover:none){.rabbit-radio-pin{opacity:1;pointer-events:auto}}
+.rabbit-radio-row-main{display:flex;align-items:center;gap:8px;flex:1;min-width:0;text-align:left;height:24px;padding:2px 6px;cursor:pointer;border-radius:4px}
+.rabbit-radio-row-main:focus-visible{outline:1px solid var(--ui-accent);outline-offset:-1px}
+.rabbit-radio-row-icon{display:flex;align-items:center;justify-content:center;width:14px;flex-shrink:0;color:var(--ui-text-tertiary);opacity:0}
+.rabbit-radio-row:hover .rabbit-radio-row-icon,.rabbit-radio-row:focus-within .rabbit-radio-row-icon,.rabbit-radio-row[data-current=true] .rabbit-radio-row-icon{opacity:1}
+.rabbit-radio-row[data-current=true] .rabbit-radio-row-icon{color:var(--ui-accent)}
+.rabbit-radio-row-copy{min-width:0;flex:1}
+.rabbit-radio-row-name{display:block;font-size:12px;line-height:17px;color:var(--ui-text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rabbit-radio-volume{display:flex;align-items:center;gap:4px;height:28px;padding:2px 2px 0}
+.rabbit-radio-volume-space{flex:1;min-width:6px}
+.rabbit-radio-volume input{width:76px;min-width:0;height:3px;accent-color:var(--ui-accent);cursor:pointer}
+.rabbit-radio-error{font-size:11px;line-height:17px;color:var(--ui-text-secondary);padding:4px 4px 12px}
 `
 
 function httpsUrl(value) {
@@ -176,7 +176,7 @@ function createPlayer(ctx) {
   let timeout = null
   let disposed = false
   let lastVolume = volume.get() || 25
-  const bus = new BroadcastChannel('hermes:radio:playback')
+  const bus = new BroadcastChannel('rabbit:radio:playback')
   const windowId = crypto.randomUUID()
 
   function stop(nextStatus = 'paused') {
@@ -209,7 +209,7 @@ function createPlayer(ctx) {
     bus.postMessage({ type: 'play', sender: windowId })
     const element = new Audio()
     audio = element
-    element.dataset.hermesRadioAudio = 'true'
+    element.dataset.rabbitRadioAudio = 'true'
     element.hidden = true
     element.preload = 'none'
     // Try real analysis for every station, not a host allowlist. If CORS or
@@ -424,12 +424,12 @@ function Waveform({ player, compact = false }) {
     motion.addEventListener('change', updateMotion)
     return () => { loop.dispose(); motion.removeEventListener('change', updateMotion) }
   }, [active, mode, player, rows, width, station.url])
-  return jsx('div', { ref, className: 'hermes-radio-waveform', style: { '--radio-columns': width }, 'data-radio-meter': width, 'data-compact': compact, 'data-meter-mode': mode, 'data-active': active, 'aria-hidden': true,
-    children: [0, 1, 2].map(layer => jsx('span', { className: 'hermes-radio-waveform-layer', children: baseline.map((cell, i) => jsx('span', { children: layer === 2 ? cell : '⠀' }, i)) }, layer)) })
+  return jsx('div', { ref, className: 'rabbit-radio-waveform', style: { '--radio-columns': width }, 'data-radio-meter': width, 'data-compact': compact, 'data-meter-mode': mode, 'data-active': active, 'aria-hidden': true,
+    children: [0, 1, 2].map(layer => jsx('span', { className: 'rabbit-radio-waveform-layer', children: baseline.map((cell, i) => jsx('span', { children: layer === 2 ? cell : '⠀' }, i)) }, layer)) })
 }
 
 function NextArrow() {
-  return jsxs('span', { className: 'hermes-radio-next', 'aria-hidden': true, children: [
+  return jsxs('span', { className: 'rabbit-radio-next', 'aria-hidden': true, children: [
     jsx(icons.Play, { style: { width: 7, height: 12, flexShrink: 0 }, fill: 'currentColor' }),
     jsx(icons.Play, { style: { width: 7, height: 12, flexShrink: 0, marginLeft: -2 }, fill: 'currentColor' })
   ] })
@@ -437,8 +437,8 @@ function NextArrow() {
 
 function SmallAction({ label, icon, onClick, size = 'micro', pressed, className, busy = false }) {
   return jsx(Tip, { label, children: jsx(Button, {
-    variant: 'ghost', size, className: `hermes-radio-action ${className ?? ''}`, 'aria-label': label, 'aria-pressed': pressed, onClick,
-    children: jsx('span', { className: 'hermes-radio-action-icon', children: busy ? jsx(GlyphSpinner, { ariaLabel: label }) : jsx(icon, {}) })
+    variant: 'ghost', size, className: `rabbit-radio-action ${className ?? ''}`, 'aria-label': label, 'aria-pressed': pressed, onClick,
+    children: jsx('span', { className: 'rabbit-radio-action-icon', children: busy ? jsx(GlyphSpinner, { ariaLabel: label }) : jsx(icon, {}) })
   }) })
 }
 
@@ -454,14 +454,14 @@ function trackCredit(source) {
 
 async function artistRequest(path, signal, ctx) {
   // The lock and persisted timestamp pace lookups across desktop windows.
-  return navigator.locks.request('hermes:radio:artist-lookup', { signal }, async () => {
+  return navigator.locks.request('rabbit:radio:artist-lookup', { signal }, async () => {
     const delay = Math.max(0, 1100 - (Date.now() - ctx.storage.get('local.artistRequestAt', 0)))
     if (delay) await new Promise(resolve => setTimeout(resolve, delay))
     signal.throwIfAborted()
     ctx.storage.set('local.artistRequestAt', Date.now())
     const response = await fetch(`https://musicbrainz.org/ws/2/${path}`, {
       signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]), credentials: 'omit',
-      headers: { 'User-Agent': 'HermesRadio/1.0 (https://github.com/NousResearch/hermes-agent)' }
+      headers: { 'User-Agent': 'RabbitRadio/1.0 (https://github.com/seven0070/Rabbit-)' }
     })
     if (!response.ok) throw new Error(`Artist lookup: HTTP ${response.status}`)
     return response.json()
@@ -551,20 +551,20 @@ function Signal({ player, ctx }) {
   })
   const artistUrl = credit.artist ? artist.data : null
   const text = status === 'live' ? track || (mode === 'activity' ? t('audioOnly') : '') : t(status)
-  return jsxs('div', { className: 'hermes-radio-signal', children: [
+  return jsxs('div', { className: 'rabbit-radio-signal', children: [
     jsx(Waveform, { player }),
-    jsxs('div', { className: 'hermes-radio-track', 'data-track': Boolean(track), role: 'status', children: [
+    jsxs('div', { className: 'rabbit-radio-track', 'data-track': Boolean(track), role: 'status', children: [
       status === 'connecting' && jsx(GlyphSpinner, { ariaLabel: t('connecting') }),
       credit.artist && (artistUrl ? jsx(Tip, { label: `${t('artistProfile')}: ${credit.artist}`, children: jsx(Button, {
-        variant: 'text', size: 'inline', asChild: true, className: 'hermes-radio-artist',
+        variant: 'text', size: 'inline', asChild: true, className: 'rabbit-radio-artist',
         children: jsxs('a', { href: artistUrl, target: '_blank', rel: 'noopener noreferrer',
           'aria-label': `${t('artistProfile')}: ${credit.artist}`,
           onClick: event => { event.preventDefault(); void ctx.os.openExternal(artistUrl) },
           children: [jsx('span', { children: credit.artist }), jsx(icons.ExternalLink, { style: { width: 10, height: 10 }, 'aria-hidden': true })]
         })
-      }) }) : jsx('span', { className: 'hermes-radio-track-text', children: credit.artist })),
-      credit.artist && jsx('span', { className: 'hermes-radio-track-separator', 'aria-hidden': true, children: '—' }),
-      jsx(Tip, { label: text || undefined, children: jsx('span', { className: 'hermes-radio-track-text', children: credit.artist ? credit.title : text }) })
+      }) }) : jsx('span', { className: 'rabbit-radio-track-text', children: credit.artist })),
+      credit.artist && jsx('span', { className: 'rabbit-radio-track-separator', 'aria-hidden': true, children: '—' }),
+      jsx(Tip, { label: text || undefined, children: jsx('span', { className: 'rabbit-radio-track-text', children: credit.artist ? credit.title : text }) })
     ] })
   ] })
 }
@@ -576,13 +576,13 @@ function StationRow({ station, player }) {
   const active = status === 'live' || status === 'connecting'
   const failed = current && status === 'error'
   const saved = useValue(player.favorites).some(item => sameStation(item, station))
-  return jsxs('div', { className: 'hermes-radio-row', 'data-current': current, 'data-pinned': saved, children: [
-    jsxs(RowButton, { className: 'hermes-radio-row-main', 'aria-label': `${t(failed ? 'retry' : current && active ? 'pause' : 'play')}: ${station.name}`, title: failed ? t('streamError') : undefined, 'aria-current': current ? 'true' : undefined,
+  return jsxs('div', { className: 'rabbit-radio-row', 'data-current': current, 'data-pinned': saved, children: [
+    jsxs(RowButton, { className: 'rabbit-radio-row-main', 'aria-label': `${t(failed ? 'retry' : current && active ? 'pause' : 'play')}: ${station.name}`, title: failed ? t('streamError') : undefined, 'aria-current': current ? 'true' : undefined,
       onClick: () => current ? player.toggle() : void player.play(station), children: [
-        jsx('span', { className: 'hermes-radio-row-icon', role: failed ? 'status' : undefined, 'aria-label': failed ? t('error') : undefined, children: jsx(failed ? icons.AlertCircle : current && active ? icons.Pause : icons.Play, { size: 12 }) }),
-        jsx('span', { className: 'hermes-radio-row-copy', children: jsx('span', { className: 'hermes-radio-row-name', children: station.name }) })
+        jsx('span', { className: 'rabbit-radio-row-icon', role: failed ? 'status' : undefined, 'aria-label': failed ? t('error') : undefined, children: jsx(failed ? icons.AlertCircle : current && active ? icons.Pause : icons.Play, { size: 12 }) }),
+        jsx('span', { className: 'rabbit-radio-row-copy', children: jsx('span', { className: 'rabbit-radio-row-name', children: station.name }) })
       ] }),
-    jsx(SmallAction, { label: `${t(saved ? 'unsave' : 'save')}: ${station.name}`, icon: icons.Pin, onClick: () => player.favorite(station), size: 'icon-xs', pressed: saved, className: 'hermes-radio-pin' })
+    jsx(SmallAction, { label: `${t(saved ? 'unsave' : 'save')}: ${station.name}`, icon: icons.Pin, onClick: () => player.favorite(station), size: 'icon-xs', pressed: saved, className: 'rabbit-radio-pin' })
   ] })
 }
 
@@ -617,15 +617,15 @@ function Stations({ player }) {
   const pending = text.length >= 2 && (text !== query || result.isFetching)
   const searchFailed = text.length >= 2 && query === text && result.isError
   return jsxs('div', { children: [
-    jsx('div', { className: 'hermes-radio-search', 'data-filled': Boolean(search), children: jsx(SearchField, {
+    jsx('div', { className: 'rabbit-radio-search', 'data-filled': Boolean(search), children: jsx(SearchField, {
       value: search, onChange: value => { setBrowseStation(player.station.get()); setSearch(value) }, placeholder: t('search'),
-      containerClassName: 'hermes-radio-search-field',
-      trailingAction: pending ? jsx('span', { className: 'hermes-radio-search-loader', children: jsx(GlyphSpinner, { ariaLabel: t('searching') }) }) : null
+      containerClassName: 'rabbit-radio-search-field',
+      trailingAction: pending ? jsx('span', { className: 'rabbit-radio-search-loader', children: jsx(GlyphSpinner, { ariaLabel: t('searching') }) }) : null
     }) }),
-    jsxs('div', { ref: listRef, className: 'hermes-radio-list', 'data-radio-pending': pending, children: [
+    jsxs('div', { ref: listRef, className: 'rabbit-radio-list', 'data-radio-pending': pending, children: [
       ...items.map(station => jsx(StationRow, { station, player }, station.id)),
-      searchFailed && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('searchError') }),
-      !pending && !searchFailed && text && results.length === 0 && jsx('div', { className: 'hermes-radio-error', role: 'status', children: t('noResults') })
+      searchFailed && jsx('div', { className: 'rabbit-radio-error', role: 'status', children: t('searchError') }),
+      !pending && !searchFailed && text && results.length === 0 && jsx('div', { className: 'rabbit-radio-error', role: 'status', children: t('noResults') })
     ] })
   ] })
 }
@@ -636,13 +636,13 @@ function Transport({ player, ctx }) {
   const station = useValue(player.station)
   const status = useValue(player.status)
   const active = status === 'live' || status === 'connecting'
-  return jsxs('div', { className: 'hermes-radio-volume', children: [
+  return jsxs('div', { className: 'rabbit-radio-volume', children: [
     jsx(SmallAction, { label: t(active ? 'pause' : 'play'), icon: active ? icons.Pause : icons.Play, busy: status === 'connecting', size: 'icon-xs', onClick: player.toggle }),
     jsx(SmallAction, { label: t('next'), icon: NextArrow, size: 'icon-xs', onClick: player.next }),
-    jsx('span', { className: 'hermes-radio-volume-space' }),
+    jsx('span', { className: 'rabbit-radio-volume-space' }),
     jsx(SmallAction, { label: t(volume ? 'mute' : 'unmute'), icon: volume ? icons.Volume2 : icons.VolumeX, onClick: player.mute, size: 'icon-xs' }),
     jsx('input', { type: 'range', min: 0, max: 100, step: 1, value: volume, 'aria-label': t('volume'), onChange: event => player.setVolume(Number(event.target.value)) }),
-    jsx('span', { className: 'hermes-radio-website', children: httpsUrl(station.homepage) && jsx(SmallAction, { label: t('visit'), icon: icons.ExternalLink, size: 'icon-xs', onClick: () => void ctx.os.openExternal(station.homepage) }) })
+    jsx('span', { className: 'rabbit-radio-website', children: httpsUrl(station.homepage) && jsx(SmallAction, { label: t('visit'), icon: icons.ExternalLink, size: 'icon-xs', onClick: () => void ctx.os.openExternal(station.homepage) }) })
   ] })
 }
 
@@ -660,7 +660,7 @@ function RadioBar({ player, ctx }) {
     if (value) setBrowseWidth(triggerRef.current.getBoundingClientRect().width)
     player.open.set(value)
   }
-  return jsxs('div', { className: 'hermes-radio-bar', 'data-tour': 'radio-player', 'data-radio-status': status, children: [
+  return jsxs('div', { className: 'rabbit-radio-bar', 'data-tour': 'radio-player', 'data-radio-status': status, children: [
     jsx(Waveform, { player, compact: true }),
     jsxs(Popover, { open, onOpenChange, children: [
       jsx(PopoverTrigger, { asChild: true, children: jsx(Button, {
@@ -668,7 +668,7 @@ function RadioBar({ player, ctx }) {
         'aria-label': `${t('browse')}: ${station.name}`,
         children: jsx('span', { className: 'radio-name', children: station.name })
       }) }),
-      jsx(PopoverContent, { side: 'top', align: 'end', className: 'hermes-radio-panel', 'aria-label': t('radio'), 'data-tour': 'radio-panel', children:
+      jsx(PopoverContent, { side: 'top', align: 'end', className: 'rabbit-radio-panel', 'aria-label': t('radio'), 'data-tour': 'radio-panel', children:
         jsxs('div', { children: [
           jsx(Stations, { player }), jsx(Signal, { player, ctx }), jsx(Transport, { player, ctx })
         ] })

@@ -22,7 +22,7 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     from agent.context_compressor import ContextCompressor
     from agent import secret_scope
     from agent.turn_context import build_api_messages
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
     from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides

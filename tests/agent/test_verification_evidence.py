@@ -16,7 +16,7 @@ from agent.verification_evidence import (
 @pytest.fixture(autouse=True)
 def _ledger_on(monkeypatch):
     """The ledger is inert unless verify-on-stop is enabled; these tests exercise the ledger."""
-    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    monkeypatch.setenv("RABBIT_VERIFY_ON_STOP", "1")
 
 
 
@@ -41,7 +41,7 @@ def _python_project(root: Path) -> None:
 
 
 def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _node_project(tmp_path)
 
     lint = classify_verification_command(
@@ -68,7 +68,7 @@ def test_lint_and_typecheck_are_not_reported_as_full_tests(tmp_path, monkeypatch
 
 
 def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _node_project(tmp_path)
 
     wrapped = classify_verification_command(
@@ -102,7 +102,7 @@ def test_shell_wrappers_match_but_echo_does_not(tmp_path, monkeypatch):
 def test_masking_shell_control_is_not_verification_evidence(
     tmp_path, monkeypatch, command
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
 
     evidence = classify_verification_command(
@@ -119,7 +119,7 @@ def test_masking_shell_control_is_not_verification_evidence(
 def test_successful_and_chain_preserves_passing_evidence(
     tmp_path, monkeypatch, command
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
 
     evidence = classify_verification_command(
@@ -137,7 +137,7 @@ def test_successful_and_chain_preserves_passing_evidence(
 def test_final_verifier_after_sequence_owns_shell_exit_status(
     tmp_path, monkeypatch, exit_code, expected
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
 
     evidence = classify_verification_command(
@@ -152,7 +152,7 @@ def test_final_verifier_after_sequence_owns_shell_exit_status(
 
 
 def test_quoted_shell_operator_remains_a_verifier_argument(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
 
     evidence = classify_verification_command(
@@ -168,7 +168,7 @@ def test_quoted_shell_operator_remains_a_verifier_argument(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("redirect", ["2>&1", "&> test.log"])
 def test_shell_redirection_does_not_hide_simple_verifier(tmp_path, monkeypatch, redirect):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
 
     evidence = classify_verification_command(
@@ -183,9 +183,9 @@ def test_shell_redirection_does_not_hide_simple_verifier(tmp_path, monkeypatch, 
 
 
 def test_masked_ad_hoc_script_is_not_verification_evidence(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script = Path(tempfile.gettempdir()) / f"rabbit-ad-hoc-{tmp_path.name}.py"
     script.write_text("raise SystemExit(1)\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -201,7 +201,7 @@ def test_masked_ad_hoc_script_is_not_verification_evidence(tmp_path, monkeypatch
 
 
 def test_masked_verifier_does_not_clear_edited_ledger_state(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _python_project(tmp_path)
     record_terminal_result(
         command="pytest",
@@ -231,9 +231,9 @@ def test_masked_verifier_does_not_clear_edited_ledger_state(tmp_path, monkeypatc
 
 
 def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-{tmp_path.name}.py"
+    script = Path(tempfile.gettempdir()) / f"rabbit-ad-hoc-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -269,9 +269,9 @@ def test_versioned_or_absolute_interpreter_records_ad_hoc_evidence(tmp_path, mon
     the verify-on-stop nudge itself hands the agent, so a passing run recorded no evidence and
     every later turn re-nudged the same workspace as unverified.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script = Path(tempfile.gettempdir()) / f"rabbit-verify-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
         evidence = classify_verification_command(
@@ -293,9 +293,9 @@ def test_non_interpreter_command_touching_the_temp_script_is_not_evidence(tmp_pa
     """The nudge also tells the agent to clean the temp script up. A command that merely names
     the script — `rm`, `chmod`, `cat` — runs no verification and must not satisfy the gate.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    script = Path(tempfile.gettempdir()) / f"hermes-verify-{tmp_path.name}.py"
+    script = Path(tempfile.gettempdir()) / f"rabbit-verify-{tmp_path.name}.py"
 
     for command in (f"rm -f {script}", f"/usr/bin/chmod +x {script}", f"/usr/bin/cat {script}"):
         evidence = classify_verification_command(command, cwd=tmp_path, session_id="s1", exit_code=0)
@@ -313,7 +313,7 @@ def test_non_interpreter_command_touching_the_temp_script_is_not_evidence(tmp_pa
 
 
 def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _node_project(tmp_path)
     target = tmp_path / "src" / "app.ts"
     target.parent.mkdir()
@@ -347,8 +347,8 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
 
 
 def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     _node_project(tmp_path)
 
     mark_workspace_edited(
@@ -385,9 +385,9 @@ def test_windows_exe_interpreter_records_ad_hoc_evidence(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(
         "agent.verification_evidence._is_temp_script_path",
-        lambda token, root: "hermes-verify-" in token and token.endswith(".py"),
+        lambda token, root: "rabbit-verify-" in token and token.endswith(".py"),
     )
-    win_script = r"C:\Users\me\AppData\Local\Temp\hermes-verify-x.py"
+    win_script = r"C:\Users\me\AppData\Local\Temp\rabbit-verify-x.py"
     assert _find_ad_hoc_match(f"{interpreter} {win_script}", tmp_path) == []
 
 
@@ -403,21 +403,21 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     """
     from agent.verification_evidence import _find_ad_hoc_match
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
 
     # On Windows, shlex.split(posix=True) eats backslashes as escape chars;
     # posix=False preserves them. Mock _is_temp_script_path so the test
     # focuses on the splitting fallback without needing a real Windows FS.
     def mock_is_temp_script(token, root):
-        return "hermes-ad-hoc" in token and ".py" in token
+        return "rabbit-ad-hoc" in token and ".py" in token
 
     monkeypatch.setattr(
         "agent.verification_evidence._is_temp_script_path",
         mock_is_temp_script,
     )
 
-    win_script = r"C:\Users\test\AppData\Local\Temp\hermes-ad-hoc-check.py"
+    win_script = r"C:\Users\test\AppData\Local\Temp\rabbit-ad-hoc-check.py"
     result = _find_ad_hoc_match(f"python {win_script}", tmp_path)
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"

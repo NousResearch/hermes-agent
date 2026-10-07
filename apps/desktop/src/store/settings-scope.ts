@@ -45,12 +45,12 @@ export const $settingsScopeEditsNonDefault = computed([$settingsScopeProfile, $p
 // `undefined` makes `profileScoped()` omit `?profile=` altogether, and the
 // backend resolves an omitted profile to the home it was LAUNCHED with — not
 // the profile this store says we are editing. Those differ the moment a pooled
-// desktop backend serves a profile other than its launch home (`hermes
+// desktop backend serves a profile other than its launch home (`rabbit
 // --profile A serve`, editing B): every settings page then READ A's values and
 // WROTE them back to A, while the "Changes on this page apply to 'B'" note —
 // which reads the concrete $settingsScopeProfile — kept naming B (#118432).
 // Send the concrete key the pages render. Only a name with no profile
-// directory behind it (`custom`, a HERMES_HOME outside profiles/) stays
+// directory behind it (`custom`, a RABBIT_HOME outside profiles/) stays
 // `undefined`, where the ambient path is the only correct answer.
 export const $settingsRequestProfile = computed($settingsScopeProfile, (selected): string | undefined =>
   selected === 'custom' ? undefined : selected

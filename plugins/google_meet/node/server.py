@@ -1,9 +1,9 @@
-"""Remote node server — hosts the Meet bot on another machine (``hermes meet node run``).
+"""Remote node server — hosts the Meet bot on another machine (``rabbit meet node run``).
 
 WebSocket endpoint accepting token-signed RPC requests dispatched to ``process_manager``.
-Token: 32 hex chars minted on first boot, persisted at ``$HERMES_HOME/workspace/meetings/
+Token: 32 hex chars minted on first boot, persisted at ``$RABBIT_HOME/workspace/meetings/
 node_token.json`` so approved gateways survive restarts; the operator copies it to the gateway
-via ``hermes meet node approve <name> <url> <token>``. ``websockets`` is imported lazily.
+via ``rabbit meet node approve <name> <url> <token>``. ``websockets`` is imported lazily.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from plugins.google_meet._jsonfile import read_json
 from utils import atomic_json_write
 from plugins.google_meet.node import protocol as _proto
@@ -64,12 +64,12 @@ class NodeServer:
     """WebSocket server that executes meet bot RPCs locally."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 18789, token_path: Optional[Path] = None,
-                 display_name: str = "hermes-meet-node") -> None:
+                 display_name: str = "rabbit-meet-node") -> None:
         self.host = host
         self.port = port
         self.display_name = display_name
         self.token_path = Path(token_path) if token_path is not None else (
-            Path(get_hermes_home()) / "workspace" / "meetings" / "node_token.json")
+            Path(get_rabbit_home()) / "workspace" / "meetings" / "node_token.json")
         self._token: Optional[str] = None
 
     def ensure_token(self) -> str:

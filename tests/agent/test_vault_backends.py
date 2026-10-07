@@ -60,7 +60,7 @@ def fake_bw(tmp_path, monkeypatch):
     exe.write_text(_FAKE_BW, encoding="utf-8")
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "bw.log"  # the backend runs bw with an allowlisted env, so the fake logs beside itself
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     unlock_mod.lock()
     yield exe, log
     unlock_mod.lock()
@@ -78,7 +78,7 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
     from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
 
     patcher, backend = _enabled(exe)
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")  # headless: nobody can answer a prompt
+    monkeypatch.setenv("RABBIT_CRON_SESSION", "1")  # headless: nobody can answer a prompt
     unlock_mod.set_unlock_prompt_callback(lambda *_: "correct horse")  # even a wired prompt must not fire
     try:
         with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]):
@@ -134,11 +134,11 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     assert len(unlock_calls) == 1 and unlock_calls[0]["pw"] == "correct horse" and unlock_calls[0]["stdin"] == ""
     assert all("correct horse" not in " ".join(c["argv"]) for c in calls), "master password must never be argv"
     assert all(c["BW_SESSION"] == "SESSION-TOKEN-123" for c in calls if c["argv"][0] != "unlock")
-    assert "HERMES_BW_MASTER" not in os.environ, "master password env var is child-only"
+    assert "RABBIT_BW_MASTER" not in os.environ, "master password env var is child-only"
 
-    # Tokens are profile-scoped: another HERMES_HOME sees the manager locked and cannot lock ours.
+    # Tokens are profile-scoped: another RABBIT_HOME sees the manager locked and cannot lock ours.
     other = str(exe.parent / "other-profile")
-    with patch.dict(os.environ, {"HERMES_HOME": other}):
+    with patch.dict(os.environ, {"RABBIT_HOME": other}):
         assert not backend.is_unlocked()
         unlock_mod.lock("bitwarden")
     assert backend.is_unlocked()

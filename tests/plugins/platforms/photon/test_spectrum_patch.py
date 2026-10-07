@@ -1,4 +1,4 @@
-"""Regression tests for Hermes' Spectrum mixed text+attachment workaround."""
+"""Regression tests for Rabbit' Spectrum mixed text+attachment workaround."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def test_sidecar_patch_failure_still_reaches_health_endpoint(tmp_path: Path) -> 
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/healthz",
         data=b"{}",
-        headers={"X-Hermes-Sidecar-Token": "test-token"},
+        headers={"X-Rabbit-Sidecar-Token": "test-token"},
         method="POST",
     )
     try:

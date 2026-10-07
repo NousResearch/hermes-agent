@@ -17,7 +17,7 @@ description: "人性化文本：去除 AI 腔调，注入真实声音"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/creative/humanizer` |
 | 版本 | `2.5.1` |
-| 作者 | Siqi Chen (@blader, https://github.com/blader/humanizer)，由 Hermes Agent 移植 |
+| 作者 | Siqi Chen (@blader, https://github.com/blader/humanizer)，由 Rabbit Agent 移植 |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `writing`, `editing`, `humanize`, `anti-ai-slop`, `voice`, `prose`, `text` |
@@ -26,7 +26,7 @@ description: "人性化文本：去除 AI 腔调，注入真实声音"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Humanizer：去除 AI 写作模式
@@ -44,9 +44,9 @@ description: "人性化文本：去除 AI 腔调，注入真实声音"
 - 在用户正在创作的写作中匹配其声音风格
 - 在发布前检查文本是否有 AI 特征
 
-同样，在撰写面向用户的散文时，也将此 skill 应用于**你自己的**输出——发布说明、PR 描述、文档、长篇解释、摘要。Hermes 的基础声音已经去除了大部分这些特征，但专项检查可以捕捉漏网之鱼。
+同样，在撰写面向用户的散文时，也将此 skill 应用于**你自己的**输出——发布说明、PR 描述、文档、长篇解释、摘要。Rabbit 的基础声音已经去除了大部分这些特征，但专项检查可以捕捉漏网之鱼。
 
-## 如何在 Hermes 中使用
+## 如何在 Rabbit 中使用
 
 文本通常以以下三种方式之一到达：
 1. **内联** — 用户直接将文本粘贴到消息中。就地处理，回复重写版本。
@@ -589,6 +589,6 @@ description: "人性化文本：去除 AI 腔调，注入真实声音"
 
 此 skill 移植自 [blader/humanizer](https://github.com/blader/humanizer)（MIT 许可），该项目本身基于 [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing)，由 WikiProject AI Cleanup 维护。其中记录的模式来自对 Wikipedia 上数千个 AI 生成文本实例的观察。
 
-原作者：Siqi Chen ([@blader](https://github.com/blader))。原始仓库：https://github.com/blader/humanizer（版本 2.5.1）。移植到 Hermes Agent 时加入了 Hermes 原生工具引用（`read_file`、`patch`、`write_file`）以及何时加载此 skill 的指导；29 种模式、个性/灵魂章节和完整示例均原文保留自来源。原始 MIT 许可证保留在此 `SKILL.md` 旁边的 `LICENSE` 文件中。
+原作者：Siqi Chen ([@blader](https://github.com/blader))。原始仓库：https://github.com/blader/humanizer（版本 2.5.1）。移植到 Rabbit Agent 时加入了 Rabbit 原生工具引用（`read_file`、`patch`、`write_file`）以及何时加载此 skill 的指导；29 种模式、个性/灵魂章节和完整示例均原文保留自来源。原始 MIT 许可证保留在此 `SKILL.md` 旁边的 `LICENSE` 文件中。
 
 来自 Wikipedia 的核心洞察："LLMs use statistical algorithms to guess what should come next. The result tends toward the most statistically likely result that applies to the widest variety of cases."

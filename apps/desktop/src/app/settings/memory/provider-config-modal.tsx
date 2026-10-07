@@ -11,11 +11,11 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { saveMemoryProviderConfig } from '@/hermes'
+import { saveMemoryProviderConfig } from '@/rabbit'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import type { MemoryProviderConfig, MemoryProviderField } from '@/types/rabbit'
 
 import { ListRow } from '../primitives'
 
@@ -106,7 +106,7 @@ export function ProviderConfigModal({
               href={config.docs_url}
               onClick={event => {
                 event.preventDefault()
-                void window.hermesDesktop?.openExternal?.(config.docs_url)
+                void window.rabbitDesktop?.openExternal?.(config.docs_url)
               }}
               rel="noreferrer"
               target="_blank"

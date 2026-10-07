@@ -26,7 +26,7 @@ from acp.schema import (
 # ---------------------------------------------------------------------------
 
 
-COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
+COMMON_RABBIT_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
 
 
 class TestToolKindMap:
@@ -84,8 +84,8 @@ class TestBuildToolTitle:
             ("terminal", {"command": "git status --short"}),
             ("read_file", {"path": "/etc/hosts", "offset": 10}),
             ("search_files", {"pattern": "TODO", "path": "src"}),
-            ("web_search", {"query": "hermes agent acp"}),
-            ("execute_code", {"code": "\nfrom hermes_tools import terminal\nprint('done')"}),
+            ("web_search", {"query": "rabbit agent acp"}),
+            ("execute_code", {"code": "\nfrom rabbit_tools import terminal\nprint('done')"}),
             ("skill_view", {"name": "github", "file_path": "references/x.md"}),
         ],
     )

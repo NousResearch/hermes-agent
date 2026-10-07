@@ -92,8 +92,8 @@ _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
 # website/docs/ and website/scripts/ are asserted about the same way. The docs
-# tree generates llms.txt — the index every LLM (Hermes included, via the
-# hermes-agent skill) reads to learn what Hermes can do — and
+# tree generates llms.txt — the index every LLM (Rabbit included, via the
+# rabbit-agent skill) reads to learn what Rabbit can do — and
 # tests/website/test_generate_llms_txt.py holds every page to appearing in it.
 # Skipping Python on a docs-only PR is how the index drifted to 53% coverage.
 _PY_RELEVANT_SITE = (
@@ -109,7 +109,7 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
-    # tests/hermes_cli/test_desktop_slash_registry.py
+    # tests/rabbit_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
@@ -126,7 +126,7 @@ _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
 # (the .rs/Cargo files are the ``rust`` lane's job). Changes here get the
 # bootstrap-installer.yml lane — a real sandboxed install + stamp check.
 _BOOTSTRAP_PATHS = ("apps/bootstrap-installer/",)
-_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-hermes.sh"}
+_BOOTSTRAP_FILES = {"scripts/install.sh", "setup-rabbit.sh"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
 # tests/_fixtures/ holds the conftest's platform gating, so it re-arms the lane too.
@@ -139,7 +139,7 @@ _DESKTOP_UPDATER_FILES = {
     "pyproject.toml",
 }
 
-# Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
+# Rust crates — currently just the Tauri bootstrap installer (Rabbit-Setup).
 # These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
 # ``frontend`` and nothing more: the TypeScript matrix built, cargo never ran,
 # and the crate's unit tests had never executed in CI at all.
@@ -180,7 +180,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/e2e/",
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
-        "hermes_state",
+        "rabbit_state",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,
@@ -190,17 +190,17 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "tests/compat/",
         "pm/",
         "scripts/install.",
-        "setup-hermes.sh",
-        "hermes_cli/update_",
-        "hermes_cli/_update_",
-        "hermes_cli/old_updater",
-        "hermes_cli/_old_updater",
-        "hermes_cli/post_update",
-        "hermes_cli/config_migrations",
-        "hermes_cli/subcommands/update",
-        "hermes_cli/install_",
-        "hermes_cli/_install_",
-        "hermes_cli/main_install",
+        "setup-rabbit.sh",
+        "rabbit_cli/update_",
+        "rabbit_cli/_update_",
+        "rabbit_cli/old_updater",
+        "rabbit_cli/_old_updater",
+        "rabbit_cli/post_update",
+        "rabbit_cli/config_migrations",
+        "rabbit_cli/subcommands/update",
+        "rabbit_cli/install_",
+        "rabbit_cli/_install_",
+        "rabbit_cli/main_install",
     ),
     "e2e_desktop_core": (
         *_DESKTOP_E2E_SHARED,
@@ -224,8 +224,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/install-stamp",
         "scripts/desktop-update/",
         "scripts/install.sh",
-        "hermes_cli/desktop_update",
-        "hermes_cli/update_",
+        "rabbit_cli/desktop_update",
+        "rabbit_cli/update_",
     ),
 }
 # The upgrade journeys are their own lane; editing one does not start ``e2e``.
@@ -265,7 +265,7 @@ def _py_irrelevant(p: str) -> bool:
 def _py_test_only(p: str) -> bool:
     """Is ``p`` inside the test suite (never shipped / imported by the product)?
 
-    Product jobs (Desktop E2E's ``hermes serve`` backend, the Docker image)
+    Product jobs (Desktop E2E's ``rabbit serve`` backend, the Docker image)
     run installed code — nothing under ``tests/`` is packaged or importable
     there. scripts/run_tests.sh and scripts/run_tests_parallel.py are deliberately
     NOT test-only: they are runner infrastructure, and a bad edit there can

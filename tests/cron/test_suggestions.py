@@ -2,7 +2,7 @@
 
 Covers the store (add/dedup/cap/accept/dismiss/latch), catalog seeding, the
 blueprint->suggestion bridge, and the shared command handler. Uses an isolated
-HERMES_HOME so the real suggestions.json is never touched.
+RABBIT_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
@@ -12,12 +12,12 @@ import pytest
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """A cron.suggestions module bound to an isolated HERMES_HOME."""
-    home = tmp_path / ".hermes"
+    """A cron.suggestions module bound to an isolated RABBIT_HOME."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    import hermes_constants
-    importlib.reload(hermes_constants)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
     import cron.suggestions as s
     importlib.reload(s)
     return s
@@ -33,9 +33,9 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
 
 class TestStore:
     def test_explicit_file_override_wins_over_profile_home(self, tmp_path, monkeypatch):
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         import cron.suggestions as suggestions_mod
 
@@ -43,36 +43,36 @@ class TestStore:
         profile_home = tmp_path / "profile"
         monkeypatch.setattr(suggestions_mod, "SUGGESTIONS_FILE", explicit_file)
 
-        token = set_hermes_home_override(profile_home)
+        token = set_rabbit_home_override(profile_home)
         try:
             _add(suggestions_mod, key="explicit-file")
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
         assert explicit_file.exists()
         assert not (profile_home / "cron" / "suggestions.json").exists()
 
     def test_profile_override_routes_writes_to_current_home(self, tmp_path):
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         import cron.suggestions as suggestions_mod
 
         profile_a = tmp_path / "profile-a"
         profile_b = tmp_path / "profile-b"
 
-        import_token = set_hermes_home_override(profile_a)
+        import_token = set_rabbit_home_override(profile_a)
         try:
             importlib.reload(suggestions_mod)
         finally:
-            reset_hermes_home_override(import_token)
+            reset_rabbit_home_override(import_token)
 
-        runtime_token = set_hermes_home_override(profile_b)
+        runtime_token = set_rabbit_home_override(profile_b)
         try:
             _add(suggestions_mod, key="profile-b")
         finally:
-            reset_hermes_home_override(runtime_token)
+            reset_rabbit_home_override(runtime_token)
 
         assert (profile_b / "cron" / "suggestions.json").exists()
         assert not (profile_a / "cron" / "suggestions.json").exists()
@@ -212,7 +212,7 @@ class TestCommandHandler:
     def test_bare_lists_pending(self, store):
         _add(store, key="c1", title="Daily thing")
         with patch("cron.suggestions.list_pending", store.list_pending):
-            from hermes_cli.suggestions_cmd import handle_suggestions_command
+            from rabbit_cli.suggestions_cmd import handle_suggestions_command
             # Patch the module the handler imports.
             with patch.dict("sys.modules"):
                 out = handle_suggestions_command("")

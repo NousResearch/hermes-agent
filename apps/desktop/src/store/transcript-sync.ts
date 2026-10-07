@@ -2,7 +2,7 @@
 // transport for a session, so a turn that completes in window A never streams
 // into window B. This bus pings peers with the stored session id so a window
 // viewing that chat can re-pull history before the user sends into an
-// out-of-date context. Distinct from hermes:sessions (sidebar list).
+// out-of-date context. Distinct from rabbit:sessions (sidebar list).
 
 export type TranscriptChangedPayload = {
   /** Stored session id shared across Desktop windows. */
@@ -11,7 +11,7 @@ export type TranscriptChangedPayload = {
   messageCount?: number
 }
 
-const CHANNEL = 'hermes:transcript'
+const CHANNEL = 'rabbit:transcript'
 
 const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def _profile_layout(tmp_path: Path) -> tuple[Path, Path]:
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     default_home = root
     launch_home = root / "profiles" / "worker"
     launch_home.mkdir(parents=True)
@@ -20,28 +20,28 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
 
     default_home, launch_home = _profile_layout(tmp_path)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(launch_home))
-    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setenv("RABBIT_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_rabbit_home", launch_home)
 
-    for alias in (default_home.name, "hermes"):
+    for alias in (default_home.name, "rabbit"):
         assert server._response_profile_name(alias) == "default"
     assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
-    # "hermes" is a legal profile id: a REAL named profile of that name is never swallowed by the alias.
-    (default_home / "profiles" / "hermes").mkdir(parents=True)
-    assert server._response_profile_name("hermes") == "hermes"
+    # "rabbit" is a legal profile id: a REAL named profile of that name is never swallowed by the alias.
+    (default_home / "profiles" / "rabbit").mkdir(parents=True)
+    assert server._response_profile_name("rabbit") == "rabbit"
 
 
 def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
     """Default and named homes resolve canonically, including lazy row creation."""
-    from hermes_constants import profile_name_for_home
+    from rabbit_constants import profile_name_for_home
     from tui_gateway import server
 
     default_home, launch_home = _profile_layout(tmp_path)
     named_home = default_home / "profiles" / "writer"
     named_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(launch_home))
-    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setenv("RABBIT_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_rabbit_home", launch_home)
 
     assert profile_name_for_home(default_home) == "default"
     assert profile_name_for_home(named_home) == "writer"
@@ -91,8 +91,8 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
 
 def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatch):
     """Custom default roots stamp real SessionDB rows as default without leaking to siblings."""
-    from hermes_constants import profile_name_for_home
-    from hermes_state import SessionDB
+    from rabbit_constants import profile_name_for_home
+    from rabbit_state import SessionDB
     from tui_gateway import server
 
     custom_root = tmp_path / "custom-root"
@@ -102,8 +102,8 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
     launch_home.mkdir(parents=True)
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(launch_home))
-    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setenv("RABBIT_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_rabbit_home", launch_home)
 
     # 1. Custom default root path resolution
     assert profile_name_for_home(default_home) == "default"

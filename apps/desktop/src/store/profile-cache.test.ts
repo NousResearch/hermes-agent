@@ -2,9 +2,9 @@ import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
-import type { DesktopAgentRoster, HermesConnection } from '@/global'
+import type { DesktopAgentRoster, RabbitConnection } from '@/global'
 import { $fleetRoster, _resetFleetRosterForTests } from '@/store/fleet-roster'
-import type { ProfileInfo } from '@/types/hermes'
+import type { ProfileInfo } from '@/types/rabbit'
 
 vi.mock('@/store/gateway', () => ({ $gateway: atom(null) }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
@@ -25,13 +25,13 @@ const profile = (name: string): ProfileInfo => ({
   skill_count: 0
 })
 
-const descriptor = (connectionId: string): HermesConnection =>
+const descriptor = (connectionId: string): RabbitConnection =>
   ({
     connectionId,
     baseUrl: `https://${connectionId}.example.com`,
     mode: 'remote',
     profile: 'default'
-  }) as HermesConnection
+  }) as RabbitConnection
 
 function activate(connectionId: string) {
   setApiRequestConnection(connectionId)
@@ -53,7 +53,7 @@ afterEach(() => {
 it('keeps failed incoming profile reads isolated while retaining the outgoing connection cache', async () => {
   const outgoing = [profile('default'), profile('writer')]
   const api = vi.fn(async () => ({ profiles: outgoing }))
-  vi.stubGlobal('window', { hermesDesktop: { api } })
+  vi.stubGlobal('window', { rabbitDesktop: { api } })
   activate('source-a')
   await refreshProfiles()
 
@@ -76,7 +76,7 @@ it('lets a fresh active-source list land even when the fleet roster arrives firs
   const list = [profile('default'), profile('writer')]
   let resolve!: (value: { profiles: ProfileInfo[] }) => void
   const api = vi.fn(() => new Promise<{ profiles: ProfileInfo[] }>(done => (resolve = done)))
-  vi.stubGlobal('window', { hermesDesktop: { api } })
+  vi.stubGlobal('window', { rabbitDesktop: { api } })
   activate('source-a')
 
   const flight = refreshProfiles()
@@ -99,7 +99,7 @@ it('lets a fresh active-source list land even when the fleet roster arrives firs
 it('treats a null descriptor as a reconnect blip, not a source change', async () => {
   const list = [profile('default'), profile('writer')]
   const api = vi.fn(async () => ({ profiles: list }))
-  vi.stubGlobal('window', { hermesDesktop: { api } })
+  vi.stubGlobal('window', { rabbitDesktop: { api } })
   activate('source-a')
   await refreshProfiles()
 
@@ -122,7 +122,7 @@ it('strands a retry during a same-profile source change without retargeting it t
   const incoming = [profile('default'), profile('builder')]
   const unavailable = new Error('HTTP 503')
   const api = vi.fn().mockRejectedValueOnce(unavailable).mockResolvedValue({ profiles: incoming })
-  vi.stubGlobal('window', { hermesDesktop: { api } })
+  vi.stubGlobal('window', { rabbitDesktop: { api } })
   activate('source-a')
   const old = refreshProfiles().catch(error => error)
   await vi.advanceTimersByTimeAsync(0) // A is in backoff, not awaiting HTTP.

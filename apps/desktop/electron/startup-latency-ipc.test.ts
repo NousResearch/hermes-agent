@@ -15,7 +15,7 @@ const { registerStartupLatencyIpc } = await import('./startup-latency-ipc')
 test('the launch latency is claimable once per app launch, whichever window asks', () => {
   registerStartupLatencyIpc()
 
-  const claim = handlers.get('hermes:startup-latency:claim')
+  const claim = handlers.get('rabbit:startup-latency:claim')
 
   expect(claim).toBeDefined()
 

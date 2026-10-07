@@ -3,7 +3,7 @@ import { atom, computed } from 'nanostores'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
-import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
+import type { RabbitReviewFile, RabbitReviewScope, RabbitReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
@@ -32,11 +32,11 @@ import { $workspaceChangeTick } from './workspace-events'
 // event is addressed by pane id).
 export const REVIEW_PANE_ID = 'review'
 
-const OPEN_KEY = 'hermes.desktop.reviewOpen'
-const COMMIT_DEFAULT_KEY = 'hermes.desktop.reviewCommitDefault'
-const TREE_MODE_KEY = 'hermes.desktop.reviewTreeMode'
-const SCOPE_KEY = 'hermes.desktop.reviewScope'
-const SELECTED_KEY = 'hermes.desktop.reviewSelectedPath'
+const OPEN_KEY = 'rabbit.desktop.reviewOpen'
+const COMMIT_DEFAULT_KEY = 'rabbit.desktop.reviewCommitDefault'
+const TREE_MODE_KEY = 'rabbit.desktop.reviewTreeMode'
+const SCOPE_KEY = 'rabbit.desktop.reviewScope'
+const SELECTED_KEY = 'rabbit.desktop.reviewSelectedPath'
 const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
@@ -71,7 +71,7 @@ export function toggleReviewTreeMode(): void {
 // the review-before-commit default; 'branch' shows committed work vs the trunk
 // merge-base; 'lastTurn' shows everything (committed + uncommitted) since the
 // most recent turn began. Persisted like the tree-mode toggle.
-export const $reviewScope = persistentAtom<HermesReviewScope>(SCOPE_KEY, 'uncommitted', {
+export const $reviewScope = persistentAtom<RabbitReviewScope>(SCOPE_KEY, 'uncommitted', {
   decode: raw => (raw === 'branch' || raw === 'lastTurn' ? raw : 'uncommitted'),
   encode: value => value
 })
@@ -118,7 +118,7 @@ function recordTurnBase(cwd: string, sha: string): void {
   $reviewTurnBase.set(Object.fromEntries(rest))
 }
 
-export const $reviewFiles = atom<HermesReviewFile[]>([])
+export const $reviewFiles = atom<RabbitReviewFile[]>([])
 export const $reviewLoading = atom(false)
 // False when the active session isn't in a local git repo (detached/fresh chat,
 // remote backend). Lets the pane say "not a repo" instead of stranding on a
@@ -139,7 +139,7 @@ export const $reviewDiffLoading = atom(false)
 
 // Ship state: gh availability + this branch's PR, and a busy flag for the
 // commit/push/PR action bar (disables buttons + shows progress).
-export const $reviewShipInfo = atom<HermesReviewShipInfo>({ ghReady: false, pr: null })
+export const $reviewShipInfo = atom<RabbitReviewShipInfo>({ ghReady: false, pr: null })
 export const $reviewShipBusy = atom(false)
 
 // True while a commit message is being generated (drives the input's spinner).
@@ -161,7 +161,7 @@ export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() 
 
 const repoCwd = reviewRepoCwd
 
-type ReviewBridge = NonNullable<NonNullable<NonNullable<Window['hermesDesktop']>['git']>['review']>
+type ReviewBridge = NonNullable<NonNullable<NonNullable<Window['rabbitDesktop']>['git']>['review']>
 let reviewRefreshSeq = 0
 let reviewRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let reviewSelectionSeq = 0
@@ -180,7 +180,7 @@ function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
 // The scope + base ref for the current read. 'lastTurn' diffing is baseRef-
 // driven (Electron recomputes the merge-base itself for 'branch'), so only the
 // last-turn baseline — looked up for the pane's own repo cwd — is passed.
-function reviewReadParams(): { scope: HermesReviewScope; baseRef: null | string } {
+function reviewReadParams(): { scope: RabbitReviewScope; baseRef: null | string } {
   const scope = $reviewScope.get()
 
   if (scope !== 'lastTurn') {
@@ -291,7 +291,7 @@ function scheduleReviewRefresh(): void {
   }, REVIEW_REFRESH_DEBOUNCE_MS)
 }
 
-export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
+export async function selectReviewFile(file: RabbitReviewFile): Promise<void> {
   const seq = (reviewSelectionSeq += 1)
   $reviewSelectedPath.set(file.path)
 
@@ -453,7 +453,7 @@ export function revealReview(scopeCwd: null | string = null, scopeTarget = 'main
 }
 
 /** The changed file matching a tool-reported path (absolute or repo-relative). */
-function matchReviewFile(files: readonly HermesReviewFile[], path: string): HermesReviewFile | undefined {
+function matchReviewFile(files: readonly RabbitReviewFile[], path: string): RabbitReviewFile | undefined {
   const target = path.replace(/\\/g, '/').replace(/\/+$/, '')
 
   if (!target) {
@@ -662,7 +662,7 @@ export async function createOrOpenPr(): Promise<void> {
   const existing = $reviewShipInfo.get().pr
 
   if (existing?.url) {
-    void window.hermesDesktop?.openExternal?.(existing.url)
+    void window.rabbitDesktop?.openExternal?.(existing.url)
 
     return
   }
@@ -671,7 +671,7 @@ export async function createOrOpenPr(): Promise<void> {
     const { url } = await ctx.review.createPr(ctx.cwd)
 
     if (url) {
-      void window.hermesDesktop?.openExternal?.(url)
+      void window.rabbitDesktop?.openExternal?.(url)
     }
 
     // The session recorded its branch when it started; the checkout may have

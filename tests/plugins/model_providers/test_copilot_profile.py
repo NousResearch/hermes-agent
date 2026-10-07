@@ -35,7 +35,7 @@ def copilot_profile():
 
 def _patch_efforts(monkeypatch, efforts):
     """Stub the catalog lookup the profile and main-agent path call for supported efforts."""
-    import hermes_cli.models as models_mod
+    import rabbit_cli.models as models_mod
     monkeypatch.setattr(
         models_mod, "github_model_reasoning_efforts", lambda model: list(efforts)
     )
@@ -112,12 +112,12 @@ class TestCopilotOfflineAstraEfforts:
         ("gpt-6-astra-pro", []),  # speed-tier / unknown suffixes stay off the Astra ladder
     ])
     def test_offline_fallback_uses_exact_astra_slugs(self, model, expected):
-        from hermes_cli.models import github_model_reasoning_efforts
+        from rabbit_cli.models import github_model_reasoning_efforts
 
         assert github_model_reasoning_efforts(model, catalog=[]) == expected
 
     def test_structured_catalog_beats_offline_fallback(self):
-        from hermes_cli.models import github_model_reasoning_efforts
+        from rabbit_cli.models import github_model_reasoning_efforts
 
         catalog = [{"id": "gpt-6-astra", "capabilities": {
             "type": "chat", "supports": {"reasoning_effort": ["low", "high"]}}}]

@@ -1,7 +1,7 @@
 """Regression: auxiliary-client keepalive httpx client must honor custom CA bundles.
 
 The main OpenAI client resolves per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
-``HERMES_CA_BUNDLE`` via ``agent.ssl_verify.resolve_httpx_verify``. Auxiliary calls
+``RABBIT_CA_BUNDLE`` via ``agent.ssl_verify.resolve_httpx_verify``. Auxiliary calls
 (compression, vision, web_extract, title generation, session_search) build their own
 keepalive client through ``agent.process_bootstrap.build_keepalive_http_client`` and must
 apply the same TLS settings — otherwise an HTTPS custom_providers endpoint signed by a
@@ -16,7 +16,7 @@ import pytest
 
 from agent.process_bootstrap import build_keepalive_http_client
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
+_CA_ENV_VARS = ("RABBIT_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
 
 
 @pytest.fixture
@@ -39,8 +39,8 @@ def test_build_keepalive_http_client_forwards_verify_context(clean_tls_env):
 
 
 def test_resolve_aux_verify_ssl_verify_false(clean_tls_env, monkeypatch):
-    import hermes_cli.config as cfg
-    import hermes_cli.config_providers as config_providers
+    import rabbit_cli.config as cfg
+    import rabbit_cli.config_providers as config_providers
     from agent import auxiliary_client
 
     monkeypatch.setattr(

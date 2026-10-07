@@ -1,7 +1,7 @@
 """Tests for the `log` tool_progress mode (salvage of #3459 / #3458).
 
 `display.tool_progress: log` keeps the chat silent and appends tool-call
-lines to ~/.hermes/logs/tool_calls.log via write_tool_log's rotating handler.
+lines to ~/.rabbit/logs/tool_calls.log via write_tool_log's rotating handler.
 These tests exercise the mode's building blocks without spinning up a full
 gateway run: the writer coroutine.
 """
@@ -21,8 +21,8 @@ async def test_write_tool_log_shares_one_logger_across_turns(tmp_path, monkeypat
     import gateway.run as gateway_run
     from gateway.run_turn import GatewayTurnMixin
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    shared = logging.getLogger("hermes.tool_calls")
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
+    shared = logging.getLogger("rabbit.tool_calls")
     for h in list(shared.handlers):
         shared.removeHandler(h)
         h.close()
@@ -37,7 +37,7 @@ async def test_write_tool_log_shares_one_logger_across_turns(tmp_path, monkeypat
             await asyncio.sleep(0.05)
             task.cancel()
             await task  # the writer swallows the cancel after draining
-        assert set(logging.Logger.manager.loggerDict) - before <= {"hermes.tool_calls"}
+        assert set(logging.Logger.manager.loggerDict) - before <= {"rabbit.tool_calls"}
         lines = (tmp_path / "logs" / "tool_calls.log").read_text(encoding="utf-8").splitlines()
         assert [l.split()[-1] for l in lines] == ['0"', '1"']
     finally:

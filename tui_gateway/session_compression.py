@@ -46,7 +46,7 @@ def _default_threshold_tokens_cap():
     same value, or a live session would diverge from a rebuilt one after the first turn
     (#117093). An explicit ``threshold_tokens: null`` stays ratio-only — the key is present,
     so ``.get`` returns it untouched."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from rabbit_cli.config_defaults import DEFAULT_CONFIG
 
     return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
 

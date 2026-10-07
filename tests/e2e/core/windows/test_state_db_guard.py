@@ -1,9 +1,9 @@
 """The state.db write-guard sees a live foreign holder on native Windows.
 
-``hermes sessions optimize-storage`` rewrites the store (FTS rebuild + VACUUM). Run under a
+``rabbit sessions optimize-storage`` rewrites the store (FTS rebuild + VACUUM). Run under a
 live writer, it is how every agent ends up refusing turns (#110054), so it refuses while
 another process holds ``state.db`` or its WAL sidecars. The holder here is the realistic
-one: a real ``hermes gateway run`` for the same profile. Control: the same command succeeds
+one: a real ``rabbit gateway run`` for the same profile. Control: the same command succeeds
 once the gateway is stopped, so a refusal is about the holder and nothing else.
 """
 
@@ -18,8 +18,8 @@ import pytest
 
 from tests.e2e.core.windows._helpers import (
     expect,
-    hermes,
-    hermes_argv,
+    rabbit,
+    rabbit_argv,
     kill_tree,
     make_home,
     process_tree,
@@ -31,7 +31,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration, pytest.
 
 def _running(home) -> bool:
     try:
-        state = json.loads((home.hermes_home / "gateway_state.json").read_text(encoding="utf-8"))
+        state = json.loads((home.rabbit_home / "gateway_state.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     return state.get("gateway_state") == "running"
@@ -42,7 +42,7 @@ def test_optimize_storage_refuses_while_gateway_holds_store(tmp_path: Path) -> N
         home = make_home(tmp_path, srv.base_url)
         log = tmp_path / "gateway.log"
         with log.open("wb") as fh:
-            gw = subprocess.Popen(hermes_argv("gateway", "run"), cwd=home.project, env=home.env(),
+            gw = subprocess.Popen(rabbit_argv("gateway", "run"), cwd=home.project, env=home.env(),
                                   stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT)
         tree: list = []
         try:
@@ -51,12 +51,12 @@ def test_optimize_storage_refuses_while_gateway_holds_store(tmp_path: Path) -> N
             tree = process_tree(gw.pid)
             assert home.db_path.exists(), "the running gateway never opened state.db"
 
-            held = hermes(home, "sessions", "optimize-storage")
+            held = rabbit(home, "sessions", "optimize-storage")
             refused = held.returncode != 0 and "Refusing" in held.stdout
-            stop = hermes(home, "gateway", "stop")
+            stop = rabbit(home, "gateway", "stop")
             assert stop.returncode == 0, stop.tail()
             gw.wait(timeout=60)
-            quiet = hermes(home, "sessions", "optimize-storage")
+            quiet = rabbit(home, "sessions", "optimize-storage")
             assert quiet.returncode == 0, f"optimize-storage fails even with no holder:\n{quiet.tail()}"
             # venv launcher OR its interpreter child; whole-number match (pid 12 is not in 4123).
             named = any(re.search(rf"\b{p.pid}\b", held.stdout) for p in tree)

@@ -2,7 +2,7 @@
 
 Its ``git gc`` repacks the whole store (tens of seconds on a GB store); run at construction it
 delayed the control socket, adapters and the code_sha stamp, so the first restart of the day (the
-``hermes update`` one) looked hung and failed fleet verification.
+``rabbit update`` one) looked hung and failed fleet verification.
 """
 
 import gateway.run as gateway_run

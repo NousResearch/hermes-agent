@@ -17,19 +17,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import load_env
+from rabbit_constants import OPENROUTER_BASE_URL
+from rabbit_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret, get_secret_str
 from agent.retry_utils import reset_delay_from_message
-from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+from rabbit_cli.auth_plugin_providers import plugin_refresh_hook
 from agent.credential_pool_plugin import apply_plugin_refresh_result, recover_failed_plugin_refresh
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
 )
-import hermes_cli.auth as auth_mod
-from hermes_cli.auth import (
+import rabbit_cli.auth as auth_mod
+from rabbit_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
     SINGLE_USE_REFRESH_POOL_PROVIDERS,
@@ -61,7 +61,7 @@ def _load_config_safe() -> Optional[dict]:
     that copy the dominant cost of ``model.options``.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
 
         return load_config_readonly()
     except Exception:
@@ -69,9 +69,9 @@ def _load_config_safe() -> Optional[dict]:
 
 
 def _is_source_suppressed_fn() -> Callable[[str, str], bool]:
-    """``hermes_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
+    """``rabbit_cli.auth.is_source_suppressed`` (late-bound), or an always-False stub."""
     try:
-        from hermes_cli.auth import is_source_suppressed
+        from rabbit_cli.auth import is_source_suppressed
         return is_source_suppressed
     except ImportError:
         return lambda _p, _s: False
@@ -105,7 +105,7 @@ _TERMINAL_AUTH_REASONS = frozenset({
 CREDENTIAL_PERSIST_FAILED_REASON = "credential_persist_failed"
 
 # DEAD ``manual:*`` entries are pruned after this quiet window — they have no
-# singleton to re-seed from and the user can re-add via ``hermes auth add``.
+# singleton to re-seed from and the user can re-add via ``rabbit auth add``.
 # Singleton-seeded entries (device_code, claude_code) are NOT pruned because
 # ``_seed_from_singletons`` would re-create them from the same stale tokens.
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60
@@ -154,10 +154,10 @@ FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
 # core, and stalled the event loop (Desktop backend readiness timeouts).
 # Credential selection runs on a hot path (every model call, plus auxiliary tasks like
 # compression/moa/titles), so when a pool is empty or fully exhausted the un-throttled log fires on *every*
-# selection. On Windows several Hermes processes share one rotating log guarded by concurrent-log-handler's
+# selection. On Windows several Rabbit processes share one rotating log guarded by concurrent-log-handler's
 # cross-process lock; that per-selection volume storms the lock (``RuntimeError: Cannot acquire lock after
 # 20 attempts``), pegs a core, and stalls the asyncio event loop long enough to fail the Desktop backend
-# readiness handshake ("Timed out connecting to Hermes backend after 15000ms"). Logging the condition at
+# readiness handshake ("Timed out connecting to Rabbit backend after 15000ms"). Logging the condition at
 # most once per window preserves the signal while removing the storm — same class of fix as the warn-once
 # dedup in #58265.
 NO_AVAILABLE_ENTRIES_LOG_THROTTLE_SECONDS = 60.0
@@ -171,7 +171,6 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
-    # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
     "auth_method", "account_tier", "anon_token", "user_id", "org_id",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
     # Providers return 403 for both an edge throttle and a spending limit, so the
@@ -179,13 +178,6 @@ _EXTRA_KEYS = frozenset({
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
 })
-
-# Nous singleton metadata mirrored between auth.json state and ``entry.extra``.
-_NOUS_EXTRA_STATE_KEYS = (
-    "obtained_at", "expires_in", "agent_key_id",
-    "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
-    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
-)
 
 # ``replace(entry, **_CLEAR_STATUS)`` returns an entry with no error state.
 _CLEAR_STATUS: Dict[str, Any] = {
@@ -222,7 +214,7 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
-    # Epoch of the last deliberate ``hermes auth reset`` of this entry. Sticky: a later exhaustion
+    # Epoch of the last deliberate ``rabbit auth reset`` of this entry. Sticky: a later exhaustion
     # stamps a newer ``last_status_at``, so "reset postdates status" stays decidable across processes.
     status_cleared_at: Optional[float] = None
     base_url: Optional[str] = None
@@ -287,33 +279,15 @@ class PooledCredential:
 
     @property
     def runtime_api_key(self) -> str:
-        if self.provider == "nous":
-            # Nous stores the runtime inference credential in agent_key for
-            # compatibility. It must be a NAS invoke JWT.
-            for token, expires_at in (
-                (self.agent_key, self.agent_key_expires_at),
-                (self.access_token, self.expires_at),
-            ):
-                if (
-                    isinstance(token, str)
-                    and token.strip()
-                    and auth_mod._nous_invoke_jwt_is_usable(
-                        token, scope=getattr(self, "scope", None), expires_at=expires_at,
-                    )
-                ):
-                    return token.strip()
-            return ""
         return str(self.access_token or "")
 
     @property
     def runtime_base_url(self) -> Optional[str]:
-        if self.provider == "nous":
-            return self.inference_base_url or self.base_url
         if self.provider == "openai-codex":
             # Pool rows keep the canonical ChatGPT URL; the profile-scoped proxy override must win
             # for every reader of the row — initial resolution AND a 401/429 rotation
             # (client_lifecycle._swap_credential), or a rotation silently leaves the proxy.
-            return get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or self.base_url
+            return get_secret_str("RABBIT_CODEX_BASE_URL", "").strip().rstrip("/") or self.base_url
         return self.base_url
 
 
@@ -329,7 +303,7 @@ def label_from_token(token: str, fallback: str) -> str:
 def _codex_principal_identity(access_token: Any) -> Optional[Tuple[str, str]]:
     """``(chatgpt_account_id, sub)`` of a Codex access token, or None when either claim is missing.
 
-    Decoded without signature verification: this only decides whether two credentials Hermes
+    Decoded without signature verification: this only decides whether two credentials Rabbit
     already holds belong to the same principal, never whether a token is valid. Both claims are
     required because members of one ChatGPT workspace share ``chatgpt_account_id`` yet have their
     own subjects and quotas.
@@ -348,7 +322,7 @@ def _codex_entry_tracks_singleton(entry: PooledCredential, singleton_tokens: Dic
 
     ``device_code`` IS the singleton. ``manual:device_code`` is ambiguous: a legacy alias of the
     singleton (same account, must follow its rotations) or an independent account added with
-    ``hermes auth add openai-codex`` (must never be overwritten — adopting turned two logins into
+    ``rabbit auth add openai-codex`` (must never be overwritten — adopting turned two logins into
     one account, both hitting the same usage limit). Same principal proves the alias; unknown
     identity fails closed.
     """
@@ -499,7 +473,7 @@ def _iter_custom_providers(config: Optional[dict] = None):
     if config is None:
         return
     try:
-        from hermes_cli.config import get_compatible_custom_providers
+        from rabbit_cli.config import get_compatible_custom_providers
 
         custom_providers = get_compatible_custom_providers(config)
     except Exception:
@@ -544,7 +518,7 @@ def custom_provider_pool_key_candidates(
 ) -> List[str]:
     """Return pool keys to try for a custom endpoint.
 
-    ``hermes auth add <key>`` stores ``providers.<key>`` credentials under the
+    ``rabbit auth add <key>`` stores ``providers.<key>`` credentials under the
     durable config slug; older rows and legacy ``custom_providers:`` entries
     live under ``custom:<display-name>``. Try the slug first, then the legacy
     namespace, so a populated pool is not skipped in favour of the
@@ -671,7 +645,7 @@ def credential_pool_entry_serves_endpoint(entry: Any, base_url: Any) -> bool:
     entry_url = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
     if not isinstance(entry_url, str) or not entry_url:
         return True
-    from hermes_cli.route_identity import normalize_route_base_url
+    from rabbit_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(entry_url) == normalize_route_base_url(base_url)
 
 
@@ -766,7 +740,7 @@ def _guarded_global_root(global_path: Optional[Path]) -> Optional[Path]:
     """Apply the pytest seat belt to a resolved global-root auth.json path.
 
     ``None`` means classic mode (profile == root) or "refuse": under pytest,
-    never write the real user's ``~/.hermes/auth.json`` even when HERMES_HOME
+    never write the real user's ``~/.rabbit/auth.json`` even when RABBIT_HOME
     points at a profile path (mirrors the read-side guard in
     ``_load_global_auth_store``). Uses the unmodified HOME env, not
     ``Path.home()`` which fixtures may monkeypatch.
@@ -776,7 +750,7 @@ def _guarded_global_root(global_path: Optional[Path]) -> Optional[Path]:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         real_home_env = os.environ.get("HOME", "")
         if real_home_env:
-            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            real_root = Path(real_home_env) / ".rabbit" / "auth.json"
             try:
                 # Comparing the guard path must not probe the real auth store.
                 if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
@@ -791,8 +765,8 @@ def _write_through_provider_state_to_global_root(
 ) -> None:
     """Persist a rotated OAuth ``state`` into the global-root auth.json.
 
-    Best-effort write-through for the multi-profile rotation hazard: nous,
-    openai-codex, and xai-oauth rotate the refresh_token on refresh, so when
+    Best-effort write-through for the multi-profile rotation hazard:
+    openai-codex and xai-oauth rotate the refresh_token on refresh, so when
     a profile pool refresh rotates a grant it resolved from the root fallback,
     the rotated chain must land back in root. Otherwise root keeps a revoked
     refresh token and every other profile dies with ``refresh_token_reused``
@@ -802,7 +776,7 @@ def _write_through_provider_state_to_global_root(
     the profile store (the caller already saved that). Swallows all errors —
     a failed write-through degrades to root-stale and must never break the
     profile's own successful save. Mirrors
-    ``hermes_cli.auth._write_through_xai_oauth_to_global_root``.
+    ``rabbit_cli.auth._write_through_xai_oauth_to_global_root``.
 
     See #48415.
     """
@@ -819,12 +793,12 @@ def _write_through_provider_state_to_global_root(
 
 
 def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
-    """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
-    if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
+    """Root ``.anthropic_oauth.json`` when *entry* is a borrowed rabbit_pkce row, else None."""
+    if entry.source != "rabbit_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
         return None
     try:
-        from agent.anthropic_credentials import _root_hermes_oauth_file
-        return _root_hermes_oauth_file()
+        from agent.anthropic_credentials import _root_rabbit_oauth_file
+        return _root_rabbit_oauth_file()
     except Exception:
         return None
 
@@ -955,7 +929,7 @@ def persist_pool_entries(
 #
 # Providers whose OAuth singleton lives in auth.json ``providers.<id>.tokens``
 # (Codex, xAI): log names (sync-message form, "<name> OAuth" form),
-# ``hermes_cli.auth`` refresh function and terminal-error predicate (looked
+# ``rabbit_cli.auth`` refresh function and terminal-error predicate (looked
 # up at call time so tests can patch them).
 _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
@@ -964,14 +938,12 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
 
 # Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
 # providers are refreshable when their profile ships ``refresh_credential`` (see
-# ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
+# ``rabbit_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
 # unchanged by that path, so callers must not report a refresh for them.
-REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", *_TOKENS_SINGLETON_PROVIDERS})
 
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
-# ``nous`` is deliberately absent even though it is in SINGLE_USE_REFRESH_POOL_PROVIDERS:
-# its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
 
 # Lock-free window between consecutive auth-store holds in a deferred refresh sweep
@@ -981,15 +953,14 @@ _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
 _REFRESH_SWEEP_SPACING_SECONDS = 0.5
 
 _REFRESH_TIMEOUT_ENV_VARS = {
-    "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
-    "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
+    "openai-codex": "RABBIT_CODEX_REFRESH_TIMEOUT_SECONDS",
+    "xai-oauth": "RABBIT_XAI_REFRESH_TIMEOUT_SECONDS",
 }
 
 # Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
 # re-auth another process wrote to the provider's store.
 _RESYNC_SOURCE = {
     "anthropic": "claude_code",
-    "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
 }
@@ -1345,7 +1316,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _sync_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex / xAI device_code entry from auth.json ``providers.<id>.tokens``.
 
-        A fresh ``hermes model`` / ``hermes auth`` login writes new tokens
+        A fresh ``rabbit model`` / ``rabbit auth`` login writes new tokens
         under ``_auth_store_lock`` while the pool entry may sit frozen behind
         a ``last_error_reset_at`` hours in the future; without this sync every
         request fails with "no available entries" despite fresh credentials on
@@ -1422,47 +1393,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             logger.debug("Failed to sync %s entry from auth.json: %s", display, exc)
         return entry
 
-    def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
-        """Sync a Nous device_code entry from auth.json ``providers.nous`` if state differs.
-
-        Another process refreshing via ``resolve_nous_runtime_credentials``
-        writes fresh tokens under ``_auth_store_lock``; adopting them avoids a
-        "refresh token reuse" revocation on the Nous Portal.
-        """
-        if self.provider != "nous" or entry.source != "device_code":
-            return entry
-        try:
-            with _auth_store_lock():
-                state = _load_provider_state(_load_auth_store(), "nous")
-            if not state:
-                return entry
-            comparable = {
-                key: state.get(key)
-                for key in (
-                    "access_token", "refresh_token", "expires_at",
-                    "agent_key", "agent_key_expires_at", "inference_base_url",
-                )
-            }
-            if not any(v not in (None, "") and getattr(entry, k, None) != v for k, v in comparable.items()):
-                return entry
-            logger.debug("Pool entry %s: syncing Nous state from auth.json", entry.id)
-            field_updates: Dict[str, Any] = dict(_CLEAR_STATUS)
-            field_updates.update({k: v for k, v in comparable.items() if v})
-            extra_updates = dict(entry.extra)
-            extra_updates.update(
-                {k: state[k] for k in _NOUS_EXTRA_STATE_KEYS if state.get(k) is not None}
-            )
-            return self._adopt(entry, extra=extra_updates, **field_updates)
-        except Exception as exc:
-            logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
-        return entry
-
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json ``providers.<id>``.
 
         Otherwise the next ``load_pool()`` re-seeds the stale singleton state
         over the fresh entry — potentially a consumed single-use refresh
-        token. Applies to Nous, OpenAI Codex and xAI OAuth singletons.
+        token. Applies to OpenAI Codex and xAI OAuth singletons.
 
         ``set_active=False`` everywhere: a sync-back is a token-rotation side
         effect, not the user choosing a provider; ``_save_provider_state``
@@ -1478,7 +1414,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """
         # Only singleton-seeded entries sync back; ``manual:*`` entries are
         # independent credentials and must not write to the singleton.
-        if entry.source != "device_code" or self.provider not in ("nous", *_TOKENS_SINGLETON_PROVIDERS):
+        if entry.source != "device_code" or self.provider not in _TOKENS_SINGLETON_PROVIDERS:
             return
         try:
             with _auth_store_lock():
@@ -1502,18 +1438,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _apply_entry_to_singleton_state(self, entry: PooledCredential, state: Dict[str, Any]) -> bool:
         """Copy *entry*'s tokens into the provider's auth.json ``state`` in place."""
-        if self.provider == "nous":
-            state["access_token"] = entry.access_token
-            for key in ("refresh_token", "expires_at", "agent_key", "agent_key_expires_at"):
-                if getattr(entry, key):
-                    state[key] = getattr(entry, key)
-            for extra_key in _NOUS_EXTRA_STATE_KEYS:
-                val = entry.extra.get(extra_key)
-                if val is not None:
-                    state[extra_key] = val
-            if entry.inference_base_url:
-                state["inference_base_url"] = entry.inference_base_url
-            return True
         tokens = state.get("tokens")
         if not isinstance(tokens, dict):
             return False
@@ -1538,7 +1462,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return self._refresh_entry_impl(entry, force=force)
 
         # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
+        # across Rabbit processes, or two processes adopt the same on-disk
         # token, both POST it, and the loser gets ``refresh_token_reused`` /
         # ``invalid_grant`` (for Anthropic sources other than claude_code
         # there was no recovery path at all). Serialize through the shared
@@ -1592,7 +1516,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     ) -> None:
         """Quarantine an entry whose rotated pair never reached its store.
 
-        For ``claude_code`` / ``hermes_pkce`` the singleton file — not
+        For ``claude_code`` / ``rabbit_pkce`` the singleton file — not
         auth.json — is authoritative: ``_seed_from_singletons()`` re-reads it
         on every ``load_pool()``. When the refresh POST succeeded but the
         singleton write failed, the replacement pair exists only in memory
@@ -1637,7 +1561,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _single_use_refresh_lock_timeout(self) -> float:
         """Configured refresh POST timeout plus margin, so a slow token endpoint cannot starve the flock."""
-        env_var = _REFRESH_TIMEOUT_ENV_VARS.get(self.provider, "HERMES_ANTHROPIC_REFRESH_TIMEOUT_SECONDS")
+        env_var = _REFRESH_TIMEOUT_ENV_VARS.get(self.provider, "RABBIT_ANTHROPIC_REFRESH_TIMEOUT_SECONDS")
         refresh_timeout_seconds = auth_mod.env_float(env_var, 20)
         return max(float(auth_mod.AUTH_LOCK_TIMEOUT_SECONDS), float(refresh_timeout_seconds) + 5.0)
 
@@ -1647,16 +1571,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """Write a rotated Anthropic pair to its authoritative singleton, or fail closed.
 
         claude_code -> ~/.claude/.credentials.json (so the fallback resolver
-        and other profiles see it). hermes_pkce -> ~/.hermes/.anthropic_oauth.json
+        and other profiles see it). rabbit_pkce -> ~/.rabbit/.anthropic_oauth.json
         (``_seed_from_singletons`` re-seeds it every load; a borrowed row commits
         to the ROOT's file, never a new profile-local copy, #100339). Not
-        ``endswith``: manual:hermes_pkce is pool-owned and a singleton for it
+        ``endswith``: manual:rabbit_pkce is pool-owned and a singleton for it
         would be a second authority for the same refresh-token family.
         """
         if entry.source == "claude_code":
             store = "~/.claude/.credentials.json"
-        elif entry.source == "hermes_pkce":
-            store = "~/.hermes/.anthropic_oauth.json"
+        elif entry.source == "rabbit_pkce":
+            store = "~/.rabbit/.anthropic_oauth.json"
         else:
             return
         try:
@@ -1665,7 +1589,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry.source == "claude_code":
                 ac._write_claude_code_credentials(*args, spent_refresh_token=entry.refresh_token or "")
             else:
-                ac._write_hermes_oauth_credentials(*args, target=_singleton_target_for_entry(self, entry))
+                ac._write_rabbit_oauth_credentials(*args, target=_singleton_target_for_entry(self, entry))
         except Exception as wexc:
             # Authoritative commit failed: do not mark, persist or return the
             # rotation as successful, and bypass the re-POST recovery path —
@@ -1694,7 +1618,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 ),
                 store=str(source_path or "credential store"),
             ))
-        refreshed = refresh_anthropic_oauth_pure(entry.refresh_token, use_json=entry.source.endswith("hermes_pkce"))
+        refreshed = refresh_anthropic_oauth_pure(entry.refresh_token, use_json=entry.source.endswith("rabbit_pkce"))
         updated = replace(
             entry,
             access_token=refreshed["access_token"],
@@ -1732,18 +1656,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     # report the stale row as refreshed (the loop would replay the dead bearer).
                     raise RuntimeError("provider refresh_credential returned no rotated fields")
                 updated = apply_plugin_refresh_result(entry, rotated)
-            elif self.provider == "nous":
-                stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
-                synced = self._sync_nous_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    # A peer already rotated and persisted a usable key: adopt
-                    # it without consuming the single-use refresh token again.
-                    if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
-                        logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
-                        return entry
-                auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
-                updated = self._sync_nous_entry_from_auth_store(entry)
             else:
                 return entry
         except _RefreshDone as done:
@@ -1778,7 +1690,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     try:
                         from agent.anthropic_credentials import refresh_anthropic_oauth_pure
                         refreshed = refresh_anthropic_oauth_pure(
-                            synced.refresh_token, use_json=synced.source.endswith("hermes_pkce"),
+                            synced.refresh_token, use_json=synced.source.endswith("rabbit_pkce"),
                         )
                         # Commit to the authoritative singleton BEFORE marking or
                         # persisting the pool row, or a failed write leaves an
@@ -1801,7 +1713,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
             else:
-                # Backstop for pool-owned sources (hermes_pkce, manual:dashboard_pkce):
+                # Backstop for pool-owned sources (rabbit_pkce, manual:dashboard_pkce):
                 # the winner may have persisted between our pre-check and our POST.
                 synced = self._sync_entry_from_pool_store(entry)
                 if synced.refresh_token != entry.refresh_token:
@@ -1811,10 +1723,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if is_terminal_anthropic_refresh_error(exc):
                 # A dead grant is not "exhausted": benching it for a TTL replays the dead token every
                 # hour at DEBUG, so the lost login left no trace (#113023). Never touch the external
-                # CLI's credentials file here — only Hermes' own row goes DEAD.
+                # CLI's credentials file here — only Rabbit' own row goes DEAD.
                 logger.warning(
                     "Anthropic OAuth refresh token for %s is terminally invalid (%s); the credential "
-                    "leaves rotation. Re-run 'hermes auth add anthropic' to sign in again.",
+                    "leaves rotation. Re-run 'rabbit auth add anthropic' to sign in again.",
                     entry.label or entry.id[:8], exc)
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
@@ -1827,40 +1739,15 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # Terminal error with no newer tokens: the stored refresh_token is
             # dead. Clear it from auth.json so the next session does not
             # re-seed the revoked credentials, and drop singleton-seeded
-            # entries from the pool (mirrors the Nous quarantine path).
+            # entries from the pool.
             if getattr(auth_mod, terminal_fn_name)(exc):
                 # WARNING, not debug: this is the moment a login is lost. At the default log level a
-                # silent quarantine looked like "I logged in once and Hermes keeps failing" (#113023).
+                # silent quarantine looked like "I logged in once and Rabbit keeps failing" (#113023).
                 logger.warning(
                     "%s OAuth refresh token is terminally invalid (%s); clearing local token state. "
-                    "Re-run 'hermes auth add %s' to sign in again.", display, exc, self.provider)
+                    "Re-run 'rabbit auth add %s' to sign in again.", display, exc, self.provider)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})
-                self._mark_dead_refresh_grant(entry, exc)
-                return None
-        elif self.provider == "nous":
-            synced = self._sync_nous_entry_from_auth_store(entry)
-            if synced.refresh_token != entry.refresh_token:
-                logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
-                updated = self._adopt(synced, **_MARK_OK)
-                self._sync_device_code_entry_to_auth_store(updated)
-                return updated
-            if isinstance(exc, TimeoutError):
-                # Lost the auth-store lock race under heavy fan-out. That says
-                # nothing about the credential — benching it here emptied the
-                # pool for ~120 sessions ("matched no nous entry ... pool size
-                # 0"). The caller's retry re-syncs once the winner persisted.
-                logger.debug("Nous refresh skipped: auth store lock busy; not benching entry")
-                return entry
-            if auth_mod._is_terminal_nous_refresh_error(exc):
-                logger.warning(
-                    "Nous refresh token is terminally invalid (%s); clearing local token state. "
-                    "Re-run 'hermes auth add nous' to sign in again.", exc)
-                self._clear_terminal_nous_state(entry, exc)
-                self._quarantine_sources(
-                    entry,
-                    {auth_mod.NOUS_DEVICE_CODE_SOURCE, f"manual:{auth_mod.NOUS_DEVICE_CODE_SOURCE}"},
-                )
                 self._mark_dead_refresh_grant(entry, exc)
                 return None
         elif plugin_refresh_hook(self.provider) is not None:
@@ -1874,7 +1761,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         """Mark a row whose refresh token was terminally rejected DEAD, if the quarantine kept it.
 
         ``_quarantine_sources`` drops only singleton-seeded rows; an independent ``manual:*`` login
-        (``hermes auth add``) survives, and an unmarked survivor re-enters rotation and re-fires the
+        (``rabbit auth add``) survives, and an unmarked survivor re-enters rotation and re-fires the
         terminal WARNING on every later refresh attempt. DEAD leaves rotation until a write-side
         re-auth sync clears it (never via TTL).
         """
@@ -1918,27 +1805,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         except Exception as clear_exc:
             logger.debug("Failed to clear terminal %s OAuth state: %s", display, clear_exc)
 
-    def _clear_terminal_nous_state(self, entry: PooledCredential, exc: Exception) -> None:
-        try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                state = _load_provider_state(auth_store, "nous") or {
-                    "client_id": entry.client_id,
-                    "portal_base_url": entry.portal_base_url,
-                    "inference_base_url": entry.inference_base_url,
-                    "token_type": entry.token_type,
-                    "scope": entry.scope,
-                    "tls": entry.tls,
-                }
-                store_refresh = str(state.get("refresh_token") or "").strip()
-                if not store_refresh or store_refresh == str(entry.refresh_token or "").strip():
-                    auth_mod._quarantine_nous_oauth_state(state, exc, reason="credential_pool_refresh_failure")
-                    auth_mod._quarantine_nous_pool_entries(auth_store, exc, reason="credential_pool_refresh_failure")
-                    _save_provider_state(auth_store, "nous", state)
-                    _save_auth_store(auth_store)
-        except Exception as clear_exc:
-            logger.debug("Failed to clear terminal Nous OAuth state: %s", clear_exc)
-
     def _codex_quota_restored_upstream(self, entry: PooledCredential) -> bool:
         """Live-check whether an exhausted Codex entry's quota reset early.
 
@@ -1973,7 +1839,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self._sync_device_code_entry_to_auth_store(entry)
                 token = entry.access_token or token
             # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
-            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            from rabbit_cli.auth_codex import _codex_pool_route_base_url
             return bool(auth_mod._probe_codex_quota_restored(
                 token, base_url=_codex_pool_route_base_url(entry.base_url)))
         except Exception:
@@ -1993,8 +1859,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
-        # Nous refresh can require network access and happens when runtime
-        # credentials are actually resolved, not on enumeration/selection.
         return False
 
     # ---- selection ---------------------------------------------------------
@@ -2037,7 +1901,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self._refresh_entry(entry, force=False)
 
     def _reset_cleared_after(self, entry: PooledCredential) -> Optional[float]:
-        """Epoch of a ``hermes auth reset`` persisted by another process AFTER *entry*'s status, else None."""
+        """Epoch of a ``rabbit auth reset`` persisted by another process AFTER *entry*'s status, else None."""
         try:
             row = next((p for p in read_credential_pool(self.provider)
                         if isinstance(p, dict) and p.get("id") == entry.id), None)
@@ -2050,9 +1914,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
     def _resync_stale_entry(self, entry: PooledCredential) -> PooledCredential:
         """Re-read an exhausted/DEAD singleton-seeded entry from its token authority.
 
-        The user may have re-authed (``hermes model`` / ``hermes auth``, the
+        The user may have re-authed (``rabbit model`` / ``rabbit auth``, the
         Claude Code CLI, another profile) leaving fresh tokens on disk while
-        the pool entry is frozen behind ``last_error_reset_at``. A ``hermes auth
+        the pool entry is frozen behind ``last_error_reset_at``. A ``rabbit auth
         reset`` run from another process while this pool is live is honoured the
         same way (#89415): the in-memory cooldown would otherwise outlive it.
         """
@@ -2065,8 +1929,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return entry
         if self.provider == "anthropic":
             return self._sync_anthropic_entry_from_credentials_file(entry)
-        if self.provider == "nous":
-            return self._sync_nous_entry_from_auth_store(entry)
         return self._sync_entry_from_auth_store(entry)
 
     def _available_entries(
@@ -2107,7 +1969,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     if dead_at and now - dead_at > DEAD_MANUAL_PRUNE_TTL_SECONDS:
                         logger.warning(
                             "credential pool: pruning DEAD manual entry %s "
-                            "(reason=%s, age=%.1fh) — re-add via `hermes auth add %s`",
+                            "(reason=%s, age=%.1fh) — re-add via `rabbit auth add %s`",
                             entry.label or entry.id[:8],
                             entry.last_error_reason or "unknown",
                             (now - dead_at) / 3600.0,
@@ -2521,7 +2383,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
 _ANTHROPIC_SOURCE_RANK = {
     "env:ANTHROPIC_TOKEN": 0,
     "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-    "hermes_pkce": 2,
+    "rabbit_pkce": 2,
     "claude_code": 3,
     "env:ANTHROPIC_API_KEY": 4,
 }
@@ -2571,7 +2433,7 @@ class _Seeder:
         self.is_suppressed = _is_source_suppressed_fn()
 
     def upsert(self, source: str, payload: Dict[str, Any]) -> bool:
-        """Upsert unless suppressed (``hermes auth remove`` must stay stable across loads)."""
+        """Upsert unless suppressed (``rabbit auth remove`` must stay stable across loads)."""
         if self.is_suppressed(self.provider, source):
             return False
         self.active_sources.add(source)
@@ -2585,23 +2447,23 @@ class _Seeder:
 
 
 def _seed_anthropic_singletons(seed: _Seeder) -> None:
-    # Only auto-discover external credentials (Claude Code, Hermes PKCE) when
+    # Only auto-discover external credentials (Claude Code, Rabbit PKCE) when
     # the user explicitly configured anthropic; otherwise auxiliary fallback
     # chains would read ~/.claude/.credentials.json without consent (PR #4210).
     try:
-        from hermes_cli.auth import is_provider_explicitly_configured
+        from rabbit_cli.auth import is_provider_explicitly_configured
         if not is_provider_explicitly_configured("anthropic"):
             return
     except ImportError:
         pass
 
-    # API-key vs OAuth is a user-visible choice at `hermes setup`. The API-key
+    # API-key vs OAuth is a user-visible choice at `rabbit setup`. The API-key
     # signal is ANTHROPIC_API_KEY set AND no OAuth env vars (the save_* helpers
     # zero the other side). Then we MUST NOT seed autodiscovered OAuth tokens:
     # rotation on a 401/429 would silently flip the session onto OAuth, which
     # forces the Claude Code identity injection, `mcp_` tool-name rewrite and
     # claude-cli User-Agent the user explicitly opted out of. Prefer
-    # ~/.hermes/.env over os.environ, as `_seed_from_env` does.
+    # ~/.rabbit/.env over os.environ, as `_seed_from_env` does.
     _env_file = load_env()
 
     def _env_val(key: str) -> str:
@@ -2611,21 +2473,21 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     if _env_val("ANTHROPIC_API_KEY") and not anthropic_oauth_env:
         # Prune stale autodiscovered OAuth entries from a previous OAuth
         # session so a transient 401 cannot revive them.
-        seed.changed |= _retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
+        seed.changed |= _retain_sources_not_in(seed.entries, {"rabbit_pkce", "claude_code"})
         return
 
     from agent.anthropic_credentials import (
         read_claude_code_credentials,
-        read_hermes_oauth_credentials,
+        read_rabbit_oauth_credentials,
     )
     from agent.credential_sources import adopt_external_logins_enabled
 
-    sources = [("hermes_pkce", read_hermes_oauth_credentials())]
+    sources = [("rabbit_pkce", read_rabbit_oauth_credentials())]
     if adopt_external_logins_enabled():
         sources.append(("claude_code", read_claude_code_credentials()))
     else:
         # Singleton-seeded rows are otherwise never pruned; the opt-out must also drop the row an
-        # earlier (adopting) process persisted, or it keeps rotating a login Hermes no longer reads.
+        # earlier (adopting) process persisted, or it keeps rotating a login Rabbit no longer reads.
         seed.changed |= _retain_sources_not_in(seed.entries, {"claude_code"})
     for source_name, creds in sources:
         if creds and creds.get("accessToken"):
@@ -2638,47 +2500,6 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
             })
 
 
-def _seed_nous_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
-    state, source_path = _load_provider_state_with_source(auth_store, "nous")
-    global_root = _global_auth_file_path()
-    if (
-        source_path is not None and global_root is not None and _same_path(source_path, global_root)
-        and _store_owns_pool_provider(auth_store, "nous")
-    ):
-        # A profile that owns local nous rows (e.g. an agent_key-only row surviving a
-        # fork strip/heal) must not re-seed root's single-use refresh token into its
-        # own pool from the global-root fallback: that re-creates the fork.
-        return
-    has_runtime_material = bool(
-        isinstance(state, dict)
-        and (str(state.get("access_token") or "").strip() or str(state.get("agent_key") or "").strip())
-    )
-    if state and not has_runtime_material:
-        seed.changed |= _retain_sources_not_in(seed.entries, {"device_code", "manual:device_code"})
-    if not (state and has_runtime_material):
-        return
-    # Prefer a user-supplied label embedded in the singleton state (``hermes
-    # auth add nous --label <name>``) over the token-derived fingerprint.
-    custom_label = str(state.get("label") or "").strip()
-    seed.upsert("device_code", {
-        "auth_type": AUTH_TYPE_OAUTH,
-        "access_token": state.get("access_token", ""),
-        "refresh_token": state.get("refresh_token"),
-        "expires_at": state.get("expires_at"),
-        "token_type": state.get("token_type"),
-        "scope": state.get("scope"),
-        "client_id": state.get("client_id"),
-        "portal_base_url": state.get("portal_base_url"),
-        "inference_base_url": state.get("inference_base_url"),
-        "agent_key": state.get("agent_key"),
-        "agent_key_expires_at": state.get("agent_key_expires_at"),
-        # Refresh timestamps let freshness-sensitive consumers (self-heal
-        # hooks, pruning by age) tell just-refreshed credentials from stale
-        # ones (#15099).
-        **{key: state.get(key) for key in _NOUS_EXTRA_STATE_KEYS},
-        "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
-        "label": custom_label or label_from_token(state.get("access_token", ""), "device_code"),
-    })
 
 
 # Warn once per token per process when Copilot exchange degrades to raw token (#114740).
@@ -2707,7 +2528,7 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
     # Copilot tokens are resolved dynamically via `gh auth token` or env vars
     # (COPILOT_GITHUB_TOKEN / GH_TOKEN); they don't live in the auth store.
     try:
-        from hermes_cli.copilot_auth import (
+        from rabbit_cli.copilot_auth import (
             COPILOT_ENV_VARS,
             resolve_copilot_token,
             get_copilot_api_token,
@@ -2728,7 +2549,7 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         # Per-source gate BEFORE the (~35s worst case) network exchange.
         if seed.is_suppressed(seed.provider, source_name):
             return
-        from hermes_cli.auth import is_provider_explicitly_configured
+        from rabbit_cli.auth import is_provider_explicitly_configured
         if not is_provider_explicitly_configured(seed.provider):
             # Copilot is only discovered here (ambient gh CLI login), not selected anywhere: no
             # model will be routed to it, so the network exchange — and its degradation warning on
@@ -2758,7 +2579,7 @@ def _seed_qwen_singleton(seed: _Seeder) -> None:
     # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json (written by the Qwen
     # CLI). refresh_if_expiring=False avoids network calls during pool loading.
     try:
-        from hermes_cli.auth import resolve_qwen_runtime_credentials
+        from rabbit_cli.auth import resolve_qwen_runtime_credentials
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
         token = creds.get("api_key", "")
         if token:
@@ -2778,7 +2599,7 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
     # Read the raw auth.json state rather than resolve_minimax_oauth_runtime_credentials,
     # which always refreshes on expiry (surprise network calls during discovery).
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from rabbit_cli.auth import get_provider_auth_state
         state = get_provider_auth_state("minimax-oauth")
         if not (state and state.get("access_token")):
             return
@@ -2804,10 +2625,10 @@ def _seed_minimax_singleton(seed: _Seeder) -> None:
 def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     """Codex / xAI: surface the auth.json ``providers.<id>.tokens`` singleton as ``device_code``.
 
-    Hermes owns its own Codex auth state and does NOT auto-import
+    Rabbit owns its own Codex auth state and does NOT auto-import
     ~/.codex/auth.json: refresh tokens are single-use, so sharing them with
     Codex CLI / VS Code causes refresh_token_reused races. Adoption is an
-    explicit one-time prompt via `hermes auth openai-codex`.
+    explicit one-time prompt via `rabbit auth openai-codex`.
     """
     state = _load_provider_state(auth_store, seed.provider)
     tokens = state.get("tokens") if isinstance(state, dict) else None
@@ -2834,8 +2655,6 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     auth_store = _load_auth_store()
     if provider == "anthropic":
         _seed_anthropic_singletons(seed)
-    elif provider == "nous":
-        _seed_nous_singleton(seed, auth_store)
     elif provider == "copilot":
         _seed_copilot_singleton(seed)
     elif provider == "qwen-oauth":
@@ -2843,7 +2662,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     elif provider == "minimax-oauth":
         _seed_minimax_singleton(seed)
     elif provider in _TOKENS_SINGLETON_PROVIDERS:
-        # `hermes auth remove openai-codex` suppresses device_code; without
+        # `rabbit auth remove openai-codex` suppresses device_code; without
         # this gate the removal is undone on the next load_pool().
         if provider == "openai-codex" and seed.is_suppressed(provider, "device_code"):
             return seed.result
@@ -2852,7 +2671,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
 
 
 def get_env_prefer_dotenv(key: str) -> str:
-    """Resolve a credential env var, preferring ~/.hermes/.env over os.environ.
+    """Resolve a credential env var, preferring ~/.rabbit/.env over os.environ.
 
     The user's config file is authoritative; stale env vars from parent
     processes (Codex CLI, test scripts) must not override deliberate .env
@@ -2888,7 +2707,7 @@ def _warn_env_ingestion_once(provider: str, env_var: str) -> None:
     logger.warning(
         "Ingested %s from environment into the %s credential pool — this "
         "enables %s spend. Remove the key or run "
-        "hermes auth remove %s <n> to suppress.",
+        "rabbit auth remove %s <n> to suppress.",
         env_var,
         provider,
         "OpenRouter" if provider == "openrouter" else provider,
@@ -2904,7 +2723,7 @@ def _env_payload(*, env_var: str, token: str, base_url: str) -> Dict[str, Any]:
         "label": env_var,
     }
     try:
-        from hermes_cli.env_loader import get_secret_source
+        from rabbit_cli.env_loader import get_secret_source
         source_label = get_secret_source(env_var)
     except Exception:
         source_label = None
@@ -3002,11 +2821,11 @@ def _prune_stale_seeded_entries(
         # ``env:*`` entries are persisted references re-hydrated on every load.
         # A process that merely lacks the env var must NOT delete the on-disk
         # entry for every other process (#9331); prune only when explicitly
-        # requested (an `hermes auth` command that confirmed the source is gone).
+        # requested (an `rabbit auth` command that confirmed the source is gone).
         if entry.source.startswith("env:"):
             return prune_env_sources
-        # File-backed singletons and Hermes PKCE disappear when their backing file is gone.
-        return is_borrowed_credential_source(entry.source, entry.provider) or entry.source == "hermes_pkce"
+        # File-backed singletons and Rabbit PKCE disappear when their backing file is gone.
+        return is_borrowed_credential_source(entry.source, entry.provider) or entry.source == "rabbit_pkce"
 
     retained = [
         entry

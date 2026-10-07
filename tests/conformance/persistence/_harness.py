@@ -125,8 +125,8 @@ def integrity_ok(db_path: Path) -> bool:
         conn.close()
 
 
-def make_hermes_home(base: Path, journal_mode: str) -> Path:
-    """Create an isolated HERMES_HOME whose config pins ``database.journal_mode``.
+def make_rabbit_home(base: Path, journal_mode: str) -> Path:
+    """Create an isolated RABBIT_HOME whose config pins ``database.journal_mode``.
 
     The journal-mode matrix legs must steer the CHILD's own resolver:
     pre-seeding the DB file alone is not enough, because ``SessionDB.__init__``
@@ -134,7 +134,7 @@ def make_hermes_home(base: Path, journal_mode: str) -> Path:
     whenever the configured mode (default ``wal``) says so — on healthy
     SQLite the DELETE leg would silently run in WAL.
     """
-    home = base / f"hermes-home-{journal_mode}"
+    home = base / f"rabbit-home-{journal_mode}"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         f"database:\n  journal_mode: {journal_mode}\n", encoding="utf-8"

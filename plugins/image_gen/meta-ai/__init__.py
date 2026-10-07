@@ -84,7 +84,7 @@ class MetaImageGenProvider(StaticImageGenProvider):
         api_key = _resolve_api_key()
         if not api_key:
             return error_factory("meta-ai", aspect)(
-                f"{API_KEY_ENV} not set. Run `hermes tools` -> Image "
+                f"{API_KEY_ENV} not set. Run `rabbit tools` -> Image "
                 "Generation -> Meta Model API to configure.",
                 "auth_required")
 

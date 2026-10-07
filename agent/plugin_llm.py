@@ -124,7 +124,7 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
     if not plugin_id:
         return _TrustPolicy(plugin_id="")
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         llm_cfg: Any = (load_config_readonly() or {}).get("plugins")
     except Exception:  # pragma: no cover — config IO failure
         llm_cfg = None
@@ -191,13 +191,13 @@ def _resolve_task_ownership(plugin_id: str) -> tuple[frozenset, frozenset]:
     owned: set = set()
     builtin: set = set()
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from rabbit_cli.plugins import get_plugin_auxiliary_tasks
         owned = {e.get("key") for e in get_plugin_auxiliary_tasks()
                  if e.get("plugin") == plugin_id and isinstance(e.get("key"), str) and e.get("key")}
     except Exception:  # pragma: no cover — registry unavailable
         pass
     try:
-        from hermes_cli.main_provider_setup import _AUX_TASKS
+        from rabbit_cli.main_provider_setup import _AUX_TASKS
         builtin = {k for k, _name, _desc in _AUX_TASKS}
     except Exception:  # pragma: no cover — main import failure
         pass
@@ -427,7 +427,7 @@ def _structured_spec(
 class PluginLlm:
     """Host-owned LLM access for one trusted plugin.
 
-    Constructed by :class:`hermes_cli.plugins.PluginContext` and exposed as
+    Constructed by :class:`rabbit_cli.plugins.PluginContext` and exposed as
     ``ctx.llm``; the constructor binds plugin identity for trust enforcement, so
     plugins should not instantiate it directly. Every public method is ``_gate``
     (trust checks → call kwargs) → ``_invoke_*`` (host ``call_llm`` or injected

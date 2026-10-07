@@ -20,12 +20,12 @@ def prepared_path(out: Path) -> Path:
 
 @contextmanager
 def preparation_lock(out: Path):
-    from hermes_cli.runtime_state import _lock
+    from rabbit_cli.runtime_state import _lock
     from pm.filesystem import is_junction
 
     if out != out.resolve():
         raise ValueError("symlinked native output")
-    for name in ("hermes-agent", "tools", "venv", "pm-runtime", "uv-cache", "bin",
+    for name in ("rabbit-agent", "tools", "venv", "pm-runtime", "uv-cache", "bin",
                  "enabled-features.json", "manifest.json"):
         path = out / name
         if path.is_symlink() or (path.exists() and is_junction(path)):
@@ -44,7 +44,7 @@ def _source_digest(code: Path) -> str:
     """Ignore only assembly-owned products, leaving admitted source immutable."""
     project = tomllib.loads((code / "pyproject.toml").read_text(encoding="utf-8-sig"))["project"]
     dist = re.sub(r"[-_.]+", "_", project["name"])
-    generated = {"install-stamp.json", "hermes_cli/tui_dist", "hermes_cli/web_dist",
+    generated = {"install-stamp.json", "rabbit_cli/tui_dist", "rabbit_cli/web_dist",
                  f"{dist}-{project['version']}.dist-info"}
     files = {}
     for directory, dirs, names in os.walk(code):
@@ -78,11 +78,11 @@ def _check_links(path: Path, out: Path) -> None:
 
 
 def _input_paths(inputs: AgentInputs, out: Path) -> list[Path]:
-    expected = {"code": out / "hermes-agent", "project": out / "hermes-agent/pyproject.toml",
+    expected = {"code": out / "rabbit-agent", "project": out / "rabbit-agent/pyproject.toml",
                 "tools": out / "tools", "environment": out / "venv", "pm_runtime": out / "pm-runtime",
                 "features": out / "enabled-features.json"}
     if (any(getattr(inputs, key) != path for key, path in expected.items())
-            or inputs.placement != "contained" or inputs.repo != "hermes-agent"
+            or inputs.placement != "contained" or inputs.repo != "rabbit-agent"
             or inputs.frontends or inputs.stamp or inputs.command_dir or inputs.env
             or inputs.resources != {name: inputs.code / name for name in RESOURCE_ENV}
             or not inputs.site_packages.is_relative_to(inputs.environment)):
@@ -95,7 +95,7 @@ def _input_paths(inputs: AgentInputs, out: Path) -> list[Path]:
 
 
 def publish_prepared(out: Path, source: Path, revision: str, inputs: AgentInputs) -> Path:
-    from hermes_cli.runtime_state import _atomic_bytes
+    from rabbit_cli.runtime_state import _atomic_bytes
     from pm.paths import lockfile_path
 
     inputs.validate(out)

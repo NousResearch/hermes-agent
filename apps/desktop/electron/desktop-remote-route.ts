@@ -16,7 +16,7 @@ interface SshRouteConfig {
   keyPath?: string
   mode: 'ssh'
   port?: number
-  remoteHermesPath?: string
+  remoteRabbitPath?: string
   remoteProfile?: string
   user?: string
 }
@@ -26,8 +26,7 @@ export type DesktopRemoteRoute =
       authMode: 'oauth' | 'token'
       connectionId?: string
       headers?: Record<string, unknown>
-      kind: 'cloud' | 'remote'
-      org?: string
+      kind: 'remote'
       source: RouteSource
       token?: unknown
       url: string
@@ -100,7 +99,7 @@ export function resolveDesktopRemoteRoute({
   const override = profileRemoteOverride(config, profile)
 
   if (override) {
-    const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
+    const kind = 'remote' as const
     const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
     const route = { ...profileConfig, kind } as StoredRoute
 
@@ -109,7 +108,6 @@ export function resolveDesktopRemoteRoute({
         authMode,
         headers: override.headers,
         kind,
-        org: kind === 'cloud' ? String(profileConfig?.org || '').trim() || undefined : undefined,
         source: 'profile' as const,
         token: override.token,
         url: override.url
@@ -125,8 +123,8 @@ export function resolveDesktopRemoteRoute({
 
     if (!envToken) {
       throw new Error(
-        'HERMES_DESKTOP_REMOTE_URL is set but HERMES_DESKTOP_REMOTE_TOKEN is not. ' +
-          'Both must be provided to connect to a remote Hermes backend.'
+        'RABBIT_DESKTOP_REMOTE_URL is set but RABBIT_DESKTOP_REMOTE_TOKEN is not. ' +
+          'Both must be provided to connect to a remote Rabbit backend.'
       )
     }
 
@@ -150,16 +148,16 @@ export function resolveDesktopRemoteRoute({
 
   if (!modeIsRemoteLike(config.mode)) {
     // Registry-primary fallback (#91564/#90316): "Make primary" on a
-    // registered remote/cloud/ssh gateway only rewrites connections.json —
+    // registered remote/ssh gateway only rewrites connections.json —
     // the v1 config.mode stays 'local'. Without this rung the primary boot
-    // resolves local and spawns a loopback `hermes serve` the desktop never
+    // resolves local and spawns a loopback `rabbit serve` the desktop never
     // uses (it dials the registry primary separately): duplicated MCP sets,
     // port squat, and a respawn on every poll. A 'local' registry primary
     // still resolves null, so genuinely-local desktops are untouched.
     return resolveRegistryPrimaryRoute(registry)
   }
 
-  const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
+  const kind = 'remote' as const
   const authMode = normAuthMode(config.remote?.authMode)
   const route = { ...config.remote, kind } as StoredRoute
 
@@ -168,7 +166,6 @@ export function resolveDesktopRemoteRoute({
       authMode,
       headers: config.remote?.headers,
       kind,
-      org: kind === 'cloud' ? String(config.remote?.org || '').trim() || undefined : undefined,
       source: 'settings' as const,
       token: config.remote?.token,
       url: String(config.remote?.url || '')
@@ -179,7 +176,7 @@ export function resolveDesktopRemoteRoute({
 
 /**
  * Lowest-precedence rung: the v2 registry PRIMARY's own transport. Returns
- * null unless the primary names a remote/cloud/ssh entry — i.e. only when the
+ * null unless the primary names a remote/ssh entry — i.e. only when the
  * user explicitly made a non-local registered gateway their primary.
  */
 function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemoteRoute | null {
@@ -205,7 +202,7 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     return { connectionId: entry.id, kind: 'ssh', source: 'registry', ssh, token: entry.token }
   }
 
-  if (entry.kind !== 'remote' && entry.kind !== 'cloud') {
+  if (entry.kind !== 'remote') {
     return null
   }
 
@@ -220,7 +217,6 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     connectionId: entry.id,
     headers: entry.headers,
     kind: entry.kind,
-    org: entry.kind === 'cloud' ? String(entry.org || '').trim() || undefined : undefined,
     source: 'registry',
     token: entry.token,
     url

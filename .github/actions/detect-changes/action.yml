@@ -34,7 +34,7 @@ outputs:
     description: Run the Python end-to-end suites (tests/e2e, except upgrade).
     value: ${{ steps.classify.outputs.e2e }}
   e2e_upgrade:
-    description: Run the N-1 to HEAD `hermes update` suites (tests/e2e/core/upgrade).
+    description: Run the N-1 to HEAD `rabbit update` suites (tests/e2e/core/upgrade).
     value: ${{ steps.classify.outputs.e2e_upgrade }}
   e2e_desktop_core:
     description: Run the Desktop core Electron suite (apps/desktop/e2e/core).

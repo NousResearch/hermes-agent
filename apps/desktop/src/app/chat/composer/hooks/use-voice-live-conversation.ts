@@ -27,11 +27,11 @@ interface VoiceLiveConversationOptions {
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
-  /** Interrupt the in-flight Hermes turn (Stop-button seam). Fired when a new
+  /** Interrupt the in-flight Rabbit turn (Stop-button seam). Fired when a new
    *  delegation supersedes one still running. */
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
-  /** Submit a Hermes turn: `text` is the user's last words (the bubble and the
+  /** Submit a Rabbit turn: `text` is the user's last words (the bubble and the
    *  persisted row), `voiceContext` the recent spoken exchange for the model. */
   onSubmit: (text: string, voiceContext: string) => Promise<void> | void
   pendingResponse: () => PendingVoiceResponse | null
@@ -43,7 +43,7 @@ interface VoiceLiveConversationOptions {
   beforeMicOpen?: () => Promise<void> | void
 }
 
-/** Turn transcript fragments into the Hermes turn: `prompt` is what the user
+/** Turn transcript fragments into the Rabbit turn: `prompt` is what the user
  *  last said (the persisted user row), `context` the recent spoken exchange
  *  that rides the model input only (see tools/voice_live.py). */
 export function delegationPrompt(context: LiveTranscriptFragment[]): { context: string; prompt: string } {
@@ -99,7 +99,7 @@ export function liveEndedMessage(
  *
  * Status mapping: `listening` = session up, voice idle; `speaking` = the
  * remote track is producing audio; `thinking` = a delegation is in flight in
- * Hermes. There is no `transcribing` phase: the voice model owns speech.
+ * Rabbit. There is no `transcribing` phase: the voice model owns speech.
  */
 export function useVoiceLiveConversation({
   busy,
@@ -322,7 +322,7 @@ export function useVoiceLiveConversation({
           refreshStatus()
           void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
             notifyError(error, voiceCopy.liveDelegationFailed)
-            session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
+            session.speak(delegationId, 'Sorry, I could not reach Rabbit for that request.')
             setDelegation(null)
             refreshStatus()
           })
@@ -374,7 +374,7 @@ export function useVoiceLiveConversation({
     }
   }, [end, refreshStatus, setDelegation, voiceCopy])
 
-  // Drive the reply back into the voice: stream commentary as Hermes writes
+  // Drive the reply back into the voice: stream commentary as Rabbit writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear
   // the delegation when the turn settles.
   // eslint-disable-next-line no-restricted-syntax -- turn-coordination refs (delegation id / spoken cursor), not atom mirrors
@@ -399,7 +399,7 @@ export function useVoiceLiveConversation({
 
       if (tool && tool !== lastToolLabelRef.current) {
         lastToolLabelRef.current = tool
-        session.think(delegationId, `Hermes is working: ${tool}. Not done yet.`)
+        session.think(delegationId, `Rabbit is working: ${tool}. Not done yet.`)
       }
 
       const response = latest.current.pendingResponse()
@@ -447,7 +447,7 @@ export function useVoiceLiveConversation({
       ) {
         // Turn settled without a speakable reply (tool-only, error, interrupted).
         if (spokenLengthRef.current === 0) {
-          session.think(delegationId, 'Hermes finished that request without a spoken result.')
+          session.think(delegationId, 'Rabbit finished that request without a spoken result.')
         }
 
         setDelegation(null)

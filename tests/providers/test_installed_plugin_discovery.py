@@ -1,6 +1,6 @@
-"""A provider installed by ``hermes plugins install`` must actually be found.
+"""A provider installed by ``rabbit plugins install`` must actually be found.
 
-The installer clones into ``$HERMES_HOME/plugins/<name>/`` (flat), provider
+The installer clones into ``$RABBIT_HOME/plugins/<name>/`` (flat), provider
 discovery only scanned ``plugins/model-providers/<name>/``, and PluginManager
 skips ``kind: model-provider`` on purpose — so the documented install path
 reported success and registered nothing. These tests pin the join, and that
@@ -34,7 +34,7 @@ def _clear_provider_caches():
     _pkg._PROVIDER_LIST_CACHE = None
     _pkg._discovered = False
     for mod in list(sys.modules):
-        if mod.startswith(("plugins.model_providers", "_hermes_user_provider")):
+        if mod.startswith(("plugins.model_providers", "_rabbit_user_provider")):
             del sys.modules[mod]
 
 
@@ -47,17 +47,17 @@ def _write_plugin(directory: Path, *, name: str, manifest: str | None):
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def rabbit_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _clear_provider_caches()
     yield tmp_path
     _clear_provider_caches()
 
 
-def test_flat_installed_model_provider_plugins_are_discovered_alongside_nested_ones(hermes_home):
-    _write_plugin(hermes_home / "plugins" / "installed-acp", name="installed-acp",
+def test_flat_installed_model_provider_plugins_are_discovered_alongside_nested_ones(rabbit_home):
+    _write_plugin(rabbit_home / "plugins" / "installed-acp", name="installed-acp",
                   manifest='name: installed-acp\nkind: "model-provider"\n')
-    _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
+    _write_plugin(rabbit_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
     from providers import get_provider_profile
 
@@ -66,11 +66,11 @@ def test_flat_installed_model_provider_plugins_are_discovered_alongside_nested_o
     assert get_provider_profile("nested-acp") is not None
 
 
-def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(hermes_home):
-    _write_plugin(hermes_home / "plugins" / "other-standalone", name="other-standalone",
+def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(rabbit_home):
+    _write_plugin(rabbit_home / "plugins" / "other-standalone", name="other-standalone",
                   manifest="name: other-standalone\nkind: standalone\n")
-    _write_plugin(hermes_home / "plugins" / "manifestless", name="manifestless", manifest=None)
-    _write_plugin(hermes_home / "plugins" / "broken-manifest", name="broken-manifest",
+    _write_plugin(rabbit_home / "plugins" / "manifestless", name="manifestless", manifest=None)
+    _write_plugin(rabbit_home / "plugins" / "broken-manifest", name="broken-manifest",
                   manifest="kind: [this is: not valid\n")
     from providers import get_provider_profile, list_providers
 

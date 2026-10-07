@@ -3,7 +3,7 @@
 The doctor module drives cua-driver's stable ``health_report`` MCP tool over
 stdio JSON-RPC and renders the structured response. Most of the surface is
 about parsing what cua-driver hands back, plus the exit-code contract
-downstream consumers (CI / `hermes update`) rely on:
+downstream consumers (CI / `rabbit update`) rely on:
 
 * Exit 0 when overall == "ok"
 * Exit 1 when overall in ("degraded", "failed") — at least one check
@@ -13,7 +13,7 @@ downstream consumers (CI / `hermes update`) rely on:
 We do NOT spin up a real cua-driver — that lives in the cua-driver
 integration test suite (libs/cua-driver/rust/tests/integration/
 test_health_report_mcp.py). Here we mock the subprocess and assert the
-Hermes-side adapter behaves correctly against the documented response
+Rabbit-side adapter behaves correctly against the documented response
 shape.
 """
 
@@ -158,7 +158,7 @@ class TestDoctorExitCodes:
             code = doctor.run_doctor()
         assert code == 2
         err = capsys.readouterr().err
-        assert "Access is denied" in err and "HERMES_CUA_DRIVER_CMD" in err
+        assert "Access is denied" in err and "RABBIT_CUA_DRIVER_CMD" in err
 
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a
@@ -243,16 +243,16 @@ class TestJsonOutput:
              patch("sys.stdout", new_callable=StringIO) as out:
             doctor.run_doctor(json_output=True)
         # Verify the captured text round-trips through json.loads. Upstream
-        # health_report keys are preserved; Hermes adds hermes_identity.
+        # health_report keys are preserved; Rabbit adds rabbit_identity.
         parsed = json.loads(out.getvalue())
         report = _ok_report()
         for key, value in report.items():
             assert parsed[key] == value
-        assert "hermes_identity" in parsed
-        assert parsed["hermes_identity"]["resolved_binary"]
+        assert "rabbit_identity" in parsed
+        assert parsed["rabbit_identity"]["resolved_binary"]
 
 
-# ── HERMES_CUA_DRIVER_CMD resolution ───────────────────────────────────────
+# ── RABBIT_CUA_DRIVER_CMD resolution ───────────────────────────────────────
 
 
 class TestDriverCmdResolution:
@@ -274,19 +274,19 @@ class TestDriverCmdResolution:
 
     def test_explicit_driver_cmd_arg_wins(self, tmp_path, monkeypatch):
         explicit = self._executable(tmp_path / "custom" / "cua-driver")
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(self._executable(tmp_path / "env" / "cua-driver")))
+        monkeypatch.setenv("RABBIT_CUA_DRIVER_CMD", str(self._executable(tmp_path / "env" / "cua-driver")))
 
         assert self._inspected_binary(driver_cmd=str(explicit)) == explicit
 
     def test_env_var_used_when_no_arg_given(self, tmp_path, monkeypatch):
         from_env = self._executable(tmp_path / "env" / "cua-driver")
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(from_env))
+        monkeypatch.setenv("RABBIT_CUA_DRIVER_CMD", str(from_env))
 
         assert self._inspected_binary() == from_env
 
     def test_doctor_inspects_the_pm_selected_driver_not_path(self, tmp_path, monkeypatch):
         """Doctor must diagnose the driver the runtime invokes: PM's pin, not a PATH copy."""
-        monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+        monkeypatch.delenv("RABBIT_CUA_DRIVER_CMD", raising=False)
         monkeypatch.setenv("PATH", str(self._executable(tmp_path / "bin" / "cua-driver").parent))
 
         assert self._inspected_binary() == Path("/pm/store/cua-driver")
@@ -391,7 +391,7 @@ class TestDoctorVersionIdentity:
             code = doctor.run_doctor(json_output=True)
         assert code == 0
         payload = json.loads(out.getvalue())
-        assert payload["hermes_identity"]["version_mismatch"] is False
+        assert payload["rabbit_identity"]["version_mismatch"] is False
 
 
 def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_service():

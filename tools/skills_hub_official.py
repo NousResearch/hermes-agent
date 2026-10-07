@@ -1,4 +1,4 @@
-"""Skills Hub official sources: repo-shipped optional skills and the centralized Hermes index."""
+"""Skills Hub official sources: repo-shipped optional skills and the centralized Rabbit index."""
 
 import logging
 from pathlib import Path, PurePosixPath
@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple, Union
 from agent.skill_utils import is_excluded_skill_path
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
 from tools.skills_hub_models import (
-    SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
+    SkillBundle, SkillMeta, SkillSource, _rabbit_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -32,19 +32,19 @@ def _entry_provider(entry: dict) -> str:
 
 
 class OptionalSkillSource(SkillSource):
-    """Skills from the repo's ``optional-skills/`` directory: official (Nous-maintained) but not
-    activated by default — absent from the system prompt and not copied to ~/.hermes/skills/ at
+    """Skills from the repo's ``optional-skills/`` directory: official (upstream-maintained) but not
+    activated by default — absent from the system prompt and not copied to ~/.rabbit/skills/ at
     setup. Discoverable via the Skills Hub as source "official" with "builtin" trust."""
 
     SOURCE_ID = "official"
     TRUST_LEVEL = "builtin"
-    OFFICIAL_REPO = "NousResearch/hermes-agent"
+    OFFICIAL_REPO = "seven0070/Rabbit-"
     OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
     _parse_frontmatter = staticmethod(_parse_frontmatter)
 
     def __init__(self, auth: Optional[GitHubAuth] = None):
-        from hermes_constants import get_optional_skills_dir
+        from rabbit_constants import get_optional_skills_dir
 
         self._optional_dir = get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
         self._auth = auth
@@ -115,7 +115,7 @@ class OptionalSkillSource(SkillSource):
         rel_id = skill_dir.resolve().relative_to(optional_root).as_posix()
 
         # Catalog stubs point at the real skill in an upstream-maintained repo
-        # (metadata.hermes.upstream); install pulls the live content from there.
+        # (metadata.rabbit.upstream); install pulls the live content from there.
         try:
             skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
@@ -155,7 +155,7 @@ class OptionalSkillSource(SkillSource):
 
     def _fetch_from_live_repo(self, rel: str) -> Optional[SkillBundle]:
         """Fetch an optional skill straight from the live default branch. Local installs lag
-        ``main``; rather than demanding ``hermes update`` first, resolve against the live repo.
+        ``main``; rather than demanding ``rabbit update`` first, resolve against the live repo.
         ``rel`` is ``category/skill`` (used verbatim) or a bare skill name (located via the repo tree)."""
         parts = _clean_rel_parts(rel.strip("/"))
         if parts is None:
@@ -217,7 +217,7 @@ class OptionalSkillSource(SkillSource):
         return self._remote_dirs
 
     def _upstream_pointer_from_content(self, content: Union[str, bytes]) -> Optional[Dict[str, str]]:
-        """Parse ``metadata.hermes.upstream: {repo: owner/name, path: ...}`` out of SKILL.md content
+        """Parse ``metadata.rabbit.upstream: {repo: owner/name, path: ...}`` out of SKILL.md content
         (a catalog stub); None for vendored skills."""
         if isinstance(content, bytes):
             try:
@@ -225,8 +225,8 @@ class OptionalSkillSource(SkillSource):
             except UnicodeDecodeError:
                 return None
         meta_block = _parse_frontmatter(content).get("metadata")
-        hermes_meta = meta_block.get("hermes") if isinstance(meta_block, dict) else None
-        upstream = hermes_meta.get("upstream") if isinstance(hermes_meta, dict) else None
+        rabbit_meta = meta_block.get("rabbit") if isinstance(meta_block, dict) else None
+        upstream = rabbit_meta.get("upstream") if isinstance(rabbit_meta, dict) else None
         if not isinstance(upstream, dict):
             return None
         repo = str(upstream.get("repo", "")).strip().strip("/")
@@ -273,19 +273,19 @@ class OptionalSkillSource(SkillSource):
             except (OSError, UnicodeDecodeError):
                 continue
             fm = _parse_frontmatter(content)
-            tags = _hermes_tags(fm)
+            tags = _rabbit_tags(fm)
             results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
                                       fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
         return results
 
 
-class HermesIndexSource(SkillSource):
-    """Skill source backed by the centralized Hermes Skills Index: a JSON catalog on the docs site,
+class RabbitIndexSource(SkillSource):
+    """Skill source backed by the centralized Rabbit Skills Index: a JSON catalog on the docs site,
     rebuilt daily by CI, with metadata + resolved GitHub paths for every skill — search and path
     discovery cost zero GitHub API calls. When unavailable every method returns empty/None so
     downstream sources take over transparently."""
 
-    SOURCE_ID = "hermes-index"
+    SOURCE_ID = "rabbit-index"
 
     def __init__(self, auth: GitHubAuth):
         self._index: Optional[dict] = None
@@ -295,8 +295,8 @@ class HermesIndexSource(SkillSource):
 
     def _ensure_loaded(self) -> dict:
         if not self._loaded:
-            from tools.skills_hub_search import _load_hermes_index
-            self._index, self._loaded = _load_hermes_index(), True
+            from tools.skills_hub_search import _load_rabbit_index
+            self._index, self._loaded = _load_rabbit_index(), True
         return self._index or {}
 
     def _skills(self) -> list:
@@ -360,7 +360,7 @@ class HermesIndexSource(SkillSource):
         for github_id in filter(None, candidates):
             bundle = self._get_github().fetch(github_id)
             if bundle:
-                bundle.source = entry.get("source", "hermes-index")
+                bundle.source = entry.get("source", "rabbit-index")
                 bundle.identifier = identifier
                 return bundle
         return None
@@ -382,7 +382,7 @@ class HermesIndexSource(SkillSource):
     def _to_meta(entry: dict) -> SkillMeta:
         return SkillMeta(
             name=entry.get("name", ""), description=entry.get("description", ""),
-            source=entry.get("source", "hermes-index"), identifier=entry.get("identifier", ""),
+            source=entry.get("source", "rabbit-index"), identifier=entry.get("identifier", ""),
             trust_level=entry.get("trust_level", "community"), repo=entry.get("repo"), path=entry.get("path"),
             tags=entry.get("tags", []), extra=entry.get("extra", {}),
         )

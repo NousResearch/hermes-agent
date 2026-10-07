@@ -2,10 +2,10 @@
  * E2E smoke tests for the dev-mode desktop app.
  *
  * These tests launch the Electron app from the built dist/ (not the
- * packaged binary) with a real `hermes serve` backend pointed at a mock
+ * packaged binary) with a real `rabbit serve` backend pointed at a mock
  * inference server. The full chain is exercised:
  *
- *   electron → hermes serve (python) → mock provider → renderer
+ *   electron → rabbit serve (python) → mock provider → renderer
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  * Run from the nix devshell:
@@ -39,7 +39,7 @@ test.describe('dev-mode boot with mock backend', () => {
   // events, timers and url — adding any other node builtin lands here.
   test('the preload bridge reaches the renderer', async () => {
     const bridge = await fixture!.page.evaluate(() => {
-      const desktop = (window as unknown as { hermesDesktop?: Record<string, unknown> }).hermesDesktop
+      const desktop = (window as unknown as { rabbitDesktop?: Record<string, unknown> }).rabbitDesktop
 
       return {
         present: typeof desktop,
@@ -53,7 +53,7 @@ test.describe('dev-mode boot with mock backend', () => {
 
   test('backend boots and app becomes ready', async () => {
     // This is the big one — wait for the full boot chain to complete:
-    // electron starts → hermes serve is spawned → WS connects → config
+    // electron starts → rabbit serve is spawned → WS connects → config
     // loaded → sessions loaded → boot overlay dismissed → composer visible.
     await waitForAppReady(fixture!, 120_000)
   })

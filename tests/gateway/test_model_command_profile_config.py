@@ -47,10 +47,10 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
         "model:\n  default: secondary-model\n  provider: secondary-provider\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", default_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers.list_picker_providers",
+        "rabbit_cli.model_switch_providers.list_picker_providers",
         lambda **_kwargs: [
             {
                 "slug": "secondary-provider",

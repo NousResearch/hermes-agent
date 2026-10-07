@@ -8,7 +8,7 @@ import { useI18n } from '@/i18n'
 export function GuideLoading() {
   const { t } = useI18n()
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
-  const label = t.boot.steps.startingHermesDesktop
+  const label = t.boot.steps.startingRabbitDesktop
 
   return (
     <div

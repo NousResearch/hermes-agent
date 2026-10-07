@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 const setUnreadRemote = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
   Promise.resolve({ ok: true })
 )
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   // Opening a session now PATCHes its persisted unread flag (clearUnreadOnOpen
   // -> markSessionUnread); keep the REST mutation minimal for the suite.
   setApiRequestProfile: () => {},
@@ -125,16 +125,16 @@ describe('composer model persistence scope', () => {
 
   it('keeps inferred local-primary connections on the historical bare keys', () => {
     setComposerSelectionOwner('remote', 'default')
-    window.localStorage.setItem('hermes.desktop.composer.model', 'legacy-model')
-    window.localStorage.setItem('hermes.desktop.composer.provider', 'legacy-provider')
+    window.localStorage.setItem('rabbit.desktop.composer.model', 'legacy-model')
+    window.localStorage.setItem('rabbit.desktop.composer.provider', 'legacy-provider')
 
     setConnection({ baseUrl: '', connectionId: 'local', mode: 'local', profile: 'default' } as never)
 
     expect($currentModel.get()).toBe('legacy-model')
     expect($currentProvider.get()).toBe('legacy-provider')
     setCurrentModel('next-model')
-    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBe('next-model')
-    expect(window.localStorage.getItem('hermes.desktop.composer.model.registry.local.default')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.composer.model')).toBe('next-model')
+    expect(window.localStorage.getItem('rabbit.desktop.composer.model.registry.local.default')).toBeNull()
   })
 
   it('uses the live registry owner when the connection descriptor is stale', () => {
@@ -244,7 +244,7 @@ describe('session owner hints', () => {
 
   it('ignores malformed persisted entries and never throws on hydrate', () => {
     window.localStorage.setItem(
-      'hermes.desktop.sessionOwnerHints.v1',
+      'rabbit.desktop.sessionOwnerHints.v1',
       JSON.stringify([
         'junk',
         ['no-route', null],
@@ -340,7 +340,7 @@ describe('fresh draft identity', () => {
     expect(first).not.toBe(previous)
     expect(second).not.toBe(first)
     expect($freshDraftKey.get()).toBe(second)
-    expect(window.localStorage.getItem('hermes.desktop.freshDraftKey')).toBe(second)
+    expect(window.localStorage.getItem('rabbit.desktop.freshDraftKey')).toBe(second)
   })
 })
 
@@ -1067,12 +1067,12 @@ describe('workspaceCwdForNewSession', () => {
     $connection.set(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-a')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.profile.profile-b')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
-    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+    window.localStorage.removeItem('rabbit.desktop.workspace-cwd')
+    window.localStorage.removeItem('rabbit.desktop.workspace-cwd.profile.profile-a')
+    window.localStorage.removeItem('rabbit.desktop.workspace-cwd.profile.profile-b')
+    window.localStorage.removeItem('rabbit.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
+    window.localStorage.removeItem('rabbit.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
+    delete (window as { rabbitDesktop?: unknown }).rabbitDesktop
   })
 
   it('does not publish a delayed configured default after ownership is lost', async () => {
@@ -1084,7 +1084,7 @@ describe('workspaceCwdForNewSession', () => {
 
     const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
 
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+    ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = {
       sanitizeWorkspaceCwd,
       settings: { getDefaultProjectDir: vi.fn(() => settingsResult.promise) }
     }
@@ -1104,7 +1104,7 @@ describe('workspaceCwdForNewSession', () => {
   it('does not publish a delayed sanitized cwd after ownership is lost', async () => {
     const sanitized = deferred<{ cwd: string }>()
 
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+    ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = {
       sanitizeWorkspaceCwd: vi.fn(() => sanitized.promise),
       settings: {
         getDefaultProjectDir: vi.fn(async () => ({
@@ -1126,7 +1126,7 @@ describe('workspaceCwdForNewSession', () => {
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
-    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    window.localStorage.setItem('rabbit.desktop.workspace-cwd', '/home/user/sticky')
     applyConfiguredDefaultProjectDir('/home/user/configured')
 
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
@@ -1145,7 +1145,7 @@ describe('workspaceCwdForNewSession', () => {
     // A bare new chat must NOT inherit the sticky/remembered or live workspace —
     // that's the "why is my new session already on a branch" bug. Only an
     // explicit configured default pre-attaches.
-    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    window.localStorage.setItem('rabbit.desktop.workspace-cwd', '/home/user/sticky')
     $currentCwd.set('/home/user/live')
 
     expect(workspaceCwdForNewSession()).toBe('')
@@ -1161,7 +1161,7 @@ describe('workspaceCwdForNewSession', () => {
   })
 
   it('keeps remote workspace memory separate from local and other remotes', () => {
-    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/local/project')
+    window.localStorage.setItem('rabbit.desktop.workspace-cwd', '/local/project')
     $currentCwd.set('/live/session/path')
     $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
 
@@ -1198,7 +1198,7 @@ describe('workspaceCwdForNewSession', () => {
     // that gateway's own default.
     const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
 
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+    ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = {
       sanitizeWorkspaceCwd,
       settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
     }
@@ -1220,12 +1220,12 @@ describe('workspaceCwdForNewSession', () => {
   it('scopes the local workspace memory per profile, keeping the bare key for default (#96834)', () => {
     $connection.set({ baseUrl: '', mode: 'local', profile: 'default' } as never)
     setCurrentCwd('/home/user/default-project')
-    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd')).toBe('/home/user/default-project')
+    expect(window.localStorage.getItem('rabbit.desktop.workspace-cwd')).toBe('/home/user/default-project')
 
     $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-a' } as never)
     expect(getRememberedWorkspaceCwd()).toBe('')
     setCurrentCwd('/home/user/project-a')
-    expect(window.localStorage.getItem('hermes.desktop.workspace-cwd.profile.profile-a')).toBe('/home/user/project-a')
+    expect(window.localStorage.getItem('rabbit.desktop.workspace-cwd.profile.profile-a')).toBe('/home/user/project-a')
 
     $connection.set({ baseUrl: '', mode: 'local', profile: 'profile-b' } as never)
     expect(getRememberedWorkspaceCwd()).toBe('')
@@ -1235,7 +1235,7 @@ describe('workspaceCwdForNewSession', () => {
   })
 
   it('switching to a local profile with no memory clears the outgoing profile folder (#96834)', async () => {
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+    ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = {
       sanitizeWorkspaceCwd: vi.fn(async (cwd: string) => ({ cwd })),
       settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
     }
@@ -1570,14 +1570,14 @@ describe('remembered session id (per profile)', () => {
 
   it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
     // An existing install remembered its session under the pre-per-profile key.
-    localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
+    localStorage.setItem('rabbit.desktop.lastSessionId', 'legacy-session')
 
     // Reading from any profile discards the legacy key — ownership is unknowable.
     expect(getRememberedSessionId('default')).toBeNull()
     expect(getRememberedSessionId('coder')).toBeNull()
 
     // The legacy key must be cleared.
-    expect(localStorage.getItem('hermes.desktop.lastSessionId')).toBeNull()
+    expect(localStorage.getItem('rabbit.desktop.lastSessionId')).toBeNull()
   })
 
   it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
@@ -1585,7 +1585,7 @@ describe('remembered session id (per profile)', () => {
 
     expect(getRememberedSessionId('research/ops')).toBe('ops-session')
     // Verify the storage key uses encoded form.
-    expect(localStorage.getItem('hermes.desktop.lastSessionId.profile.research%2Fops')).toBe('ops-session')
+    expect(localStorage.getItem('rabbit.desktop.lastSessionId.profile.research%2Fops')).toBe('ops-session')
     // Another profile with a different encoding cannot read it.
     expect(getRememberedSessionId('research')).toBeNull()
   })
@@ -1623,20 +1623,20 @@ describe('remembered route (per profile)', () => {
   })
 
   it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
-    localStorage.setItem('hermes.desktop.lastRoute', '/capabilities')
+    localStorage.setItem('rabbit.desktop.lastRoute', '/capabilities')
 
     // Reading from any profile discards the legacy key.
     expect(getRememberedRoute('default')).toBeNull()
     expect(getRememberedRoute('coder')).toBeNull()
 
-    expect(localStorage.getItem('hermes.desktop.lastRoute')).toBeNull()
+    expect(localStorage.getItem('rabbit.desktop.lastRoute')).toBeNull()
   })
 
   it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
     setRememberedRoute('/cron', 'research/ops')
 
     expect(getRememberedRoute('research/ops')).toBe('/cron')
-    expect(localStorage.getItem('hermes.desktop.lastRoute.profile.research%2Fops')).toBe('/cron')
+    expect(localStorage.getItem('rabbit.desktop.lastRoute.profile.research%2Fops')).toBe('/cron')
     expect(getRememberedRoute('research')).toBeNull()
   })
 

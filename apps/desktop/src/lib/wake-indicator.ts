@@ -12,7 +12,7 @@ function pushState(state: WakeIndicatorState): void {
   }
 
   lastState = state
-  window.hermesDesktop?.wakeIndicator?.setState(state)
+  window.rabbitDesktop?.wakeIndicator?.setState(state)
 }
 
 export function activateWakeIndicator(): void {

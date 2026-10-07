@@ -1,6 +1,6 @@
 """Desktop/TUI sessions must adopt a ``fallback_providers`` chain added after the chat was opened.
 
-Regression for #95066: ``_make_agent`` read the chain once, so a session born before ``hermes fallback
+Regression for #95066: ``_make_agent`` read the chain once, so a session born before ``rabbit fallback
 add`` kept an empty ``_fallback_chain`` forever and a Codex ``usage_limit_reached`` 429 ended in a
 provider error instead of switching to the configured fallback.
 

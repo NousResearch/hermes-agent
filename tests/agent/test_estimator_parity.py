@@ -34,7 +34,7 @@ STALE_THINKING = "considering the next move carefully... " * 200  # ~2K tok
 
 def _reasoning_heavy_session(n_turns: int = 40) -> list:
     """Transcript whose bulk is stale reasoning replay (the #84371 shape)."""
-    msgs = [{"role": "system", "content": "You are Hermes."}]
+    msgs = [{"role": "system", "content": "You are Rabbit."}]
     msgs.append({"role": "user", "content": "do the big task"})
     for i in range(n_turns):
         msgs.append(

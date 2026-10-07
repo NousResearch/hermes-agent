@@ -20,7 +20,7 @@ from tools.browser_extension_router import route_browser_tool
 
 
 API_KEY = "-".join(("fixture", "neutral", "api", "key", "123"))
-CONTROL_PROTOCOL = "hermes-browser-control-v1"
+CONTROL_PROTOCOL = "rabbit-browser-control-v1"
 REAL_BROWSER_CAPABILITIES = {
     "browser_back",
     "browser_click",
@@ -50,7 +50,7 @@ class _SessionDB:
 
 
 def _ticket_protocol(ticket):
-    return f"hermes-browser-control-ticket.{ticket}"
+    return f"rabbit-browser-control-ticket.{ticket}"
 
 
 def _adapter(*, key=API_KEY):
@@ -253,11 +253,11 @@ def test_api_agent_context_binds_server_principal_and_transport_family():
     )
     try:
         assert (
-            get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL")
+            get_session_env("RABBIT_BROWSER_CONTROL_PRINCIPAL")
             == "principal-fixture"
         )
         assert (
-            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+            get_session_env("RABBIT_BROWSER_CONTROL_TRANSPORT_FAMILY")
             == "local-api"
         )
     finally:

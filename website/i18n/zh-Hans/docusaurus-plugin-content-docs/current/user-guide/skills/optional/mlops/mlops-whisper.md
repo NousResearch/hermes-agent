@@ -14,7 +14,7 @@ OpenAI 的通用语音识别模型。支持 99 种语言、转录、翻译为英
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/whisper` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/whisper` 安装 |
 | 路径 | `optional-skills/mlops/whisper` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ OpenAI 的通用语音识别模型。支持 99 种语言、转录、翻译为英
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Whisper - 鲁棒语音识别

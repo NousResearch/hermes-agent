@@ -14,10 +14,10 @@ Passive recon of subdomains, SSL certs, WHOIS, and DNS.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/research/domain-intel` |
+| Source | Optional — install with `rabbit skills install official/research/domain-intel` |
 | Path | `optional-skills/research/domain-intel` |
 | Version | `1.0.0` |
-| Author | FurkanL0, Hermes Agent |
+| Author | FurkanL0, Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Domains`, `OSINT`, `DNS`, `Research` |
@@ -25,7 +25,7 @@ Passive recon of subdomains, SSL certs, WHOIS, and DNS.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Domain Intelligence — Passive OSINT

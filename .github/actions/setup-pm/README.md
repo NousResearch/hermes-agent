@@ -30,7 +30,7 @@ On Windows, PM selects the host architecture even if the bootstrap interpreter
 runs under x64 emulation. A disposable command environment supplies the missing
 `python3.exe` alias without changing the verified interpreter store.
 
-For Python dependencies, the action exports `HERMES_PYTHON` and `VIRTUAL_ENV`.
+For Python dependencies, the action exports `RABBIT_PYTHON` and `VIRTUAL_ENV`.
 Use `scripts/run_tests.sh`; do not activate `.venv`. The environment belongs to
 PM under the runner's temporary home, not the checkout. No installer executable
 or `UV_*` policy variables are exposed. Tool-only jobs can prepare small isolated

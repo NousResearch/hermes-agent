@@ -1,4 +1,4 @@
-"""``hermes config set telegram.allowed_chats '["a","b"]'`` stores a JSON-encoded *string*; every
+"""``rabbit config set telegram.allowed_chats '["a","b"]'`` stores a JSON-encoded *string*; every
 Telegram allowlist reader must decode it instead of comma-splitting the brackets onto the ids."""
 
 from types import SimpleNamespace
@@ -12,7 +12,7 @@ def _adapter(extra):
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra=extra)
-    adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    adapter._bot = SimpleNamespace(id=999, username="rabbit_bot")
     return adapter
 
 

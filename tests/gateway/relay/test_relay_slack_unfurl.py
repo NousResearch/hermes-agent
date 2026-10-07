@@ -89,7 +89,7 @@ class TestUnfurlHints:
         assert a._slack_unfurl_hints("slack") is None
 
     def test_string_bools_from_config_set_are_coerced(self):
-        # Railway knobs / `hermes config set` persist YAML strings.
+        # Railway knobs / `rabbit config set` persist YAML strings.
         a = _slack_adapter({"slack": {"unfurl_links": "true", "unfurl_media": "false"}})
         assert a._slack_unfurl_hints("slack") == {
             "unfurl_links": True,
@@ -281,7 +281,7 @@ class TestFreshFinalForForceOnUnfurl:
         )
 
     def test_force_on_string_true_prefers_fresh_final(self):
-        # hermes config set / Railway knobs persist YAML strings.
+        # rabbit config set / Railway knobs persist YAML strings.
         a = self._adapter({"unfurl_links": "true"})
         assert a.prefers_fresh_final_streaming("see https://x.dev") is True
 

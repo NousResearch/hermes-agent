@@ -2,9 +2,9 @@
 
 Every pm venv sync — startup, plugin install, update rebuild — writes a
 receipt with the SAME schema the updater's receipts use
-(hermes_cli.update_receipt), into the same
-``<HERMES_HOME>/logs/update_receipts/`` dir with a ``kind`` field
-separating kinds. One reader (``hermes pm status``, desktop IPC) serves
+(rabbit_cli.update_receipt), into the same
+``<RABBIT_HOME>/logs/update_receipts/`` dir with a ``kind`` field
+separating kinds. One reader (``rabbit pm status``, desktop IPC) serves
 every surface: a failed venv rebuild is as reportable as a failed
 update.
 
@@ -104,13 +104,13 @@ def accept_worker_receipt(data: Optional[dict[str, Any]], update_id: Optional[st
 def _ambient_update_id() -> Optional[str]:
     """The update correlation id in force in this context, or None.
 
-    Lazy import: hermes_cli.update_receipt imports pm.receipt at embed
+    Lazy import: rabbit_cli.update_receipt imports pm.receipt at embed
     time, so this direction must stay function-scoped. Never raises."""
     worker = _worker_update.get()
     if worker is not None:
         return worker[0]
     try:
-        from hermes_cli.update_receipt import current_correlation_id
+        from rabbit_cli.update_receipt import current_correlation_id
 
         return current_correlation_id()
     except Exception:
@@ -124,9 +124,9 @@ def _utc_now_iso() -> str:
 def _receipt_dir() -> Path:
     """The receipts dir — a pure path computation, NO mkdir side
     effect: readers (latest()) must not create state."""
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
-    return get_hermes_home() / "logs" / "update_receipts"
+    return get_rabbit_home() / "logs" / "update_receipts"
 
 
 def begin(kind: str) -> contextvars.Token:
@@ -136,7 +136,7 @@ def begin(kind: str) -> contextvars.Token:
     outer receipt survives the inner finalize.
 
     The receipt is stamped with the ambient update correlation id (the
-    ``hermes update`` this sync belongs to), or None for a standalone
+    ``rabbit update`` this sync belongs to), or None for a standalone
     sync — the id is what makes the updater's embed selective."""
     return _current.set(
         {
@@ -277,7 +277,7 @@ def last_for_update(update_id: Optional[str], *, consume: bool = False) -> Optio
 
 def latest() -> Optional[dict[str, Any]]:
     """The newest receipt (any kind) — the reader surface for
-    ``hermes pm status`` + the desktop. Pure read: never creates the
+    ``rabbit pm status`` + the desktop. Pure read: never creates the
     receipts dir."""
     try:
         point = _receipt_dir() / "latest.json"

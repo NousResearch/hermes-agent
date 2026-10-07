@@ -1,12 +1,12 @@
 name: twenty-crm
-repo: https://github.com/TREE-Ind/hermes-twenty-crm
+repo: https://github.com/TREE-Ind/rabbit-twenty-crm
 sha: 3d87c1634e4b159738b35954ac4efc15c876d46d
-description: Twenty CRM for Hermes Agent with managed self-hosting, external-instance connectivity, REST,
+description: Twenty CRM for Rabbit Agent with managed self-hosting, external-instance connectivity, REST,
   GraphQL, and live schema introspection.
 maintainer: TREE-Ind
 tier: community
 category: tools
-docs_url: https://github.com/TREE-Ind/hermes-twenty-crm#readme
+docs_url: https://github.com/TREE-Ind/rabbit-twenty-crm#readme
 capabilities:
   provides_tools:
   - twenty_describe_workspace

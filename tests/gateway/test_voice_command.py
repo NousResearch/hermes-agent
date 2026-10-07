@@ -153,7 +153,7 @@ class TestHandleVoiceCommand:
 
         fake_cfg = {"voice": {"auto_tts": True}}
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             lambda: fake_cfg,
         )
         adapter = SimpleNamespace(
@@ -476,7 +476,7 @@ class TestVoiceChannelCommands:
         mock_adapter._voice_input_callback = None
         event = self._make_discord_event()
         event.source.chat_type = "group"
-        event.source.chat_name = "Hermes Server / #general"
+        event.source.chat_name = "Rabbit Server / #general"
         runner.adapters[event.source.platform] = mock_adapter
         result = await runner._handle_voice_channel_join(event)
         assert "General" in result
@@ -604,7 +604,7 @@ class TestVoiceChannelCommands:
 
         bound_source = SessionSource(
             chat_id="123",
-            chat_name="Hermes Server / #general",
+            chat_name="Rabbit Server / #general",
             chat_type="group",
             user_id="user1",
             user_name="user1",
@@ -626,7 +626,7 @@ class TestVoiceChannelCommands:
         event = mock_adapter.handle_message.call_args[0][0]
         assert event.source.chat_id == "123"
         assert event.source.chat_type == "group"
-        assert event.source.chat_name == "Hermes Server / #general"
+        assert event.source.chat_name == "Rabbit Server / #general"
         assert event.source.user_id == "42"
 
 
@@ -766,7 +766,7 @@ class TestDiscordVoiceChannelMethods:
         from plugins.platforms.discord.adapter import DiscordAdapter
         from gateway.config import PlatformConfig
 
-        with patch("hermes_cli.config.read_raw_config", return_value={
+        with patch("rabbit_cli.config.read_raw_config", return_value={
             "discord": {
                 "voice_channel_inactivity_timeout_seconds": 0,
                 "voice_playback_timeout_seconds": 240,
@@ -1142,7 +1142,7 @@ class TestVoiceChannelAwareness:
         adapter._voice_sources = {}
         adapter._voice_receivers = {}
         adapter._client = MagicMock()
-        adapter._client.user = SimpleNamespace(id=99999, name="HermesBot")
+        adapter._client.user = SimpleNamespace(id=99999, name="RabbitBot")
         return adapter
 
     def _make_member(self, user_id, display_name, is_bot=False):
@@ -1155,7 +1155,7 @@ class TestVoiceChannelAwareness:
         adapter = self._make_adapter()
         vc = MagicMock()
         vc.is_connected.return_value = True
-        bot_member = self._make_member(99999, "HermesBot", is_bot=True)
+        bot_member = self._make_member(99999, "RabbitBot", is_bot=True)
         user_a = self._make_member(1001, "Alice")
         user_b = self._make_member(1002, "Bob")
         vc.channel.name = "general-voice"
@@ -1169,7 +1169,7 @@ class TestVoiceChannelAwareness:
         names = [m["display_name"] for m in info["members"]]
         assert "Alice" in names
         assert "Bob" in names
-        assert "HermesBot" not in names
+        assert "RabbitBot" not in names
 
 
     def test_context_string_format(self):

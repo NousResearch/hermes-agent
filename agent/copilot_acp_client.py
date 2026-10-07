@@ -1,4 +1,4 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Rabbit requests to `copilot --acp`.
 
 Each request starts a short-lived ACP session, sends the formatted conversation
 as one prompt, collects text chunks, and returns the minimal OpenAI-client shape.
@@ -31,7 +31,7 @@ from agent.acp_openai_bridge import (
 from agent.file_safety import (
     get_nt_namespace_error, get_read_block_error, get_write_denied_error, is_write_approval_required)
 from agent.redact import redact_sensitive_text
-from tools.environments.local import hermes_subprocess_env
+from tools.environments.local import rabbit_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "t
 # True/False is cached, so a CLI installed mid-session is picked up.
 _ACP_PROBE_CACHE: dict[str, bool] = {}
 _PROMPT_PREAMBLE = (
-    "You are being used as the active ACP agent backend for Hermes.",
+    "You are being used as the active ACP agent backend for Rabbit.",
     "Use ACP capabilities to complete tasks.",
     "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
     "If no tool is needed, answer normally.",
@@ -53,16 +53,16 @@ _PROMPT_PREAMBLE = (
 _INITIALIZE_PARAMS = {
     "protocolVersion": 1,
     "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
-    "clientInfo": {"name": "hermes-agent", "title": "Hermes Agent", "version": "0.0.0"},
+    "clientInfo": {"name": "rabbit-agent", "title": "Rabbit Agent", "version": "0.0.0"},
 }
 _DEPRECATED_CLI_ERROR = (
-    "Hermes ACP mode requires the NEW GitHub Copilot CLI (github.com/github/copilot-cli), but the binary it just "
+    "Rabbit ACP mode requires the NEW GitHub Copilot CLI (github.com/github/copilot-cli), but the binary it just "
     "spawned is the deprecated `gh copilot` extension.\n\n"
     "Install the new CLI:\n  npm install -g @github/copilot\n  # then verify with: copilot --help\n\n"
-    "If `copilot` already resolves to the new CLI but you still see this,\npoint Hermes at it explicitly:\n"
-    "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
+    "If `copilot` already resolves to the new CLI but you still see this,\npoint Rabbit at it explicitly:\n"
+    "  export RABBIT_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
     "Alternative: use the `copilot` provider (no ACP, hits the Copilot API\ndirectly with a Copilot subscription "
-    "token) via `hermes setup`.\n\nOriginal error:\n"
+    "token) via `rabbit setup`.\n\nOriginal error:\n"
 )
 
 
@@ -73,11 +73,11 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 
 def _resolve_command() -> str:
-    return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
+    return os.getenv("RABBIT_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
 
 
 def _resolve_args() -> list[str]:
-    return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+    return shlex.split(os.getenv("RABBIT_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -123,12 +123,12 @@ def _resolve_home_dir() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-    from hermes_constants import apply_subprocess_home_env
+    from rabbit_constants import apply_subprocess_home_env
 
     # Copilot ACP drives a model and needs LLM provider credentials; the central helper still
     # strips Tier-1 secrets (bot tokens, GitHub auth, infra).
     # See #29157.
-    env = hermes_subprocess_env(inherit_credentials=True)
+    env = rabbit_subprocess_env(inherit_credentials=True)
     env["HOME"] = _resolve_home_dir()
     apply_subprocess_home_env(env)
     return env
@@ -197,7 +197,7 @@ def _format_messages_as_prompt(
 ) -> str:
     # Deliberately no "requested model" line: the model is applied for real via ACP session/set_model;
     # a prompt-text mention makes a substituted backend model FALSELY self-identify as the requested
-    # one. Copilot has no tools of its own that collide with Hermes', so forward the whole toolset.
+    # one. Copilot has no tools of its own that collide with Rabbit', so forward the whole toolset.
     sections: list[str] = [*_PROMPT_PREAMBLE, *_render_tool_bridge_sections(tools, tool_choice)]
     transcript: list[str] = []
     for message in (m for m in messages if isinstance(m, dict)):
@@ -280,8 +280,8 @@ class CopilotACPClient:
 
     # Declared for agent/auxiliary_client.py: this shim drives an ACP subprocess over stdio, so it is
     # already a complete client (never re-dispatch through a wire adapter) and async-safe as-is.
-    HERMES_SKIP_TRANSPORT_WRAP = True
-    HERMES_SKIP_ASYNC_WRAP = True
+    RABBIT_SKIP_TRANSPORT_WRAP = True
+    RABBIT_SKIP_ASYNC_WRAP = True
 
     def __init__(
         self, *, api_key: str | None = None, base_url: str | None = None, default_headers: dict[str, str] | None = None,
@@ -355,10 +355,10 @@ class CopilotACPClient:
                 f"ACP transport not supported by '{self._acp_command}': `{preview}` is rejected as an unknown option. This "
                 "usually means the CLI is an older release (e.g. Claude Code v2.x) or a different tool than expected. Either "
                 "install a CLI that ships with --acp support (e.g. `@github/copilot` late 2025+), or set "
-                "HERMES_COPILOT_ACP_COMMAND / HERMES_COPILOT_ACP_ARGS to a working pair."
+                "RABBIT_COPILOT_ACP_COMMAND / RABBIT_COPILOT_ACP_ARGS to a working pair."
             )
         try:
-            from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
+            from rabbit_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
 
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
             # pipes stay intact for the ACP wire.
@@ -369,7 +369,7 @@ class CopilotACPClient:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(f"Could not start Copilot ACP command '{self._acp_command}'. Install GitHub Copilot CLI or set "
-                               "HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.") from exc
+                               "RABBIT_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.") from exc
         if proc.stdin is None or proc.stdout is None:
             proc.kill()
             raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
@@ -500,7 +500,7 @@ class CopilotACPClient:
                 except Exception as exc:
                     response = _jsonrpc_error(message_id, -32602, str(exc))
         else:
-            response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Hermes yet.")
+            response = _jsonrpc_error(message_id, -32601, f"ACP client method '{method}' is not supported by Rabbit yet.")
         process.stdin.write(json.dumps(response) + "\n")
         process.stdin.flush()
         return True

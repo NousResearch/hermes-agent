@@ -1,7 +1,7 @@
 /**
  * bootstrap-runner.ts
  *
- * Drives apps/desktop's first-launch install of Hermes Agent by spawning
+ * Drives apps/desktop's first-launch install of Rabbit Agent by spawning
  * scripts/install.ps1 stage-by-stage and streaming progress events back to
  * the renderer.
  *
@@ -9,10 +9,10 @@
  *   import { runBootstrap }from './bootstrap-runner'
  *   const result = await runBootstrap({
  *     installStamp,        // INSTALL_STAMP from main.ts (may be null in dev)
- *     activeRoot,          // ACTIVE_HERMES_ROOT
+ *     activeRoot,          // ACTIVE_RABBIT_ROOT
  *     sourceRepoRoot,      // SOURCE_REPO_ROOT (for dev install.ps1 lookup)
- *     hermesHome,          // HERMES_HOME
- *     logRoot,             // HERMES_HOME/logs
+ *     rabbitHome,          // RABBIT_HOME
+ *     logRoot,             // RABBIT_HOME/logs
  *     emit: ev => {...}    // event sink (sender.send or similar)
  *   })
  *
@@ -37,7 +37,7 @@ import fs from 'node:fs'
 import https from 'node:https'
 import path from 'node:path'
 
-// Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
+// Relative, not `@rabbit/shared/ansi`: the electron bundle is built by esbuild
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
 import { stripAnsi } from '../../shared/src/ansi'
 
@@ -99,7 +99,7 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
   }
 
   try {
-    const raw = fs.readFileSync(path.join(activeRoot, '.hermes-bootstrap-complete'), 'utf8')
+    const raw = fs.readFileSync(path.join(activeRoot, '.rabbit-bootstrap-complete'), 'utf8')
     const parsed = JSON.parse(raw)
 
     return parsed && isPinnedCommit(parsed.pinnedCommit) ? parsed.pinnedCommit : null
@@ -204,8 +204,8 @@ function resolveLocalInstallScript(sourceRepoRoot) {
   }
 }
 
-function bootstrapCacheDir(hermesHome) {
-  return path.join(hermesHome, 'bootstrap-cache')
+function bootstrapCacheDir(rabbitHome) {
+  return path.join(rabbitHome, 'bootstrap-cache')
 }
 
 function hasExistingGitCheckout(activeRoot) {
@@ -220,8 +220,8 @@ function hasExistingGitCheckout(activeRoot) {
   }
 }
 
-function cachedScriptPath(hermesHome, cacheKey) {
-  return path.join(bootstrapCacheDir(hermesHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
+function cachedScriptPath(rabbitHome, cacheKey) {
+  return path.join(bootstrapCacheDir(rabbitHome), `install-${cacheKey}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
 function downloadInstallScript(ref, destPath) {
@@ -229,7 +229,7 @@ function downloadInstallScript(ref, destPath) {
   // install, the branch for an existing checkout or a non-git fallback stamp
   // (never the all-zero placeholder, which is not a real GitHub commit).
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  const url = `https://raw.githubusercontent.com/seven0070/Rabbit-/${ref}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -313,7 +313,7 @@ function downloadInstallScript(ref, destPath) {
 async function resolveInstallScript({
   installStamp,
   sourceRepoRoot,
-  hermesHome,
+  rabbitHome,
   emit,
   pinCommit = true,
   _download = downloadInstallScript
@@ -341,7 +341,7 @@ async function resolveInstallScript({
     )
   }
 
-  const cached = cachedScriptPath(hermesHome, installRef.cacheKey)
+  const cached = cachedScriptPath(rabbitHome, installRef.cacheKey)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
 
   // The cache is only this run's -File target, never a source of truth.
@@ -426,11 +426,11 @@ function cleanInstallerLogLine(raw: string): string {
   return frames.length ? frames[frames.length - 1] : ''
 }
 
-// The installer drives Hermes's own toolchain (install.sh takes a uv from PATH
+// The installer drives Rabbit's own toolchain (install.sh takes a uv from PATH
 // when it is new enough), so store dirs already on PATH stay ahead of the
 // login-shell entries shell-path.ts merged in front of them.
-function installerEnv(hermesHome) {
-  const env = { ...process.env, HERMES_HOME: hermesHome || process.env.HERMES_HOME || '' }
+function installerEnv(rabbitHome) {
+  const env = { ...process.env, RABBIT_HOME: rabbitHome || process.env.RABBIT_HOME || '' }
   const key = pathEnvKey(env)
 
   env[key] = storeFirstPath(env[key] || '', { currentEnv: env })
@@ -438,7 +438,7 @@ function installerEnv(hermesHome) {
   return env
 }
 
-function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, rabbitHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
@@ -448,9 +448,9 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
       fullArgs,
       hiddenWindowsChildOptions({
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Pass HERMES_HOME through so install.ps1 respects the caller's
+        // Pass RABBIT_HOME through so install.ps1 respects the caller's
         // choice rather than re-computing the default.
-        env: installerEnv(hermesHome)
+        env: installerEnv(rabbitHome)
       })
     )
 
@@ -542,11 +542,11 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
   })
 }
 
-function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome }: any = {}) {
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, rabbitHome }: any = {}) {
   return new Promise<any>((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: installerEnv(hermesHome)
+      env: installerEnv(rabbitHome)
     })
 
     let stdout = ''
@@ -658,8 +658,8 @@ function buildPinArgs(installStamp, { pinCommit = true } = {}) {
   return args
 }
 
-function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = true }) {
-  const args = ['--dir', activeRoot, '--hermes-home', hermesHome]
+function buildPosixPinArgs({ installStamp, activeRoot, rabbitHome, pinCommit = true }) {
+  const args = ['--dir', activeRoot, '--rabbit-home', rabbitHome]
 
   if (installStamp && installStamp.branch) {
     args.push('--branch', installStamp.branch)
@@ -676,7 +676,7 @@ async function fetchManifest({
   scriptPath,
   installerKind,
   emit,
-  hermesHome,
+  rabbitHome,
   activeRoot,
   installStamp,
   pinCommit,
@@ -686,14 +686,14 @@ async function fetchManifest({
   const isPosix = installerKind === 'posix'
 
   const args = isPosix
-    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })]
+    ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, rabbitHome, pinCommit })]
     : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit })]
 
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
     abortSignal,
-    hermesHome
+    rabbitHome
   })
 
   if (result.code !== 0) {
@@ -754,7 +754,7 @@ async function runStage({
   installerKind,
   stage,
   emit,
-  hermesHome,
+  rabbitHome,
   activeRoot,
   abortSignal,
   installStamp,
@@ -771,7 +771,7 @@ async function runStage({
         stage.name,
         '--non-interactive',
         '--json',
-        ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })
+        ...buildPosixPinArgs({ installStamp, activeRoot, rabbitHome, pinCommit })
       ]
     : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit })]
 
@@ -779,7 +779,7 @@ async function runStage({
     emit,
     stageName: stage.name,
     abortSignal,
-    hermesHome
+    rabbitHome
   })
 
   const durationMs = Date.now() - startedAt
@@ -858,7 +858,7 @@ async function runBootstrap(opts) {
     installStamp,
     activeRoot,
     sourceRepoRoot,
-    hermesHome,
+    rabbitHome,
     logRoot,
     onEvent,
     abortSignal,
@@ -881,7 +881,7 @@ async function runBootstrap(opts) {
     return { ok: false, cancelled: true }
   }
 
-  const runLog = openRunLog(logRoot || path.join(hermesHome, 'logs'))
+  const runLog = openRunLog(logRoot || path.join(rabbitHome, 'logs'))
 
   // Tee every event to the runLog AND the caller's onEvent. This gives us a
   // forensic trail per bootstrap run AND lets the renderer subscribe live.
@@ -925,7 +925,7 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, pinCommit })
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, rabbitHome, emit, pinCommit })
     abortSignal?.throwIfAborted()
 
     const installerKind = scriptInfo.kind || 'powershell'
@@ -935,7 +935,7 @@ async function runBootstrap(opts) {
       scriptPath: scriptInfo.path,
       installerKind,
       emit,
-      hermesHome,
+      rabbitHome,
       activeRoot,
       installStamp,
       pinCommit,
@@ -966,7 +966,7 @@ async function runBootstrap(opts) {
         installerKind,
         stage,
         emit,
-        hermesHome,
+        rabbitHome,
         activeRoot,
         abortSignal,
         installStamp,

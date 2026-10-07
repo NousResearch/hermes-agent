@@ -32,7 +32,7 @@ _SILENT_BACKGROUND_HINT = (
 # Detector is deliberately narrow: the canonical column-2 awk poller is fine.
 _HOMEBREW_CI_POLLER_HINT = (
     'This looks like a homebrewed CI poller built from `gh pr view --json statusCheckRollup` '
-    'and/or `gh pr checks | jq`. That shape has burned us repeatedly in hermes-agent dev work '
+    'and/or `gh pr checks | jq`. That shape has burned us repeatedly in rabbit-agent dev work '
     '(PRs #31329, #31448, #31695, #31709, #31745, #32264, #33131) — stdout buffering kills '
     'output capture, jq null-key edge cases silently exit the loop, conclusion-vs-status field '
     'confusion exits early with bogus all-green verdicts, TTY-only summary banners never '
@@ -40,7 +40,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     'exit-code-driven `gh pr checks $PR >/dev/null` (rc 0 = green, 8 = pending, else fail) for '
     'exit-on-first-fail behavior, or the column-2 awk-on-tabs poller (`awk -F"\\t" '
     '"$2==\\"pending\\""`) for sharded matrices. Load '
-    "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
+    "skill_view(name='github/rabbit-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
     "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
@@ -49,22 +49,22 @@ _HOMEBREW_CI_POLLER_HINT = (
 
 _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
-    'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
+    'an async completion after the turn ends (a one-shot runner such as `rabbit -z`, a cron '
     'job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
     "background; retrieve its result with process(action='poll') or process(action='wait')."
 )
 
-# proc_session attribute -> HERMES_SESSION_* env var carrying it.
+# proc_session attribute -> RABBIT_SESSION_* env var carrying it.
 _ROUTING_FIELDS = (
-    ("watcher_chat_id", "HERMES_SESSION_CHAT_ID"),
-    ("watcher_user_id", "HERMES_SESSION_USER_ID"),
-    ("watcher_user_name", "HERMES_SESSION_USER_NAME"),
-    ("watcher_thread_id", "HERMES_SESSION_THREAD_ID"),
-    ("watcher_message_id", "HERMES_SESSION_MESSAGE_ID"),
+    ("watcher_chat_id", "RABBIT_SESSION_CHAT_ID"),
+    ("watcher_user_id", "RABBIT_SESSION_USER_ID"),
+    ("watcher_user_name", "RABBIT_SESSION_USER_NAME"),
+    ("watcher_thread_id", "RABBIT_SESSION_THREAD_ID"),
+    ("watcher_message_id", "RABBIT_SESSION_MESSAGE_ID"),
     # The spawning conversation's session-db id lets the gateway's completion
     # pre-flight drop the notification if the user closed this session (/new)
     # before the process finished, instead of injecting it into the NEW one.
-    ("parent_session_id", "HERMES_SESSION_ID"),
+    ("parent_session_id", "RABBIT_SESSION_ID"),
 )
 
 
@@ -78,7 +78,7 @@ def _looks_like_homebrew_ci_poller(command: str) -> bool:
 def _stamp_gateway_routing(proc_session, get_session_env) -> None:
     """Copy the spawning chat's routing metadata onto the process session so
     completion / watch notifications reach the right chat/thread."""
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    platform = get_session_env("RABBIT_SESSION_PLATFORM", "")
     if not platform:
         return
     proc_session.watcher_platform = platform

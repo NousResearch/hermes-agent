@@ -9,7 +9,7 @@ export function wslgLaunchArgs(
   electronFlags: readonly string[] = [],
   nvidiaProprietaryDriver = false
 ): string[] | null {
-  const displayEnv = { ...env, HERMES_DESKTOP_DISABLE_GPU: undefined }
+  const displayEnv = { ...env, RABBIT_DESKTOP_DISABLE_GPU: undefined }
 
   // Remote/forwarded displays stay on the software-rendering path. A local
   // Wayland session — native Linux or WSLg — otherwise defaults to XWayland

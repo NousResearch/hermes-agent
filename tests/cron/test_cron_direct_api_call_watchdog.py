@@ -91,7 +91,7 @@ def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):
     >10k-token cron turn is killed at the 90s default."""
     from agent.chat_completion_helpers import _resolve_direct_stale_timeout, should_use_direct_api_call
 
-    for key in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_STREAM_STALE_TIMEOUT", "HERMES_CODEX_HARD_TIMEOUT_SECONDS"):
+    for key in ("RABBIT_API_CALL_STALE_TIMEOUT", "RABBIT_STREAM_STALE_TIMEOUT", "RABBIT_CODEX_HARD_TIMEOUT_SECONDS"):
         monkeypatch.delenv(key, raising=False)
     agent = run_agent.AIAgent(
         model="gpt-5.5", provider="openai-codex", api_mode="codex_responses",
@@ -108,8 +108,8 @@ def test_inline_local_responses_endpoint_keeps_its_configured_stale_budget(monke
     configured stale budget on the inline path either (same rule as the worker path)."""
     from agent.chat_completion_helpers import _resolve_direct_stale_timeout
 
-    monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
-    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "3000")
+    monkeypatch.delenv("RABBIT_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("RABBIT_API_CALL_STALE_TIMEOUT", "3000")
     agent = run_agent.AIAgent(
         model="local-model", provider="custom", api_mode="codex_responses",
         base_url="http://127.0.0.1:8080/v1", api_key="x", quiet_mode=True,
@@ -242,7 +242,7 @@ def _build_cron_agent(monkeypatch):
     agent._stream_callback = None
     agent.reasoning_callback = None
     agent.status_callback = None
-    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "0.3")
+    monkeypatch.setenv("RABBIT_API_CALL_STALE_TIMEOUT", "0.3")
     return agent
 
 

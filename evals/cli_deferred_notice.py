@@ -21,8 +21,8 @@ import fcntl
 
 
 def run_case(root, output, name, behind, early=False, cancel=False):
-    with tempfile.TemporaryDirectory(prefix="hermes_test_notice_") as home:
-        hh = Path(home) / ".hermes"
+    with tempfile.TemporaryDirectory(prefix="rabbit_test_notice_") as home:
+        hh = Path(home) / ".rabbit"
         hh.mkdir()
         (hh / "config.yaml").write_text(
             "model:\n  default: test-model\n  provider: custom\n"
@@ -36,14 +36,14 @@ def run_case(root, output, name, behind, early=False, cancel=False):
             cache.write_bytes(payload)
         else:
             os.mkfifo(cache)
-        env = {"PATH": os.environ["PATH"], "HOME": home, "HERMES_HOME": str(hh),
+        env = {"PATH": os.environ["PATH"], "HOME": home, "RABBIT_HOME": str(hh),
                "PYTHONPATH": str(root), "PYTHONUNBUFFERED": "1",
                "TERM": "xterm-256color", "LANG": "C.UTF-8",
                "OPENAI_API_KEY": "local-not-used", "PROMPT_TOOLKIT_NO_CPR": "1"}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        bootstrap = ("import json; from pathlib import Path; import hermes_cli.main as m; "
-                     "import hermes_cli.banner as b; from hermes_cli import source_check; "
+        bootstrap = ("import json; from pathlib import Path; import rabbit_cli.main as m; "
+                     "import rabbit_cli.banner as b; from rabbit_cli import source_check; "
                      f"source_check.check_for_updates = lambda **kw: json.loads(Path({str(cache)!r}).read_text()); "
                      "print('LOADED', m.__file__, b.__file__, flush=True); m.main()")
         proc = subprocess.Popen([sys.executable, "-c", bootstrap, "chat"], cwd=root,
@@ -92,7 +92,7 @@ def run_case(root, output, name, behind, early=False, cancel=False):
             result = {"case": name, "ready": ready, "exited": exited,
                       "returncode": proc.returncode, "garbled": "?[1;33m" in text,
                       "notice": "commits behind" in text or "update available" in text,
-                      "loaded_worktree": str(root / "hermes_cli/banner.py") in text,
+                      "loaded_worktree": str(root / "rabbit_cli/banner.py") in text,
                       "raw_path": str(output / f"{name}.pty")}
             assert result["loaded_worktree"] and proc.returncode == 0, result
             return result

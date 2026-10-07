@@ -1,6 +1,6 @@
 """The runtime's own interpreter/venv is not agent-deletable (#58748).
 
-A Hermes session asked to clean up "older Pythons" removed the base
+A Rabbit session asked to clean up "older Pythons" removed the base
 interpreter its own venv pointed at; the next boot died with ``uv trampoline
 failed to spawn Python child process``. These tests pin both defense layers:
 
@@ -27,7 +27,7 @@ from agent import runtime_self_protection as rsp
 @pytest.fixture
 def fake_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A venv whose pyvenv.cfg points at a uv-managed base interpreter."""
-    venv = tmp_path / "hermes-agent" / "venv"
+    venv = tmp_path / "rabbit-agent" / "venv"
     venv.mkdir(parents=True)
     exe_dir = venv / ("Scripts" if sys.platform == "win32" else "bin")
     exe_dir.mkdir()

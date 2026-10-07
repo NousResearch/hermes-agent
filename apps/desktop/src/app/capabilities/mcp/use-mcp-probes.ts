@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
-import { type ProfileScope, testMcpServer } from '@/hermes'
+import { type ProfileScope, testMcpServer } from '@/rabbit'
 import { PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
 import { type McpServerEntry, type McpServers, serverEnabled } from '@/lib/mcp-servers'
 import { countEnabledTools } from '@/lib/mcp-tool-filter'

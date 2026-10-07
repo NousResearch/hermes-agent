@@ -20,7 +20,7 @@ class _HealthyEmptyEnv:
 
     def execute(self, command: str, cwd=None, **kwargs) -> dict:
         if command.startswith("if [ -f"):
-            return {"output": "__hermes_missing__\n", "returncode": 0}
+            return {"output": "__rabbit_missing__\n", "returncode": 0}
         if command.startswith("test -e"):
             return {"output": "not_found\n", "returncode": 0}
         if command.startswith("echo "):

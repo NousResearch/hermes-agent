@@ -7,7 +7,7 @@ license: MIT
 dependencies: [guidance, transformers]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Prompt Engineering, Guidance, Constrained Generation, Structured Output, JSON Validation, Grammar, Microsoft Research, Format Enforcement, Multi-Step Workflows]
 
 ---

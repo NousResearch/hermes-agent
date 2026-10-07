@@ -6,7 +6,7 @@ import {
 } from "./reasoning-effort";
 
 describe("normalizeEffort", () => {
-  it("treats empty/unset as the Hermes default (medium)", () => {
+  it("treats empty/unset as the Rabbit default (medium)", () => {
     expect(normalizeEffort("")).toBe("medium");
     expect(normalizeEffort(null)).toBe("medium");
     expect(normalizeEffort(undefined)).toBe("medium");

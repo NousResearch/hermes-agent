@@ -15,7 +15,7 @@ export interface SourceUpdateProbe {
   python: string | null
   git: string
   updateRoot: string
-  hermesHome: string
+  rabbitHome: string
   branch?: string
   channel?: 'main' | 'stable' | 'canary'
   force?: boolean
@@ -25,15 +25,15 @@ export interface SourceUpdateProbe {
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 
-export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
+export function sourceUpdateEnvironment(updateRoot: string, rabbitHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...buildDesktopBackendEnv(),
-    HERMES_HOME: hermesHome,
-    HERMES_INSTALL_ROOT: updateRoot
+    RABBIT_HOME: rabbitHome,
+    RABBIT_INSTALL_ROOT: updateRoot
   }
 
-  delete env.HERMES_RUNTIME_DIR
+  delete env.RABBIT_RUNTIME_DIR
 
   return env
 }
@@ -45,7 +45,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
   const managed = existsSync(path.join(probe.updateRoot, 'pm'))
 
   const launcher = managed
-    ? resolveInstallationLauncher(probe.updateRoot, process.platform === 'win32', probe.hermesHome)
+    ? resolveInstallationLauncher(probe.updateRoot, process.platform === 'win32', probe.rabbitHome)
     : null
 
   if (managed && !launcher) {
@@ -58,17 +58,17 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
 
   const args: string[] = [
     ...(managed
-      ? ['--run-module', 'hermes_cli.source_check']
+      ? ['--run-module', 'rabbit_cli.source_check']
       : [
           '-c',
           // Inspect the target checkout's callable, not stderr strings or an editable
           // install elsewhere on sys.path. Exceptions inside a present probe propagate.
-          'from pathlib import Path; import runpy; p = Path("hermes_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")'
+          'from pathlib import Path; import runpy; p = Path("rabbit_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")'
         ]),
     '--install-root',
     probe.updateRoot,
     '--home',
-    probe.hermesHome,
+    probe.rabbitHome,
     '--git',
     probe.git,
     ...(probe.branch ? ['--branch', probe.branch] : []),
@@ -94,7 +94,7 @@ export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<Source
       : args,
     hiddenWindowsChildOptions({
       cwd: probe.updateRoot,
-      env: sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome),
+      env: sourceUpdateEnvironment(probe.updateRoot, probe.rabbitHome),
       encoding: 'utf8',
       timeout: 360000,
       maxBuffer: 1024 * 1024,

@@ -1,11 +1,11 @@
 name: omnivoice
-repo: https://github.com/ThaungThanHan/hermes-omnivoice
+repo: https://github.com/ThaungThanHan/rabbit-omnivoice
 sha: 21d2900c392247dc52d706fee956f08dbfc3c5ea
-description: OmniVoice TTS provider for Hermes Agent
+description: OmniVoice TTS provider for Rabbit Agent
 maintainer: ThaungThanHan
 tier: community
 category: voice
-docs_url: https://github.com/ThaungThanHan/hermes-omnivoice#readme
+docs_url: https://github.com/ThaungThanHan/rabbit-omnivoice#readme
 capabilities:
   provides_tools: []
   provides_hooks: []

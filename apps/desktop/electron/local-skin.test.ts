@@ -8,7 +8,7 @@ import { test } from 'vitest'
 import { localSkinHome, readLocalDisplaySkin, readLocalSkinPayload } from './local-skin'
 
 function makeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-local-skin-'))
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-local-skin-'))
 }
 
 test('reads a configured custom skin without a live gateway', () => {

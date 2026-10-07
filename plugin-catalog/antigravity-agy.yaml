@@ -1,11 +1,11 @@
 name: antigravity-agy
-repo: https://github.com/Realtyxxx/hermes-plugin-antigravity-agy
+repo: https://github.com/Realtyxxx/rabbit-plugin-antigravity-agy
 sha: f85003d3ce0de3844e2d5c23174d630ff3586e5d
 description: >-
-  Run Hermes on a Google Antigravity subscription through the official agy CLI, with agy as the
-  model only: a generated custom agent removes agy's built-in tools, Hermes tools are exposed
+  Run Rabbit on a Google Antigravity subscription through the official agy CLI, with agy as the
+  model only: a generated custom agent removes agy's built-in tools, Rabbit tools are exposed
   through an inventory-only MCP server with native function calling, and every tool call is
-  handed back to Hermes. Fails closed on any non-Hermes tool step or silent agent fallback;
+  handed back to Rabbit. Fails closed on any non-Rabbit tool step or silent agent fallback;
   pre-warms agy for fast tool loops. Disclosure — routes inference through Google's official agy
   CLI and counts against the Antigravity/Gemini subscription agy is signed in to; the plugin
   never reads, copies or links agy's credential files. agy runs in your real HOME with the gateway's environment; by
@@ -15,8 +15,8 @@ description: >-
 maintainer: Realtyxxx
 tier: community
 category: models
-requires_hermes: ">=0.21.4"
-docs_url: https://github.com/Realtyxxx/hermes-plugin-antigravity-agy#readme
+requires_rabbit: ">=0.21.4"
+docs_url: https://github.com/Realtyxxx/rabbit-plugin-antigravity-agy#readme
 version: "0.1.0"
 readme: true
 platforms:

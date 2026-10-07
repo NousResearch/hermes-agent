@@ -15,13 +15,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import model_metadata_http
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
+from rabbit_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
@@ -145,8 +145,8 @@ _LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
 
 
 def _cache_file(name: str) -> Path:
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "cache" / name
+    from rabbit_constants import get_rabbit_home
+    return get_rabbit_home() / "cache" / name
 
 
 def _load_json_dict(path: Path) -> Dict[str, Any]:
@@ -236,7 +236,7 @@ def _get_endpoint_metadata_cache_path() -> Path:
 
 def _endpoint_disk_cache_get(normalized: str) -> Optional[Dict[str, Dict[str, Any]]]:
     """Fresh cross-process memo of a remote ``/models`` probe (same TTL as in-memory): one-shot
-    runs (``hermes -q``, cron) start cold and Nous bypasses the persistent context cache, so
+    runs (``rabbit -q``, cron) start cold, so
     without this every launch paid the live probe. Local endpoints are never memoized."""
     models = _ttl_memo_get(_get_endpoint_metadata_cache_path(), normalized, _ENDPOINT_MODEL_CACHE_TTL, ts_key="at", value_key="models")
     return models if isinstance(models, dict) else None
@@ -318,12 +318,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
     "llama": 131072, "muse-spark-1.3": 1_048_576, "muse-spark": 1_048_576, "inkling": 1_048_576,
     # Qwen — https://help.aliyun.com/zh/model-studio/developer-reference/ (3.8-max/flash
-    # 1M verified on OpenRouter & Nous portal 2026-08; qwen3-max = 256K Coding Plan snapshot)
+    # 1M verified on OpenRouter 2026-08; qwen3-max = 256K Coding Plan snapshot)
     "qwen3.8-max": 1_000_000, "qwen3.8-flash": 1_000_000, "qwen3.6-plus": 1048576, "qwen3.7-plus": 1048576,
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # GLM — OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
     # 5.3-flashx 1,048,576 (2026-09-20; its own key, else the shorter 5.3-flash entry wins by substring);
     # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
@@ -446,7 +446,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
-    "inference-api.nousresearch.com": "nous", "api.deepseek.com": "deepseek",
+    "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot", ".githubcopilot.com": "copilot", "models.github.ai": "copilot",
     "models.inference.ai.azure.com": "copilot",
     "api.fireworks.ai": "fireworks", "opencode.ai": "opencode-go", "api.x.ai": "xai",
@@ -492,7 +492,7 @@ def _strip_openrouter_routing_variant(
 
     Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
     stays on the wire, so the routing opt-in is preserved — the same rule
-    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    :func:`rabbit_cli.models.validate_requested_model` applies. Sharing the
     base's cache key is intentional: the window is identical, so a variant and
     its base must never disagree.
 
@@ -619,7 +619,7 @@ def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
 
 def _is_codex_route(provider: str, base_url: str, custom_providers: list | None) -> bool:
     """True when the request travels the Codex Responses wire regardless of host: the native
-    ``openai-codex`` provider (also behind a ``HERMES_CODEX_BASE_URL`` / ``model.base_url`` proxy)
+    ``openai-codex`` provider (also behind a ``RABBIT_CODEX_BASE_URL`` / ``model.base_url`` proxy)
     or a custom entry declaring ``api_mode: codex_responses``. The transport, not the hostname,
     decides which window the model actually gets (#116191)."""
     if (provider or "").strip().lower() == "openai-codex":
@@ -627,7 +627,7 @@ def _is_codex_route(provider: str, base_url: str, custom_providers: list | None)
     if not base_url:
         return False
     with contextlib.suppress(Exception):  # config unreadable → not a known Codex route
-        from hermes_cli.config import get_custom_provider_api_mode
+        from rabbit_cli.config import get_custom_provider_api_mode
         return get_custom_provider_api_mode(base_url, custom_providers) == "codex_responses"
     return False
 
@@ -1097,8 +1097,8 @@ def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "
 
 def _get_context_cache_path() -> Path:
     """Path to the persistent context length cache file."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "context_length_cache.yaml"
+    from rabbit_constants import get_rabbit_home
+    return get_rabbit_home() / "context_length_cache.yaml"
 
 
 def _load_context_cache_document() -> dict:
@@ -1213,9 +1213,9 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     _LOCAL_CTX_PROBE_CACHE.pop(("ollama_show", bare, stripped), None)
     # Same for a memoised Bedrock probe failure (keyed by region, which the caller does not know):
     # the entry being dropped is the reason to ask the probe again, not to wait out its TTL.
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     for memo_key in list(_BEDROCK_PROBE_FAILURE_CACHE):  # snapshot: another thread may be memoising
-        if memo_key[:2] == (hermes_home_key(), stripped) and memo_key[2] in (model, bare):
+        if memo_key[:2] == (rabbit_home_key(), stripped) and memo_key[2] in (model, bare):
             _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
     # Every key shape get_cached_context_length consults.
     stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
@@ -1318,7 +1318,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         match = re.search(pattern, error_lower)
         if match and int(match.group(1)) >= 1:
             return int(match.group(1))
-    # OpenRouter/Nous: "maximum context length is N … (A of text input, B of tool input, C in the output)" -> ctx - A - B.
+    # OpenRouter: "maximum context length is N … (A of text input, B of tool input, C in the output)" -> ctx - A - B.
     _m_ctx = re.search(r'maximum context length is (\d+)', error_lower)
     _m_parts = re.search(r'\((\d+)\s+of text input,\s*(\d+)\s+of tool input,\s*(\d+)\s+in the output\)', error_lower)
     if _m_ctx and _m_parts:
@@ -1360,7 +1360,7 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
 
 # Each entry is a phrase group; the group matches when ALL phrases are present.
-# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter/Nous,
+# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter,
 # LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
 _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
@@ -1663,7 +1663,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
 
 
 def _normalize_model_version(model: str) -> str:
-    """Dots -> dashes so Nous ids (claude-opus-4-6) compare with OpenRouter's (claude-opus-4.6)."""
+    """Dots -> dashes so portal-style ids (claude-opus-4-6) compare with OpenRouter's (claude-opus-4.6)."""
     return model.replace(".", "-")
 
 
@@ -1829,7 +1829,7 @@ def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
     base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
     if not base_url_host_matches(base, "chatgpt.com"):
         return True
-    from hermes_cli.auth_constants import _decode_jwt_claims
+    from rabbit_cli.auth_constants import _decode_jwt_claims
     return bool(_decode_jwt_claims(access_token))
 
 
@@ -1943,7 +1943,7 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
             return bumped, source
         return ctx, source
     # The Codex catalog only knows the base slug (no -900k, no vendor/).
-    # ``-900k`` variants are Hermes picker aliases — the Codex catalog only knows the base slug, so resolve
+    # ``-900k`` variants are Rabbit picker aliases — the Codex catalog only knows the base slug, so resolve
     # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
     # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
     # (#92797 review).
@@ -1958,40 +1958,6 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
             return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
-
-
-def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = "") -> Tuple[Optional[int], str]:
-    """``(context_length, source)`` for a Nous Portal model: portal /v1/models is authoritative
-    ("portal"). Fallback matches OR's prefixed ids against the bare Nous id with dot/dash
-    normalisation ("openrouter" — callers must NOT persist it, or a portal blip freezes the wrong value)."""
-    if base_url:
-        portal_ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
-        if portal_ctx is not None:
-            return portal_ctx, "portal"
-    metadata = fetch_model_metadata()
-    def _safe_ctx(or_id: str, entry: dict) -> Optional[int]:
-        """Context length minus the known stale 32K underreports (same guard as step 6)."""
-        ctx = entry.get("context_length")
-        if ctx is not None and ctx <= 32768 and _model_name_suggests_stale_32k_underreport(or_id):
-            logger.info("Rejecting OpenRouter metadata context=%s for %r (known 32K underreport, Nous path); falling through to hardcoded defaults", ctx, or_id)
-            return None
-        return ctx
-    model_lower, normalized = model.lower(), _normalize_model_version(model).lower()
-    def _pairs(or_id: str):
-        bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
-        return ((bare.lower(), model_lower), (_normalize_model_version(bare).lower(), normalized))
-    def _exact(or_id: str) -> bool:
-        return any(candidate == query for candidate, query in _pairs(or_id))
-    def _prefix(or_id: str) -> bool:
-        return any(candidate.startswith(query) and (len(candidate) == len(query) or candidate[len(query)] in "-:.") for candidate, query in _pairs(or_id))
-    # Direct id, then exact bare-id match (with dot/dash normalisation), then prefix match on a
-    # separator boundary — separate passes so any exact hit beats every prefix hit.
-    for matcher in (lambda or_id: or_id == model, _exact, _prefix):
-        for or_id, entry in metadata.items():
-            ctx = _safe_ctx(or_id, entry) if matcher(or_id) else None
-            if ctx is not None:
-                return ctx, "openrouter"
-    return None, ""
 
 
 def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
@@ -2013,12 +1979,6 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, *, a
             log(msg, model, base_url, shown)
             _invalidate_cached_context_length(model, base_url)
             return None
-    # Nous Portal: /v1/models is authoritative. Bypass (don't drop) the cache so step
-    # 5b reconciles OR-seeded entries without touching disk when the portal is down.
-    if _infer_provider_from_url(base_url) == "nous":
-        logger.debug("Bypassing persistent cache for %s@%s (Nous portal authoritative)", model, base_url)
-        return None
-
     # For local endpoints, run the probe that respects configured Modelfile context values first.
     # _query_local_context_length prefers num_ctx from Modelfile, while _query_ollama_api_show returns the
     # GGUF training max first which can be larger and would create a false-safe window for compression
@@ -2066,8 +2026,8 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     if not region:
         with contextlib.suppress(Exception):
             region = resolve_bedrock_region()
-    from hermes_constants import hermes_home_key
-    memo_key = (hermes_home_key(), cache_key_url.rstrip('/'), model, region)
+    from rabbit_constants import rabbit_home_key
+    memo_key = (rabbit_home_key(), cache_key_url.rstrip('/'), model, region)
     if region and not _bedrock_probe_failed_recently(memo_key):
         probed = probe_bedrock_context_length(model, region)
         if probed:
@@ -2139,9 +2099,9 @@ def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Op
     """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
     the aggregator's real provider+model (references are advisory). None on any failure."""
     try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config
-        from hermes_cli.moa_config import resolve_moa_preset
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.config import get_compatible_custom_providers, load_config
+        from rabbit_cli.moa_config import resolve_moa_preset
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
         config = load_config()
         if custom_providers is None:
             custom_providers = get_compatible_custom_providers(config)
@@ -2178,7 +2138,7 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # helper self-resolves it from config (#69807).
     if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
-            from hermes_cli.config import get_custom_provider_context_length
+            from rabbit_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)
             if cp_ctx:
                 return cp_ctx
@@ -2191,15 +2151,14 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # models.dev, and the provider-enforced limit for the rest.
     if effective_provider in {"copilot", "copilot-acp", "github-copilot"}:
         with contextlib.suppress(Exception):  # fall through to models.dev
-            from hermes_cli.models import get_copilot_model_context
+            from rabbit_cli.models import get_copilot_model_context
             ctx = get_copilot_model_context(model, api_key=api_key)
             if ctx:
                 return ctx
-    # 5b/5c. Nous portal and Codex OAuth (lower limits than the direct API for the same slug; its
-    # own /models is authoritative). Persist ONLY the authoritative source ("portal" / "live"): an
+    # 5b. Codex OAuth (lower limits than the direct API for the same slug; its
+    # own /models is authoritative). Persist ONLY the authoritative source ("live"): an
     # OR-fallback or static-table value cached on a blip would be frozen in by step 1 forever.
     sourced = {
-        "nous": lambda: _resolve_nous_context_length(model, base_url=base_url or "", api_key=api_key or "") + ("portal",),
         "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "", base_url=base_url or "") + ("live",),
     }.get(effective_provider)
     if sourced is not None:
@@ -2247,10 +2206,10 @@ def get_model_context_length(
     provider: str = "", custom_providers: list | None = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
-    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
+    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (LM
     Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
-    Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
+    Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
     unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
@@ -2281,7 +2240,7 @@ def get_model_context_length(
     # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
     # cache/catalog lookup below so the base's real window is found instead of
     # a generic family default. Mirrors the validation path's base/suffix split
-    # in hermes_cli.models.validate_requested_model.
+    # in rabbit_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
@@ -2297,7 +2256,7 @@ def get_model_context_length(
         return context
     is_bedrock_context = _is_bedrock_context(base_url, provider)
     # A Codex Responses route is keyed on its transport, not its host: behind a proxy
-    # (HERMES_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
+    # (RABBIT_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
     # generic while the window is still the Codex OAuth one (#116191).
     codex_route = _is_codex_route(provider, base_url, custom_providers)
     # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).

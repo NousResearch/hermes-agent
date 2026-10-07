@@ -44,7 +44,7 @@ export function ProfileLaunchMenuItems({ connectionId, label, profile }: Profile
         </ContextMenuItem>
       )}
       <ContextMenuItem
-        disabled={isDefault || !window.hermesDesktop?.profile?.setDefault}
+        disabled={isDefault || !window.rabbitDesktop?.profile?.setDefault}
         onSelect={() => void makeDefault()}
       >
         <Codicon name={isDefault ? 'check' : 'home'} size="0.875rem" />

@@ -392,14 +392,14 @@ def serve_bare(root: Path, name: str, source: Path, ref: str) -> Path:
     configured for partial clone and any-SHA wants. The server borrows ``source``'s objects
     (``--shared``: no copy); the client still receives real packs over HTTP.
 
-    ``HERMES_E2E_GIT_OBJECTS`` may name an extra complete object store: a developer checkout that
+    ``RABBIT_E2E_GIT_OBJECTS`` may name an extra complete object store: a developer checkout that
     is itself a partial clone lacks old blobs a full clone needs (CI's full checkout does not)."""
     bare = root / name
     subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True, capture_output=True)
     stores = [Path(subprocess.run(["git", "-C", str(source), "rev-parse", "--path-format=absolute",
                                    "--git-common-dir"], check=True, capture_output=True, text=True)
                    .stdout.strip()) / "objects"]
-    extra = os.environ.get("HERMES_E2E_GIT_OBJECTS")
+    extra = os.environ.get("RABBIT_E2E_GIT_OBJECTS")
     if extra:
         stores.append(Path(extra))
     (bare / "objects" / "info" / "alternates").write_text("".join(f"{s}\n" for s in stores), encoding="utf-8")

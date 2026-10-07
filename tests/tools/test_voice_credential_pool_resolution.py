@@ -1,9 +1,9 @@
 """Tests for ``resolve_provider_secret`` — the single owner of STT/TTS
 provider key resolution (#68003).
 
-Keys added via ``hermes auth add <provider>`` live in the credential pool /
+Keys added via ``rabbit auth add <provider>`` live in the credential pool /
 auth store and used to be invisible to the voice tools, which only read
-``os.environ`` + ``~/.hermes/.env`` via ``get_env_value``. The shared
+``os.environ`` + ``~/.rabbit/.env`` via ``get_env_value``. The shared
 resolver falls back to the pool; env still wins when set; an explicit
 config.yaml value wins over both; and under a multiplexed gateway turn the
 profile secret scope stays authoritative (no pool borrow).
@@ -39,8 +39,8 @@ def _clean_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_dotenv(monkeypatch):
-    """Keep the developer's real ~/.hermes/.env out of these tests."""
-    import hermes_cli.config as config_mod
+    """Keep the developer's real ~/.rabbit/.env out of these tests."""
+    import rabbit_cli.config as config_mod
 
     monkeypatch.setattr(config_mod, "load_env", lambda: {})
     yield

@@ -159,7 +159,7 @@ def _make_runner(adapter):
 
 
 async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
@@ -186,7 +186,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     adapter = FinalizeCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
@@ -289,7 +289,7 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch, tmp_path
 ):
     """#78541 — payload-less split-delivery flags must not swallow the reply."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
@@ -320,7 +320,7 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     monkeypatch.setattr(
         stream_consumer_mod, "GatewayStreamConsumer", _PayloadLessSplitConsumer
     )
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )

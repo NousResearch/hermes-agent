@@ -202,7 +202,7 @@ class TestCoverageGaps:
         """get_clarify_timeout returns 3600 when load_config raises."""
         from tools import clarify_gateway as cm
 
-        monkeypatch.setattr("hermes_cli.config.load_config",
+        monkeypatch.setattr("rabbit_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cm.get_clarify_timeout() == 3600
 

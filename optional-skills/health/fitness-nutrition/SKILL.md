@@ -3,12 +3,12 @@ name: fitness-nutrition
 description: "Workout planning, macros, and body metrics via wger/USDA."
 platforms: [linux, macos, windows]
 version: 1.0.0
-author: Hailey Marshall (haileymarshall), Hermes Agent
+author: Hailey Marshall (haileymarshall), Rabbit Agent
 authors:
   - haileymarshall
 license: MIT
 metadata:
-  hermes:
+  rabbit:
     tags: [health, fitness, nutrition, gym, workout, diet, exercise]
     category: health
     prerequisites:

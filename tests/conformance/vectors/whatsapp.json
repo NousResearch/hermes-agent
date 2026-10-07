@@ -1,7 +1,7 @@
 {
-  "$comment": "GENERATED — do not hand-edit. Regenerate with hermes-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
+  "$comment": "GENERATED — do not hand-edit. Regenerate with rabbit-agent scripts/generate_conformance_vectors.py; the native renderers are the oracle (executable spec).",
   "oracle": {
-    "repo": "NousResearch/hermes-agent",
+    "repo": "seven0070/Rabbit-",
     "commit": "40eebc7d70f3d8e95c429c8aa482f31ba6c867f6",
     "generator": "scripts/generate_conformance_vectors.py",
     "generator_version": 1
@@ -47,8 +47,8 @@
       "id": "inline-code",
       "category": "grid",
       "expect": "parity",
-      "input": "Run `pip install hermes` to start.",
-      "native_output": "Run `pip install hermes` to start."
+      "input": "Run `pip install rabbit` to start.",
+      "native_output": "Run `pip install rabbit` to start."
     },
     {
       "id": "fenced-code",

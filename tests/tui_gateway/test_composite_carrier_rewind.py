@@ -12,7 +12,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
 )
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 
 

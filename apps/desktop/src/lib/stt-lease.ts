@@ -1,4 +1,4 @@
-import { type ResolvedOwner, setSttLease } from '@/hermes'
+import { type ResolvedOwner, setSttLease } from '@/rabbit'
 
 // The desktop's voice-input sessions — push-to-talk dictation and the voice
 // conversation loop — are the user telling us STT is about to be needed (or no

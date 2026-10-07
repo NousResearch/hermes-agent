@@ -14,7 +14,7 @@ proves ``compress()`` routes into ``_generate_summary``.
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import hermes_time
+import rabbit_time
 from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
 
@@ -59,7 +59,7 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
     def _boom():
         raise RuntimeError("clock unavailable")
 
-    with patch.object(hermes_time, "now", _boom), patch(
+    with patch.object(rabbit_time, "now", _boom), patch(
         "agent.context_compressor.call_llm", return_value=_response("summary")
     ) as mock_call:
         result = compressor._generate_summary(_turns())
@@ -73,11 +73,11 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
     assert HISTORICAL_TASK_HEADING in prompt
 
 
-def test_anchoring_rule_uses_date_from_hermes_time_now():
-    """The date is taken from hermes_time.now(), which respects the user's TZ."""
+def test_anchoring_rule_uses_date_from_rabbit_time_now():
+    """The date is taken from rabbit_time.now(), which respects the user's TZ."""
     compressor = _compressor()
     fixed = datetime(2025, 12, 31, 23, 30, tzinfo=timezone.utc)
-    with patch.object(hermes_time, "now", lambda: fixed), patch(
+    with patch.object(rabbit_time, "now", lambda: fixed), patch(
         "agent.context_compressor.call_llm", return_value=_response("summary")
     ) as mock_call:
         compressor._generate_summary(_turns())

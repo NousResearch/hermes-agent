@@ -81,7 +81,7 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
 async function assertStagedBranch(page, expectedSha, log) {
   let status
   for (let attempt = 0; attempt < 3; attempt++) {
-    status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
+    status = await page.evaluate(() => window.rabbitDesktop.updates.check({ force: true }))
     log(`[source-branch-check] ${JSON.stringify(status)}`)
     // The app's mount-time poller can fetch the same origin/main concurrently;
     // Git rejects the losing ref update even though the winning fetch succeeded.
@@ -120,7 +120,7 @@ async function waitForUpdate(page, { log, shot }) {
   }
   if (!await update.isVisible().catch(() => false)) {
     const status = await page.evaluate(() =>
-      window.hermesDesktop?.updates?.check?.() ?? Promise.resolve('no updates.check bridge')
+      window.rabbitDesktop?.updates?.check?.() ?? Promise.resolve('no updates.check bridge')
     ).catch(error => `updates.check failed: ${error.message}`)
     log(`[update-status] ${JSON.stringify(status)}`)
     await shot(page, 'ERROR-no-update-now')
@@ -137,10 +137,10 @@ async function readManualUpdateCommand(page) {
   } catch {
     return null
   }
-  const text = await page.locator('code').filter({ hasText: /hermes update/i }).first().textContent()
+  const text = await page.locator('code').filter({ hasText: /rabbit update/i }).first().textContent()
   const command = (text || '').trim().replace(/^\$\s*/, '')
-  if (!/^hermes update(?:\s|$)/.test(command)) {
-    throw new Error('manual update card did not present a hermes update command')
+  if (!/^rabbit update(?:\s|$)/.test(command)) {
+    throw new Error('manual update card did not present a rabbit update command')
   }
   return command
 }

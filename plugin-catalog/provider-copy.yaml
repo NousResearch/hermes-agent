@@ -1,5 +1,5 @@
 name: provider-copy
-repo: https://github.com/tobenwarrior/hermes-provider-copy
+repo: https://github.com/tobenwarrior/rabbit-provider-copy
 sha: 1599d21d1bce11d94424f749531dadf8d619f42c
 version: "1.0.1"
 description: Copy provider API keys (and provider base-URL overrides) from one profile onto
@@ -9,7 +9,7 @@ description: Copy provider API keys (and provider base-URL overrides) from one p
 maintainer: tobenwarrior
 tier: community
 category: desktop
-docs_url: https://github.com/tobenwarrior/hermes-provider-copy#readme
+docs_url: https://github.com/tobenwarrior/rabbit-provider-copy#readme
 platforms: []
 capabilities:
   provides_tools: []

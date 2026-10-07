@@ -10,8 +10,8 @@ The pool is rolling: rebuilding a package DELETES the previous archive from
 gets a 404. The library set is the payload's recursive DT_NEEDED closure, so a
 pin may not simply track "newest" — a repin is a repair:
 
-    hermes pm update --termux --check   # what the pool no longer serves
-    hermes pm update --termux           # repin exactly those rows
+    rabbit pm update --termux --check   # what the pool no longer serves
+    rabbit pm update --termux           # repin exactly those rows
 
 Nothing here resolves versions. "Move to the newest" is a different job with a
 different blast radius (a repin can land a rebuilt library under a moved

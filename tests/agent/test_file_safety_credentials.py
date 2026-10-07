@@ -1,13 +1,13 @@
-"""Tests for HERMES_HOME credential-file read blocking in file_safety.
+"""Tests for RABBIT_HOME credential-file read blocking in file_safety.
 
-Regression for https://github.com/NousResearch/hermes-agent/issues/17656 —
-``read_file`` was previously only sandboxed against ``HERMES_HOME`` itself,
+Regression for https://github.com/seven0070/Rabbit-/issues/17656 —
+``read_file`` was previously only sandboxed against ``RABBIT_HOME`` itself,
 which left ``auth.json`` and ``.anthropic_oauth.json`` (plaintext provider
 keys + OAuth tokens) readable by the agent. A prompt-injection reaching
 ``read_file`` could exfiltrate active credentials.
 
 These tests verify that ``get_read_block_error`` returns a denial message
-for the credential stores while leaving arbitrary ``HERMES_HOME`` files
+for the credential stores while leaving arbitrary ``RABBIT_HOME`` files
 readable, and that the existing ``skills/.hub`` deny still applies.
 """
 
@@ -21,12 +21,12 @@ import pytest
 
 @pytest.fixture()
 def fake_home(tmp_path, monkeypatch):
-    """Point ``_hermes_home_path()`` at a tmp dir for isolated checks."""
+    """Point ``_rabbit_home_path()`` at a tmp dir for isolated checks."""
     import agent.file_safety as fs
 
-    home = tmp_path / "hermes_home"
+    home = tmp_path / "rabbit_home"
     home.mkdir()
-    monkeypatch.setattr(fs, "_hermes_home_path", lambda: home)
+    monkeypatch.setattr(fs, "_rabbit_home_path", lambda: home)
     return home
 
 
@@ -46,8 +46,8 @@ def _create(home: Path, rel: str | Path) -> Path:
 
 
 
-def test_arbitrary_hermes_home_file_not_blocked(fake_home):
-    """Non-credential files inside HERMES_HOME stay readable."""
+def test_arbitrary_rabbit_home_file_not_blocked(fake_home):
+    """Non-credential files inside RABBIT_HOME stay readable."""
     from agent.file_safety import get_read_block_error
 
     safe = _create(fake_home, "session_log.txt")
@@ -191,11 +191,11 @@ def test_webhook_subscriptions_blocked(fake_home):
 
 
 
-def test_identically_named_hermes_files_outside_home_not_blocked(
+def test_identically_named_rabbit_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
-    """Hermes-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
-    outside HERMES_HOME must remain readable — the gate is per-location for
+    """Rabbit-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
+    outside RABBIT_HOME must remain readable — the gate is per-location for
     those, not per-filename. ``.env`` is the exception: it's blocked anywhere
     on disk (see test_project_local_env_blocked) because the basename always
     means \"secret-bearing environment file\" regardless of directory."""
@@ -203,11 +203,11 @@ def test_identically_named_hermes_files_outside_home_not_blocked(
 
     project = tmp_path / "myproject"
     project.mkdir()
-    # auth.json outside HERMES_HOME — readable (per-location gate).
+    # auth.json outside RABBIT_HOME — readable (per-location gate).
     p = project / "auth.json"
     p.write_text("not secret here", encoding="utf-8")
     assert get_read_block_error(str(p)) is None, (
-        "auth.json outside HERMES_HOME should NOT be blocked"
+        "auth.json outside RABBIT_HOME should NOT be blocked"
     )
 
     google_oauth = project / "auth" / "google_oauth.json"
@@ -241,16 +241,16 @@ def test_config_yaml_not_blocked(fake_home):
 
 
 def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
-    """Under a profile, HERMES_HOME = <root>/profiles/<name>, but
+    """Under a profile, RABBIT_HOME = <root>/profiles/<name>, but
     <root>/auth.json must ALSO be blocked — credentials at root are
     inherited by every profile."""
     import agent.file_safety as fs
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "coder"
     profile.mkdir(parents=True)
-    monkeypatch.setattr(fs, "_hermes_home_path", lambda: profile)
-    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+    monkeypatch.setattr(fs, "_rabbit_home_path", lambda: profile)
+    monkeypatch.setattr(fs, "_rabbit_root_path", lambda: root)
 
     from agent.file_safety import get_read_block_error
 

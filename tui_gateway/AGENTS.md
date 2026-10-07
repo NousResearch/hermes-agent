@@ -1,13 +1,13 @@
 # tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
 
 Applies on top of the root `AGENTS.md`. The TUI fully replaces the classic prompt_toolkit CLI;
-activate with `hermes --tui` or `HERMES_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
+activate with `rabbit --tui` or `RABBIT_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
 and the dashboard `/chat` talk to — changes here have three consumers.
 
 ## Process model
 
 ```
-hermes --tui
+rabbit --tui
   └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
        │                                  └─ AIAgent + tools + sessions
        └─ renders transcript, composer, prompts, activity
@@ -37,7 +37,7 @@ in an existing topical sibling, registered in the table — no `if method == ...
 has a `Params` + `Result` model, every server→client request a `Params` + `Result`, every event a
 `Payload` — one Pydantic class each, `extra="forbid"` by default (`OpenModel` for producer-owned dicts).
 `register_method` refuses an undeclared name at import; the dispatcher rejects unknown param keys
-(`4000` + key path) and, under `HERMES_TEST_ISOLATION=1`, raises `ContractViolation` when a handler's
+(`4000` + key path) and, under `RABBIT_TEST_ISOLATION=1`, raises `ContractViolation` when a handler's
 result or an emitted payload does not match its model (production only logs). `apps/shared/src/
 gateway-contract.generated.ts` (`RpcMethods`, `ServerRequestMap`, `BackendGatewayEventMap` + every value
 shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_contracts.py`;
@@ -53,21 +53,21 @@ New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is 
 
 One `serve` process may host sessions from several profile homes (Desktop pooled backends launch
 under a profile; the dashboard serves several). The launch profile is a profile: "default" means
-the launch home, never `~/.hermes`. The first non-launch home hosted flips
+the launch home, never `~/.rabbit`. The first non-launch home hosted flips
 `launch_profile_policy.py` → `set_multiplex_active(True)`; without it every fail-closed guard is
 silently off. Every method that reads or writes home-, config- or `.env`-derived state runs under
 `server.py::@_profile_scoped` (resolved from the live session's `profile_home`, or the explicit
 `profile` argument for sessionless calls) and, for tool/agent construction,
 `methods_tools.py::_profile_scoped_rpc`; the tokens come from `model_switch.py::
 _profile_runtime_scope_tokens(profile_home)` — home + secret scope + terminal scope together.
-**A method that sets only `get_hermes_home_override()` is half-bound**: config paths resolve to the
+**A method that sets only `get_rabbit_home_override()` is half-bound**: config paths resolve to the
 right profile while credentials and `TERMINAL_*` policy still come from the launch profile.
 Off-turn paths bind the same way: `session_lifecycle.py::_finalize_session` / `_teardown_session`
 enter `_session_profile_runtime_scope(session)` around `on_session_end`, the memory commit and
 `agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
 threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
 children act for the served profile through `tools/environments/local.py::served_profile_child_env`
-(`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
+(`rabbit -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
 unscoped handlers before adding one: `rg -n "^(async )?def " tui_gateway/methods_*.py | rg -v
 _profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
 call the method for that session and assert the secondary's value resolves and the launch
@@ -128,16 +128,16 @@ retains its legacy unscoped contract.
 `commands.catalog` (empty-query list) and `complete.slash` (typed-query completions) already include
 built-ins, user `quick_commands`, AND skill-derived commands (`scan_skill_commands()` /
 `get_skill_commands()`) — clients do not need a new RPC to see skills. The command definitions
-themselves come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
+themselves come from `rabbit_cli/commands.py` (`rabbit_cli/AGENTS.md`).
 
 ## Dev commands
 
 ```bash
 cd ui-tui
 npm install       # first time
-npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm run dev       # watch mode (rebuilds rabbit-ink + tsx --watch)
 npm start         # production
-npm run build     # full build (hermes-ink + tsc)
+npm run build     # full build (rabbit-ink + tsc)
 npm run typecheck # tsc --noEmit
 npm run lint      # eslint
 npm run fmt       # prettier

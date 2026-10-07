@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 CHAT = "208214988"

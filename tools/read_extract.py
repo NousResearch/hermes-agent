@@ -144,7 +144,7 @@ def _anydoc_missing_error(path: str) -> str:
     return (
         f"Cannot convert {path!r}: this format needs the optional anydoc "
         "converter, which is not installed (install blocked or first "
-        "attempt failed; retried every 5 minutes). Run `hermes pm repair` "
+        "attempt failed; retried every 5 minutes). Run `rabbit pm repair` "
         "to restore firecrawl-anydoc, or convert the file "
         "yourself via terminal (e.g. libreoffice --headless --convert-to "
         "txt).")
@@ -152,15 +152,14 @@ def _anydoc_missing_error(path: str) -> str:
 
 def _hosted_ocr_config() -> tuple:
     """(enabled, api_key, api_url); never raises, no network. Maintainer decision: the ONLY route
-    is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); the Nous gateway's Parse proxy
-    live-probed broken, so it is NOT used. ``file_tools.hosted_ocr: false`` disables even with a
+    is a direct ``FIRECRAWL_API_KEY`` (anydoc defaults api_url); no hosted proxy fallback is used. ``file_tools.hosted_ocr: false`` disables even with a
     key. The key is a profile credential: read through the secret scope so a multiplexed
     secondary never spends (or reveals its documents to) the default profile's Firecrawl key."""
     from agent.secret_scope import get_secret
     api_key = get_secret("FIRECRAWL_API_KEY") or None
     enabled = api_key is not None
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         section = load_config_readonly().get("file_tools")
         if isinstance(section, dict) and section.get("hosted_ocr") is False:
             enabled = False

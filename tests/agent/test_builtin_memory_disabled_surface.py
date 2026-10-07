@@ -9,13 +9,13 @@ Mem0, …) paid for both on every API call with no way to drop them — listing
 ``memory`` under ``disabled_toolsets`` takes the provider's tools down too.
 
 These tests exercise the real resolution chain (config on disk → check_fn →
-``get_tool_definitions``) against a temp ``HERMES_HOME``, not mocks.
+``get_tool_definitions``) against a temp ``RABBIT_HOME``, not mocks.
 """
 
 import json
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from model_tools import get_tool_definitions
 
@@ -42,9 +42,9 @@ def _write_memory_config(home, **memory_section):
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
@@ -62,27 +62,27 @@ def _memory_tool_names():
 
 
 class TestBuiltinMemoryToolAvailability:
-    def test_tool_hidden_when_both_stores_disabled(self, hermes_home):
+    def test_tool_hidden_when_both_stores_disabled(self, rabbit_home):
         _write_memory_config(
-            hermes_home, memory_enabled=False, user_profile_enabled=False
+            rabbit_home, memory_enabled=False, user_profile_enabled=False
         )
         assert "memory" not in _memory_tool_names()
 
-    def test_tool_present_when_only_user_profile_enabled(self, hermes_home):
+    def test_tool_present_when_only_user_profile_enabled(self, rabbit_home):
         _write_memory_config(
-            hermes_home, memory_enabled=False, user_profile_enabled=True
+            rabbit_home, memory_enabled=False, user_profile_enabled=True
         )
         definition = _memory_tool_definition()
         assert definition["parameters"]["properties"]["target"]["enum"] == ["user"]
 
-    def test_tool_present_when_only_memory_enabled(self, hermes_home):
+    def test_tool_present_when_only_memory_enabled(self, rabbit_home):
         _write_memory_config(
-            hermes_home, memory_enabled=True, user_profile_enabled=False
+            rabbit_home, memory_enabled=True, user_profile_enabled=False
         )
         definition = _memory_tool_definition()
         assert definition["parameters"]["properties"]["target"]["enum"] == ["memory"]
 
-    def test_tool_present_by_default(self, hermes_home):
+    def test_tool_present_by_default(self, rabbit_home):
         """No config file at all must not strip a working tool."""
         assert "memory" in _memory_tool_names()
 
@@ -135,18 +135,18 @@ class TestBuiltinMemoryToolAvailability:
 
         assert memory_tool_module._memory_surface_flags.get() is None
 
-    def test_config_flip_updates_tool_without_manual_cache_clear(self, hermes_home):
+    def test_config_flip_updates_tool_without_manual_cache_clear(self, rabbit_home):
         _write_memory_config(
-            hermes_home, memory_enabled=False, user_profile_enabled=False
+            rabbit_home, memory_enabled=False, user_profile_enabled=False
         )
         assert "memory" not in _memory_tool_names()
 
         _write_memory_config(
-            hermes_home, memory_enabled=True, user_profile_enabled=False
+            rabbit_home, memory_enabled=True, user_profile_enabled=False
         )
         assert "memory" in _memory_tool_names()
 
-    def test_unreadable_config_fails_open(self, hermes_home, monkeypatch):
+    def test_unreadable_config_fails_open(self, rabbit_home, monkeypatch):
         """A config read error must not silently remove the tool."""
         from tools import memory_tool as memory_tool_module
 
@@ -154,7 +154,7 @@ class TestBuiltinMemoryToolAvailability:
             raise RuntimeError("config unreadable")
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly", _boom, raising=False
+            "rabbit_cli.config.load_config_readonly", _boom, raising=False
         )
         assert memory_tool_module.check_memory_requirements() is True
 
@@ -182,7 +182,7 @@ class TestIndependentStoreWriteGates:
         store.load_from_disk()
         return store
 
-    def test_user_profile_only_rejects_memory_write(self, hermes_home):
+    def test_user_profile_only_rejects_memory_write(self, rabbit_home):
         from tools.memory_tool import memory_tool
 
         store = self._store(memory_enabled=False, user_profile_enabled=True)
@@ -193,7 +193,7 @@ class TestIndependentStoreWriteGates:
         assert denied["target"] == "memory"
         assert allowed["success"] is True
 
-    def test_memory_only_rejects_user_profile_write(self, hermes_home):
+    def test_memory_only_rejects_user_profile_write(self, rabbit_home):
         from tools.memory_tool import memory_tool
 
         store = self._store(memory_enabled=True, user_profile_enabled=False)
@@ -204,7 +204,7 @@ class TestIndependentStoreWriteGates:
         assert denied["target"] == "user"
         assert allowed["success"] is True
 
-    def test_staged_write_cannot_bypass_target_gate(self, hermes_home):
+    def test_staged_write_cannot_bypass_target_gate(self, rabbit_home):
         from tools.memory_tool import apply_memory_pending
 
         store = self._store(memory_enabled=False, user_profile_enabled=True)
@@ -215,7 +215,7 @@ class TestIndependentStoreWriteGates:
         assert result["success"] is False
         assert result["target"] == "memory"
 
-    def test_invalid_target_error_is_bounded_and_carries_recovery_hint(self, hermes_home):
+    def test_invalid_target_error_is_bounded_and_carries_recovery_hint(self, rabbit_home):
         """Model-supplied target is interpolated into the error: it must stay
         capped at the shared tool_error bound and keep the recovery hint."""
         from tools.memory_tool import memory_tool

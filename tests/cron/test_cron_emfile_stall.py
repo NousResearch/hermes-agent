@@ -112,7 +112,7 @@ class TestTickerEmfileBackoff:
             t.join(timeout=5)
 
         assert not t.is_alive(), "ticker must survive EMFILE ticks"
-        assert errors, "ticker error must be persisted so `hermes cron status` can show it"
+        assert errors, "ticker error must be persisted so `rabbit cron status` can show it"
         assert "Too many open files" in errors[0]
         # Every post-failure beat must be success=False: liveness yes, success no.
         assert beats[-1] is False

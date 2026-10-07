@@ -5,14 +5,14 @@ import pytest
 pytest.importorskip("nemo_relay")
 
 from agent import auxiliary_client, relay_llm, relay_runtime
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_contract import MODEL_ROUTE_METRIC
-from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
+from rabbit_cli.observability.shared_metrics import SharedMetricsStore
+from rabbit_cli.observability.shared_metrics_contract import MODEL_ROUTE_METRIC
+from rabbit_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
 
 
 @pytest.fixture()
 def relay_turn(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "profile"))
     relay_runtime._reset_for_tests()
     lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
         profile_key=relay_runtime.current_profile_key(),
@@ -255,7 +255,7 @@ def test_auxiliary_provider_fallback_records_one_terminal_model_route(
     snapshot = store.counter_snapshot()
     assert len(snapshot) == 1
     assert snapshot[0]["metric_name"] == MODEL_ROUTE_METRIC
-    assert snapshot[0]["resource"]["hermes_version"] == "test-version"
+    assert snapshot[0]["resource"]["rabbit_version"] == "test-version"
     assert snapshot[0]["dimensions"] == {
         "call_role": "auxiliary",
         # The success keeps the error it recovered from; an invalid shape classifies as unknown.
@@ -339,7 +339,7 @@ def test_auxiliary_model_routes_carry_classified_error_class(relay_turn, tmp_pat
     auxiliary_client.AuxiliaryExplicitCancellation(), InterruptedError("aux stream interrupted"), KeyboardInterrupt(),
 ])
 def test_aborted_auxiliary_call_is_cancelled_not_failed(relay_turn, tmp_path, abort):
-    """A Hermes abort (/stop, interrupt, Ctrl+C) mid aux call is not a provider failure."""
+    """A Rabbit abort (/stop, interrupt, Ctrl+C) mid aux call is not a provider failure."""
     def run():
         with pytest.raises(type(abort)):
             _aux_call("compression", _aux_attempts(abort), 1)

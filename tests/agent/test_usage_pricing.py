@@ -359,18 +359,18 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
 
 def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypatch):
-    """Every ``google/gemini-*-flash`` model curated for the OpenRouter and Nous
-    pickers must also bill through the Google official-docs snapshot on the
+    """Every ``google/gemini-*-flash`` model curated for the OpenRouter
+    picker must also bill through the Google official-docs snapshot on the
     direct Gemini and Vertex routes — a model pickable via the aggregators but
     ``unknown`` to Google-route accounting is a catalog/pricing drift.
     """
-    from hermes_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from rabbit_cli.models_catalog_static import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",
         lambda *_args, **_kwargs: {},
     )
-    curated = {m for m, _desc in OPENROUTER_MODELS} | set(_PROVIDER_MODELS["nous"])
+    curated = {m for m, _desc in OPENROUTER_MODELS}
     flash = sorted(m for m in curated if m.startswith("google/gemini-") and m.endswith("-flash"))
     assert flash, "expected curated google/gemini-*-flash picker entries"
     usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000)

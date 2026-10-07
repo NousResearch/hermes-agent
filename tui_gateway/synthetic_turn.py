@@ -1,7 +1,7 @@
 """Synthetic GIL-heavy turn driver for the AC-4 isolation certify harness. The regime under test is
 interpreter-wide GIL starvation (serving-process turn threads park the WebSocket loop in ``take_gil``),
 so the driver must hold the GIL with sustained pure-Python CPU — a network/sleep stub releases the GIL
-and a green off it is fake. Test seam: dead unless ``HERMES_ISO_CERTIFY_SYNTH_TURN=1``; when armed,
+and a green off it is fake. Test seam: dead unless ``RABBIT_ISO_CERTIFY_SYNTH_TURN=1``; when armed,
 ``server._make_agent`` returns a :class:`SyntheticHeavyAgent` on both the in-process and compute-host
 paths, so the isolation boundary is the only variable. Per-turn intensity rides in the prompt text as
 a JSON object; any other prompt falls back to env / built-in defaults."""
@@ -24,17 +24,17 @@ from tui_gateway._env import env_float as _env_float, env_int as _env_int
 # heavy-turn proxy; ``sleep_s`` = optional per-chunk sleep for a mixed regime (0 = pure burn; --dry-run
 # shortens duration instead, so it still exercises the real seam).
 _SPEC_FIELDS = (
-    ("duration_s", float, lambda: _env_float("HERMES_ISO_CERTIFY_DURATION_S", 8.0)),
-    ("chunk", int, lambda: _env_int("HERMES_ISO_CERTIFY_CHUNK", 20_000)),
-    ("delta_interval_s", float, lambda: _env_float("HERMES_ISO_CERTIFY_DELTA_S", 0.05)),
-    ("tokens_per_delta", int, lambda: _env_int("HERMES_ISO_CERTIFY_TPD", 512)),
+    ("duration_s", float, lambda: _env_float("RABBIT_ISO_CERTIFY_DURATION_S", 8.0)),
+    ("chunk", int, lambda: _env_int("RABBIT_ISO_CERTIFY_CHUNK", 20_000)),
+    ("delta_interval_s", float, lambda: _env_float("RABBIT_ISO_CERTIFY_DELTA_S", 0.05)),
+    ("tokens_per_delta", int, lambda: _env_int("RABBIT_ISO_CERTIFY_TPD", 512)),
     ("sleep_s", float, lambda: 0.0),
 )
 
 
 def synth_turn_armed() -> bool:
     """True when the synthetic-turn test seam is armed via env."""
-    return os.environ.get("HERMES_ISO_CERTIFY_SYNTH_TURN") == "1"
+    return os.environ.get("RABBIT_ISO_CERTIFY_SYNTH_TURN") == "1"
 
 
 class SyntheticHeavyAgent:

@@ -53,7 +53,7 @@ from pathlib import Path
 
 # Hidden marker the comment system uses to find-and-edit its
 # previous comment instead of stacking new ones on each run.
-MARKER = "<!-- hermes-ci-review-bot -->"
+MARKER = "<!-- rabbit-ci-review-bot -->"
 
 # Severity ordering for display.
 _SEVERITY_ORDER = ["error", "action_required", "warning", "info", "debug"]

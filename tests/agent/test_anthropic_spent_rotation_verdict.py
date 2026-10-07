@@ -58,17 +58,17 @@ def _clean_spent_registry():
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / "rabbit"
     home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     (home / "auth.json").write_text(
         json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+        "rabbit_cli.auth.is_provider_explicitly_configured", lambda pid: True
     )
     return home
 
@@ -168,7 +168,7 @@ def test_registry_stays_bounded():
 
 
 def test_resolve_returns_none_when_the_rotation_could_not_commit(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """Full resolver: source 5 must not hand back the pair source 4 refused.
 
@@ -187,7 +187,7 @@ def test_resolve_returns_none_when_the_rotation_could_not_commit(
 
 
 def test_auxiliary_refresh_reports_failure_for_a_lost_commit(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """``_refresh_provider_credentials`` must fail when this is the only credential.
 
@@ -202,10 +202,10 @@ def test_auxiliary_refresh_reports_failure_for_a_lost_commit(
 
 
 def test_independent_pool_credential_stays_eligible(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """Failing closed is scoped to the spent family, not to Anthropic as a whole."""
-    _add_independent_pool_entry(hermes_home)
+    _add_independent_pool_entry(rabbit_home)
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
     _break_durable_write(monkeypatch)
 
@@ -217,7 +217,7 @@ def test_independent_pool_credential_stays_eligible(
 
 
 def test_successful_commit_leaves_the_credential_usable(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """Control: nothing is quarantined when the commit actually lands."""
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
@@ -232,7 +232,7 @@ def test_successful_commit_leaves_the_credential_usable(
 
 
 def test_failed_commit_persists_the_verdict_to_the_sidecar(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """The verdict must outlive this process: it lands in the sidecar file."""
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
@@ -295,7 +295,7 @@ print(json.dumps(result))
 
 
 def test_second_process_adopts_the_terminal_verdict(
-    hermes_home, claude_credentials, monkeypatch, tmp_path
+    rabbit_home, claude_credentials, monkeypatch, tmp_path
 ):
     """Two-process witness: A rotates and loses the commit; B fails closed.
 
@@ -320,7 +320,7 @@ def test_second_process_adopts_the_terminal_verdict(
         __import__("pathlib").Path(_agent_pkg.__file__).resolve().parents[1]
     )
     env = dict(os.environ)
-    env["HERMES_HOME"] = str(hermes_home)
+    env["RABBIT_HOME"] = str(rabbit_home)
     env["PYTHONPATH"] = repo_root
     for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         env.pop(var, None)
@@ -344,7 +344,7 @@ def test_second_process_adopts_the_terminal_verdict(
 
 
 def test_control_second_process_without_sidecar_still_resolves(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """Independent-credential control: no verdict, no quarantine.
 

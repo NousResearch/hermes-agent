@@ -1,16 +1,16 @@
 // Host-level backend discovery — the Desktop half of multiplex-only.
 //
-// Exactly ONE `hermes serve` runs per HOST and multiplexes every profile, so
+// Exactly ONE `rabbit serve` runs per HOST and multiplexes every profile, so
 // Desktop must ATTACH to a backend that is already listening and spawn only
 // when the host has none. A backend registered by another profile is still THE
 // backend: refusing it is what produced a second process per profile.
 //
 // Nothing new has to be published for this. The backend already writes a
 // machine-root `spawn-ledger.json` entry AFTER its socket binds
-// (`hermes_cli/process_identity.py::register_self`, called from
+// (`rabbit_cli/process_identity.py::register_self`, called from
 // `web_server.py` with `detail={host, port, profile}`), and an ungated
 // loopback backend serves its session token at `GET /`
-// (`window.__HERMES_SESSION_TOKEN__`, `web_server_dashboard.py`). The ledger is
+// (`window.__RABBIT_SESSION_TOKEN__`, `web_server_dashboard.py`). The ledger is
 // DISCOVERY ONLY — a record is never trusted as proof of a usable backend; the
 // HTTP probe and the token handshake are the boundary that validates it.
 //
@@ -32,7 +32,7 @@ export interface HostBackendRecord {
 export type SpawnOrAttachDecision =
   { action: 'attach'; record: HostBackendRecord } | { action: 'spawn'; reason: 'isolated' | 'no-running-backend' }
 
-/** Filename the CLI writes under the machine Hermes root. */
+/** Filename the CLI writes under the machine Rabbit root. */
 export const SPAWN_LEDGER_FILENAME = 'spawn-ledger.json'
 
 /** Ledger purposes that denote a JSON-RPC/WebSocket backend we can attach to. */
@@ -50,7 +50,7 @@ function asInteger(value: unknown): number | null {
  *
  * A record without a bound port predates the structured detail (or belongs to
  * a purpose that never binds) and is skipped: a port is the whole point.
- * A record marked `isolated` (`hermes serve --isolated`, e.g. the backend
+ * A record marked `isolated` (`rabbit serve --isolated`, e.g. the backend
  * another machine's Desktop spawned here over SSH) opted out of the host
  * singleton and belongs to that client, so it is skipped too; the CLI's
  * `_attach_to_host_backend` honours the same flag.
@@ -113,7 +113,7 @@ export function parseSpawnLedger(contents: unknown): HostBackendRecord[] {
 /**
  * The attach-first decision: one running backend on the host means attach and
  * spawn nothing. `isolated` is the deliberate escape hatch (see
- * `HERMES_DESKTOP_ISOLATED_BACKEND` in main.ts) and wins over every record.
+ * `RABBIT_DESKTOP_ISOLATED_BACKEND` in main.ts) and wins over every record.
  *
  * Newest registration first, so a host that briefly holds a stale record and a
  * fresh one tries the live one before falling back.

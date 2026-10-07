@@ -10,12 +10,12 @@ name: Install & Update E2E
 #   Matrix: linux     the real curl|bash install one-liner, isolated by a
 #                     git URL redirect to a local bare clone
 #                     (install-e2e-run.yml)
-#   Matrix: windows   the real desktop user flow: website Hermes-Setup.exe
+#   Matrix: windows   the real desktop user flow: website Rabbit-Setup.exe
 #                     clicked by AutoHotkey, update via the app, Playwright
 #                     clicking "Update now" (install-e2e-windows-run.yml)
 #   Matrix: macos     script installs on the shared OS-agnostic driver,
 #                     plus the real desktop user flow: website
-#                     Hermes-Setup.dmg mounted and run, updates via the
+#                     Rabbit-Setup.dmg mounted and run, updates via the
 #                     app under Playwright (install-e2e-macos-run.yml)
 #
 # Every combination is dispatched to its OS's run workflow; the run
@@ -39,7 +39,7 @@ name: Install & Update E2E
 #     releases to sample;
 #   * pull_request, path-filtered to the install/update surface, runs ONLY the
 #     `pr` route (generate-e2e-matrix.mjs PR_SUBSET): installer-script ->
-#     hermes-update on linux (newest release -> PR, and PR -> NEXT), windows
+#     rabbit-update on linux (newest release -> PR, and PR -> NEXT), windows
 #     (PR -> NEXT) and macos (newest release -> PR), sampling just the newest tag.
 #     Four legs in parallel keep a PR's wall clock near one leg (~15 min);
 #     the full matrix multiplies that, so it stays on the clock and releases.
@@ -122,25 +122,25 @@ on:
   pull_request:
     # The install/update surface: derived from 60 days of commits whose subject
     # names update/install/pm/bootstrap/relaunch. Keep it to code a real
-    # install or `hermes update` executes; hermes_cli/main.py and friends are
+    # install or `rabbit update` executes; rabbit_cli/main.py and friends are
     # deliberately absent (they change daily and are covered by e2e-upgrade).
     paths:
       - 'scripts/install*'
       - 'scripts/desktop-update/**'
-      - 'setup-hermes.*'
-      - 'hermes_bootstrap.py'
+      - 'setup-rabbit.*'
+      - 'rabbit_bootstrap.py'
       - 'pm/**'
       - '!pm/**/*.md'
-      - 'hermes_cli/update*'
-      - 'hermes_cli/*update*'
-      - 'hermes_cli/pm*'
-      - 'hermes_cli/*install*'
-      - 'hermes_cli/_early_recovery.py'
-      - 'hermes_cli/_launchers.py'
-      - 'hermes_cli/managed_uv.py'
-      - 'hermes_cli/venv_sync.py'
-      - 'hermes_cli/relaunch.py'
-      - 'hermes_cli/gateway.py'
+      - 'rabbit_cli/update*'
+      - 'rabbit_cli/*update*'
+      - 'rabbit_cli/pm*'
+      - 'rabbit_cli/*install*'
+      - 'rabbit_cli/_early_recovery.py'
+      - 'rabbit_cli/_launchers.py'
+      - 'rabbit_cli/managed_uv.py'
+      - 'rabbit_cli/venv_sync.py'
+      - 'rabbit_cli/relaunch.py'
+      - 'rabbit_cli/gateway.py'
       - 'gateway/status.py'
       - 'apps/bootstrap-installer/**'
       - 'apps/desktop/electron/*update*'

@@ -8,7 +8,7 @@ export interface DeepLinkPayload {
 
 export type DeepLinkAction =
   | { type: 'plugin-install'; repo: string; enable: boolean; force: boolean; legacyHint: PluginInstallLegacyHint }
-  /** `hermes://plugin/install?catalog=<name>` — resolved against the curated
+  /** `rabbit://plugin/install?catalog=<name>` — resolved against the curated
    *  catalog by the caller; the raw name is never treated as a git identifier. */
   | { type: 'plugin-catalog-install'; name: string }
   | { type: 'skill-install'; identifier: string }
@@ -35,7 +35,7 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
   }
 
-  // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id
+  // The browser leg of a connection came back (rabbit://connections/done?op=…&status=…). The op id
   // names the operation to show; the status is carried but never moves a row, because the link is
   // whatever the user's browser was pointed at.
   if (payload.kind === 'connections' && payload.name === 'done') {

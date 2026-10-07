@@ -1,7 +1,7 @@
 """Tiny offline stdio MCP server installed through the dashboard's MCP catalog (#120527 cell).
 
 Two tools, so the catalog install's tool probe SUCCEEDS with a non-empty list: that is the branch
-of ``hermes_cli.mcp_catalog._apply_tool_selection`` that decides between the non-interactive
+of ``rabbit_cli.mcp_catalog._apply_tool_selection`` that decides between the non-interactive
 default and the interactive tool checklist. Nothing here touches the network.
 """
 

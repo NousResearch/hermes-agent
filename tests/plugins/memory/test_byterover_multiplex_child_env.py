@@ -11,19 +11,19 @@ from pathlib import Path
 import pytest
 
 from agent import secret_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from plugins.memory import byterover
 
 
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     prof_b = root / "profiles" / "b"
     prof_b.mkdir(parents=True)
-    (root / ".env").write_text("BRV_API_KEY=DEFAULT-PROFILE-KEY\nHERMES_MODEL=default-model\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    (root / ".env").write_text("BRV_API_KEY=DEFAULT-PROFILE-KEY\nRABBIT_MODEL=default-model\n", encoding="utf-8")
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("BRV_API_KEY", "DEFAULT-PROFILE-KEY")  # the gateway loaded default's .env at boot
-    monkeypatch.setenv("HERMES_MODEL", "default-model")
+    monkeypatch.setenv("RABBIT_MODEL", "default-model")
     monkeypatch.setattr(byterover, "_resolve_brv_path", lambda: "/opt/brv/bin/brv")
     captured = {}
 
@@ -41,7 +41,7 @@ def two_profiles(tmp_path, monkeypatch):
 
 def _served_turn(prof_home: Path, scope: dict):
     secret_scope.set_multiplex_active(True)
-    home_tok = set_hermes_home_override(str(prof_home))
+    home_tok = set_rabbit_home_override(str(prof_home))
     scope_tok = secret_scope.set_secret_scope(scope)
     return home_tok, scope_tok
 
@@ -49,7 +49,7 @@ def _served_turn(prof_home: Path, scope: dict):
 def _end_turn(tokens):
     home_tok, scope_tok = tokens
     secret_scope.reset_secret_scope(scope_tok)
-    reset_hermes_home_override(home_tok)
+    reset_rabbit_home_override(home_tok)
     secret_scope.set_multiplex_active(False)
 
 
@@ -62,8 +62,8 @@ def test_secondary_profile_child_uses_its_own_key_not_defaults(two_profiles):
         _end_turn(tokens)
     env = captured["env"]
     assert env["BRV_API_KEY"] == "PROFILE-B-KEY"
-    assert env["HERMES_HOME"] == str(prof_b)
-    assert "HERMES_MODEL" not in env  # launch profile's .env residue is stripped too
+    assert env["RABBIT_HOME"] == str(prof_b)
+    assert "RABBIT_MODEL" not in env  # launch profile's .env residue is stripped too
     assert env["PATH"].startswith("/opt/brv/bin")
 
 

@@ -2,11 +2,11 @@
 name: humanizer
 description: "Humanize text: strip AI-isms and add real voice."
 version: 2.5.1
-author: Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Hermes Agent
+author: Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [writing, editing, humanize, anti-ai-slop, voice, prose, text]
     category: creative
     homepage: https://github.com/blader/humanizer
@@ -28,9 +28,9 @@ Load this skill whenever the user asks to:
 - match their voice in writing they're producing
 - review text for AI tells before publishing
 
-Also apply this skill to **your own** output when writing user-facing prose such as release notes, PR descriptions, docs, and summaries. Hermes's baseline voice already strips most of these, but a focused pass catches what slips through.
+Also apply this skill to **your own** output when writing user-facing prose such as release notes, PR descriptions, docs, and summaries. Rabbit's baseline voice already strips most of these, but a focused pass catches what slips through.
 
-## How to use it in Hermes
+## How to use it in Rabbit
 
 The text usually arrives one of three ways:
 1. **Inline.** The user pastes the text into the message. Work on it in place and reply with the rewrite.
@@ -642,6 +642,6 @@ Provide:
 
 This skill is ported from [blader/humanizer](https://github.com/blader/humanizer) (MIT licensed), which is itself based on [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), maintained by WikiProject AI Cleanup. The patterns documented there come from observations of thousands of instances of AI-generated text on Wikipedia.
 
-Original author: Siqi Chen ([@blader](https://github.com/blader)). Original repo: https://github.com/blader/humanizer (version 2.5.1). Ported to Hermes Agent with Hermes-native tool references (`read_file`, `patch`, `write_file`) and guidance for when to load the skill. The original 29 patterns come from the source, and the before/after examples (including the full worked example) are kept as demonstrations. Patterns 30-34 and the "marketing and blog clichés" list added to pattern 7 are Hermes additions and are not part of the upstream source. The skill's own instructional prose has also been lightly edited to follow its own guidance (for example, removing em dashes and negative parallelism from the narration) so the skill models the writing it asks for. Original MIT license preserved in the `LICENSE` file alongside this `SKILL.md`.
+Original author: Siqi Chen ([@blader](https://github.com/blader)). Original repo: https://github.com/blader/humanizer (version 2.5.1). Ported to Rabbit Agent with Rabbit-native tool references (`read_file`, `patch`, `write_file`) and guidance for when to load the skill. The original 29 patterns come from the source, and the before/after examples (including the full worked example) are kept as demonstrations. Patterns 30-34 and the "marketing and blog clichés" list added to pattern 7 are Rabbit additions and are not part of the upstream source. The skill's own instructional prose has also been lightly edited to follow its own guidance (for example, removing em dashes and negative parallelism from the narration) so the skill models the writing it asks for. Original MIT license preserved in the `LICENSE` file alongside this `SKILL.md`.
 
 Key insight from Wikipedia: "LLMs use statistical algorithms to guess what should come next. The result tends toward the most statistically likely result that applies to the widest variety of cases."

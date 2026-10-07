@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
-import type { HermesGateway, ResolvedOwner } from '@/hermes'
+import type { RabbitGateway, ResolvedOwner } from '@/rabbit'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
@@ -44,7 +44,7 @@ export interface ChatBarProps {
   freshDraftKey?: string
   maxRecordingSeconds?: number
   state: ChatBarState
-  gateway?: HermesGateway | null
+  gateway?: RabbitGateway | null
   queueSessionKey?: string | null
   sessionId?: string | null
   /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */

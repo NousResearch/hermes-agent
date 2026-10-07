@@ -8,7 +8,7 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
-import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
+import { getLatestSessionMessages, type ProfileScope } from '@/rabbit'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
@@ -899,7 +899,7 @@ interface BackgroundSyncParams {
   refreshActiveTranscript: () => Promise<unknown> | unknown
   refreshCronJobs: () => Promise<unknown> | unknown
   refreshCurrentModel: (force?: boolean) => Promise<unknown> | unknown
-  refreshHermesConfig: () => Promise<unknown> | unknown
+  refreshRabbitConfig: () => Promise<unknown> | unknown
   refreshMessagingSessions: () => Promise<unknown> | unknown
   refreshSessions: () => Promise<unknown> | unknown
   requestGateway: GatewayRequester
@@ -972,7 +972,7 @@ export function useBackgroundSync({
   refreshActiveTranscript,
   refreshCronJobs,
   refreshCurrentModel,
-  refreshHermesConfig,
+  refreshRabbitConfig,
   refreshMessagingSessions,
   refreshSessions,
   requestGateway,
@@ -1432,7 +1432,7 @@ export function useBackgroundSync({
     )
   }, [changeEventsAvailable, cronChangeTick, gatewayState, refreshCronJobs])
 
-  // projects.changed (projects.db moved: a CLI `hermes projects create`, another
+  // projects.changed (projects.db moved: a CLI `rabbit projects create`, another
   // window's folder picker, a `set_primary` from the workspace settings) refreshes
   // both the projects list and the sidebar tree — the desktop's own mutations
   // refresh optimistically, so this only needs to cover writers in OTHER
@@ -1497,7 +1497,7 @@ export function useBackgroundSync({
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
       void refreshCurrentModel()
-      void refreshHermesConfig()
+      void refreshRabbitConfig()
     }
-  }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
+  }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshRabbitConfig])
 }

@@ -1,12 +1,12 @@
 import { hasCronRunVerdict, isCronRunReadOnly, recordCronRunVerdict } from '@/store/read-only-transcript'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned'> &
   Partial<Pick<SessionInfo, 'is_active'>>
 
 type CronRunRow = CronRunLiveness & Pick<SessionInfo, 'id'>
 
-// Mirrors the backend's activity window (`hermes_cli/web_routers/cron.py`,
+// Mirrors the backend's activity window (`rabbit_cli/web_routers/cron.py`,
 // `sessions.py::_ACTIVE_WINDOW_S`). Used ONLY against an older backend that
 // predates `scheduler_owned`.
 const ACTIVITY_WINDOW_MS = 300_000

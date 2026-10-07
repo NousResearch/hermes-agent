@@ -42,7 +42,7 @@ function normalizeLaunchProfile(raw: unknown): string | null {
 }
 
 /**
- * Persist a launch-time profile before startHermes reads active-profile.json.
+ * Persist a launch-time profile before startRabbit reads active-profile.json.
  * A missing or invalid flag does not call persist.
  */
 export function applyLaunchProfileOverride(argv: readonly string[], persist: (name: string) => void): string | null {

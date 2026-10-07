@@ -7,17 +7,17 @@ description: "Send email, manage calendar events, search Drive, read/write Sheet
 
 # Google Workspace Skill
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
+Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Rabbit. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
 
 **Skill path:** `skills/productivity/google-workspace/`
 
 ## Setup
 
-The setup is fully agent-driven — ask Hermes to set up Google Workspace and it walks you through each step. The flow:
+The setup is fully agent-driven — ask Rabbit to set up Google Workspace and it walks you through each step. The flow:
 
 1. **Create a Google Cloud project** and enable the required APIs (Gmail, Calendar, Drive, Sheets, Docs, People)
 2. **Create OAuth 2.0 credentials** (Desktop app type) and download the client secret JSON
-3. **Authorize** — Hermes generates an auth URL, you approve in the browser, paste back the redirect URL
+3. **Authorize** — Rabbit generates an auth URL, you approve in the browser, paste back the redirect URL
 4. **Done** — token auto-refreshes from that point on
 
 :::tip Email-only users
@@ -184,7 +184,7 @@ All commands return JSON. Key fields per service:
 
 | Problem | Fix |
 |---------|-----|
-| `NOT_AUTHENTICATED` | Run setup (ask Hermes to set up Google Workspace) |
+| `NOT_AUTHENTICATED` | Run setup (ask Rabbit to set up Google Workspace) |
 | `REFRESH_FAILED` | Token revoked — re-run authorization steps |
 | `HttpError 403: Insufficient Permission` | Missing scope — revoke and re-authorize with the right services |
 | `HttpError 403: Access Not Configured` | API not enabled in Google Cloud Console |

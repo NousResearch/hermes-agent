@@ -24,7 +24,7 @@ mint on ambiguity. Post-#92129 the contract is name-as-identity:
 What is pinned here is the Python layer the desktop relies on. The desktop
 click/create flow itself (plugin.js), and group ROOM member-session lifecycle
 (#90005's original surface), live in Electron JS and are covered by
-apps/desktop/src/plugins/hermes-bots/canonical-chat-registry.test.ts; here we pin the DB/RPC algebra
+apps/desktop/src/plugins/rabbit-bots/canonical-chat-registry.test.ts; here we pin the DB/RPC algebra
 those flows depend on, including a Python re-enactment of the #90005 and
 #92692 shapes at the registry layer.
 """
@@ -47,7 +47,7 @@ CANON = "Bot Chat"
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    """Temp HERMES_HOME so the gateway resolvers read a throwaway state.db.
+    """Temp RABBIT_HOME so the gateway resolvers read a throwaway state.db.
 
     ``session.list`` reaches the DB through the gateway's shared launch
     handle (``srv._get_db``), which is bound at process launch — so, like
@@ -55,11 +55,11 @@ def home(tmp_path, monkeypatch):
     DB directly. ``profiles.list`` reads each profile dir's state.db itself
     and only needs the env override.
     """
-    h = tmp_path / ".hermes"
+    h = tmp_path / ".rabbit"
     h.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setenv("RABBIT_HOME", str(h))
 
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     handles = []
 
@@ -78,7 +78,7 @@ def home(tmp_path, monkeypatch):
 
 
 def _db(home):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     return SessionDB(db_path=home / "state.db")
 
@@ -277,7 +277,7 @@ def _adopt_or_mint(home, sid, results, idx):
     """The adopt-before-mint creation algebra plugin.js runs, re-enacted in
     Python against the real SessionDB: lookup → create+claim → on conflict
     re-lookup and ADOPT. This is the #92692 racing-resolvers shape."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     try:

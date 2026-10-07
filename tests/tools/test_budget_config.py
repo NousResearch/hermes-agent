@@ -144,11 +144,11 @@ class TestMcpPrefixThreshold:
         assert cfg.resolve_threshold("mcp_anything") == 20_000
 
 
-    def test_config_override_via_hermes_home(self, tmp_path, monkeypatch):
+    def test_config_override_via_rabbit_home(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
             "tool_budget:\n  mcp_result_size_chars: 30000\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         cfg = budget_for_context_window(None)
         assert cfg.resolve_threshold("mcp_composio_multi_execute") == 30_000
         # Generic tools are untouched by the MCP knob.
@@ -158,20 +158,20 @@ class TestMcpPrefixThreshold:
         (tmp_path / "config.yaml").write_text(
             "tool_budget:\n  mcp_result_size_chars: 30000\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         cfg = budget_for_context_window(200_000)
         assert cfg.mcp_result_size == 30_000
 
     def test_malformed_config_falls_back_to_default(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text("tool_budget: not-a-mapping\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
         cfg = budget_for_context_window(None)
         assert cfg.resolve_threshold("mcp_x_y") == DEFAULT_MCP_RESULT_SIZE_CHARS
 
     def test_scaled_small_window_caps_mcp_threshold(self, tmp_path, monkeypatch):
         """A tiny model's scaled default_result_size caps even the MCP value."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # no config.yaml
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))  # no config.yaml
         cfg = budget_for_context_window(16_384)  # scaled default < 50K
         assert cfg.default_result_size < 50_000
         assert cfg.resolve_threshold("mcp_tool") == cfg.default_result_size

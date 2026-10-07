@@ -48,8 +48,8 @@ def _seed_fetch_cache(store: Store, payload: bytes) -> None:
 def sandbox(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(runtime))
     store = Store(runtime)
     package = _FakePackage()
     monkeypatch.setattr(ensure_mod, "get_package", lambda name: package)
@@ -79,8 +79,8 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
     from tests.pm.test_deb_safety import _build_deb
     from pm.registry import get_package
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
     lock = Lockfile(tmp_path / "lock.json")
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
     deb = tmp_path / "tool.deb"
@@ -115,8 +115,8 @@ def test_real_node_foreign_stage_checks_bytes_without_exec(tmp_path, monkeypatch
 
     assert current_target() == "linux-x64"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "runtime"))
     store = Store(paths.store_root())
     # Real Node package/unpacker/verifier, with a hash-verified offline archive.
     elf = bytearray(b"\x7fELF" + b"\0" * 60)

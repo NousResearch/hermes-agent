@@ -13,7 +13,7 @@ from email.mime.text import MIMEText
 from unittest.mock import MagicMock, patch
 
 
-def _make_adapter(address="hermes@test.com"):
+def _make_adapter(address="rabbit@test.com"):
     from gateway.config import PlatformConfig
 
     with patch.dict(os.environ, {
@@ -79,7 +79,7 @@ class TestTransportSecurity(unittest.TestCase):
         from gateway.config import PlatformConfig
 
         with patch.dict(os.environ, {
-            "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+            "EMAIL_ADDRESS": "rabbit@test.com", "EMAIL_PASSWORD": "secret",
             "EMAIL_IMAP_HOST": "127.0.0.1", "EMAIL_IMAP_PORT": "1143",
             "EMAIL_SMTP_HOST": "127.0.0.1", "EMAIL_SMTP_PORT": "1025",
         }, clear=True):

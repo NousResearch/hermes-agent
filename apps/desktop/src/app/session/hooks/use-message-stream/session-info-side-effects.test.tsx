@@ -19,7 +19,7 @@ import { PRE_TURN_LIVE_SETTLE_GRACE_MS } from './utils'
 const ACTIVE_SID = 'session-active'
 const ACTIVE_PROFILE = 'compass'
 let stream: MessageStreamHarness
-let refreshHermesConfig: ReturnType<typeof vi.fn<() => Promise<void>>>
+let refreshRabbitConfig: ReturnType<typeof vi.fn<() => Promise<void>>>
 let refreshSessions: ReturnType<typeof vi.fn<() => Promise<void>>>
 let hydrateFromStoredSession: ReturnType<typeof vi.fn<() => Promise<void>>>
 let queryClient: QueryClient
@@ -30,7 +30,7 @@ function mountStream() {
     activeGatewayProfile: ACTIVE_PROFILE,
     hydrateFromStoredSession,
     queryClient,
-    refreshHermesConfig,
+    refreshRabbitConfig,
     refreshSessions
   })
   sessionStates = stream.states
@@ -41,7 +41,7 @@ const sessionInfo = (sessionId: string, payload: Record<string, unknown>) =>
 
 beforeEach(() => {
   sessionStates = null
-  refreshHermesConfig = vi.fn<() => Promise<void>>(async () => undefined)
+  refreshRabbitConfig = vi.fn<() => Promise<void>>(async () => undefined)
   refreshSessions = vi.fn<() => Promise<void>>(async () => undefined)
   hydrateFromStoredSession = vi.fn<() => Promise<void>>(async () => undefined)
   queryClient = new QueryClient()
@@ -67,13 +67,13 @@ describe('session.info config refetch gating', () => {
     sessionInfo(ACTIVE_SID, { model: 'm1', running: false })
     sessionInfo(ACTIVE_SID, { model: 'm1', title: 't' })
 
-    expect(refreshHermesConfig).not.toHaveBeenCalled()
+    expect(refreshRabbitConfig).not.toHaveBeenCalled()
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
     })
 
-    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect(refreshRabbitConfig).toHaveBeenCalledTimes(1)
   })
 
   it('never fetches config for a background session heartbeat', async () => {
@@ -87,7 +87,7 @@ describe('session.info config refetch gating', () => {
       await vi.advanceTimersByTimeAsync(400)
     })
 
-    expect(refreshHermesConfig).not.toHaveBeenCalled()
+    expect(refreshRabbitConfig).not.toHaveBeenCalled()
   })
 })
 

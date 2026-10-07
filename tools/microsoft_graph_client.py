@@ -42,7 +42,7 @@ class MicrosoftGraphClient:
                  base_url: str = DEFAULT_GRAPH_BASE_URL, timeout: float = 60.0, max_retries: int = 3,
                  transport: httpx.AsyncBaseTransport | None = None,
                  sleep: Callable[[float], Awaitable[None]] | None = None,
-                 user_agent: str = "Hermes-Agent/graph-client") -> None:
+                 user_agent: str = "Rabbit-Agent/graph-client") -> None:
         self.token_provider, self.base_url, self.timeout = token_provider, base_url.rstrip("/"), timeout
         self.max_retries, self.user_agent = max(0, int(max_retries)), user_agent
         self._transport, self._sleep = transport, sleep or asyncio.sleep

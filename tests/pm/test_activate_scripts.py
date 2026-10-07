@@ -1,7 +1,7 @@
 """``activate`` / ``activate.ps1``: an interactive shell takes on the environment and gives it back.
 
-What a process launched under ``scripts/run-in-hermes-env`` sees is covered in
-tests/scripts/test_run_in_hermes_env.py; how the environment is composed, in
+What a process launched under ``scripts/run-in-rabbit-env`` sees is covered in
+tests/scripts/test_run_in_rabbit_env.py; how the environment is composed, in
 test_environment_script.py; the fish port, in test_activate_fish.py.
 """
 
@@ -13,13 +13,13 @@ from pathlib import Path
 import pytest
 
 from tests.pm.activation_support import (
-    ACTIVATE, ACTIVATE_PS1, CANARY, SETUP_HERMES_PS1, SETUP_HERMES_SH, bash, bash_env,
+    ACTIVATE, ACTIVATE_PS1, CANARY, SETUP_RABBIT_PS1, SETUP_RABBIT_SH, bash, bash_env,
     child_env, fake_store, isolated_checkout, posix, powershell, spawnable_python,
 )
 
 
 def test_bash_scripts_pass_syntax_check():
-    for script in (ACTIVATE, SETUP_HERMES_SH):
+    for script in (ACTIVATE, SETUP_RABBIT_SH):
         result = subprocess.run(
             [bash(), "-n", posix(script)], capture_output=True, text=True, env=child_env()
         )
@@ -32,7 +32,7 @@ def test_source_activate_exports_the_pm_env(tmp_path: Path):
     store, _ = fake_store(tmp_path)
     script = (
         f'source "{posix(root / "activate")}" && '
-        f'test -n "$__HERMES_ACTIVATED" && '
+        f'test -n "$__RABBIT_ACTIVATED" && '
         f'printf "%s" "${CANARY}"'
     )
     result = subprocess.run(
@@ -55,9 +55,9 @@ def test_activate_exports_the_sentinel_to_child_processes(tmp_path: Path):
     store, _ = fake_store(tmp_path)
     script = (
         f'source "{posix(root / "activate")}" && '
-        f'"$BASH" -c \'test -n "$__HERMES_ACTIVATED"\' && '
+        f'"$BASH" -c \'test -n "$__RABBIT_ACTIVATED"\' && '
         f'deactivate && '
-        f'! "$BASH" -c \'test -n "$__HERMES_ACTIVATED"\' && '
+        f'! "$BASH" -c \'test -n "$__RABBIT_ACTIVATED"\' && '
         f'echo exported-then-cleared'
     )
     result = subprocess.run(
@@ -78,7 +78,7 @@ def test_deactivate_restores_the_prior_shell(tmp_path: Path):
     script = (
         f'source "{posix(root / "activate")}" && deactivate && '
         f'test -z "${{{CANARY}+set}}" && '
-        f'test -z "${{__HERMES_ACTIVATED+set}}" && '
+        f'test -z "${{__RABBIT_ACTIVATED+set}}" && '
         f"! declare -F deactivate >/dev/null && "
         f'echo restored'
     )
@@ -144,7 +144,7 @@ def test_powershell_scripts_parse():
     ps = powershell()
     if ps is None:
         pytest.skip("no PowerShell host available")
-    for script in (ACTIVATE_PS1, SETUP_HERMES_PS1):
+    for script in (ACTIVATE_PS1, SETUP_RABBIT_PS1):
         result = subprocess.run(
             [
                 ps,

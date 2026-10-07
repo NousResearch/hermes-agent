@@ -6,7 +6,7 @@ description: "消息 gateway 如何启动、授权用户、路由会话以及投
 
 # Gateway 内部机制
 
-消息 gateway 是一个长期运行的进程，通过统一架构将 Hermes 连接到 20 余个外部消息平台。
+消息 gateway 是一个长期运行的进程，通过统一架构将 Rabbit 连接到 20 余个外部消息平台。
 
 ## 关键文件
 
@@ -114,7 +114,7 @@ Gateway: "Paired! You're now authorized."
 
 Gateway 中所有斜杠命令均经过相同的解析流程：
 
-1. `hermes_cli/commands.py` 中的 `resolve_command()` 将输入映射为规范名称（处理别名、前缀匹配）
+1. `rabbit_cli/commands.py` 中的 `resolve_command()` 将输入映射为规范名称（处理别名、前缀匹配）
 2. 规范名称与 `GATEWAY_KNOWN_COMMANDS` 进行比对
 3. `_handle_message()` 中的处理器根据规范名称进行分发
 4. 部分命令受配置门控（`CommandDef` 上的 `gateway_config_gate`）
@@ -137,8 +137,8 @@ Gateway 从多个来源读取配置：
 
 | 来源 | 提供内容 |
 |--------|-----------------|
-| `~/.hermes/.env` | API 密钥、bot token、平台凭据 |
-| `~/.hermes/config.yaml` | 模型设置、工具配置、显示选项 |
+| `~/.rabbit/.env` | API 密钥、bot token、平台凭据 |
+| `~/.rabbit/config.yaml` | 模型设置、工具配置、显示选项 |
 | 环境变量 | 覆盖上述任意配置 |
 
 与 CLI（使用带硬编码默认值的 `load_cli_config()`）不同，gateway 通过 YAML 加载器直接读取 `config.yaml`。这意味着存在于 CLI 默认值字典但不在用户配置文件中的配置键，在 CLI 和 gateway 之间可能表现不同。
@@ -192,7 +192,7 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 
 - **直接回复** — 将响应发回原始聊天
 - **主频道投递** — 将 cron 任务输出和后台结果路由至已配置的主频道
-- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](../guides/pipe-script-output.md) 封装同一工具供 shell 脚本使用
+- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`rabbit send` CLI](../guides/pipe-script-output.md) 封装同一工具供 shell 脚本使用
 - **跨平台投递** — 投递至与原始消息不同的平台
 
 Cron 任务投递**不会**镜像到 gateway 会话历史中 — 它们仅存在于各自的 cron 会话中。这是有意为之的设计选择，以避免消息交替违规。
@@ -214,7 +214,7 @@ Gateway hook 是响应生命周期事件的 Python 模块。
 | `agent:end` | Agent 完成并返回响应时 |
 | `command:*` | 任意斜杠命令被执行时 |
 
-Hook 从 `gateway/builtin_hooks/`（扩展点 — 当前发行版中为空；`_register_builtin_hooks()` 是一个空操作存根）和 `~/.hermes/hooks/`（用户安装）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。
+Hook 从 `gateway/builtin_hooks/`（扩展点 — 当前发行版中为空；`_register_builtin_hooks()` 是一个空操作存根）和 `~/.rabbit/hooks/`（用户安装）中发现。每个 hook 是一个包含 `HOOK.yaml` 清单和 `handler.py` 的目录。
 
 ## 内存提供者集成
 
@@ -251,11 +251,11 @@ Gateway 在处理消息的同时运行周期性维护任务：
 
 Gateway 作为长期运行进程运行，管理方式如下：
 
-- `hermes gateway start` / `hermes gateway stop` — 手动控制
+- `rabbit gateway start` / `rabbit gateway stop` — 手动控制
 - `systemctl`（Linux）或 `launchctl`（macOS）— 服务管理
-- PID 文件位于 `~/.hermes/gateway.pid` — 面向 profile 的进程追踪
+- PID 文件位于 `~/.rabbit/gateway.pid` — 面向 profile 的进程追踪
 
-**Profile 范围 vs 全局**：`start_gateway()` 使用 profile 范围的 PID 文件。`hermes gateway stop` 仅停止当前 profile 的 gateway。`hermes gateway stop --all` 使用全局 `ps aux` 扫描来终止所有 gateway 进程（用于更新时）。
+**Profile 范围 vs 全局**：`start_gateway()` 使用 profile 范围的 PID 文件。`rabbit gateway stop` 仅停止当前 profile 的 gateway。`rabbit gateway stop --all` 使用全局 `ps aux` 扫描来终止所有 gateway 进程（用于更新时）。
 
 ## 相关文档
 

@@ -13,7 +13,7 @@ TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
 ONBOARD_CREATE_PATH = "/lite/create_bind_task"
 ONBOARD_POLL_PATH = "/lite/poll_bind_result"
-QR_URL_TEMPLATE = "https://q.qq.com/qqbot/openclaw/connect.html?task_id={task_id}&_wv=2&source=hermes"
+QR_URL_TEMPLATE = "https://q.qq.com/qqbot/openclaw/connect.html?task_id={task_id}&_wv=2&source=rabbit"
 
 DEFAULT_API_TIMEOUT = 30.0
 FILE_UPLOAD_TIMEOUT = 120.0

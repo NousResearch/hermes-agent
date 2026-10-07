@@ -1,7 +1,7 @@
 """Unit tests for the custom provider profile's reasoning wiring.
 
 ``provider=custom`` covers any OpenAI-compatible endpoint the user points
-Hermes at — local Ollama, vLLM, llama.cpp, and hosted reasoning APIs like
+Rabbit at — local Ollama, vLLM, llama.cpp, and hosted reasoning APIs like
 GLM-5.2 on Volcengine ARK. Before #57601's salvage, ``CustomProfile`` emitted
 nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.

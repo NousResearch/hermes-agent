@@ -24,7 +24,7 @@ from gateway.hosted_room_peer import (
     local_room_link_endpoint,
     verify_room_grant,
 )
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 SECRET = b"s" * 32
@@ -34,17 +34,17 @@ EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer", config={"
 def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
     tmp_path, monkeypatch
 ):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     profile_home = home / "profiles" / "reviewer"
     profile_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     first = gateway_room_grant_secret()
-    token = set_hermes_home_override(str(profile_home))
+    token = set_rabbit_home_override(str(profile_home))
     try:
         second = gateway_room_grant_secret()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     secret_path = home / ".room-link-grant-secret"
     assert first == second
@@ -55,7 +55,7 @@ def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
 
 @pytest.mark.platforms("posix")
 def test_gateway_room_grant_secret_has_owner_only_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     gateway_room_grant_secret()
     assert stat.S_IMODE((tmp_path / ".room-link-grant-secret").stat().st_mode) == 0o600
 
@@ -63,8 +63,8 @@ def test_gateway_room_grant_secret_has_owner_only_mode(tmp_path, monkeypatch):
 def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
     tmp_path, monkeypatch
 ):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         secrets = list(pool.map(lambda _index: gateway_room_grant_secret(), range(8)))
@@ -89,75 +89,75 @@ def test_room_link_protocol_fixture_matches_backend_contract():
 def test_room_link_endpoint_reads_supported_config_with_env_override(
     tmp_path, monkeypatch
 ):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
-        "gateway:\n  room_link_url: https://configured.example.test/hermes\n",
+        "gateway:\n  room_link_url: https://configured.example.test/rabbit\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.delenv("RABBIT_ROOM_LINK_URL", raising=False)
     assert local_room_link_endpoint() == {
         "available": True,
-        "url": "https://configured.example.test/hermes",
+        "url": "https://configured.example.test/rabbit",
         "transport_security": "tls",
     }
 
     monkeypatch.setenv(
-        "HERMES_ROOM_LINK_URL", "https://override.example.test/hermes"
+        "RABBIT_ROOM_LINK_URL", "https://override.example.test/rabbit"
     )
     assert local_room_link_endpoint()["url"] == (
-        "https://override.example.test/hermes"
+        "https://override.example.test/rabbit"
     )
 
 
 def test_named_profile_inherits_gateway_room_link_endpoint(tmp_path, monkeypatch):
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "reviewer"
     profile.mkdir(parents=True)
     (root / "config.yaml").write_text(
-        "gateway:\n  room_link_url: https://gateway.example.test/hermes\n",
+        "gateway:\n  room_link_url: https://gateway.example.test/rabbit\n",
         encoding="utf-8",
     )
     (profile / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.delenv("RABBIT_ROOM_LINK_URL", raising=False)
 
-    token = set_hermes_home_override(profile)
+    token = set_rabbit_home_override(profile)
     try:
         assert local_room_link_endpoint() == {
             "available": True,
-            "url": "https://gateway.example.test/hermes",
+            "url": "https://gateway.example.test/rabbit",
             "transport_security": "tls",
         }
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_named_profile_room_link_override_wins_over_gateway_root(
     tmp_path, monkeypatch
 ):
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "reviewer"
     profile.mkdir(parents=True)
     (root / "config.yaml").write_text(
-        "gateway:\n  room_link_url: https://gateway.example.test/hermes\n",
+        "gateway:\n  room_link_url: https://gateway.example.test/rabbit\n",
         encoding="utf-8",
     )
     (profile / "config.yaml").write_text(
-        "gateway:\n  room_link_url: https://profile.example.test/hermes\n",
+        "gateway:\n  room_link_url: https://profile.example.test/rabbit\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.delenv("RABBIT_ROOM_LINK_URL", raising=False)
 
-    token = set_hermes_home_override(profile)
+    token = set_rabbit_home_override(profile)
     try:
         assert local_room_link_endpoint()["url"] == (
-            "https://profile.example.test/hermes"
+            "https://profile.example.test/rabbit"
         )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def _dispatch(**overrides):
@@ -284,7 +284,7 @@ def test_room_grant_fails_closed_for_tamper_expiry_and_permission():
 def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):
     from gateway.hosted_room_peer import local_catalog_mapping
 
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("RABBIT_DESKTOP", "1")
     catalog = local_catalog_mapping(target_profile="default", installation_id="install-desktop")
     assert catalog["persistent_process"] is False
     assert catalog["link_modes"] == ["direct"]
@@ -305,9 +305,9 @@ def test_self_advertised_endpoint_is_explicit_and_validated(
     from gateway.hosted_room_peer import local_catalog_mapping
 
     if configured is None:
-        monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
+        monkeypatch.delenv("RABBIT_ROOM_LINK_URL", raising=False)
     else:
-        monkeypatch.setenv("HERMES_ROOM_LINK_URL", configured)
+        monkeypatch.setenv("RABBIT_ROOM_LINK_URL", configured)
     endpoint = local_catalog_mapping(target_profile="default", installation_id="install-peer")["endpoint"]
     assert endpoint["available"] is available
     if reason is not None:

@@ -1,27 +1,27 @@
 ---
 sidebar_position: 11
 title: "飞书 / Lark"
-description: "将 Hermes Agent 配置为飞书或 Lark 机器人"
+description: "将 Rabbit Agent 配置为飞书或 Lark 机器人"
 ---
 
 # 飞书 / Lark 配置
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
-Hermes Agent 可作为全功能机器人与飞书和 Lark 集成。连接后，你可以在私信或群聊中与 Agent 对话，在 home chat 中接收 cron job 结果，并通过标准 gateway 流程发送文本、图片、音频和文件附件。
+Rabbit Agent 可作为全功能机器人与飞书和 Lark 集成。连接后，你可以在私信或群聊中与 Agent 对话，在 home chat 中接收 cron job 结果，并通过标准 gateway 流程发送文本、图片、音频和文件附件。
 
 该集成支持两种连接模式：
 
-- `websocket` — 推荐；Hermes 主动建立出站连接，无需公开 webhook 端点
-- `webhook` — 适用于已将 Hermes 部署在可访问 HTTP 端点后的场景
+- `websocket` — 推荐；Rabbit 主动建立出站连接，无需公开 webhook 端点
+- `webhook` — 适用于已将 Rabbit 部署在可访问 HTTP 端点后的场景
 
-## Hermes 的行为方式
+## Rabbit 的行为方式
 
 | 场景 | 行为 |
 |---------|----------|
-| 私信 | Hermes 回复每一条消息。 |
-| 群聊 | Hermes 仅在被 @提及 时回复。 |
+| 私信 | Rabbit 回复每一条消息。 |
+| 群聊 | Rabbit 仅在被 @提及 时回复。 |
 | 共享群聊 | 默认情况下，每位用户在共享群聊中的会话历史相互隔离。 |
 
 共享群聊行为由 `config.yaml` 控制：
@@ -37,10 +37,10 @@ group_sessions_per_user: true
 ### 推荐：扫码创建（一条命令）
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
-选择 **飞书 / Lark**，用飞书或 Lark 手机端扫描二维码。Hermes 将自动创建具有正确权限的机器人应用并保存凭据。
+选择 **飞书 / Lark**，用飞书或 Lark 手机端扫描二维码。Rabbit 将自动创建具有正确权限的机器人应用并保存凭据。
 
 ### 备选：手动配置
 
@@ -52,7 +52,7 @@ hermes gateway setup
 2. 创建新应用。
 3. 在 **凭证与基础信息** 中，复制 **App ID** 和 **App Secret**。
 4. 为应用开启 **机器人** 能力。
-5. 运行 `hermes gateway setup`，选择 **飞书 / Lark**，并在提示时输入凭据。
+5. 运行 `rabbit gateway setup`，选择 **飞书 / Lark**，并在提示时输入凭据。
 
 :::warning
 请妥善保管 App Secret。任何持有它的人都可以冒充你的应用。
@@ -62,7 +62,7 @@ hermes gateway setup
 
 ### 推荐：WebSocket 模式
 
-当 Hermes 运行在你的笔记本、工作站或私有服务器上时，使用 WebSocket 模式。无需公开 URL。官方 Lark SDK 会建立并维护一个持久的出站 WebSocket 连接，并支持自动重连。
+当 Rabbit 运行在你的笔记本、工作站或私有服务器上时，使用 WebSocket 模式。无需公开 URL。官方 Lark SDK 会建立并维护一个持久的出站 WebSocket 连接，并支持自动重连。
 
 ```bash
 FEISHU_CONNECTION_MODE=websocket
@@ -74,13 +74,13 @@ FEISHU_CONNECTION_MODE=websocket
 
 ### 可选：Webhook 模式
 
-仅当 Hermes 已部署在可访问的 HTTP 端点后时，才使用 webhook 模式。
+仅当 Rabbit 已部署在可访问的 HTTP 端点后时，才使用 webhook 模式。
 
 ```bash
 FEISHU_CONNECTION_MODE=webhook
 ```
 
-在 webhook 模式下，Hermes 启动一个 HTTP 服务器（通过 `aiohttp`），并在以下路径提供飞书端点：
+在 webhook 模式下，Rabbit 启动一个 HTTP 服务器（通过 `aiohttp`），并在以下路径提供飞书端点：
 
 ```text
 /feishu/webhook
@@ -98,19 +98,19 @@ FEISHU_WEBHOOK_PATH=/feishu/webhook  # 默认：/feishu/webhook
 
 当飞书发送 URL 验证挑战（`type: url_verification`）时，webhook 会自动响应，以便你在飞书开发者控制台完成订阅配置。当设置了 `FEISHU_VERIFICATION_TOKEN` 时，挑战响应会进行 token 校验——token 缺失或不匹配的挑战请求将被拒绝，防止未经认证的远端通过回显攻击者控制的挑战数据来证明端点控制权。
 
-## 第三步：配置 Hermes
+## 第三步：配置 Rabbit
 
 ### 方式 A：交互式配置
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 选择 **飞书 / Lark** 并填写提示信息。
 
 ### 方式 B：手动配置
 
-在 `~/.hermes/.env` 中添加以下内容：
+在 `~/.rabbit/.env` 中添加以下内容：
 
 ```bash
 FEISHU_APP_ID=cli_xxx
@@ -131,7 +131,7 @@ FEISHU_HOME_CHANNEL=oc_xxx
 ## 第四步：启动 Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 然后从飞书/Lark 向机器人发送消息，确认连接已建立。
@@ -192,7 +192,7 @@ FEISHU_VERIFICATION_TOKEN=your-verification-token
 
 ## 群消息策略
 
-`FEISHU_GROUP_POLICY` 环境变量控制 Hermes 是否以及如何在群聊中响应：
+`FEISHU_GROUP_POLICY` 环境变量控制 Rabbit 是否以及如何在群聊中响应：
 
 ```bash
 FEISHU_GROUP_POLICY=allowlist   # 默认
@@ -200,13 +200,13 @@ FEISHU_GROUP_POLICY=allowlist   # 默认
 
 | 值 | 行为 |
 |-------|----------|
-| `open` | Hermes 响应任意群中任意用户的 @提及。 |
-| `allowlist` | Hermes 仅响应 `FEISHU_ALLOWED_USERS` 中列出的用户的 @提及。 |
-| `disabled` | Hermes 完全忽略所有群消息。 |
+| `open` | Rabbit 响应任意群中任意用户的 @提及。 |
+| `allowlist` | Rabbit 仅响应 `FEISHU_ALLOWED_USERS` 中列出的用户的 @提及。 |
+| `disabled` | Rabbit 完全忽略所有群消息。 |
 
 在所有模式下，消息处理前机器人必须被明确 @提及（或 @all）。私信始终绕过此限制。
 
-设置 `FEISHU_REQUIRE_MENTION=false` 可让 Hermes 读取所有群消息而无需 @提及：
+设置 `FEISHU_REQUIRE_MENTION=false` 可让 Rabbit 读取所有群消息而无需 @提及：
 
 ```bash
 FEISHU_REQUIRE_MENTION=false
@@ -216,7 +216,7 @@ FEISHU_REQUIRE_MENTION=false
 
 ### 机器人身份
 
-Hermes 在启动时自动检测机器人的 `open_id` 和显示名称。仅当自动检测无法访问飞书 API，或你的应用使用租户范围用户 ID 时，才需要手动设置：
+Rabbit 在启动时自动检测机器人的 `open_id` 和显示名称。仅当自动检测无法访问飞书 API，或你的应用使用租户范围用户 ID 时，才需要手动设置：
 
 ```bash
 FEISHU_BOT_OPEN_ID=ou_xxx     # 仅在自动检测失败时使用
@@ -226,7 +226,7 @@ FEISHU_BOT_NAME=MyBot         # 仅在自动检测失败时使用
 
 ## 机器人间消息传递
 
-默认情况下，Hermes 忽略其他机器人发送的消息。当你希望 Hermes 参与 A2A 编排或接收同一群中其他机器人的通知时，可启用机器人间消息传递。
+默认情况下，Rabbit 忽略其他机器人发送的消息。当你希望 Rabbit 参与 A2A 编排或接收同一群中其他机器人的通知时，可启用机器人间消息传递。
 
 ```bash
 FEISHU_ALLOW_BOTS=mentions   # 默认：none
@@ -235,7 +235,7 @@ FEISHU_ALLOW_BOTS=mentions   # 默认：none
 | 值 | 行为 |
 |-------|----------|
 | `none` | 忽略所有其他机器人的消息（默认）。 |
-| `mentions` | 仅当对端机器人 @提及 Hermes 时接受。 |
+| `mentions` | 仅当对端机器人 @提及 Rabbit 时接受。 |
 | `all` | 接受所有对端机器人消息。 |
 
 也可在 `config.yaml` 中配置为 `feishu.allow_bots`（两者同时设置时，环境变量优先）。
@@ -252,7 +252,7 @@ FEISHU_ALLOW_BOTS=mentions   # 默认：none
 - 卡片定义中操作的 `value` payload 以 JSON 形式包含在内。
 - 卡片操作在 15 分钟窗口内去重，防止重复处理。
 
-Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回退到纯文本回复。当 `hermes update --gateway` 需要确认时，适配器将所选答案记录到 Hermes 的 `.update_response` 文件中，并将卡片内联替换为已解决状态。
+Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回退到纯文本回复。当 `rabbit update --gateway` 需要确认时，适配器将所选答案记录到 Rabbit 的 `.update_response` 文件中，并将卡片内联替换为已解决状态。
 
 卡片操作事件以 `MessageType.COMMAND` 分发，因此流经标准命令处理管道。
 
@@ -266,7 +266,7 @@ Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回�
    在 **开发配置 > 事件与回调** 中，打开 **回调配置** 标签页——它与放置 `im.message.receive_v1` 的 **事件配置** 标签页是分开的——在「已订阅回调」下添加 `card.action.trigger`。把它当作事件添加不会投递按钮点击。
 
 2. **设置回调的接收方式：**
-   在同一标签页中，Hermes 以 `websocket` 模式运行时选择 **长连接**（Lark SDK 通过现有连接接收回调）；webhook 模式则填写请求地址（与事件 webhook 相同的端点，例如 `https://your-server:8765/feishu/webhook`）。飞书必须能够访问并解析该地址，否则点击会返回 200342/200343。
+   在同一标签页中，Rabbit 以 `websocket` 模式运行时选择 **长连接**（Lark SDK 通过现有连接接收回调）；webhook 模式则填写请求地址（与事件 webhook 相同的端点，例如 `https://your-server:8765/feishu/webhook`）。飞书必须能够访问并解析该地址，否则点击会返回 200342/200343。
 
 3. **启用交互式卡片能力：**
    在 **应用功能 > 机器人** 中，确保 **交互式卡片** 开关已启用。
@@ -275,14 +275,14 @@ Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回�
    回调配置只有在 **版本管理与发布 > 创建版本** 并发布（企业应用还需审核通过）后才会生效。飞书对 200340 的官方描述是「应用未配置卡片回调地址或配置的地址无效……请确认已创建并发布最新版本」。
 
 :::warning
-没有已发布的卡片回调时，飞书仍会成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现，并且点击不会到达 Hermes（`gateway.log` 中没有任何记录），因为飞书在投递回调之前就拒绝了它。
+没有已发布的卡片回调时，飞书仍会成功*发送*交互式卡片（发送仅需 `im:message:send` 权限），但点击任意按钮将返回错误 200340。卡片看起来正常——错误仅在用户与其交互时才会出现，并且点击不会到达 Rabbit（`gateway.log` 中没有任何记录），因为飞书在投递回调之前就拒绝了它。
 
-错误码 200672 / 200673 表示回调*确实*到达了 Hermes 而飞书拒绝了响应；如果遇到，请附上对应的 `gateway.log` 日志提交 issue。
+错误码 200672 / 200673 表示回调*确实*到达了 Rabbit 而飞书拒绝了响应；如果遇到，请附上对应的 `gateway.log` 日志提交 issue。
 :::
 
 ## 文档评论智能回复
 
-除聊天外，适配器还可以回复**飞书/Lark 文档**中的 `@` 提及。当用户在文档中评论（局部文本选区或全文评论）并 @提及机器人时，Hermes 读取文档内容及周围的评论线程，并在线程中内联发布 LLM 回复。
+除聊天外，适配器还可以回复**飞书/Lark 文档**中的 `@` 提及。当用户在文档中评论（局部文本选区或全文评论）并 @提及机器人时，Rabbit 读取文档内容及周围的评论线程，并在线程中内联发布 LLM 回复。
 
 由 `drive.notice.comment_add_v1` 事件驱动，处理器：
 
@@ -304,7 +304,7 @@ Gateway 驱动的更新提示使用原生飞书 `Yes` / `No` 卡片，而非回�
 - **`allowlist`** — 静态用户/租户列表。
 - **`pairing`** — 静态列表 ∪ 运行时审批存储。适用于管理员可实时授权的灰度发布场景。
 
-规则存储在 `~/.hermes/feishu_comment_rules.json`（pairing 授权存储在 `~/.hermes/feishu_comment_pairing.json`），支持基于 mtime 缓存的热重载——编辑后无需重启 gateway，下一个评论事件即生效。
+规则存储在 `~/.rabbit/feishu_comment_rules.json`（pairing 授权存储在 `~/.rabbit/feishu_comment_pairing.json`），支持基于 mtime 缓存的热重载——编辑后无需重启 gateway，下一个评论事件即生效。
 
 CLI：
 
@@ -387,9 +387,9 @@ Agent 工作期间，机器人会在你的消息上显示 `Typing` 表情回应�
 
 | 设置 | 环境变量 | 默认值 |
 |---------|---------|---------|
-| 静默期 | `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` | 0.6s |
-| 每批最大消息数 | `HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES` | 8 |
-| 每批最大字符数 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | 4000 |
+| 静默期 | `RABBIT_FEISHU_TEXT_BATCH_DELAY_SECONDS` | 0.6s |
+| 每批最大消息数 | `RABBIT_FEISHU_TEXT_BATCH_MAX_MESSAGES` | 8 |
+| 每批最大字符数 | `RABBIT_FEISHU_TEXT_BATCH_MAX_CHARS` | 4000 |
 
 ### 媒体批处理
 
@@ -397,7 +397,7 @@ Agent 工作期间，机器人会在你的消息上显示 `Typing` 表情回应�
 
 | 设置 | 环境变量 | 默认值 |
 |---------|---------|---------|
-| 静默期 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | 0.8s |
+| 静默期 | `RABBIT_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | 0.8s |
 
 ### 按聊天串行化
 
@@ -481,11 +481,11 @@ platforms:
 
 ## 去重
 
-入站消息使用消息 ID 去重，TTL 为 24 小时。去重状态持久化到 `~/.hermes/feishu_seen_message_ids.json`，重启后仍有效。
+入站消息使用消息 ID 去重，TTL 为 24 小时。去重状态持久化到 `~/.rabbit/feishu_seen_message_ids.json`，重启后仍有效。
 
 | 设置 | 环境变量 | 默认值 |
 |---------|---------|---------|
-| 缓存大小 | `HERMES_FEISHU_DEDUP_CACHE_SIZE` | 2048 条 |
+| 缓存大小 | `RABBIT_FEISHU_DEDUP_CACHE_SIZE` | 2048 条 |
 
 ## 所有环境变量
 
@@ -508,11 +508,11 @@ platforms:
 | `FEISHU_WEBHOOK_HOST` | — | `127.0.0.1` | Webhook 服务器绑定地址 |
 | `FEISHU_WEBHOOK_PORT` | — | `8765` | Webhook 服务器端口 |
 | `FEISHU_WEBHOOK_PATH` | — | `/feishu/webhook` | Webhook 端点路径 |
-| `HERMES_FEISHU_DEDUP_CACHE_SIZE` | — | `2048` | 最大去重消息 ID 追踪数量 |
-| `HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS` | — | `0.6` | 文本突发防抖静默期 |
-| `HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES` | — | `8` | 每批文本合并的最大消息数 |
-| `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | 每批文本合并的最大字符数 |
-| `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | 媒体突发防抖静默期 |
+| `RABBIT_FEISHU_DEDUP_CACHE_SIZE` | — | `2048` | 最大去重消息 ID 追踪数量 |
+| `RABBIT_FEISHU_TEXT_BATCH_DELAY_SECONDS` | — | `0.6` | 文本突发防抖静默期 |
+| `RABBIT_FEISHU_TEXT_BATCH_MAX_MESSAGES` | — | `8` | 每批文本合并的最大消息数 |
+| `RABBIT_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | 每批文本合并的最大字符数 |
+| `RABBIT_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | 媒体突发防抖静默期 |
 
 WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 配置（参见上方 [WebSocket 调优](#websocket-tuning) 和[按群访问控制](#per-group-access-control)）。
 
@@ -521,21 +521,21 @@ WebSocket 和按群 ACL 设置通过 `config.yaml` 的 `platforms.feishu.extra` 
 | 问题 | 解决方法 |
 |---------|-----|
 | `lark-oapi not installed` | 安装 SDK：`python -c "import pm; pm.sync_venv(['feishu'], explicit=True)"` |
-| `websockets not installed; websocket mode unavailable` | 安装 websockets：`hermes pm repair` |
+| `websockets not installed; websocket mode unavailable` | 安装 websockets：`rabbit pm repair` |
 | `aiohttp not installed; webhook mode unavailable` | 安装 aiohttp：`python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
-| `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | 设置两个环境变量，或通过 `hermes gateway setup` 配置 |
-| `Another local Hermes gateway is already using this Feishu app_id` | 同一时间只能有一个 Hermes 实例使用相同的 app_id。请先停止另一个 gateway。 |
+| `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | 设置两个环境变量，或通过 `rabbit gateway setup` 配置 |
+| `Another local Rabbit gateway is already using this Feishu app_id` | 同一时间只能有一个 Rabbit 实例使用相同的 app_id。请先停止另一个 gateway。 |
 | 机器人在群聊中不响应 | 确保机器人被 @提及，检查 `FEISHU_GROUP_POLICY`，若策略为 `allowlist` 则验证发送者是否在 `FEISHU_ALLOWED_USERS` 中 |
 | `Webhook rejected: invalid verification token` | 确保 `FEISHU_VERIFICATION_TOKEN` 与飞书应用事件订阅配置中的 token 一致 |
 | `Webhook rejected: invalid signature` | 确保 `FEISHU_ENCRYPT_KEY` 与飞书应用配置中的加密密钥一致 |
 | Post 消息显示为纯文本 | 飞书 API 拒绝了 post payload；这是正常的回退行为。查看日志了解详情。 |
 | 机器人未收到图片/文件 | 为飞书应用授予 `im:message` 和 `im:resource` 权限范围 |
 | 机器人身份未自动检测 | 通常是访问飞书机器人信息端点时的瞬时网络问题。可手动设置 `FEISHU_BOT_OPEN_ID` 和 `FEISHU_BOT_NAME` 作为临时解决方案。 |
-| 启用 `FEISHU_ALLOW_BOTS` 后对端机器人消息仍被忽略 | Hermes 尚无法识别自身——请设置 `FEISHU_BOT_OPEN_ID`（若应用使用 `sender_id_type=user_id` 则同时设置 `FEISHU_BOT_USER_ID`）。 |
+| 启用 `FEISHU_ALLOW_BOTS` 后对端机器人消息仍被忽略 | Rabbit 尚无法识别自身——请设置 `FEISHU_BOT_OPEN_ID`（若应用使用 `sender_id_type=user_id` 则同时设置 `FEISHU_BOT_USER_ID`）。 |
 | 对端机器人显示为 `ou_xxxxxx` 而非名称 | 授予 `application:bot.basic_info:read` 权限范围。 |
 | 点击审批按钮时出现错误 200340 | 在飞书开发者控制台启用**交互式卡片**能力并配置**卡片请求 URL**。参见上方[飞书应用所需配置](#required-feishu-app-configuration)。 |
 | `Webhook rate limit exceeded` | 同一 IP 每分钟请求超过 120 次。通常是配置错误或循环导致。 |
 
 ## 工具集
 
-飞书 / Lark 使用 `hermes-feishu` 平台预设，包含与 Telegram 及其他基于 gateway 的消息平台相同的核心工具。
+飞书 / Lark 使用 `rabbit-feishu` 平台预设，包含与 Telegram 及其他基于 gateway 的消息平台相同的核心工具。

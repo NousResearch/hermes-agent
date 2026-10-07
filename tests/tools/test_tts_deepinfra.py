@@ -4,7 +4,7 @@
 then delegates to ``_generate_openai_tts``. These two tests pin the
 delegation happy path and the no-hardcoded-fallback contract; shared
 infrastructure (catalog fetch + tag filter) is covered in
-``tests/hermes_cli/test_api_key_providers.py``.
+``tests/rabbit_cli/test_api_key_providers.py``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolation(monkeypatch):
-    import hermes_cli.models as _models_mod
+    import rabbit_cli.models as _models_mod
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
     monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     yield

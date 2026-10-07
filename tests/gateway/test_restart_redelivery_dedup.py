@@ -29,7 +29,7 @@ def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
 @pytest.mark.asyncio
 async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, monkeypatch):
     """update_id strictly LESS than the recorded one is also a redelivery."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     marker = tmp_path / ".restart_last_processed.json"
@@ -54,7 +54,7 @@ async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, mon
 @pytest.mark.asyncio
 async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch):
     """A marker older than the 5-minute window is ignored — fresh /restart proceeds."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     marker = tmp_path / ".restart_last_processed.json"
@@ -77,7 +77,7 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
 @pytest.mark.asyncio
 async def test_event_without_update_id_bypasses_dedup(tmp_path, monkeypatch):
     """Events with no platform_update_id (non-Telegram, CLI fallback) aren't gated."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     marker = tmp_path / ".restart_last_processed.json"
@@ -103,7 +103,7 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
     from gateway.config import Platform
     from gateway.session import SessionSource
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     marker = tmp_path / ".restart_last_processed.json"
@@ -144,7 +144,7 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     from a chat-originated /restart and is still within the post-boot window,
     the redelivered /restart is suppressed instead of re-restarting the gateway.
     """
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     runner, _adapter = make_restart_runner()

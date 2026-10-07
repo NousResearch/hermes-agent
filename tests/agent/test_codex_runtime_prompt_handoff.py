@@ -1,4 +1,4 @@
-"""The codex_app_server runtime hands Hermes' composed system prompt to the codex thread (#74712, #26035).
+"""The codex_app_server runtime hands Rabbit' composed system prompt to the codex thread (#74712, #26035).
 
 The standard loop sends ``_cached_system_prompt + ephemeral_system_prompt`` as its system message; the
 codex early-return used to send only cwd + raw user text, so SOUL.md / memory / channel_overrides were
@@ -29,7 +29,7 @@ class _FakeClient:
 
 def _agent(**overrides):
     base = dict(_codex_session=None, session_cwd="/tmp", tool_progress_callback=None,
-                _cached_system_prompt="SOUL: you are Hermes", ephemeral_system_prompt="Always start with ZZZ")
+                _cached_system_prompt="SOUL: you are Rabbit", ephemeral_system_prompt="Always start with ZZZ")
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -45,7 +45,7 @@ def test_runtime_sends_composed_prompt_once_per_thread(monkeypatch):
         agent._codex_session.ensure_started()
     starts = [p for (m, p) in client.requests if m == "thread/start"]
     assert len(starts) == 1
-    assert starts[0]["developerInstructions"] == "SOUL: you are Hermes\n\nAlways start with ZZZ"
+    assert starts[0]["developerInstructions"] == "SOUL: you are Rabbit\n\nAlways start with ZZZ"
 
 
 def test_runtime_omits_prompt_when_agent_has_none(monkeypatch):
@@ -71,7 +71,7 @@ def test_runtime_retires_thread_when_prompt_composition_changes(monkeypatch):
     codex_runtime._ensure_codex_session(agent)
     agent._codex_session.ensure_started()
     starts = [p["developerInstructions"] for (m, p) in client.requests if m == "thread/start"]
-    assert starts == ["SOUL: you are Hermes\n\nAlways start with ZZZ", "SOUL: you are Hermes\n\nPersonality: pirate"]
+    assert starts == ["SOUL: you are Rabbit\n\nAlways start with ZZZ", "SOUL: you are Rabbit\n\nPersonality: pirate"]
     assert client.closed == 1  # the stale thread's client was closed, not leaked
 
 
@@ -106,7 +106,7 @@ def test_each_turn_sends_the_agent_s_current_wire_model(monkeypatch):
 def test_runtime_retires_thread_when_an_in_place_switch_changes_the_codex_provider(monkeypatch):
     """turn/start can change the model but not the provider: switching between codex's own provider and a
     named custom provider (``[model_providers.<id>]``) starts a thread carrying the new modelProvider."""
-    import hermes_cli.runtime_provider as rp
+    import rabbit_cli.runtime_provider as rp
     monkeypatch.setattr(rp, "load_config", lambda: {"providers": {"my-gateway": {"api": "https://gw.example/v1"}}})
     client = _FakeClient()
     monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: client)

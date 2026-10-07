@@ -8,16 +8,15 @@ description: "将 alibaba/page-agent 嵌入你自己的 Web 应用——一个�
 
 # Page Agent
 
-将 alibaba/page-agent 嵌入你自己的 Web 应用——一个纯 JavaScript 页内 GUI agent，以单个 &lt;script> 标签或 npm 包形式发布，让你网站的终端用户能用自然语言驱动 UI（"点击登录，将用户名填为 John"）。无需 Python，无需无头浏览器，无需扩展程序。当用户是 Web 开发者，希望为其 SaaS / 管理面板 / B2B 工具添加 AI copilot、通过自然语言让遗留 Web 应用可访问，或针对本地（Ollama）或云端（Qwen / OpenAI / OpenRouter）LLM 评估 page-agent 时，使用此 skill。不适用于服务端浏览器自动化——此类需求请将用户引导至 Hermes 内置的浏览器工具。
+将 alibaba/page-agent 嵌入你自己的 Web 应用——一个纯 JavaScript 页内 GUI agent，以单个 &lt;script> 标签或 npm 包形式发布，让你网站的终端用户能用自然语言驱动 UI（"点击登录，将用户名填为 John"）。无需 Python，无需无头浏览器，无需扩展程序。当用户是 Web 开发者，希望为其 SaaS / 管理面板 / B2B 工具添加 AI copilot、通过自然语言让遗留 Web 应用可访问，或针对本地（Ollama）或云端（Qwen / OpenAI / OpenRouter）LLM 评估 page-agent 时，使用此 skill。不适用于服务端浏览器自动化——此类需求请将用户引导至 Rabbit 内置的浏览器工具。
 
 ## Skill 元数据
 
 | | |
 |---|---|
-| 来源 | 可选——通过 `hermes skills install official/web-development/page-agent` 安装 |
+| 来源 | 可选——通过 `rabbit skills install official/web-development/page-agent` 安装 |
 | 路径 | `optional-skills/web-development/page-agent` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `web`, `javascript`, `agent`, `browser`, `gui`, `alibaba`, `embed`, `copilot`, `saas` |
@@ -25,7 +24,7 @@ description: "将 alibaba/page-agent 嵌入你自己的 Web 应用——一个�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # page-agent
@@ -44,7 +43,7 @@ alibaba/page-agent（https://github.com/alibaba/page-agent，17k+ stars，MIT）
 
 ## 何时不应使用此 skill
 
-- 用户希望 **Hermes 本身驱动浏览器** → 使用 Hermes 内置的浏览器工具（Browserbase / Camofox）。page-agent 是*相反*的方向。
+- 用户希望 **Rabbit 本身驱动浏览器** → 使用 Rabbit 内置的浏览器工具（Browserbase / Camofox）。page-agent 是*相反*的方向。
 - 用户希望**在不嵌入的情况下实现跨标签页自动化** → 使用 Playwright、browser-use 或 page-agent Chrome 扩展
 - 用户需要**视觉定位 / 截图** → page-agent 仅支持文本 DOM；请改用多模态浏览器 agent
 

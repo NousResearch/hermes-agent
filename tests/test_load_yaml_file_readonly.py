@@ -24,7 +24,7 @@ def test_callers_do_not_mutate_the_shared_cached_object(tmp_path, monkeypatch):
     otherwise a later reader of the same file would observe another caller's edits."""
     import copy
 
-    from hermes_cli.env_loader import _load_secrets_config
+    from rabbit_cli.env_loader import _load_secrets_config
     from tools.terminal_scope import build_profile_terminal_scope
 
     home = tmp_path / "profiles" / "work"
@@ -34,7 +34,7 @@ def test_callers_do_not_mutate_the_shared_cached_object(tmp_path, monkeypatch):
         "terminal:\n  backend: local\n  cwd: auto\n  timeout: 5\n"
         "secrets:\n  onepassword: {enabled: false}\n"
     )
-    monkeypatch.setattr("hermes_cli.env_loader._process_hermes_home", lambda: tmp_path / "other")
+    monkeypatch.setattr("rabbit_cli.env_loader._process_rabbit_home", lambda: tmp_path / "other")
     cached = load_yaml_file_readonly(path)
     snapshot = copy.deepcopy(cached)
 

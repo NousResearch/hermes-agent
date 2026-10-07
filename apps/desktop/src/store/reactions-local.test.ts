@@ -14,7 +14,7 @@ import {
   setLocalReaction
 } from '@/store/reactions-local'
 import { $messages } from '@/store/session'
-import type { MessageReaction } from '@/types/hermes'
+import type { MessageReaction } from '@/types/rabbit'
 
 vi.mock('@/store/profile', async () => {
   const { atom: nanoAtom } = await import('nanostores')
@@ -68,7 +68,7 @@ vi.mock('@/app/right-sidebar/terminal/terminals', () => ({ closeAgentTerminalByP
 vi.mock('@/store/pane-focus', () => ({ applyDesktopLayoutPreset: vi.fn(), revealDesktopPane: vi.fn() }))
 vi.mock('@/store/tips', () => ({ $tipsEnabled: { get: () => false }, agentTipId: vi.fn(), showTip: vi.fn() }))
 vi.mock('@/app/contrib/hooks/use-background-sync', () => ({ resetLiveRuntimeTracking: vi.fn() }))
-vi.mock('@/hermes', () => ({ resetSidebarBatchCapability: vi.fn() }))
+vi.mock('@/rabbit', () => ({ resetSidebarBatchCapability: vi.fn() }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/artifacts', () => ({ clearArtifactRegistry: vi.fn() }))
 vi.mock('@/store/cron', () => ({ invalidateCronJobsRequests: vi.fn(), setCronJobs: vi.fn() }))

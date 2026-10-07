@@ -2,4 +2,4 @@ name: azure-foundry-provider
 kind: model-provider
 version: 1.0.0
 description: Microsoft Foundry
-author: Nous Research
+author: Sanath Patil

@@ -21,7 +21,7 @@ import {
   mergeTranslations,
   type TranslationOverride,
   unflattenMessages
-} from '@hermes/shared/i18n'
+} from '@rabbit/shared/i18n'
 import { atom } from 'nanostores'
 
 import { isBundledLocale, TRANSLATIONS } from './catalog'

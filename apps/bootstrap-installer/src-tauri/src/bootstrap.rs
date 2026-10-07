@@ -3,7 +3,7 @@
 //! Direct port of `runBootstrap` from `apps/desktop/electron/bootstrap-runner.ts`.
 //! Drives install.ps1 / install.sh stage-by-stage, emits progress events
 //! over the Tauri `bootstrap` channel, writes a forensic log to
-//! HERMES_HOME/logs/bootstrap-<timestamp>.log.
+//! RABBIT_HOME/logs/bootstrap-<timestamp>.log.
 //!
 //! Lifecycle:
 //!   1. `start_bootstrap` (Tauri command) → spawns the worker task.
@@ -46,9 +46,9 @@ pub struct StartBootstrapArgs {
     /// bootstrap-runner passes false to avoid building-while-running.
     #[serde(default = "default_true")]
     pub include_desktop: bool,
-    /// Optional override for HERMES_HOME. Tests use this; production
+    /// Optional override for RABBIT_HOME. Tests use this; production
     /// almost always falls back to the OS default.
-    pub hermes_home: Option<String>,
+    pub rabbit_home: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -159,31 +159,31 @@ pub async fn get_bootstrap_status(
     })
 }
 
-/// Spawn the locally-built Hermes desktop binary, then close the installer
+/// Spawn the locally-built Rabbit desktop binary, then close the installer
 /// window. Caller resolves the binary path from `install_root`.
 ///
 /// Returns Err with a human-readable message if the binary doesn't exist
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
 #[tauri::command]
-pub async fn launch_hermes_desktop(
+pub async fn launch_rabbit_desktop(
     app: AppHandle,
     install_root: String,
 ) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
-    let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
+    let exe_path = resolve_rabbit_desktop_exe(&install_root).ok_or_else(|| {
         format!(
-            "Couldn't find a built Hermes desktop at {}. The desktop build step \
-             may have been skipped or failed. Run `hermes desktop` from a \
+            "Couldn't find a built Rabbit desktop at {}. The desktop build step \
+             may have been skipped or failed. Run `rabbit desktop` from a \
              terminal to build and launch it.",
             install_root.join("apps").join("desktop").join("release").display()
         )
     })?;
 
-    tracing::info!(?exe_path, "launching Hermes desktop");
+    tracing::info!(?exe_path, "launching Rabbit desktop");
 
     // Detach from us — the installer is about to exit. On macOS launch the
-    // bundle through LaunchServices instead of exec'ing Contents/MacOS/Hermes
+    // bundle through LaunchServices instead of exec'ing Contents/MacOS/Rabbit
     // directly; this matches user double-click/open behavior and avoids cwd /
     // quarantine oddities after a self-update rebuild.
     let mut cmd = desktop_launch_command(&exe_path, &install_root);
@@ -207,22 +207,22 @@ pub async fn launch_hermes_desktop(
 /// Walks the well-known electron-builder unpacked-app paths under
 /// `install_root`. Mirrors the resolver in `cmd_gui` (apps/desktop/release/
 /// <os>-unpacked/<exe>).
-pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
+pub(crate) fn resolve_rabbit_desktop_exe(install_root: &std::path::Path) -> Option<PathBuf> {
     let release_dir = install_root.join("apps").join("desktop").join("release");
     let candidates: &[(&str, &str)] = if cfg!(target_os = "windows") {
         &[
-            ("win-unpacked", "Hermes.exe"),
-            ("win-arm64-unpacked", "Hermes.exe"),
+            ("win-unpacked", "Rabbit.exe"),
+            ("win-arm64-unpacked", "Rabbit.exe"),
         ]
     } else if cfg!(target_os = "macos") {
         &[
-            ("mac/Hermes.app/Contents/MacOS", "Hermes"),
-            ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
+            ("mac/Rabbit.app/Contents/MacOS", "Rabbit"),
+            ("mac-arm64/Rabbit.app/Contents/MacOS", "Rabbit"),
         ]
     } else {
         // electron-builder names the x64 dir `linux-unpacked` and every other
         // arch `linux-<arch>-unpacked` (#94703).
-        &[("linux-unpacked", "hermes"), ("linux-arm64-unpacked", "hermes")]
+        &[("linux-unpacked", "rabbit"), ("linux-arm64-unpacked", "rabbit")]
     };
     for (subdir, exe) in candidates {
         let p = release_dir.join(subdir).join(exe);
@@ -233,11 +233,11 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
     None
 }
 
-pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
-    let exe = resolve_hermes_desktop_exe(install_root)?;
+pub(crate) fn resolve_rabbit_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
+    let exe = resolve_rabbit_desktop_exe(install_root)?;
     #[cfg(target_os = "macos")]
     {
-        // .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+        // .../Rabbit.app/Contents/MacOS/Rabbit -> .../Rabbit.app
         let app = exe.parent()?.parent()?.parent()?.to_path_buf();
         if app.extension().and_then(|e| e.to_str()) == Some("app") && app.is_dir() {
             return Some(app);
@@ -253,10 +253,10 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 
 /// True when a prior install completed (bootstrap-complete marker present) AND a
 /// launchable desktop app exists on disk. Used by the installer's launcher fast
-/// path so a bare re-open just opens Hermes instead of re-running setup.
-pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
-    install_root.join(".hermes-bootstrap-complete").exists()
-        && resolve_hermes_desktop_exe(install_root).is_some()
+/// path so a bare re-open just opens Rabbit instead of re-running setup.
+pub(crate) fn rabbit_is_installed(install_root: &std::path::Path) -> bool {
+    install_root.join(".rabbit-bootstrap-complete").exists()
+        && resolve_rabbit_desktop_exe(install_root).is_some()
 }
 
 fn is_full_sha(value: &str) -> bool {
@@ -310,7 +310,7 @@ fn resolve_marker_commit(install_root: &Path, pin: &Pin, marker_path: &Path) -> 
 }
 
 /// UTC ISO-8601 with milliseconds, the `completedAt` format install.ps1,
-/// Electron (`toISOString`) and hermes_cli/source_stamp.py all write.
+/// Electron (`toISOString`) and rabbit_cli/source_stamp.py all write.
 fn iso8601_utc(since_epoch: std::time::Duration) -> String {
     let secs = since_epoch.as_secs();
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
@@ -359,9 +359,9 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
     body.push(b'\n');
 
     // Atomic publish (temp sibling + flush + rename), matching Electron's
-    // writeFileAtomic(). hermes_is_installed() only checks existence, so a
+    // writeFileAtomic(). rabbit_is_installed() only checks existence, so a
     // partial direct write would incorrectly enable the launcher fast path.
-    let tmp_path = install_root.join(".hermes-bootstrap-complete.tmp");
+    let tmp_path = install_root.join(".rabbit-bootstrap-complete.tmp");
     {
         let mut file = std::fs::File::create(&tmp_path).with_context(|| {
             format!(
@@ -456,8 +456,8 @@ fn spawn_detached_desktop(cmd: &mut std::process::Command) -> std::io::Result<st
 /// exists or the spawn fails, so the caller can fall back to showing the
 /// installer UI.
 pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io::Result<()> {
-    let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
+    let exe = resolve_rabbit_desktop_exe(install_root).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no built Rabbit desktop app")
     })?;
     let mut cmd = desktop_launch_command_std(&exe, install_root);
     spawn_detached_desktop(&mut cmd).map(|_child| ())
@@ -469,7 +469,7 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
 pub(crate) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/open");
     cmd.arg(app_bundle);
-    cmd.current_dir(crate::paths::hermes_home());
+    cmd.current_dir(crate::paths::rabbit_home());
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -495,7 +495,7 @@ fn desktop_launch_command(
         if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
             let mut cmd = tokio::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
-            cmd.current_dir(crate::paths::hermes_home());
+            cmd.current_dir(crate::paths::rabbit_home());
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -520,7 +520,7 @@ fn desktop_launch_command_std(
         if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
             let mut cmd = std::process::Command::new("/usr/bin/open");
             cmd.arg(app_bundle);
-            cmd.current_dir(crate::paths::hermes_home());
+            cmd.current_dir(crate::paths::rabbit_home());
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -621,7 +621,7 @@ async fn run_bootstrap(
         &app,
         &script.path,
         &manifest_args_full,
-        args.hermes_home.as_deref(),
+        args.rabbit_home.as_deref(),
         &mut manifest_cancel_rx,
         Some("__manifest__".to_string()),
     )
@@ -733,7 +733,7 @@ async fn run_bootstrap(
                 &app,
                 &script.path,
                 &stage_args,
-                args.hermes_home.as_deref(),
+                args.rabbit_home.as_deref(),
                 &mut local_cancel_rx,
                 Some(stage.name.clone()),
             )
@@ -873,13 +873,13 @@ async fn run_bootstrap(
     }
 
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
-    // explicitly; we infer it from $HermesHome which Stage-Repository clones
-    // the repo INTO at $HermesHome\hermes-agent. Mirrors hermes_constants.
-    let hermes_home = args
-        .hermes_home
+    // explicitly; we infer it from $RabbitHome which Stage-Repository clones
+    // the repo INTO at $RabbitHome\rabbit-agent. Mirrors rabbit_constants.
+    let rabbit_home = args
+        .rabbit_home
         .clone()
-        .unwrap_or_else(|| crate::paths::hermes_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&hermes_home).join("hermes-agent");
+        .unwrap_or_else(|| crate::paths::rabbit_home().to_string_lossy().into_owned());
+    let install_root = PathBuf::from(&rabbit_home).join("rabbit-agent");
 
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).
@@ -898,13 +898,13 @@ async fn run_bootstrap(
         }
     };
 
-    // Copy ourselves to HERMES_HOME/hermes-setup.exe so the desktop app can
+    // Copy ourselves to RABBIT_HOME/rabbit-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is
     // a one-shot install concern; an `--update` re-invocation no-ops because
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
-    if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+    if let Err(err) = crate::paths::copy_self_to_rabbit_home() {
+        tracing::warn!(?err, "failed to copy installer into RABBIT_HOME (non-fatal)");
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -959,7 +959,7 @@ async fn run_install_script(
     app: &AppHandle,
     script_path: &std::path::Path,
     args: &[String],
-    hermes_home_override: Option<&str>,
+    rabbit_home_override: Option<&str>,
     cancel_rx: &mut Option<mpsc::Receiver<()>>,
     stage_name: Option<String>,
 ) -> Result<powershell::ScriptResult> {
@@ -1011,7 +1011,7 @@ async fn run_install_script(
         }),
     };
 
-    powershell::run_script(script_path, args, sink, hermes_home_override, cancel_rx)
+    powershell::run_script(script_path, args, sink, rabbit_home_override, cancel_rx)
         .await
         .map_err(|e| {
             tracing::error!(?e, "install script invocation failed");
@@ -1106,9 +1106,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[cfg(windows)]
-    const STDIO_HELPER_ENV: &str = "HERMES_BOOTSTRAP_STDIO_HELPER";
+    const STDIO_HELPER_ENV: &str = "RABBIT_BOOTSTRAP_STDIO_HELPER";
     #[cfg(windows)]
-    const STDIO_SLEEPER_ENV: &str = "HERMES_BOOTSTRAP_STDIO_SLEEPER";
+    const STDIO_SLEEPER_ENV: &str = "RABBIT_BOOTSTRAP_STDIO_SLEEPER";
     #[cfg(windows)]
     const STDIO_HELPER_TEST: &str = "bootstrap::tests::stdio_helper_launch";
     #[cfg(windows)]
@@ -1118,7 +1118,7 @@ mod tests {
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
-            "hermes-bootstrap-test-{tag}-{}-{}",
+            "rabbit-bootstrap-test-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1136,22 +1136,22 @@ mod tests {
         if cfg!(target_os = "macos") {
             let macos_dir = release
                 .join("mac-arm64")
-                .join("Hermes.app")
+                .join("Rabbit.app")
                 .join("Contents")
                 .join("MacOS");
             std::fs::create_dir_all(&macos_dir).unwrap();
-            std::fs::write(macos_dir.join("Hermes"), b"#!/bin/sh\n").unwrap();
-            macos_dir.parent().unwrap().parent().unwrap().to_path_buf() // .../Hermes.app
+            std::fs::write(macos_dir.join("Rabbit"), b"#!/bin/sh\n").unwrap();
+            macos_dir.parent().unwrap().parent().unwrap().to_path_buf() // .../Rabbit.app
         } else if cfg!(target_os = "windows") {
             let dir = release.join("win-unpacked");
             std::fs::create_dir_all(&dir).unwrap();
-            let exe = dir.join("Hermes.exe");
+            let exe = dir.join("Rabbit.exe");
             std::fs::write(&exe, b"stub").unwrap();
             exe
         } else {
             let dir = release.join("linux-unpacked");
             std::fs::create_dir_all(&dir).unwrap();
-            let exe = dir.join("hermes");
+            let exe = dir.join("rabbit");
             std::fs::write(&exe, b"stub").unwrap();
             exe
         }
@@ -1159,14 +1159,14 @@ mod tests {
 
     // The relaunch / install target is derived from the rebuilt desktop app.
     // On macOS this MUST resolve to the .app bundle (what `open` relaunches and
-    // what the updater ditto's over /Applications/Hermes.app). A regression in
+    // what the updater ditto's over /Applications/Rabbit.app). A regression in
     // this derivation breaks the post-update auto-relaunch, so guard it.
     #[test]
-    fn resolve_hermes_desktop_app_finds_built_bundle() {
+    fn resolve_rabbit_desktop_app_finds_built_bundle() {
         let root = unique_tmp_dir("app-ok");
         let expected = make_release_tree(&root);
 
-        let resolved = resolve_hermes_desktop_app(&root)
+        let resolved = resolve_rabbit_desktop_app(&root)
             .expect("should resolve the freshly-built desktop app");
 
         #[cfg(target_os = "macos")]
@@ -1189,23 +1189,23 @@ mod tests {
     // x64 uses the bare `linux-unpacked` name (#94703).
     #[cfg(target_os = "linux")]
     #[test]
-    fn resolve_hermes_desktop_exe_finds_arm64_linux_build() {
+    fn resolve_rabbit_desktop_exe_finds_arm64_linux_build() {
         let root = unique_tmp_dir("app-linux-arm64");
         let dir = root.join("apps/desktop/release/linux-arm64-unpacked");
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("hermes");
+        let exe = dir.join("rabbit");
         std::fs::write(&exe, b"stub").unwrap();
 
-        assert_eq!(resolve_hermes_desktop_exe(&root), Some(exe));
+        assert_eq!(resolve_rabbit_desktop_exe(&root), Some(exe));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn resolve_hermes_desktop_app_is_none_without_a_build() {
+    fn resolve_rabbit_desktop_app_is_none_without_a_build() {
         let root = unique_tmp_dir("app-none");
         // No release tree created.
         assert!(
-            resolve_hermes_desktop_app(&root).is_none(),
+            resolve_rabbit_desktop_app(&root).is_none(),
             "no resolved app when nothing has been built"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1221,7 +1221,7 @@ mod tests {
 
         let marker =
             write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
-        let marker_path = root.join(".hermes-bootstrap-complete");
+        let marker_path = root.join(".rabbit-bootstrap-complete");
         let from_disk: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
 
@@ -1272,7 +1272,7 @@ mod tests {
         let receipt = format!(
             "\u{feff}{{\"schemaVersion\":1,\"pinnedCommit\":\"{head}\",\"pinnedBranch\":\"main\",\"completedAt\":\"2026-01-01T00:00:00.000Z\"}}"
         );
-        std::fs::write(root.join(".hermes-bootstrap-complete"), receipt).unwrap();
+        std::fs::write(root.join(".rabbit-bootstrap-complete"), receipt).unwrap();
         let marker = write_bootstrap_complete_marker(&root, &pin).unwrap();
         assert_eq!(marker["pinnedCommit"], head);
         let _ = std::fs::remove_dir_all(&root);
@@ -1289,8 +1289,8 @@ mod tests {
 
         write_bootstrap_complete_marker(&root, &pin).expect("marker write should succeed");
 
-        let marker_path = root.join(".hermes-bootstrap-complete");
-        let tmp_path = root.join(".hermes-bootstrap-complete.tmp");
+        let marker_path = root.join(".rabbit-bootstrap-complete");
+        let tmp_path = root.join(".rabbit-bootstrap-complete.tmp");
         assert!(
             marker_path.is_file(),
             "final marker must exist after atomic publish"
@@ -1300,23 +1300,23 @@ mod tests {
             "temp sibling must not remain after atomic publish"
         );
         assert!(
-            hermes_is_installed(&root),
+            rabbit_is_installed(&root),
             "atomically published marker must enable the installer fast path"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn hermes_is_installed_treats_marker_existence_as_sufficient() {
+    fn rabbit_is_installed_treats_marker_existence_as_sufficient() {
         // Documents why write_bootstrap_complete_marker must publish atomically:
         // the launcher predicate only checks existence, so a partial/corrupt
         // final marker would still enable the fast path.
         let root = unique_tmp_dir("marker-existence-only");
         make_release_tree(&root);
-        std::fs::write(root.join(".hermes-bootstrap-complete"), b"").unwrap();
+        std::fs::write(root.join(".rabbit-bootstrap-complete"), b"").unwrap();
 
         assert!(
-            hermes_is_installed(&root),
+            rabbit_is_installed(&root),
             "empty/partial marker content still counts as installed"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1342,11 +1342,11 @@ mod tests {
             "error should mention the marker path: {msg}"
         );
         assert!(
-            !not_a_dir.join(".hermes-bootstrap-complete").exists(),
+            !not_a_dir.join(".rabbit-bootstrap-complete").exists(),
             "failed write must not leave a final marker that enables the fast path"
         );
         assert!(
-            !not_a_dir.join(".hermes-bootstrap-complete.tmp").exists(),
+            !not_a_dir.join(".rabbit-bootstrap-complete.tmp").exists(),
             "failed write must not leave a temp marker sibling either"
         );
         let _ = std::fs::remove_dir_all(&base);

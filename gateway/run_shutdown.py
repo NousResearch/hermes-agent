@@ -66,10 +66,10 @@ def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bo
     return True
 
 # Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to
-# exit (bounded), then spawns ``hermes gateway restart``.
+# exit (bounded), then spawns ``rabbit gateway restart``.
 _WINDOWS_RESTART_WATCHER = """
 import os, subprocess, sys, time
-from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+from rabbit_cli._subprocess_compat import windows_detach_flags_without_breakaway
 pid = int(sys.argv[1])
 restart_after_s = float(sys.argv[2])
 cmd = sys.argv[3:]
@@ -318,11 +318,11 @@ class GatewayShutdownMixin:
     def _scale_to_zero_has_live_background_work(self) -> bool:
         """Live background work (delegations, processes, pending watchers) that must block a suspend.
 
-        PERMANENT supervised watchers (_hermes_supervised_watcher, incl. the scale-to-zero watcher
+        PERMANENT supervised watchers (_rabbit_supervised_watcher, incl. the scale-to-zero watcher
         itself) are excluded, else this would be True forever and the gateway could never go dormant.
         """
         if any(
-            not t.done() and not getattr(t, "_hermes_supervised_watcher", False)
+            not t.done() and not getattr(t, "_rabbit_supervised_watcher", False)
             for t in self._background_tasks
         ):
             return True
@@ -780,7 +780,7 @@ class GatewayShutdownMixin:
         )
         logger.warning(
             "%s paused after %d consecutive failures (%s) — fix the underlying issue then run `/platform "
-            "resume %s` to retry, or `hermes gateway restart` to restart the gateway.",
+            "resume %s` to retry, or `rabbit gateway restart` to restart the gateway.",
             platform.value, info.get("attempts", 0), info["pause_reason"], platform.value,
         )
 
@@ -1230,13 +1230,13 @@ class GatewayShutdownMixin:
     async def _finalize_session_off_loop(
         self, *, session_id: Any, platform: str, reason: str, session_key: Optional[str] = None, **extra: Any,
     ) -> None:
-        """Run hermes_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
+        """Run rabbit_cli.lifecycle.finalize_session off-loop, bounded; on timeout the worker is left alone.
         ``session_key`` lets an unscoped caller (shutdown) enter the owning profile's scope: plugin
         ``on_session_finalize`` observers and the Relay coordinator (``current_profile_key``) resolve
         profile state at call time."""
 
         def _call() -> None:
-            from hermes_cli.lifecycle import finalize_session
+            from rabbit_cli.lifecycle import finalize_session
             finalize_session(session_id=session_id, platform=platform, reason=reason, **extra)
 
         try:
@@ -1328,8 +1328,8 @@ class GatewayShutdownMixin:
 
     # Stuck-loop (restart failure) counters
     def _stuck_loop_counts_path(self) -> Path:
-        from gateway.run import _hermes_home
-        return _hermes_home / self._STUCK_LOOP_FILE
+        from gateway.run import _rabbit_home
+        return _rabbit_home / self._STUCK_LOOP_FILE
 
     @staticmethod
     def _read_json_counts(path: Path) -> Optional[dict]:
@@ -1396,7 +1396,7 @@ class GatewayShutdownMixin:
     # Restart orchestration
     @staticmethod
     def _restart_watcher_env() -> dict:
-        """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
+        """Watcher env minus ``_RABBIT_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down).
 
         The host multiplexer is respawned with ``host_gateway_child_env`` (default-root
         secrets via ``served_profile_child_env``, not ``os.environ.copy()``). A standalone
@@ -1404,12 +1404,12 @@ class GatewayShutdownMixin:
         already on the default root, is the host.
         """
         from gateway.config_loader import drop_bridged_env
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from rabbit_constants import get_default_rabbit_root, get_rabbit_home
         from tools.environments.local import host_gateway_child_env, served_profile_child_env
 
-        home = get_hermes_home()
+        home = get_rabbit_home()
         try:
-            on_default = home.resolve() == get_default_hermes_root().resolve()
+            on_default = home.resolve() == get_default_rabbit_root().resolve()
         except Exception:
             on_default = False
         # ``resolve_multiplex_mode`` settles the default-on/unset decision before
@@ -1443,20 +1443,20 @@ class GatewayShutdownMixin:
                 target_home=home, inherit_credentials=True,
             )
         watcher_env = drop_bridged_env(watcher_env)
-        watcher_env.pop("_HERMES_GATEWAY", None)
+        watcher_env.pop("_RABBIT_GATEWAY", None)
         return watcher_env
 
     @staticmethod
-    def _spawn_windows_restart_watcher(hermes_cmd: list, current_pid: int, restart_after_s: float) -> None:
+    def _spawn_windows_restart_watcher(rabbit_cmd: list, current_pid: int, restart_after_s: float) -> None:
         """Spawn the detached Windows watcher (``python -c``), retrying once without job breakaway."""
         import subprocess
-        from hermes_cli._subprocess_compat import (
+        from rabbit_cli._subprocess_compat import (
             windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
         )
         watcher_env = GatewayShutdownMixin._restart_watcher_env()
         # host_gateway_child_env does not copy the parent dotenv. The watcher
         # still has to run inside the venv this process is using, or the
-        # respawn cannot import hermes.
+        # respawn cannot import rabbit.
         if not watcher_env.get("VIRTUAL_ENV"):
             inherited = os.environ.get("VIRTUAL_ENV")
             if inherited:
@@ -1465,11 +1465,11 @@ class GatewayShutdownMixin:
         # Console python under CREATE_NO_WINDOW: nothing flashes. NOT pythonw.exe — a console-less
         # watcher makes every console-subsystem descendant allocate a visible conhost (#54220/#56747).
         # The watcher runs sys.executable (console python) under the CREATE_NO_WINDOW detach kwargs below:
-        # it owns one hidden console, inherited by the `hermes gateway restart` child, so nothing flashes.
+        # it owns one hidden console, inherited by the `rabbit gateway restart` child, so nothing flashes.
         # See #54220, #56747.
-        from hermes_cli._launchers import runtime_command
+        from rabbit_cli._launchers import runtime_command
         watcher_argv = runtime_command(project_root,
-            [str(current_pid), str(restart_after_s), *hermes_cmd, "gateway", "restart"],
+            [str(current_pid), str(restart_after_s), *rabbit_cmd, "gateway", "restart"],
             code=_WINDOWS_RESTART_WATCHER)
         watcher_python = watcher_argv[0]
         popen_kwargs = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=watcher_env)
@@ -1495,12 +1495,12 @@ class GatewayShutdownMixin:
                 )
 
     async def _launch_detached_restart_command(self) -> None:
-        from gateway.run import _resolve_hermes_bin
+        from gateway.run import _resolve_rabbit_bin
         import shutil
         import subprocess
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            logger.error("Could not locate hermes binary for detached /restart")
+        rabbit_cmd = _resolve_rabbit_bin()
+        if not rabbit_cmd:
+            logger.error("Could not locate rabbit binary for detached /restart")
             return
         if self._detached_restart_helper_started:
             return
@@ -1508,9 +1508,9 @@ class GatewayShutdownMixin:
         current_pid = os.getpid()
         restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
         if sys.platform == "win32":
-            GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
+            GatewayShutdownMixin._spawn_windows_restart_watcher(rabbit_cmd, current_pid, restart_after_s)
             return
-        cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        cmd = " ".join(shlex.quote(part) for part in rabbit_cmd)
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
@@ -1565,7 +1565,7 @@ class GatewayShutdownMixin:
         an unreadable activity summary means "not wedged".
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _float_env
-        timeout = _float_env("HERMES_AGENT_TIMEOUT", 1800)
+        timeout = _float_env("RABBIT_AGENT_TIMEOUT", 1800)
         if timeout <= 0:
             return 0
 
@@ -1608,7 +1608,7 @@ class GatewayShutdownMixin:
 
     def _describe_active_work(self) -> list:
         """One dict per in-flight work unit the restart wait is holding for, so an observer
-        (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
+        (``rabbit update``, ``rabbit gateway status``) can name it instead of printing a bare count.
 
         ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
         handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
@@ -1742,7 +1742,7 @@ class GatewayShutdownMixin:
         # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
         # skips _restart_task for the same reason it skips _stop_task.
         # Empty Context: /restart is handled inside the requester's profile scope, and a copied context
-        # would run the HOST restart as that profile (watcher HERMES_HOME, stop()'s flushes).
+        # would run the HOST restart as that profile (watcher RABBIT_HOME, stop()'s flushes).
         self._restart_task = Context().run(lambda: asyncio.create_task(_run_restart()))
         return True
 
@@ -1757,7 +1757,7 @@ class GatewayShutdownMixin:
         if not watchdog.start():
             return False
         self._systemd_watchdog = watchdog
-        watchdog.ready("Hermes Gateway running")
+        watchdog.ready("Rabbit Gateway running")
         return True
 
     async def _stop_systemd_watchdog(self) -> None:
@@ -2137,7 +2137,7 @@ class GatewayShutdownMixin:
             # Shared SessionDB instances still held by the process-wide registry (tools, cron, mirror).
             # This is the safety net that guarantees no WAL write lock survives past gateway shutdown
             # (#90837).
-            from hermes_state_registry import close_all
+            from rabbit_state_registry import close_all
             closed = close_all()
             if closed:
                 logger.debug("Closed %d shared SessionDB instance(s) at shutdown", closed)
@@ -2147,7 +2147,7 @@ class GatewayShutdownMixin:
 
     async def _stop_persist_exit_state(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """PID/lock release, clean-shutdown marker, restart markers, terminal runtime status."""
-        from gateway.run import _hermes_home, _planned_restart_notification_path, _shutdown_gateway_health_export
+        from gateway.run import _rabbit_home, _planned_restart_notification_path, _shutdown_gateway_health_export
         from utils import atomic_json_write
         from gateway.status import remove_pid_file, release_gateway_runtime_lock
         remove_pid_file()
@@ -2156,7 +2156,7 @@ class GatewayShutdownMixin:
         # half-finished sessions, so no marker — the next startup recovers their turn markers.
         if not ctx.timed_out:
             with suppress(Exception):
-                (_hermes_home / ".clean_shutdown").touch()
+                (_rabbit_home / ".clean_shutdown").touch()
         else:
             logger.info(
                 "Skipping .clean_shutdown marker — drain timed out with "

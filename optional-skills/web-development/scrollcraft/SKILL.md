@@ -2,11 +2,11 @@
 name: scrollcraft
 description: "Premium scroll-driven landing pages; scroll = timeline."
 version: 1.0.0
-author: 'nateherkai (upstream scroll-craft), ported by Hermes Agent'
+author: 'nateherkai (upstream scroll-craft), ported by Rabbit Agent'
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [web-development, landing-page, scrollytelling, animation, design, frontend]
     category: web-development
     homepage: https://github.com/nateherkai/scroll-craft
@@ -132,7 +132,7 @@ viewport-heights.
 
 Full pipeline, prompt scaffolds and model notes: [references/assets.md](references/assets.md).
 
-**Hermes-native paths first:**
+**Rabbit-native paths first:**
 
 - **User-supplied footage and photos** — no key, no spend, a first-class route.
   Grade and encode them.
@@ -227,7 +227,7 @@ build's row to `<workspace>/FINGERPRINTS.md`.
 ## Pitfalls
 
 - `scripts/shoot.mjs` needs Playwright (`npm install playwright` or
-  `playwright-core` plus a Chrome install). Hermes' `browser_exec` tool is the
+  `playwright-core` plus a Chrome install). Rabbit' `browser_exec` tool is the
   lighter alternative for scroll-screenshot verification: serve the build,
   scroll in steps, capture screenshots, and inspect them yourself.
 - `scripts/kie.mjs` needs `KIE_AI_API_KEY` and paid credit; prefer

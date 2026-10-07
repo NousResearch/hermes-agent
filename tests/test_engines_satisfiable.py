@@ -1,14 +1,14 @@
 """The manifest's ``engines`` must be satisfiable by a toolchain we can actually ship.
 
 `engine-strict=true` in `.npmrc` makes `engines` a hard gate on every
-`npm ci` / `npm install` — the installer's workspace step, `hermes update`'s
+`npm ci` / `npm install` — the installer's workspace step, `rabbit update`'s
 dependency refresh, and CI alike. So a floor nobody's toolchain can meet is
 not a strict-hygiene win; it is a total install outage.
 
 That is exactly what happened: `engines.npm` was raised to `>=12.0.0` while
 **no Node release bundles npm 12** (Node 26 ships 11.17.0, 24 ships 11.16.0,
 22 ships 10.9.8). Every fresh install died at the first `npm ci`, and
-`hermes update` left installs in a mixed state. These tests encode the
+`rabbit update` left installs in a mixed state. These tests encode the
 invariants that would have caught it.
 
 Deliberately behavioral, not a snapshot: nothing here pins a version we
@@ -118,14 +118,14 @@ class TestEnginesAreSatisfiable:
 
     def test_managed_npm_is_accepted_by_the_engines(self):
         """The npm PM provisions must clear engines.npm, or fresh
-        Hermes-managed installs die at `npm ci` with EBADENGINE (#80769).
+        Rabbit-managed installs die at `npm ci` with EBADENGINE (#80769).
         """
         npm_range = _root_manifest()["engines"]["npm"]
         managed_npm = _pm_lock().version("npm")
         assert managed_npm, "pm/lock.json does not pin npm"
         assert _satisfies_range(managed_npm, npm_range), (
             f"PM provisions npm {managed_npm}, but engines.npm is "
-            f"{npm_range!r}. A fresh Hermes-managed install cannot run npm ci."
+            f"{npm_range!r}. A fresh Rabbit-managed install cannot run npm ci."
         )
 
 class TestExcludedNpmBand:

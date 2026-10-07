@@ -20,7 +20,7 @@
  *   - the listener only ever RECEIVES `code`/`state` query params and
  *     forwards them to the renderer; no tokens are exchanged here — the
  *     gateway verifies `state` (constant-time) before redeeming anything;
- *   - the browser sees only a minimal "return to Hermes" page.
+ *   - the browser sees only a minimal "return to Rabbit" page.
  */
 
 import http from 'node:http'
@@ -35,7 +35,7 @@ const DONE_HTML =
   '<!doctype html><meta charset="utf-8"><title>Authorization received</title>' +
   '<body style="font:15px system-ui;margin:3rem;text-align:center">' +
   '<h2>&#10003; Authorization received</h2>' +
-  '<p>You can close this window and return to Hermes.</p>' +
+  '<p>You can close this window and return to Rabbit.</p>' +
   '<script>setTimeout(()=>window.close(),800)</script>'
 
 interface CallbackResult {
@@ -95,7 +95,7 @@ function dispose(id: string) {
 
 export function registerMcpOauthCallbackIpc() {
   // Bind a one-shot loopback listener; resolves { id, redirectUri }.
-  ipcMain.handle('hermes:mcp-oauth:listen', async () => {
+  ipcMain.handle('rabbit:mcp-oauth:listen', async () => {
     if (pending.size >= MAX_PENDING_LISTENERS) {
       throw new Error('Too many MCP OAuth listeners are already pending')
     }
@@ -145,7 +145,7 @@ export function registerMcpOauthCallbackIpc() {
   })
 
   // Resolve when the redirect arrives (or timeout). Safe to call once per id.
-  ipcMain.handle('hermes:mcp-oauth:wait', async (_event, id, timeoutMs) => {
+  ipcMain.handle('rabbit:mcp-oauth:wait', async (_event, id, timeoutMs) => {
     const entry = pending.get(String(id || ''))
 
     if (!entry) {
@@ -179,7 +179,7 @@ export function registerMcpOauthCallbackIpc() {
   })
 
   // Tear a listener down without waiting (user cancelled, flow errored).
-  ipcMain.handle('hermes:mcp-oauth:cancel', (_event, id) => {
+  ipcMain.handle('rabbit:mcp-oauth:cancel', (_event, id) => {
     dispose(String(id || ''))
 
     return true

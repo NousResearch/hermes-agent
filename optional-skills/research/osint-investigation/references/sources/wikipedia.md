@@ -18,7 +18,7 @@ inclusion is real, but anything past that bar is well-cross-referenced.
 - **Wikidata SPARQL:** `https://query.wikidata.org/sparql` (more powerful but aggressively rate-limited)
 - **Auth:** None, but **a meaningful User-Agent is required**
 
-Set `HERMES_OSINT_UA` to something identifying (e.g. `your-app/1.0 (you@example.com)`).
+Set `RABBIT_OSINT_UA` to something identifying (e.g. `your-app/1.0 (you@example.com)`).
 Wikimedia returns HTTP 429 to generic UAs.
 
 ## 3. Data Schema

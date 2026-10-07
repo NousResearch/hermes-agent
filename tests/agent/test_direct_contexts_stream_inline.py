@@ -185,8 +185,8 @@ def test_inline_stream_stale_detector_still_fires_from_monitor_thread(
     """The stale-stream detector moved onto a monitor thread for inline
     mode; a stream that sends one chunk then only keep-alives must still be
     killed at the stale budget instead of hanging until the socket dies."""
-    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1.0")
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    monkeypatch.setenv("RABBIT_STREAM_STALE_TIMEOUT", "1.0")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
     agent = _make_agent(stalling_wire.base_url, platform="subagent")
 
     started = time.time()
@@ -206,8 +206,8 @@ def test_inline_stream_cross_thread_interrupt_aborts_promptly(stalling_wire, mon
     stall monitor) must abort the inline stream and surface InterruptedError
     — the property the direct_api_call path guaranteed via
     ``_active_request_abort``."""
-    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "60")
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    monkeypatch.setenv("RABBIT_STREAM_STALE_TIMEOUT", "60")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
     agent = _make_agent(stalling_wire.base_url, platform="cron")
     box: dict = {}
 

@@ -1,4 +1,4 @@
-"""A real install served over real smart HTTP, and the real ``hermes update`` against it.
+"""A real install served over real smart HTTP, and the real ``rabbit update`` against it.
 
 ``World`` is one sandboxed machine (``_install_helpers.new_sandbox``: bwrap, empty fake HOME, the
 git wrapper that reports the official remote URL) whose ``~/.gitconfig`` rewrites the official
@@ -8,8 +8,8 @@ single-branch clone N-1 users have), HEAD's for a HEAD install (a ``--filter=blo
 ``preclone`` seeds a checkout the installer then adopts, for the clone shapes users got another
 way (a manual full clone, a ``blob:none`` fallback clone).
 
-Everything a cell asserts is user-visible: the exit code and transcript of ``hermes update``, the
-checkout's HEAD / branch / working tree / refs, the update receipt, and whether ``hermes
+Everything a cell asserts is user-visible: the exit code and transcript of ``rabbit update``, the
+checkout's HEAD / branch / working tree / refs, the update receipt, and whether ``rabbit
 --version`` still answers. ``diag()`` renders all of it, plus the HTTP request log, for a failure
 message that explains itself.
 """
@@ -32,13 +32,13 @@ from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git._smart_http import GitHTTPServer, serve_bare
 
-REPO = "hermes-agent.git"
+REPO = "rabbit-agent.git"
 SUCCESS = "Update complete"
 TRACEBACK = I.TRACEBACK
 
 PYTESTMARK = [
     pytest.mark.platforms("linux"),
-    # Every `hermes update` runs inside the bwrap sandbox against a throwaway install in tmp_path.
+    # Every `rabbit update` runs inside the bwrap sandbox against a throwaway install in tmp_path.
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(shutil.which("git") is None, reason="git required"),
@@ -60,9 +60,9 @@ def n1_tag() -> str:
 
 
 def n1_base() -> str:
-    """The commit an N-1 install sits on: N-1's tag, or ``HERMES_E2E_N1_REF`` (a patched commit
+    """The commit an N-1 install sits on: N-1's tag, or ``RABBIT_E2E_N1_REF`` (a patched commit
     object, used to prove red a cell whose bug lives in N-1's own updater code)."""
-    return commit_of(os.environ.get("HERMES_E2E_N1_REF") or n1_tag())
+    return commit_of(os.environ.get("RABBIT_E2E_N1_REF") or n1_tag())
 
 
 def commit_of(ref: str) -> str:
@@ -147,7 +147,7 @@ class World:
         self.git("reset", "-q", "--hard", "refs/remotes/origin/main")
         self.git("clean", "-fdq")
         self.git("stash", "clear")
-        for ref in self.refs("refs/hermes-update-backups", "refs/tags/pre-update-*"):
+        for ref in self.refs("refs/rabbit-update-backups", "refs/tags/pre-update-*"):
             self.git("update-ref", "-d", ref)
         assert not self.status(), f"reset_clean left a dirty tree:\n{self.status()}"
 
@@ -156,7 +156,7 @@ class World:
 
     def update(self, *extra: str, timeout: float = 1200) -> subprocess.CompletedProcess:
         cp = self.sb.cli("update", "--yes", "--branch", "main", *extra, timeout=timeout)
-        self.transcripts.append(f"$ hermes update --yes --branch main {' '.join(extra)} -> rc={cp.returncode}\n"
+        self.transcripts.append(f"$ rabbit update --yes --branch main {' '.join(extra)} -> rc={cp.returncode}\n"
                                 f"{(cp.stdout or '')[-8000:]}\n{(cp.stderr or '')[-4000:]}")
         return cp
 
@@ -164,7 +164,7 @@ class World:
         return self.sb.cli("--version", timeout=180)
 
     def receipt(self) -> dict:
-        path = self.sb.hermes_home / "logs" / "update_receipts" / "latest.json"
+        path = self.sb.rabbit_home / "logs" / "update_receipts" / "latest.json"
         if not path.is_file():
             return {}
         try:
@@ -180,13 +180,13 @@ class World:
             out.append(f"HEAD={self.head()} branch={self.branch()} shape={self.shape()}")
             out.append("status:\n" + (self.status() or "  (clean)"))
             out.append("refs:\n" + self.git("for-each-ref", "--format=%(refname) %(objectname:short)",
-                                            "refs/heads", "refs/stash", "refs/hermes-update-backups",
+                                            "refs/heads", "refs/stash", "refs/rabbit-update-backups",
                                             "refs/remotes"))
         rec = self.receipt()
         if rec:
             out.append("receipt: " + json.dumps({k: rec.get(k) for k in ("outcome", "status", "exit_code", "steps")
                                                  if k in rec}, default=str)[:3000])
-        logs = self.sb.hermes_home / "logs"
+        logs = self.sb.rabbit_home / "logs"
         for name in ("update.log", "errors.log"):
             p = logs / name
             if p.is_file():
@@ -196,7 +196,7 @@ class World:
 
 
 def _preclone(sb: I.Sandbox, args: list[str], env: dict[str, str]) -> None:
-    sb.hermes_home.mkdir(parents=True, exist_ok=True)
+    sb.rabbit_home.mkdir(parents=True, exist_ok=True)
     cp = subprocess.run(["git", "clone", "-q", *args, "--branch", "main", I.OFFICIAL_HTTPS, str(sb.checkout)],
                         capture_output=True, text=True, env=env, timeout=900)
     assert cp.returncode == 0, f"pre-clone {args} failed: {cp.stderr[-2000:]}"

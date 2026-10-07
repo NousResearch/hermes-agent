@@ -26,7 +26,7 @@ class ActualProfile(ProviderProfile):
         if any(
             os.getenv(key)
             for key in (
-                "HERMES_CA_BUNDLE",
+                "RABBIT_CA_BUNDLE",
                 "SSL_CERT_FILE",
                 "REQUESTS_CA_BUNDLE",
                 "CURL_CA_BUNDLE",
@@ -65,7 +65,7 @@ class ActualProfile(ProviderProfile):
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Use the selected route, then config.yaml, then the legacy environment override."""
-        from hermes_cli.auth import (
+        from rabbit_cli.auth import (
             normalize_actual_base_url,
             resolve_api_key_provider_credentials,
         )

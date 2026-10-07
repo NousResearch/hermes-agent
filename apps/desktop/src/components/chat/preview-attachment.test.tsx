@@ -33,7 +33,7 @@ vi.mock('@/store/preview', async importOriginal => ({
   openPreview
 }))
 
-const previousDesktop = window.hermesDesktop
+const previousDesktop = window.rabbitDesktop
 
 function fileTarget(path: string, previewKind = 'text') {
   return {
@@ -50,7 +50,7 @@ function mountDesktopStub(normalizePreviewTarget: (target: string, baseDir?: str
   const openDir = vi.fn(async () => ({ ok: true }))
   const revealPath = vi.fn(async () => true)
 
-  window.hermesDesktop = {
+  window.rabbitDesktop = {
     normalizePreviewTarget: vi.fn(normalizePreviewTarget),
     openDir,
     revealPath
@@ -71,7 +71,7 @@ describe('PreviewAttachment local target classification (#101683)', () => {
 
   afterEach(() => {
     cleanup()
-    window.hermesDesktop = previousDesktop
+    window.rabbitDesktop = previousDesktop
   })
 
   it('opens a Windows file:///C:/... directory link natively with no Download or preview action', async () => {

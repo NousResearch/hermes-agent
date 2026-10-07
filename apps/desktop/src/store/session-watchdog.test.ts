@@ -230,7 +230,7 @@ describe('live turn event silence', () => {
     publishSessionState('rt-down', partial('partial', { storedSessionId: 's-down' }))
 
     const request = backend(async () => {
-      throw new Error('Hermes gateway unavailable')
+      throw new Error('Rabbit gateway unavailable')
     })
 
     noteSessionEvent('rt-down')

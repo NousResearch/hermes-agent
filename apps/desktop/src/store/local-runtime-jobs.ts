@@ -22,13 +22,13 @@ import {
   getLocalModelsJobs,
   getLocalModelsStatus,
   installLocalRuntime
-} from '@/hermes'
+} from '@/rabbit'
 import { translateNow } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { useStoresSelector } from '@/lib/use-session-slice'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
 export interface LocalModelsOwner extends LocalModelsScope {
   // Legacy primary routes have no registry pin. Fence them by endpoint instead.

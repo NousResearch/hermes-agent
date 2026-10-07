@@ -2,7 +2,7 @@
 // (runs the actual encoder, so every string round-trips). Run with `npx tsx`.
 import { writeFileSync } from 'node:fs'
 
-import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/hermes'
+import type { StarmapEdge, StarmapGraph, StarmapMemoryCard, StarmapNode } from '../src/types/rabbit'
 
 import { decodeShareCode, encodeShareCode } from '../src/app/starmap/share-code'
 

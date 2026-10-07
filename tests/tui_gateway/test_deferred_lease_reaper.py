@@ -15,7 +15,7 @@ import threading
 import time
 from pathlib import Path
 
-from hermes_cli.active_sessions import ActiveSessionLease, try_acquire_active_session
+from rabbit_cli.active_sessions import ActiveSessionLease, try_acquire_active_session
 from tui_gateway import server
 
 

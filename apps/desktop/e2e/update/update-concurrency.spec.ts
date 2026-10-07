@@ -4,7 +4,7 @@
  *
  * #123117: the About panel's update buttons let a second update start while
  * one was already running, and the panel's state stopped matching the
- * install. Here the user starts `hermes update` in a terminal, then clicks
+ * install. Here the user starts `rabbit update` in a terminal, then clicks
  * "Update now" in the running app before the terminal update is done:
  *   - the app refuses and says an update is already running (no second
  *     updater process is started, the app stays up);
@@ -49,7 +49,7 @@ test('Update now while a terminal update runs is refused, and the panel is truth
   const session = await startInstallSession()
   const { facts, provider, env } = session
   const target = publishUpstream('release: next upstream main', 'UPSTREAM_RELEASE.md', `next release ${RUN}\n`)
-  const marker = path.join(facts.hermesHome, '.hermes-update-in-progress')
+  const marker = path.join(facts.rabbitHome, '.rabbit-update-in-progress')
   const cliLog = path.join(facts.sandboxRoot, 'terminal-update.log')
   let cliExit: null | number = null
 
@@ -65,7 +65,7 @@ test('Update now while a terminal update runs is refused, and the panel is truth
     const explain = (extra = '') =>
       diagnostics(
         facts,
-        `${extra}\n── terminal hermes update (tail) ──\n${readText(cliLog).split('\n').slice(-40).join('\n')}\n${logTail()}`
+        `${extra}\n── terminal rabbit update (tail) ──\n${readText(cliLog).split('\n').slice(-40).join('\n')}\n${logTail()}`
       )
 
     try {
@@ -77,10 +77,10 @@ test('Update now while a terminal update runs is refused, and the panel is truth
       await openAbout(page)
       await waitForUpdateOffer(page, target)
 
-      await test.step('a terminal `hermes update` is running', async () => {
+      await test.step('a terminal `rabbit update` is running', async () => {
         const out = fs.openSync(cliLog, 'w')
 
-        const cli = spawn(facts.hermes, ['update', '--yes'], {
+        const cli = spawn(facts.rabbit, ['update', '--yes'], {
           cwd: facts.home,
           env: { ...env, TERM: 'dumb' },
           stdio: ['ignore', out, out]
@@ -111,7 +111,7 @@ test('Update now while a terminal update runs is refused, and the panel is truth
           .toMatch(/refusing (posix )?hand-off: An update is already running/)
         expect(
           installProcesses(facts)
-            .filter(proc => /desktop-update\/posix\.sh|hermes-desktop-update/.test(proc.cmdline))
+            .filter(proc => /desktop-update\/posix\.sh|rabbit-desktop-update/.test(proc.cmdline))
             .map(p => p.cmdline),
           'no second updater was started'
         ).toEqual([])
@@ -123,7 +123,7 @@ test('Update now while a terminal update runs is refused, and the panel is truth
           interval: 1_000,
           explain
         })
-        expect(cliExit, `terminal hermes update exits 0\n${explain()}`).toBe(0)
+        expect(cliExit, `terminal rabbit update exits 0\n${explain()}`).toBe(0)
         expect(git(facts.checkout, 'rev-parse', 'HEAD'), 'the checkout is on the new commit').toBe(target)
       })
 

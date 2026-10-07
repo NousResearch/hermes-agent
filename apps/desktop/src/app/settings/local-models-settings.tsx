@@ -12,7 +12,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
-import type { LocalRuntimeJob } from '@/types/hermes'
+import type { LocalRuntimeJob } from '@/types/rabbit'
 
 import { isActiveStatus } from './local-models-actions'
 import { LocalModelsBrowseSection } from './local-models-browse'

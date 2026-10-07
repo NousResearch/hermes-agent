@@ -32,7 +32,7 @@ def _clean_live():
 def _entry(name, *, platforms=(), requires_env=()):
     return SimpleNamespace(
         name=name, repo=f"https://github.com/example/{name}", sha="a" * 40, subdir="", tier="official",
-        description=f"Drives {name}. More text.", requires_hermes="", platforms=list(platforms),
+        description=f"Drives {name}. More text.", requires_rabbit="", platforms=list(platforms),
         capabilities=SimpleNamespace(requires_env=list(requires_env)),
     )
 
@@ -54,10 +54,10 @@ class FakeInstaller:
             raise RuntimeError(self.refusal[entry.name])
 
     def install_plugin(self, name, *, force, enable, ref):
-        from hermes_constants import get_hermes_home
+        from rabbit_constants import get_rabbit_home
 
         self.installs.append({"name": name, "force": force, "enable": enable, "ref": ref,
-                              "home": Path(get_hermes_home())})
+                              "home": Path(get_rabbit_home())})
         if self.install_error:
             return {"ok": False, "error": self.install_error}
         tools = [f"mcp__{name}__status", f"mcp__{name}__launch"]
@@ -103,22 +103,22 @@ def _approve(env=None):
 
 def test_only_a_setup_profile_session_selects_the_tool(tmp_path, monkeypatch):
     import model_tools
-    from hermes_cli.profiles import write_profile_meta
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_cli.profiles import write_profile_meta
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     homes = {}
-    for name, role in (("default", None), ("hermes-setup", "setup")):
+    for name, role in (("default", None), ("rabbit-setup", "setup")):
         homes[name] = tmp_path / name
         homes[name].mkdir()
         if role:
             write_profile_meta(homes[name], role=role)
-    for name, expected in (("default", False), ("hermes-setup", True)):
-        token = set_hermes_home_override(str(homes[name]))
+    for name, expected in (("default", False), ("rabbit-setup", True)):
+        token = set_rabbit_home_override(str(homes[name]))
         try:
             # Even an explicit request for the toolset does not reach a profile without the role.
             names = model_tools._select_tool_names(["setup", "web"], None, quiet_mode=True)
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert ("manage_catalog" in names) is expected, name
     # The setup guide's one tool is sent directly, never hidden behind tool_search.
     from tools.tool_search import is_deferrable_tool_name
@@ -163,19 +163,19 @@ def test_unknown_and_unsupported_ids_are_drawn_failed_and_never_installed():
 
 
 def test_an_approved_row_installs_into_default_and_lists_the_live_tools(tmp_path):
-    from hermes_cli.profiles import get_profile_dir, write_profile_meta
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_cli.profiles import get_profile_dir, write_profile_meta
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    setup_home = tmp_path / "hermes-setup"
+    setup_home = tmp_path / "rabbit-setup"
     setup_home.mkdir()
     write_profile_meta(setup_home, role="setup")
     installer = FakeInstaller([_entry("blender")])
     card = _card(_approve(), profile_home=str(setup_home))
-    token = set_hermes_home_override(str(setup_home))  # the call comes from the setup chat
+    token = set_rabbit_home_override(str(setup_home))  # the call comes from the setup chat
     try:
         out = _install([{"kind": "plugin", "id": "blender"}], installer, card)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     (row,) = out["targets"]
     assert card.seen[0]["targets"][0]["state"] == TargetState.pending.value  # nothing ran before the card
     assert row["state"] == TargetState.connected.value and row["target_profile"] == "default"
@@ -186,7 +186,7 @@ def test_an_approved_row_installs_into_default_and_lists_the_live_tools(tmp_path
 
 
 def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
-    from hermes_cli.profiles import create_profile
+    from rabbit_cli.profiles import create_profile
 
     work = create_profile("work", no_alias=True)
     installer = FakeInstaller([_entry("blender")])

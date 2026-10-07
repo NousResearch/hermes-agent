@@ -7,7 +7,7 @@ PR comment. Repeats every ``--interval`` seconds until all jobs are
 completed (or ``--timeout`` is reached), so the comment updates in real time
 as each job finishes.
 
-The comment is identified by the ``<!-- hermes-ci-review-bot -->`` marker
+The comment is identified by the ``<!-- rabbit-ci-review-bot -->`` marker
 — the same one ``assemble_review_comment.py`` uses — so it replaces any
 previous comment from an earlier run.
 
@@ -301,7 +301,7 @@ def find_comment_id(token: str, repo: str, pr_number: str) -> int | None:
     )
     for c in comments:
         body = c.get("body", "") if isinstance(c, dict) else ""
-        if body.startswith("<!-- hermes-ci-review-bot -->"):
+        if body.startswith("<!-- rabbit-ci-review-bot -->"):
             return c.get("id") if isinstance(c, dict) else None
     return None
 

@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
-from tools.xai_http import hermes_xai_user_agent
+from tools.xai_http import rabbit_xai_user_agent
 
 logger = logging.getLogger("tools.tts_tool")
 
@@ -293,7 +293,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     creds = resolve_xai_http_credentials(prefer_api_key=True)
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        raise ValueError("No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY.")
+        raise ValueError("No xAI credentials found. Configure xAI OAuth in `rabbit model` or set XAI_API_KEY.")
     xai_config = tts_config.get("xai") or {}
     voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
@@ -314,7 +314,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     if creds.get("provider") == "xai-oauth":
         base_url = creds.get("base_url")
     else:
-        from hermes_cli.config import get_env_value
+        from rabbit_cli.config import get_env_value
         base_url = xai_config.get("base_url") or creds.get("base_url") or get_env_value("XAI_BASE_URL")
     base_url = str(base_url or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
 
@@ -336,7 +336,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
         payload["text_normalization"] = True
     response = _post_json(f"{base_url}/tts", payload, {
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-        "User-Agent": hermes_xai_user_agent()})
+        "User-Agent": rabbit_xai_user_agent()})
     response.raise_for_status()
     return _write_bytes(output_path, _read_tts_response_bytes(response, label="xAI TTS"))
 
@@ -400,7 +400,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     base_url = runtime.endpoint
     # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
     # MINIMAX_GROUP_ID, attached only when absent from the URL.
-    from hermes_cli.config import get_env_value
+    from rabbit_cli.config import get_env_value
     group_id = (str(mm_config.get("group_id") or "").strip()
                 or (get_env_value("MINIMAX_GROUP_ID") or "").strip())
     if group_id and "GroupId=" not in base_url:
@@ -470,15 +470,15 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 # --- Google Gemini TTS ---
 def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
-    """Read ``tts.gemini.persona_prompt_file`` (relative -> under HERMES_HOME), failing soft."""
+    """Read ``tts.gemini.persona_prompt_file`` (relative -> under RABBIT_HOME), failing soft."""
     raw = gemini_config.get("persona_prompt_file")
     if not isinstance(raw, str) or not raw.strip():
         return ""
     path = Path(os.path.expandvars(raw.strip())).expanduser()
     if not path.is_absolute():
         try:
-            from hermes_constants import get_hermes_home
-            path = get_hermes_home() / path
+            from rabbit_constants import get_rabbit_home
+            path = get_rabbit_home() / path
         except Exception:
             path = Path.cwd() / path
     try:
@@ -567,7 +567,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     gemini_config = _section(tts_config, "gemini")
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-    from hermes_cli.config import get_env_value
+    from rabbit_cli.config import get_env_value
     from agent.gemini_native_adapter import normalize_gemini_base_url
     base_url = normalize_gemini_base_url(
         gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
@@ -596,10 +596,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
-            from hermes_cli.version_info import get_version_info
-            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
+            from rabbit_cli.version_info import get_version_info
+            headers["X-Goog-Api-Client"] = f"rabbit-agent/{get_version_info().base_version}"
         except Exception:
-            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
+            headers["X-Goog-Api-Client"] = "rabbit-agent/0.0.0"
     response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers)
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")

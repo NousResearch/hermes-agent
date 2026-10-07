@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
-import { resetSidebarBatchCapability } from '@/hermes'
+import { resetSidebarBatchCapability } from '@/rabbit'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
@@ -41,7 +41,7 @@ import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 // (wipe → re-dial, use-gateway-boot softSwitch) or a Sessions-switcher source
 // change (store/connections selectConnection). Lets the boot hook suppress the
 // backend-exit toast, keeps the cold-boot CONNECTING overlay from resurrecting
-// when startHermes re-emits boot progress, and tells the resume path that a
+// when startRabbit re-emits boot progress, and tells the resume path that a
 // "session not found" mid-switch means "retry once things settle", not "gone".
 export const $gatewaySwitching = atom(false)
 
@@ -193,7 +193,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // rail's $profiles cache is deliberately NOT wiped (an empty list flickers
   // the rail away), but a late response from the old backend must not
   // overwrite what the new backend reports — that stale write is how a
-  // remote/Cloud connection apply made the profile rail vanish (#85731).
+  // remote connection apply made the profile rail vanish (#85731).
   invalidateProfileListFetches()
   // Pins are mirrored per-backend. The next gateway has its own state.db and
   // has never seen them, so drop the "already pushed" bookkeeping and let the

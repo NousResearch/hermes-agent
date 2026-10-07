@@ -29,14 +29,14 @@ def test_bootstrap_rejection_does_not_invent_keepalive(tmp_path, monkeypatch):
 
 
 def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monkeypatch):
-    """Scheduled-Task topology (#113667): only ``HERMES_SUPERVISED_CHILD`` marks the launch, and an
+    """Scheduled-Task topology (#113667): only ``RABBIT_SUPERVISED_CHILD`` marks the launch, and an
     image-name kill of the interpreter is refused with the ``proc_*`` / explicit-PID route named.
     Other images and explicit PIDs pass."""
     import os
 
-    monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
-    for marker in ("INVOCATION_ID", "XPC_SERVICE_NAME", "HERMES_S6_SUPERVISED_CHILD", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+    monkeypatch.setenv("_RABBIT_GATEWAY", "1")
+    monkeypatch.setenv("RABBIT_SUPERVISED_CHILD", "1")
+    for marker in ("INVOCATION_ID", "XPC_SERVICE_NAME", "RABBIT_S6_SUPERVISED_CHILD", "RABBIT_GATEWAY_EXTERNAL_SUPERVISOR"):
         monkeypatch.delenv(marker, raising=False)
     monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: os.getpid())
 
@@ -52,6 +52,6 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     assert "proc_" in json.loads(run("pkill -9 python3"))["error"]
     assert run("taskkill /F /IM agent-browser.exe /T") is None
     assert run("taskkill /F /PID 46544") is None
-    # Absence on the wrong side: a plain foreground `hermes gateway run` carries no launch marker.
-    monkeypatch.delenv("HERMES_SUPERVISED_CHILD")
+    # Absence on the wrong side: a plain foreground `rabbit gateway run` carries no launch marker.
+    monkeypatch.delenv("RABBIT_SUPERVISED_CHILD")
     assert run("pkill -9 python3") is None

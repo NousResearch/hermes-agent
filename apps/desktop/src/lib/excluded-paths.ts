@@ -46,7 +46,7 @@ export const ALWAYS_EXCLUDED = new Set([
 // them even with the eye toggle on. Names here stay hidden even when the
 // project opted in; they are the noise the transports strip as well
 // (FS_READDIR_HIDDEN in electron/fs-read-dir.ts, _FS_READDIR_HIDDEN in
-// hermes_cli/web_routers/files.py), so the toggle's reveal floor must not go
+// rabbit_cli/web_routers/files.py), so the toggle's reveal floor must not go
 // below what either transport can return. Keep the two transport sets in sync
 // with this floor: a name only ever filtered by ALWAYS_EXCLUDED (out, vendor,
 // coverage, .DS_Store, …) belongs here so a synced project can reveal it; the

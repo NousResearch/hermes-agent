@@ -1,6 +1,6 @@
 """The intake / delivery transport matrix (#88715 phase 4; gateway/AGENTS.md § Profile scope).
 
-Real ``GatewayRunner`` resolvers against a temp ``HERMES_HOME`` with three served profiles:
+Real ``GatewayRunner`` resolvers against a temp ``RABBIT_HOME`` with three served profiles:
 ``default`` (shared bot), ``ops`` (satellite routed through the shared bot) and ``team_b`` (its own
 bot). Every row is asserted in one fixture so the two historical fixes (#69246 shared transport
 preserved, #70625 route-override egress) cannot drift apart again.
@@ -58,7 +58,7 @@ def mux(tmp_path, monkeypatch):
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):
         (home / "profiles" / name).mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
     rig = _runner(multiplex=True, routes=[
         # shared credential → satellite (#69246)
@@ -70,10 +70,10 @@ def mux(tmp_path, monkeypatch):
          "bot_profile": "team_b"},
     ])
     rig.home = home
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir",
+    with patch("rabbit_cli.profiles.profiles_to_serve", return_value=served), \
+            patch("rabbit_cli.profiles.get_profile_dir",
                   side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+            patch("rabbit_cli.profiles.profile_exists", return_value=True):
         yield rig
 
 
@@ -149,7 +149,7 @@ def test_restored_rows_fail_closed_on_intake_and_deliver_only_via_a_unique_owner
 
     solo_home = tmp_path / "solo"
     solo_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(solo_home))
+    monkeypatch.setenv("RABBIT_HOME", str(solo_home))
     solo = _runner(multiplex=False)
     bare = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42")
     assert solo.runner._intake_adapter_for(bare) is solo.runner._delivery_adapter_for(bare) is solo.primary

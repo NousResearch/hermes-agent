@@ -53,7 +53,7 @@ function uv {
     } finally { Remove-Item $env:UV_BUSY }
 }
 function Invoke-WebRequest { throw 'network access outside test boundary' }
-$installerArgs = @{ InstallDir = $InstallDir; HermesHome = $HomeDir }
+$installerArgs = @{ InstallDir = $InstallDir; RabbitHome = $HomeDir }
 if ($env:PROBE_SKIP_BROWSER) { $installerArgs.SkipBrowser = $true }
 . $Installer @installerArgs
 # Dot-sourcing defines Get-Uv, so override only that acquisition boundary.
@@ -73,7 +73,7 @@ exit $LASTEXITCODE
                          cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=120)
     assert (run.returncode == 0) == (exit_code == 0), run.stdout + run.stderr
-    from hermes_platform.host.facts import native_arch
+    from rabbit_platform.host.facts import native_arch
 
     # The request names the machine's architecture: a bare version lets uv
     # pick an emulated x86_64 build on Windows-on-ARM.

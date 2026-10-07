@@ -44,15 +44,15 @@ foreach ($asset in @(@('StoreLogo.png',50), @('Square150x150Logo.png',150), @('S
 `)
   run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', iconsScript, '-Dir', path.join(root, 'icons')], root)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/^(AZURE_|CLOUDFLARE_|HERMES_|GITHUB_|GH_|NODE_OPTIONS$)/i.test(key)))
-  Object.assign(env, { HERMES_PAYLOAD_TAG: '', CI: '', GIT_CONFIG_GLOBAL: path.join(root, 'git-config'),
+    !/^(AZURE_|CLOUDFLARE_|RABBIT_|GITHUB_|GH_|NODE_OPTIONS$)/i.test(key)))
+  Object.assign(env, { RABBIT_PAYLOAD_TAG: '', CI: '', GIT_CONFIG_GLOBAL: path.join(root, 'git-config'),
     GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid',
     GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
     GIT_AUTHOR_DATE: '2026-09-10T10:20:30Z', GIT_COMMITTER_DATE: '2026-09-10T10:20:30Z' })
   for (const args of [['init', '-q'], ['add', 'scripts', 'apps'], ['-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture']]) run('git', args, root, env)
   const commit = run('git', ['rev-parse', 'HEAD'], root, env).trim()
-  env.HERMES_BUILD_COMMIT = commit
-  env.HERMES_PAYLOAD_VERSION = '0.21.1'
+  env.RABBIT_BUILD_COMMIT = commit
+  env.RABBIT_PAYLOAD_VERSION = '0.21.1'
   const release = path.join(desktop, 'release')
   fs.mkdirSync(release)
   return { root, desktop, env, commit, release }
@@ -61,7 +61,7 @@ foreach ($asset in @(@('StoreLogo.png',50), @('Square150x150Logo.png',150), @('S
 function identity(root, env, variant) {
   return JSON.parse(run(process.execPath, ['--input-type=module', '-e',
     "import{appIdentity}from'./scripts/msix-shared.mjs';console.log(JSON.stringify(appIdentity(process.cwd()+'/apps/desktop','')))"],
-  root, { ...env, HERMES_DESKTOP_VARIANT: variant }))
+  root, { ...env, RABBIT_DESKTOP_VARIANT: variant }))
 }
 
 function makePackage(makeappx, root, release, metadata, variant, arch, env) {
@@ -73,7 +73,7 @@ function makePackage(makeappx, root, release, metadata, variant, arch, env) {
   }
   const name = metadata.identity.store ? metadata.identity.storeMsix.identityName : metadata.identity.msixAppIdWithOrg
   const publisher = metadata.identity.store ? metadata.identity.storeMsix.publisher : 'CN=Fixture'
-  fs.writeFileSync(path.join(content, 'index.html'), '<!doctype html><title>Assembly fixture</title>Not an installed Hermes application.')
+  fs.writeFileSync(path.join(content, 'index.html'), '<!doctype html><title>Assembly fixture</title>Not an installed Rabbit application.')
   fs.writeFileSync(path.join(content, 'AppxManifest.xml'), `<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" IgnorableNamespaces="uap">
   <Identity Name="${name}" Publisher="${publisher}" Version="${metadata.version}" ProcessorArchitecture="${arch}" />

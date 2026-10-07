@@ -1,4 +1,4 @@
-> **Hermes adaptation note:** upstream auteur generated assets through several local image CLIs. In Hermes, read every generation instruction as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
+> **Rabbit adaptation note:** upstream auteur generated assets through several local image CLIs. In Rabbit, read every generation instruction as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
 
 # direct.md — the cinematic register
 

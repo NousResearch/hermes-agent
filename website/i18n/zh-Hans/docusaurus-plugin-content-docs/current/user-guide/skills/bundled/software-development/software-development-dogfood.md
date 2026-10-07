@@ -23,7 +23,7 @@ description: "网页应用探索性 QA：发现缺陷、收集证据、生成报
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Dogfood：系统化网页应用 QA 测试

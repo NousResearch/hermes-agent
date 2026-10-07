@@ -6,7 +6,7 @@
     ["Commit 73688014f78 landed.", ["73688014f78"], ["Commit", "landed"]],
     ["Trace id 550e8400-e29b-41d4-a716-446655440000 appears once.", ["550e8400", "446655440000"], ["Trace id", "appears once"]],
     ["Model meta-llama/Llama-3.3-70B-Instruct is large.", ["meta-llama/Llama-3.3-70B-Instruct", "70B"], ["Model", "is large"]],
-    ["Config at ~/.config/hermes/config.yaml was read.", ["config.yaml", "~/.config"], ["Config at", "was read"]],
+    ["Config at ~/.config/rabbit/config.yaml was read.", ["config.yaml", "~/.config"], ["Config at", "was read"]],
     ["Version v2.1.0-beta.3 shipped.", ["v2.1.0-beta.3"], ["Version", "shipped"]]
   ],
   "pass_through_tokens": [

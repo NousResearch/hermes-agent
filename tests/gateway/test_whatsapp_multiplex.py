@@ -21,13 +21,13 @@ def test_credentials_follow_profile_home(tmp_path):
             overridden = PlatformConfig(extra={"session_path": str(a / "platforms/whatsapp/session")})
             assert _platform_has_bot_credential(Platform.WHATSAPP, overridden)
     from gateway.status import write_runtime_status
-    from hermes_cli import gateway_multiplex_served as served
+    from rabbit_cli import gateway_multiplex_served as served
     from unittest.mock import patch
     write_runtime_status(platform="work:whatsapp", platform_state="disabled",
-                         error_code="whatsapp_unpaired", error_message="pair it: hermes -p work whatsapp")
+                         error_code="whatsapp_unpaired", error_message="pair it: rabbit -p work whatsapp")
     with patch.object(served, "live_default_gateway_pid", return_value=os.getpid()):
         assert served.served_profile_unserved_platforms("work") == {
-            "whatsapp": "pair it: hermes -p work whatsapp"}
+            "whatsapp": "pair it: rabbit -p work whatsapp"}
 
 
 @pytest.mark.asyncio
@@ -42,7 +42,7 @@ async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
         home.mkdir()
         with _profile_runtime_scope(home, hydrate_secrets=False):
             adapter = WhatsAppAdapter(PlatformConfig())
-        adapter._hermes_profile_name = name
+        adapter._rabbit_profile_name = name
         adapter._runtime_status_platform_key = f"{name}:whatsapp"
         monkeypatch.setattr(adapter, "_preflight", lambda: True)
         monkeypatch.setattr(adapter, "_ensure_bridge_deps", lambda path: False)
@@ -56,7 +56,7 @@ async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
     with listener:
         with _profile_runtime_scope(tmp_path / "b", hydrate_secrets=False):
             explicit = WhatsAppAdapter(PlatformConfig(extra={"bridge_port": adapters[0]._bridge_port}))
-        explicit._hermes_profile_name = "b"
+        explicit._rabbit_profile_name = "b"
         explicit._runtime_status_platform_key = "b:whatsapp"
         monkeypatch.setattr(explicit, "_preflight", lambda: True)
         monkeypatch.setattr(explicit, "_ensure_bridge_deps", lambda path: True)

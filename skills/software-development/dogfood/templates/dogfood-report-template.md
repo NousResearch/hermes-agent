@@ -3,7 +3,7 @@
 **Target:** {target_url}
 **Date:** {date}
 **Scope:** {scope_description}
-**Tester:** Hermes Agent (automated exploratory QA)
+**Tester:** Rabbit Agent (automated exploratory QA)
 
 ---
 

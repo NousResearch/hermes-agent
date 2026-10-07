@@ -2,12 +2,12 @@
 name: dream-loop
 description: "Build stunning 3D scenes via a concept-art fidelity loop."
 version: 1.0.0
-author: Anshu Chimala (adapted by Nous Research)
+author: Anshu Chimala
 license: MIT
 dependencies: []
 platforms: [linux, macos]
 metadata:
-  hermes:
+  rabbit:
     tags: [3d, games, webgl, threejs, image-generation, visual-fidelity, creative]
     category: creative
     related_skills: [p5js, claude-design, manim-video]

@@ -35,7 +35,7 @@ describe('user theme registry', () => {
     expect(isUserTheme(theme.name)).toBe(true)
     expect(resolveTheme(theme.name)).toEqual(theme)
     expect(listAllThemes().map(t => t.name)).toContain(theme.name)
-    expect(window.localStorage.getItem('hermes-desktop-user-themes-v1')).toContain(theme.name)
+    expect(window.localStorage.getItem('rabbit-desktop-user-themes-v1')).toContain(theme.name)
   })
 
   it('lists built-ins before user themes', () => {

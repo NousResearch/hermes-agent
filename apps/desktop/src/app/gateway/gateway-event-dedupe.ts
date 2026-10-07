@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 
 /**
  * Cross-socket duplicate gate for backend events (#120005 / #120007).

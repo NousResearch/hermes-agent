@@ -1,6 +1,6 @@
 import type { MutableRefObject } from 'react'
 
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import { isSessionRemovalPending } from '@/store/session-removal'
 
 import type { ClientSessionState } from '../../../types'

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from agent.auxiliary_client import reset_runtime_main, set_runtime_main
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from tools import vision_tools  # noqa: F401 - registers vision_analyze
 from tools.delegate_tool_config import _resolve_child_runtime
 from tools.registry import registry
@@ -60,7 +60,7 @@ def test_inherited_named_custom_child_uses_native_vision(tmp_path):
     image.write_bytes(_TINY_PNG)
     # The persisted default is a different named route: config-side fallback must not mask the child's
     # missing identity (a /model switch or session-scoped pick is where the aux slow path fired live).
-    get_hermes_home().joinpath("config.yaml").write_text(
+    get_rabbit_home().joinpath("config.yaml").write_text(
         """\
 model:
   provider: custom:text-endpoint

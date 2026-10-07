@@ -182,7 +182,7 @@ jobs:
     name: Desktop E2E
     needs: detect
     # python_prod (not python): the Playwright suite exercises the built app
-    # + `hermes serve` backend, which never import anything under tests/.
+    # + `rabbit serve` backend, which never import anything under tests/.
     # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
     # single job in the workflow — while still running the full pytest lanes.
     #

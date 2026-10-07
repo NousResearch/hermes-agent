@@ -1,15 +1,15 @@
-"""Dashboard embedded chat: the ``/api/pty`` WebSocket drives a REAL ``hermes --tui`` end to end.
+"""Dashboard embedded chat: the ``/api/pty`` WebSocket drives a REAL ``rabbit --tui`` end to end.
 
 Issue class: the dashboard Chat tab talking to the wrong profile, or losing the conversation on a
-reconnect. Every cell runs the real ``hermes dashboard``, which
+reconnect. Every cell runs the real ``rabbit dashboard``, which
 spawns the real Ink TUI (``ui-tui/dist/entry.js``) and its ``tui_gateway`` under a real PTY; the
 client is what the browser's xterm does (raw PTY bytes, the ``\\x1b[RESIZE:c;r]`` control frame, the
 SPA's ``?attach=`` keep-alive token, ``?profile=`` and a per-(profile) ``?channel=``). Each profile
 has its own fake provider that only accepts that profile's key and echoes the prompt's canary, so
 every recorded request proves which profile's TUI sent it, and state.db proves where it landed.
 
-Contract under test (``hermes_cli/web_routers/chat_ws.py::pty_ws`` + ``hermes_cli/pty_session.py``):
-  * ``?profile=<name>`` scopes the whole chat to that profile (HERMES_HOME=<profile dir>);
+Contract under test (``rabbit_cli/web_routers/chat_ws.py::pty_ws`` + ``rabbit_cli/pty_session.py``):
+  * ``?profile=<name>`` scopes the whole chat to that profile (RABBIT_HOME=<profile dir>);
   * with ``?attach=T`` the PTY outlives the socket; reconnecting with the same T + profile replays
     the buffer and forces a redraw of the SAME TUI/session;
   * the registry key includes the profile, so the same T under another profile gets a fresh TUI.
@@ -51,8 +51,8 @@ TURN_TIMEOUT = 90.0
 def _require_tui() -> None:
     if shutil.which("node") and (H.REPO_ROOT / "ui-tui" / "dist" / "entry.js").is_file():
         return
-    if os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
-        pytest.fail("ui-tui/dist/entry.js or node missing but HERMES_E2E_REQUIRE_TUI=1")
+    if os.environ.get("RABBIT_E2E_REQUIRE_TUI") == "1":
+        pytest.fail("ui-tui/dist/entry.js or node missing but RABBIT_E2E_REQUIRE_TUI=1")
     pytest.skip("Ink TUI not built (cd ui-tui && npm run build) or node missing")
 
 
@@ -116,12 +116,12 @@ class Chat:
 
     def wait_composer(self, term: WsTerm) -> None:
         """The TUI painted its composer prompt and session banner, and its status bar no longer
-        reports a boot phase ("summoning hermes…", "starting agent…"). Profile-agnostic on purpose:
+        reports a boot phase ("summoning rabbit…", "starting agent…"). Profile-agnostic on purpose:
         which profile answered is judged by the provider/state.db assertions, not by this wait."""
         def ready() -> bool:
             s = term.text()
             return term.closed or ("❯" in s and "Session:" in s
-                                   and "startingagent" not in s and "summoninghermes" not in s)
+                                   and "startingagent" not in s and "summoningrabbit" not in s)
         try:
             poll(ready, 120, "the TUI composer to be ready")
             assert not term.closed, f"/api/pty closed (code={term.close_code}) during TUI startup"
@@ -151,7 +151,7 @@ class Chat:
 
 def _private_tui(tmp_path: Path) -> Path:
     """A private, syntax-checked copy of the prebuilt bundle, handed to the dashboard as
-    ``HERMES_TUI_DIR`` (the prebuilt-install path of ``_make_tui_argv``). On a source checkout every
+    ``RABBIT_TUI_DIR`` (the prebuilt-install path of ``_make_tui_argv``). On a source checkout every
     PTY spawn otherwise re-runs ``npm run build``, rewriting ``ui-tui/dist/entry.js`` in place, and a
     TUI starting during a concurrent build (another worker, another dashboard) crashes on the
     truncated file (#121286). The bundle is self-contained (node builtins only)."""
@@ -175,7 +175,7 @@ def dash_env(tmp_path: Path):
     _require_tui()
     tui_dir = _private_tui(tmp_path)
     sb = H.make_sandbox(tmp_path, ("default", "alpha", "beta"), responder=_echo_responder)
-    dash = H.Dashboard(sb, tmp_path / "dashboard.log", extra_env={"HERMES_TUI_DIR": str(tui_dir)})
+    dash = H.Dashboard(sb, tmp_path / "dashboard.log", extra_env={"RABBIT_TUI_DIR": str(tui_dir)})
     ledger = ProcessLedger(dash.proc.pid)
     try:
         yield sb, dash, ledger

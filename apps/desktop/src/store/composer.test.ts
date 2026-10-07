@@ -61,7 +61,7 @@ describe('blob preview URL ownership handoff', () => {
   it('direct-submit handoff keeps blob previews across clear, then revokes when the optimistic consumer is discarded', () => {
     // Mirrors use-composer-submit: clone → clear({ retainPreviewUrls }) → dispatch clone.
     const revokeObjectURL = stubRevokeObjectURL()
-    const blobUrl = 'blob:hermes-direct-submit-1'
+    const blobUrl = 'blob:rabbit-direct-submit-1'
     addComposerAttachment(attachment({ id: 'image:drop', kind: 'image', label: 'Lattice.png', previewUrl: blobUrl }))
 
     const submittedAttachments = $composerAttachments.get().map(item => ({ ...item }))
@@ -78,7 +78,7 @@ describe('blob preview URL ownership handoff', () => {
 
   it('still revokes blob previews on a normal clear (no handoff)', () => {
     const revokeObjectURL = stubRevokeObjectURL()
-    const blobUrl = 'blob:hermes-clear-1'
+    const blobUrl = 'blob:rabbit-clear-1'
     const scope = createComposerAttachmentScope()
     scope.add(attachment({ id: 'image:x', kind: 'image', previewUrl: blobUrl }))
 
@@ -180,14 +180,14 @@ describe('updateComposerAttachment', () => {
     expect(
       scope.updateIfCurrent(original, {
         attachedSessionId: 'session-1',
-        path: '/root/.hermes/attachments/photo.png',
+        path: '/root/.rabbit/attachments/photo.png',
         uploadState: undefined
       })
     ).toBe(true)
 
     expect(scope.$attachments.get()[0]).toMatchObject({
       attachedSessionId: 'session-1',
-      path: '/root/.hermes/attachments/photo.png',
+      path: '/root/.rabbit/attachments/photo.png',
       thumbnailUrl: 'data:image/png;base64,current'
     })
   })

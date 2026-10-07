@@ -10,11 +10,11 @@ from scripts import smoke_nemo_relay_shared_metrics as smoke
 @pytest.mark.parametrize(
     "relative_path",
     [
-        Path(".venv") / "bin" / "hermes",
-        Path(".venv") / "Scripts" / "hermes.exe",
+        Path(".venv") / "bin" / "rabbit",
+        Path(".venv") / "Scripts" / "rabbit.exe",
     ],
 )
-def test_resolve_hermes_executable_from_repository_venv(
+def test_resolve_rabbit_executable_from_repository_venv(
     tmp_path,
     monkeypatch,
     relative_path,
@@ -24,11 +24,11 @@ def test_resolve_hermes_executable_from_repository_venv(
     executable.touch()
     monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
 
-    assert smoke._resolve_hermes_executable(tmp_path) == executable
+    assert smoke._resolve_rabbit_executable(tmp_path) == executable
 
 
-def test_resolve_hermes_executable_reports_missing_binary(tmp_path, monkeypatch):
+def test_resolve_rabbit_executable_reports_missing_binary(tmp_path, monkeypatch):
     monkeypatch.setattr(smoke.shutil, "which", lambda _name: None)
 
     with pytest.raises(SystemExit, match="or on PATH"):
-        smoke._resolve_hermes_executable(tmp_path)
+        smoke._resolve_rabbit_executable(tmp_path)

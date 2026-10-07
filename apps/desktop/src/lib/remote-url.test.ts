@@ -12,7 +12,7 @@ describe('coerceRemoteUrlScheme', () => {
 
   it('leaves explicitly schemed URLs alone', () => {
     expect(coerceRemoteUrlScheme('http://host:9119')).toBe('http://host:9119')
-    expect(coerceRemoteUrlScheme('https://gw.example.com/hermes')).toBe('https://gw.example.com/hermes')
+    expect(coerceRemoteUrlScheme('https://gw.example.com/rabbit')).toBe('https://gw.example.com/rabbit')
     expect(coerceRemoteUrlScheme('ws://host:9119')).toBe('ws://host:9119')
     expect(coerceRemoteUrlScheme('ftp://host:21')).toBe('ftp://host:21')
   })

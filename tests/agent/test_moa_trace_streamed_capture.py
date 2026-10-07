@@ -6,11 +6,11 @@ capture at call time) or streaming (captured after the fact from the caller's
 resolved assistant text). Before the streamed-capture fix, a streamed
 aggregator left ``output: null`` in the trace and only pointed at state.db,
 so an offline audit of a benchmark run (which drives the streaming display
-path via ``hermes chat --query``) couldn't see what the aggregator actually
+path via ``rabbit chat --query``) couldn't see what the aggregator actually
 produced without joining to the session DB by hand.
 
 These exercise the real ``consume_and_save_trace`` → ``save_moa_turn`` path
-with real file I/O against a temp HERMES_HOME — no mocks on the write path.
+with real file I/O against a temp RABBIT_HOME — no mocks on the write path.
 """
 
 from __future__ import annotations
@@ -23,12 +23,12 @@ from agent.moa_loop import MoAChatCompletions
 
 
 def _enable_traces(tmp_path, monkeypatch):
-    """Point HERMES_HOME at a temp dir and turn moa.save_traces on."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    """Point RABBIT_HOME at a temp dir and turn moa.save_traces on."""
+    rabbit_home = tmp_path / ".rabbit"
+    rabbit_home.mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
-    # save_moa_turn reads config via hermes_cli.config.load_config; stub it to
+    # save_moa_turn reads config via rabbit_cli.config.load_config; stub it to
     # return traces-on so the test doesn't depend on a real config file.
     import agent.moa_trace as moa_trace
 
@@ -40,12 +40,12 @@ def _enable_traces(tmp_path, monkeypatch):
     )
     # load_config is imported lazily inside _traces_enabled_and_dir; patch the
     # source module attribute it imports from as well.
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(
         cfg, "load_config", lambda: {"moa": {"save_traces": True}}, raising=False
     )
-    return hermes_home / "moa-traces"
+    return rabbit_home / "moa-traces"
 
 
 def _make_completions_with_pending(streamed: bool, inline_output):

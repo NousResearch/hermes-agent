@@ -15,7 +15,6 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { httpStatusError } from './api-transport'
-import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -88,7 +87,7 @@ test('normalizeRemoteHeaders keeps safe proxy headers and drops transport/auth h
       Authorization: { encoding: 'plain', value: 'bearer' },
       Cookie: { encoding: 'plain', value: 'a=b' },
       Host: { encoding: 'plain', value: 'example.com' },
-      'X-Hermes-Session-Token': { encoding: 'plain', value: 'token' },
+      'X-Rabbit-Session-Token': { encoding: 'plain', value: 'token' },
       'Bad Header': { encoding: 'plain', value: 'bad' },
       Empty: { encoding: 'plain', value: '' }
     }),
@@ -121,29 +120,26 @@ test('normalizeRemoteHeaders sanitizes plaintext values at ingest', () => {
 test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origin', () => {
   assert.equal(
     remoteRequestMatchesBaseUrl(
-      'wss://hermes.example.com/gateway/api/ws?ticket=abc',
-      'https://hermes.example.com/gateway'
+      'wss://rabbit.example.com/gateway/api/ws?ticket=abc',
+      'https://rabbit.example.com/gateway'
     ),
     true
   )
-  assert.equal(remoteRequestMatchesBaseUrl('ws://hermes.example.com/api/ws', 'http://hermes.example.com'), true)
+  assert.equal(remoteRequestMatchesBaseUrl('ws://rabbit.example.com/api/ws', 'http://rabbit.example.com'), true)
   assert.equal(
-    remoteRequestMatchesBaseUrl('wss://hermes.example.com/other/api/ws', 'https://hermes.example.com/gateway'),
+    remoteRequestMatchesBaseUrl('wss://rabbit.example.com/other/api/ws', 'https://rabbit.example.com/gateway'),
     false
   )
   assert.equal(
-    remoteRequestMatchesBaseUrl('wss://other.example.com/gateway/api/ws', 'https://hermes.example.com/gateway'),
+    remoteRequestMatchesBaseUrl('wss://other.example.com/gateway/api/ws', 'https://rabbit.example.com/gateway'),
     false
   )
 })
 
 // --- modeIsRemoteLike ---
 
-test('modeIsRemoteLike is true for remote and cloud, false otherwise', () => {
-  // cloud resolves to a remote backend under the hood (Q6), so every resolution
-  // site treats it like remote.
+test('modeIsRemoteLike is true for remote, false otherwise', () => {
   assert.equal(modeIsRemoteLike('remote'), true)
-  assert.equal(modeIsRemoteLike('cloud'), true)
   assert.equal(modeIsRemoteLike('local'), false)
   assert.equal(modeIsRemoteLike(undefined), false)
   assert.equal(modeIsRemoteLike(null), false)
@@ -173,12 +169,12 @@ test('profileRemoteOverride ignores local or url-less profile entries', () => {
 test('profileRemoteOverride returns the per-profile remote with defaulted auth mode', () => {
   const config = {
     profiles: {
-      coder: { mode: 'remote', url: '  https://coder.example.com/hermes  ', token: { value: 'sek' } }
+      coder: { mode: 'remote', url: '  https://coder.example.com/rabbit  ', token: { value: 'sek' } }
     }
   }
 
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
-    url: 'https://coder.example.com/hermes',
+    url: 'https://coder.example.com/rabbit',
     authMode: 'token',
     token: { value: 'sek' }
   })
@@ -213,22 +209,6 @@ test('profileRemoteOverride preserves normalized remote headers', () => {
   })
 })
 
-test('profileRemoteOverride treats a cloud entry as a remote override', () => {
-  // A 'cloud' per-profile entry resolves to the same remote backend a 'remote'
-  // entry would (Q6) — the override must be returned, not dropped.
-  const config = {
-    profiles: {
-      coder: { mode: 'cloud', url: 'https://agent-1.agents.nousresearch.com', authMode: 'oauth' }
-    }
-  }
-
-  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
-    url: 'https://agent-1.agents.nousresearch.com',
-    authMode: 'oauth',
-    token: undefined
-  })
-})
-
 test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
   assert.equal(profileRemoteOverride({}, 'coder'), null)
   assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
@@ -256,11 +236,11 @@ test('SSH remains separate from URL-shaped remote modes and preserves an explici
 
 test('profileRemoteOverride preserves an explicit remote profile mapping on a URL override', () => {
   const config = {
-    profiles: { gris: { mode: 'remote', url: 'https://agent.example.com/hermes', remoteProfile: 'main-gris' } }
+    profiles: { gris: { mode: 'remote', url: 'https://agent.example.com/rabbit', remoteProfile: 'main-gris' } }
   }
 
   assert.deepEqual(profileRemoteOverride(config, 'gris'), {
-    url: 'https://agent.example.com/hermes',
+    url: 'https://agent.example.com/rabbit',
     authMode: 'token',
     token: undefined,
     remoteProfile: 'main-gris'
@@ -270,11 +250,6 @@ test('profileRemoteOverride preserves an explicit remote profile mapping on a UR
 test('profileRemoteOverride drops invalid or reserved remote profile mappings', () => {
   assert.equal(
     profileRemoteOverride({ profiles: { p: { mode: 'remote', url: 'https://x', remoteProfile: 'bad profile' } } }, 'p')
-      ?.remoteProfile,
-    undefined
-  )
-  assert.equal(
-    profileRemoteOverride({ profiles: { p: { mode: 'cloud', url: 'https://x', remoteProfile: 'root' } } }, 'p')
       ?.remoteProfile,
     undefined
   )
@@ -351,14 +326,14 @@ test('normalizeSshConfig strips a pasted "ssh " command prefix', () => {
   })
 })
 
-test('localProfileEntry preserves inactive SSH drafts but drops Cloud state', () => {
-  const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteHermesPath: '/hermes' }
+test('localProfileEntry preserves inactive SSH drafts but drops remote state', () => {
+  const ssh = { mode: 'ssh', host: 'box', user: 'alice', remoteRabbitPath: '/rabbit' }
   assert.deepEqual(localProfileEntry(ssh), { mode: 'local', savedSsh: ssh })
   assert.deepEqual(localProfileEntry({ mode: 'local', savedSsh: ssh }), {
     mode: 'local',
     savedSsh: ssh
   })
-  assert.equal(localProfileEntry({ mode: 'cloud', url: 'https://agent' }), null)
+  assert.equal(localProfileEntry({ mode: 'remote', url: 'https://agent' }), null)
 })
 
 test('saved SSH drafts are inactive and explicit overrides take precedence', () => {
@@ -423,7 +398,7 @@ const ROUTES = [
   },
   {
     // THE INVARIANT this collapse must not eat: a route the server cannot
-    // profile-scope has only the backend PROCESS's HERMES_HOME left as a
+    // profile-scope has only the backend PROCESS's RABBIT_HOME left as a
     // scope, so it keeps a pooled backend. /api/files/upload acts on host
     // paths and takes no `profile` even after #118275.
     name: 'a mutating local request the server cannot scope keeps its pooled backend',
@@ -555,7 +530,7 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'HERMES_DESKTOP_ISOLATED_BACKEND keeps a local profile on its own pooled backend',
+    name: 'RABBIT_DESKTOP_ISOLATED_BACKEND keeps a local profile on its own pooled backend',
     profile: 'coder',
     opts: {
       primaryProfile: 'default',
@@ -771,7 +746,7 @@ test('pathWithGlobalRemoteProfile preserves cross-profile selectors when transla
   )
 })
 
-// --- translateSelfProfileQuery (registry SSH-scoped hermes:api contract) ---
+// --- translateSelfProfileQuery (registry SSH-scoped rabbit:api contract) ---
 
 test('translateSelfProfileQuery rewrites the self-profile filter into the backend namespace', () => {
   assert.equal(
@@ -930,7 +905,7 @@ test('resolveProfileApiRequest scopes destructive profile-owned routes to the sh
 
 test('resolveProfileApiRequest keeps an unscopable mutating route on a process-scoped backend', () => {
   // The load-bearing half of the collapse: a route the server cannot scope has
-  // nothing left but the backend process's own HERMES_HOME, so it must NOT fall
+  // nothing left but the backend process's own RABBIT_HOME, so it must NOT fall
   // through to the shared primary. Live proof of the failure mode this pins:
   // `POST /api/memory/reset?profile=beta` on an unfixed server deleted ALPHA's
   // MEMORY.md and returned ok:true.
@@ -1001,12 +976,12 @@ test('resolveProfileApiRequest uses exact method and path eligibility for mixed 
     { backendProfile: null, requestPath: '/api/config/defaults?profile=iris' }
   )
   assert.deepEqual(
-    resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=nous', {
+    resolveProfileApiRequest('iris', '/api/model/recommended-default?provider=openrouter', {
       requestMethod: 'GET'
     }),
     {
       backendProfile: null,
-      requestPath: '/api/model/recommended-default?provider=nous&profile=iris'
+      requestPath: '/api/model/recommended-default?provider=openrouter&profile=iris'
     }
   )
 })
@@ -1055,7 +1030,7 @@ test('resolveProfileApiRequest keeps gateway lifecycle verbs on the primary with
 test('resolveProfileApiRequest routes action-status polls with the action-spawning routes', () => {
   // /api/actions/{name}/status must land on the SAME backend as the endpoints
   // that spawn actions (skills hub install/uninstall/update, mcp catalog
-  // install): _spawn_hermes_action registers the dynamic action name only in
+  // install): _spawn_rabbit_action registers the dynamic action name only in
   // the spawning process. Splitting the pair 404s the poll with
   // "Unknown action: skills-install-<slug>-<hash>".
   assert.deepEqual(
@@ -1126,12 +1101,12 @@ test('resolveProfileApiRequest keeps a stored local profile off a remote primary
 
 test('normalizeRemoteBaseUrl strips trailing slashes, hash, and query', () => {
   assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/'), 'https://gw.example.com')
-  assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/hermes/'), 'https://gw.example.com/hermes')
-  assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/hermes?x=1#frag'), 'https://gw.example.com/hermes')
+  assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/rabbit/'), 'https://gw.example.com/rabbit')
+  assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/rabbit?x=1#frag'), 'https://gw.example.com/rabbit')
 })
 
 test('normalizeRemoteBaseUrl preserves a path prefix', () => {
-  assert.equal(normalizeRemoteBaseUrl('https://host/hermes'), 'https://host/hermes')
+  assert.equal(normalizeRemoteBaseUrl('https://host/rabbit'), 'https://host/rabbit')
 })
 
 test('normalizeRemoteBaseUrl rejects empty input', () => {
@@ -1153,7 +1128,7 @@ test('normalizeRemoteBaseUrl auto-prepends http:// for scheme-less host:port inp
   assert.equal(normalizeRemoteBaseUrl('mini.tailnet-1234.ts.net:9119'), 'http://mini.tailnet-1234.ts.net:9119')
   assert.equal(normalizeRemoteBaseUrl('localhost:9119'), 'http://localhost:9119')
   assert.equal(normalizeRemoteBaseUrl('gw.example.com'), 'http://gw.example.com')
-  assert.equal(normalizeRemoteBaseUrl('gw.example.com/hermes/'), 'http://gw.example.com/hermes')
+  assert.equal(normalizeRemoteBaseUrl('gw.example.com/rabbit/'), 'http://gw.example.com/rabbit')
 })
 
 test('normalizeRemoteBaseUrl still rejects explicit non-http(s) schemes after scheme-less handling', () => {
@@ -1172,7 +1147,7 @@ test('buildGatewayWsUrl uses ws for http', () => {
 })
 
 test('buildGatewayWsUrl honors a path prefix', () => {
-  assert.equal(buildGatewayWsUrl('https://host/hermes', 't'), 'wss://host/hermes/api/ws?token=t')
+  assert.equal(buildGatewayWsUrl('https://host/rabbit', 't'), 'wss://host/rabbit/api/ws?token=t')
 })
 
 test('buildGatewayWsUrl url-encodes the token', () => {
@@ -1182,8 +1157,8 @@ test('buildGatewayWsUrl url-encodes the token', () => {
 // --- buildGatewayWsUrlWithTicket (oauth) ---
 
 test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
-  const url = buildGatewayWsUrlWithTicket('https://gw.example.com/hermes', 'tkt-9')
-  assert.equal(url, 'wss://gw.example.com/hermes/api/ws?ticket=tkt-9')
+  const url = buildGatewayWsUrlWithTicket('https://gw.example.com/rabbit', 'tkt-9')
+  assert.equal(url, 'wss://gw.example.com/rabbit/api/ws?ticket=tkt-9')
   assert.ok(!url.includes('token='))
 })
 
@@ -1194,7 +1169,7 @@ test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
 // --- authModeFromStatus ---
 
 test('authModeFromStatus returns oauth when auth_required is true', () => {
-  assert.equal(authModeFromStatus({ auth_required: true, auth_providers: ['nous'] }), 'oauth')
+  assert.equal(authModeFromStatus({ auth_required: true, auth_providers: ['openrouter'] }), 'oauth')
 })
 
 test('authModeFromStatus returns token when auth_required is false/missing', () => {
@@ -1229,23 +1204,23 @@ test('resolveAuthMode: ignores unknown values, defaults to token', () => {
 // --- cookiesHaveSession ---
 
 test('cookiesHaveSession detects the bare access-token cookie', () => {
-  assert.equal(cookiesHaveSession([{ name: 'hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: 'rabbit_session_at', value: 'x' }]), true)
 })
 
 test('cookiesHaveSession detects the __Host- and __Secure- prefixed variants', () => {
-  assert.equal(cookiesHaveSession([{ name: '__Host-hermes_session_at', value: 'x' }]), true)
-  assert.equal(cookiesHaveSession([{ name: '__Secure-hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: '__Host-rabbit_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveSession([{ name: '__Secure-rabbit_session_at', value: 'x' }]), true)
 })
 
 test('cookiesHaveSession is false for an empty value', () => {
-  assert.equal(cookiesHaveSession([{ name: 'hermes_session_at', value: '' }]), false)
+  assert.equal(cookiesHaveSession([{ name: 'rabbit_session_at', value: '' }]), false)
 })
 
 test('cookiesHaveSession ignores unrelated cookies (AT-only by design)', () => {
   // cookiesHaveSession is deliberately access-token-only — a lone RT cookie
   // is NOT an access token, so this returns false. Connectivity callers must
   // use cookiesHaveLiveSession instead (see below).
-  assert.equal(cookiesHaveSession([{ name: 'hermes_session_rt', value: 'x' }]), false)
+  assert.equal(cookiesHaveSession([{ name: 'rabbit_session_rt', value: 'x' }]), false)
   assert.equal(cookiesHaveSession([{ name: 'other', value: 'x' }]), false)
 })
 
@@ -1258,37 +1233,37 @@ test('cookiesHaveSession handles non-arrays', () => {
 // --- cookiesHaveLiveSession (AT or RT — the connectivity check) ---
 
 test('cookiesHaveLiveSession is true for a live access-token cookie', () => {
-  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_at', value: 'x' }]), true)
-  assert.equal(cookiesHaveLiveSession([{ name: '__Host-hermes_session_at', value: 'x' }]), true)
-  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-hermes_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: 'rabbit_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Host-rabbit_session_at', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-rabbit_session_at', value: 'x' }]), true)
 })
 
 test('cookiesHaveLiveSession is true for an RT cookie even with NO access-token cookie', () => {
   // This is the bug-fix case: the AT cookie has lapsed (dropped from the jar)
   // but the 24h RT cookie is still alive. The session is still connectable —
   // the gateway rotates a fresh AT from the RT on the next request.
-  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_rt', value: 'x' }]), true)
-  assert.equal(cookiesHaveLiveSession([{ name: '__Host-hermes_session_rt', value: 'x' }]), true)
-  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-hermes_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: 'rabbit_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Host-rabbit_session_rt', value: 'x' }]), true)
+  assert.equal(cookiesHaveLiveSession([{ name: '__Secure-rabbit_session_rt', value: 'x' }]), true)
 })
 
 test('cookiesHaveLiveSession is true when both AT and RT are present', () => {
   assert.equal(
     cookiesHaveLiveSession([
-      { name: 'hermes_session_at', value: 'a' },
-      { name: 'hermes_session_rt', value: 'r' }
+      { name: 'rabbit_session_at', value: 'a' },
+      { name: 'rabbit_session_rt', value: 'r' }
     ]),
     true
   )
 })
 
 test('cookiesHaveLiveSession is false for empty values', () => {
-  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_at', value: '' }]), false)
-  assert.equal(cookiesHaveLiveSession([{ name: 'hermes_session_rt', value: '' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: 'rabbit_session_at', value: '' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: 'rabbit_session_rt', value: '' }]), false)
   assert.equal(
     cookiesHaveLiveSession([
-      { name: 'hermes_session_at', value: '' },
-      { name: 'hermes_session_rt', value: '' }
+      { name: 'rabbit_session_at', value: '' },
+      { name: 'rabbit_session_rt', value: '' }
     ]),
     false
   )
@@ -1494,7 +1469,7 @@ test('gateway WS URL IPC result serializes success and the auth-vs-transport mat
 
   for (const error of [
     Object.assign(new Error('500: unavailable'), { statusCode: 500 }),
-    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    new Error('Timed out connecting to Rabbit backend after 8000ms'),
     Object.assign(new Error('socket reset'), { code: 'ECONNRESET' })
   ]) {
     assert.deepEqual(await gatewayWsUrlIpcResult(async () => Promise.reject(error)), {
@@ -1524,9 +1499,8 @@ test('gatewayTicketFailure preserves a structured 503 statusCode as a transport 
 })
 
 test('gatewayTicketFailure only copies an integer statusCode, not a message prefix', () => {
-  // A legacy "503: ..." message carries no structured statusCode; the Cloud
-  // classifier (makeNousCloudBackendDownError) handles the prefix at the mint
-  // boundary. The wrapper must not invent an integer from the message.
+  // A legacy "503: ..." message carries no structured statusCode. The wrapper
+  // must not invent an integer from the message.
   const source = new Error('503: Service Unavailable') as any
 
   const wrapped = gatewayTicketFailure(source, 'auth message', 'transport message')
@@ -1535,48 +1509,7 @@ test('gatewayTicketFailure only copies an integer statusCode, not a message pref
   assert.equal((wrapped as any).needsOauthLogin, undefined)
 })
 
-// OAuth integration regression (#85373): the WS-ticket mint boundary runs
-// BEFORE waitForHermesReady. This mirrors main.ts buildRemoteConnection's
-// catch — classify a Nous Cloud server fault via the shared factory, else
-// fall through to gatewayTicketFailure. Proves the production composition:
-//   1. Cloud + OAuth ticket mint + 503  -> actionable Cloud-down error
-//   2. Cloud + OAuth ticket mint + 401  -> reauth (never Cloud-down)
-test('OAuth ticket-mint 503 surfaces the Cloud-down error (startup boundary)', () => {
-  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
-  const ticketErr = new Error('upstream unavailable') as any
-  ticketErr.statusCode = 503
-
-  // The exact production sequence from main.ts.
-  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
-
-  if (cloudError !== null) {
-    assert.equal((cloudError as any).isCloudBackendDown, true)
-    assert.equal((cloudError as any).statusCode, 503)
-
-    return
-  }
-
-  const wrapped = gatewayTicketFailure(ticketErr, 'auth', 'transport')
-
-  assert.fail(`expected Cloud-down classification, got wrapper: ${wrapped.message}`)
-})
-
-test('OAuth ticket-mint 401 stays on the reauth path (never Cloud-down)', () => {
-  const baseUrl = 'https://ares-3009.agents.nousresearch.com'
-  const ticketErr = new Error('Unauthorized') as any
-  ticketErr.statusCode = 401
-
-  const cloudError = makeNousCloudBackendDownError(baseUrl, ticketErr)
-  assert.equal(cloudError, null, 'a 401 must not become a Cloud-down error')
-
-  const wrapped = gatewayTicketFailure(ticketErr, 'auth message', 'transport message')
-
-  assert.equal(wrapped.message, 'auth message')
-  assert.equal((wrapped as any).needsOauthLogin, true)
-  assert.equal((wrapped as any).statusCode, 401)
-})
-
-test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequired so startHermes latches it', () => {
+test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequired so startRabbit latches it', () => {
   for (const statusCode of [401, 403]) {
     const source = Object.assign(new Error(`${statusCode}: rejected`), { statusCode })
     const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any
@@ -1596,7 +1529,7 @@ test('FIX #95701: a confirmed 401/403 ticket rejection is tagged isReauthRequire
 test('FIX #95701: transport and server failures at the ticket mint stay retryable — never reauth', () => {
   for (const source of [
     Object.assign(new Error('503: unavailable'), { statusCode: 503 }),
-    new Error('Timed out connecting to Hermes backend after 8000ms'),
+    new Error('Timed out connecting to Rabbit backend after 8000ms'),
     Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
   ]) {
     const wrapped = gatewayTicketFailure(source, 'auth copy', 'transport copy') as any

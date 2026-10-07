@@ -1,15 +1,15 @@
 ---
+author: Teknium + Hermes Agent
 name: dynamic-workflow
 description: Plan-in-code fan-outs, adversarial verification, waves.
 version: 2.0.0
-author: Teknium + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [orchestration, fan-out, subagents, delegation, verification, migration, audit, research, campaign]
     category: autonomous-ai-agents
-    related_skills: [hermes-agent, simplify-code]
+    related_skills: [rabbit-agent, simplify-code]
 when_to_use:
   - A task is too big for one context window AND you can describe the split (per-file, per-endpoint, per-source, per-record)
   - You want orchestration codified as a re-runnable script plus a shared brief, not improvised turn by turn
@@ -33,8 +33,8 @@ make `delegate_task` durable across restarts; that is the kanban swarm's job.
 
 Reach for it when the unit of work is clear (a file, an endpoint, a record) and
 there are more units than one context can hold. Skip it for under ~10 units or
-for serial chains. For a refactor or fix campaign on hermes-agent itself, load
-`hermes-agent` (the dev workflow) alongside; this skill owns the fan-out shape.
+for serial chains. For a refactor or fix campaign on rabbit-agent itself, load
+`rabbit-agent` (the dev workflow) alongside; this skill owns the fan-out shape.
 
 ## Prerequisites
 
@@ -155,7 +155,7 @@ The one-shot recipe does not scale to a whole-codebase pass. What did:
    conflicted files by directory to workers editing ONE merge worktree with
    no commits, then the parent commits the merge once. CI never runs on a
    conflicted PR, so re-merge main before every push.
-10. Live QA is its own wave: one squad per surface, isolated `HERMES_HOME`,
+10. Live QA is its own wave: one squad per surface, isolated `RABBIT_HOME`,
     expectation written before the check, evidence on disk, report only, and a
     PR-vs-main difference is the only thing that counts as a regression. Green
     unit tests missed the one P0 (a logged-in code path no test exercised).

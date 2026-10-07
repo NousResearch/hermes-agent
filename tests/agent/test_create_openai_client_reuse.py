@@ -9,7 +9,7 @@ future keepalive / transport reimplementation plumbs sockets in, the Nth call
 to ``_create_openai_client`` must not hand back a client wrapping a
 now-closed httpx transport from an earlier call.
 
-AlexKucera's Discord report (2026-04-16): after ``hermes update`` pulled
+AlexKucera's Discord report (2026-04-16): after ``rabbit update`` pulled
 #10933, the first chat on a session worked, every subsequent chat failed
 with ``APIConnectionError('Connection error.')`` whose cause was
 ``RuntimeError: Cannot send a request, as the client has been closed``.

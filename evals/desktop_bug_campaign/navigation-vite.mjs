@@ -2,7 +2,7 @@ import { createServer } from '../../node_modules/vite/dist/node/index.js'
 import fs from 'node:fs'
 import path from 'node:path'
 const root = path.resolve(import.meta.dirname, '../../apps/desktop')
-const artifactDir = process.env.NAVIGATION_ARTIFACT_DIR ?? '/home/teknium/.hermes/cache/desktop-bugs-74848ed3/navigation-markdown'
+const artifactDir = process.env.NAVIGATION_ARTIFACT_DIR ?? '/home/teknium/.rabbit/cache/desktop-bugs-74848ed3/navigation-markdown'
 const fixture = path.join(import.meta.dirname, 'navigation-markdown-probe.tsx')
 const server = await createServer({
   root,

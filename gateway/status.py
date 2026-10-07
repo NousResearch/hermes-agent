@@ -1,4 +1,4 @@
-"""Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
+"""Gateway runtime status helpers: PID/lock/marker files under ``{RABBIT_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
 import asyncio
@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from rabbit_constants import _get_platform_default_rabbit_home, get_rabbit_home, get_process_rabbit_home
+from rabbit_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -30,7 +30,7 @@ if sys.platform == "win32":
 else:
     import fcntl
 
-_GATEWAY_KIND = "hermes-gateway"
+_GATEWAY_KIND = "rabbit-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
@@ -201,7 +201,7 @@ def record_start_and_check_storm(
     """Record this start; :class:`StormInfo` when > ``max_starts`` landed in ``window_s``.
     Best-effort: a broken ``gateway-starts.log`` ledger is logged and swallowed, never fatal."""
     try:
-        path = get_hermes_home() / "gateway-starts.log"
+        path = get_rabbit_home() / "gateway-starts.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         now = datetime.now(timezone.utc).timestamp()
         existing: list[float] = []
@@ -230,77 +230,77 @@ def record_start_and_check_storm(
         return None
 
 
-def _get_process_hermes_home() -> Path:
-    """Launch-home HERMES_HOME for identity files (PID, lock, status, markers):
-    ``get_hermes_home()`` honors the per-session ``_HERMES_HOME_OVERRIDE`` and would misroute
+def _get_process_rabbit_home() -> Path:
+    """Launch-home RABBIT_HOME for identity files (PID, lock, status, markers):
+    ``get_rabbit_home()`` honors the per-session ``_RABBIT_HOME_OVERRIDE`` and would misroute
     them."""
-    return get_process_hermes_home()
+    return get_process_rabbit_home()
 
 
-def _canonical_hermes_home(path: Path | str) -> Path:
-    """Stable absolute HERMES_HOME path for persisted identity data."""
+def _canonical_rabbit_home(path: Path | str) -> Path:
+    """Stable absolute RABBIT_HOME path for persisted identity data."""
     return Path(path).expanduser().resolve(strict=False)
 
 
-def _same_hermes_home(left: Path | str, right: Path | str) -> bool:
-    """Compare HERMES_HOME paths with the host platform's case semantics."""
-    left_c = os.path.normcase(str(_canonical_hermes_home(left)))
-    return left_c == os.path.normcase(str(_canonical_hermes_home(right)))
+def _same_rabbit_home(left: Path | str, right: Path | str) -> bool:
+    """Compare RABBIT_HOME paths with the host platform's case semantics."""
+    left_c = os.path.normcase(str(_canonical_rabbit_home(left)))
+    return left_c == os.path.normcase(str(_canonical_rabbit_home(right)))
 
 
 def recorded_gateway_home_conflicts(
     record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
 ) -> bool:
-    """True when a persisted gateway record names a DIFFERENT HERMES_HOME (cross-profile kill guard:
+    """True when a persisted gateway record names a DIFFERENT RABBIT_HOME (cross-profile kill guard:
     profile B's stop must never SIGTERM profile A). ``expected_home`` overrides the comparison base.
-    Legacy records without ``hermes_home`` prove nothing -> False; a comparison failure fails
+    Legacy records without ``rabbit_home`` prove nothing -> False; a comparison failure fails
     closed -> True."""
-    recorded_home = record.get("hermes_home") if isinstance(record, dict) else None
+    recorded_home = record.get("rabbit_home") if isinstance(record, dict) else None
     if not isinstance(recorded_home, str) or not recorded_home.strip():
         return False
     try:
-        base = expected_home if expected_home is not None else _get_process_hermes_home()
-        return not _same_hermes_home(recorded_home, base)
+        base = expected_home if expected_home is not None else _get_process_rabbit_home()
+        return not _same_rabbit_home(recorded_home, base)
     except Exception:
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
-# stays import-light (hermes_constants + stdlib only).
+# Mirrors rabbit_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
+# stays import-light (rabbit_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _profile_label_for_home(home: Path | str) -> Optional[str]:
     """Best-effort label: ``<root>/profiles/<name>`` -> name, root home -> "default", else None."""
     try:
-        canonical = _canonical_hermes_home(home)
+        canonical = _canonical_rabbit_home(home)
     except Exception:
         return None
     if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
         return canonical.name
-    import hermes_constants
-    default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
+    import rabbit_constants
+    default_homes = (rabbit_constants.get_default_rabbit_root, _get_platform_default_rabbit_home)
     for default_home in default_homes:
         with contextlib.suppress(Exception):
-            if _same_hermes_home(canonical, default_home()):
+            if _same_rabbit_home(canonical, default_home()):
                 return "default"
     return None
 
 
 def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     """Profile label of a scoped-lock owner (None: PID-only wording): the validated ``profile``
-    field stamped by :func:`acquire_scoped_lock`, else inferred from ``hermes_home`` (old locks)."""
+    field stamped by :func:`acquire_scoped_lock`, else inferred from ``rabbit_home`` (old locks)."""
     if not isinstance(record, dict):
         return None
     profile = record.get("profile")
     if isinstance(profile, str) and _PROFILE_LABEL_RE.match(profile.strip()):
         return profile.strip()
-    home = record.get("hermes_home")
+    home = record.get("rabbit_home")
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
 
 
 def _get_pid_path() -> Path:
-    return _get_process_hermes_home() / "gateway.pid"
+    return _get_process_rabbit_home() / "gateway.pid"
 
 
 def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
@@ -308,26 +308,26 @@ def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
 
 
 def _get_runtime_status_path() -> Path:
-    return _get_process_hermes_home() / _RUNTIME_STATUS_FILE
+    return _get_process_rabbit_home() / _RUNTIME_STATUS_FILE
 
 
 def _get_lock_dir() -> Path:
-    """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
+    """Cross-profile rendezvous dir for machine-local locks; ``RABBIT_GATEWAY_LOCK_DIR`` overrides.
 
     Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
-    separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
+    separate ``~/.rabbit`` profile roots and separate credentials, so "one gateway per host"
     means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
     and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
-    ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
+    ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's RABBIT_HOME.
     """
-    override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
+    override = os.getenv("RABBIT_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
     # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
     # lock dir CWD-relative, so two serves started from different directories shared no singleton.
     state_home_env = os.getenv("XDG_STATE_HOME") or ""
     state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
-    return state_home / "hermes" / _LOCKS_DIRNAME
+    return state_home / "rabbit" / _LOCKS_DIRNAME
 
 
 def _utc_now_iso() -> str:
@@ -375,11 +375,11 @@ def retained_gateway_state(runtime: Any) -> str:
     ``"startup_failed"`` (or a watchdog-stamped ``"degraded"``) only while the operator still
     wants it running, else ``"stopped"``.
 
-    ``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
+    ``rabbit gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
     diagnostics and records the durable stop intent as ``desired_state``; a profile the operator
     stopped is "stopped", not a current failure. A watchdog exit (``degraded`` + an exit_reason in
     ``WATCHDOG_EXIT_REASONS``) is the same kind of current failure as ``startup_failed`` and is kept
-    under the same rule, so the dashboard agrees with ``hermes gateway status``. Any other retained
+    under the same rule, so the dashboard agrees with ``rabbit gateway status``. Any other retained
     state of a dead process (``running``, ``starting``, missing) is just "stopped". Shared by
     ``/api/status`` and ``/api/messaging/platforms`` so the sidebar strip and the Channels page
     cannot disagree."""
@@ -418,7 +418,7 @@ def terminate_pid(
         os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
         return
     # Hide flags: a bare taskkill spawn from windowless pythonw.exe would flash a conhost window.
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from rabbit_cli._subprocess_compat import windows_hide_flags
 
     try:
         result = subprocess.run(
@@ -535,23 +535,23 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
 
     Everything after ``-c`` is data the inline program receives, not this process's own identity.
     The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
-    ``python -c <watcher source> <old_pid> <python> -m hermes_cli.main gateway run``: its trailing
+    ``python -c <watcher source> <old_pid> <python> -m rabbit_cli.main gateway run``: its trailing
     argv is the command the watcher will LATER spawn, so every argv matcher used to read it as a
     live gateway. See #107002 and the "never infer process identity from argv substrings" rule.
 
     Only interpreter options may precede ``-c``; the first non-option token ends the option block
-    (``python -m hermes_cli.main …`` therefore never matches).
+    (``python -m rabbit_cli.main …`` therefore never matches).
 
     The walk is VALUE-AWARE: ``-X``/``-W``/``-Q`` and ``--check-hash-based-pycs``/``--jit`` take a
     SEPARATE operand, so a naive "first non-option token ends the block" walk mistakes that operand
     for the end of the block and never reaches the ``-c`` behind it (``python -X utf8 -c <src> …``
     was still read as a live gateway). The operand sets are the canonical ones in
-    ``hermes_state_holders``, not a second hand-rolled copy.
+    ``rabbit_state_holders``, not a second hand-rolled copy.
 
     *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
     operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
     """
-    from hermes_state_holders import (
+    from rabbit_state_holders import (
         _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
         _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
     )
@@ -589,7 +589,7 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
-# Hermes' own inline bootstraps hand control to a Hermes entry point IN this process, so the argv
+# Rabbit' own inline bootstraps hand control to a Rabbit entry point IN this process, so the argv
 # they run with is this process's own identity; every other ``-c`` program keeps its trailing argv
 # as data (#107002). Each pattern is one emitted source shape, anchored at both ends so a program
 # merely CARRYING a bootstrap command line (the restart watcher's respawn argv) never matches.
@@ -597,16 +597,16 @@ _Q = r"""['"]?"""
 _MAIN = rf"{_Q}__main__{_Q}"
 _RUN_MODULE = rf"runpy\.run_module\(\s*{_Q}(?P<target>[\w.]+){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*,\s*alter_sys\s*=\s*True\s*\)"
 _BOOTSTRAPS = (
-    # hermes_cli._launchers.runtime_command (store launcher, the Windows updater's relaunch)
+    # rabbit_cli._launchers.runtime_command (store launcher, the Windows updater's relaunch)
     ("module", re.compile(rf"import os, sys, runpy;.*\b{_RUN_MODULE}", re.S)),
-    # hermes_cli.venv_sync.relaunch_command: argv is assigned inside the source
+    # rabbit_cli.venv_sync.relaunch_command: argv is assigned inside the source
     ("module", re.compile(rf"import sys, runpy; sys\.path\.insert\(.*\b{_RUN_MODULE}", re.S)),
     ("path", re.compile(
         rf"import sys, runpy; sys\.path\.insert\(.*\brunpy\.run_path\(\s*{_Q}(?P<target>[^'\"]+?){_Q}\s*,\s*run_name\s*=\s*{_MAIN}\s*\)",
         re.S)),
-    # hermes_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
+    # rabbit_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
     ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
-    # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
+    # rabbit_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
     ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
 )
 _ASSIGNED_ARGV = re.compile(r"\bsys\.argv\s*=\s*\[(.*?)\]\s*;")
@@ -635,7 +635,7 @@ def _bootstrap_entry(source: str, argv: list[str]) -> list[str] | None:
 
 def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
     """*tokens* as the equivalent ``python -m <module> <argv…>`` when this interpreter's ``-c`` source
-    is a Hermes bootstrap running an entry point in-process; None for any other inline source.
+    is a Rabbit bootstrap running an entry point in-process; None for any other inline source.
 
     Command lines usually arrive space-joined (``/proc``, psutil, ``ps``), which splits the source
     across tokens; the shortest token run that ends in a recognised tail is the source, whatever
@@ -653,9 +653,9 @@ def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
 
 
 def _gateway_command_subcommand(command: str | None) -> str | None:
-    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
+    """Rabbit gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
-    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
+    Rabbit entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
     quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
     argv since ``_apply_profile_override`` removes them before argparse."""
     if not command:
@@ -670,11 +670,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
+    # ``python -c <src> … -m rabbit_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
+        # …unless the source is a Rabbit bootstrap running the entry point in THIS process (store
         # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
         cased_tokens = inline_bootstrap_argv(cased_tokens)
         if cased_tokens is None:
@@ -688,17 +688,17 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
-    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
+    # Atomic Rabbit' bundled desktop runner shares RABBIT_HOME with the CLI; without this,
     # `gateway run --replace` does not recognise it as a running gateway, skips the
     # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
     # (e.g. the Discord bot-token lock). See #22418.
     if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
-    if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
+    if any(b in ("rabbit-gateway", "rabbit-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)
-    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
-        b in ("hermes", "hermes.exe") for b in basenames
+    if "rabbit_cli.main" not in joined and "rabbit_cli/main.py" not in joined and not any(
+        b in ("rabbit", "rabbit.exe") for b in basenames
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
@@ -713,7 +713,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             filtered.append(token)
     for i, token in enumerate(filtered):
         if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
+            # Bare `rabbit gateway` defaults to `run`.
             return filtered[i + 1] if i + 1 < len(filtered) else "run"
     return None
 
@@ -725,7 +725,7 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
     Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
     eventually appear?" — need the opposite answer, because
-    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
+    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m rabbit_cli.main gateway run``
     behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
 
     Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
@@ -760,12 +760,12 @@ def looks_like_gateway_command_line(command: str | None) -> bool:
 def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     """True for command lines that can host the runtime (``run`` or ``restart``: without a service
     manager the manual restart fallback runs ``run_gateway()`` in-process). For validating
-    Hermes-owned records / cleanup scans only; ``looks_like_gateway_command_line`` stays strict."""
+    Rabbit-owned records / cleanup scans only; ``looks_like_gateway_command_line`` stays strict."""
     return _gateway_command_subcommand(command) in {"run", "restart"}
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
-    """True when the live PID still looks like the Hermes gateway."""
+    """True when the live PID still looks like the Rabbit gateway."""
     cmdline = _read_process_cmdline(pid)
     return bool(cmdline) and looks_like_gateway_command_line(cmdline)
 
@@ -795,54 +795,54 @@ def profile_flag_value(command: str) -> Optional[str]:
     return None
 
 
-_HERMES_HOME_ASSIGNMENT_RE = re.compile(r"(?:^|\s)hermes_home=(?:\"([^\"]*)\"|'([^']*)'|(\S+))")
+_RABBIT_HOME_ASSIGNMENT_RE = re.compile(r"(?:^|\s)rabbit_home=(?:\"([^\"]*)\"|'([^']*)'|(\S+))")
 
 
-def hermes_home_assignments(command: str) -> list[str]:
-    """Values of every ``HERMES_HOME=<value>`` assignment in ``command`` (the caller lowercases
+def rabbit_home_assignments(command: str) -> list[str]:
+    """Values of every ``RABBIT_HOME=<value>`` assignment in ``command`` (the caller lowercases
     and normalizes separators). Values are token-bounded, quotes stripped: the substring test
-    this replaces let ``HERMES_HOME=/root/profiles/ops`` claim a ``/root/profiles/ops2`` gateway.
-    The name is token-bounded too (``FOO=hermes_home=/x`` is not an assignment), and a trailing
-    separator on the value is stripped -- ``HERMES_HOME=/root/.hermes/`` (systemd ``Environment=``
-    or a shell wrapper spelling) is the same home as ``/root/.hermes``; callers strip the profile
+    this replaces let ``RABBIT_HOME=/root/profiles/ops`` claim a ``/root/profiles/ops2`` gateway.
+    The name is token-bounded too (``FOO=rabbit_home=/x`` is not an assignment), and a trailing
+    separator on the value is stripped -- ``RABBIT_HOME=/root/.rabbit/`` (systemd ``Environment=``
+    or a shell wrapper spelling) is the same home as ``/root/.rabbit``; callers strip the profile
     home the same way."""
     return [
         next(g for g in m.groups() if g is not None).rstrip("/")
-        for m in _HERMES_HOME_ASSIGNMENT_RE.finditer(command)
+        for m in _RABBIT_HOME_ASSIGNMENT_RE.finditer(command)
     ]
 
 
-def command_line_names_hermes_home(command_lc: str, home_lc: str) -> bool:
-    """True when ``command_lc`` carries ``HERMES_HOME=<home_lc>`` (both lowercased, ``/``-separated,
+def command_line_names_rabbit_home(command_lc: str, home_lc: str) -> bool:
+    """True when ``command_lc`` carries ``RABBIT_HOME=<home_lc>`` (both lowercased, ``/``-separated,
     no trailing separator). Argv reaches us space-joined, so an unquoted value with a space in it
-    (``HERMES_HOME=C:/Users/John Doe/.hermes``) is cut at the space by the token parser; a
+    (``RABBIT_HOME=C:/Users/John Doe/.rabbit``) is cut at the space by the token parser; a
     token-bounded literal match of the whole home recovers that spelling."""
-    if home_lc in hermes_home_assignments(command_lc):
+    if home_lc in rabbit_home_assignments(command_lc):
         return True
-    return re.search(rf"(?:^|\s)hermes_home={re.escape(home_lc)}/?(?=\s|$)", command_lc) is not None
+    return re.search(rf"(?:^|\s)rabbit_home={re.escape(home_lc)}/?(?=\s|$)", command_lc) is not None
 
 
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
-    ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
+    ``rabbit_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
     onto ANOTHER profile's live gateway. Named profiles carry ``-p``/``--profile <name>`` or
-    ``HERMES_HOME=`` on argv; the default gateway runs bare. Separators normalized."""
+    ``RABBIT_HOME=`` on argv; the default gateway runs bare. Separators normalized."""
     command_lc = command.lower().replace("\\", "/")
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/").rstrip("/")
     if profile_name is not None and profile_name != "default":
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
-        return command_line_names_hermes_home(command_lc, home_lc)
+        return command_line_names_rabbit_home(command_lc, home_lc)
     # Default profile: accept unless argv names ANOTHER profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
-    # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
+    # or a conflicting explicit RABBIT_HOME= (its absence is not disqualifying -- RABBIT_HOME usually
     # arrives via the env). ``--profile default`` names this profile: a hand-written launchd plist
     # mirrors the named-profile service shape, and rejecting it reported a live default gateway
     # as stopped (#100817).
     if profile_flag_value(command_lc) not in (None, "default"):
         return False
-    return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
+    return not rabbit_home_assignments(command_lc) or command_line_names_rabbit_home(command_lc, home_lc)
 
 
 def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
@@ -882,14 +882,14 @@ def _record_matches_live_gateway_pid(
 def _record_argv() -> list[str]:
     """``sys.argv`` with the inline-source placeholder replaced by the entry point this process runs.
 
-    The published launcher script (``_launchers._launcher_script``: the POSIX ``bin/hermes`` shell
-    launcher and the Windows ``.cmd``) imports ``hermes_cli.main`` inside ``python -I -c <script>``,
+    The published launcher script (``_launchers._launcher_script``: the POSIX ``bin/rabbit`` shell
+    launcher and the Windows ``.cmd``) imports ``rabbit_cli.main`` inside ``python -I -c <script>``,
     so ``sys.argv`` is ``["-c", "gateway", "run"]`` — a record the argv matcher can never accept
     once the live command line is unreadable (Windows/EACCES fallback in
     ``_record_matches_live_gateway_pid``). Recording the module path follows runpy's ``alter_sys``
     convention, which is what the ``--run-module`` and store-launcher forms already persist."""
     argv = list(sys.argv)
-    entry = sys.modules.get("hermes_cli.main")
+    entry = sys.modules.get("rabbit_cli.main")
     if argv[:1] == ["-c"] and getattr(entry, "__file__", None):
         argv[0] = entry.__file__
     return argv
@@ -901,21 +901,21 @@ def _build_pid_record() -> dict:
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.
-        "hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+        "rabbit_home": str(_canonical_rabbit_home(_get_process_rabbit_home())),
     }
 
 
 def _get_code_identity_fields() -> dict[str, Any]:
     """Code identity of THIS process for ``gateway_state.json`` (restart picked up new code?).
-    Lazy import keeps ``gateway.status`` free of ``hermes_cli`` at import time. Never raises.
+    Lazy import keeps ``gateway.status`` free of ``rabbit_cli`` at import time. Never raises.
 
     A gateway keeps serving the module versions it imported at startup, so stamping the identity into
-    ``gateway_state.json`` lets `hermes update` (and the dashboard) prove whether a running gateway actually
+    ``gateway_state.json`` lets `rabbit update` (and the dashboard) prove whether a running gateway actually
     picked up new code after the restart phase — instead of assuming it did (#88654, #69754). Never raises;
     degrades to absent fields.
     """
     try:
-        from hermes_cli.version_info import get_code_identity
+        from rabbit_cli.version_info import get_code_identity
 
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
@@ -924,12 +924,12 @@ def _get_code_identity_fields() -> dict[str, Any]:
 
 
 def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
-    """True when the record's ``hermes_home`` matches the current process (legacy records: True);
-    another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
+    """True when the record's ``rabbit_home`` matches the current process (legacy records: True);
+    another RABBIT_HOME's record must be ignored or the default gateway assumes its identity."""
     if not isinstance(record, dict):
         return False
-    record_home = record.get("hermes_home")
-    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
+    record_home = record.get("rabbit_home")
+    return not record_home or _same_rabbit_home(record_home, _get_process_rabbit_home())
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -1410,7 +1410,7 @@ class GatewayLiveness:
 
 
 def profile_name_for_home(profile_home: Path) -> Optional[str]:
-    """Profile id of any Hermes home: ``<root>/profiles/<name>`` → ``<name>``, the default root →
+    """Profile id of any Rabbit home: ``<root>/profiles/<name>`` → ``<name>``, the default root →
     ``"default"``, anything else → None. Multiplex-only makes ``default`` an ordinary served
     profile, so reporting surfaces need a name for it too."""
     home = Path(profile_home)
@@ -1418,8 +1418,8 @@ def profile_name_for_home(profile_home: Path) -> Optional[str]:
     if named:
         return named
     try:
-        from hermes_constants import get_default_hermes_root
-        if home.resolve() == Path(get_default_hermes_root()).resolve():
+        from rabbit_constants import get_default_rabbit_root
+        if home.resolve() == Path(get_default_rabbit_root()).resolve():
             return "default"
     except Exception:
         return None
@@ -1434,24 +1434,24 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     resolving from the host rendezvous record (``gateway/host_topology.py``) is what lets it be
     reported as SERVED rather than only as owner. A served profile owns no
     ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the dashboard ladder
-    reports it stopped while ``hermes -p X status`` says running — the two must agree.
+    reports it stopped while ``rabbit -p X status`` says running — the two must agree.
     """
     name = profile_name_for_home(Path(profile_dir))
     if not name:
         return None
     from gateway.host_topology import host_gateway_topology
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
-    from hermes_constants import get_default_hermes_root
+    from rabbit_cli.gateway import named_profile_served_by_running_multiplexer
+    from rabbit_cli.gateway_multiplex_served import live_default_gateway_pid
+    from rabbit_constants import get_default_rabbit_root
     # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
     # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
     # not the home being served, so it must not borrow the multiplexer's PID.
-    if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
+    if name != "default" and not _same_rabbit_home(profile_dir, get_default_rabbit_root() / "profiles" / name):
         return None
     topology = host_gateway_topology()
     # The multiplexer's record lives in the home that LAUNCHED it; a named-hosted multiplexer leaves
     # a possibly stale standalone record at the default root, which must not be projected.
-    launch_home = get_default_hermes_root()
+    launch_home = get_default_rabbit_root()
     if topology is not None and topology.serves(name):
         pid: Optional[int] = topology.pid
         launch_home = topology.home or launch_home
@@ -1576,11 +1576,11 @@ def resolve_gateway_liveness(
             running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
         )
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
-    # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the
+    # the multiplexer IS its gateway (mirrors `rabbit -p X status` / `gateway list`). Unscoped, the
     # question is about the process's OWN home — which is a named profile inside a pooled
-    # `hermes --profile X serve` (the Desktop's per-profile backend answers its REST without
+    # `rabbit --profile X serve` (the Desktop's per-profile backend answers its REST without
     # `?profile=`), so it takes the same rung instead of reporting the served profile stopped.
-    own_home = profile_dir if scoped else _get_process_hermes_home()
+    own_home = profile_dir if scoped else _get_process_rabbit_home()
     served = guarded(multiplexer_liveness_for_profile, own_home)
     if served is not None:
         mux_pid, mux_runtime = served
@@ -1607,7 +1607,7 @@ def get_runtime_status_running_pid(
     pid = _live_pid_from_record(payload)
     if pid is None:
         return None
-    # The record's hermes_home must match the home asked about (this process unscoped) so a stale
+    # The record's rabbit_home must match the home asked about (this process unscoped) so a stale
     # or copied record cannot lend another home's gateway identity; legacy records without the
     # stamp prove nothing either way and fall through to the live command-line check.
     if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
@@ -1689,8 +1689,8 @@ def acquire_scoped_lock(
         "metadata": metadata or {}, "updated_at": _utc_now_iso(),
     }
     # Profile label for cross-profile conflict diagnostics ("token already in use (PID 559)" alone
-    # does not say WHICH profile). Omitted when not inferable; readers fall back to hermes_home.
-    profile = _profile_label_for_home(_get_process_hermes_home())
+    # does not say WHICH profile). Omitted when not inferable; readers fall back to rabbit_home.
+    profile = _profile_label_for_home(_get_process_rabbit_home())
     if profile:
         record["profile"] = profile
     existing = _read_json_file(lock_path)
@@ -1764,21 +1764,21 @@ def release_all_scoped_locks(
 # exits 0. Unlinked once consumed, so a stale one can grief at most one future shutdown on
 # the same PID, within _TAKEOVER_MARKER_TTL_S.
 # When a new gateway starts with ``--replace``, it SIGTERMs the existing gateway so it can take over the bot
-# token. ``hermes.service`` + ``hermes- gateway.service``). See #5646.
+# token. ``rabbit.service`` + ``rabbit- gateway.service``). See #5646.
 _TAKEOVER_MARKER_FILENAME = ".gateway-takeover.json"
 _TAKEOVER_MARKER_TTL_S = 60  # Marker older than this is treated as stale
 _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
 
 
-def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
-    """Takeover marker path; ``hermes_home`` is given only for a verified cross-home handoff."""
-    home = _canonical_hermes_home(hermes_home or _get_process_hermes_home())
+def _get_takeover_marker_path(rabbit_home: Optional[Path] = None) -> Path:
+    """Takeover marker path; ``rabbit_home`` is given only for a verified cross-home handoff."""
+    home = _canonical_rabbit_home(rabbit_home or _get_process_rabbit_home())
     return home / _TAKEOVER_MARKER_FILENAME
 
 
 def _get_planned_stop_marker_path() -> Path:
-    return _get_process_hermes_home() / _PLANNED_STOP_MARKER_FILENAME
+    return _get_process_rabbit_home() / _PLANNED_STOP_MARKER_FILENAME
 
 
 def _marker_is_stale(written_at: str, ttl_s: int) -> bool:
@@ -1807,7 +1807,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     times known -> must match; either unknown -> PID equality decides (bounded by the marker TTL):
     ``_get_process_start_time`` is None without /proc (macOS, native Windows -- where the
     planned-stop watcher matters most) and requiring a match there would misclassify a legitimate
-    ``hermes gateway stop`` as an unexpected exit revived by the service manager."""
+    ``rabbit gateway stop`` as an unexpected exit revived by the service manager."""
     if target_pid != os.getpid():
         return False
     our_start_time = _get_process_start_time(target_pid)
@@ -1820,17 +1820,17 @@ def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
         return False
     record, target_pid, target_start_time = parsed
     # Cross-profile guard: new markers name the verified TARGET home, which permits a deliberate
-    # cross-HERMES_HOME --replace while ignoring a marker accidentally written into another
+    # cross-RABBIT_HOME --replace while ignoring a marker accidentally written into another
     # profile's directory. Legacy markers have no target field: keep the same-replacer-home rule.
     # See #29092.
-    our_home = _get_process_hermes_home()
-    target_home = record.get("target_hermes_home")
+    our_home = _get_process_rabbit_home()
+    target_home = record.get("target_rabbit_home")
     if target_home is not None:
-        if not isinstance(target_home, str) or not _same_hermes_home(target_home, our_home):
+        if not isinstance(target_home, str) or not _same_rabbit_home(target_home, our_home):
             return False
     else:
-        replacer_home = record.get("replacer_hermes_home")
-        if replacer_home is not None and not _same_hermes_home(replacer_home, our_home):
+        replacer_home = record.get("replacer_rabbit_home")
+        if replacer_home is not None and not _same_rabbit_home(replacer_home, our_home):
             return False
     matches = _pid_marker_names_self(target_pid, target_start_time)
     _unlink_quietly(path)
@@ -1845,13 +1845,13 @@ def write_takeover_marker(
     passes ``target_home`` + validated ``target_start_time`` so the marker lands in the target's
     home; such callers must fail closed on False (the target's supervisor could revive it)."""
     try:
-        marker_home = _canonical_hermes_home(target_home or _get_process_hermes_home())
+        marker_home = _canonical_rabbit_home(target_home or _get_process_rabbit_home())
         if target_start_time is _UNSET:
             target_start_time = _get_process_start_time(target_pid)
         return _write_marker(_get_takeover_marker_path(marker_home), {
             "target_pid": target_pid, "target_start_time": target_start_time,
-            "target_hermes_home": str(marker_home), "replacer_pid": os.getpid(),
-            "replacer_hermes_home": str(_canonical_hermes_home(_get_process_hermes_home())),
+            "target_rabbit_home": str(marker_home), "replacer_pid": os.getpid(),
+            "replacer_rabbit_home": str(_canonical_rabbit_home(_get_process_rabbit_home())),
             "written_at": _utc_now_iso(),
         })
     except OSError:
@@ -1885,7 +1885,7 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
         return None
     owner_pid = _pid_from_record(record)
     owner_start_time = record.get("start_time")
-    raw_home = record.get("hermes_home")
+    raw_home = record.get("rabbit_home")
     if (
         owner_pid is None or owner_pid <= 0 or owner_pid == os.getpid()
         or not isinstance(owner_start_time, int) or isinstance(owner_start_time, bool)
@@ -1893,7 +1893,7 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
         or not Path(raw_home).expanduser().is_absolute()
     ):
         return None
-    target_home = _canonical_hermes_home(raw_home)
+    target_home = _canonical_rabbit_home(raw_home)
     if _scoped_lock_owner_state(owner_pid, owner_start_time) != "same":
         return None
     live_cmdline = _read_process_cmdline(owner_pid)
@@ -1901,13 +1901,13 @@ def _validated_scoped_lock_gateway_owner(record: dict[str, Any]) -> Optional[tup
         return None
     # The target home's own PID record must corroborate the claim.
     pid_record = _read_json_file(target_home / "gateway.pid") or {}
-    pid_record_home = pid_record.get("hermes_home")
+    pid_record_home = pid_record.get("rabbit_home")
     if (
         not _record_looks_like_gateway(pid_record)
         or _pid_from_record(pid_record) != owner_pid
         or pid_record.get("start_time") != owner_start_time
         or not isinstance(pid_record_home, str)
-        or not _same_hermes_home(pid_record_home, target_home)
+        or not _same_rabbit_home(pid_record_home, target_home)
     ):
         return None
     return owner_pid, owner_start_time, target_home

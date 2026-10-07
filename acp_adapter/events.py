@@ -28,7 +28,7 @@ _PLAN_STATUS = {"pending": "pending", "in_progress": "in_progress", "completed":
 
 
 def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
-    """Translate Hermes' todo tool result into ACP's native plan update.
+    """Translate Rabbit' todo tool result into ACP's native plan update.
 
     Zed renders ``sessionUpdate: plan`` as its first-class task panel, so the
     todo state is exposed natively rather than only as a tool-call transcript."""
@@ -221,7 +221,7 @@ def _make_text_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, wrap: Callable[[str], Any],
     message_ids: AssistantMessageIdAllocator | None = None,
 ) -> Callable:
-    # ``None`` is the flush sentinel Hermes core sends between assistant messages
+    # ``None`` is the flush sentinel Rabbit core sends between assistant messages
     # (before tool execution / at end of stream): it closes the active messageId so
     # the next delta opens a new bubble instead of merging into the previous one.
     def _cb(text: str | None) -> None:

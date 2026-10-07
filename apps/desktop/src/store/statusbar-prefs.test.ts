@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const LEGACY_VISIBLE_KEY = 'hermes.desktop.statusbarVisible'
+const LEGACY_VISIBLE_KEY = 'rabbit.desktop.statusbarVisible'
 
 const loadStore = () => import('./statusbar-prefs')
 
@@ -39,7 +39,7 @@ describe('statusbar hidden items', () => {
 
   it('surfaces the approval pill for installs that hid it under the v1 defaults, keeping their other choices', async () => {
     window.localStorage.setItem(
-      'hermes.desktop.statusbarHidden',
+      'rabbit.desktop.statusbarHidden',
       JSON.stringify(['approval-mode', 'cron', 'gateway-health'])
     )
 

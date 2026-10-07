@@ -14,7 +14,7 @@ description: "用于 LLM 对齐的简单偏好优化"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/simpo` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/simpo` 安装 |
 | 路径 | `optional-skills/mlops/simpo` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "用于 LLM 对齐的简单偏好优化"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # SimPO - 简单偏好优化
@@ -208,11 +208,11 @@ gradient_checkpointing: true
 
 ## 进阶主题
 
-**损失函数**：参见 [references/loss-functions.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/loss-functions.md)，了解 sigmoid 与 hinge 损失、数学公式及各自适用场景。
+**损失函数**：参见 [references/loss-functions.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/loss-functions.md)，了解 sigmoid 与 hinge 损失、数学公式及各自适用场景。
 
-**超参数调优**：参见 [references/hyperparameters.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/hyperparameters.md)，了解 beta、gamma、学习率选择指南及针对不同模型规模的建议。
+**超参数调优**：参见 [references/hyperparameters.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/hyperparameters.md)，了解 beta、gamma、学习率选择指南及针对不同模型规模的建议。
 
-**数据集准备**：参见 [references/datasets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/simpo/references/datasets.md)，了解偏好数据格式、质量过滤及自定义数据集创建方法。
+**数据集准备**：参见 [references/datasets.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/simpo/references/datasets.md)，了解偏好数据格式、质量过滤及自定义数据集创建方法。
 
 ## 硬件要求
 

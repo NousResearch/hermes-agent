@@ -9,7 +9,7 @@ import { useEffect, useState } from 'react'
  * user is using.
  */
 
-const RELEASE_EVENT = 'hermes:release-typing-focus'
+const RELEASE_EVENT = 'rabbit:release-typing-focus'
 
 /**
  * True while the pointer must be treated as absent.

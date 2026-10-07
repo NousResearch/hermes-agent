@@ -1,7 +1,7 @@
 """A stdio MCP server whose native addon was built by another Node.js (#124264).
 
-Hermes runs stdio servers on its own Node only. When such a server dies at startup with a
-``NODE_MODULE_VERSION`` mismatch, the user must be told, with the rebuild under Hermes's Node,
+Rabbit runs stdio servers on its own Node only. When such a server dies at startup with a
+``NODE_MODULE_VERSION`` mismatch, the user must be told, with the rebuild under Rabbit's Node,
 instead of an opaque "Connection closed" and a silent park.
 """
 
@@ -28,7 +28,7 @@ sys.exit(1)
 
 @pytest.fixture
 def managed_node(tmp_path, monkeypatch):
-    """Hermes's PM-installed node/npm, as PM would report them."""
+    """Rabbit's PM-installed node/npm, as PM would report them."""
     store = tmp_path / "tools"
     node, npm = store / "node-26.7.0-linux-x64" / "bin" / "node", store / "npm-12.0.2-linux-x64" / "bin" / "npm"
     from tools import mcp_tool_node_abi
@@ -37,11 +37,11 @@ def managed_node(tmp_path, monkeypatch):
     return node, npm
 
 
-def test_stdio_server_dying_on_a_node_abi_mismatch_names_the_rebuild_under_hermes_node(tmp_path, monkeypatch,
+def test_stdio_server_dying_on_a_node_abi_mismatch_names_the_rebuild_under_rabbit_node(tmp_path, monkeypatch,
                                                                                          managed_node):
-    from hermes_cli.mcp_config import _probe_failure_reason, _probe_single_server
+    from rabbit_cli.mcp_config import _probe_failure_reason, _probe_single_server
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     node, npm = managed_node
     entry = tmp_path / ".npm" / "_npx" / "0e2eab1c"
     addon = entry / "node_modules" / "better-sqlite3" / "build" / "Release" / "better_sqlite3.node"
@@ -53,7 +53,7 @@ def test_stdio_server_dying_on_a_node_abi_mismatch_names_the_rebuild_under_herme
                                         "connect_timeout": 20})
 
     reason = _probe_failure_reason(caught.value)
-    assert "NODE_MODULE_VERSION 127; Hermes's Node 26.7.0 needs 147" in reason
+    assert "NODE_MODULE_VERSION 127; Rabbit's Node 26.7.0 needs 147" in reason
     assert f"rm -rf {entry}" in reason
     assert f"PATH={node.parent}:\"$PATH\" {npm} rebuild better-sqlite3 --prefix {entry}" in reason
     # Every retry loads the same binary: parked at once, not walked through the retry ladder.
@@ -63,7 +63,7 @@ def test_stdio_server_dying_on_a_node_abi_mismatch_names_the_rebuild_under_herme
 
 
 def test_the_remedy_never_points_the_server_at_another_node(managed_node):
-    """A module outside an npx cache gets the rebuild alone, still with Hermes's npm under Hermes's node,
+    """A module outside an npx cache gets the rebuild alone, still with Rabbit's npm under Rabbit's node,
     and nothing suggests pinning ``command:`` to the user's Node."""
     from tools.mcp_tool_node_abi import node_abi_error
 

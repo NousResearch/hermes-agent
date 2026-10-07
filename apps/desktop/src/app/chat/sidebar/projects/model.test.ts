@@ -40,7 +40,7 @@ describe('orderProjectsByIds', () => {
 
   it('keeps freshly-scanned zero-session repos below the hand-ordered list', () => {
     // The regression: a disk scan keeps finding git checkouts the user has
-    // never opened in Hermes. Surfacing every unsaved id at the top buried the
+    // never opened in Rabbit. Surfacing every unsaved id at the top buried the
     // projects they deliberately dragged into place.
     const projects = [makeProject('scanned-1', 0), makeProject('mine', 4), makeProject('scanned-2', 0)]
 

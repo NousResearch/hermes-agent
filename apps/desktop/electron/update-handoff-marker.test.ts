@@ -10,8 +10,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const POSIX_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'posix.sh')
 
 function sandbox(tag: string) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-handoff-marker-${tag}-`))
-  const installRoot = path.join(home, 'hermes-agent')
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-handoff-marker-${tag}-`))
+  const installRoot = path.join(home, 'rabbit-agent')
   fs.mkdirSync(installRoot)
 
   return { home, installRoot }
@@ -24,18 +24,18 @@ function cleanupSandbox(home: string) {
 }
 
 function markerStartedAt(home: string): number {
-  const [, startedAt] = fs.readFileSync(path.join(home, '.hermes-update-in-progress'), 'utf8').split('\n')
+  const [, startedAt] = fs.readFileSync(path.join(home, '.rabbit-update-in-progress'), 'utf8').split('\n')
 
   return Number.parseInt(startedAt, 10)
 }
 
 function runPosix(installRoot: string, startedAt?: string) {
-  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: path.dirname(installRoot) }
+  const env: NodeJS.ProcessEnv = { ...process.env, RABBIT_HOME: path.dirname(installRoot) }
 
   if (startedAt === undefined) {
-    delete env.HERMES_UPDATE_STARTED_AT
+    delete env.RABBIT_UPDATE_STARTED_AT
   } else {
-    env.HERMES_UPDATE_STARTED_AT = startedAt
+    env.RABBIT_UPDATE_STARTED_AT = startedAt
   }
 
   return spawnSync(
@@ -66,7 +66,7 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   const refreshed = sandbox('refreshed')
 
   try {
-    fs.writeFileSync(path.join(refreshed.home, '.hermes-update-in-progress'), '999999\n1\n')
+    fs.writeFileSync(path.join(refreshed.home, '.rabbit-update-in-progress'), '999999\n1\n')
     const before = Math.floor(Date.now() / 1000)
     const refreshedResult = run(refreshed.installRoot, 'malformed')
     const after = Math.floor(Date.now() / 1000)

@@ -33,13 +33,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Run as `python website/scripts/fetch-plugin-stars.py`, so sys.path[0] is this directory and the
-# repo-root `hermes_yaml` shim is not importable without this (broke every scheduled probe).
+# repo-root `rabbit_yaml` shim is not importable without this (broke every scheduled probe).
 sys.path.insert(0, str(REPO_ROOT))
-import hermes_yaml as yaml  # noqa: E402
+import rabbit_yaml as yaml  # noqa: E402
 
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"
-LIVE_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-stars.json"
+LIVE_URL = "https://github.com/seven0070/Rabbit-/tree/main/website/docs/api/plugin-stars.json"
 _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
 
 
@@ -69,7 +69,7 @@ def catalog_slugs(catalog_dir: Path) -> list[str]:
 
 
 def _http_json(url: str, headers: dict[str, str], timeout: float = 15.0):
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-agent-docs", **headers})
+    req = urllib.request.Request(url, headers={"User-Agent": "rabbit-agent-docs", **headers})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -103,7 +103,7 @@ _BATCH = 100
 def _graphql(query: str, token: str) -> dict:
     req = urllib.request.Request(
         _GRAPHQL_URL, data=json.dumps({"query": query}).encode("utf-8"), method="POST",
-        headers={"User-Agent": "hermes-agent-docs", "Authorization": f"Bearer {token}",
+        headers={"User-Agent": "rabbit-agent-docs", "Authorization": f"Bearer {token}",
                  "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=30.0) as resp:
         return json.loads(resp.read().decode("utf-8"))

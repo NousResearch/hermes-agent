@@ -8,7 +8,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tip } from '@/components/ui/tooltip'
-import type { HermesReviewScope } from '@/global'
+import type { RabbitReviewScope } from '@/global'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
@@ -89,7 +89,7 @@ export function ReviewPane() {
                 says "review", so the zone header hides it (styles.css). */}
             <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
-          <SegmentedControl<HermesReviewScope>
+          <SegmentedControl<RabbitReviewScope>
             className="mr-1"
             onChange={id => {
               $reviewScope.set(id)

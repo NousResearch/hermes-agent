@@ -5,7 +5,7 @@ import { messagePaintWeight, messageStoreWeight, RENDER_WEIGHT_CHARS } from './r
 const bigResult = (chars: number) => ({
   type: 'tool-call',
   toolName: 'skill_view',
-  args: { name: 'hermes-agent' },
+  args: { name: 'rabbit-agent' },
   result: { content: 'x'.repeat(chars) }
 })
 

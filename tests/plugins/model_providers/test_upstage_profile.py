@@ -55,7 +55,7 @@ class TestUpstageReasoning:
         assert top_level == {"reasoning_effort": effort}
 
     def test_unknown_future_effort_collapses_to_high(self, upstage_profile):
-        # Guard against the #62650 recurrence: a future effort level Hermes
+        # Guard against the #62650 recurrence: a future effort level Rabbit
         # adds above "high" must collapse to Solar's strongest, not silently
         # downgrade to the medium default.
         _, top_level = upstage_profile.build_api_kwargs_extras(

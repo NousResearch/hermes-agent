@@ -3,7 +3,6 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
-import { requestSendDiagnostics } from '@/store/send-diagnostics'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -67,7 +66,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     // the main process for windows with a console hook, is minified, and loses
     // the component stack. This survives the window and names the component.
     try {
-      window.hermesDesktop?.reportRendererError?.({
+      window.rabbitDesktop?.reportRendererError?.({
         label: new URLSearchParams(window.location.search).get('win') ?? 'main',
         boundary: label || 'unlabeled',
         message: error.message,
@@ -185,11 +184,8 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         <Button onClick={() => window.location.reload()} variant="text">
           {t.errors.reloadWindow}
         </Button>
-        <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
+        <Button onClick={() => void window.rabbitDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
           {t.errors.openLogs}
-        </Button>
-        <Button onClick={() => requestSendDiagnostics(error.stack || error.message)} variant="text">
-          {t.errors.sendDiagnostics}
         </Button>
       </ErrorState>
     </div>

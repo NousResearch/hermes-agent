@@ -148,9 +148,9 @@ class MemoryStore:
 
         for target in ("memory", "user"):
             path = self._path_for(target)
-            from hermes_constants import mkdir_under_hermes_home
+            from rabbit_constants import mkdir_under_rabbit_home
 
-            mkdir_under_hermes_home(path.parent)
+            mkdir_under_rabbit_home(path.parent)
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
@@ -171,9 +171,9 @@ class MemoryStore:
         from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
-        from hermes_constants import mkdir_under_hermes_home
+        from rabbit_constants import mkdir_under_rabbit_home
 
-        mkdir_under_hermes_home(lock_path.parent)
+        mkdir_under_rabbit_home(lock_path.parent)
         if fcntl is None and msvcrt is None:
             yield
             return
@@ -183,7 +183,7 @@ class MemoryStore:
         raw_fd = os.open(lock_path, flags, 0o600)
         try:
             # The creation mode is filtered through the process umask and does
-            # not repair a lock left loose by an older Hermes process. Tighten
+            # not repair a lock left loose by an older Rabbit process. Tighten
             # the opened inode before acquiring the lock so both cases are
             # owner-only. Operating on the fd avoids a path-swap window.
             if hasattr(os, "fchmod"):
@@ -266,9 +266,9 @@ class MemoryStore:
             if isinstance(result, dict):
                 return result
             self._set_entries(target, result[0])
-            from hermes_constants import mkdir_under_hermes_home
+            from rabbit_constants import mkdir_under_rabbit_home
 
-            mkdir_under_hermes_home(path.parent)
+            mkdir_under_rabbit_home(path.parent)
             self._write_file(path, result[0])
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)

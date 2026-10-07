@@ -25,14 +25,14 @@ def _clear_memo():
 
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
     bob = tmp_path / "profiles" / "bob"
     bob.mkdir(parents=True)
     (bob / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
     (bob / "profile.yaml").write_text(
-        "display_name: Bob\nui_meta:\n  hermes-bots:\n    title: Bob\n"
-        "_ui_meta_revisions:\n  hermes-bots: 1\n", encoding="utf-8")
+        "display_name: Bob\nui_meta:\n  rabbit-bots:\n    title: Bob\n"
+        "_ui_meta_revisions:\n  rabbit-bots: 1\n", encoding="utf-8")
     return tmp_path
 
 def _row(name="bob", **params):
@@ -41,18 +41,18 @@ def _row(name="bob", **params):
 
 def test_the_cas_writer_round_trips_through_the_listing(home):
     """The real write path: profiles.configure reads the raw document, mutates and writes it back."""
-    before = _row()["ui_meta_revisions"]["hermes-bots"]
+    before = _row()["ui_meta_revisions"]["rabbit-bots"]
 
     envelope = srv._methods["profiles.configure"](2, {
         "name": "bob",
-        "ui_meta": {"hermes-bots": {"title": "Bobby"}},
-        "ui_meta_expected_revisions": {"hermes-bots": before},
+        "ui_meta": {"rabbit-bots": {"title": "Bobby"}},
+        "ui_meta_expected_revisions": {"rabbit-bots": before},
     })
     assert envelope["result"]["applied"]["ui_meta"] is True
 
     row = _row()
-    assert row["ui_meta"]["hermes-bots"]["title"] == "Bobby"
-    assert row["ui_meta_revisions"]["hermes-bots"] == before + 1
+    assert row["ui_meta"]["rabbit-bots"]["title"] == "Bobby"
+    assert row["ui_meta_revisions"]["rabbit-bots"] == before + 1
 
 def test_an_avatar_added_without_touching_profile_yaml_is_still_seen(home):
     """``has_avatar`` stays live — that is why it is not part of the cached value."""

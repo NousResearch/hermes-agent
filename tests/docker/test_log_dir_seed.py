@@ -1,11 +1,11 @@
-"""Runtime smoke test for Docker $HERMES_HOME/logs/gateways seeding.
+"""Runtime smoke test for Docker $RABBIT_HOME/logs/gateways seeding.
 
 Build the real image and verify logs/ and logs/gateways/ exist and are
-owned by the hermes user after container boot.
+owned by the rabbit user after container boot.
 
 Regression guard for #45258: if the first gateway log service runs in
 root context, logs/gateways/ is created root-owned; every profile
-registered later runs its log service as the dropped hermes user and
+registered later runs its log service as the dropped rabbit user and
 s6-log crash-loops on mkdir: Permission denied.
 """
 from __future__ import annotations
@@ -16,10 +16,10 @@ from tests.docker.conftest import (
 )
 
 
-def test_logs_gateways_seeded_and_hermes_owned(
+def test_logs_gateways_seeded_and_rabbit_owned(
     built_image: str, container_name: str,
 ) -> None:
-    """logs/ and logs/gateways/ must exist and be owned by hermes after boot."""
+    """logs/ and logs/gateways/ must exist and be owned by rabbit after boot."""
     start_container(built_image, container_name)
 
     # Both directories must exist
@@ -34,7 +34,7 @@ def test_logs_gateways_seeded_and_hermes_owned(
         f"logs/ or logs/gateways/ not seeded: {r.stdout}"
     )
 
-    # Both must be owned by hermes
+    # Both must be owned by rabbit
     r = docker_exec_sh(
         container_name,
         'logs_owner=$(stat -c "%U" /opt/data/logs); '
@@ -42,11 +42,11 @@ def test_logs_gateways_seeded_and_hermes_owned(
         'echo "logs=$logs_owner gateways=$gateways_owner"',
         timeout=10,
     )
-    assert "logs=hermes" in r.stdout, (
-        f"logs/ not owned by hermes: {r.stdout}"
+    assert "logs=rabbit" in r.stdout, (
+        f"logs/ not owned by rabbit: {r.stdout}"
     )
-    assert "gateways=hermes" in r.stdout, (
-        f"logs/gateways/ not owned by hermes: {r.stdout}"
+    assert "gateways=rabbit" in r.stdout, (
+        f"logs/gateways/ not owned by rabbit: {r.stdout}"
     )
 
 

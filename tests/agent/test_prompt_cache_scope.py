@@ -16,7 +16,7 @@ import pytest
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope
 from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 @pytest.fixture()
@@ -353,15 +353,15 @@ class TestTransportWiring:
 class TestPerResponseRunNonceIsolation:
     """Issue #96570 — hosts that mint one physical session per RESPONSE.
 
-    Hermes Studio group chat builds ``gc_run_<room>_<profile>_<name>_<uuid4hex>``
+    Rabbit Studio group chat builds ``gc_run_<room>_<profile>_<name>_<uuid4hex>``
     for every reply and destroys it when the reply completes
-    (``groupRuntimeSessionId``), so every conversation-affinity hint Hermes
+    (``groupRuntimeSessionId``), so every conversation-affinity hint Rabbit
     derives from that id is re-keyed on every reply. What is demonstrated here
     is the routing/affinity mechanism moving per response; no provider cache
     telemetry or billing outcome is measured or claimed.
 
     The normalizer cannot repair that from the id alone: a physical session id
-    is an identity, and Hermes' public session API lets a client choose one
+    is an identity, and Rabbit' public session API lets a client choose one
     freely (``POST /v1/sessions`` honors ``body["id"]``/``body["session_id"]``).
     These tests pin the isolation invariant that any future scope rule has to
     keep — collapsing a trailing token because it *looks* like per-run noise
@@ -446,7 +446,7 @@ class TestPerResponseRunNonceIsolation:
         The Studio bridge creates the row with ``create_session(id, source,
         model)`` — no ``parent_session_id`` — so ``resolve_prompt_cache_scope``
         returns the physical id. This is the invariant, not a defect record:
-        an owner Hermes was never told about must never be guessed. #96811
+        an owner Rabbit was never told about must never be guessed. #96811
         closes the gap by having the host declare the logical conversation (a
         stable session id, or an explicit key); rows that still declare
         nothing keep resolving exactly like this.
@@ -506,7 +506,7 @@ class TestPerResponseRunNonceIsolation:
 
         assert chat_key(self.RESPONSE_1) != chat_key(self.RESPONSE_2)
 
-    @pytest.mark.parametrize("profile_name", ["openrouter", "nous"])
+    @pytest.mark.parametrize("profile_name", ["openrouter"])
     def test_distinct_ids_keep_distinct_provider_sticky_keys(self, profile_name):
         """OpenRouter/Nous route by this key, and it isolates distinct ids.
 
@@ -515,7 +515,7 @@ class TestPerResponseRunNonceIsolation:
         identity would arrive through the conversation contextvar, not from
         re-reading this id.
         """
-        from agent.portal_tags import (
+        from agent.conversation_context import (
             reset_conversation_context,
             set_conversation_context,
         )

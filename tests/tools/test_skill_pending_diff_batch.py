@@ -22,7 +22,7 @@ SK = (
 class TestSkillPendingDiffBatch(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="skdiff_t_")
-        os.environ["HERMES_HOME"] = self.home
+        os.environ["RABBIT_HOME"] = self.home
         os.makedirs(os.path.join(self.home, "skills", "probe"), exist_ok=True)
         with open(os.path.join(self.home, "skills", "probe", "SKILL.md"), "w",
                   encoding="utf-8") as f:
@@ -160,7 +160,7 @@ class TestSkillPendingDiffBatch(unittest.TestCase):
         self.assertIn("Found 2 matches", out)
 
     def test_diff_subcommand_end_to_end(self):
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from rabbit_cli.write_approval_commands import handle_pending_subcommand
         rec = self.wa.stage_write(
             self.wa.SKILLS, self._batch_record()["payload"],
             summary="batch(2 ops) on newprobe, probe", origin="foreground")

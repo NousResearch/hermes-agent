@@ -13,7 +13,7 @@ deterministic stubs for:
 * ``should_route_capture_to_aux_vision`` (the policy decision)
 * ``_run_async`` (sync->async bridge)
 * ``vision_analyze_tool`` (the aux LLM call)
-* ``hermes_constants.get_hermes_dir`` (cache path)
+* ``rabbit_constants.get_rabbit_dir`` (cache path)
 
 …so the full code path is covered without a live cua-driver, a real
 auxiliary client, or network access.
@@ -47,14 +47,14 @@ _JPEG_B64 = (
 
 @pytest.fixture
 def tmp_cache_dir(tmp_path):
-    """Override get_hermes_dir so cache writes land under tmp_path."""
+    """Override get_rabbit_dir so cache writes land under tmp_path."""
     cache_dir = tmp_path / "cache_vision"
     cache_dir.mkdir()
 
     def _fake_get(*_args, **_kw):
         return cache_dir
 
-    with patch("hermes_constants.get_hermes_dir", _fake_get):
+    with patch("rabbit_constants.get_rabbit_dir", _fake_get):
         yield cache_dir
 
 
@@ -227,7 +227,7 @@ class TestRoutingDecisionWiring:
                    return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model",
                    return_value="tencent/hy3-preview"), \
-             patch("hermes_cli.config.load_config", return_value=cfg):
+             patch("rabbit_cli.config.load_config", return_value=cfg):
             assert cu_tool._should_route_through_aux_vision() is True
 
 
@@ -239,7 +239,7 @@ class TestRoutingDecisionWiring:
                    return_value="openrouter"), \
              patch("agent.auxiliary_client._read_main_model",
                    return_value="x"), \
-             patch("hermes_cli.config.load_config", return_value={}), \
+             patch("rabbit_cli.config.load_config", return_value={}), \
              patch.object(vr_mod, "should_route_capture_to_aux_vision",
                           side_effect=ValueError("policy bug")):
             assert cu_tool._should_route_through_aux_vision() is False

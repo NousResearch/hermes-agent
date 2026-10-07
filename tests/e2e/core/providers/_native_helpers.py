@@ -1,12 +1,12 @@
 """Shared harness for the native-dialect provider wire suites (``test_native_*.py``).
 
-Every scenario drives the REAL ``hermes`` CLI (``python -m hermes_cli.main chat -q ... -Q``) as a
-subprocess with a hermetic fake HOME / HERMES_HOME, a config.yaml that selects a native provider,
+Every scenario drives the REAL ``rabbit`` CLI (``python -m rabbit_cli.main chat -q ... -Q``) as a
+subprocess with a hermetic fake HOME / RABBIT_HOME, a config.yaml that selects a native provider,
 and the provider's endpoint redirected to a loopback fake from ``tests/fakes/providers/``. Only the
 vendor boundary is faked; runtime resolution, the adapter, the agent loop, tools and SQLite are real.
 
-What a test asserts: the NEXT wire request Hermes sends (captured by the fake), the persisted
-``state.db`` rows, and the CLI's user-visible output — never Hermes source text.
+What a test asserts: the NEXT wire request Rabbit sends (captured by the fake), the persisted
+``state.db`` rows, and the CLI's user-visible output — never Rabbit source text.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 180.0
@@ -35,7 +35,7 @@ _PASSTHROUGH_ENV = frozenset({
 
 @dataclass
 class NativeHome:
-    """One hermetic fake HOME with ``HOME/.hermes`` as HERMES_HOME and a project dir as cwd."""
+    """One hermetic fake HOME with ``HOME/.rabbit`` as RABBIT_HOME and a project dir as cwd."""
 
     root: Path
 
@@ -44,8 +44,8 @@ class NativeHome:
         return self.root / "home"
 
     @property
-    def hermes_home(self) -> Path:
-        return self.home / ".hermes"
+    def rabbit_home(self) -> Path:
+        return self.home / ".rabbit"
 
     @property
     def project(self) -> Path:
@@ -53,24 +53,24 @@ class NativeHome:
 
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "state.db"
+        return self.rabbit_home / "state.db"
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        """Allowlisted env: no inherited credentials, HERMES_* or TERMINAL_* can reroute the child."""
+        """Allowlisted env: no inherited credentials, RABBIT_* or TERMINAL_* can reroute the child."""
         env = {
             k: v for k, v in os.environ.items()
             if (k in _PASSTHROUGH_ENV or k.startswith("LC_")) and not k.endswith(_SECRET_ENV_SUFFIXES)
         }
         env.update({
             "HOME": str(self.home),
-            "HERMES_HOME": str(self.hermes_home),
+            "RABBIT_HOME": str(self.rabbit_home),
             "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
-            # The child's ~/.hermes/state.db IS the tmp home's db; under a pytest ancestor the
+            # The child's ~/.rabbit/state.db IS the tmp home's db; under a pytest ancestor the
             # live-DB guard would refuse it. Documented child escape hatch; path is tmp by construction.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
             # Never reach real AWS/GCP metadata endpoints or shared config from a fake home.
             "AWS_EC2_METADATA_DISABLED": "true",
             "AWS_CONFIG_FILE": str(self.home / ".aws" / "config"),
@@ -85,7 +85,7 @@ def make_home(root: Path, model: dict[str, Any], *, env_file: dict[str, str] | N
               extra_config: dict[str, Any] | None = None) -> NativeHome:
     """Write config.yaml (``model`` block + offline defaults + ``extra_config``) and ``.env``."""
     nh = NativeHome(root)
-    for d in (nh.hermes_home, nh.project):
+    for d in (nh.rabbit_home, nh.project):
         d.mkdir(parents=True, exist_ok=True)
     cfg: dict[str, Any] = {
         "model": model,
@@ -99,9 +99,9 @@ def make_home(root: Path, model: dict[str, Any], *, env_file: dict[str, str] | N
             cfg[key].update(value)
         else:
             cfg[key] = value
-    (nh.hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    (nh.rabbit_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
     lines = [f"{k}={v}" for k, v in (env_file or {}).items()]
-    (nh.hermes_home / ".env").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    (nh.rabbit_home / ".env").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return nh
 
 
@@ -119,8 +119,8 @@ class ChatResult:
 
 def run_chat(nh: NativeHome, prompt: str, *, resume: str | None = None, env: dict[str, str] | None = None,
              args: tuple[str, ...] = (), timeout: float = TURN_TIMEOUT) -> ChatResult:
-    """One real ``hermes chat -q`` turn (optionally ``--resume <id>``) against the fake provider."""
-    argv = [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "-Q", *args]
+    """One real ``rabbit chat -q`` turn (optionally ``--resume <id>``) against the fake provider."""
+    argv = [sys.executable, "-m", "rabbit_cli.main", "chat", "-q", prompt, "-Q", *args]
     if resume:
         argv += ["--resume", resume]
     started = time.monotonic()

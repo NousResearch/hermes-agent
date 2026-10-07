@@ -25,7 +25,7 @@ Notion API + ntn CLI：页面、数据库、Markdown、Workers。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Notion
@@ -41,7 +41,7 @@ Notion API + ntn CLI：页面、数据库、Markdown、Workers。
 
 1. 在 https://notion.so/my-integrations 创建集成
 2. 复制 API 密钥（以 `ntn_` 或 `secret_` 开头）
-3. 存储到 `~/.hermes/.env`：
+3. 存储到 `~/.rabbit/.env`：
    ```
    NOTION_API_KEY=ntn_your_key_here
    ```
@@ -65,7 +65,7 @@ export NOTION_API_TOKEN=$NOTION_API_KEY      # ntn 读取 NOTION_API_TOKEN
 export NOTION_KEYRING=0                       # 不尝试使用系统密钥链
 ```
 
-将上述 export 添加到你的 shell 配置文件（或 `~/.hermes/.env`），使每个会话都能继承这些变量。
+将上述 export 添加到你的 shell 配置文件（或 `~/.rabbit/.env`），使每个会话都能继承这些变量。
 
 ### 3. 运行时选择路径
 
@@ -297,7 +297,7 @@ curl -s -X PATCH "https://api.notion.com/v1/blocks/{page_id}/children" \
   -H "Content-Type: application/json" \
   -d '{
     "children": [
-      {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Hello from Hermes!"}}]}}
+      {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": "Hello from Rabbit!"}}]}}
     ]
   }'
 ```
@@ -460,4 +460,4 @@ ntn workers webhooks list
 - 创建 data sources 时使用 `"is_inline": true` 可将其嵌入页面。
 - 始终为 curl 传入 `-s` 以抑制进度条（使 agent 输出更整洁）。
 - 读取数据时通过 `jq` 管道处理：`... | jq '.results[0].properties'`。
-- Notion 现已推出 MCP 服务器（`Notion MCP`，在数据库操作上比上一版本的 token 效率提升约 91%）——如需在会话中进行流式 Notion 访问，可通过 Hermes 的 MCP 支持接入，但上述路径已足以应对大多数一次性任务。
+- Notion 现已推出 MCP 服务器（`Notion MCP`，在数据库操作上比上一版本的 token 效率提升约 91%）——如需在会话中进行流式 Notion 访问，可通过 Rabbit 的 MCP 支持接入，但上述路径已足以应对大多数一次性任务。

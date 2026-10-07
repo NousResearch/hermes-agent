@@ -1,5 +1,5 @@
 // Preload for the preview pane's `<webview>` guests. main.ts installs this
-// file via `will-attach-webview` on the `persist:hermes-preview` partition
+// file via `will-attach-webview` on the `persist:rabbit-preview` partition
 // only (see `installPreviewGuestPreload`), so no other webview inherits it.
 //
 // The guest runs with contextIsolation, so this preload shares the guest's
@@ -7,7 +7,7 @@
 // anchors (Streamlit traceback's "Ask Google" / "Ask …" buttons —
 // #112941) are intercepted here in the DOM's capture phase and handed to the
 // host renderer via `sendToHost`; the host admits the scheme and routes the
-// URL through the audited `hermes:openExternal` channel. A guest URL never
+// URL through the audited `rabbit:openExternal` channel. A guest URL never
 // becomes an Electron popup and this side never opens anything by itself.
 //
 // Deliberate scope: only trusted anchor clicks are forwarded. A page's direct

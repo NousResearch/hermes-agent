@@ -5,7 +5,7 @@ import { useI18n } from "@/i18n";
 
 /**
  * A multi-profile host whose gateway came up STANDALONE on a boot guard: every other
- * profile's bot is silent until `hermes gateway migrate --multiplex` runs. The backend only
+ * profile's bot is silent until `rabbit gateway migrate --multiplex` runs. The backend only
  * sets `multiplex_standalone_reason` when there is something unserved (never for a
  * single-profile install), so presence == show. Dismissal is session-scoped and keyed on the
  * reason text so a different blocker re-surfaces.
@@ -31,7 +31,7 @@ export function MultiplexStandaloneBanner({
   const unserved = (status?.profiles ?? []).filter((p) => p !== "default");
   const template =
     t.app.multiplexStandaloneBanner ??
-    "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex";
+    "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: rabbit gateway migrate --multiplex";
   const message = template
     .replace("{profiles}", unserved.length > 0 ? unserved.join(", ") : "—")
     .replace("{reason}", reason);

@@ -38,7 +38,7 @@ function Get-AppxPackage {
   ${unavailable ? 'return $null' : "return [pscustomobject]@{ Version = $(if ($global:checks -gt 6) { '2.0.0.0' } else { '1.0.0.0' }); PackageFamilyName = 'audit-only' }"}
 }
 function Get-AppxPackageManifest {
-  return [pscustomobject]@{ Package = [pscustomobject]@{ Applications = [pscustomobject]@{ Application = [pscustomobject]@{ Id = 'Hermes' } } } }
+  return [pscustomobject]@{ Package = [pscustomobject]@{ Applications = [pscustomobject]@{ Application = [pscustomobject]@{ Id = 'Rabbit' } } } }
 }
 function Start-Process {
   param($FilePath)
@@ -65,7 +65,7 @@ exit $LASTEXITCODE
         expect(fs.existsSync(activation)).toBe(!unavailable)
 
         if (!unavailable) {
-          expect(fs.readFileSync(activation, 'utf8').trim()).toBe('shell:AppsFolder\\audit-only!Hermes')
+          expect(fs.readFileSync(activation, 'utf8').trim()).toBe('shell:AppsFolder\\audit-only!Rabbit')
         }
       } finally {
         fs.rmSync(root, { recursive: true, force: true })

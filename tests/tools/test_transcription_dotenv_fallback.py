@@ -2,7 +2,7 @@
 
 Same class of bug as ``tools/tts_tool.py`` (fixed in PR #17163): the STT
 provider call sites read API keys via ``os.getenv()``, which bypasses
-``~/.hermes/.env`` entries. These tests confirm each STT provider now
+``~/.rabbit/.env`` entries. These tests confirm each STT provider now
 consults ``get_env_value()`` and the provider auto-detect + explicit
 selection gate (``_get_provider``) do the same.
 """
@@ -35,7 +35,7 @@ def isolate_env(monkeypatch):
 
 class TestProviderSelectionGate:
     """``_get_provider`` picks the STT backend. If it only consulted
-    ``os.environ`` a user with keys in ``~/.hermes/.env`` would be told
+    ``os.environ`` a user with keys in ``~/.rabbit/.env`` would be told
     "no STT available" even though the actual transcribe call would
     succeed. The gate lives behind ``is_stt_enabled(stt_config)``, so
     configure ``{"enabled": True, "provider": ...}`` for explicit tests.
@@ -52,7 +52,7 @@ class TestProviderSelectionGate:
              patch.object(tt, "_HAS_MISTRAL", False), \
              patch.object(tt, "_has_local_command", return_value=False), \
              patch.object(tt, "_has_openai_audio_backend", return_value=False), \
-             patch("hermes_cli.config.load_env",
+             patch("rabbit_cli.config.load_env",
                    return_value={"GROQ_API_KEY": "dotenv-secret"}):
             # No "provider" key → explicit=False → auto-detect branch
             assert tt._get_provider({"enabled": True}) == "groq"
@@ -82,7 +82,7 @@ class TestTranscribeCallSitesReadDotenv:
         fake_openai_module.APIConnectionError = Exception
         fake_openai_module.APITimeoutError = Exception
 
-        with patch("hermes_cli.config.get_env_value", return_value="groq-dotenv-key"), \
+        with patch("rabbit_cli.config.get_env_value", return_value="groq-dotenv-key"), \
              patch.object(tt, "_HAS_OPENAI", True), \
              patch.dict("sys.modules", {"openai": fake_openai_module}), \
              patch("builtins.open", MagicMock()):
@@ -113,7 +113,7 @@ class TestTranscribeCallSitesReadDotenv:
                 return "xai-dotenv-key"
             return None
 
-        with patch("hermes_cli.config.get_env_value", side_effect=fake_get_env_value), \
+        with patch("rabbit_cli.config.get_env_value", side_effect=fake_get_env_value), \
              patch.object(xai_http, "resolve_xai_http_credentials", return_value={
                  "provider": "xai-oauth",
                  "api_key": "subscription-oauth-token",
@@ -144,7 +144,7 @@ class TestTranscribeCallSitesReadDotenv:
                 return "elevenlabs-dotenv-key"
             return None
 
-        with patch("hermes_cli.config.get_env_value", side_effect=fake_get_env_value), \
+        with patch("rabbit_cli.config.get_env_value", side_effect=fake_get_env_value), \
              patch.object(tt, "_load_stt_config", return_value={}), \
              patch("requests.post", side_effect=fake_post), \
              patch("builtins.open", MagicMock()):
@@ -155,8 +155,8 @@ class TestTranscribeCallSitesReadDotenv:
 
 
 class TestEndToEndRegressionGuard:
-    """End-to-end probe: patch ``hermes_cli.config.load_env`` to simulate
-    ``~/.hermes/.env`` carrying the key while ``os.environ`` does not.
+    """End-to-end probe: patch ``rabbit_cli.config.load_env`` to simulate
+    ``~/.rabbit/.env`` carrying the key while ``os.environ`` does not.
     Before the fix ``_transcribe_xai`` called ``os.getenv("XAI_API_KEY")``
     directly and returned ``XAI_API_KEY not set``."""
 
@@ -175,11 +175,11 @@ class TestEndToEndRegressionGuard:
             response.json.return_value = {"text": "ok"}
             return response
 
-        with patch("hermes_cli.config.load_env",
+        with patch("rabbit_cli.config.load_env",
                    return_value={"XAI_API_KEY": "dotenv-secret"}):
             # Sanity: get_env_value resolves through load_env when
             # os.environ is empty.
-            from hermes_cli.config import get_env_value as live_get
+            from rabbit_cli.config import get_env_value as live_get
             assert live_get("XAI_API_KEY") == "dotenv-secret"
 
             with patch("requests.post", side_effect=fake_post), \

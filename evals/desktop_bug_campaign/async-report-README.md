@@ -10,7 +10,7 @@ From the repository root with the normal Python and npm dependencies installed:
 
 ```sh
 export HOME=$(mktemp -d)
-export HERMES_HOME="$HOME/.hermes"
+export RABBIT_HOME="$HOME/.rabbit"
 export ASYNC_REPORT_ARTIFACT_DIR=$(mktemp -d)
 # If Chromium is installed outside the temporary HOME, set
 # PLAYWRIGHT_BROWSERS_PATH to that installation's browser cache.

@@ -12,12 +12,11 @@ import {
 
 function config(overrides: Partial<ProfileRouteConfig> = {}): ProfileRouteConfig {
   return {
-    cloudOrg: '',
     mode: 'local',
     remoteUrl: '',
     sshHost: '',
     sshPort: null,
-    sshRemoteHermesPath: '',
+    sshRemoteRabbitPath: '',
     sshRemoteProfile: '',
     sshUser: '',
     ...overrides
@@ -32,7 +31,7 @@ describe('buildOpaqueProfileRoutes', () => {
         config({
           mode: 'ssh',
           sshHost: 'lab-a',
-          sshRemoteHermesPath: '~/.hermes',
+          sshRemoteRabbitPath: '~/.rabbit',
           sshRemoteProfile: 'remote-research'
         })
       ],
@@ -41,13 +40,13 @@ describe('buildOpaqueProfileRoutes', () => {
         config({
           mode: 'ssh',
           sshHost: 'lab-b',
-          sshRemoteHermesPath: '~/.hermes',
+          sshRemoteRabbitPath: '~/.rabbit',
           sshRemoteProfile: 'remote-writing'
         })
       ]
     ])
 
-    const resolveSsh = vi.fn(async () => ({ hostname: 'gateway.example', port: 22, user: 'hermes' }))
+    const resolveSsh = vi.fn(async () => ({ hostname: 'gateway.example', port: 22, user: 'rabbit' }))
 
     const routes = await buildOpaqueProfileRoutes({
       getProfileConfig: profile => configs.get(profile) ?? config(),
@@ -69,12 +68,12 @@ describe('buildOpaqueProfileRoutes', () => {
     expect(routes[0].connectionId).not.toBe(routes[1].connectionId)
     expect(JSON.stringify(routes)).not.toContain('gateway.example')
     expect(JSON.stringify(routes)).not.toContain('lab-a')
-    expect(JSON.stringify(routes)).not.toContain('.hermes')
+    expect(JSON.stringify(routes)).not.toContain('.rabbit')
   })
 
   it('changes opaque IDs when the effective SSH destination changes', async () => {
     const options = {
-      getProfileConfig: () => config({ mode: 'ssh', sshHost: 'lab', sshRemoteHermesPath: '~/.hermes' }),
+      getProfileConfig: () => config({ mode: 'ssh', sshHost: 'lab', sshRemoteRabbitPath: '~/.rabbit' }),
       globalConfig: config(),
       installationId: 'install-a-secret',
       primaryProfile: 'default',
@@ -83,12 +82,12 @@ describe('buildOpaqueProfileRoutes', () => {
 
     const before = await buildOpaqueProfileRoutes({
       ...options,
-      resolveSsh: async () => ({ hostname: 'old.example', port: 22, user: 'hermes' })
+      resolveSsh: async () => ({ hostname: 'old.example', port: 22, user: 'rabbit' })
     })
 
     const after = await buildOpaqueProfileRoutes({
       ...options,
-      resolveSsh: async () => ({ hostname: 'new.example', port: 22, user: 'hermes' })
+      resolveSsh: async () => ({ hostname: 'new.example', port: 22, user: 'rabbit' })
     })
 
     expect(before[1].connectionId).not.toBe(after[1].connectionId)
@@ -113,7 +112,7 @@ describe('buildOpaqueProfileRoutes', () => {
     const options = {
       getProfileConfig: (profile: string) =>
         profile === 'broken'
-          ? config({ mode: 'ssh', sshHost: 'unreachable', sshPort: 2222, sshUser: 'hermes' })
+          ? config({ mode: 'ssh', sshHost: 'unreachable', sshPort: 2222, sshUser: 'rabbit' })
           : config(),
       globalConfig: config(),
       installationId: 'install-a-secret',
@@ -177,28 +176,12 @@ describe('buildOpaqueProfileRoutes', () => {
       installationId: 'install-a-secret',
       primaryProfile: 'default',
       profileNames: ['default', 'desktop-alias'],
-      resolveSsh: vi.fn(async () => ({ hostname: 'gateway.example', port: 22, user: 'hermes' }))
+      resolveSsh: vi.fn(async () => ({ hostname: 'gateway.example', port: 22, user: 'rabbit' }))
     })
 
     expect(routes.map(route => route.targetProfile)).toEqual(['remote-primary', 'remote-primary'])
   })
 
-  it('keeps cloud organizations on one service URL in distinct groups', async () => {
-    const routes = await buildOpaqueProfileRoutes({
-      getProfileConfig: profile =>
-        profile === 'org-a' || profile === 'org-b'
-          ? config({ cloudOrg: profile, mode: 'cloud', remoteUrl: 'https://cloud.example' })
-          : config(),
-      globalConfig: config(),
-      installationId: 'install-a-secret',
-      primaryProfile: 'default',
-      profileNames: ['default', 'org-a', 'org-b'],
-      resolveSsh: vi.fn()
-    })
-
-    expect(new Set(routes.map(route => route.connectionId))).toHaveLength(3)
-    expect(JSON.stringify(routes.map(({ connectionId, mode }) => ({ connectionId, mode })))).not.toContain('org-a')
-  })
 })
 
 describe('buildRegistryProfileRoutes', () => {
@@ -280,7 +263,7 @@ describe('isLocalEnumerationFailure', () => {
 
 describe('localRouteFallbackProfiles', () => {
   it('restores failed local profiles when another source returned agents', () => {
-    const agents = [{ connectionId: 'cloud-prod', profile: 'default' }]
+    const agents = [{ connectionId: 'remote-prod', profile: 'default' }]
 
     expect(localRouteFallbackProfiles(agents, 'local', ['default', 'venture'], true)).toEqual(['default', 'venture'])
   })
@@ -309,7 +292,7 @@ describe('undialedSshRouteSeeds', () => {
         [],
         [
           { id: 'homelab', kind: 'ssh', remoteProfile: 'venture' },
-          { id: 'cloud-prod', kind: 'cloud' }
+          { id: 'remote-prod', kind: 'remote' }
         ]
       )
     ).toEqual([{ connectionId: 'homelab', profile: 'default' }])

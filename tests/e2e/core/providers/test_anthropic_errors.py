@@ -1,6 +1,6 @@
 """Anthropic Messages wire conformance: documented error envelopes and stream faults.
 
-A real ``hermes -z`` process on the native route meets the vendor's documented
+A real ``rabbit -z`` process on the native route meets the vendor's documented
 failures (built from the SDK's error models): ``429 rate_limit_error`` with
 ``retry-after``, ``529 overloaded_error``, ``400 invalid_request_error`` and a
 socket dropped in the middle of a thinking block. Each test asserts the retry

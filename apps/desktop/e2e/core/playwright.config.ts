@@ -10,7 +10,7 @@ import { defineConfig } from '@playwright/test'
  *  - retries: 0 — a required job that retries hides exactly the flake it
  *    should expose (the old lane retried and still went red for weeks).
  *  - no visual baselines / always-on screenshots; artifacts only on failure.
- *  - one worker: every spec owns a real Electron + `hermes serve`; running
+ *  - one worker: every spec owns a real Electron + `rabbit serve`; running
  *    them concurrently on a loaded runner is the timing margin we refuse.
  *  - 180 s per test (green runs take 6-36 s): a stalled stream fails the one
  *    test fast instead of the 30-min job timeout cancelling the whole lane

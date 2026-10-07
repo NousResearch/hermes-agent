@@ -1,6 +1,6 @@
 """Vertex AI wire conformance: OAuth minting, multi-turn tools, thought-signature replay after resume.
 
-The real ``hermes chat -q`` CLI talks to Vertex through the standard ``HTTPS_PROXY`` +
+The real ``rabbit chat -q`` CLI talks to Vertex through the standard ``HTTPS_PROXY`` +
 ``SSL_CERT_FILE`` channel; the fake (``tests/fakes/providers/vertex.py``) terminates TLS for
 ``us-central1-aiplatform.googleapis.com``, validates every request against the Vertex
 OpenAI-compatibility contract, and mints tokens for the REAL ``google-auth`` JWT exchange.
@@ -11,7 +11,7 @@ Scenarios run concurrently (one fake + one hermetic home each) in a module fixtu
   ``--resume`` and calls it again; ``--reasoning high`` throughout.
 * ``refresh``  — tokens are minted with a short ``expires_in``; the vendor expires them right
   after the first response, so the next request 401s and must be retried with a re-minted token.
-* ``default_toolset`` — a turn with Hermes' default toolsets (every tool schema goes to Vertex).
+* ``default_toolset`` — a turn with Rabbit' default toolsets (every tool schema goes to Vertex).
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     Call,
     FakeVertex,
     Say,
-    hermes_setup,
+    rabbit_setup,
     signatures_on_wire,
 )
 
@@ -72,7 +72,7 @@ def require(ok: Any, what: str) -> None:
 
 
 def _home(tmp: Path, name: str, fake: FakeVertex) -> NativeHome:
-    nh = make_home(tmp / name / "h", **hermes_setup(fake))
+    nh = make_home(tmp / name / "h", **rabbit_setup(fake))
     (nh.project / "note1.txt").write_text(f"note: {SECRET_1}\n", encoding="utf-8")
     (nh.project / "note2.txt").write_text(f"note: {SECRET_2}\n", encoding="utf-8")
     return nh
@@ -238,7 +238,7 @@ def test_expired_token_is_reminted_and_request_retried(results: dict[str, Any]) 
 
 
 def test_default_toolset_schemas_accepted_by_vertex(results: dict[str, Any]) -> None:
-    """With Hermes' default toolsets every tool declaration must survive Vertex's translation."""
+    """With Rabbit' default toolsets every tool declaration must survive Vertex's translation."""
     res = results["default_toolset"]
     fake = res["fake"]
     require(fake.requests and fake.requests[0]["auth"].startswith("Bearer ya29."), "turn never reached Vertex")

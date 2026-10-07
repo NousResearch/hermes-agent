@@ -34,7 +34,7 @@ describe('SidebarStorageCorruptNotice', () => {
     expect(notice.textContent).toContain('Session database is damaged')
     expect(notice.textContent).toContain('for default')
     expect(notice.textContent).toContain('were not deleted')
-    expect(notice.textContent).toContain('hermes sessions recover --source <state.db> --inspect-only')
+    expect(notice.textContent).toContain('rabbit sessions recover --source <state.db> --inspect-only')
     // No blanket "run repair" advice: structural damage goes to inspect/restore first.
     expect(notice.textContent).not.toContain('sessions repair')
 

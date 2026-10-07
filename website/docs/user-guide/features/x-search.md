@@ -13,7 +13,7 @@ The `x_search` tool lets the agent search X (Twitter) posts, profiles, and threa
 
 ## `x_search` vs `xurl`
 
-Hermes can expose two different X surfaces:
+Rabbit can expose two different X surfaces:
 
 | Surface | Use it for | Do not use it for |
 |---------|------------|-------------------|
@@ -23,7 +23,7 @@ Hermes can expose two different X surfaces:
 For mixed workflows, use `x_search` to discover candidate public posts, then switch to `xurl read` or another exact `xurl` command after the target post/user/action is clear. Any state-changing X action must be confirmed by `xurl` output or the X API response; an `x_search` answer is never evidence that a write happened.
 
 :::tip
-If you're paying Portal for an xAI model anyway, Live Search calls bill against the same xAI key configured for chat. See [Nous Portal](../../integrations/nous-portal.md).
+
 :::
 
 ## Authentication
@@ -32,8 +32,8 @@ If you're paying Portal for an xAI model anyway, Live Search calls bill against 
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok / X Premium+ OAuth** | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
-| **`XAI_API_KEY`** (preferred) | Paid xAI API key | Set in `~/.hermes/.env` |
+| **SuperGrok / X Premium+ OAuth** | Browser login at `accounts.x.ai`, refreshed automatically | `rabbit auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
+| **`XAI_API_KEY`** (preferred) | Paid xAI API key | Set in `~/.rabbit/.env` |
 
 Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, the explicit `XAI_API_KEY` wins** — the subscription OAuth bearer authorizes `/v1/responses` but answers x_search in a degraded Grok explanatory mode with no citations, while the API key returns real posts. Note this means x_search runs against metered API billing when a key is set; remove `XAI_API_KEY` to fall back to your subscription quota (with the degraded-answer caveat).
 
@@ -41,10 +41,10 @@ The tool's `check_fn` runs the xAI credential resolver every time the model's to
 
 ## Enabling the tool
 
-Auto-enables when xAI credentials (OAuth token or `XAI_API_KEY`) are present. Disable explicitly via `hermes tools` → Search → x_search if you don't want this.
+Auto-enables when xAI credentials (OAuth token or `XAI_API_KEY`) are present. Disable explicitly via `rabbit tools` → Search → x_search if you don't want this.
 
 ```bash
-hermes tools
+rabbit tools
 # → 🐦 X (Twitter) Search   (press space to toggle on)
 ```
 
@@ -58,7 +58,7 @@ Either choice satisfies the gating. You can pick whichever credentials you alrea
 ## Configuration
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 x_search:
   # xAI model used for the Responses call.
   # grok-4.5 is the recommended default; any Grok model
@@ -136,7 +136,7 @@ If the next user request is "reply to the best one" or "like that post", the age
 
 ### "No xAI credentials available"
 
-The tool surfaces this when both auth paths fail. Either set `XAI_API_KEY` in `~/.hermes/.env` or run `hermes auth add xai-oauth` and complete the browser login. Then restart your session so the agent re-reads the tool registry.
+The tool surfaces this when both auth paths fail. Either set `XAI_API_KEY` in `~/.rabbit/.env` or run `rabbit auth add xai-oauth` and complete the browser login. Then restart your session so the agent re-reads the tool registry.
 
 ### "`x_search` is not enabled for this model"
 
@@ -146,8 +146,8 @@ The configured `x_search.model` doesn't have access to the server-side `x_search
 
 Two possible causes:
 
-1. **Toolset not enabled.** Run `hermes tools` and confirm `🐦 X (Twitter) Search` is checked.
-2. **No xAI credentials.** The check_fn returns False, so the schema stays hidden. Run `hermes auth status` to confirm xai-oauth login state, and check that `XAI_API_KEY` is set (if you're using the API-key path).
+1. **Toolset not enabled.** Run `rabbit tools` and confirm `🐦 X (Twitter) Search` is checked.
+2. **No xAI credentials.** The check_fn returns False, so the schema stays hidden. Run `rabbit auth status` to confirm xai-oauth login state, and check that `XAI_API_KEY` is set (if you're using the API-key path).
 
 ### `degraded: true` — answer with no citations
 

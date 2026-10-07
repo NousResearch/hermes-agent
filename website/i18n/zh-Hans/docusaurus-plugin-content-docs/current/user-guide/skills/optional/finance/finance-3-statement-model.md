@@ -14,10 +14,10 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/finance/3-statement-model` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/finance/3-statement-model` 安装 |
 | 路径 | `optional-skills/finance/3-statement-model` |
 | 版本 | `1.0.0` |
-| 作者 | Anthropic（由 Nous Research 改编） |
+| 作者 | Anthropic |
 | 许可证 | Apache-2.0 |
 | 平台 | linux, macos, windows |
 | 标签 | `finance`, `three-statement`, `income-statement`, `balance-sheet`, `cash-flow`, `excel`, `openpyxl`, `modeling` |
@@ -26,7 +26,7 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 ## 环境
@@ -194,7 +194,7 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 
 ## SEC 申报文件数据提取
 
-如果模板明确需要从 SEC 申报文件（10-K、10-Q）中提取数据，请参阅 [references/sec-filings.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/3-statement-model/references/sec-filings.md) 获取详细提取指引。仅在使用上市公司监管申报文件数据填写模板时才需要此参考文档。
+如果模板明确需要从 SEC 申报文件（10-K、10-Q）中提取数据，请参阅 [references/sec-filings.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/finance/3-statement-model/references/sec-filings.md) 获取详细提取指引。仅在使用上市公司监管申报文件数据填写模板时才需要此参考文档。
 
 ## 填写模型模板
 
@@ -327,7 +327,7 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 
 ### 核心勾稽项（必须始终成立）
 
-所有公式详情见 [references/formulas.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/finance/3-statement-model/references/formulas.md)。
+所有公式详情见 [references/formulas.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/finance/3-statement-model/references/formulas.md)。
 
 | 检查项 | 公式 | 预期结果 |
 |-------|---------|-----------------|
@@ -436,9 +436,9 @@ description: "在 Excel 中构建完整集成的三表模型（利润表、资�
 
 ## 数据来源 — 优先 MCP，其次网络回退
 
-以下许多段落提到"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原 Cowork 插件上下文中的商业金融数据 MCP。在 Hermes 中：
+以下许多段落提到"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原 Cowork 插件上下文中的商业金融数据 MCP。在 Rabbit 中：
 
-- **如果已配置任何结构化金融数据 MCP**（Hermes 支持 MCP — 参见 `native-mcp` skill），优先使用它获取时点可比数据、前例交易和申报文件。
+- **如果已配置任何结构化金融数据 MCP**（Rabbit 支持 MCP — 参见 `native-mcp` skill），优先使用它获取时点可比数据、前例交易和申报文件。
 - **否则**，回退至：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国申报文件
   - 公司投资者关系页面获取新闻稿、业绩演示文稿

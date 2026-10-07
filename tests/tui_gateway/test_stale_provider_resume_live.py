@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 OLD_URL = "https://old-endpoint.invalid/v1"
 NEW_URL = "https://new-endpoint.invalid/v1"
@@ -40,9 +40,9 @@ NEW_URL = "https://new-endpoint.invalid/v1"
 
 @pytest.fixture()
 def live_home(monkeypatch):
-    """A REAL isolated HERMES_HOME with a config.yaml + state.db on disk."""
-    tmp = Path(tempfile.mkdtemp(prefix="hermes-live-staleprov-"))
-    home = tmp / ".hermes"
+    """A REAL isolated RABBIT_HOME with a config.yaml + state.db on disk."""
+    tmp = Path(tempfile.mkdtemp(prefix="rabbit-live-staleprov-"))
+    home = tmp / ".rabbit"
     home.mkdir(parents=True)
     config = {
         "model": {"default": "test-model-live", "provider": "custom:newone"},
@@ -56,21 +56,21 @@ def live_home(monkeypatch):
         ],
     }
     (home / "config.yaml").write_text(yaml.safe_dump(config))
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    # hermes_constants caches the resolved home at first read — the env var
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    # rabbit_constants caches the resolved home at first read — the env var
     # alone doesn't repoint an already-imported process. Use the override API
     # (the same mechanism profile-scoped resumes use).
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    home_token = set_hermes_home_override(str(home))
+    home_token = set_rabbit_home_override(str(home))
     # Neutralize ambient provider creds so resolution uses ONLY the config
     # above — this must behave the same on a dev box and a bare CI runner.
     for var in list(os.environ):
         if var.endswith("_API_KEY") or var in ("OPENROUTER_KEY", "NOUS_KEY"):
             monkeypatch.delenv(var, raising=False)
 
-    import hermes_cli.config as hconfig
-    import hermes_cli.runtime_provider as rp
+    import rabbit_cli.config as hconfig
+    import rabbit_cli.runtime_provider as rp
 
     for mod in (hconfig, rp):
         for attr in ("_config_cache", "_cache", "_CONFIG_CACHE"):
@@ -80,18 +80,18 @@ def live_home(monkeypatch):
                 except Exception:
                     pass
 
-    import hermes_state
+    import rabbit_state
     import tui_gateway.server as server
 
     # The launch DB handle and the module-level home snapshot are import-time
     # caches — repoint both at the isolated home for the duration of the test
     # (see references: tui-gateway live WS harness, same trap). The hermetic
-    # conftest also re-pins hermes_state.DEFAULT_DB_PATH per test; pin it to
+    # conftest also re-pins rabbit_state.DEFAULT_DB_PATH per test; pin it to
     # THIS home so server._get_db() opens the same real state.db we seed.
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", home / "state.db")
     monkeypatch.setattr(server, "_db", None, raising=False)
     monkeypatch.setattr(server, "_db_error", None, raising=False)
-    monkeypatch.setattr(server, "_hermes_home", str(home), raising=False)
+    monkeypatch.setattr(server, "_rabbit_home", str(home), raising=False)
     yield home, server
     # Detach the shared handle so the tmpdir can be reclaimed.
     try:
@@ -101,7 +101,7 @@ def live_home(monkeypatch):
         pass
     server._db = None
     try:
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
     except Exception:
         pass
 
@@ -115,7 +115,7 @@ def _seed_session_row(
     extra_config: dict | None = None,
 ) -> str:
     """Write a REAL session row + one message into the profile's state.db."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=home / "state.db")
     sid = uuid.uuid4().hex[:12]

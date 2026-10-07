@@ -1,9 +1,9 @@
 """Sidecar runtime-record persistence tests (issue #69960).
 
 The sidecar token is generated at spawn and used to exist only in the
-gateway process memory + sidecar child env — so cron/`hermes send`
+gateway process memory + sidecar child env — so cron/`rabbit send`
 standalone sends structurally could not authenticate. The adapter now
-persists ``<hermes-home>/runtime/photon-sidecar.json`` after the sidecar
+persists ``<rabbit-home>/runtime/photon-sidecar.json`` after the sidecar
 passes its /healthz readiness check, deletes it on stop/failed-start, and
 ``_standalone_send`` falls back to it when PHOTON_SIDECAR_TOKEN is unset.
 No Node, no ports, no network.
@@ -230,6 +230,6 @@ async def test_standalone_send_consumes_record_when_env_missing(
     assert result == {"success": True, "message_id": "m1"}
     url, _body, headers = _SendClient.calls[0]
     assert ":9111/" in url
-    assert headers["X-Hermes-Sidecar-Token"] == "record-token"
+    assert headers["X-Rabbit-Sidecar-Token"] == "record-token"
 
 

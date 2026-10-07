@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AppContextMenu } from '@/app/context-menu/app-context-menu'
 import { $contextMenu } from '@/app/context-menu/store'
-import type { StarmapGraph } from '@/types/hermes'
+import type { StarmapGraph } from '@/types/rabbit'
 
 import { StarMap } from './star-map'
 

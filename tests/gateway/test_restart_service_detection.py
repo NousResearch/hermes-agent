@@ -35,10 +35,10 @@ def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
 
 
 def _make_runner_with_mock_restart(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
-    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.delenv("RABBIT_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
     # Hermeticity: neutralize the real container probe — on a containerized
     # CI runner /.dockerenv exists and would route every case via_service=True
@@ -79,14 +79,14 @@ async def test_false_external_supervisor_marker_keeps_detached_path(
 
 
 def test_supervised_child_marker_is_a_launch_not_a_restart_route():
-    """The Windows Scheduled-Task launcher exports only ``HERMES_SUPERVISED_CHILD``: that must make
+    """The Windows Scheduled-Task launcher exports only ``RABBIT_SUPERVISED_CHILD``: that must make
     the gateway a supervised LAUNCH (self-kill guards active, #113667) without selecting the exit-75
     restart route, which the task cannot honour (#113670)."""
     from gateway.restart import is_gateway_supervisor_process, is_supervised_gateway_launch
-    from hermes_cli.gateway_windows import _GATEWAY_ENV
+    from rabbit_cli.gateway_windows import _GATEWAY_ENV
 
     task_env = dict(_GATEWAY_ENV)
-    assert task_env["HERMES_SUPERVISED_CHILD"] == "1"
+    assert task_env["RABBIT_SUPERVISED_CHILD"] == "1"
     assert is_supervised_gateway_launch(task_env) is True
     assert is_gateway_supervisor_process(task_env) is False
     assert is_supervised_gateway_launch({}) is False

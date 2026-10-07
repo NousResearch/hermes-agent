@@ -11,7 +11,7 @@ import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows
 // preference the user set, honoured. SIMPLE is chat-first: the standing
 // developer instrumentation (statusbar, profile rail, terminal / files / review
 // panes, technical tool payloads, the artifacts / scheduled-jobs rows) rests
-// out of the way. Mode changes what is SHOWN, never what Hermes can do: every
+// out of the way. Mode changes what is SHOWN, never what Rabbit can do: every
 // route still answers ⌘K, every pane still answers its keybind and the agent's
 // `focus_pane`.
 //
@@ -41,7 +41,7 @@ export const INTERFACE_MODES: readonly InterfaceMode[] = ['simple', 'advanced']
 
 export const DEFAULT_INTERFACE_MODE: InterfaceMode = 'advanced'
 
-const INTERFACE_MODE_STORAGE_KEY = 'hermes.desktop.interfaceMode.v1'
+const INTERFACE_MODE_STORAGE_KEY = 'rabbit.desktop.interfaceMode.v1'
 
 // Advanced is the ABSENCE of a mode: encoded as "no key" so a user who never
 // touched the picker never gains a record, and clearing the key means Advanced.

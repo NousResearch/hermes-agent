@@ -2,7 +2,7 @@
  * native-oauth.ts
  *
  * Pure, electron-free helpers for the desktop's RFC 8252 (OAuth 2.0 for Native
- * Apps) login to a gated Hermes gateway: system-browser + loopback redirect +
+ * Apps) login to a gated Rabbit gateway: system-browser + loopback redirect +
  * PKCE, with tokens returned to the app (never browser session cookies).
  *
  * Kept standalone (no `import 'electron'`) so it unit-tests with `node --test`
@@ -31,7 +31,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { type AdvertisedAuthProvider, oauthGuardMayHardFail } from './native-auth-decisions'
 
 // The gateway status field that lists supported auth flows. See
-// hermes_cli/web_server.py status handler.
+// rabbit_cli/web_server.py status handler.
 const NATIVE_FLOW_ID = 'native_pkce'
 
 export interface NativePkcePair {

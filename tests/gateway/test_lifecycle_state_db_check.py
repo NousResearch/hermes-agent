@@ -133,7 +133,7 @@ def _armed_handle(monkeypatch):
     ``report_startup_progress`` resolves the singleton, so the lease bookkeeping the
     check performs lands on this handle; no watchdog thread means nothing can exit pytest.
     """
-    import hermes_startup_watchdog as sw
+    import rabbit_startup_watchdog as sw
 
     handle = sw.StartupWatchdogHandle(timeout_s=300.0, exit_code=75)
     monkeypatch.setattr(sw, "_handle", handle)

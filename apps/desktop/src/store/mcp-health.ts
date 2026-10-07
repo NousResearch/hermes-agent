@@ -14,7 +14,7 @@
  * the other just learned.
  */
 
-import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
+import { getRabbitConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/rabbit'
 import { translateNow } from '@/i18n'
 import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
 import { getServers, serverEnabled } from '@/lib/mcp-servers'
@@ -67,7 +67,7 @@ export function shouldNotify(
 // Same time-based snooze the update/skew toasts use (store/updates.ts): a
 // shown toast arms a 24h cooldown for that (profile, server), persisted so an
 // app restart does not re-nudge before the day is up.
-const SNOOZE_KEY_PREFIX = 'hermes:mcp-health-snooze-until:'
+const SNOOZE_KEY_PREFIX = 'rabbit:mcp-health-snooze-until:'
 const SNOOZE_MS = 24 * 60 * 60 * 1000
 
 function snoozedUntil(key: string): number {
@@ -157,7 +157,7 @@ async function sweep(): Promise<void> {
   let config: Record<string, unknown>
 
   try {
-    config = await getHermesConfigRecord()
+    config = await getRabbitConfigRecord()
   } catch {
     // Backend unreachable / mid-restart — the next interval tick retries.
     return

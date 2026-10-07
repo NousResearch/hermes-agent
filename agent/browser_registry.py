@@ -26,7 +26,7 @@ _registry.export(globals())
 
 
 # Auto-detect order when ``browser.cloud_provider`` is unset (historic order: Browser Use first because
-# it covers both the managed Nous gateway and the direct API key path; Browserbase as the older
+# it covers both the managed gateway and the direct API key path; Browserbase as the older
 # direct-credentials fallback). Firecrawl is deliberately absent — see :func:`_resolve`.
 _LEGACY_PREFERENCE = ("browser-use", "browserbase")
 

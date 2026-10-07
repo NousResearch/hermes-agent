@@ -187,7 +187,6 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
@@ -210,12 +209,11 @@ class TestUnconfiguredErrorEnvelopeParity:
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setattr(fc, "_load_web_config", lambda: {"backend": "firecrawl"}, raising=False)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        # Developer machines may carry FIRECRAWL_* in ~/.hermes/.env — the
+        # Developer machines may carry FIRECRAWL_* in ~/.rabbit/.env — the
         # config-aware lookup must see a truly keyless environment here.
         monkeypatch.setattr(
-            "hermes_cli.config.get_env_value", lambda name: None, raising=True
+            "rabbit_cli.config.get_env_value", lambda name: None, raising=True
         )
 
         calls = {}
@@ -336,7 +334,7 @@ class TestDispatchersTriggerPluginDiscovery:
 
             mock_hook = MagicMock(wraps=_register_fake)
             # Patch the helper on ``tools.web_tools`` directly rather than the
-            # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
+            # underlying ``rabbit_cli.plugins._ensure_plugins_discovered`` so
             # the test stays valid even if the import inside the helper is
             # later moved to module scope or renamed.
             monkeypatch.setattr(
@@ -462,7 +460,7 @@ class TestDisabledPluginDiagnostic:
         """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
         dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
         simulated disabled/enabled state without touching real config."""
-        import hermes_cli.plugins as plugins_mod
+        import rabbit_cli.plugins as plugins_mod
 
         class _StubMgr:
             _plugins = plugins_map

@@ -33,8 +33,8 @@ def _auto_continue_config() -> tuple[bool, float, int]:
 
 
 def _session_home(session: dict) -> Path:
-    """The HERMES_HOME the session's durable state lives in (profile-aware)."""
-    return Path(session.get("profile_home") or _hermes_home)
+    """The RABBIT_HOME the session's durable state lives in (profile-aware)."""
+    return Path(session.get("profile_home") or _rabbit_home)
 
 
 def _retire_turn_marker(session: dict, *keys: str) -> None:
@@ -68,7 +68,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
-    # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
+    # Ownership, not forensics: a sibling backend sharing this RABBIT_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.
     writer_state = marker_writer_state(marker)
@@ -104,7 +104,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 return
             session["running"] = True
             session["last_active"] = time.time()
-        # Ownership admission BEFORE message.start: a sibling backend sharing this HERMES_HOME may have written the
+        # Ownership admission BEFORE message.start: a sibling backend sharing this RABBIT_HOME may have written the
         # marker and still be mid-turn. Leave the marker so a later resume retries.
         # Running the continuation anyway would be the double-writer this fence exists to prevent. See
         # #94778.
@@ -335,7 +335,7 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
-    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+    from rabbit_state_common import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
         accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
@@ -367,7 +367,7 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     if is_dispatching:
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
     else:
-        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
+        from rabbit_state_common import QUEUED_PROMPT_METADATA_KEY
         _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
                                  accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
     fresh = session.get("_submit_user_row")

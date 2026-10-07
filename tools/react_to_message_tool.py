@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent emoji reaction in the Hermes desktop app: the counterpart to the user's tapback
+"""Agent emoji reaction in the Rabbit desktop app: the counterpart to the user's tapback
 (same store, one-per-author, ``author="agent"``). Lives in the ``desktop_ui`` toolset so it
 costs nothing elsewhere (adapters expose reactions via ``send_message(action="react")``);
 defaults to the triggering message and emits ``message.reaction`` for live painting."""
@@ -15,7 +15,7 @@ from tools.registry import registry, tool_error
 def _open_session_db():
     """Open the SessionDB for the profile owning this turn, or ``None``."""
     try:
-        from hermes_state_registry import acquire
+        from rabbit_state_registry import acquire
         return acquire()
     except Exception:
         return None
@@ -24,7 +24,7 @@ def _open_session_db():
 def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -> str:
     """Attach (or with an empty ``emoji`` retract) the agent's reaction."""
     emoji = (emoji or "").strip()
-    session_key = get_session_env("HERMES_SESSION_KEY", "") or get_session_env("HERMES_SESSION_ID", "")
+    session_key = get_session_env("RABBIT_SESSION_KEY", "") or get_session_env("RABBIT_SESSION_ID", "")
     if not session_key:
         return tool_error("No active session — reactions need a persisted conversation.")
     db = _open_session_db()
@@ -54,7 +54,7 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
         return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
     finally:
         with contextlib.suppress(Exception):
-            from hermes_state_registry import release_or_close
+            from rabbit_state_registry import release_or_close
             release_or_close(db)
 
 

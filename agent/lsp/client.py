@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from rabbit_cli._subprocess_compat import windows_hide_flags
 
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,
@@ -248,7 +248,7 @@ class LSPClient:
 
     async def _spawn(self) -> None:
         from agent.delegation_context import delegated_child_subprocess_env
-        from tools.environments.local import hermes_subprocess_env
+        from tools.environments.local import rabbit_subprocess_env
         cmd = self._command
         if sys.platform == "win32" and cmd[0].lower().endswith((".cmd", ".bat")):
             cmd = ["cmd.exe", "/c", *cmd]  # CreateProcess can't run .cmd/.bat shims directly
@@ -262,7 +262,7 @@ class LSPClient:
             self._proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:], limit=_STREAM_LIMIT,
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=delegated_child_subprocess_env({**hermes_subprocess_env(), **(self._env or {})}), cwd=self._cwd,
+                env=delegated_child_subprocess_env({**rabbit_subprocess_env(), **(self._env or {})}), cwd=self._cwd,
                 start_new_session=True, creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as e:

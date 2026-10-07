@@ -37,8 +37,8 @@ class TestResolveActiveContextLengthProviderAware:
             )
             return 272_000
 
-        with patch("hermes_cli.config.load_config", return_value=_model_cfg()), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+        with patch("rabbit_cli.config.load_config", return_value=_model_cfg()), \
+             patch("rabbit_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"base_url": "https://chatgpt.com/backend-api/codex",
                                  "api_key": "tok-live"}) as mock_rt, \
              patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
@@ -64,9 +64,9 @@ class TestResolveActiveContextLengthProviderAware:
             captured.update(base_url=base_url, api_key=api_key, provider=provider)
             return 272_000
 
-        with patch("hermes_cli.config.load_config",
+        with patch("rabbit_cli.config.load_config",
                    return_value=_model_cfg(base_url="https://chatgpt.com/backend-api/codex")), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+             patch("rabbit_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=RuntimeError("no credentials")), \
              patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
@@ -87,9 +87,9 @@ class TestResolveActiveContextLengthProviderAware:
             captured.update(base_url=base_url, provider=provider)
             return 200_000
 
-        with patch("hermes_cli.config.load_config",
+        with patch("rabbit_cli.config.load_config",
                    return_value={"model": {"model": "some-model"}}), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_rt, \
+             patch("rabbit_cli.runtime_provider.resolve_runtime_provider") as mock_rt, \
              patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):
             ctx = model_tools._resolve_active_context_length()
 
@@ -107,9 +107,9 @@ class TestResolveActiveContextLengthProviderAware:
             captured["config_ctx"] = config_context_length
             return config_context_length or 0
 
-        with patch("hermes_cli.config.load_config",
+        with patch("rabbit_cli.config.load_config",
                    return_value=_model_cfg(context_length=150_000)), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+             patch("rabbit_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"base_url": "https://chatgpt.com/backend-api/codex",
                                  "api_key": "tok"}), \
              patch("agent.model_metadata.get_model_context_length", side_effect=fake_get_ctx):

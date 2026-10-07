@@ -6,9 +6,9 @@ const leg = (name, conclusion, step) => ({ name, conclusion, html_url: `https://
 
 test('one tracker: a red run opens it, the next red run rewrites it, a green run closes it', () => {
   const jobs = [
-    leg('windows: installer-script -> hermes-update (v2026.9.24 -> HEAD) / e2e', 'cancelled', 'Install v2026.9.24 (installer-script)'),
-    leg('windows: installer-script+desktop -> hermes-update (HEAD -> NEXT) / e2e', 'cancelled', 'Install HEAD (installer-script+desktop)'),
-    leg('linux: installer-script -> hermes-update (HEAD -> NEXT) / install & update', 'success'),
+    leg('windows: installer-script -> rabbit-update (v2026.9.24 -> HEAD) / e2e', 'cancelled', 'Install v2026.9.24 (installer-script)'),
+    leg('windows: installer-script+desktop -> rabbit-update (HEAD -> NEXT) / e2e', 'cancelled', 'Install HEAD (installer-script+desktop)'),
+    leg('linux: installer-script -> rabbit-update (HEAD -> NEXT) / install & update', 'success'),
     leg('linux: installer-script -> installer-script (HEAD -> NEXT) / install & update', 'skipped'),
   ]
 

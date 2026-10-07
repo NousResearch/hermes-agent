@@ -6,7 +6,7 @@ import { readKey, writeKey } from '@/lib/storage'
 import { $gateway } from './gateway'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
-const PHASE_KEY = 'hermes-onboarding-phase-v1'
+const PHASE_KEY = 'rabbit-onboarding-phase-v1'
 
 export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'skipped', 'handoff', 'done'] as const
 

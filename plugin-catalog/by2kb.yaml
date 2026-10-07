@@ -1,8 +1,8 @@
 name: by2kb
 repo: https://github.com/Charlesmpc/by2kb
 sha: 5983ca8a479feb87321f5c37f59cf8ae28818451
-subdir: by2kb/integrations/hermes
-description: "Discover learning videos by topic, select numbered recommendations, and turn Bilibili and YouTube videos into transcripts, abstracts, and study notes using the Hermes host model. Disclosure — intercepts gateway messages with a Bilibili/YouTube URL, a \"by2kb <topic>\" prefix, or (for 1 h after a recommendation list, same user/chat) a bare number reply, and runs the separately installed by2kb CLI (BY2KB_COMMAND or PATH), which searches Bilibili/YouTube, downloads media and runs ASR; enrichment prompts go to your active Hermes model."
+subdir: by2kb/integrations/rabbit
+description: "Discover learning videos by topic, select numbered recommendations, and turn Bilibili and YouTube videos into transcripts, abstracts, and study notes using the Rabbit host model. Disclosure — intercepts gateway messages with a Bilibili/YouTube URL, a \"by2kb <topic>\" prefix, or (for 1 h after a recommendation list, same user/chat) a bare number reply, and runs the separately installed by2kb CLI (BY2KB_COMMAND or PATH), which searches Bilibili/YouTube, downloads media and runs ASR; enrichment prompts go to your active Rabbit model."
 maintainer: Charlesmpc
 tier: community
 category: tools

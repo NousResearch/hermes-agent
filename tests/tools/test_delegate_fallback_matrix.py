@@ -75,15 +75,15 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 ):
     """The public key must survive DEFAULT_CONFIG/profile loading without
     patching ``_load_config`` and reach the child constructor."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
+    from rabbit_constants import (
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
 
-    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
-    token = set_hermes_home_override(tmp_path)
+    monkeypatch.delenv("RABBIT_IGNORE_USER_CONFIG", raising=False)
+    token = set_rabbit_home_override(tmp_path)
     try:
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump(
@@ -104,7 +104,7 @@ def test_declared_chain_flows_through_real_profile_config_loader(
                 task_count=1,
             )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     child_kwargs = mock_agent.call_args.kwargs
     assert child_kwargs["fallback_model"] == DECLARED_CHAIN
@@ -112,12 +112,12 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 
 def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monkeypatch):
     """An explicit [] remains an authoritative disable after config loading."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
-    token = set_hermes_home_override(tmp_path)
+    monkeypatch.delenv("RABBIT_IGNORE_USER_CONFIG", raising=False)
+    token = set_rabbit_home_override(tmp_path)
     try:
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"delegation": {"fallback_providers": []}}),
@@ -136,19 +136,19 @@ def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monk
                 task_count=1,
             )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert mock_agent.call_args.kwargs["fallback_model"] is None
 
 
 def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatch):
     """The public /review route owns its fallback policy as well as its model."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     from agent.review_engine import start_review
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    monkeypatch.delenv("RABBIT_IGNORE_USER_CONFIG", raising=False)
     (tmp_path / "config.yaml").write_text(
         yaml.safe_dump(
             {
@@ -180,7 +180,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
         captured.update(kwargs)
         raise ReachedConstructor()
 
-    token = set_hermes_home_override(tmp_path)
+    token = set_rabbit_home_override(tmp_path)
     try:
         with patch("run_agent.AIAgent", side_effect=capture):
             with pytest.raises(ReachedConstructor):
@@ -189,7 +189,7 @@ def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatc
                     [{"role": "user", "content": "Check the last result"}],
                 )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert captured["model"] == "review-model"
     assert captured["base_url"] == "http://127.0.0.1:18479/v1"
@@ -230,7 +230,7 @@ def test_declared_child_chain_activates_on_primary_failure():
             return_value=(fallback_client, "deepseek-chat"),
         ),
         patch(
-            "hermes_cli.model_normalize.normalize_model_for_provider",
+            "rabbit_cli.model_normalize.normalize_model_for_provider",
             side_effect=lambda model, _provider: model,
         ),
     ):

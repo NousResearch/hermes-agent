@@ -2,10 +2,10 @@
 
 Reasoning-summary models (OpenAI gpt-5.x and Responses-API relays onto the chat wire) emit one
 ``reasoning_content`` delta per *completed* summary part, each opening with a bold heading.
-The chat wire lacks the Responses API's ``summary_index`` delimiter (verified live on Nous
-Portal ``openai/gpt-5.6-sol``), so plain concatenation glues ``**One****Two**`` into one
+The chat wire lacks the Responses API's ``summary_index`` delimiter (verified live on a hosted
+``openai/gpt-5.6-sol`` route), so plain concatenation glues ``**One****Two**`` into one
 half-bold paragraph. The boundary is re-derived from a delta opening a bold heading, matching
-the blank-line join Hermes' own Responses adapter does.
+the blank-line join Rabbit' own Responses adapter does.
 """
 
 from __future__ import annotations

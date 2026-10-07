@@ -8,7 +8,7 @@ import json
 import os
 from typing import Any, Callable
 
-from hermes_constants import display_hermes_home
+from rabbit_constants import display_rabbit_home
 from gateway.config import Platform, load_gateway_config
 from plugins.teams_pipeline.meetings import (
     enrich_meeting_with_call_record, fetch_preferred_transcript_text, list_recording_artifacts, resolve_meeting_reference)
@@ -31,7 +31,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def teams_pipeline_command(args: argparse.Namespace) -> int:
     action = getattr(args, "teams_pipeline_action", None)
     if not action:
-        print(f"Usage: hermes teams-pipeline {{{'|'.join(spec[0] for spec in _SUBCOMMANDS)}}}")
+        print(f"Usage: rabbit teams-pipeline {{{'|'.join(spec[0] for spec in _SUBCOMMANDS)}}}")
         return 2
     handler = _ACTIONS.get(action)
     if handler is None:
@@ -82,7 +82,7 @@ def _print_records(noun: str, empty_message: str, records: list[tuple[Any, list[
 
 def _graph_setup_hint() -> str:
     return f"""
-  Microsoft Graph is not configured. Add these to {display_hermes_home()}/.env:
+  Microsoft Graph is not configured. Add these to {display_rabbit_home()}/.env:
 
     MSGRAPH_TENANT_ID=...
     MSGRAPH_CLIENT_ID=...

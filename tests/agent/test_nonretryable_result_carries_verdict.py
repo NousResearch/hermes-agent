@@ -28,16 +28,16 @@ class _Agent:
 
 def test_nonretryable_401_result_classifies_as_auth_for_the_ui():
     error = _Rejected()
-    classified = classify_api_error(error, provider="nous", model="m")
+    classified = classify_api_error(error, provider="xai-oauth", model="m")
     result = nonretryable_client_error_result(
         _Agent(), error, classified, status_code=401, api_kwargs=None, api_messages=[], messages=[],
-        conversation_history=None, api_call_count=1, approx_tokens=10, provider="nous",
-        base_url="https://inference-api.nousresearch.com/v1", model="m",
+        conversation_history=None, api_call_count=1, approx_tokens=10, provider="xai-oauth",
+        base_url="https://api.x.ai/v1", model="m",
     )
     assert result["failure_reason"] == classified.reason.value
     assert result["failure_retryable"] is classified.retryable is False
 
-    surface = build_error_surface_from_result(result, provider="nous", model="m")
+    surface = build_error_surface_from_result(result, provider="xai-oauth", model="m")
     assert surface["layer"] == LAYER_AUTH
     assert surface["retryable"] is False
     assert surface["auth_kind"] == "oauth"

@@ -1,6 +1,6 @@
 # Browser Use Mode Benchmark
 
-The A/B battery behind PR [#81958](https://github.com/NousResearch/hermes-agent/pull/81958)
+The A/B battery behind PR [#81958](https://github.com/seven0070/Rabbit-/pull/81958)
 (Browser Use CLI 3.0 mode, salvage of #66476 by @laithrw): built-in
 `browser_*` toolset vs the single `browser_exec` driver, measured as total
 task tokens / tool calls / wall clock at accuracy parity on live multi-step
@@ -12,7 +12,7 @@ web tasks.
   `browser_*` tools from a merge-base checkout; `pr` runs `browser_exec`
   (`browser.backend: browser-use`) from the branch checkout; `prns` is `pr`
   with the schema's helpers digest stripped to the header (isolates the
-  digest's value). Each cell gets a throwaway `HERMES_HOME`; web-fetch
+  digest's value). Each cell gets a throwaway `RABBIT_HOME`; web-fetch
   credentials are stripped so every arm must actually drive the browser.
 - **Tasks are oracle-checked.** toscrape-family sites (stable content, no
   anti-bot), regex oracles over the final answer. `tasks/easy.json` (5 tasks:
@@ -23,7 +23,7 @@ web tasks.
 - **Resume-safe.** Completed cells in `results/*.jsonl` are skipped on rerun
   (same pattern as `evals/toolperf_abeval`).
 - **Backend matrix.** `orchestrate.py` drives a local headless-Chrome CDP;
-  `orchestrate_cloud.py --backend nous-cloud|browserbase` provisions a real
+  `orchestrate_cloud.py --backend browser-use-cloud|browserbase` provisions a real
   cloud browser per cell through the same provider plumbing the product uses.
 
 ## Run

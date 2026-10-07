@@ -31,7 +31,7 @@ def test_real_tui_emitter_keeps_control_frames_and_restores_callbacks(monkeypatc
 @pytest.mark.parametrize("suppress", [False, True])
 def test_tui_kanban_splits_diagnostics_from_results_before_wake(tmp_path, monkeypatch, suppress):
     from gateway.warning_notifications import DiagnosticText
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not suppress).lower()}}}")
     owner = tmp_path / "owner"
     owner.mkdir()

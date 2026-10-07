@@ -20,22 +20,22 @@
 # Phases (mirroring the windows driver):
 #   stage      bare-clone this checkout to serve.git, park main at OLD
 #   install    run OLD's scripts/install.sh under the redirect; assert the
-#              install landed on OLD with a working `hermes`
+#              install landed on OLD with a working `rabbit`
 #   update     advance served main to HEAD, apply ONE update method, assert
-#              the checkout landed on HEAD with a working `hermes`
+#              the checkout landed on HEAD with a working `rabbit`
 #
 # Usage:
-#   tests/install/installer-script-e2e.sh --update-method hermes-update|installer-script|installer-script+desktop
+#   tests/install/installer-script-e2e.sh --update-method rabbit-update|installer-script|installer-script+desktop
 #                                         [--install-method installer-script|installer-script+desktop]
 #                                         [--install-ref REF]
 #
 #   --install-method installer-script          the plain one-liner (default)
 #                    installer-script+desktop  the one-liner with its desktop
 #                                              stage opted in (--include-desktop)
-#   --update-method  hermes-update      `hermes update`
+#   --update-method  rabbit-update      `rabbit update`
 #                    installer-script   re-run install.sh (HEAD's copy)
 #                    installer-script+desktop  re-run with --include-desktop
-#                    hermes-desktop-app-update  launch the app via `hermes
+#                    rabbit-desktop-app-update  launch the app via `rabbit
 #                                       desktop` (spawn captured, Playwright
 #                                       drives it) and click Update now
 #   --install-ref    what to install first; anything git resolves. Default:
@@ -83,19 +83,19 @@ case "$INSTALL_METHOD" in
   *) echo "error: --install-method must be installer-script or installer-script+desktop, got '$INSTALL_METHOD'" >&2; exit 1 ;;
 esac
 case "$UPDATE_METHOD" in
-  hermes-update|installer-script|installer-script+desktop|hermes-desktop-app-update) ;;
-  *) echo "error: --update-method must be hermes-update, installer-script, installer-script+desktop or hermes-desktop-app-update, got '$UPDATE_METHOD'" >&2; exit 1 ;;
+  rabbit-update|installer-script|installer-script+desktop|rabbit-desktop-app-update) ;;
+  *) echo "error: --update-method must be rabbit-update, installer-script, installer-script+desktop or rabbit-desktop-app-update, got '$UPDATE_METHOD'" >&2; exit 1 ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
 # Pin driver tooling before an installer changes PATH. CI prepares locked deps.
-export HERMES_E2E_NODE="${HERMES_E2E_NODE:-$(command -v node)}"
+export RABBIT_E2E_NODE="${RABBIT_E2E_NODE:-$(command -v node)}"
 
 # Everything lives OUTSIDE the checkout; an untracked dir inside the repo
 # would make later dirty-tree checks lie.
-WORK_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/hermes-installer-script-e2e"
-LOG_DIR="${HERMES_E2E_LOG_DIR:-$WORK_ROOT/logs}"
+WORK_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rabbit-installer-script-e2e"
+LOG_DIR="${RABBIT_E2E_LOG_DIR:-$WORK_ROOT/logs}"
 SERVE_REPO="$WORK_ROOT/serve.git"
 
 step() { printf '\n=== %s ===\n' "$*"; }
@@ -169,18 +169,18 @@ ok "serve.git main = $OLD_SHA ($INSTALL_REF), update target $TARGET_SHA ($TARGET
 
 arm_source_redirect "$REPO_ROOT" "$WORK_ROOT" "$SERVE_REPO"
 
-# Isolated HOME: the runner's real one may carry a preinstalled hermes or a
-# developer config, and old installer scripts hardcode $HOME/.hermes (the
-# HERMES_HOME env override is newer than tags we sample). GIT_CONFIG_GLOBAL
+# Isolated HOME: the runner's real one may carry a preinstalled rabbit or a
+# developer config, and old installer scripts hardcode $HOME/.rabbit (the
+# RABBIT_HOME env override is newer than tags we sample). GIT_CONFIG_GLOBAL
 # above keeps working -- an explicit path wins over $HOME/.gitconfig.
 export HOME="$WORK_ROOT/home"
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
-export HERMES_HOME="$HOME/.hermes"
-export HERMES_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
-mkdir -p "$HERMES_HOME"
+export RABBIT_HOME="$HOME/.rabbit"
+export RABBIT_DESKTOP_USER_DATA_DIR="$WORK_ROOT/electron-user-data"
+mkdir -p "$RABBIT_HOME"
 
-INSTALL_DIR="$HERMES_HOME/hermes-agent"
+INSTALL_DIR="$RABBIT_HOME/rabbit-agent"
 
 
 
@@ -192,12 +192,12 @@ INSTALL_DIR="$HERMES_HOME/hermes-agent"
 # hundreds of lines above close_running_desktop.
 env_key_names() { # label
   local label="$1"
-  if [ ! -s "$HERMES_HOME/.env" ]; then
+  if [ ! -s "$RABBIT_HOME/.env" ]; then
     printf '  [env] %s: (no .env)\n' "$label"
     return 0
   fi
   printf '  [env] %s: %s\n' "$label" \
-    "$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$HERMES_HOME/.env" | tr -d '=' | sort | tr '\n' ' ')"
+    "$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$RABBIT_HOME/.env" | tr -d '=' | sort | tr '\n' ' ')"
 }
 
 assert_desktop_artifact() {
@@ -207,10 +207,10 @@ assert_desktop_artifact() {
   local found=""
   local cand
   for cand in \
-    "$release_dir/linux-unpacked/Hermes" \
-    "$release_dir/linux-unpacked/hermes" \
-    "$release_dir/mac-arm64/Hermes.app" \
-    "$release_dir/mac/Hermes.app"; do
+    "$release_dir/linux-unpacked/Rabbit" \
+    "$release_dir/linux-unpacked/rabbit" \
+    "$release_dir/mac-arm64/Rabbit.app" \
+    "$release_dir/mac/Rabbit.app"; do
     if [ -x "$cand" ] || [ -d "$cand" ]; then
       found="$cand"
       break
@@ -226,19 +226,19 @@ assert_checkout() {
   got="$(git -C "$INSTALL_DIR" rev-parse HEAD)"
   [ "$got" = "$1" ] || fail "installed checkout is $got, expected $2 ($1)"
   ok "checkout is $2 ($1)"
-  local hermes
-  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no usable installed command at $2"
+  local rabbit
+  rabbit="$(source_rabbit "$INSTALL_DIR")" || fail "no usable installed command at $2"
   python3 -B "$REPO_ROOT/tests/install/e2e-assets/source_driver.py" \
-    --root "$INSTALL_DIR" --launcher "$hermes" --desktop "$EXPECT_DESKTOP" \
+    --root "$INSTALL_DIR" --launcher "$rabbit" --desktop "$EXPECT_DESKTOP" \
     || fail "read-only verification failed at $2; no repair was attempted"
-  HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 source_build_env "$hermes" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
-    || fail "hermes --version failed after $2; log in $LOG_DIR/version-$2.log"
-  ok "hermes --version works: $(head -c 120 "$LOG_DIR/version-$2.log" | tr -d '\n')"
+  RABBIT_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 source_build_env "$rabbit" --version 2>&1 | ts_prefix > "$LOG_DIR/version-$2.log" \
+    || fail "rabbit --version failed after $2; log in $LOG_DIR/version-$2.log"
+  ok "rabbit --version works: $(head -c 120 "$LOG_DIR/version-$2.log" | tr -d '\n')"
 }
 
 desktop_checkpoint() { # phase, expected commit, selected method
-  source_build_env "$HERMES_E2E_NODE" "$ASSETS/source-desktop-smoke.mjs" \
-    --root "$INSTALL_DIR" --home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" \
+  source_build_env "$RABBIT_E2E_NODE" "$ASSETS/source-desktop-smoke.mjs" \
+    --root "$INSTALL_DIR" --home "$RABBIT_HOME" --user-data "$RABBIT_DESKTOP_USER_DATA_DIR" \
     --out "$LOG_DIR" --phase "$1" --expect-commit "$2" \
     --desktop "$EXPECT_DESKTOP" --method "$3"
 }
@@ -270,12 +270,12 @@ close_running_desktop() {
   # prints only that stamp is Electron's silent secondary-instance path. After
   # every matching process is gone, these isolated-route artifacts are stale,
   # not user data, and must not reject Playwright's lock-owning launch.
-  rm -f "$HERMES_DESKTOP_USER_DATA_DIR/SingletonLock" \
-    "$HERMES_DESKTOP_USER_DATA_DIR/SingletonSocket" \
-    "$HERMES_DESKTOP_USER_DATA_DIR/SingletonCookie"
+  rm -f "$RABBIT_DESKTOP_USER_DATA_DIR/SingletonLock" \
+    "$RABBIT_DESKTOP_USER_DATA_DIR/SingletonSocket" \
+    "$RABBIT_DESKTOP_USER_DATA_DIR/SingletonCookie"
 }
 
-# The redirect must stay at TRANSPORT level. `hermes update` resolves its
+# The redirect must stay at TRANSPORT level. `rabbit update` resolves its
 # update channel from the release archive and validates the record against
 # `git config --get remote.origin.url`; if the configured URL ever looked like
 # the rehearsal source, channel resolution would fail outright and the leg
@@ -284,8 +284,8 @@ assert_redirect_is_transport_only() {
   # Either official form is valid: the installer clones over SSH or HTTPS
   # depending on the environment, and both are "the official URL" as far as
   # channel resolution is concerned.
-  local official_https='https://github.com/NousResearch/hermes-agent.git'
-  local official_ssh='git@github.com:NousResearch/hermes-agent.git'
+  local official_https='https://github.com/seven0070/Rabbit-.git'
+  local official_ssh='git@github.com:seven0070/Rabbit-.git'
   local configured observed
   configured="$(git -C "$INSTALL_DIR" config --get remote.origin.url)"
   case "$configured" in
@@ -296,7 +296,7 @@ assert_redirect_is_transport_only() {
   # detection sees it), so read the TRANSPORT url through the real git that
   # arm_source_redirect exported — otherwise `remote get-url origin` returns
   # the official URL and this check would always fail.
-  local real="${HERMES_E2E_REAL_GIT:-git}"
+  local real="${RABBIT_E2E_REAL_GIT:-git}"
   observed="$("$real" -C "$INSTALL_DIR" remote get-url origin)"
   case "$observed" in
     file://*|*serve.git*) ;;
@@ -309,12 +309,12 @@ assert_redirect_is_transport_only() {
 # left pointing at a vanished tree is exactly the "update lost something" shape
 # a checkout-hash assertion cannot see.
 assert_user_shims() {
-  local hermes user_shim
-  hermes="$(source_hermes "$INSTALL_DIR")" || fail "no usable launcher after the upgrade"
-  [ -x "$hermes" ] || fail "launcher is not executable: $hermes"
-  user_shim="$HOME/.local/bin/hermes"
+  local rabbit user_shim
+  rabbit="$(source_rabbit "$INSTALL_DIR")" || fail "no usable launcher after the upgrade"
+  [ -x "$rabbit" ] || fail "launcher is not executable: $rabbit"
+  user_shim="$HOME/.local/bin/rabbit"
   if [ -e "$user_shim" ] || [ -L "$user_shim" ]; then
-    HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 \
+    RABBIT_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 \
       "$user_shim" --version > "$LOG_DIR/version-path-shim.log" 2>&1 \
       || fail "the PATH shim stopped working after the upgrade: $user_shim"
     ok "PATH shim still runs: $user_shim"
@@ -340,15 +340,15 @@ fi
 # A real, chat-capable provider, started BEFORE the first desktop checkpoint. An
 # existing user HAS one configured, the durability check needs a real turn (not a
 # file we wrote ourselves), and the checkpoint's own chat smoke asserts against
-# HERMES_E2E_MOCK_URL -- so starting this later left TWO mocks per leg: the
+# RABBIT_E2E_MOCK_URL -- so starting this later left TWO mocks per leg: the
 # checkpoint's (which the app's config pointed at and kept using) and the
 # driver's, which the smoke then waited on. That is the "The mock must receive
 # this checkpoint prompt after the send" timeout: the app was talking to 43475
 # while the smoke asserted against 46723. One mock, started here, is also
 # written into the provider config BEFORE preserve_before_upgrade snapshots the
 # home, so nothing reconfigures provider state inside the verified window.
-if [ -z "${HERMES_E2E_MOCK_URL:-}" ]; then
-  PATH="$(dirname "$HERMES_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
+if [ -z "${RABBIT_E2E_MOCK_URL:-}" ]; then
+  PATH="$(dirname "$RABBIT_E2E_NODE"):$PATH" mock_start "$WORK_ROOT"
   trap mock_stop EXIT
 fi
 
@@ -357,8 +357,8 @@ desktop_checkpoint old "$OLD_SHA" "$INSTALL_METHOD"
 # Produce the user's own state through the ordinary CLI, then snapshot what
 # must survive. Done as late as possible before the update so the window
 # verify() covers contains only the upgrade.
-HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed command to drive"
-source_build_env user_state_produce "$HERMES"
+RABBIT="$(source_rabbit "$INSTALL_DIR")" || fail "no installed command to drive"
+source_build_env user_state_produce "$RABBIT"
 user_state_before_upgrade
 assert_redirect_is_transport_only
 # Configure the provider LAST, immediately before the snapshot. The steps above
@@ -367,14 +367,14 @@ assert_redirect_is_transport_only
 # ADDITIONS after the snapshot, meaning the snapshot had missed them. Re-pointing
 # here fixes what the upgrade starts from, whatever those steps did, and nothing
 # rewrites provider state after this line.
-mock_configure_provider "${HERMES_E2E_MOCK_URL:?HERMES_E2E_MOCK_URL must be set before snapshotting}"
+mock_configure_provider "${RABBIT_E2E_MOCK_URL:?RABBIT_E2E_MOCK_URL must be set before snapshotting}"
 env_key_names "after provider configure"
-grep -q '^OPENAI_BASE_URL=' "$HERMES_HOME/.env" \
-  || fail "provider configure did not reach $HERMES_HOME/.env"
+grep -q '^OPENAI_BASE_URL=' "$RABBIT_HOME/.env" \
+  || fail "provider configure did not reach $RABBIT_HOME/.env"
 preserve_before_upgrade
 env_key_names "after snapshot"
-grep -q '^OPENAI_BASE_URL=' "$HERMES_HOME/.env" \
-  || fail "the snapshot phase cleared OPENAI_BASE_URL from $HERMES_HOME/.env"
+grep -q '^OPENAI_BASE_URL=' "$RABBIT_HOME/.env" \
+  || fail "the snapshot phase cleared OPENAI_BASE_URL from $RABBIT_HOME/.env"
 
 # The verifier's OWN view of every .env it judges, printed right after its
 # snapshot. When this disagrees with the probe above, the snapshot recorded a
@@ -385,7 +385,7 @@ env_verifier_view() {
   local py
   py="$(_user_state_python)"
   printf '  [env] verifier view:\n'
-  "$py" "$USER_STATE_VERIFIER" env-keys --home "$HERMES_HOME" 2>&1 | sed 's/^/    /' || true
+  "$py" "$USER_STATE_VERIFIER" env-keys --home "$RABBIT_HOME" 2>&1 | sed 's/^/    /' || true
 }
 env_verifier_view
 
@@ -410,28 +410,28 @@ collect_install_side_logs() {
   COLLECTED_INSTALL_LOGS=1
   ildest="$LOG_DIR/install-logs"
   mkdir -p "$ildest"
-  cp -R "$HERMES_HOME/logs" "$ildest/hermes-logs" 2>/dev/null || true
+  cp -R "$RABBIT_HOME/logs" "$ildest/rabbit-logs" 2>/dev/null || true
   if [ -n "${XDG_DATA_HOME:-}" ]; then
-    cp -R "$XDG_DATA_HOME/hermes/logs" "$ildest/desktop-userdata-logs" 2>/dev/null || true
+    cp -R "$XDG_DATA_HOME/rabbit/logs" "$ildest/desktop-userdata-logs" 2>/dev/null || true
   fi
-  cp "$HERMES_HOME/.hermes-update-result.json" "$ildest" 2>/dev/null || true
-  ls -la "$HERMES_HOME" > "$ildest/hermes-home-ls.txt" 2>/dev/null || true
+  cp "$RABBIT_HOME/.rabbit-update-result.json" "$ildest" 2>/dev/null || true
+  ls -la "$RABBIT_HOME" > "$ildest/rabbit-home-ls.txt" 2>/dev/null || true
   ls -la "$INSTALL_DIR/venv/bin" > "$ildest/venv-bin-ls.txt" 2>/dev/null || true
   ok "collected install-side logs to $ildest"
 }
 
 case "$UPDATE_METHOD" in
-  hermes-update)
+  rabbit-update)
     # `--yes` reaches the update subcommand only in later releases, and
     # argparse rejects the whole invocation when it does not exist. Ask the
-    # installed hermes; older ones read the prompt from stdin, so close it.
-    HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed update command"
-    help="$(source_build_env "$HERMES" update --help 2>&1)" || fail "installed update --help failed: $help"
-    build_source_update_command "$HERMES" "$help"
+    # installed rabbit; older ones read the prompt from stdin, so close it.
+    RABBIT="$(source_rabbit "$INSTALL_DIR")" || fail "no installed update command"
+    help="$(source_build_env "$RABBIT" update --help 2>&1)" || fail "installed update --help failed: $help"
+    build_source_update_command "$RABBIT" "$help"
     rc=0
     (cd "$INSTALL_DIR" && source_build_env "${update_cmd[@]}" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/update.log") || rc=$?
-    log_group "hermes update transcript" "$LOG_DIR/update.log"
-    [ "$rc" -eq 0 ] || fail "hermes update exited $rc; transcript above, log at $LOG_DIR/update.log"
+    log_group "rabbit update transcript" "$LOG_DIR/update.log"
+    [ "$rc" -eq 0 ] || fail "rabbit update exited $rc; transcript above, log at $LOG_DIR/update.log"
     ;;
   installer-script)
     # A user re-running the one-liner today gets the CURRENT script.
@@ -442,8 +442,8 @@ case "$UPDATE_METHOD" in
     source_build_env run_source_installer "$REPO_ROOT" "$WORK_ROOT" "$LOG_DIR" "$TARGET_SHA" "$TARGET_LABEL" desktop
     assert_desktop_artifact "$TARGET_LABEL"
     ;;
-  hermes-desktop-app-update)
-    # The real user surface: `hermes desktop` launches the app, the user
+  rabbit-desktop-app-update)
+    # The real user surface: `rabbit desktop` launches the app, the user
     # clicks Settings -> About -> Update now. Playwright must OWN the spawn
     # (it needs the inspection pipe), so the driver intercepts the product's
     # own launch call - argv/cwd/env captured at the spawn site by
@@ -451,14 +451,14 @@ case "$UPDATE_METHOD" in
     # _electron.launch. Everything before the spawn (build, stamps, sandbox
     # fixup) runs for real in the installed code.
     EXPECT_DESKTOP=present
-    HERMES="$(source_hermes "$INSTALL_DIR")" || fail "no installed desktop command"
+    RABBIT="$(source_rabbit "$INSTALL_DIR")" || fail "no installed desktop command"
     accept_installer_marker "$INSTALL_DIR" \
       || fail "installed source has changes other than the generated install marker"
     ASSETS="$REPO_ROOT/tests/install/e2e-assets"
     SPEC="$WORK_ROOT/launch-spec.json"
 
     # A REAL configured provider: the mock inference server (the desktop E2E
-    # suite's own) is configured into HERMES_HOME exactly like the dev:mock
+    # suite's own) is configured into RABBIT_HOME exactly like the dev:mock
     # flow does. The app then boots genuinely configured - no onboarding
     # overlay (a fullscreen div that intercepts every click) - and the chat
     # surface is real too.
@@ -467,40 +467,40 @@ case "$UPDATE_METHOD" in
     # is what config.yaml/.env hold. Nothing here may touch provider state: this
     # point is INSIDE the window the user-state verifier judges, so a rewrite (or
     # a new mock on a new port) reads as the upgrade modifying .env. The app reads
-    # config.yaml/.env, not HERMES_E2E_MOCK_URL.
+    # config.yaml/.env, not RABBIT_E2E_MOCK_URL.
     source "$ASSETS/mock-provider.sh"
     trap mock_stop EXIT
 
-    step "capturing the hermes desktop launch spec (build runs for real)"
+    step "capturing the rabbit desktop launch spec (build runs for real)"
     rc=0
-    if [ "$HERMES" = "$INSTALL_DIR/.hermes/bin/hermes" ]; then
+    if [ "$RABBIT" = "$INSTALL_DIR/.rabbit/bin/rabbit" ]; then
       # The PM launcher uses -I: PYTHONPATH/sitecustomize cannot reach it.
       # Ask the installed launcher for its own isolated command, then inject
       # the driver hook into that command without changing product code.
       (cd "$INSTALL_DIR" && source_build_env python3 -I "$ASSETS/launch-capture/pm-launch.py" \
-        "$HERMES" "$SPEC" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+        "$RABBIT" "$SPEC" < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
     else
       # Pre-PM console scripts load sitecustomize from PYTHONPATH.
       (cd "$INSTALL_DIR" && \
         PYTHONPATH="$ASSETS/launch-capture${PYTHONPATH:+:$PYTHONPATH}" \
-        HERMES_E2E_CAPTURE_LAUNCH="$SPEC" \
-        source_build_env "$HERMES" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
+        RABBIT_E2E_CAPTURE_LAUNCH="$SPEC" \
+        source_build_env "$RABBIT" desktop < /dev/null 2>&1 | ts_prefix > "$LOG_DIR/desktop-launch-capture.log") || rc=$?
     fi
-    log_group "hermes desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
-    [ "$rc" -eq 0 ] || fail "hermes desktop exited $rc during launch capture; transcript above"
+    log_group "rabbit desktop (launch capture) transcript" "$LOG_DIR/desktop-launch-capture.log"
+    [ "$rc" -eq 0 ] || fail "rabbit desktop exited $rc during launch capture; transcript above"
     # Exit 0 without a capture means a version that never reached its
     # launch - that must fail loudly, not pass as a no-op.
-    [ -f "$SPEC.captured" ] || fail "hermes desktop exited 0 but no launch was captured at $SPEC"
+    [ -f "$SPEC.captured" ] || fail "rabbit desktop exited 0 but no launch was captured at $SPEC"
     ok "captured $(cat "$SPEC.captured") launch spec"
 
     close_running_desktop
     step "driving the app under Playwright: Settings -> About -> Update now"
     # Use the checkout module closure and current driver Node, not OLD tooling.
     rc=0
-    (cd "$WORK_ROOT" && "$HERMES_E2E_NODE" "$ASSETS/launch-from-spec.mjs" \
+    (cd "$WORK_ROOT" && "$RABBIT_E2E_NODE" "$ASSETS/launch-from-spec.mjs" \
       --spec "$SPEC" \
-      --old-sha "$OLD_SHA" --chat-out "$LOG_DIR/update-window" --mock-url "$HERMES_E2E_MOCK_URL" \
-      --result "$HERMES_HOME/.hermes-update-result.json" \
+      --old-sha "$OLD_SHA" --chat-out "$LOG_DIR/update-window" --mock-url "$RABBIT_E2E_MOCK_URL" \
+      --result "$RABBIT_HOME/.rabbit-update-result.json" \
       --expect-sha "$TARGET_SHA" \
       --repo-dir "$INSTALL_DIR" 2>&1 \
       | ts_prefix > "$LOG_DIR/app-update.log") || rc=$?
@@ -525,12 +525,12 @@ collect_install_side_logs
 # its backend replace the live bundle and kills Playwright's renderer target.
 # Desktop legs must therefore drive the ordinary CLI startup even when the
 # launcher exists. No-desktop legs retain the legacy missing-launcher recovery.
-if [ "$EXPECT_DESKTOP" = "present" ] || ! source_hermes "$INSTALL_DIR" >/dev/null 2>&1; then
+if [ "$EXPECT_DESKTOP" = "present" ] || ! source_rabbit "$INSTALL_DIR" >/dev/null 2>&1; then
   step "next ordinary startup after the update (completes deferred source-update work)"
-  STARTUP_HERMES="$(source_hermes_for_startup "$INSTALL_DIR")" \
+  STARTUP_RABBIT="$(source_rabbit_for_startup "$INSTALL_DIR")" \
     || fail "no installed command to start after the update"
   startup_rc=0
-  source_build_env "$STARTUP_HERMES" status > "$LOG_DIR/post-update-startup.log" 2>&1 || startup_rc=$?
+  source_build_env "$STARTUP_RABBIT" status > "$LOG_DIR/post-update-startup.log" 2>&1 || startup_rc=$?
   log_group "post-update startup" "$LOG_DIR/post-update-startup.log"
   ok "post-update startup ran (exit $startup_rc); the read-only checks below assert completion"
 fi

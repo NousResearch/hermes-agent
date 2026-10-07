@@ -1,6 +1,6 @@
 {
   "meta": {
-    "source": "hermes-agent-dev skill, cross-cutting-profile-scope-patterns.json (validated pattern set)",
+    "source": "rabbit-agent-dev skill, cross-cutting-profile-scope-patterns.json (validated pattern set)",
     "selection": "patterns with a scope_hint that hit <= 50 sites on main; the >50 ones are review greps, not lint",
     "class_legend": {
       "C1": "secret/home read outside the turn scope",
@@ -39,8 +39,8 @@
       "id": "P05",
       "class": "C2",
       "pattern_regex": "subprocess\\.(Popen|run|check_output)\\([^)]*env\\s*=\\s*(os\\.environ|dict\\(os\\.environ|\\{\\*\\*os\\.environ)|env\\s*=\\s*os\\.environ\\.copy\\(\\)|spawn\\([^)]*env:\\s*process\\.env|env\\s*=\\s*dict\\(os\\.environ\\)|\\{\\*\\*os\\.environ\\}",
-      "scope_hint": "Also grep the named builders: _build_child_env, _bridge_env, _brv_child_env, build_subprocess_env( without scrub/scope. Assert HERMES_HOME and profile-varying vars from INSIDE a real child.",
-      "why": "Children inherit the launch process's HERMES_HOME and secrets: MCP stdio servers got the default vault, WhatsApp bridge.js ran the default's dm_policy, brv curated into the default's cloud account, execute_code skill scripts read the default's OAuth tokens. Four spawn sites fixed one at a time."
+      "scope_hint": "Also grep the named builders: _build_child_env, _bridge_env, _brv_child_env, build_subprocess_env( without scrub/scope. Assert RABBIT_HOME and profile-varying vars from INSIDE a real child.",
+      "why": "Children inherit the launch process's RABBIT_HOME and secrets: MCP stdio servers got the default vault, WhatsApp bridge.js ran the default's dm_policy, brv curated into the default's cloud account, execute_code skill scripts read the default's OAuth tokens. Four spawn sites fixed one at a time."
     },
     {
       "id": "P06",
@@ -59,7 +59,7 @@
     {
       "id": "P10",
       "class": "C6",
-      "pattern_regex": "if\\s+not\\s+(get_hermes_home_override|current_secret_scope|_served_profile_homes)\\b|profile\\s*(==|!=)\\s*[\"']main[\"']|agent:main\\b",
+      "pattern_regex": "if\\s+not\\s+(get_rabbit_home_override|current_secret_scope|_served_profile_homes)\\b|profile\\s*(==|!=)\\s*[\"']main[\"']|agent:main\\b",
       "scope_hint": "Launch-profile branches that treat 'no override' as 'no scope needed'; reserved-name checks.",
       "why": "The launch profile has its own contract (env-only TERMINAL_ENV=ssh, root files writable, a profile literally named 'main'); tests only asserted secondary isolation and the launch turn collapsed to file-only policy / the default namespace."
     },
@@ -67,7 +67,7 @@
       "id": "P11",
       "class": "C4",
       "pattern_regex": "^(_active_sessions|_DB_CACHE|_servers|_backends|_session_owner_homes|_trust[a-z_]*|_parallel[a-z_]*|_cooldown[a-z_]*)\\s*[:=]\\s*(\\{\\}|dict\\(|\\{\\s*$)|\\.setdefault\\((task_id|session_id|server_name|name)\\b",
-      "scope_hint": "Module-level dicts keyed by session_id / task_id / server_name / display alone. Key must include hermes_home_key() or (scope, name) when a profile override is active; release must use the same key.",
+      "scope_hint": "Module-level dicts keyed by session_id / task_id / server_name / display alone. Key must include rabbit_home_key() or (scope, name) when a profile override is active; release must use the same key.",
       "why": "Two profiles legitimately share session names, DISPLAY numbers and MCP server names; the first profile's entry wins and B's release stops A's driver. #108935 keyed 36 caches and still missed browser_exec/computer_use."
     },
     {
@@ -82,14 +82,14 @@
       "class": "C8",
       "pattern_regex": "DEFAULT_CONFIG\\[[\"']\\w+[\"']\\]\\[[\"']\\w+[\"']\\]|\\.get\\([\"'](auto_migrate|auto_multiplex_migration|notify_in_gateway|dispatch_in_gateway)[\"']",
       "scope_hint": "For every new DEFAULT_CONFIG key, one test: the effective config exposes exactly the key the reader consumes (grep the reader's .get() spelling). Also: a runtime that requires a key (webhook route 'profile') needs the CLI that writes the file to expose it.",
-      "why": "DEFAULT_CONFIG declared gateway.auto_migrate while the guard read gateway.auto_multiplex_migration, and 'hermes config set' pointed operators at the dead spelling; hermes webhook subscribe never wrote the 'profile' key the runtime required (100% 404 on /p/<profile>/)."
+      "why": "DEFAULT_CONFIG declared gateway.auto_migrate while the guard read gateway.auto_multiplex_migration, and 'rabbit config set' pointed operators at the dead spelling; rabbit webhook subscribe never wrote the 'profile' key the runtime required (100% 404 on /p/<profile>/)."
     },
     {
       "id": "P18",
       "class": "C9",
       "pattern_regex": "systemd_install\\(|_installed_service\\(|_service_op\\(|launchd_install\\(|User=",
       "scope_hint": "Pass run_as_user read from the unit being replaced; represent every installed unit (user AND system) not a scalar; unresolved User= stays None and blocks the unattended path; wrap install/start after destructive steps in rollback via the manifest; treat flag-on + manifest + no live default as 'interrupted', not 'already multiplexing'.",
-      "why": "Migration passed preflight, uninstalled the secondaries, then raised 'Refusing to install ... as root' with nothing catching it: host left with no gateway and the flag on. Unattended hermes update folded per-UNIX-user system units into one process."
+      "why": "Migration passed preflight, uninstalled the secondaries, then raised 'Refusing to install ... as root' with nothing catching it: host left with no gateway and the flag on. Unattended rabbit update folded per-UNIX-user system units into one process."
     },
     {
       "id": "P19",
@@ -103,7 +103,7 @@
       "class": "C3",
       "pattern_regex": "def _spawn_side_agent\\(|def _profile_build_scope\\(|prompt\\.(background|btw)|preview\\.restart|_build_branch_agent\\(",
       "scope_hint": "Every secondary entrypoint must enter _session_profile_runtime_scope (home -> secrets -> terminal, same composition as a prompt turn) and hold its own registry reference on the DB.",
-      "why": "Side workers bound HERMES_HOME only: they picked the launch terminal backend (local instead of the secondary's docker) and shared the parent's state.db handle so parent close() closed it under a running background turn."
+      "why": "Side workers bound RABBIT_HOME only: they picked the launch terminal backend (local instead of the secondary's docker) and shared the parent's state.db handle so parent close() closed it under a running background turn."
     },
     {
       "id": "P22",
@@ -116,7 +116,7 @@
       "id": "P23",
       "class": "C1",
       "pattern_regex": "@_profile_scoped_rpc|@_profile_scoped\\b|def _profile_scoped_rpc\\(|_profile_home\\(\\s*profile",
-      "scope_hint": "A decorator that only sets the HERMES_HOME override is insufficient for anything that expands ${VAR} refs, builds MCP clients, or spawns terminals; bind secret scope (after hydrating external secret sources) and terminal scope too.",
+      "scope_hint": "A decorator that only sets the RABBIT_HOME override is insufficient for anything that expands ${VAR} refs, builds MCP clients, or spawns terminals; bind secret scope (after hydrating external secret sources) and terminal scope too.",
       "why": "Desktop 'Test connection' and the REST MCP list/test/auth sites resolved ${GITHUB_PERSONAL_ACCESS_TOKEN} from the launch process, sending the default's bearer to a secondary's server (HTTP 400 loop, tools missing)."
     },
     {
@@ -172,10 +172,10 @@
     {
       "id": "P33",
       "class": "C1",
-      "path_regex": "^(gateway|hermes_cli|agent|tools|cron|tui_gateway)/.+\\.py$",
-      "pattern_regex": "^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:_float_env|_int_env|_bool_env|_env_float|_env_int|_env_bool)\\(|^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:float|int|str|bool)?\\(?\\s*os\\.(?:environ\\.get|getenv)\\(\\s*[\"']HERMES_",
-      "scope_hint": "A module-level CONSTANT = <env read> of a HERMES_* var that gateway/run.py bridges from config.yaml (_AGENT_ENV_BRIDGE, _SESSIONS_ENV_BRIDGE, _DISPLAY_ENV_BRIDGE, HERMES_REDACT_SECRETS, HERMES_TIMEZONE) freezes the LAUNCH profile's value for the process. Resolve at call time from load_config_readonly() under the bound scope (gateway/run.py::_reconnect_attention_after_secs), or key a cache by hermes_home_key() (agent/redact.py::_REDACT_ENABLED_BY_HOME).",
-      "why": "_RECONNECT_ATTENTION_AFTER_SECONDS captured the bridged env once at import: a multiplexed secondary escalated at the launch profile's threshold and `hermes config set agent.reconnect_attention_after` was ignored until restart (#115635)."
+      "path_regex": "^(gateway|rabbit_cli|agent|tools|cron|tui_gateway)/.+\\.py$",
+      "pattern_regex": "^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:_float_env|_int_env|_bool_env|_env_float|_env_int|_env_bool)\\(|^_?[A-Z][A-Z0-9_]*\\s*(?::[^=\\n]+)?=\\s*(?:float|int|str|bool)?\\(?\\s*os\\.(?:environ\\.get|getenv)\\(\\s*[\"']RABBIT_",
+      "scope_hint": "A module-level CONSTANT = <env read> of a RABBIT_* var that gateway/run.py bridges from config.yaml (_AGENT_ENV_BRIDGE, _SESSIONS_ENV_BRIDGE, _DISPLAY_ENV_BRIDGE, RABBIT_REDACT_SECRETS, RABBIT_TIMEZONE) freezes the LAUNCH profile's value for the process. Resolve at call time from load_config_readonly() under the bound scope (gateway/run.py::_reconnect_attention_after_secs), or key a cache by rabbit_home_key() (agent/redact.py::_REDACT_ENABLED_BY_HOME).",
+      "why": "_RECONNECT_ATTENTION_AFTER_SECONDS captured the bridged env once at import: a multiplexed secondary escalated at the launch profile's threshold and `rabbit config set agent.reconnect_attention_after` was ignored until restart (#115635)."
     }
   ]
 }

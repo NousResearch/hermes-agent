@@ -43,7 +43,7 @@ When you change a script:
 
 ## Why the explicit `-c` / `-o`?
 
-The parent hermes-agent repo uses `scripts/run_tests.sh`, which runs each
+The parent rabbit-agent repo uses `scripts/run_tests.sh`, which runs each
 test file in a separate subprocess through `scripts/run_tests_parallel.py`.
 It does not use xdist on any platform.
 This suite is small enough that parallelism isn't worth the complexity, and

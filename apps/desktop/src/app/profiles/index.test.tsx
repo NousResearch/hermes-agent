@@ -2,10 +2,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/hermes'
+import { deleteProfile, getProfileSoul, updateProfileSoul } from '@/rabbit'
 import { retireLocalProfileGateways } from '@/store/gateway'
 import { refreshProfiles, selectProfile, setActiveProfile } from '@/store/profile'
-import type { ProfileInfo } from '@/types/hermes'
+import type { ProfileInfo } from '@/types/rabbit'
 
 import { ProfilesView } from './index'
 
@@ -28,7 +28,7 @@ vi.mock('@/components/chat/code-editor', () => ({
   )
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   createProfile: vi.fn(async () => ({ name: 'x', ok: true, path: '/x' })),
   deleteProfile: vi.fn(async () => ({ ok: true, path: '/x' })),
   getProfileSoul: vi.fn(async () => ({ content: '', exists: true })),
@@ -83,7 +83,7 @@ function makeProfile(name: string, isDefault = false): ProfileInfo {
     is_default: isDefault,
     model: null,
     name,
-    path: `/home/user/.hermes/profiles/${name}`,
+    path: `/home/user/.rabbit/profiles/${name}`,
     provider: null,
     skill_count: 0
   }

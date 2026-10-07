@@ -44,7 +44,7 @@ class TestGetBrowserEngine:
         """Config browser.engine = 'lightpanda' is respected."""
         from tools.browser_tool_cloud import _get_browser_engine
         cfg = {"browser": {"engine": "lightpanda"}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("rabbit_cli.config.read_raw_config", return_value=cfg):
             assert _get_browser_engine() == "lightpanda"
 
 
@@ -275,7 +275,7 @@ class TestLightpandaFallbackWarning:
              patch("tools.browser_tool_lightpanda_fallback._chrome_fallback_screenshot", return_value={
                  "success": True, "data": {"path": str(chrome_shot)}
              }), \
-             patch("hermes_constants.get_hermes_dir", return_value=tmp_path), \
+             patch("rabbit_constants.get_rabbit_dir", return_value=tmp_path), \
              patch("agent.auxiliary_client.call_llm", return_value=_Response()):
             response = json.loads(bt.browser_vision("what is this?", task_id="vision-structured"))
 
@@ -708,7 +708,7 @@ class TestLightpandaSessionLifecycle:
         """A parseable-but-non-object state file is swept like an unreadable one —
         never an AttributeError that wedges the reaper."""
         from tools import browser_lightpanda
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         state_dir = browser_lightpanda._state_dir()
         bad = state_dir / "broken.json"
         bad.write_text('"not a record"', encoding="utf-8")

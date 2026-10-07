@@ -3,7 +3,7 @@ import { type DragEvent as ReactDragEvent, useCallback, useEffect, useRef, useSt
 import { dragHasAttachments } from '@/app/chat/composer/inline-refs'
 import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
 
-import { type DroppedFile, extractDroppedFiles, HERMES_PATHS_MIME } from './use-composer-actions'
+import { type DroppedFile, extractDroppedFiles, RABBIT_PATHS_MIME } from './use-composer-actions'
 
 /** `'session'` is set by callers from the pointer drag session's store —
  *  native drags only ever resolve to `'files'` here (sessions left native
@@ -11,7 +11,7 @@ import { type DroppedFile, extractDroppedFiles, HERMES_PATHS_MIME } from './use-
 export type DragKind = 'files' | 'session' | null
 
 const dragKindOf = (event: ReactDragEvent): DragKind =>
-  dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME) ? 'files' : null
+  dragHasAttachments(event.dataTransfer, RABBIT_PATHS_MIME) ? 'files' : null
 
 interface FileDropZoneOptions {
   /** When false the zone ignores drags entirely. */

@@ -5,7 +5,7 @@
  * apps/shared so the renderer and the main process cannot drift; this module
  * adds only what needs a BrowserWindow to mean anything.
  *
- * The import is relative rather than `@hermes/shared/translucency`: the
+ * The import is relative rather than `@rabbit/shared/translucency`: the
  * electron bundle is built by esbuild with no tsconfig path resolution (see
  * scripts/bundle-electron-main.mjs), so a bare specifier would typecheck and
  * then fail to bundle.

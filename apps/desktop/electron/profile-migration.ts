@@ -15,15 +15,15 @@ export const PROFILE_SCORE_MIN_SIZE_BYTES = 1024
 
 export interface MigrationDeps {
   legacyActivePath: string
-  /** Default profile home (`~/.hermes`). Default's state.db and gateway.pid live here. */
-  hermesHome: string
-  /** Named-profile root (`~/.hermes/profiles`). Does not contain `default`. */
+  /** Default profile home (`~/.rabbit`). Default's state.db and gateway.pid live here. */
+  rabbitHome: string
+  /** Named-profile root (`~/.rabbit/profiles`). Does not contain `default`. */
   profilesRoot: string
   existsSync: (path: string) => boolean
   readFileSync: (path: string, encoding: 'utf8') => string
   statSync: (path: string) => { size: number; mtimeMs: number }
   readdirSync: (path: string, options?: { withFileTypes?: boolean }) => Dirent[]
-  isHermesProcess: (pid: number) => boolean
+  isRabbitProcess: (pid: number) => boolean
   now: () => number
   writeJson: (path: string, payload: MigrationDecision) => void
   isValidProfileName: (name: string) => boolean
@@ -36,23 +36,23 @@ export interface MigrationDecision {
 }
 
 /**
- * Production layout: default IS `hermesHome`; named profiles are children of
+ * Production layout: default IS `rabbitHome`; named profiles are children of
  * `profilesRoot`. There is no `profiles/default` directory on a normal install.
  */
-export function profileStateDbPath(name: string, hermesHome: string, profilesRoot: string): string {
-  return name === 'default' ? `${hermesHome}/state.db` : `${profilesRoot}/${name}/state.db`
+export function profileStateDbPath(name: string, rabbitHome: string, profilesRoot: string): string {
+  return name === 'default' ? `${rabbitHome}/state.db` : `${profilesRoot}/${name}/state.db`
 }
 
-export function profileGatewayPidPath(name: string, hermesHome: string, profilesRoot: string): string {
-  return name === 'default' ? `${hermesHome}/gateway.pid` : `${profilesRoot}/${name}/gateway.pid`
+export function profileGatewayPidPath(name: string, rabbitHome: string, profilesRoot: string): string {
+  return name === 'default' ? `${rabbitHome}/gateway.pid` : `${profilesRoot}/${name}/gateway.pid`
 }
 
-function resolveHermesHome(profilesRoot: string, hermesHome?: string): string {
-  if (hermesHome) {
-    return hermesHome
+function resolveRabbitHome(profilesRoot: string, rabbitHome?: string): string {
+  if (rabbitHome) {
+    return rabbitHome
   }
 
-  // Tests that predate hermesHome pass only profilesRoot.
+  // Tests that predate rabbitHome pass only profilesRoot.
   for (const suffix of ['/profiles', '\\profiles']) {
     if (profilesRoot.endsWith(suffix)) {
       return profilesRoot.slice(0, -suffix.length)
@@ -97,23 +97,23 @@ export function readLegacyActiveProfile(
 }
 
 /**
- * Return the profile names whose gateway.pid file points to a live hermes process.
+ * Return the profile names whose gateway.pid file points to a live rabbit process.
  * Tolerates missing/malformed pid files and stale-but-recycled PIDs (the latter is
  * the whole reason we check both liveness AND cmdline identity).
  *
- * `hermesHome` is optional so existing call sites that only pass `profilesRoot`
+ * `rabbitHome` is optional so existing call sites that only pass `profilesRoot`
  * still work: it is derived as the parent of `…/profiles`.
  */
 export function findRunningGatewayProfiles(
   profilesRoot: string,
   allProfiles: string[],
-  deps: Pick<MigrationDeps, 'existsSync' | 'readFileSync' | 'isHermesProcess'> & { hermesHome?: string }
+  deps: Pick<MigrationDeps, 'existsSync' | 'readFileSync' | 'isRabbitProcess'> & { rabbitHome?: string }
 ): string[] {
-  const hermesHome = resolveHermesHome(profilesRoot, deps.hermesHome)
+  const rabbitHome = resolveRabbitHome(profilesRoot, deps.rabbitHome)
   const running: string[] = []
 
   for (const name of allProfiles) {
-    const pidFile = profileGatewayPidPath(name, hermesHome, profilesRoot)
+    const pidFile = profileGatewayPidPath(name, rabbitHome, profilesRoot)
 
     if (!deps.existsSync(pidFile)) {
       continue
@@ -133,7 +133,7 @@ export function findRunningGatewayProfiles(
       continue
     }
 
-    if (deps.isHermesProcess(pid)) {
+    if (deps.isRabbitProcess(pid)) {
       running.push(name)
     }
   }
@@ -190,7 +190,7 @@ export function decideMigration(
   let maxScore = -Infinity
 
   for (const name of candidates) {
-    const s = score(profileStateDbPath(name, deps.hermesHome, deps.profilesRoot))
+    const s = score(profileStateDbPath(name, deps.rabbitHome, deps.profilesRoot))
 
     if (s == null) {
       continue
@@ -228,7 +228,7 @@ export function listProfileDirs(deps: MigrationDeps): string[] {
     .map(e => e.name)
 }
 
-/** Default is always a candidate; it is `$HERMES_HOME`, not `$HERMES_HOME/profiles/default`. */
+/** Default is always a candidate; it is `$RABBIT_HOME`, not `$RABBIT_HOME/profiles/default`. */
 export function withDefaultCandidate(named: string[]): string[] {
   return ['default', ...named.filter(name => name !== 'default')]
 }
@@ -289,7 +289,7 @@ export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, 
   )
 
   // Same as the heuristic rung: pinning `default` into active-profile.json
-  // launches `hermes --profile default` and is worse than writing nothing
+  // launches `rabbit --profile default` and is worse than writing nothing
   // (legacy sticky / implicit default). Covers a lone default gateway.pid.
   if (!decision || decision.profile === 'default') {
     if (existing?.migrated) {

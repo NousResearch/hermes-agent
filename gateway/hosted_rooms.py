@@ -398,7 +398,7 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
 def default_db_path() -> Path:
     """Return the hosted-room coordination database for the active install.
 
-    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
+    Profile gateways (``~/.rabbit/profiles/<name>/``) resolve to the shared
     ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
     coordination is the only thing this module owns, and pointing profile
     gateways at the master session store makes every profile process a
@@ -408,14 +408,14 @@ def default_db_path() -> Path:
     tables in a dedicated file means profile gateways never open the master
     session store writable.
     """
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
+    from rabbit_constants import get_rabbit_home
+    home = get_rabbit_home()
     return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
 
 
 def local_authority_gateway_id() -> str:
     """Return the stable server-owned identity for hosted-room authority."""
-    from hermes_cli.install_identity import get_install_id
+    from rabbit_cli.install_identity import get_install_id
     install_id = get_install_id()
     if not install_id:
         raise HostedRoomError("stable gateway install identity is unavailable")

@@ -17,7 +17,7 @@ import { mirrorDisplayToggle } from '@/store/display-toggles'
 
 import { recordFeatureToggle } from './desktop-metrics'
 
-const KEY = 'hermes.desktop.reactions.v1'
+const KEY = 'rabbit.desktop.reactions.v1'
 
 export const $reactionsEnabled = atom<boolean>(typeof window === 'undefined' ? false : storedString(KEY) === 'on')
 

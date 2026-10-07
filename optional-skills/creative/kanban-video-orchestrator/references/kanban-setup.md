@@ -1,7 +1,7 @@
 # Kanban Setup — Project Bootstrap & Profile Configuration
 
 Once the brief is locked and the team is designed, the next step is producing
-the actual `setup.sh` that creates the project workspace, configures Hermes
+the actual `setup.sh` that creates the project workspace, configures Rabbit
 profiles, and fires the initial kanban task.
 
 This file documents the patterns. The companion script
@@ -60,20 +60,20 @@ Example: `q3-product-teaser`, `ascii-mood-loop`, `interview-cut-2026-q1`.
 The setup script does six things in order:
 
 1. **Create workspace tree** — all directories above
-2. **Create profiles** — `hermes profile create <name> --clone`
+2. **Create profiles** — `rabbit profile create <name> --clone`
 3. **Configure profiles** — patch each profile's
-   `~/.hermes/profiles/<name>/config.yaml` to set toolsets, always_load skills,
+   `~/.rabbit/profiles/<name>/config.yaml` to set toolsets, always_load skills,
    and `cwd`
 4. **Write SOUL.md per profile** — the personality + role definition
 5. **Copy any provided assets + write `brief.md`, `TEAM.md`, and `taste/`**
-6. **Fire the initial kanban task** — `hermes kanban create` assigned to the director
+6. **Fire the initial kanban task** — `rabbit kanban create` assigned to the director
 
 See `assets/setup.sh.tmpl` for the skeleton.
 
 ### Profile creation pattern
 
 ```bash
-hermes profile create director --clone 2>/dev/null || true
+rabbit profile create director --clone 2>/dev/null || true
 ```
 
 The `--clone` flag clones from the active profile (preserving model, base
@@ -82,7 +82,7 @@ the profile already exists.
 
 ### Profile config patching
 
-Each profile has a YAML config at `~/.hermes/profiles/<name>/config.yaml`. The
+Each profile has a YAML config at `~/.rabbit/profiles/<name>/config.yaml`. The
 setup script edits exactly two keys:
 
 1. `toolsets:` — replace the default with the role's required toolsets
@@ -110,7 +110,7 @@ yaml.version = (1, 1)
 yaml.default_flow_style = False
 yaml.sort_base_mapping_type_on_output = False
 profile, ts_json, sk_json = sys.argv[1:4]
-p = os.path.expanduser(f"~/.hermes/profiles/{profile}/config.yaml")
+p = os.path.expanduser(f"~/.rabbit/profiles/{profile}/config.yaml")
 with open(p) as f:
     cfg = yaml.load(f) or {}
 cfg["toolsets"] = json.loads(ts_json)
@@ -121,7 +121,7 @@ PY
 }
 ```
 
-ruamel.yaml must be installed in the user's Python (it ships with Hermes).
+ruamel.yaml must be installed in the user's Python (it ships with Rabbit).
 If absent: `pip install ruamel.yaml==0.18.17`.
 
 The setup script should also **validate** the patch by re-reading the file
@@ -129,7 +129,7 @@ and comparing — see `assets/setup.sh.tmpl` for the validation pattern.
 
 ### SOUL.md per profile
 
-Each profile gets a `SOUL.md` at `~/.hermes/profiles/<name>/SOUL.md` that
+Each profile gets a `SOUL.md` at `~/.rabbit/profiles/<name>/SOUL.md` that
 defines its role, voice, and rules. See `assets/soul.md.tmpl` for the
 template. Customize per role and per project.
 
@@ -154,7 +154,7 @@ system prompt, so no profile needs to load a kanban skill.
 The final action of setup.sh is firing the kanban:
 
 ```bash
-hermes kanban create "Direct production of <video title>" \
+rabbit kanban create "Direct production of <video title>" \
     --assignee director \
     --workspace dir:"$HOME/projects/video-pipeline/${PROJECT_SLUG}" \
     --tenant ${PROJECT_SLUG} \
@@ -223,7 +223,7 @@ The director turns this into actual `kanban_create` calls.
 ## API-key prerequisites check
 
 Before firing the kanban, verify required keys are available. Check both
-the Hermes `.env` (`${HERMES_HOME:-$HOME/.hermes}/.env`) and macOS Keychain
+the Rabbit `.env` (`${RABBIT_HOME:-$HOME/.rabbit}/.env`) and macOS Keychain
 (if on macOS):
 
 ```bash
@@ -231,21 +231,21 @@ check_key() {
     local var="$1"
     local kc_account="$2"
     local kc_service="$3"
-    local _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"
-    if grep -q "^${var}=" "$_hermes_env" 2>/dev/null && \
-       [ -n "$(grep "^${var}=" "$_hermes_env" | cut -d= -f2-)" ]; then
+    local _rabbit_env="${RABBIT_HOME:-$HOME/.rabbit}/.env"
+    if grep -q "^${var}=" "$_rabbit_env" 2>/dev/null && \
+       [ -n "$(grep "^${var}=" "$_rabbit_env" | cut -d= -f2-)" ]; then
         return 0
     fi
     if command -v security >/dev/null 2>&1 && \
        security find-generic-password -a "${kc_account}" -s "${kc_service}" -w >/dev/null 2>&1; then
         return 0
     fi
-    echo "ERROR: ${var} not set in ${_hermes_env} or Keychain (${kc_account}/${kc_service})"
+    echo "ERROR: ${var} not set in ${_rabbit_env} or Keychain (${kc_account}/${kc_service})"
     return 1
 }
 
-check_key ELEVENLABS_API_KEY hermes ELEVENLABS_API_KEY || exit 1
-check_key OPENROUTER_API_KEY hermes OPENROUTER_API_KEY || exit 1
+check_key ELEVENLABS_API_KEY rabbit ELEVENLABS_API_KEY || exit 1
+check_key OPENROUTER_API_KEY rabbit OPENROUTER_API_KEY || exit 1
 # ...
 ```
 

@@ -1,9 +1,9 @@
-"""Connector integration boundary for managed gateway accounts and local MCP servers.
+"""Connector integration boundary for local MCP servers.
 
 Only the names below are cross-package surface; imports beyond it need a design decision.
 Siblings: ``contract`` (states, actors, transition table), ``operation`` (the record),
-``live`` (open operation per session), ``run`` (the lifecycle loop), ``managed`` / ``mcp``
-(per-kind hooks), ``targets``, ``search``, ``dispatch``, ``gateway/`` (HTTP wire + client).
+``live`` (open operation per session), ``run`` (the lifecycle loop), ``mcp`` (the local
+MCP server hooks), ``targets``, ``search``, ``dispatch``, ``gateway/`` (name codec + config).
 
 The surface is exported lazily (PEP 562): eager submodule imports here deadlocked the
 concurrent registry scan and the Group Chat worker (see test_connectors_import_deadlock.py).
@@ -15,8 +15,6 @@ import importlib
 _LAZY_EXPORTS: dict[str, str] = {
     "CONNECTOR_BATCH_SENTINEL": "tools.connectors.gateway.names",
     "MANAGE_CONNECTIONS_SCHEMA": "tools.connectors.tool",
-    "connector_describe": "tools.connectors.gateway.bridge",
-    "connector_search_hits": "tools.connectors.gateway.bridge",
     "connectors_available": "tools.connectors.gateway.config",
     "dispatch_connector_batch": "tools.connectors.dispatch",
     "dispatch_connector_call": "tools.connectors.dispatch",

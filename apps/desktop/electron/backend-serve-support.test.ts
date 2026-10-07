@@ -14,7 +14,7 @@ test('concurrent serve checks share one pending probe and retain its negative re
 
   const probe = vi.spyOn(probes, 'execProbe').mockReturnValue(pending)
   const supportsServe = createBackendServeSupportResolver('/unused', () => {})
-  const backend = { command: '/unused/hermes', args: ['serve'] }
+  const backend = { command: '/unused/rabbit', args: ['serve'] }
 
   try {
     const first = supportsServe(backend)
@@ -37,7 +37,7 @@ test('a probe that fails by timeout is not cached, so the next check re-probes',
     .mockResolvedValueOnce(undefined)
 
   const supportsServe = createBackendServeSupportResolver('/unused', () => {})
-  const backend = { command: '/unused/hermes', args: ['serve'] }
+  const backend = { command: '/unused/rabbit', args: ['serve'] }
 
   try {
     assert.equal(await supportsServe(backend), false)

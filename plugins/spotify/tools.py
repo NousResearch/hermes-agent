@@ -1,4 +1,4 @@
-"""Native Spotify tools for Hermes (registered via plugins/spotify).
+"""Native Spotify tools for Rabbit (registered via plugins/spotify).
 
 Each tool routes ``args["action"]`` through a dict dispatch table; every entry
 has the signature ``(client, args, action) -> str`` and issues its Spotify Web
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_cli.auth import get_auth_status
+from rabbit_cli.auth import get_auth_status
 from plugins.spotify.client import (
     SpotifyClient, SpotifyError, normalize_spotify_id, normalize_spotify_uri, normalize_spotify_uris)
 from tools.registry import tool_error, tool_result

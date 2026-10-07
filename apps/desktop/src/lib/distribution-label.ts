@@ -18,13 +18,13 @@ import type { DesktopVersionInfo } from '@/global'
  *                    managed checkout underneath does.
  * `installedByScript` refines an external/git install into "installed by
  * install.sh / install.ps1" vs a manual clone — those checkouts carry the
- * bootstrap installers' `.hermes-bootstrap-complete` receipt.
+ * bootstrap installers' `.rabbit-bootstrap-complete` receipt.
  *
- * `hermes desktop` packs the app from a source checkout with the same
+ * `rabbit desktop` packs the app from a source checkout with the same
  * `bootstrap` payload the installer shell carries. Released shells are
  * stamped by CI and never rebuilt (the checkout under them updates), so a
  * `local`/`fallback` build source is what separates "a source install that
- * ran `hermes desktop`" from "the Desktop app installer".
+ * ran `rabbit desktop`" from "the Desktop app installer".
  */
 
 /** Keys of the updates i18n section this resolver may return. */

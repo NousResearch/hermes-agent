@@ -51,7 +51,7 @@ const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
  * software rendering when a remote display is detected.
  *
  * Returns a short reason string when GPU acceleration should be disabled, or
- * null to keep it enabled. `HERMES_DESKTOP_DISABLE_GPU` overrides detection
+ * null to keep it enabled. `RABBIT_DESKTOP_DISABLE_GPU` overrides detection
  * both ways (1/true/yes/on → always disable, 0/false/no/off → never disable).
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
@@ -60,12 +60,12 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
 
-  const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
+  const override = String(env.RABBIT_DESKTOP_DISABLE_GPU || '')
     .trim()
     .toLowerCase()
 
   if (GPU_OVERRIDE_ON.has(override)) {
-    return 'override (HERMES_DESKTOP_DISABLE_GPU)'
+    return 'override (RABBIT_DESKTOP_DISABLE_GPU)'
   }
 
   if (GPU_OVERRIDE_OFF.has(override)) {
@@ -111,9 +111,9 @@ const LINUX_PASSWORD_STORES = new Set(['gnome-libsecret', 'kwallet', 'kwallet5',
  * Without the switch Chromium often fails to pick a keychain backend when the
  * app is launched outside a full desktop session, safeStorage reports
  * encryption as unavailable, and hardening.ts refuses to persist remote
- * gateway tokens. The `hermes desktop` launcher detects the session keychain
+ * gateway tokens. The `rabbit desktop` launcher detects the session keychain
  * (or reads `desktop.password_store` from config.yaml) and bridges the value
- * in via HERMES_DESKTOP_PASSWORD_STORE.
+ * in via RABBIT_DESKTOP_PASSWORD_STORE.
  *
  * Returns `{ store, warning }`: `store` is the validated backend to apply (or
  * null to leave Chromium's default), `warning` is a message to log for
@@ -124,14 +124,14 @@ function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
 
-  const requested = String(env.HERMES_DESKTOP_PASSWORD_STORE || '').trim()
+  const requested = String(env.RABBIT_DESKTOP_PASSWORD_STORE || '').trim()
 
   if (platform !== 'linux' || !requested) {
     return { store: null, warning: null }
   }
 
   if (!LINUX_PASSWORD_STORES.has(requested)) {
-    return { store: null, warning: `ignoring unknown HERMES_DESKTOP_PASSWORD_STORE value: ${requested}` }
+    return { store: null, warning: `ignoring unknown RABBIT_DESKTOP_PASSWORD_STORE value: ${requested}` }
   }
 
   return { store: requested, warning: null }

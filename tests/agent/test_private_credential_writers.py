@@ -48,8 +48,8 @@ def _writers(home: Path, monkeypatch):
     from agent.proxy_sources import iron_proxy
     from agent.vault_store import VaultStore
     from gateway import pairing
-    from hermes_cli import auth as auth_mod, copilot_auth
-    from hermes_cli import process_identity
+    from rabbit_cli import auth as auth_mod, copilot_auth
+    from rabbit_cli import process_identity
     from tools import mcp_oauth
     from plugins.google_meet.node.server import NodeServer
     from plugins.platforms.photon import adapter as photon_adapter
@@ -85,7 +85,7 @@ def test_every_credential_writer_creates_its_temp_file_at_0600(tmp_path, monkeyp
     pytest.importorskip("cryptography")
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     old_umask = os.umask(0o022)  # a "write then chmod" regression would surface as 0o644
     try:
         for label, write, target in _writers(home, monkeypatch):

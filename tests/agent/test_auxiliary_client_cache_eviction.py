@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import agent.auxiliary_client as aux
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 def _cache_entry() -> tuple[MagicMock, str, None]:
@@ -36,11 +36,11 @@ def test_evict_cached_clients_matches_provider_after_profile_home_key(monkeypatc
 def test_evict_cached_clients_is_scoped_to_the_calling_profile(monkeypatch, tmp_path):
     """A rotation in profile A must not drop profile B's client for the same provider."""
     key_a = aux._client_cache_key("anthropic", async_mode=False)
-    token = set_hermes_home_override(tmp_path / "profiles" / "b")
+    token = set_rabbit_home_override(tmp_path / "profiles" / "b")
     try:
         key_b = aux._client_cache_key("anthropic", async_mode=False)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     assert key_a[0] != key_b[0]
     monkeypatch.setattr(aux, "_client_cache", {key_a: _cache_entry(), key_b: _cache_entry()})
 

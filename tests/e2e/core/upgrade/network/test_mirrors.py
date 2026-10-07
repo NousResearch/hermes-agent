@@ -29,7 +29,7 @@ from tests.e2e.core.upgrade.network import _seed as S
 
 pytestmark = [
     pytest.mark.platforms("linux"),
-    # Every `hermes update` here targets a throwaway sandboxed install, never the real checkout.
+    # Every `rabbit update` here targets a throwaway sandboxed install, never the real checkout.
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(N.netns_required_reason() is not None, reason=str(N.netns_required_reason())),
@@ -65,7 +65,7 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
     before = inst.state()
     edge = inst.edge(sites=[mirror])
     try:
-        r = inst.hermes("update", "--yes", edge=edge, timeout=900)
+        r = inst.rabbit("update", "--yes", edge=edge, timeout=900)
     finally:
         edge.close()
         pip_conf.unlink()
@@ -78,7 +78,7 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
 
 def test_npm_registry_mirror_serves_pm_npm_download(inst):
     """``~/.npmrc`` names the mirror; the npm tool's store entry is missing, so
-    `hermes pm install npm` has to fetch its pinned tarball: from the mirror, never from
+    `rabbit pm install npm` has to fetch its pinned tarball: from the mirror, never from
     registry.npmjs.org."""
     tool = S.installed_tool(inst, "npm")
     version = tool["version"]
@@ -96,14 +96,14 @@ def test_npm_registry_mirror_serves_pm_npm_download(inst):
         with S.tool_missing(inst, "npm") as tool:
             edge = inst.edge(sites=[mirror])
             try:
-                r = inst.hermes("pm", "install", "npm", edge=edge, timeout=600)
+                r = inst.rabbit("pm", "install", "npm", edge=edge, timeout=600)
             finally:
                 edge.close()
             public = _public_index_hits(edge)
             assert not public and r.rc == 0, (
                 f"npm provisioning with a registry mirror failed or reached the public registry {public}\n"
                 + r.report(inst))
-            assert (inst.sb.hermes_home / "tools" / tool["entry"]).is_dir(), "npm was not re-provisioned\n" + r.report(inst)
+            assert (inst.sb.rabbit_home / "tools" / tool["entry"]).is_dir(), "npm was not re-provisioned\n" + r.report(inst)
             assert any(h.path.endswith(tarball) and h.status == 200 for h in mirror.hits), (
                 "the tarball was not served by the mirror\n" + r.report(inst))
     finally:

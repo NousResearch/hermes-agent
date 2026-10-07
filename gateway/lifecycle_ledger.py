@@ -2,7 +2,7 @@
 
 Graceful shutdowns leave forensics (``gateway-exit-diag.log``); an unclean
 death (SIGKILL, kernel OOM, VM death) runs no handler.  A sentinel at
-``<HERMES_HOME>/state/gateway.lifecycle.json`` closes the gap:
+``<RABBIT_HOME>/state/gateway.lifecycle.json`` closes the gap:
 :func:`record_startup` finds ``phase == "running"`` from the previous life →
 unclean death, appended to the exit-diag log as ``gateway.previous_unclean_exit``
 and logged at WARNING; :func:`mark_exited` rewrites ``phase=exited`` on every
@@ -24,20 +24,20 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-def _process_hermes_home() -> Path:
-    """HERMES_HOME for process-level identity files (ignore task overrides)."""
-    from hermes_constants import get_hermes_home, get_process_hermes_home
+def _process_rabbit_home() -> Path:
+    """RABBIT_HOME for process-level identity files (ignore task overrides)."""
+    from rabbit_constants import get_rabbit_home, get_process_rabbit_home
 
-    # get_process_hermes_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
-    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
+    # get_process_rabbit_home expands ``~``/``$VAR`` (python -m gateway.run skips the CLI normalizer).
+    return get_process_rabbit_home() if os.environ.get("RABBIT_HOME", "").strip() else get_rabbit_home()
 
 
 def _home_path(home: Optional[Path], *relative: str) -> Path:
-    return (_process_hermes_home() if home is None else home).joinpath(*relative)
+    return (_process_rabbit_home() if home is None else home).joinpath(*relative)
 
 
 def get_lifecycle_sentinel_path(home: Optional[Path] = None) -> Path:
-    """Return ``<HERMES_HOME>/state/gateway.lifecycle.json``."""
+    """Return ``<RABBIT_HOME>/state/gateway.lifecycle.json``."""
     return _home_path(home, "state", "gateway.lifecycle.json")
 
 
@@ -87,9 +87,9 @@ def _write_sentinel(payload: Dict[str, Any], home: Optional[Path]) -> None:
         from utils import atomic_json_write
 
         path = get_lifecycle_sentinel_path(home)
-        from hermes_constants import mkdir_under_hermes_home
+        from rabbit_constants import mkdir_under_rabbit_home
 
-        mkdir_under_hermes_home(path.parent)
+        mkdir_under_rabbit_home(path.parent)
         atomic_json_write(path, payload, indent=None)
     except Exception:
         logger.debug("Failed to write lifecycle sentinel", exc_info=True)
@@ -99,9 +99,9 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
         path = _home_path(home, "logs", "gateway-exit-diag.log")
-        from hermes_constants import mkdir_under_hermes_home
+        from rabbit_constants import mkdir_under_rabbit_home
 
-        mkdir_under_hermes_home(path.parent)
+        mkdir_under_rabbit_home(path.parent)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, default=str) + "\n")
     except OSError:
@@ -128,7 +128,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
             return False
     except Exception:
         return False
-    from hermes_cli.process_identity import _process_create_time
+    from rabbit_cli.process_identity import _process_create_time
 
     actual = _process_create_time(pid_int)
     if actual is None:
@@ -203,7 +203,7 @@ def _install_integrity_check_lease(conn: sqlite3.Connection) -> None:
     The handler always returns 0 -- it must never abort the verdict PRAGMA.  Synchronous
     by design: no checker worker thread can outlive the check.
     """
-    from hermes_startup_watchdog import report_startup_progress
+    from rabbit_startup_watchdog import report_startup_progress
 
     report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
     last_renew = time.monotonic()
@@ -250,7 +250,7 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     if verdict not in ("ok", "absent"):
         logger.error(
             "state.db FAILED integrity check after an unclean gateway exit: %s — sessions may read as "
-            "missing until it is repaired. Run `hermes doctor`.",
+            "missing until it is repaired. Run `rabbit doctor`.",
             verdict,
         )
     _append_exit_diag({"ts": _now_iso(), "tag": "gateway.previous_unclean_exit", "pid": os.getpid(), **evidence}, home)
@@ -277,7 +277,7 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
-        from hermes_cli.process_identity import _process_create_time
+        from rabbit_cli.process_identity import _process_create_time
 
         create_time = _process_create_time(os.getpid())
         if create_time is not None:

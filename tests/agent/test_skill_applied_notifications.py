@@ -10,7 +10,7 @@ def _messages(args, data):
 
 
 def test_applied_skill_operations_notify_with_names(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     name = "notify-contract"
     content = f"---\nname: {name}\ndescription: Use when checking notices. Verify applied writes.\n---\nRead the sample before editing.\n"
     operations = [{"name": name, "action": "create", "content": content},

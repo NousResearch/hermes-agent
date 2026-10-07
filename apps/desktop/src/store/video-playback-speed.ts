@@ -5,7 +5,7 @@ import { persistentAtom } from '@/lib/persisted'
 // player starts from, so a viewer who watches at 2x doesn't re-select it per
 // clip. Ported from block/buzz#7336, adapted to our persistentAtom store.
 
-const STORAGE_KEY = 'hermes.desktop.videoPlaybackSpeed'
+const STORAGE_KEY = 'rabbit.desktop.videoPlaybackSpeed'
 
 export const DEFAULT_VIDEO_PLAYBACK_SPEED = 1
 

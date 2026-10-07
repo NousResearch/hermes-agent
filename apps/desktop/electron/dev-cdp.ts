@@ -14,12 +14,12 @@
  * app exposing it, which is the one hard gate here.
  *
  *  - packaged build              → always closed, whatever the env says.
- *  - no HERMES_DESKTOP_DEV_SERVER → closed (an unpackaged `electron .` against
+ *  - no RABBIT_DESKTOP_DEV_SERVER → closed (an unpackaged `electron .` against
  *    dist/ is how the packaged app gets smoke tested; it should behave like
  *    the packaged app).
- *  - otherwise                    → open on 9222, or HERMES_DESKTOP_CDP_PORT.
+ *  - otherwise                    → open on 9222, or RABBIT_DESKTOP_CDP_PORT.
  *
- * `HERMES_DESKTOP_CDP_PORT=off` (or `0` / `false`) opts out for anyone who
+ * `RABBIT_DESKTOP_CDP_PORT=off` (or `0` / `false`) opts out for anyone who
  * wants the port closed on a dev run.
  *
  * The port binds to loopback (Chromium's default) and the address is
@@ -64,7 +64,7 @@ function resolveDevCdpPort({ env, isPackaged, devServer }: DevCdpInput): DevCdpD
     return { port: null, reason: 'no-dev-server' }
   }
 
-  const requested = (env.HERMES_DESKTOP_CDP_PORT ?? '').trim()
+  const requested = (env.RABBIT_DESKTOP_CDP_PORT ?? '').trim()
 
   if (!requested) {
     return { port: DEFAULT_PORT, reason: null }
@@ -90,10 +90,10 @@ function describeDevCdpDecision(decision: DevCdpDecision): string | null {
       return null
 
     case 'invalid-port':
-      return `HERMES_DESKTOP_CDP_PORT is not a valid port (expected an integer ${MIN_PORT}-${MAX_PORT}, or "off"); renderer debugging is disabled.`
+      return `RABBIT_DESKTOP_CDP_PORT is not a valid port (expected an integer ${MIN_PORT}-${MAX_PORT}, or "off"); renderer debugging is disabled.`
 
     case 'opted-out':
-      return 'renderer debugging disabled by HERMES_DESKTOP_CDP_PORT.'
+      return 'renderer debugging disabled by RABBIT_DESKTOP_CDP_PORT.'
 
     // Packaged and dist-run builds are closed by design — the common case, not
     // worth a line of startup noise.

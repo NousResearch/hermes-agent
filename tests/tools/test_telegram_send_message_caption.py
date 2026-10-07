@@ -1,6 +1,6 @@
 """Standalone Telegram MEDIA:<path> caption delivery.
 
-When `hermes send --to telegram "MEDIA:/x.png This Caption"` carries a single
+When `rabbit send --to telegram "MEDIA:/x.png This Caption"` carries a single
 captionable file plus short text, the text must ride on the media bubble as the
 sendPhoto/sendVideo/sendDocument ``caption`` rather than being posted as a
 separate sendMessage beforehand. Longer text (> Telegram's 1024 caption cap)

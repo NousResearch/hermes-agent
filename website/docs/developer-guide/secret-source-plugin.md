@@ -1,28 +1,28 @@
 ---
 sidebar_position: 9
 title: "Secret Source Plugins"
-description: "How to build a secret-manager backend plugin for Hermes Agent"
+description: "How to build a secret-manager backend plugin for Rabbit Agent"
 ---
 
 # Building a Secret Source Plugin
 
-Secret sources resolve provider credentials from an external secret manager (a vault, a password manager, an OS keystore, a custom script) into environment variables at process startup — after `~/.hermes/.env` loads, before Hermes reads credentials. Bitwarden, 1Password, and a generic command-helper source ship in-tree; **every other backend is a plugin**. This guide covers building one.
+Secret sources resolve provider credentials from an external secret manager (a vault, a password manager, an OS keystore, a custom script) into environment variables at process startup — after `~/.rabbit/.env` loads, before Rabbit reads credentials. Bitwarden, 1Password, and a generic command-helper source ship in-tree; **every other backend is a plugin**. This guide covers building one.
 
 :::tip
-The bundled set is deliberately closed, same policy as [memory providers](./memory-provider-plugin.md): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Nous Research Discord (`#plugins-skills-and-skins`).
+The bundled set is deliberately closed, same policy as [memory providers](./memory-provider-plugin.md): PRs adding new vault backends under `agent/secret_sources/` are closed with a pointer to this guide. Publish your backend as a standalone plugin repo and share it in the Sanath Patil Discord (`#plugins-skills-and-skins`).
 :::
 
 ## First-process bootstrap timing
 
-`load_hermes_dotenv()` often runs at import time **before** plugins register.
-Hermes then re-pulls secrets after plugin discovery when any **enabled**
+`load_rabbit_dotenv()` often runs at import time **before** plugins register.
+Rabbit then re-pulls secrets after plugin discovery when any **enabled**
 plugin secret source is configured. Enablement uses the source's
 `is_enabled(cfg)` contract; the standard form is
 `secrets.<name>.enabled: true`, while custom activation remains supported.
 That closes the "replace Bitwarden with my vault" first-process gap (#64177).
 
 - Re-pull is idempotent and fail-open (never blocks startup).
-- `hermes update` never resolves external sources — not in the updater process
+- `rabbit update` never resolves external sources — not in the updater process
   and not in the import-health probes it spawns. Nothing in the update path
   needs credentials, and a slow helper would otherwise be misreported as an
   import failure (#110823).
@@ -49,7 +49,7 @@ The orchestrator (`agent.secret_sources.registry.apply_all`) owns everything sec
 ## Directory structure
 
 ```
-~/.hermes/plugins/my-vault/
+~/.rabbit/plugins/my-vault/
 ├── plugin.yaml      # name, description
 └── __init__.py      # SecretSource subclass + register(ctx)
 ```
@@ -130,11 +130,11 @@ class MyVaultSource(SecretSource):
 | `protected_env_vars(cfg)` | empty | You have a bootstrap token (you almost certainly do) |
 | `fetch_timeout_seconds(cfg)` | 120s | Your backend needs a different budget |
 | `config_schema()` | `{}` | Declare config keys for setup surfaces |
-| `remediation(kind, cfg)` | generic per-`ErrorKind` hints | You want failure warnings to point at your own fix-it command (e.g. the bundled sources return `Run hermes secrets <name> token…` for `AUTH_FAILED`). Must be a pure kind→string mapping: no I/O, never raises. Return `""` to suppress the hint. |
+| `remediation(kind, cfg)` | generic per-`ErrorKind` hints | You want failure warnings to point at your own fix-it command (e.g. the bundled sources return `Run rabbit secrets <name> token…` for `AUTH_FAILED`). Must be a pure kind→string mapping: no I/O, never raises. Return `""` to suppress the hint. |
 
 ## Subprocess safety: use `run_secret_cli()`
 
-If your backend shells out to a CLI, use the shared helper instead of `subprocess.run` directly. It gives you the audited posture for free: argv-only (no `shell=True`), a **minimal allowlisted child environment** (by the time sources run, `os.environ` holds every credential Hermes knows — never hand that to a child process), `NO_COLOR` + ANSI-scrubbed stderr, stdin closed, timeout → clean `RuntimeError`. Pass user-supplied reference strings after a `--` terminator in your argv so they can never parse as flags.
+If your backend shells out to a CLI, use the shared helper instead of `subprocess.run` directly. It gives you the audited posture for free: argv-only (no `shell=True`), a **minimal allowlisted child environment** (by the time sources run, `os.environ` holds every credential Rabbit knows — never hand that to a child process), `NO_COLOR` + ANSI-scrubbed stderr, stdin closed, timeout → clean `RuntimeError`. Pass user-supplied reference strings after a `--` terminator in your argv so they can never parse as flags.
 
 ## Registering
 
@@ -147,7 +147,7 @@ def register(ctx):
 Registration is rejected (with a log warning, never a crash) for: non-`SecretSource` instances, invalid/duplicate names, a `scheme` another source owns, wrong `api_version`, or a `shape` outside `mapped`/`bulk`.
 
 :::note Timing
-Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call. Immediately after discovery, Hermes re-pulls enabled plugin secret sources (`reset_secret_source_cache()` + `load_hermes_dotenv()`), so the discovering process *does* pick them up — see [First-process bootstrap timing](#first-process-bootstrap-timing) above (#64177). The re-pull is fail-open and skipped when no plugin source is enabled. Any code that reads `os.environ` during the plugin module's import or `register(ctx)` still runs before the re-pull and cannot depend on credentials supplied by that same source; keep credentialed work inside `fetch()`. Gateway, cron, and subagent processes perform the same discovery/re-pull sequence. The re-pull (and the per-fire cron re-pull) resets only the resolving home's cache, so under a multiplex gateway sibling profiles keep their hydrated snapshots; and a re-pull whose keys already sit in the process environment (`skipped_existing`, e.g. the previous apply's own write-back) still records the home's effective values, so `override_existing` is never required just to survive a re-pull.
+Plugin discovery runs later in startup than the first `load_rabbit_dotenv()` call. Immediately after discovery, Rabbit re-pulls enabled plugin secret sources (`reset_secret_source_cache()` + `load_rabbit_dotenv()`), so the discovering process *does* pick them up — see [First-process bootstrap timing](#first-process-bootstrap-timing) above (#64177). The re-pull is fail-open and skipped when no plugin source is enabled. Any code that reads `os.environ` during the plugin module's import or `register(ctx)` still runs before the re-pull and cannot depend on credentials supplied by that same source; keep credentialed work inside `fetch()`. Gateway, cron, and subagent processes perform the same discovery/re-pull sequence. The re-pull (and the per-fire cron re-pull) resets only the resolving home's cache, so under a multiplex gateway sibling profiles keep their hydrated snapshots; and a re-pull whose keys already sit in the process environment (`skipped_existing`, e.g. the previous apply's own write-back) still records the home's effective values, so `override_existing` is never required just to survive a re-pull.
 :::
 
 ## Users configure it like any other source
@@ -164,7 +164,7 @@ Multi-source precedence, conflict warnings, and `(from My Vault)` provenance lab
 
 ## Validate with the conformance kit
 
-Subclass the kit from the Hermes repo (`tests/secret_sources/conformance.py`) in your plugin's tests:
+Subclass the kit from the Rabbit repo (`tests/secret_sources/conformance.py`) in your plugin's tests:
 
 ```python
 import pytest

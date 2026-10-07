@@ -1,6 +1,6 @@
 """Who owns the gateway role on THIS host, and which profiles does that one process serve?
 
-Multiplex-only (Teknium ruling): exactly ONE ``hermes gateway run`` per host, multiplexing every
+Multiplex-only (Teknium ruling): exactly ONE ``rabbit gateway run`` per host, multiplexing every
 profile. Every reporting surface (doctor, ``cron status``, ``claw``, the dashboard liveness ladder)
 used to ask a per-PROFILE question instead — "does *my* profile own a gateway process?" — and a
 profile that is SERVED by the host gateway answered "no". That produced three user-visible lies:
@@ -22,8 +22,8 @@ from typing import Optional
 def _normalized(name: Optional[str]) -> str:
     if not name:
         return ""
-    # Late import: ``hermes_cli.profiles`` imports gateway modules back.
-    from hermes_cli.profiles import normalize_profile_name
+    # Late import: ``rabbit_cli.profiles`` imports gateway modules back.
+    from rabbit_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(name)
 
@@ -69,10 +69,10 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
     if record.create_time is None or not hr.liveness_is_proven(record):
         return None
     from gateway.host_attach import launched_by_other_tenant, record_home
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     # Another tenant root's gateway is a name collision, not this tenant's host process (#121352).
-    if launched_by_other_tenant(record.home, get_hermes_home()):
+    if launched_by_other_tenant(record.home, get_rabbit_home()):
         return None
     return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record",
                                home=record_home(record))
@@ -81,7 +81,7 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
 def _from_served_record() -> Optional[HostGatewayTopology]:
     """A gateway started before the host record existed still publishes ``served_profiles`` into
     the default home's ``gateway_state.json``; that plus a proven-live PID is the same fact."""
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from rabbit_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
 
     pid = live_default_gateway_pid()
     if pid is None:
@@ -106,7 +106,7 @@ def host_gateway_serving(profile_name: Optional[str] = None) -> Optional[HostGat
     if topology is None:
         return None
     if profile_name is None:
-        from hermes_cli.profiles import get_active_profile_name
+        from rabbit_cli.profiles import get_active_profile_name
 
         profile_name = get_active_profile_name()
     return topology if topology.serves(profile_name) else None

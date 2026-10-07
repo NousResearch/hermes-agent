@@ -176,7 +176,7 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="ab-image-cost-"))
-    os.environ["HERMES_HOME"] = str(tmp / "home")
+    os.environ["RABBIT_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
     # An unknown custom model is treated as non-vision (images replaced by text); declare it.
     (tmp / "home" / "config.yaml").write_text("model:\n  supports_vision: true\n", encoding="utf-8")

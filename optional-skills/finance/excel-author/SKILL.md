@@ -2,11 +2,11 @@
 name: excel-author
 description: Build auditable financial workbooks headless via openpyxl.
 version: 1.0.0
-author: Anthropic (adapted by Nous Research)
+author: Anthropic
 license: Apache-2.0
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [excel, openpyxl, finance, spreadsheet, modeling]
     related_skills: [xlsx, pptx-author, dcf-model, comps-analysis, lbo-model, 3-statement-model]
 ---

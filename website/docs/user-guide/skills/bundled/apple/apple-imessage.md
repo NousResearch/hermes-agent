@@ -17,7 +17,6 @@ Send and receive iMessages/SMS via the imsg CLI on macOS.
 | Source | Bundled (installed by default) |
 | Path | `skills/apple/imessage` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
 | License | MIT |
 | Platforms | macos |
 | Tags | `iMessage`, `SMS`, `messaging`, `macOS`, `Apple` |
@@ -25,7 +24,7 @@ Send and receive iMessages/SMS via the imsg CLI on macOS.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # iMessage

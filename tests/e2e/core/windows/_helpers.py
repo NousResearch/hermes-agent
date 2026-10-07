@@ -1,15 +1,15 @@
 """Shared harness for the native-Windows end-to-end suite.
 
-Every test drives REAL Hermes processes (the source launcher / ``python -m
-hermes_cli.main``) on a real Windows host against the recording loopback
-provider (``tests/fakes/fake_llm_provider.py``). Nothing in Hermes is mocked;
+Every test drives REAL Rabbit processes (the source launcher / ``python -m
+rabbit_cli.main``) on a real Windows host against the recording loopback
+provider (``tests/fakes/fake_llm_provider.py``). Nothing in Rabbit is mocked;
 verdicts come from what reached the provider wire, what landed in ``state.db``
 / on disk, and the live process table (psutil).
 
 Each test gets a fresh fake user profile under ``tmp_path``: ``USERPROFILE`` /
 ``HOME`` / ``LOCALAPPDATA`` / ``APPDATA`` all point inside it and
-``HERMES_HOME`` is ``<profile>/.hermes``, so no child can read or write the
-runner's real Hermes state.
+``RABBIT_HOME`` is ``<profile>/.rabbit``, so no child can read or write the
+runner's real Rabbit state.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from tests.fakes.fake_llm_provider import FakeLLMServer, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, write_rabbit_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 180.0
@@ -46,11 +46,11 @@ _SECRET_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_ACCESS_KEY")
 
 @dataclass
 class WinHome:
-    """One hermetic fake Windows user profile with a Hermes home inside it."""
+    """One hermetic fake Windows user profile with a Rabbit home inside it."""
 
     root: Path
     profile: Path
-    hermes_home: Path
+    rabbit_home: Path
     project: Path
     extra_env: dict[str, str] = field(default_factory=dict)
 
@@ -68,37 +68,37 @@ class WinHome:
             "HOME": str(self.profile),
             "LOCALAPPDATA": str(local),
             "APPDATA": str(roaming),
-            "HERMES_HOME": str(self.hermes_home),
+            "RABBIT_HOME": str(self.rabbit_home),
             "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1",
             "NO_COLOR": "1",
             # The child's state.db lives under tmp_path; under a pytest ancestor the live-DB
             # guard would refuse it. Documented child-process escape hatch (tests/conftest.py).
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         })
         env.update(self.extra_env)
         env.update(extra or {})
         return env
 
     def update_config(self, mutate: Callable[[dict], None]) -> None:
-        path = self.hermes_home / "config.yaml"
+        path = self.rabbit_home / "config.yaml"
         cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         mutate(cfg)
         path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "state.db"
+        return self.rabbit_home / "state.db"
 
 
 def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHome:
     root = tmp_path
     profile = root / "Users" / "e2e"
-    hermes_home = profile / ".hermes"
+    rabbit_home = profile / ".rabbit"
     project = root / "project"
     project.mkdir(parents=True, exist_ok=True)
-    write_hermes_home(hermes_home, base_url, extra_config=extra_config)
-    home = WinHome(root=root, profile=profile, hermes_home=hermes_home, project=project)
+    write_rabbit_home(rabbit_home, base_url, extra_config=extra_config)
+    home = WinHome(root=root, profile=profile, rabbit_home=rabbit_home, project=project)
 
     def _hermetic(cfg: dict) -> None:
         cfg["updates"] = {"check": False}  # offline: no GitHub round trip / git lazy fetch
@@ -108,11 +108,11 @@ def make_home(tmp_path: Path, base_url: str, *, extra_config: str = "") -> WinHo
     return home
 
 
-def hermes_argv(*args: str) -> list[str]:
-    return [sys.executable, "-m", "hermes_cli.main", *args]
+def rabbit_argv(*args: str) -> list[str]:
+    return [sys.executable, "-m", "rabbit_cli.main", *args]
 
 
-def hermes_exe(home: WinHome) -> Path:
+def rabbit_exe(home: WinHome) -> Path:
     """Publish a real source launcher in the isolated user's bin directory.
 
     PM's side test environment has dependencies but no console script. The
@@ -120,13 +120,13 @@ def hermes_exe(home: WinHome) -> Path:
     a scratch home keeps its dependencies in that interpreter, not PM install
     facts for the runner's real home.
     """
-    from hermes_cli._launchers import mint_launcher
+    from rabbit_cli._launchers import mint_launcher
 
-    bin_dir = home.profile / "AppData" / "Local" / "hermes" / "bin"
+    bin_dir = home.profile / "AppData" / "Local" / "rabbit" / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    launcher = mint_launcher("hermes", REPO_ROOT, bin_dir, Path(sys.executable), None)
+    launcher = mint_launcher("rabbit", REPO_ROOT, bin_dir, Path(sys.executable), None)
     assert launcher is not None and launcher.suffix.lower() == ".exe" and launcher.is_file(), (
-        f"could not publish source hermes.exe in {bin_dir}: {launcher}")
+        f"could not publish source rabbit.exe in {bin_dir}: {launcher}")
     return launcher
 
 
@@ -149,8 +149,8 @@ def run(argv: list[str], home: WinHome, *, cwd: Path | None = None, timeout: flo
     return Run(proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
 
 
-def hermes(home: WinHome, *args: str, **kw: Any) -> Run:
-    return run(hermes_argv(*args), home, **kw)
+def rabbit(home: WinHome, *args: str, **kw: Any) -> Run:
+    return run(rabbit_argv(*args), home, **kw)
 
 
 def _decode(raw: bytes) -> str:
@@ -181,7 +181,7 @@ def last_user(body: dict[str, Any]) -> str:
 
 
 def tool_results(srv: FakeLLMServer) -> list[str]:
-    """Tool-result messages Hermes sent back to the model, in order, deduped across requests."""
+    """Tool-result messages Rabbit sent back to the model, in order, deduped across requests."""
     seen: dict[str, str] = {}
     for body in srv.main_requests():
         for m in body.get("messages") or []:
@@ -257,14 +257,14 @@ def _under(path: str, root: str) -> bool:
 
 
 def _owned_by(proc: Any, root: str, home: str) -> bool:
-    """One process belongs to the fake profile if its HERMES_HOME is that home, or its
+    """One process belongs to the fake profile if its RABBIT_HOME is that home, or its
     cwd or any argv element lives under the profile root. Environment and cwd are
     inherited by detached grandchildren, so they survive a broken parent link."""
     import psutil
 
     try:
         env = {k.upper(): v for k, v in proc.environ().items()}
-        if "HERMES_HOME" in env and os.path.normcase(os.path.normpath(env["HERMES_HOME"])) == home:
+        if "RABBIT_HOME" in env and os.path.normcase(os.path.normpath(env["RABBIT_HOME"])) == home:
             return True
         if _under(proc.cwd(), root):
             return True
@@ -281,7 +281,7 @@ def owned_processes(home: WinHome, *, since: float) -> list[Any]:
     import psutil
 
     root = os.path.normcase(os.path.normpath(str(home.root)))
-    hermes_home = os.path.normcase(os.path.normpath(str(home.hermes_home)))
+    rabbit_home = os.path.normcase(os.path.normpath(str(home.rabbit_home)))
     me = os.getpid()
     owned = []
     for proc in psutil.process_iter():
@@ -290,7 +290,7 @@ def owned_processes(home: WinHome, *, since: float) -> list[Any]:
                 continue
         except psutil.Error:
             continue
-        if _owned_by(proc, root, hermes_home):
+        if _owned_by(proc, root, rabbit_home):
             owned.append(proc)
     return owned
 

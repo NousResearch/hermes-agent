@@ -3,9 +3,9 @@
 
 Usage (via cron with --no-agent):
 
-    hermes cron create api-events \\
+    rabbit cron create api-events \\
       --schedule "*/1 * * * *" --no-agent \\
-      --script "$HERMES_HOME/skills/devops/watchers/scripts/watch_http_json.py" \\
+      --script "$RABBIT_HOME/skills/devops/watchers/scripts/watch_http_json.py" \\
       --script-args "--name api --url https://api.example.com/events \\
                      --id-field event_id --items-path data.events"
 
@@ -76,7 +76,7 @@ def main() -> int:
                    help="HTTP timeout in seconds (default: 20)")
     args = p.parse_args()
 
-    req = urllib.request.Request(args.url, headers={"User-Agent": "Hermes-Watcher/1.0"})
+    req = urllib.request.Request(args.url, headers={"User-Agent": "Rabbit-Watcher/1.0"})
     for k, v in args.header:
         req.add_header(k, v)
 

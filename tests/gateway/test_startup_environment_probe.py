@@ -18,7 +18,7 @@ def _probe_cache(monkeypatch):
 
 
 def _warm(tmp_path, monkeypatch, agent_section: dict, backend: str) -> None:
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(f"agent: {agent_section!r}\n", encoding="utf-8")
     token = set_terminal_scope({"TERMINAL_ENV": backend})
     try:

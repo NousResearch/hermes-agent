@@ -2,7 +2,7 @@
 
 The staged-installer rework (92686159d1) dropped the ``-SkipSetup`` switch from
 install.ps1's ``param()`` block, so wrappers written against the old spelling
-(hermes-desktop passes ``-SkipSetup -NonInteractive -HermesHome ...``) die at
+(rabbit-desktop passes ``-SkipSetup -NonInteractive -RabbitHome ...``) die at
 parameter binding with ``NamedParameterNotFound`` before any stage runs. The
 switch is back as a deprecated alias that folds into ``-NonInteractive``.
 
@@ -31,7 +31,7 @@ def test_skipsetup_still_binds(tmp_path):
     result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(INSTALLER), "-SkipSetup", "-NonInteractive", "-ShowResolvedPaths",
-         "-HermesHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
+         "-RabbitHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, (
@@ -52,7 +52,7 @@ def test_skipsetup_alone_skips_needs_input_stage(tmp_path):
     result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
          "-File", str(INSTALLER), "-SkipSetup", "-Stage", "setup", "-Json",
-         "-HermesHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
+         "-RabbitHome", str(tmp_path / "home"), "-InstallDir", str(tmp_path / "install")],
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, (

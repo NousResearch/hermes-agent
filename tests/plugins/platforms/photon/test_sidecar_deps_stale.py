@@ -1,6 +1,6 @@
 """Regression tests for the Photon sidecar stale-dependency self-heal.
 
-A `hermes update` that bumps the spectrum-ts pin rewrites the sidecar's
+A `rabbit update` that bumps the spectrum-ts pin rewrites the sidecar's
 ``package-lock.json`` but never reinstalls ``node_modules``, so the sidecar
 spawns against stale deps and dies on every reconnect. ``_sidecar_deps_stale``
 detects that skew (lockfile newer than npm's install marker) so

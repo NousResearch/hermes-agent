@@ -1,8 +1,8 @@
-import { compactNumber } from '@hermes/shared'
+import { compactNumber } from '@rabbit/shared'
 import { useLocation, useNavigate } from 'react-router'
 
 import { PanelEmpty } from '@/app/overlays/panel'
-import type { ProfileScope } from '@/hermes'
+import type { ProfileScope } from '@/rabbit'
 import { useI18n } from '@/i18n'
 
 import type { McpServersController } from '../mcp/use-mcp-servers'
@@ -23,9 +23,7 @@ export interface LocalConnectorDialogProps {
   installFields?: readonly InstallField[]
   installing?: boolean
   onClose: () => void
-  onConnect: () => void
   onInstall: (env: Record<string, string>) => void
-  onReconnect: () => void
   onRemoveServer: () => void
   profile: ProfileScope
 }
@@ -36,9 +34,7 @@ export function LocalConnectorDialog({
   installFields,
   installing,
   onClose,
-  onConnect,
   onInstall,
-  onReconnect,
   onRemoveServer,
   profile
 }: LocalConnectorDialogProps) {
@@ -46,7 +42,7 @@ export function LocalConnectorDialog({
   const name = localServerName(card)
   const openPlugins = useOpenPluginsTab()
   const plugin = card.plugin
-  const installed = card.ways.local?.installed === true
+  const installed = card.ways?.installed === true
   const owned = plugin === undefined && installed
 
   const refreshTools = () => {
@@ -66,14 +62,12 @@ export function LocalConnectorDialog({
       installing={installing}
       menu={<ConnectorDialogMenu onRefreshTools={refreshTools} />}
       onAuthenticate={() => void controller.authenticate(name)}
-      onConnect={onConnect}
       onInstall={onInstall}
       onOpenChange={next => {
         if (!next) {
           onClose()
         }
       }}
-      onReconnect={onReconnect}
       onServerToggle={next => void controller.setServerEnabled(name, next)}
       open
       tools={

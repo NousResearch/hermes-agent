@@ -34,7 +34,7 @@ def flavored_assets(icons: Path, assets: Path):
     flavored (canary/commit) build cannot package from the rendered product
     directory alone. Restore the admitted files once packaging ends: the source
     custody check refuses a dirty checkout, and a build that leaves its own
-    render behind breaks every later build in that tree and `hermes update`.
+    render behind breaks every later build in that tree and `rabbit update`.
     """
     admitted = {path.relative_to(assets): path.read_bytes()
                 for path in assets.rglob("*") if path.is_file()}
@@ -69,7 +69,7 @@ def build(repo: Path, tag: str | None, variant: str, builder_args: list[str],
     from scripts.releases.bundle_env import decode
     request = BuildRequest.create(repo, tag=tag, commit=commit_build, variant=variant,
                                   work=repo / ".build/desktop-job", cache=repo / ".cache/desktop-inputs",
-                                  bundle_env=decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", "")))
+                                  bundle_env=decode(os.environ.get("RABBIT_BUNDLE_ENV_JSON", "")))
     build_prepared(prepare(request), builder_args)
 
 
@@ -94,7 +94,7 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
     repo, node = request.source, str(prepared.node)
     env = build_environment(prepared, variant, os.environ)
     if request.release_epoch is not None:
-        env["HERMES_RELEASE_EPOCH"] = str(request.release_epoch)
+        env["RABBIT_RELEASE_EPOCH"] = str(request.release_epoch)
     desktop = repo / "apps/desktop"
     targets = {"win32": ["--win", "msix"], "darwin": ["--mac", "dmg", "zip"], "linux": ["--linux", "AppImage"]}[sys.platform]
     package_args = ["--prepared", str(prepared.packager), "--native-deps", str(prepared.native),
@@ -130,7 +130,7 @@ def _build_prepared(prepared, builder_args: list[str], variant: str | None) -> N
              "--out", str(desktop / "dist")], cwd=repo, env=env)
         version_args = []
         if sys.platform == "win32" and request.channel_request is None and request.tag is not None:
-            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.HERMES_RELEASE_EPOCH)))"
+            script = "const m=require('./scripts/msix-shared.mjs');console.log(m.nativeQuad(process.argv[1], Number(process.env.RABBIT_RELEASE_EPOCH)))"
             quad = capture([node, "-e", script, request.tag], repo, env)
             version_args = [f'-c.extraMetadata.shortVersion={quad}', f'-c.extraMetadata.shortVersionWindows={quad}']
         run([node, "scripts/run-electron-builder.mjs", *package_args, *version_args, *builder_args], cwd=desktop,
@@ -169,7 +169,7 @@ def main() -> None:
                                           variant=args.variant or "bundled",
                                           work=args.work or args.repo / ".build/desktop-job",
                                           cache=args.cache or args.repo / ".cache/desktop-inputs",
-                                          bundle_env=decode(os.environ.get("HERMES_BUNDLE_ENV_JSON", "")),
+                                          bundle_env=decode(os.environ.get("RABBIT_BUNDLE_ENV_JSON", "")),
                                           channel_request=json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
                                           if args.channel_request else None,
                                           release_commit=args.release_commit)

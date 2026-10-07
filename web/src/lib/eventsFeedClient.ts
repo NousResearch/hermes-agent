@@ -10,7 +10,7 @@
  * into one `closed` transition) apply to every attempt.
  */
 
-import { JsonRpcGatewayClient, type ConnectionState, type GatewayEvent, type GatewayEventName } from '@hermes/shared'
+import { JsonRpcGatewayClient, type ConnectionState, type GatewayEvent, type GatewayEventName } from '@rabbit/shared'
 
 import { buildWsUrl } from '@/lib/api'
 import { maybeReloadForLoopbackWsAuthFailure } from '@/lib/dashboard-auth-reload'

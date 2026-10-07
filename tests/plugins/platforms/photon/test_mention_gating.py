@@ -87,7 +87,7 @@ def test_custom_mention_patterns_from_config(monkeypatch: pytest.MonkeyPatch) ->
     assert adapter.require_mention is True
     assert len(adapter._mention_patterns) == 1
     assert adapter._message_matches_mention_patterns("amos help me") is True
-    assert adapter._message_matches_mention_patterns("hermes help me") is False
+    assert adapter._message_matches_mention_patterns("rabbit help me") is False
 
 
 def test_mention_patterns_env_comma_separated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +115,7 @@ def test_invalid_pattern_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("caption, cached_calls, dispatched", [
     ("holiday pic", 0, 0),          # unmentioned group attachment: never persisted
-    ("hermes holiday pic", 1, 1),   # mentioned: cached and dispatched
+    ("rabbit holiday pic", 1, 1),   # mentioned: cached and dispatched
 ])
 async def test_unmentioned_group_attachment_is_not_cached(
         monkeypatch: pytest.MonkeyPatch, caption: str, cached_calls: int, dispatched: int) -> None:

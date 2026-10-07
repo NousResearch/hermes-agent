@@ -2,7 +2,7 @@
 """Verify the version stamp a bootstrap installer ships.
 
 The bootstrap installers (scripts/install.sh, scripts/install.ps1) finish
-with a ``complete`` stage that writes ``.hermes-bootstrap-complete`` into the
+with a ``complete`` stage that writes ``.rabbit-bootstrap-complete`` into the
 install dir: ``{"schemaVersion": 1, "pinnedCommit": <40-hex sha>,
 "pinnedBranch": <name>, "completedAt": <UTC ISO-8601>}``. That stamp is what
 update tooling and support triage read back, so it must tell the truth about
@@ -23,7 +23,7 @@ checkout it describes:
 Usage:
 
     python3 scripts/verify-bootstrap-version-stamp.py \
-        --stamp <install-dir>/.hermes-bootstrap-complete --repo <install-dir>
+        --stamp <install-dir>/.rabbit-bootstrap-complete --repo <install-dir>
     # CI lane additionally pins the expected commit/branch:
     python3 scripts/verify-bootstrap-version-stamp.py --stamp ... --repo ... \
         --expect-commit "$SHA" --expect-branch ci-under-test
@@ -177,7 +177,7 @@ def _read_install_stamp(repo: Path) -> tuple[bool, str | None]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stamp", required=True, help="Path to .hermes-bootstrap-complete")
+    parser.add_argument("--stamp", required=True, help="Path to .rabbit-bootstrap-complete")
     parser.add_argument("--repo", required=True, help="The install checkout the stamp describes")
     parser.add_argument("--expect-commit", default=None, help="Fail unless pinnedCommit equals this sha")
     parser.add_argument("--expect-branch", default=None, help="Fail unless pinnedBranch equals this branch")

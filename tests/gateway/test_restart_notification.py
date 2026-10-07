@@ -21,7 +21,7 @@ from tests.gateway.restart_test_helpers import (
 
 
 def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     marker = tmp_path / ".restart_pending.json"
 
     assert gateway_run._planned_restart_notification_pending() is False
@@ -39,7 +39,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     """When /restart fires, the requester's routing info is persisted to disk."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -66,7 +66,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     calls = []
 
@@ -100,14 +100,14 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
 @pytest.mark.asyncio
 async def test_sethome_updates_running_config_for_same_process_restart(tmp_path, monkeypatch):
     """/sethome persists to env and updates in-memory config before restart."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     saved = {}
 
     def _fake_save_env_value(key, value):
         saved[key] = value
 
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+    monkeypatch.setattr("rabbit_cli.config.save_env_value", _fake_save_env_value)
     monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
 
     runner, _adapter = make_restart_runner()
@@ -132,14 +132,14 @@ async def test_sethome_updates_running_config_for_same_process_restart(tmp_path,
 @pytest.mark.asyncio
 async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path, monkeypatch):
     """/sethome from a topic/thread stores the thread-aware home target."""
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     saved = {}
 
     def _fake_save_env_value(key, value):
         saved[key] = value
 
-    monkeypatch.setattr("hermes_cli.config.save_env_value", _fake_save_env_value)
+    monkeypatch.setattr("rabbit_cli.config.save_env_value", _fake_save_env_value)
     monkeypatch.setattr("gateway.slash_commands.persist_home_channel", lambda home, **kwargs: None)
 
     runner, _adapter = make_restart_runner()
@@ -169,7 +169,7 @@ async def test_sethome_preserves_thread_target_for_same_process_restart(tmp_path
 async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     runner, adapter = make_restart_runner()
     runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
@@ -195,7 +195,7 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     assert delivered == {("telegram", "parent-42", "777")}
     adapter.send.assert_called_once_with(
         "parent-42",
-        "♻️ Gateway online — Hermes is back and ready.",
+        "♻️ Gateway online — Rabbit is back and ready.",
         metadata={
             "thread_id": "777",
             "telegram_dm_topic_reply_fallback": True,
@@ -206,7 +206,7 @@ async def test_send_home_channel_startup_notification_preserves_thread_metadata(
 
 @pytest.mark.asyncio
 async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     runner, _native = make_restart_runner()
     relay = MagicMock()
@@ -234,7 +234,7 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     assert relay.send_for_platform.await_args.args[:3] == (
         Platform.SLACK,
         "D123",
-        "♻️ Gateway online — Hermes is back and ready.",
+        "♻️ Gateway online — Rabbit is back and ready.",
     )
     assert relay.send_for_platform.await_args.kwargs["metadata"]["user_id"] == "U123"
     assert relay.send_for_platform.await_args.kwargs["metadata"]["scope_id"] == "T123"
@@ -245,7 +245,7 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
 
 @pytest.mark.asyncio
 async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_path, monkeypatch):
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     notify_path = tmp_path / ".restart_notify.json"
     notify_path.write_text(
         json.dumps(
@@ -297,7 +297,7 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     """
     from gateway.platforms.base import SendResult
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
     notify_path.write_text(json.dumps({

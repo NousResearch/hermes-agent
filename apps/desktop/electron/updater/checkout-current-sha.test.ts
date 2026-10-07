@@ -17,7 +17,7 @@ function writeStamp(root: string, commit: string): void {
 function deps(root: string, status: SourceUpdate | null, isWindows: boolean): CheckoutStrategyDeps {
   return {
     readSourceUpdate: vi.fn(async (): Promise<SourceUpdate | null> => status),
-    hermesHome: 'home',
+    rabbitHome: 'home',
     isWindows,
     isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main',
@@ -27,7 +27,7 @@ function deps(root: string, status: SourceUpdate | null, isWindows: boolean): Ch
     remoteGatewayActive: (): boolean => false,
     emitUpdateProgress: vi.fn(),
     rememberLog: vi.fn(),
-    startHermes: vi.fn(async (): Promise<void> => {}),
+    startRabbit: vi.fn(async (): Promise<void> => {}),
     stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
     repairMacUpdaterHelper: vi.fn(),
     preflightStateDb: vi.fn(),
@@ -46,7 +46,7 @@ it.each([
     const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-sha-'))
 
     try {
-      // A probe-less checkout (the manual path: no hermes_cli/source_check.py)
+      // A probe-less checkout (the manual path: no rabbit_cli/source_check.py)
       // previously reported no currentSha at all — the commit showed nowhere.
       writeStamp(root, STAMPED)
       const strategy: ReturnType<typeof createCheckoutStrategy> = createCheckoutStrategy(deps(root, null, isWindows))

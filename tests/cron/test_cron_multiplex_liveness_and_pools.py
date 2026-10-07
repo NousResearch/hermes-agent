@@ -14,10 +14,10 @@ Two invariants that a host-wide, process-lifetime view of cron state gets wrong:
 from __future__ import annotations
 
 import cron.scheduler as sched
-from hermes_constants import (
-    hermes_home_key,
-    reset_hermes_home_override,
-    set_hermes_home_override,
+from rabbit_constants import (
+    rabbit_home_key,
+    reset_rabbit_home_override,
+    set_rabbit_home_override,
 )
 
 
@@ -26,11 +26,11 @@ class _Scope:
         self._home = str(home)
 
     def __enter__(self):
-        self._token = set_hermes_home_override(self._home)
+        self._token = set_rabbit_home_override(self._home)
         return self
 
     def __exit__(self, *_exc):
-        reset_hermes_home_override(self._token)
+        reset_rabbit_home_override(self._token)
         return False
 
 
@@ -95,12 +95,12 @@ class TestPoolReaping:
 
             # Profile B goes away (deleted / gated out); the served set is republished without it.
             register_ticked_homes([home_a])
-            assert hermes_home_key(home_b) not in sched._parallel_pools, (
+            assert rabbit_home_key(home_b) not in sched._parallel_pools, (
                 "an unticked home's ThreadPoolExecutor leaked for the process's lifetime"
             )
-            assert hermes_home_key(home_b) not in sched._parallel_pool_max_workers
+            assert rabbit_home_key(home_b) not in sched._parallel_pool_max_workers
             # The home still being ticked keeps its pool.
-            assert hermes_home_key(home_a) in sched._parallel_pools
+            assert rabbit_home_key(home_a) in sched._parallel_pools
         finally:
             register_ticked_homes([])
             sched._shutdown_parallel_pool()

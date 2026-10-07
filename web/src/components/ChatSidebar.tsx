@@ -314,7 +314,7 @@ export function ChatSidebar({
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
-  // /api/events in hermes_cli/web_server.py for the broadcast hop.
+  // /api/events in rabbit_cli/web_server.py for the broadcast hop.
   //
   // Framing, dispatch and connect timeout come from the shared JSON-RPC
   // client (`EventsFeedClient`); this effect owns only the retry policy and

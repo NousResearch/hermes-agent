@@ -146,7 +146,7 @@ class TestConnect:
 
     def test_connect_starts_stream_task(self, monkeypatch):
         monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", True)
-        config = PlatformConfig(enabled=True, extra={"topic": "hermes-test"})
+        config = PlatformConfig(enabled=True, extra={"topic": "rabbit-test"})
         adapter = NtfyAdapter(config)
 
         with patch.object(adapter, "_run_stream", new_callable=AsyncMock):
@@ -185,7 +185,7 @@ class TestConnect:
 
 class TestSend:
 
-    def _make_adapter(self, topic="hermes-in", publish_topic="", token="", markdown=False):
+    def _make_adapter(self, topic="rabbit-in", publish_topic="", token="", markdown=False):
         extra: dict = {"topic": topic, "token": token}
         if publish_topic:
             extra["publish_topic"] = publish_topic
@@ -195,7 +195,7 @@ class TestSend:
 
 
     def test_send_posts_to_publish_topic(self):
-        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        adapter = self._make_adapter(topic="rabbit-in", publish_topic="rabbit-out")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -205,15 +205,15 @@ class TestSend:
         mock_client.post = AsyncMock(return_value=mock_resp)
         adapter._http_client = mock_client
 
-        result = _run(adapter.send("hermes-in", "Hello ntfy!"))
+        result = _run(adapter.send("rabbit-in", "Hello ntfy!"))
         assert result.success is True
         assert result.message_id == "abc123"
 
         posted_url = mock_client.post.call_args[0][0]
-        assert posted_url.endswith("/hermes-out")
+        assert posted_url.endswith("/rabbit-out")
 
     def test_send_falls_back_to_subscribe_topic(self):
-        adapter = self._make_adapter(topic="hermes-in")
+        adapter = self._make_adapter(topic="rabbit-in")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -223,13 +223,13 @@ class TestSend:
         mock_client.post = AsyncMock(return_value=mock_resp)
         adapter._http_client = mock_client
 
-        result = _run(adapter.send("hermes-in", "Hello!"))
+        result = _run(adapter.send("rabbit-in", "Hello!"))
         assert result.success is True
         posted_url = mock_client.post.call_args[0][0]
-        assert posted_url.endswith("/hermes-in")
+        assert posted_url.endswith("/rabbit-in")
 
     def test_send_uses_metadata_publish_topic(self):
-        adapter = self._make_adapter(topic="hermes-in")
+        adapter = self._make_adapter(topic="rabbit-in")
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -240,7 +240,7 @@ class TestSend:
         adapter._http_client = mock_client
 
         result = _run(adapter.send(
-            "hermes-in", "Hi!", metadata={"publish_topic": "override-out"}
+            "rabbit-in", "Hi!", metadata={"publish_topic": "override-out"}
         ))
         assert result.success is True
         posted_url = mock_client.post.call_args[0][0]
@@ -248,7 +248,7 @@ class TestSend:
 
 
     def test_send_handles_timeout(self):
-        adapter = self._make_adapter(topic="hermes-in")
+        adapter = self._make_adapter(topic="rabbit-in")
 
         class _FakeTimeout(Exception):
             pass
@@ -261,7 +261,7 @@ class TestSend:
         adapter._http_client = mock_client
 
         with patch.object(_ntfy, "httpx", fake_httpx):
-            result = _run(adapter.send("hermes-in", "Hello!"))
+            result = _run(adapter.send("rabbit-in", "Hello!"))
 
         assert result.success is False
         assert "timeout" in result.error.lower()
@@ -277,7 +277,7 @@ class TestSend:
 class TestOnMessage:
 
     def _make_adapter(self):
-        return NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "hermes-in"}))
+        return NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "rabbit-in"}))
 
     def test_message_dispatched_to_handler(self):
         adapter = self._make_adapter()
@@ -291,7 +291,7 @@ class TestOnMessage:
         event = {
             "id": "evt-001",
             "event": "message",
-            "topic": "hermes-in",
+            "topic": "rabbit-in",
             "message": "Hello from ntfy",
             "time": 1700000000,
         }
@@ -320,7 +320,7 @@ class TestOnMessage:
             calls.append(event)
 
         adapter.set_message_handler(handler)
-        event = {"id": "dup-1", "event": "message", "topic": "hermes-in", "message": "hi", "time": None}
+        event = {"id": "dup-1", "event": "message", "topic": "rabbit-in", "message": "hi", "time": None}
         _run(adapter._on_message(event))
         _run(adapter._on_message(event))
         assert len(calls) == 1
@@ -339,7 +339,7 @@ class TestOnMessage:
         _run(adapter._on_message({
             "id": "echo-1",
             "event": "message",
-            "topic": "hermes-in",
+            "topic": "rabbit-in",
             "message": "my own reply",
             "tags": [_ntfy._ECHO_TAG],
             "time": None,
@@ -360,14 +360,14 @@ class TestEnvEnablement:
 
 
     def test_markdown_truthy_values(self, monkeypatch):
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_TOPIC", "rabbit-in")
         for val in ("true", "1", "yes", "TRUE"):
             monkeypatch.setenv("NTFY_MARKDOWN", val)
             assert _env_enablement()["markdown"] is True
 
 
     def test_home_channel_override(self, monkeypatch):
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_TOPIC", "rabbit-in")
         monkeypatch.setenv("NTFY_HOME_CHANNEL", "alerts")
         monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alerts Channel")
         seed = _env_enablement()
@@ -394,9 +394,9 @@ class TestStandaloneSend:
     def test_emits_echo_tag_header(self, monkeypatch):
         """Out-of-process cron / send_message deliveries also carry the echo
         tag, so a gateway subscribed to the same topic skips them too."""
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.setenv("NTFY_TOPIC", "rabbit-in")
         pconfig = MagicMock()
-        pconfig.extra = {"topic": "hermes-in"}
+        pconfig.extra = {"topic": "rabbit-in"}
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -408,7 +408,7 @@ class TestStandaloneSend:
 
         with patch.object(_ntfy, "httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
-            _run(_standalone_send(pconfig, "hermes-in", "hi"))
+            _run(_standalone_send(pconfig, "rabbit-in", "hi"))
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers.get("X-Tags") == _ntfy._ECHO_TAG

@@ -17,7 +17,7 @@ class _FatalAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._set_fatal_error(
             "telegram_token_lock",
-            "Another local Hermes gateway is already using this Telegram bot token.",
+            "Another local Rabbit gateway is already using this Telegram bot token.",
             retryable=False,
         )
         return False
@@ -117,7 +117,7 @@ async def test_retryable_fatal_queues_reconnect_after_cancellation_swallowing_di
     monkeypatch, tmp_path
 ):
     """A wedged old adapter cannot block runner-owned reconnect recovery."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
     config = GatewayConfig(
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
         sessions_dir=tmp_path / "sessions",
@@ -205,7 +205,7 @@ async def test_retryable_fatal_queues_before_disconnect_returns(monkeypatch, tmp
 @pytest.mark.asyncio
 async def test_fatal_handler_outer_timeout_still_queues_platform(monkeypatch, tmp_path):
     """#80598: outer deadline must queue even if the impl task never returns."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.05")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.05")
     config = GatewayConfig(
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, token="token")},
         sessions_dir=tmp_path / "sessions",

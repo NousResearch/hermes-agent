@@ -17,12 +17,12 @@ def _isolated_registry(monkeypatch, catalog=None):
 
 def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monkeypatch):
     from agent.image_routing import decide_image_input_mode
-    from hermes_cli.inventory import _apply_capabilities
+    from rabbit_cli.inventory import _apply_capabilities
 
     _isolated_registry(monkeypatch)
     overrides: dict = {}
     monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: overrides)
-    monkeypatch.setattr("hermes_cli.inventory._reasoning_catalog_reader", lambda slug: None)
+    monkeypatch.setattr("rabbit_cli.inventory._reasoning_catalog_reader", lambda slug: None)
     declaration = {
         "tier-high": {"supports_reasoning": False, "supports_vision": True, "context_window": 64000},
     }

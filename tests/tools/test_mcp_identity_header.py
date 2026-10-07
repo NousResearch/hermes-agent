@@ -68,16 +68,16 @@ class TestResolveIdentityHeader:
         from tools.mcp_tool_errors import _resolve_identity_header
 
         with patch(
-            "hermes_cli.profiles.get_active_profile_name",
+            "rabbit_cli.profiles.get_active_profile_name",
             return_value="workbot",
         ):
             result = _resolve_identity_header("srv", {
                 "identity_header": {
-                    "name": "X-Hermes-Profile",
+                    "name": "X-Rabbit-Profile",
                     "value_from": "profile",
                 },
             })
-        assert result == ("X-Hermes-Profile", "workbot")
+        assert result == ("X-Rabbit-Profile", "workbot")
 
     def test_missing_name_warns_and_returns_none(self, caplog):
         from tools.mcp_tool_errors import _resolve_identity_header

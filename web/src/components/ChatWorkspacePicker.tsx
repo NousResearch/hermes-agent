@@ -2,7 +2,7 @@
  * ChatWorkspacePicker — choose which host directory a FRESH dashboard chat
  * starts in.
  *
- * The dashboard is the "drive Hermes from a phone or any browser" surface,
+ * The dashboard is the "drive Rabbit from a phone or any browser" surface,
  * yet every new /chat used to spawn in the dashboard process's launch
  * directory with no way to say "work in ~/code/foo". The Desktop sidebar
  * already knows the user's projects and discovered repos; this exposes the

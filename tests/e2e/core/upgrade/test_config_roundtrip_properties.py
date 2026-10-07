@@ -6,13 +6,13 @@ A seeded property / matrix layer over every surface that writes ``config.yaml`` 
       one key changes that key's line(s) only (comments, quoting, unicode, ``${VAR}`` templates,
       explicit-default values, dotted provider names and nulls all survive);
 * P2  "set one key" changes exactly one key, on every writer: in-process ``set_config_value`` over
-      EVERY documented scalar leaf of ``DEFAULT_CONFIG``, the real ``hermes config set`` CLI
+      EVERY documented scalar leaf of ``DEFAULT_CONFIG``, the real ``rabbit config set`` CLI
       subprocess, a real ``python -m tui_gateway.entry`` stdio JSON-RPC process (``config.set``),
       and the dashboard/Desktop ``PUT /api/config`` (partial bodies, like Desktop sends);
 * P3  a failed read never results in a clobbering write: for every single config read an
       operation performs, a transient ``EMFILE`` on exactly that read, plus unreadable, truncated
       and non-mapping files, must leave every section the operation did not target intact;
-* P4  Hermes's ``.env`` loaders are idempotent (self-references, placeholders, quoting), the
+* P4  Rabbit's ``.env`` loaders are idempotent (self-references, placeholders, quoting), the
       sanitizer is a fixed point, and ``save_env_value`` changes exactly one line;
 * P5  every config migration is idempotent from every historical ``_config_version`` and never
       clobbers user-set values;
@@ -43,12 +43,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
 
-import hermes_cli.config as C
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+import rabbit_cli.config as C
+from rabbit_cli.config_defaults import DEFAULT_CONFIG
 
 LATEST = int(DEFAULT_CONFIG["_config_version"])
 
@@ -226,7 +226,7 @@ def _value_for(default: Any, rng: random.Random, *, long: bool, env: dict[str, s
         return rng.choice([
             "A" * rng.randint(74, 85) + "D:\\CentBrowserPortable " + "B" * 40,
             " ".join(rng.choice(_WORDS) for _ in range(40)) + " \\scripts\\monitor-off-v3.ps1 end",
-            "x" * 150 + " " + "C:\\Users\\me\\.hermes\\scripts\\" + "y" * 90,
+            "x" * 150 + " " + "C:\\Users\\me\\.rabbit\\scripts\\" + "y" * 90,
         ])
     if roll < 0.08:
         return None
@@ -342,7 +342,7 @@ def _reset_config_caches(*, keep_lkg: bool = False) -> None:
 
 
 def _write_file(path: Path, text: str) -> None:
-    """Atomic replace (new inode), like every Hermes writer, so no cache can serve stale bytes."""
+    """Atomic replace (new inode), like every Rabbit writer, so no cache can serve stale bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.c18tmp")
     tmp.write_text(text, encoding="utf-8")
@@ -355,14 +355,14 @@ def _read(path: Path) -> str:
 
 @pytest.fixture
 def home(monkeypatch):
-    """The per-test HERMES_HOME the repo conftest sandboxes; config caches reset around the test."""
-    hh = Path(os.environ["HERMES_HOME"])
+    """The per-test RABBIT_HOME the repo conftest sandboxes; config caches reset around the test."""
+    hh = Path(os.environ["RABBIT_HOME"])
     hh.mkdir(parents=True, exist_ok=True)
     assert str(_cfg_path()).startswith(str(hh))
     _reset_config_caches()
     with contextlib.suppress(Exception):
         from tui_gateway import server
-        monkeypatch.setattr(server, "_hermes_home", hh)
+        monkeypatch.setattr(server, "_rabbit_home", hh)
     yield hh
     _reset_config_caches()
 
@@ -384,7 +384,7 @@ def _quiet():
 
 class ReadFaults:
     """Counts every read of config.yaml through the lowest-level YAML read seam
-    (``hermes_cli.config.fast_safe_load`` — every config.yaml reader in hermes_cli.config,
+    (``rabbit_cli.config.fast_safe_load`` — every config.yaml reader in rabbit_cli.config,
     ``read_user_config_raw`` and therefore tui_gateway go through it) and fails chosen reads with
     a transient ``EMFILE`` on an otherwise intact file."""
 
@@ -493,7 +493,7 @@ _SET_EXCLUDE = {
     ("model", "api_base"),            # alias rewritten to model.base_url
     ("_config_version",),
     ("display", "language"),          # validated against the live language set (bundled ∪ overlay ∪ packs);
-                                      # an unknown id is refused with the list — tests/hermes_cli/test_config_display_language.py
+                                      # an unknown id is refused with the list — tests/rabbit_cli/test_config_display_language.py
 }
 
 
@@ -565,13 +565,13 @@ def _dotted_provider(case: Case) -> str:
 
 
 def _cli(env: dict, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], cwd=str(WORKTREE), env=env,
+    return subprocess.run([sys.executable, "-m", "rabbit_cli.main", *args], cwd=str(WORKTREE), env=env,
                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 def _cli_home(tmp_path: Path, case: Case) -> tuple[dict, Path]:
     env = isolated_env(tmp_path / "cli", pythonpath=WORKTREE, extra=case.env)
-    cfg = Path(env["HERMES_HOME"]) / "config.yaml"
+    cfg = Path(env["RABBIT_HOME"]) / "config.yaml"
     _write_file(cfg, case.text)
     return env, cfg
 
@@ -630,8 +630,8 @@ def test_p2_env_lock_refusal_is_not_reported_as_success(key, tmp_path):
     managed = tmp_path / "managed"
     managed.mkdir()
     (managed / ".env").write_text("DEEPSEEK_API_KEY=sk-admin\nTELEGRAM_HOME_CHANNEL=111\n", encoding="utf-8")
-    env = isolated_env(tmp_path / "cli", pythonpath=WORKTREE, extra={"HERMES_MANAGED_DIR": str(managed)})
-    hh = Path(env["HERMES_HOME"])
+    env = isolated_env(tmp_path / "cli", pythonpath=WORKTREE, extra={"RABBIT_MANAGED_DIR": str(managed)})
+    hh = Path(env["RABBIT_HOME"])
     (hh / ".env").write_text("DEEPSEEK_API_KEY=sk-old\nTELEGRAM_HOME_CHANNEL=5\n", encoding="utf-8")
     cfg_text = "model:\n  default: deepseek-chat\n  api_key: sk-old\n"
     _write_file(hh / "config.yaml", cfg_text)
@@ -650,7 +650,7 @@ class _RpcProc:
     def __init__(self, root: Path):
         self.root = root
         self.env = isolated_env(root, pythonpath=WORKTREE)
-        self.home = Path(self.env["HERMES_HOME"])
+        self.home = Path(self.env["RABBIT_HOME"])
         _write_file(self.home / "config.yaml", "model_catalog:\n  enabled: false\n")
         self.stderr = open(root / "tui_gateway.stderr", "w", encoding="utf-8")
         self.proc = subprocess.Popen([sys.executable, "-m", "tui_gateway.entry"], cwd=str(WORKTREE), env=self.env,
@@ -759,7 +759,7 @@ def web_app():
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("starlette not installed")
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from rabbit_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     client = TestClient(app)  # no lifespan: requests only; profile/home resolved per request
     client.headers.update({_SESSION_HEADER_NAME: _SESSION_TOKEN})
     return client
@@ -1016,22 +1016,22 @@ def gen_dotenv(seed: int) -> tuple[str, list[str], dict[str, str]]:
 def env_restore(monkeypatch):
     saved = dict(os.environ)
     monkeypatch.setenv("PATH", _BASE_PATH)
-    monkeypatch.setenv("HERMES_MULTIPLEX_PROFILES", "0")
+    monkeypatch.setenv("RABBIT_MULTIPLEX_PROFILES", "0")
     yield
     os.environ.clear()
     os.environ.update(saved)
 
 
 @pytest.mark.parametrize("seed", P4_SEEDS)
-def test_p4_load_hermes_dotenv_is_idempotent(seed, home, env_restore, monkeypatch):
-    from hermes_cli.env_loader import load_hermes_dotenv
+def test_p4_load_rabbit_dotenv_is_idempotent(seed, home, env_restore, monkeypatch):
+    from rabbit_cli.env_loader import load_rabbit_dotenv
     text, keys, shell = gen_dotenv(seed)
     for k, v in shell.items():
         monkeypatch.setenv(k, v)
     (home / ".env").write_text(text, encoding="utf-8")
     snaps = []
     for _ in range(4):
-        load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+        load_rabbit_dotenv(rabbit_home=home, load_external_secrets=False)
         snaps.append({k: os.environ.get(k) for k in keys})
     assert all(s == snaps[0] for s in snaps), f"[seed={seed}] env drifted across reloads:\n" + "\n".join(
         f"{k}: {[s[k] for s in snaps]}" for k in keys if len({s[k] for s in snaps}) > 1)
@@ -1073,7 +1073,7 @@ def test_p4_env_parser_sanitizer_and_writer_round_trip(seed, home, env_restore):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _migration_start_versions() -> list[int | None]:
-    from hermes_cli.config_migrations import MIGRATIONS, SUPPORT_FLOOR_VERSION
+    from rabbit_cli.config_migrations import MIGRATIONS, SUPPORT_FLOOR_VERSION
     starts = sorted({v - 1 for v, _fn in MIGRATIONS if v - 1 >= SUPPORT_FLOOR_VERSION})
     return [None, *starts]  # None = a hand-written config with no _config_version (full ladder)
 
@@ -1200,7 +1200,7 @@ def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypa
     """No crash and no clobber of any OTHER section on load, effective resolution, gateway display
     resolvers, save, CLI set, TUI RPC and Desktop PUT (the #105674 `display: null` class)."""
     from gateway.display_config import resolve_display_setting, resolve_tool_progress
-    from hermes_cli.config_effective import load_user_config_effective
+    from rabbit_cli.config_effective import load_user_config_effective
     from tui_gateway import server
 
     text, tree, cfg, null_line = _p6_setup(section, monkeypatch)
@@ -1254,7 +1254,7 @@ def test_p6_all_sections_null_at_once_through_gateway_loader_and_migration(home,
     resolver and a migration from the previous schema version run without crashing; the
     migration stamps the latest version and keeps the file's comments."""
     from gateway.config import load_gateway_config
-    from hermes_cli.config_effective import load_user_config_effective
+    from rabbit_cli.config_effective import load_user_config_effective
 
     text = "# every section null\n" + "".join(f"{k}: null\n" for k in _TOP_LEVEL) + f"_config_version: {LATEST - 1}\n"
     cfg = _cfg_path()

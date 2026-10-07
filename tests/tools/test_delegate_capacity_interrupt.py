@@ -107,8 +107,8 @@ def _batch(parent, *children):
 
 @pytest.fixture
 def registry_state(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.delenv("RABBIT_IGNORE_USER_CONFIG", raising=False)
     (tmp_path / "config.yaml").write_text(
         "delegation:\n  max_concurrent_children: 1\n  worktree_isolation: false\n",
         encoding="utf-8",

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const STORAGE_KEY = 'hermes.desktop.keybinds'
+const STORAGE_KEY = 'rabbit.desktop.keybinds'
 
 function storedDiff(): Record<string, string[]> {
   return JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}')

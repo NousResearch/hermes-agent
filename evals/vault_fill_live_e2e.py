@@ -1,11 +1,11 @@
-"""Live E2E: vault fill through the REAL browser_exec path (Browser Use CLI + Hermes' packaged Chromium).
+"""Live E2E: vault fill through the REAL browser_exec path (Browser Use CLI + Rabbit' packaged Chromium).
 
 Proves problem (1) of the #106480 re-review is fixed: on the default browser backend the login page lives in
 a tab browser_exec opened, the supervisor is attached by browser_exec itself, browser_vault_fill focuses the
 tab on the bound origin and injects the password over the supervisor's CDP WebSocket, and the secret is absent
 from every model-facing result. Also exercises a payment fill (confirm gate, card fields, decline = no write).
 
-Run: HERMES_E2E_BROWSER=1 <venv>/bin/python evals/vault_fill_live_e2e.py
+Run: RABBIT_E2E_BROWSER=1 <venv>/bin/python evals/vault_fill_live_e2e.py
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-HOME = Path(tempfile.mkdtemp(prefix="hermes-vault-e2e-"))
-os.environ["HERMES_HOME"] = str(HOME)
+HOME = Path(tempfile.mkdtemp(prefix="rabbit-vault-e2e-"))
+os.environ["RABBIT_HOME"] = str(HOME)
 
 PAGES = {
     "/login": b"""<!doctype html><title>login</title>

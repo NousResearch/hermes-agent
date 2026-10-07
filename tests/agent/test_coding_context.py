@@ -267,7 +267,7 @@ class TestEditFormatSteering:
         # editors) steer to replace, not neutral.
         for m in (
             "google/gemini-3-pro", "deepseek-v3.2", "qwen3-coder",
-            "moonshot/kimi-k2", "zai/glm-4.6", "nousresearch/hermes-4-405b",
+            "moonshot/kimi-k2", "zai/glm-4.6",
         ):
             assert cc._model_family(m) == "replace"
         # Unknown family and no model both fall through to neutral wording.

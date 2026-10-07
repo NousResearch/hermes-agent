@@ -58,8 +58,8 @@ class TestSSHBulkUpload:
         f2.write_text("bbb")
 
         files = [
-            (str(f1), "/home/testuser/.hermes/skills/a.txt"),
-            (str(f2), "/home/testuser/.hermes/credentials/b.txt"),
+            (str(f1), "/home/testuser/.rabbit/skills/a.txt"),
+            (str(f2), "/home/testuser/.rabbit/credentials/b.txt"),
         ]
 
         # Mock subprocess.run for mkdir and Popen for tar pipe
@@ -85,8 +85,8 @@ class TestSSHBulkUpload:
         # Should contain mkdir -p with both parent dirs
         mkdir_str = " ".join(mkdir_cmd)
         assert "mkdir -p" in mkdir_str
-        assert "/home/testuser/.hermes/skills" in mkdir_str
-        assert "/home/testuser/.hermes/credentials" in mkdir_str
+        assert "/home/testuser/.rabbit/skills" in mkdir_str
+        assert "/home/testuser/.rabbit/credentials" in mkdir_str
 
     def test_staging_symlinks_mirror_remote_layout(self, mock_env, tmp_path):
         """Staged file in staging dir should mirror the remote path structure.
@@ -99,7 +99,7 @@ class TestSSHBulkUpload:
         f1.write_text("content a")
 
         files = [
-            (str(f1), "/home/testuser/.hermes/skills/my_skill.md"),
+            (str(f1), "/home/testuser/.rabbit/skills/my_skill.md"),
         ]
 
         staging_paths = []
@@ -140,7 +140,7 @@ class TestSSHBulkUpload:
         """Regression: do not archive /home/<user> path components."""
         f1 = tmp_path / "nested.txt"
         f1.write_text("nested")
-        files = [(str(f1), "/home/testuser/.hermes/cache/nested.txt")]
+        files = [(str(f1), "/home/testuser/.rabbit/cache/nested.txt")]
 
         def capture_tar_cmd(cmd, **kwargs):
             if cmd[0] == "tar":
@@ -169,7 +169,7 @@ class TestSSHBulkUpload:
         """TimeoutExpired during communicate should kill both processes."""
         f1 = tmp_path / "t.txt"
         f1.write_text("t")
-        files = [(str(f1), "/home/testuser/.hermes/skills/t.txt")]
+        files = [(str(f1), "/home/testuser/.rabbit/skills/t.txt")]
 
         mock_tar = MagicMock()
         mock_tar.stdout = MagicMock()
@@ -206,7 +206,7 @@ class TestSSHBulkUploadEdgeCases:
         """If SSH Popen raises, tar process must be killed and cleaned up."""
         f1 = tmp_path / "e.txt"
         f1.write_text("e")
-        files = [(str(f1), "/home/testuser/.hermes/skills/e.txt")]
+        files = [(str(f1), "/home/testuser/.rabbit/skills/e.txt")]
 
         mock_tar = _mock_proc()
 

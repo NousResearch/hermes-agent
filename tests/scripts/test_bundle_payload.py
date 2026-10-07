@@ -26,9 +26,9 @@ def test_wrapper_rejects_unresolved_template_fields(tmp_path, monkeypatch):
     from scripts.build import launchers
 
     template = tmp_path / "launcher_wrapper.py"
-    template.write_text('entry = "__HERMES_ENTRY_MODULE__"\nmissing = "__HERMES_NEW__"\n', encoding="utf-8")
+    template.write_text('entry = "__RABBIT_ENTRY_MODULE__"\nmissing = "__RABBIT_NEW__"\n', encoding="utf-8")
     monkeypatch.setattr(launchers, "__file__", str(tmp_path / "payload.py"))
-    with pytest.raises(ValueError, match="__HERMES_NEW__"):
+    with pytest.raises(ValueError, match="__RABBIT_NEW__"):
         launchers.render_wrapper("entry:run", "../app", "../venv/Lib/site-packages")
 
 
@@ -61,10 +61,10 @@ def test_both_launchers_keep_active_home_and_call_declared_function(tmp_path, ta
     (root / "bin").mkdir(parents=True)
     (root / "app").mkdir()
     (root / "python").symlink_to(sys.executable)
-    (root / "app/entry.py").write_text("import json,os,sys\ndef run():\n print(json.dumps([os.environ['HERMES_HOME'],sys.argv[1:]])); return 7\n", encoding="utf-8")
+    (root / "app/entry.py").write_text("import json,os,sys\ndef run():\n print(json.dumps([os.environ['RABBIT_HOME'],sys.argv[1:]])); return 7\n", encoding="utf-8")
     launcher = root / "bin/custom"
     launcher.write_text(posix_launcher("custom", "entry:run", python="python", repo="app", site="deps", target=target), encoding="utf-8")
     result = subprocess.run(["sh", str(launcher), "two words", "$(nope)", ""], cwd=tmp_path,
-                            env={**os.environ, "HERMES_HOME": str(tmp_path / "custom/profiles/memory")}, capture_output=True, text=True)
+                            env={**os.environ, "RABBIT_HOME": str(tmp_path / "custom/profiles/memory")}, capture_output=True, text=True)
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout) == [str(tmp_path / "custom/profiles/memory"), ["two words", "$(nope)", ""]]

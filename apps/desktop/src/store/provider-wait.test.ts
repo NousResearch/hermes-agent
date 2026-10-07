@@ -5,7 +5,7 @@ import { parseModelLoadWait, providerWaitText } from './provider-wait'
 // The load-notice string is minted by the backend
 // (agent/chat_completion_helpers._managed_local_load_notice) and parsed
 // here — these tests pin the desktop side of that cross-language contract
-// (the backend pins its side in tests/hermes_cli/test_load_progress.py).
+// (the backend pins its side in tests/rabbit_cli/test_load_progress.py).
 describe('providerWaitText', () => {
   it('accepts the managed-local load frame', () => {
     const frame = '⏳ loading Qwen3.6-35B-A3B-UD-Q4_K_M into memory — 42% (responses start once the model is loaded)'

@@ -20,12 +20,12 @@ import pytest
 class TestDiscovery:
     def test_plugin_is_discovered_as_standalone_opt_in(self, tmp_path, monkeypatch):
         """Scanner should find the plugin but NOT load it by default."""
-        from hermes_cli import plugins as plugins_mod
+        from rabbit_cli import plugins as plugins_mod
 
-        # Isolated HERMES_HOME so we don't read the developer's config.yaml.
-        home = tmp_path / ".hermes"
+        # Isolated RABBIT_HOME so we don't read the developer's config.yaml.
+        home = tmp_path / ".rabbit"
         home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         manager = plugins_mod.PluginManager()
@@ -54,7 +54,7 @@ class TestRuntimeGate:
 
     def test_get_langfuse_returns_none_without_credentials(self, monkeypatch):
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "RABBIT_LANGFUSE_PUBLIC_KEY", "RABBIT_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
@@ -83,7 +83,7 @@ class TestHooksInert:
     def test_hooks_noop_without_client(self, monkeypatch):
         """All 6 hooks must return without raising when _get_langfuse() is None."""
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "RABBIT_LANGFUSE_PUBLIC_KEY", "RABBIT_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
@@ -356,11 +356,11 @@ class TestTurnTraceIsolation:
 # Placeholder-credential guard (#23823).
 #
 # Regression coverage for the silent-failure bug: when an operator leaves
-# HERMES_LANGFUSE_PUBLIC_KEY / SECRET_KEY at a template value like
+# RABBIT_LANGFUSE_PUBLIC_KEY / SECRET_KEY at a template value like
 # "placeholder", "test-key", or "your-langfuse-key", the SDK accepts the
 # credentials at construction time (it does no server-side validation
 # eagerly) but drops every trace at flush time, with no signal in the
-# Hermes logs.  The fix in `_get_langfuse()` validates the documented
+# Rabbit logs.  The fix in `_get_langfuse()` validates the documented
 # `pk-lf-` / `sk-lf-` prefix Langfuse always issues, surfaces a one-shot
 # warning naming the offending env var(s), and short-circuits via the
 # same `_INIT_FAILED` path used for missing credentials so subsequent
@@ -402,7 +402,7 @@ class TestPlaceholderKeyDetection:
     @staticmethod
     def _clear_env(monkeypatch):
         for k in (
-            "HERMES_LANGFUSE_PUBLIC_KEY", "HERMES_LANGFUSE_SECRET_KEY",
+            "RABBIT_LANGFUSE_PUBLIC_KEY", "RABBIT_LANGFUSE_SECRET_KEY",
             "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
         ):
             monkeypatch.delenv(k, raising=False)
@@ -415,10 +415,10 @@ class TestPlaceholderKeyDetection:
         self._clear_env(monkeypatch)
         plugin = self._fresh_plugin()
         assert plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
+            "RABBIT_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz"
         ) is None
         assert plugin._validate_langfuse_key(
-            "HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
+            "RABBIT_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz"
         ) is None
 
 
@@ -430,13 +430,13 @@ class TestPlaceholderKeyDetection:
 
     def test_placeholder_public_key_warns_and_skips(self, monkeypatch, caplog):
         self._clear_env(monkeypatch)
-        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        monkeypatch.setenv("RABBIT_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("RABBIT_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
         text = caplog.text
-        assert "HERMES_LANGFUSE_PUBLIC_KEY" in text
+        assert "RABBIT_LANGFUSE_PUBLIC_KEY" in text
         assert "'placeholder'" in text
         assert "pk-lf-" in text
         # The valid secret value must NOT appear (the var NAME does, in
@@ -447,13 +447,13 @@ class TestPlaceholderKeyDetection:
 
     def test_placeholder_secret_key_warns_and_skips(self, monkeypatch, caplog):
         self._clear_env(monkeypatch)
-        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "test-key")
+        monkeypatch.setenv("RABBIT_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("RABBIT_LANGFUSE_SECRET_KEY", "test-key")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
         text = caplog.text
-        assert "HERMES_LANGFUSE_SECRET_KEY" in text
+        assert "RABBIT_LANGFUSE_SECRET_KEY" in text
         assert "'test-key'" in text
         assert "sk-lf-" in text
         # The valid public value must NOT appear.
@@ -462,8 +462,8 @@ class TestPlaceholderKeyDetection:
 
     def test_both_placeholders_one_warning_with_both_keys(self, monkeypatch, caplog):
         self._clear_env(monkeypatch)
-        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
+        monkeypatch.setenv("RABBIT_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("RABBIT_LANGFUSE_SECRET_KEY", "placeholder")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             assert plugin._get_langfuse() is None
@@ -474,8 +474,8 @@ class TestPlaceholderKeyDetection:
             + "\n".join(r.getMessage() for r in warnings)
         )
         text = warnings[0].getMessage()
-        assert "HERMES_LANGFUSE_PUBLIC_KEY" in text
-        assert "HERMES_LANGFUSE_SECRET_KEY" in text
+        assert "RABBIT_LANGFUSE_PUBLIC_KEY" in text
+        assert "RABBIT_LANGFUSE_SECRET_KEY" in text
 
     def test_repeated_calls_do_not_re_warn(self, monkeypatch, caplog):
         """The cached ``_INIT_FAILED`` sentinel must short-circuit
@@ -483,8 +483,8 @@ class TestPlaceholderKeyDetection:
         line — otherwise a busy gateway will spam the operator's
         terminal."""
         self._clear_env(monkeypatch)
-        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "placeholder")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "placeholder")
+        monkeypatch.setenv("RABBIT_LANGFUSE_PUBLIC_KEY", "placeholder")
+        monkeypatch.setenv("RABBIT_LANGFUSE_SECRET_KEY", "placeholder")
         plugin = self._fresh_plugin(monkeypatch)
         with caplog.at_level(logging.WARNING, logger=self.LOGGER_NAME):
             for _ in range(15):
@@ -1025,7 +1025,7 @@ class TestCostTotal:
 
 
 # ---------------------------------------------------------------------------
-# Capture modes: metadata | sanitized | full  (HERMES_LANGFUSE_CAPTURE)
+# Capture modes: metadata | sanitized | full  (RABBIT_LANGFUSE_CAPTURE)
 # ---------------------------------------------------------------------------
 
 class TestCaptureModes:
@@ -1035,21 +1035,21 @@ class TestCaptureModes:
 
     def test_default_mode_is_sanitized(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.delenv("HERMES_LANGFUSE_CAPTURE", raising=False)
+        monkeypatch.delenv("RABBIT_LANGFUSE_CAPTURE", raising=False)
         assert mod._capture_mode() == "sanitized"
 
     def test_invalid_mode_falls_back_and_warns_once(self, monkeypatch, caplog):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "everything")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "everything")
         with caplog.at_level(logging.WARNING):
             assert mod._capture_mode() == "sanitized"
             assert mod._capture_mode() == "sanitized"
-        warnings = [r for r in caplog.records if "HERMES_LANGFUSE_CAPTURE" in r.getMessage()]
+        warnings = [r for r in caplog.records if "RABBIT_LANGFUSE_CAPTURE" in r.getMessage()]
         assert len(warnings) == 1
 
     def test_metadata_mode_omits_content(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "metadata")
         out = mod._capture_content("top secret prompt text")
         assert out == {"omitted": True, "type": "text", "chars": 22}
         obj = mod._capture_content({"password": "hunter22", "path": "/x"})
@@ -1059,7 +1059,7 @@ class TestCaptureModes:
 
     def test_metadata_mode_message_serialization_keeps_roles(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "metadata")
         msgs = mod._serialize_messages([
             {"role": "user", "content": "my ssn is 123-45-6789"},
             {"role": "assistant", "content": "noted"},
@@ -1070,7 +1070,7 @@ class TestCaptureModes:
 
     def test_sanitized_mode_redacts_secrets(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "sanitized")
         samples = {
             "openai": "here sk-" + "a" * 20 + " done",
             "anthropic": "key sk-ant-" + "a" * 20 + " x",
@@ -1089,7 +1089,7 @@ class TestCaptureModes:
 
     def test_sanitized_mode_redacts_before_truncation(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "sanitized")
         secret = "sk-" + "z" * 40
         text = "x" * 100 + " " + secret + " " + "y" * 100
         out = mod._truncate_text(text, 120)
@@ -1098,13 +1098,13 @@ class TestCaptureModes:
 
     def test_sanitized_mode_keeps_ordinary_text(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "sanitized")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "sanitized")
         text = "refactor the memory manager to emit spans"
         assert mod._capture_content(text) == text
 
     def test_full_mode_keeps_secret_shaped_text(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "full")
         text = "here sk-abcdefghijklmnop1234 done"
         assert mod._capture_content(text) == text
 
@@ -1197,7 +1197,7 @@ class TestApiRequestErrorHook:
 
     def test_error_message_respects_capture_mode(self, monkeypatch):
         mod = self._fresh_plugin()
-        monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "metadata")
+        monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "metadata")
         monkeypatch.setattr(mod, "_get_langfuse", lambda: object())
         mod._TRACE_STATE.clear()
         turn_id = "s:t:turn3"
@@ -1552,7 +1552,7 @@ class TestMoAReferenceGenerations:
         assert gens == []
 
 class TestAtexitFinalization(TestTurnTraceIsolation):
-    """Short-lived processes (kanban workers, `hermes chat -q`, cron) can exit
+    """Short-lived processes (kanban workers, `rabbit chat -q`, cron) can exit
     with tool calls still queued — the root span never ends and the backend
     shows an anonymous trace (no name/session/metadata). _finalize_all_traces
     (registered atexit after client construction) must end every open root."""
@@ -1595,8 +1595,8 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
         monkeypatch.setattr(
             _atexit, "register", lambda fn, *a, **k: registered.append(fn)
         )
-        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-0123456789abcdef")
-        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-0123456789abcdef")
+        monkeypatch.setenv("RABBIT_LANGFUSE_PUBLIC_KEY", "pk-lf-0123456789abcdef")
+        monkeypatch.setenv("RABBIT_LANGFUSE_SECRET_KEY", "sk-lf-0123456789abcdef")
         mod._LANGFUSE_CLIENT = None
 
         assert mod._get_langfuse() is not None
@@ -1609,7 +1609,7 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
         credentials at all — it ends the open roots and flushes each settled client, so neither
         profile loses its pending traces."""
         from agent import secret_scope
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         mod = self._fresh_plugin()
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -1631,16 +1631,16 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
         for profile in ("alpha", "beta"):
             home = tmp_path / profile
             home.mkdir()
-            home_token = set_hermes_home_override(home)
+            home_token = set_rabbit_home_override(home)
             scope_token = secret_scope.set_secret_scope({
-                "HERMES_LANGFUSE_PUBLIC_KEY": f"pk-lf-{profile}-0123456789",
-                "HERMES_LANGFUSE_SECRET_KEY": f"sk-lf-{profile}-0123456789",
+                "RABBIT_LANGFUSE_PUBLIC_KEY": f"pk-lf-{profile}-0123456789",
+                "RABBIT_LANGFUSE_SECRET_KEY": f"sk-lf-{profile}-0123456789",
             })
             try:
                 self._run_turn(mod, session=f"{profile}-turn", turn_n=0, finalize=False)
             finally:
                 secret_scope.reset_secret_scope(scope_token)
-                reset_hermes_home_override(home_token)
+                reset_rabbit_home_override(home_token)
 
         assert len(mod._TRACE_STATE) == 2 and len(mod._LANGFUSE_CLIENT_BY_HOME) == 2
         assert mod._LANGFUSE_CLIENT is None and secret_scope.current_secret_scope() is None
@@ -1654,7 +1654,7 @@ class TestAtexitFinalization(TestTurnTraceIsolation):
 class TestSystemPromptInGenerationInput:
     """The generation input must carry the system prompt even for providers
     that move it out of ``messages``: Anthropic Messages (``system`` kwarg)
-    and the Responses/Codex API (``instructions``).  Hermes forwards it to
+    and the Responses/Codex API (``instructions``).  Rabbit forwards it to
     hooks as ``system_prompt``; the plugin prepends a ``role: system`` entry.
 
     Regression for the trace gap discussed in PR #32175 (Anthropic) and its
@@ -1744,7 +1744,7 @@ class TestSystemPromptCrossesHookBoundary:
     the regression coverage PR #32175's review asked for: verify the
     provider-specific request shape (Anthropic ``system`` kwarg, Codex
     ``instructions``) actually reaches the Langfuse generation input, with
-    no Hermes internals mocked (only the Langfuse client is faked)."""
+    no Rabbit internals mocked (only the Langfuse client is faked)."""
 
     def _make_mod(self):
         sys.modules.pop("plugins.observability.langfuse", None)

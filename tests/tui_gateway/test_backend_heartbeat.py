@@ -10,7 +10,7 @@ refreshes it periodically.  This file verifies:
   existing orphan-sweep wiring pattern).
 * Failure to start the refresher is swallowed so a malformed DB
   never breaks gateway startup.
-* ``HERMES_GATEWAY_HEARTBEAT_REFRESH_S=0`` disables the refresher.
+* ``RABBIT_GATEWAY_HEARTBEAT_REFRESH_S=0`` disables the refresher.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ import io
 
 import pytest
 
-from hermes_state import SessionDB
-from hermes_cli import model_switch_providers
+from rabbit_state import SessionDB
+from rabbit_cli import model_switch_providers
 
 
 IDLE_S = 6 * 3600

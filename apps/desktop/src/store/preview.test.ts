@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
@@ -301,7 +301,7 @@ describe('preview store', () => {
     expect(closeBrowserPreviewMatchingLiveUrl('https://example.com/dashboard')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
     expect($browserPages.get()[tabId]).toBeUndefined()
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('prefers the tab currently showing a URL over one that navigated away from it', () => {
@@ -333,7 +333,7 @@ describe('preview store', () => {
     openPreview(urlTarget('http://localhost:5174'))
     openPreview(artifactTarget('session-1:dashboard'))
 
-    const stored = window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? ''
+    const stored = window.localStorage.getItem('rabbit.desktop.previewTabs.v2') ?? ''
 
     expect(stored).toContain('/work/demo.html')
     expect(stored).toContain('localhost:5174')
@@ -343,7 +343,7 @@ describe('preview store', () => {
   it('strips inline image bytes rather than pushing megabytes into storage', () => {
     openPreview({ ...fileTarget('/work/shot.png'), dataUrl: 'data:image/png;base64,AAAA', previewKind: 'image' })
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '').not.toContain('base64')
+    expect(window.localStorage.getItem('rabbit.desktop.previewTabs.v2') ?? '').not.toContain('base64')
   })
 
   it('does not persist remote HTML without its in-memory document', () => {
@@ -351,7 +351,7 @@ describe('preview store', () => {
 
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('preserves an explicit HTML source fallback', () => {
@@ -367,7 +367,7 @@ describe('preview store', () => {
 
     // Nothing persistable, so the profile's bucket is empty and the key is
     // removed rather than stored as an empty list (matching the tiles store).
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('tombstones a confirmed-missing tab in place without closing it', () => {
@@ -498,7 +498,7 @@ describe('preview session scoping (#73890)', () => {
 
       prunePreviewTabsForSession('stored-del-x')
 
-      const stored = JSON.parse(window.localStorage.getItem('hermes.desktop.previewTabs.v2') ?? '{}') as Record<
+      const stored = JSON.parse(window.localStorage.getItem('rabbit.desktop.previewTabs.v2') ?? '{}') as Record<
         string,
         { target: PreviewTarget }[]
       >
@@ -902,7 +902,7 @@ describe('preview session scoping (#73890)', () => {
 
     // A fresh pop-out renderer: no session focus, its view on the default
     // bucket, the tab in another profile's bucket — found by id in storage.
-    window.localStorage.setItem('hermes.desktop.previewTabs.v2', JSON.stringify({ work: $previewTabs.get() }))
+    window.localStorage.setItem('rabbit.desktop.previewTabs.v2', JSON.stringify({ work: $previewTabs.get() }))
     const fresh = await relaunchedPreviewStore()
 
     expect(fresh.$previewTabs.get()).toHaveLength(0)

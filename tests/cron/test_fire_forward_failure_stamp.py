@@ -4,7 +4,7 @@ When the hosted fire path (NAS -> dashboard -> loopback forward to the
 gateway api_server) cannot reach the gateway, no execution row is ever
 created — the miss used to be invisible outside gui.log. The dashboard fire
 webhook now stamps ``last_fire_error`` on the job record via
-``note_fire_forward_failure`` so `cronjob list`, `hermes cron list`, and the
+``note_fire_forward_failure`` so `cronjob list`, `rabbit cron list`, and the
 dashboard surface it, and ``mark_job_run`` clears the stamp on the next
 successful run so it always describes CURRENT auto-fire health.
 """

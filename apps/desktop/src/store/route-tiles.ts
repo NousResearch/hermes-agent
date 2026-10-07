@@ -16,7 +16,7 @@ export interface RouteTile {
   dir?: SplitDir
 }
 
-const TILES_KEY = 'hermes.desktop.routeTiles.v1'
+const TILES_KEY = 'rabbit.desktop.routeTiles.v1'
 
 function loadTiles(): RouteTile[] {
   const parsed = readJson<unknown>(TILES_KEY)

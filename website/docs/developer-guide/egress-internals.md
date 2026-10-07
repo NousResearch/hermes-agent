@@ -1,12 +1,12 @@
 ---
 sidebar_position: 14
 title: "Egress proxy internals"
-description: "How the iron-proxy egress firewall integrates with Hermes — module layout, lifecycle, security invariants, and extension points"
+description: "How the iron-proxy egress firewall integrates with Rabbit — module layout, lifecycle, security invariants, and extension points"
 ---
 
 # Egress proxy internals
 
-This page covers the architecture of the egress credential-injection firewall (`hermes egress` / iron-proxy) from a contributor / plugin author's perspective. End-user setup + usage docs live at [Egress proxy](../user-guide/egress/iron-proxy.md).
+This page covers the architecture of the egress credential-injection firewall (`rabbit egress` / iron-proxy) from a contributor / plugin author's perspective. End-user setup + usage docs live at [Egress proxy](../user-guide/egress/iron-proxy.md).
 
 The threat model and high-level design are summarised on the user page; this page is about *how* it's wired, where the security-relevant code lives, and what invariants you have to preserve if you touch it.
 
@@ -20,19 +20,19 @@ agent/proxy_sources/iron_proxy.py     Core: binary lookup, GPG checks, CA gen, c
                                        subprocess lifecycle, mappings I/O, PID/nonce
                                        defense.  Pure-function surface where possible.
 
-hermes_cli/proxy_cli.py               Wizard + slash command handlers.
-                                       `hermes egress {install,setup,start,stop,
+rabbit_cli/proxy_cli.py               Wizard + slash command handlers.
+                                       `rabbit egress {install,setup,start,stop,
                                        status,disable,config}`.  Wires the
                                        core module into argparse.
 
-hermes_cli/subcommands/egress.py:_dispatch_egress
+rabbit_cli/subcommands/egress.py:_dispatch_egress
                                        Top-level subparser dispatcher.
                                        dest='egress_command' (intentionally
                                        disjoint from the inbound OAuth
-                                       `hermes proxy` subparser, which uses
+                                       `rabbit proxy` subparser, which uses
                                        dest='proxy_command').
 
-hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
+rabbit_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
                                        Adding a knob means: add it here, add a
                                        wizard prompt or `setdefault` in
                                        proxy_cli.cmd_setup, and document it
@@ -46,7 +46,7 @@ tools/environments/docker.py
   DockerEnvironment.__init__          Docker-side merge logic: collision
                                        detection against critical egress vars,
                                        NODE_OPTIONS append-merge via the
-                                       _HERMES_EGRESS_NODE_OPTIONS_APPEND
+                                       _RABBIT_EGRESS_NODE_OPTIONS_APPEND
                                        sentinel, enforce_on_docker precedence.
 
 tests/agent/test_iron_proxy.py              Hermetic tests (~70).  Binary install
@@ -55,12 +55,12 @@ tests/agent/test_iron_proxy.py              Hermetic tests (~70).  Binary instal
                                        deny CIDR defaults, bind policy, CA
                                        TOCTOU, ensure_audit_log behaviour, etc.
 
-tests/hermes_cli/test_iron_proxy_cli.py          CLI handler unit tests (~20).  Argparse
+tests/rabbit_cli/test_iron_proxy_cli.py          CLI handler unit tests (~20).  Argparse
                                        wiring, fail-loud paths, BWS refresh
                                        wire-up, dest='egress_command'
                                        regression guard.
 
-tests/agent/test_iron_proxy_e2e.py          Live E2E (gated on HERMES_RUN_E2E=1).
+tests/agent/test_iron_proxy_e2e.py          Live E2E (gated on RABBIT_RUN_E2E=1).
                                        Real iron-proxy binary, real curl,
                                        end-to-end token swap verified.
 ```
@@ -68,7 +68,7 @@ tests/agent/test_iron_proxy_e2e.py          Live E2E (gated on HERMES_RUN_E2E=1)
 ## Lifecycle
 
 ```text
-hermes egress install
+rabbit egress install
   -> agent.proxy_sources.iron_proxy.install_iron_proxy(force=...)
        pm.ensure("iron-proxy", explicit=True) installs or repairs the entry.
        PM checks archive and provenance hashes against pm/lock.json.
@@ -79,7 +79,7 @@ hermes egress install
        pm.installed_package("iron-proxy").binary returns the selected path.
        _VERSION_CACHE.pop(target) makes the next status call probe --version.
 
-hermes egress setup [--from-bitwarden | --no-bitwarden] [--rotate-tokens]
+rabbit egress setup [--from-bitwarden | --no-bitwarden] [--rotate-tokens]
   -> proxy_cli.cmd_setup
        Step 1. find_iron_proxy(install_if_missing=False) -> install if absent.
        Step 2. ensure_ca_cert()
@@ -102,7 +102,7 @@ hermes egress setup [--from-bitwarden | --no-bitwarden] [--rotate-tokens]
                (do NOT silently downgrade bitwarden -> env on re-run);
                save_config(cfg).
 
-hermes egress start
+rabbit egress start
   -> proxy_cli.cmd_start
        Pre-checks (refuse-start path):
          - credential_source=bitwarden? -> pre-validate access_token_env + project_id
@@ -131,7 +131,7 @@ hermes egress start
                 time.sleep(0.1)
             If not listening at exit: _kill_and_wait(proc) + unlink pidfile + raise.
 
-hermes egress stop
+rabbit egress stop
   -> iron_proxy.stop_proxy
        _read_pid + _pid_alive guard.
        starttime_before = _pid_proc_starttime(pid)   # Linux only; None elsewhere
@@ -151,7 +151,7 @@ These are the load-bearing properties.  If you touch the module, you must preser
 
 | Path | Mode | Test |
 |---|---|---|
-| `~/.hermes/proxy/` (dir) | `0o700` | `test_proxy_state_dir_is_0o700` |
+| `~/.rabbit/proxy/` (dir) | `0o700` | `test_proxy_state_dir_is_0o700` |
 | `ca.key` | `0o600` | `test_ca_key_created_with_0o600` |
 | `ca.crt` | `0o644` | (implicit; chmod call in `ensure_ca_cert`) |
 | `proxy.yaml` | `0o600` | (chmod after atomic rename in `write_proxy_config`) |
@@ -183,7 +183,7 @@ Regression: `test_default_bind_is_loopback_not_zero_zero` (asserts no INADDR_ANY
 
 ### Metrics port collision
 
-`metrics.listen` defaults to `:9090` in iron-proxy v0.39 — the SAME port as Hermes's default `tunnel_port: 9090`.  `build_proxy_config` MUST explicitly pin `metrics.listen: 127.0.0.1:0` so the metrics binding gets an ephemeral loopback port that can never collide with the proxy listener regardless of operator-chosen `tunnel_port`.
+`metrics.listen` defaults to `:9090` in iron-proxy v0.39 — the SAME port as Rabbit's default `tunnel_port: 9090`.  `build_proxy_config` MUST explicitly pin `metrics.listen: 127.0.0.1:0` so the metrics binding gets an ephemeral loopback port that can never collide with the proxy listener regardless of operator-chosen `tunnel_port`.
 
 Regression: `test_metrics_listener_pinned_to_loopback_ephemeral`.
 
@@ -226,13 +226,13 @@ Regression: `test_stop_proxy_suppresses_sigkill_on_pid_recycle`, `test_pid_proc_
 
 ### Token preservation on re-setup
 
-`merge_mappings(existing, discovered, rotate=False)` MUST return prior tokens for providers that overlap.  Re-running `hermes egress setup` cannot silently 401 running sandboxes.  `--rotate-tokens` is the explicit opt-in.
+`merge_mappings(existing, discovered, rotate=False)` MUST return prior tokens for providers that overlap.  Re-running `rabbit egress setup` cannot silently 401 running sandboxes.  `--rotate-tokens` is the explicit opt-in.
 
 Regression: `test_merge_mappings_preserves_existing_tokens`, `test_merge_mappings_rotate_mints_fresh_tokens`.
 
 ### `credential_source` preservation
 
-`cmd_setup` MUST NOT downgrade `credential_source: bitwarden` to `env` on re-run without an explicit `--no-bitwarden` flag.  Running `hermes egress setup` (no flag) preserves whatever was previously configured.
+`cmd_setup` MUST NOT downgrade `credential_source: bitwarden` to `env` on re-run without an explicit `--no-bitwarden` flag.  Running `rabbit egress setup` (no flag) preserves whatever was previously configured.
 
 Tested via the `cmd_setup` flow in CLI tests (the bitwarden-preservation path is exercised when `--from-bitwarden` is followed by a plain `setup` re-run).
 
@@ -270,7 +270,7 @@ Use `aliases` ONLY for interchangeable env-var names of the *same* credential (e
 
 ### Adding a new signature-auth provider (uncovered)
 
-If the provider uses SigV4 / SDK-minted OAuth / request signatures, a static header swap cannot cover it.  Add the env var to `_NON_BEARER_PROVIDERS` so the wizard and `hermes egress status` warn about it:
+If the provider uses SigV4 / SDK-minted OAuth / request signatures, a static header swap cannot cover it.  Add the env var to `_NON_BEARER_PROVIDERS` so the wizard and `rabbit egress status` warn about it:
 
 ```python
 _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
@@ -286,36 +286,36 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
 1. Reads `load_config().get("proxy", {})`; returns empty args if `enabled` is false.
 2. Calls `iron_proxy.get_status()`; surfaces `enforce` semantics on `configured` / `pid` / `listening` / `ca_cert_path` failure paths.
 3. Calls `iron_proxy.load_mappings()`; refuses to mount if empty AND `enforce_on_docker: true`.
-4. Sets the seven env vars (HTTPS_PROXY, NO_PROXY, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS, HERMES_EGRESS_PROXY) and the per-mapping `HERMES_PROXY_TOKEN_<NAME>` vars.
-5. Distributes the CA cert into the sandbox at a path the runtime will trust (typically `/etc/ssl/certs/hermes-egress-ca.crt`).
+4. Sets the seven env vars (HTTPS_PROXY, NO_PROXY, REQUESTS_CA_BUNDLE, SSL_CERT_FILE, CURL_CA_BUNDLE, NODE_EXTRA_CA_CERTS, RABBIT_EGRESS_PROXY) and the per-mapping `RABBIT_PROXY_TOKEN_<NAME>` vars.
+5. Distributes the CA cert into the sandbox at a path the runtime will trust (typically `/etc/ssl/certs/rabbit-egress-ca.crt`).
 6. Implements collision detection against the user's backend-specific env config.
 
 The Docker implementation is ~150 lines; expect similar volume for Modal / Daytona / SSH.
 
 ### Subscribing to per-request audit events
 
-iron-proxy writes line-delimited JSON to `~/.hermes/proxy/iron-proxy.log` on the currently pinned v0.39 (daemon + per-request records combined; see "Logging on iron-proxy v0.39" in the user guide).  A plugin / external watcher can tail that file and react to allowlist denials, secret swaps, or upstream errors.  When the pinned version is bumped to one that supports `log.audit_path`, the per-request stream moves to `audit.log` and watchers wired to that path go live without operator action.  The schema is documented at [docs.iron.sh/audit](https://docs.iron.sh/audit) (link).
+iron-proxy writes line-delimited JSON to `~/.rabbit/proxy/iron-proxy.log` on the currently pinned v0.39 (daemon + per-request records combined; see "Logging on iron-proxy v0.39" in the user guide).  A plugin / external watcher can tail that file and react to allowlist denials, secret swaps, or upstream errors.  When the pinned version is bumped to one that supports `log.audit_path`, the per-request stream moves to `audit.log` and watchers wired to that path go live without operator action.  The schema is documented at [docs.iron.sh/audit](https://docs.iron.sh/audit) (link).
 
 ## Testing
 
 ```bash
 # Hermetic suite (no network, no real binary)
-scripts/run_tests.sh tests/agent/test_iron_proxy.py tests/hermes_cli/test_iron_proxy_cli.py
+scripts/run_tests.sh tests/agent/test_iron_proxy.py tests/rabbit_cli/test_iron_proxy_cli.py
 
 # Live E2E (real binary, real curl, real CONNECT tunnel)
-HERMES_RUN_E2E=1 scripts/run_tests.sh tests/agent/test_iron_proxy_e2e.py
+RABBIT_RUN_E2E=1 scripts/run_tests.sh tests/agent/test_iron_proxy_e2e.py
 
-# Live PTY smoke against `hermes egress`
-HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress --help
-HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress setup --help
+# Live PTY smoke against `rabbit egress`
+RABBIT_HOME=$HOME/.rabbit/cache/scratch/rabbit-egress-test python3 -m rabbit_cli.main egress --help
+RABBIT_HOME=$HOME/.rabbit/cache/scratch/rabbit-egress-test python3 -m rabbit_cli.main egress setup --help
 ```
 
 The CLI uses argparse, so `--help` is a good first probe for "did my new flag register correctly".
 
 ## See also
 
-- User-facing setup + troubleshooting: [Egress proxy](https://hermes-agent.nousresearch.com/docs/user-guide/egress/iron-proxy)
-- Docker backend internals: [Docker](https://hermes-agent.nousresearch.com/docs/user-guide/docker)
-- Bitwarden Secrets Manager integration: [`hermes secrets bitwarden`](https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden)
-- CLI command reference: [`hermes egress`](https://hermes-agent.nousresearch.com/docs/reference/cli-commands#hermes-egress)
-- Sandbox-injected environment variables: [Egress proxy (sandbox-injected)](https://hermes-agent.nousresearch.com/docs/reference/environment-variables#egress-proxy-sandbox-injected)
+- User-facing setup + troubleshooting: [Egress proxy](https://github.com/seven0070/Rabbit-/tree/main/website/docs/user-guide/egress/iron-proxy)
+- Docker backend internals: [Docker](https://github.com/seven0070/Rabbit-/tree/main/website/docs/user-guide/docker)
+- Bitwarden Secrets Manager integration: [`rabbit secrets bitwarden`](https://github.com/seven0070/Rabbit-/tree/main/website/docs/user-guide/secrets/bitwarden)
+- CLI command reference: [`rabbit egress`](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/cli-commands#rabbit-egress)
+- Sandbox-injected environment variables: [Egress proxy (sandbox-injected)](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/environment-variables#egress-proxy-sandbox-injected)

@@ -1,6 +1,6 @@
 # Opt-out method playbooks
 
-How the agent executes each broker `optout.method` using native Hermes tools. Obey **least-disclosure**:
+How the agent executes each broker `optout.method` using native Rabbit tools. Obey **least-disclosure**:
 submit only the subject's OWN identifiers, and only the fields a broker's official channel requires
 (`pdd.py plan` lists them per broker). Never disclose more than that, and confirm a listing is really
 the subject's before acting on any THIRD-PARTY / indirect record (see "Distinguish the subject" and
@@ -199,7 +199,7 @@ actually sends depends on `email_mode`:
 1. **browser mode (no password, autonomous):** the command returns a recipient-locked `compose`
    payload (`to`/`subject`/`body`). Compose a NEW message in the operator's **logged-in webmail** via
    `browser_*` (paste `compose.body` exactly, disclosing nothing beyond it) and send. No credentials
-   stored. Requires the inbox signed in in the browser Hermes uses.
+   stored. Requires the inbox signed in in the browser Rabbit uses.
 2. **programmatic mode (SMTP creds):** the command SMTP-sends it directly, no human.
 3. **draft_only fallback:** `pdd.py render-email <subject> <broker> --listing <url>`; a digest entry
    tells the operator to send it, and the agent records `submitted --channel email` afterward.
@@ -271,7 +271,7 @@ run stalling in Phase 2.
   Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_extract` and the
   proxyless agent browser cannot. This is what the skill's `browser_backend` setting governs
   (`auto` picks Browserbase when `BROWSERBASE_API_KEY` is present - now also read from
-  `$HERMES_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Hermes
+  `$RABBIT_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Rabbit
   already loads for its own tools).
 - **Phase 2 (execute: opt-out forms, webmail sends, session-bound multi-step gates):** the work must
   run in the **operator's own everyday browser** - real fingerprint, residential IP, AND the
@@ -281,13 +281,13 @@ run stalling in Phase 2.
   multi-step flows that matter (e.g. PeopleConnect guided-mode, whose verify link is session- and
   device-bound to the browser that opens it - a cloud browser both fails the challenge and breaks the
   binding).
-- **How to drive the operator's browser (CDP).** Point Hermes's browser tools at the operator's real
+- **How to drive the operator's browser (CDP).** Point Rabbit's browser tools at the operator's real
   Chrome over the DevTools protocol: launch
-  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.hermes/chrome-debug"` and connect the
+  `chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.rabbit/chrome-debug"` and connect the
   browser backend to `127.0.0.1:9222`. Use a **dedicated debug profile** (`chrome-debug`), NOT the
   operator's Default Chrome profile, and have the operator sign into their webmail (and any needed
   broker accounts) in that profile once. That single browser then carries residential IP + real
-  fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Hermes-side
+  fingerprint + logged-in sessions, which is precisely what Phase-2 flows need. (This is a Rabbit-side
   browser setup, not a `pdd` config value; `browser_backend` above only selects the Phase-1 scan
   browser.) **The skill launches this for you: `pdd.py cdp`** finds a Chrome/Chromium/Brave/Edge
   binary, starts it detached on the dedicated profile, waits for the debug port, and prints the CDP

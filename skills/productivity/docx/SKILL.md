@@ -1,12 +1,12 @@
 ---
+author: Nous Research
 name: docx
 description: Create, read, edit, template, and review Word .docx files.
 version: 1.1.0
-author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [word, docx, documents, office, templates, revisions, comments]
     category: productivity
     related_skills: [pdf, xlsx, powerpoint]

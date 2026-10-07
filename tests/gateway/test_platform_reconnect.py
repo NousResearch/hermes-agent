@@ -86,7 +86,7 @@ class TestStartupPlatformIsolation:
         # Skip the boot warm-up and boot-path sends: unrelated to platform
         # isolation, and with create_task stubbed below the bounded wait on
         # the (never-started) send task would hold start() for 30 s.
-        monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+        monkeypatch.setenv("RABBIT_STARTUP_WARMUP_TIMEOUT", "0")
         runner = _make_runner()
         runner._await_startup_boot_sends = AsyncMock()
         runner.config = GatewayConfig(
@@ -125,8 +125,8 @@ class TestStartupPlatformIsolation:
             return MagicMock()
 
         with patch("gateway.status.publish_runtime_status"):
-            with patch("hermes_cli.plugins.discover_plugins"):
-                with patch("hermes_cli.config.load_config", return_value={}):
+            with patch("rabbit_cli.plugins.discover_plugins"):
+                with patch("rabbit_cli.config.load_config", return_value={}):
                     with patch("agent.shell_hooks.register_from_config"):
                         with patch(
                             "tools.process_registry.process_registry.recover_from_checkpoint",
@@ -519,7 +519,7 @@ class TestSpawnSupervised:
             is_delegated_child_context,
         )
         from gateway.kanban_watchers_common import _to_thread_process_service
-        from hermes_cli.kanban_db import _assert_not_delegated_child_mutation
+        from rabbit_cli.kanban_db import _assert_not_delegated_child_mutation
 
         with delegated_child_context():
             assert is_delegated_child_context() is True
@@ -712,7 +712,7 @@ class TestVoiceInputCallbackWiring:
     @pytest.mark.asyncio
     async def test_startup_wires_voice_input_callback(self, tmp_path, monkeypatch):
         """Cold-start connect must wire _voice_input_callback on Discord adapter."""
-        monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+        monkeypatch.setenv("RABBIT_STARTUP_WARMUP_TIMEOUT", "0")
         runner = self._make_runner_with_discord()
         runner._await_startup_boot_sends = AsyncMock()  # see TestStartupPlatformIsolation
         adapter = self._make_discord_voice_adapter()
@@ -724,8 +724,8 @@ class TestVoiceInputCallbackWiring:
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
             with patch("gateway.status.publish_runtime_status"):
-                with patch("hermes_cli.plugins.discover_plugins"):
-                    with patch("hermes_cli.config.load_config", return_value={}):
+                with patch("rabbit_cli.plugins.discover_plugins"):
+                    with patch("rabbit_cli.config.load_config", return_value={}):
                         with patch("agent.shell_hooks.register_from_config"):
                             with patch(
                                 "tools.process_registry.process_registry.recover_from_checkpoint",

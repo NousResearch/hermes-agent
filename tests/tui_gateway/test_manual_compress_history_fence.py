@@ -7,7 +7,7 @@ import pytest
 
 
 def _agent_with_history(tmp_path, monkeypatch, in_place=False):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from run_agent import AIAgent
     from agent.context_compressor import SUMMARY_PREFIX
 

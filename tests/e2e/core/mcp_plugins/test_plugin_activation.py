@@ -1,7 +1,7 @@
 """Plugin activation with REAL MCP servers (Agent Plugins v1 portable packages).
 
-Every test drives a real Hermes process against the recording fake LLM and the real ``mcp``
-fixture server, launched from a portable package under ``<HERMES_HOME>/plugins/<dir>/``:
+Every test drives a real Rabbit process against the recording fake LLM and the real ``mcp``
+fixture server, launched from a portable package under ``<RABBIT_HOME>/plugins/<dir>/``:
 
 * live activation: a plugin enabled over the Plugins Hub RPC (``plugins.manage toggle``) while a
   chat is open in the ``tui_gateway`` host (the Ink TUI / Desktop backend) is usable in that SAME
@@ -13,7 +13,7 @@ fixture server, launched from a portable package under ``<HERMES_HOME>/plugins/<
   profile's ``.env`` (#120526), with the native ``mcp_servers`` path as the passing control, and
   that same enabled server is not called an unknown toolset at startup (#119457);
 * two user plugin dirs declaring the same manifest name: the dir named like the manifest (not the
-  ``.bak-*`` copy next to it) is what ``hermes plugins list`` shows and what a real turn runs,
+  ``.bak-*`` copy next to it) is what ``rabbit plugins list`` shows and what a real turn runs,
   and the collision is reported (#121078).
 
 Open bugs are run-time gated through ``KNOWN`` (``known_gate`` around the bug's own assertion; drop
@@ -51,7 +51,7 @@ from tests.e2e.core.mcp_plugins._helpers import (
     tool_results,
 )
 from tests.e2e.core.mcp_plugins._plugin_helpers import portable_stdio, reap_tagged, tui_host, write_portable_plugin
-from tests.e2e.core.parity._helpers import hermes_argv
+from tests.e2e.core.parity._helpers import rabbit_argv
 from tests.e2e.core._pending_fixes import known_gate
 
 pytestmark = [
@@ -70,10 +70,10 @@ KNOWN: dict[str, tuple[str, str]] = {
         r"^the portable plugin's server received the literal placeholder: ENV:NO-CANARY:\$\{E2E_PORTABLE_KEY\}",
         "#120526 portable mcp.json env ${VAR} reaches the server literally"),
     "test_enabled_portable_plugin_server_is_not_reported_as_an_unknown_toolset": (
-        r"^`hermes chat` warned about the enabled plugin's MCP server: \[.*Unknown toolsets: .*\bplug\b",
+        r"^`rabbit chat` warned about the enabled plugin's MCP server: \[.*Unknown toolsets: .*\bplug\b",
         "#119457 startup 'Unknown toolsets' warning names a plugin-provided MCP server"),
     "test_same_name_backup_dir_does_not_shadow_the_live_plugin": (
-        r"^(`hermes plugins list` shows the backup copy instead of plugins/foo \(v2\.0\.0\)"
+        r"^(`rabbit plugins list` shows the backup copy instead of plugins/foo \(v2\.0\.0\)"
         r"|a real turn ran the backup dir's MCP server, not plugins/foo's)",
         "#121078 the later-sorting plugins/foo.bak-* wins a same-name user collision"),
     "test_same_name_plugin_collision_is_reported": (
@@ -84,8 +84,8 @@ KNOWN: dict[str, tuple[str, str]] = {
 
 def build_home(root: Path, base_url: str, *, extra: dict[str, Any] | None = None) -> E2EHome:
     eh = _build_home(root, base_url, extra=extra)
-    select_test_dependencies(eh.hermes_home, REPO_ROOT)
-    eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    select_test_dependencies(eh.rabbit_home, REPO_ROOT)
+    eh.extra_env["RABBIT_DISABLE_LAZY_INSTALLS"] = "1"
     return eh
 
 
@@ -136,7 +136,7 @@ def test_plugin_sandbox_selects_real_pm_tools_offline(tmp_path: Path) -> None:
     eh = build_home(tmp_path, "http://127.0.0.1:1")
     child = subprocess.run([sys.executable, "-c",
                             "from pm._uv import _toolchain; assert _toolchain(realize=False) is not None"],
-                           env=eh.env({"HERMES_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
+                           env=eh.env({"RABBIT_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
                            capture_output=True, text=True, timeout=30)
     assert child.returncode == 0, child.stderr
 
@@ -210,7 +210,7 @@ def test_resource_only_plugin_activated_live_is_reported_connected(tmp_path: Pat
 
 @pytest.fixture(scope="module")
 def env_echo_results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
-    """One ``hermes chat -q`` turn calling ``env_echo`` on a portable-plugin server AND a native
+    """One ``rabbit chat -q`` turn calling ``env_echo`` on a portable-plugin server AND a native
     ``mcp_servers`` server, each told to echo a var whose value is ``${VAR}`` from the profile .env.
     Returns ``{server: tool result, "output": the process's stdout+stderr}``."""
     root = tmp_path_factory.mktemp("env_interp")
@@ -220,7 +220,7 @@ def env_echo_results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]
         eh.update_config(lambda cfg: cfg["mcp_servers"].update(nat=stdio_server(
             "nat", root / "nat.jsonl", eh.tag, MCPE2E_ECHO_ENV="E2E_NATIVE_KEY",
             E2E_NATIVE_KEY="${E2E_NATIVE_KEY}")))
-        with open(eh.hermes_home / ".env", "a", encoding="utf-8") as fh:
+        with open(eh.rabbit_home / ".env", "a", encoding="utf-8") as fh:
             fh.write("\nE2E_PORTABLE_KEY=portable-dotenv-value\nE2E_NATIVE_KEY=native-dotenv-value\n")
         write_portable_plugin(eh, PLUGIN, {SERVER: portable_stdio(
             root / "plug.jsonl", eh.tag, MCPE2E_ECHO_ENV="E2E_PORTABLE_KEY",
@@ -265,7 +265,7 @@ def test_enabled_portable_plugin_server_is_not_reported_as_an_unknown_toolset(en
     startup warning calling it an unknown toolset is a false alarm the user sees on every launch."""
     warned = [line for line in env_echo_results["output"].splitlines() if "Unknown toolsets" in line]
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
-        symptom(not warned, f"`hermes chat` warned about the enabled plugin's MCP server: {warned}")
+        symptom(not warned, f"`rabbit chat` warned about the enabled plugin's MCP server: {warned}")
 
 
 # 4. #121078 same manifest name in two user plugin dirs ------------------------------------------
@@ -274,7 +274,7 @@ def test_enabled_portable_plugin_server_is_not_reported_as_an_unknown_toolset(en
 @pytest.fixture(scope="module")
 def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """``plugins/foo`` (the upgraded copy, v2) next to ``plugins/foo.bak-x`` (the old copy, v1), both
-    declaring ``name: foo``; ``foo`` enabled. Reads ``hermes plugins list``, runs one turn calling the
+    declaring ``name: foo``; ``foo`` enabled. Reads ``rabbit plugins list``, runs one turn calling the
     plugin's MCP tool, and collects the process logs."""
     root = tmp_path_factory.mktemp("name_collision")
     with provider(script((tool_name("srv", "ro_probe"), {"nonce": "dup"}))) as srv:
@@ -283,7 +283,7 @@ def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
             root / "live.jsonl", eh.tag, MCPE2E_CANARY="CANARY-LIVE")}, name="foo", version="2.0.0")
         backup = write_portable_plugin(eh, "foo.bak-x", {"srv": portable_stdio(
             root / "backup.jsonl", eh.tag, MCPE2E_CANARY="CANARY-BACKUP")}, name="foo", version="1.0.0")
-        listing = subprocess.run(hermes_argv("plugins", "list", "--plain", "--no-bundled"), cwd=eh.project,
+        listing = subprocess.run(rabbit_argv("plugins", "list", "--plain", "--no-bundled"), cwd=eh.project,
                                  env=eh.env(), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
         assert listing.returncode == 0, listing.stderr[-2000:]
         try:
@@ -293,7 +293,7 @@ def name_collision(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         assert turn.returncode == 0 and FINAL in turn.stdout, (turn.stdout[-800:], turn.stderr[-2000:])
         results = tool_results(srv)
     logs = "\n".join(p.read_text(encoding="utf-8", errors="replace")
-                     for p in sorted((eh.hermes_home / "logs").glob("*.log")))
+                     for p in sorted((eh.rabbit_home / "logs").glob("*.log")))
     return {"live": live, "backup": backup, "listing": listing.stdout + listing.stderr,
             "results": results, "logs": logs}
 
@@ -312,14 +312,14 @@ def test_same_name_backup_dir_does_not_shadow_the_live_plugin(name_collision: di
     assert rows, name_collision["listing"]
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom("2.0.0" in rows[0],
-                f"`hermes plugins list` shows the backup copy instead of plugins/foo (v2.0.0): {rows}")
+                f"`rabbit plugins list` shows the backup copy instead of plugins/foo (v2.0.0): {rows}")
         symptom(any("RO:CANARY-LIVE:dup" in r for r in name_collision["results"]),
                 f"a real turn ran the backup dir's MCP server, not plugins/foo's: {name_collision['results']}")
 
 
 def test_same_name_plugin_collision_is_reported(name_collision: dict[str, Any], request: pytest.FixtureRequest) -> None:
     live, backup = str(name_collision["live"]), str(name_collision["backup"])
-    surfaces = {"hermes plugins list": name_collision["listing"], "logs/*.log": name_collision["logs"]}
+    surfaces = {"rabbit plugins list": name_collision["listing"], "logs/*.log": name_collision["logs"]}
     named_both = [where for where, text in surfaces.items() if live in text and backup in text]
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom(named_both, f"two user plugin dirs declare the same name 'foo' ({live} and {backup}) but no "

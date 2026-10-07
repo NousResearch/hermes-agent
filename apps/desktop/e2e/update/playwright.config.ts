@@ -7,16 +7,16 @@ import { defineConfig } from '@playwright/test'
  *
  * Every spec drives the packaged app a real install built, against that
  * install's real backend, and updates it through the app's own "Update now".
- * globalSetup builds the install once (scripts/install.sh + `hermes desktop
+ * globalSetup builds the install once (scripts/install.sh + `rabbit desktop
  * --build-only`); each spec restores that snapshot, so specs run serially.
  *
  *  - retries: 0 (a required lane must expose flake, not hide it);
  *  - one worker: specs share one install path (absolute paths are baked in);
- *  - per-test budget covers a real `hermes update` (git pull + product builds +
+ *  - per-test budget covers a real `rabbit update` (git pull + product builds +
  *    packaging) and the app's relaunch.
  */
 // Local parallel runs against different install roots need separate output dirs.
-const OUT = process.env.HERMES_E2E_UPDATE_OUT ?? 'update'
+const OUT = process.env.RABBIT_E2E_UPDATE_OUT ?? 'update'
 
 export default defineConfig({
   testDir: '.',

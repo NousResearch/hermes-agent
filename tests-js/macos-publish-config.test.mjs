@@ -14,7 +14,7 @@ it.each([
   const result = execFileSync(process.execPath, ['-e', "const c=require('./apps/desktop/electron-builder.config.cjs'); console.log(JSON.stringify({publish:c.mac.publish,notarize:c.mac.notarize,targets:c.mac.target}))"], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: tag, CLOUDFLARE_R2_PUBLIC_URL: 'https://updates.example' }
+    env: { ...process.env, RABBIT_DESKTOP_VARIANT: variant, RABBIT_PAYLOAD_TAG: tag, CLOUDFLARE_R2_PUBLIC_URL: 'https://updates.example' }
   })
   const config = JSON.parse(result)
   const feed = feedContract.darwinFeed(channel, light)
@@ -32,7 +32,7 @@ it('bakes only a canonical https feed base into the updater config', () => {
   }
   const build = (url) => execFileSync(process.execPath, ['-e', "const c=require('./apps/desktop/electron-builder.config.cjs'); console.log(JSON.stringify(c.publish))"], {
     cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, HERMES_DESKTOP_VARIANT: 'bundled', HERMES_PAYLOAD_TAG: 'v0.28.0', CLOUDFLARE_R2_PUBLIC_URL: url }
+    env: { ...process.env, RABBIT_DESKTOP_VARIANT: 'bundled', RABBIT_PAYLOAD_TAG: 'v0.28.0', CLOUDFLARE_R2_PUBLIC_URL: url }
   })
   expect(JSON.parse(build('https://updates.example/'))).toEqual([{ provider: 'generic', url: 'https://updates.example', channel: 'latest' }])
   expect(() => build('http://updates.example')).toThrow(/canonical https/)

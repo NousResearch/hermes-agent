@@ -3,7 +3,7 @@
 The gateway's loopback api_server refuses to start without a strong
 API_SERVER_KEY, and hosted cron fires are forwarded through it — so the
 stage2 keygen must succeed even when no ``.env`` exists yet. Historically it
-was gated on ``[ -f "$HERMES_HOME/.env" ]`` while the first-boot seed that
+was gated on ``[ -f "$RABBIT_HOME/.env" ]`` while the first-boot seed that
 was supposed to create ``.env`` silently no-oped (``.env.example`` was
 excluded from the image by ``.dockerignore``), leaving 40%+ of the hosted
 fleet with no api_server and every scheduled cron fire silently lost.
@@ -39,7 +39,7 @@ def _keygen_block(text: str) -> str:
 
 def _path_guard_functions(text: str) -> str:
     start = text.index("path_has_symlink_component() {")
-    end = text.index("\n\nchown_hermes_tree() {", start)
+    end = text.index("\n\nchown_rabbit_tree() {", start)
     return text[start:end]
 
 
@@ -60,9 +60,9 @@ def _run_keygen(
         # unguarded-command defects that would abort a real container boot.
         "set -eu\n"
         f"{env_setup}"
-        f'HERMES_HOME="{home}"\n'
-        # In tests we run unprivileged; as_hermes is a passthrough then.
-        'as_hermes() { "$@"; }\n'
+        f'RABBIT_HOME="{home}"\n'
+        # In tests we run unprivileged; as_rabbit is a passthrough then.
+        'as_rabbit() { "$@"; }\n'
         f"{_path_guard_functions(stage2_text)}\n"
         f"{_keygen_block(stage2_text)}\n"
     )
@@ -135,7 +135,7 @@ def test_keygen_skips_when_container_env_provides_key(
 ) -> None:
     """`docker run -e API_SERVER_KEY=...` must win: no generated key.
 
-    Hermes loads $HERMES_HOME/.env with override=True, so a key generated
+    Rabbit loads $RABBIT_HOME/.env with override=True, so a key generated
     into .env would silently shadow the operator's env-provided credential
     and 401 every client still using it.
     """
@@ -262,7 +262,7 @@ def test_keygen_weak_env_key_warning_suppressed_when_env_file_key_wins(
 
 
 def test_dockerignore_keeps_env_example_template() -> None:
-    """The first-boot seed copies /opt/hermes/.env.example -> $HERMES_HOME/.env.
+    """The first-boot seed copies /opt/rabbit/.env.example -> $RABBIT_HOME/.env.
 
     ``.env.*`` in .dockerignore matches the template, so an explicit
     ``!.env.example`` re-include must appear AFTER it (last match wins), and
@@ -280,7 +280,7 @@ def test_dockerignore_keeps_env_example_template() -> None:
             verdict = "included" if negate else "excluded"
     assert verdict == "included", (
         ".env.example must survive .dockerignore — docker/stage2-hook.sh "
-        "seeds $HERMES_HOME/.env from it on first boot"
+        "seeds $RABBIT_HOME/.env from it on first boot"
     )
 
 

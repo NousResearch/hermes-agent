@@ -34,8 +34,8 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
     Pre-fix this silently did nothing: the ``PairingStore(profile=name)``
     reference raised NameError inside the swallowed try/except.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    (tmp_path / ".rabbit").mkdir()
 
     runner = _bare_runner()
 
@@ -45,9 +45,9 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
-        ("coder", tmp_path / ".hermes" / "profiles" / "coder"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.profiles_to_serve", return_value=[
+        ("coder", tmp_path / ".rabbit" / "profiles" / "coder"),
+    ]), patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         runner._profile_adapters["coder"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -63,8 +63,8 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
 
 def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
     """The created store must live under the profile's pairing directory."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    (tmp_path / ".rabbit").mkdir()
 
     runner = _bare_runner()
 
@@ -74,9 +74,9 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
-        ("ops", tmp_path / ".hermes" / "profiles" / "ops"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.profiles_to_serve", return_value=[
+        ("ops", tmp_path / ".rabbit" / "profiles" / "ops"),
+    ]), patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         runner._profile_adapters["ops"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -96,14 +96,14 @@ def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatc
     from agent import secret_scope as ss
     from gateway.pairing import _sync_allowlist_add
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.config import save_env_value
+    from rabbit_cli.config import save_env_value
 
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     prof = root / "profiles" / "b"
     prof.mkdir(parents=True)
     (root / ".env").write_text("DISCORD_ALLOWED_USERS=default-admin\n")
     (prof / ".env").write_text("DISCORD_ALLOWED_USERS=b-admin\n")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
 
     was_active = ss.is_multiplex_active()
@@ -143,7 +143,7 @@ def test_allowlist_env_read_never_borrows_on_scope_failure(tmp_path, monkeypatch
     from agent import secret_scope as ss
     from gateway import pairing
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
 
     was_active = ss.is_multiplex_active()
@@ -178,9 +178,9 @@ def test_allowlist_sync_does_not_persist_foreign_allowlist(tmp_path, monkeypatch
     from agent import secret_scope as ss
     from gateway import pairing
 
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     root.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
 
     was_active = ss.is_multiplex_active()
@@ -210,11 +210,11 @@ def test_allowlist_scoped_miss_configures_nothing(tmp_path, monkeypatch):
     from gateway import pairing
     from gateway.run import _profile_runtime_scope
 
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     prof = root / "profiles" / "b"
     prof.mkdir(parents=True)
     (prof / ".env").write_text("OTHER_KEY=x\n")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "default-admin")
 
     was_active = ss.is_multiplex_active()

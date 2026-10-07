@@ -1,22 +1,22 @@
 """Copilot ACP wire conformance, part 1: the multi-call tool flow, resume, and the process lifecycle.
 
-``provider: copilot-acp`` makes Hermes spawn an external ACP agent (``copilot --acp --stdio``) per model
+``provider: copilot-acp`` makes Rabbit spawn an external ACP agent (``copilot --acp --stdio``) per model
 call and speak the Agent Client Protocol to it over stdio. Here the agent is
 ``tests/fakes/providers/copilot_acp.py``, a fake that validates every request against the published
-ACP schema and replays scripted turns. Everything on the Hermes side is real: the ``hermes chat -q``
-process, runtime resolution from ``config.yaml`` + the profile ``.env`` (``HERMES_COPILOT_ACP_COMMAND``
-/ ``HERMES_COPILOT_ACP_ARGS``), the ACP client, the agent loop, the ``read_file`` tool and ``state.db``.
+ACP schema and replays scripted turns. Everything on the Rabbit side is real: the ``rabbit chat -q``
+process, runtime resolution from ``config.yaml`` + the profile ``.env`` (``RABBIT_COPILOT_ACP_COMMAND``
+/ ``RABBIT_COPILOT_ACP_ARGS``), the ACP client, the agent loop, the ``read_file`` tool and ``state.db``.
 
 Contract under test (documented in ``agent/copilot_acp_client.py`` and the ACP spec):
 
 * each model call is a fresh agent process: ``initialize`` -> ``session/new`` (absolute cwd) ->
   model selection via the advertised ``model`` config option -> ``session/prompt``; every request is
   schema-valid;
-* ACP has no tools channel: Hermes' tools travel in the prompt text, a ``<tool_call>`` block in the
-  agent's message runs a REAL Hermes tool, and the result is in the next call's prompt;
+* ACP has no tools channel: Rabbit' tools travel in the prompt text, a ``<tool_call>`` block in the
+  agent's message runs a REAL Rabbit tool, and the result is in the next call's prompt;
 * ``--resume`` in a new process runs in a new agent process whose prompt carries the persisted history
   (turn 1 in order, then the new question), with nothing duplicated;
-* agent-side ``session/request_permission`` is never granted (Hermes has no human channel there) and
+* agent-side ``session/request_permission`` is never granted (Rabbit has no human channel there) and
   ``fs/read_text_file`` is confined to the session cwd;
 * no agent process outlives the CLI, including one that ignores SIGTERM and stdin EOF.
 """
@@ -69,7 +69,7 @@ LATE_TEXT = "LATE-ANSWER-65788"
 # Compaction: the turn pins ``--toolsets file`` so the prompt size does not depend on which optional tools
 # the host can advertise (browser tools appear only where agent-browser and Chromium exist). With that pin
 # the system prompt + tool bridge is ~3.5K estimated tokens and each file read adds ~0.6K, so eight reads
-# cross this absolute threshold mid-turn (ACP reports no usage, so Hermes estimates).
+# cross this absolute threshold mid-turn (ACP reports no usage, so Rabbit estimates).
 COMPACT_THRESHOLD = 5_500
 COMPACT_TOOLSETS = ("--toolsets", "file")
 COMPACT_FILES = 8
@@ -120,12 +120,12 @@ def _reap(fake: acp.AcpFake) -> None:
 
 
 def _flow(root: Path) -> Scenario:
-    """Turn 1 (two model calls): agent-side permission + a Hermes read_file call, then fs reads + the
+    """Turn 1 (two model calls): agent-side permission + a Rabbit read_file call, then fs reads + the
     answer. Turn 2: ``--resume`` in a new process. The agent ignores SIGTERM and stdin EOF."""
     project = NativeHome(root).project
     turns = [
         [acp.tool_call("agent-native-1", "run shell", kind="execute"), acp.permission("agent-native-1"),
-         acp.message(acp.hermes_tool_call("call_rf_1", "read_file", {"path": str(project / "canary.txt")}))],
+         acp.message(acp.rabbit_tool_call("call_rf_1", "read_file", {"path": str(project / "canary.txt")}))],
         [acp.fs_read(str(project / "canary.txt")), acp.fs_read(str(root / "outside" / "secret.txt")),
          acp.thought("REASONING-ONE: the tool result names the canary"), acp.message(FINAL_ONE)],
         [acp.message(FINAL_TWO)],
@@ -152,7 +152,7 @@ def _compaction(root: Path) -> Scenario:
     """Eight read_file calls in one turn cross ``compression.threshold_tokens``; the summarizer runs
     through the same ACP provider (no tool bridge -> the fake answers ``SUMMARY``)."""
     project = NativeHome(root).project
-    turns = [[acp.thought(f"step {i}"), acp.message(acp.hermes_tool_call(
+    turns = [[acp.thought(f"step {i}"), acp.message(acp.rabbit_tool_call(
         f"call_f{i}", "read_file", {"path": str(project / f"f{i}.txt")}))] for i in range(1, COMPACT_FILES + 1)]
     fake = acp.AcpFake(root / "acp", [*turns, [acp.message(FINAL_COMPACT)]], models=MODELS, aux_text=SUMMARY)
     nh = make_home(root, {"provider": "copilot-acp", "default": CONFIGURED_MODEL}, env_file=fake.env(),
@@ -196,8 +196,8 @@ def _calls(fake: acp.AcpFake) -> dict[int, list[dict[str, Any]]]:
 # ── tests ──────────────────────────────────────────────────────────────────────────────────────
 
 
-def test_hermes_tool_call_round_trips_through_acp_and_persists(outcomes):
-    """A ``<tool_call>`` in the agent's message runs Hermes' real read_file; the result reaches the
+def test_rabbit_tool_call_round_trips_through_acp_and_persists(outcomes):
+    """A ``<tool_call>`` in the agent's message runs Rabbit' real read_file; the result reaches the
     NEXT call's prompt; the CLI prints the answer; state.db pairs the call and result by id."""
     sc = _flow_ok(outcomes)
     assert FINAL_ONE in sc.runs[0].stdout, sc.runs[0].describe()
@@ -244,7 +244,7 @@ def test_agent_permission_is_never_granted_and_fs_reads_stay_in_cwd(outcomes):
     sc = _flow_ok(outcomes)
     outcomes_seen = [r["msg"]["result"]["outcome"] for r in sc.fake.records() if r.get("kind") == "permission_outcome"]
     assert len(outcomes_seen) == 1, sc.fake.records()
-    assert outcomes_seen[0].get("outcome") != "selected", f"Hermes granted an agent-side permission: {outcomes_seen}"
+    assert outcomes_seen[0].get("outcome") != "selected", f"Rabbit granted an agent-side permission: {outcomes_seen}"
     reads = [r for r in sc.fake.records() if r.get("kind") == "fs_read_result"]
     assert len(reads) == 2 and not any(r["errors"] for r in reads), reads
     inside, outside = reads[0]["msg"], reads[1]["msg"]

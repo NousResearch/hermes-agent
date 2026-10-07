@@ -301,14 +301,14 @@ def test_seven_physical_else_if_levels_block(tmp_path, capsys):
 # --- HX001 / HX003 / HX012 precision ---
 
 @pytest.mark.parametrize("expr, flagged", [
-    ('Path.home() / ".hermes"', True),
-    ('Path.home() / ".hermes/profiles"', True),
-    ('Path.home() / ".hermes" / "x"', True),
-    ('Path.home() / ".hermes-profile-exports"', False),
-    ('Path.home() / ".hermes_backup"', False),
-    ('os.path.expanduser("~/.hermes")', True),
-    ('os.path.expanduser("~/.hermes/config.yaml")', True),
-    ('os.path.expanduser("~/.hermes-profile-exports")', False),
+    ('Path.home() / ".rabbit"', True),
+    ('Path.home() / ".rabbit/profiles"', True),
+    ('Path.home() / ".rabbit" / "x"', True),
+    ('Path.home() / ".rabbit-profile-exports"', False),
+    ('Path.home() / ".rabbit_backup"', False),
+    ('os.path.expanduser("~/.rabbit")', True),
+    ('os.path.expanduser("~/.rabbit/config.yaml")', True),
+    ('os.path.expanduser("~/.rabbit-profile-exports")', False),
 ])
 def test_hardcoded_home_matches_the_exact_component(expr, flagged):
     src = f"import os\nfrom pathlib import Path\n\n\ndef f():\n    return {expr}\n"
@@ -317,9 +317,9 @@ def test_hardcoded_home_matches_the_exact_component(expr, flagged):
 
 @pytest.mark.parametrize("src, flagged", [
     ('"""Unlike `ps aux`, this reads /proc."""\n', False),
-    ('def f():\n    """Never `pgrep -f hermes`: argv substrings lie."""\n    return 1\n', False),
+    ('def f():\n    """Never `pgrep -f rabbit`: argv substrings lie."""\n    return 1\n', False),
     ('import subprocess\n\n\ndef f():\n    return subprocess.run("ps aux", shell=True, timeout=5)\n', True),
-    ('CMD = "pgrep -f hermes"\n', True),
+    ('CMD = "pgrep -f rabbit"\n', True),
     ('def f(n):\n    return f"pgrep -f {n}"\n', True),
 ])
 def test_argv_identity_ignores_docstrings(src, flagged):

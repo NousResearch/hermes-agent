@@ -24,11 +24,11 @@ def test_capture_respects_configured_depth_for_tool_inputs_and_outputs(
     monkeypatch, mode, configured_depth,
 ):
     plugin = importlib.import_module("plugins.observability.langfuse")
-    monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", mode)
+    monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", mode)
     if configured_depth is None:
-        monkeypatch.delenv("HERMES_LANGFUSE_MAX_DEPTH", raising=False)
+        monkeypatch.delenv("RABBIT_LANGFUSE_MAX_DEPTH", raising=False)
     else:
-        monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", configured_depth)
+        monkeypatch.setenv("RABBIT_LANGFUSE_MAX_DEPTH", configured_depth)
     max_depth = int(configured_depth) if configured_depth else 4
 
     # Each dict value/list element adds one level; scalars at the limit survive.
@@ -51,32 +51,32 @@ def test_capture_respects_configured_depth_for_tool_inputs_and_outputs(
 @pytest.mark.parametrize("invalid_depth", ["nope", "1.5", "-1"])
 def test_invalid_max_depth_warns_and_preserves_default_capture(monkeypatch, caplog, invalid_depth):
     plugin = importlib.import_module("plugins.observability.langfuse")
-    monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
-    monkeypatch.delenv("HERMES_LANGFUSE_MAX_DEPTH", raising=False)
+    monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "full")
+    monkeypatch.delenv("RABBIT_LANGFUSE_MAX_DEPTH", raising=False)
     payload = {"result": {"data": {"results": [{"index": 0}]}}}
     default_capture = plugin._capture_content(payload)
-    monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", invalid_depth)
+    monkeypatch.setenv("RABBIT_LANGFUSE_MAX_DEPTH", invalid_depth)
 
     assert plugin._capture_content(payload) == default_capture
     assert len(caplog.records) == 1
-    assert "HERMES_LANGFUSE_MAX_DEPTH" in caplog.text
+    assert "RABBIT_LANGFUSE_MAX_DEPTH" in caplog.text
     assert "non-negative integer" in caplog.text
 
 
 def test_invalid_max_depth_warns_once_per_value_not_per_payload(monkeypatch, caplog):
-    """A bad ``HERMES_LANGFUSE_MAX_DEPTH`` must not log one warning per captured prompt/tool payload
+    """A bad ``RABBIT_LANGFUSE_MAX_DEPTH`` must not log one warning per captured prompt/tool payload
     for the life of the process; a changed (still bad) value gets its own single warning."""
     plugin = importlib.import_module("plugins.observability.langfuse")
-    monkeypatch.setenv("HERMES_LANGFUSE_CAPTURE", "full")
-    monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", "abc")
+    monkeypatch.setenv("RABBIT_LANGFUSE_CAPTURE", "full")
+    monkeypatch.setenv("RABBIT_LANGFUSE_MAX_DEPTH", "abc")
     payload = {"result": {"data": [{"index": 0}]}}
 
     for _ in range(5):
         plugin._capture_content(payload)
         plugin._capture_content(payload, tool_result_of=("example", {}))
-    assert sum("HERMES_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 1
+    assert sum("RABBIT_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 1
 
-    monkeypatch.setenv("HERMES_LANGFUSE_MAX_DEPTH", "-7")
+    monkeypatch.setenv("RABBIT_LANGFUSE_MAX_DEPTH", "-7")
     for _ in range(3):
         plugin._capture_content(payload)
-    assert sum("HERMES_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 2
+    assert sum("RABBIT_LANGFUSE_MAX_DEPTH" in r.getMessage() for r in caplog.records) == 2

@@ -3,7 +3,7 @@
 // scripts/write-build-stamp.mjs writes build/install-stamp.json during
 // `npm run build`.
 // bundle-electron-main.mjs bakes that file into the
-// production bundle by defining the __HERMES_INSTALL_STAMP__ global as
+// production bundle by defining the __RABBIT_INSTALL_STAMP__ global as
 // the stamp.  The stamp is a constant of the artifact.
 // It cannot be missing, stale, or edited after signing.
 //
@@ -16,7 +16,7 @@
  *    local install (the default; also what non-desktop stamps carry).
  *  - 'bundled': the agent runtime ships inside the artifact resources.
  *  - 'light': no runtime at all; remote connections only.
- * Selected at build time by HERMES_DESKTOP_VARIANT (unset = bootstrap).
+ * Selected at build time by RABBIT_DESKTOP_VARIANT (unset = bootstrap).
  */
 export type ArtifactKind = 'bootstrap' | 'bundled' | 'light'
 
@@ -97,7 +97,7 @@ export interface InstallStamp {
   tag: string | null
 }
 
-declare const __HERMES_INSTALL_STAMP__: InstallStamp
+declare const __RABBIT_INSTALL_STAMP__: InstallStamp
 
 /** The baked request is immutable as well as its containing artifact stamp. */
 function freezeStamp(stamp: InstallStamp): Readonly<InstallStamp> {
@@ -112,7 +112,7 @@ function freezeStamp(stamp: InstallStamp): Readonly<InstallStamp> {
 
 /** The baked stamp of this artifact, or null on dev bundles. */
 export const INSTALL_STAMP: Readonly<InstallStamp> | null =
-  typeof __HERMES_INSTALL_STAMP__ === 'undefined' ? null : freezeStamp(__HERMES_INSTALL_STAMP__)
+  typeof __RABBIT_INSTALL_STAMP__ === 'undefined' ? null : freezeStamp(__RABBIT_INSTALL_STAMP__)
 
 /**
  * The install shape this process runs as — THE single split every
@@ -121,7 +121,7 @@ export const INSTALL_STAMP: Readonly<InstallStamp> | null =
  *    installers, repair-reinstall escalation and update checkouts must
  *    never run; drift means rebuild, updates mean the steward.
  *  - 'checkout': a git tree with venv machinery, provisioner-on-demand
- *    and `hermes update`.
+ *    and `rabbit update`.
  *
  * Derived from the stamp CONSTANT, never from filesystem probes: a
  * payload/venv/marker probe answers "is this artifact intact?", not

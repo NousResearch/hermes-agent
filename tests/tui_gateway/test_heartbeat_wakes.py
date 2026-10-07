@@ -13,7 +13,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tui_gateway import server
 

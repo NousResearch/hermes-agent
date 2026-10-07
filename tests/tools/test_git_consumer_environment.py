@@ -21,7 +21,7 @@ def test_checkpoint_and_diff_follow_selected_git_environment(tmp_path, monkeypat
 
     wrapper.write_text(
         '#!/bin/sh\n'
-        'test "$HERMES_GIT_HELPER" = "selected" || exit 77\n'
+        'test "$RABBIT_GIT_HELPER" = "selected" || exit 77\n'
         f'printf "%s\\n" selected >> {shlex.quote(str(observed))}\n'
         f'exec {shlex.quote(git)} "$@"\n',
         encoding="utf-8",
@@ -36,7 +36,7 @@ def test_checkpoint_and_diff_follow_selected_git_environment(tmp_path, monkeypat
     def selected_git(name, *, base_env):
         assert name == "git"
         return pm.Runner(name, {
-            **base_env, "PATH": str(selected), "HERMES_GIT_HELPER": "selected"
+            **base_env, "PATH": str(selected), "RABBIT_GIT_HELPER": "selected"
         })
 
     monkeypatch.setattr(pm, "ensure", selected_git)

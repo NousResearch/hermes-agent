@@ -26,7 +26,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
       ok: true,
       entry: {
         name: 'aihubmix',
-        repo: 'https://github.com/AIhubmix/hermes-provider-aihubmix',
+        repo: 'https://github.com/AIhubmix/rabbit-provider-aihubmix',
         sha: 'b'.repeat(40),
         subdir: 'aihubmix'
       }
@@ -38,15 +38,15 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
     expect($pluginInstallRequest.get()).toEqual({
       catalogName: 'aihubmix',
       profile: null,
-      repo: 'https://github.com/AIhubmix/hermes-provider-aihubmix#aihubmix',
+      repo: 'https://github.com/AIhubmix/rabbit-provider-aihubmix#aihubmix',
       sha: 'b'.repeat(40)
     })
     expect($notifications.get()).toEqual([])
   })
 
   it.each([
-    ['unknown', 'not in the Hermes plugin catalog'],
-    ['unavailable', 'Could not load the Hermes plugin catalog'],
+    ['unknown', 'not in the Rabbit plugin catalog'],
+    ['unavailable', 'Could not load the Rabbit plugin catalog'],
     ['invalid_name', 'missing or invalid']
   ] as const)('%s → error toast, no dialog, no git fallback', async (error, fragment) => {
     await requestPluginCatalogInstallFromDeepLink('not-a-real-plugin', lookupFor({ ok: false, error }))
@@ -69,7 +69,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(PLUGIN_CATALOG_URL, expect.anything())
     expect($pluginInstallRequest.get()).toBeNull()
-    expect($notifications.get()[0]?.message).toContain('\u201Cweather-evil\u201D is not in the Hermes plugin catalog')
+    expect($notifications.get()[0]?.message).toContain('\u201Cweather-evil\u201D is not in the Rabbit plugin catalog')
 
     await requestPluginCatalogInstallFromDeepLink('weather')
 

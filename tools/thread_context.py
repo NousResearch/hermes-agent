@@ -1,4 +1,4 @@
-"""Propagate agent-turn context into worker threads that dispatch Hermes tools.
+"""Propagate agent-turn context into worker threads that dispatch Rabbit tools.
 
 A bare ``threading.Thread`` / ``ThreadPoolExecutor`` worker starts with an empty
 ``contextvars.Context`` and no thread-local approval/sudo callbacks, so tool dispatch inside it

@@ -1,5 +1,5 @@
 // Wake-word activation chime. A short, bright, rising two-note "ding" that
-// plays the moment "Hey Hermes" is detected, so it's obvious the wake
+// plays the moment "Hey Rabbit" is detected, so it's obvious the wake
 // registered before voice capture starts. Deliberately distinct from the
 // turn-end completion cue (completion-sound.ts): this one RISES (open/ready),
 // the completion cue settles (done). Reuses the same lightweight WebAudio

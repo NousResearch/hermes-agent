@@ -1,8 +1,8 @@
 ---
+author: Teknium (teknium1), Hermes Agent
 name: oss-forensics
 description: "GitHub supply-chain forensics: recovery, IOCs, reporting."
 version: 1.0.0
-author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 category: security
@@ -23,7 +23,7 @@ toolsets:
   - file
   - delegation
 metadata:
-  hermes:
+  rabbit:
     tags: [Security, Forensics, GitHub, Supply-Chain]
     related_skills: []
 ---
@@ -62,7 +62,7 @@ Read these before every investigation step. Violating them invalidates the repor
 
 > **Path convention**: Throughout this skill, `SKILL_DIR` refers to the root of this skill's
 > installation directory (the folder containing this `SKILL.md`). When the skill is loaded,
-> resolve `SKILL_DIR` to the actual path — e.g. `~/.hermes/skills/security/oss-forensics/`
+> resolve `SKILL_DIR` to the actual path — e.g. `~/.rabbit/skills/security/oss-forensics/`
 > or the `optional-skills/` equivalent. All script and template references are relative to it.
 
 ## Phase 0: Initialization

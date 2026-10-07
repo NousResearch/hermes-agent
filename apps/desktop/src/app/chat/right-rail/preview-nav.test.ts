@@ -19,7 +19,7 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-// This registry answers only for focus in Hermes' OWN chrome. A gesture made
+// This registry answers only for focus in Rabbit' OWN chrome. A gesture made
 // inside the guest page never reaches this renderer at all — main handles that
 // against the focused webContents (see `commandFocusedGuest` in main.ts).
 describe('commandFocusedPreview', () => {

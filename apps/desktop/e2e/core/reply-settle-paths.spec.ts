@@ -116,7 +116,7 @@ async function withApp(
 ) {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox(label)
-  writeProviderHome(sandbox.hermesHome, provider.url, extraYaml)
+  writeProviderHome(sandbox.rabbitHome, provider.url, extraYaml)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 

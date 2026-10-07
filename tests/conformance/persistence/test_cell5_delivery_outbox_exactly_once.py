@@ -6,7 +6,7 @@ the provider send and its durable record must not double-deliver on catch-up
 cell 2 pins that exactly one claimant WINS a parked row; this cell pins the
 observable SIDE EFFECT — how many copies of a reply the platform received.
 
-Hermes' outbox is ``gateway/delivery_ledger.py``. Because a send and its
+Rabbit' outbox is ``gateway/delivery_ledger.py``. Because a send and its
 ``mark_delivered`` can never be one atomic step, the ledger promises honest
 at-least-once rather than a silent resend: a row that was never sent
 ('pending') is redelivered plainly; a row whose send may have landed
@@ -24,7 +24,7 @@ effect-level invariant that follows, per obligation id, is:
 What is real
 ------------
 * The ledger module, on a real ``state.db`` under an isolated
-  ``HOME=<tmp>/home``, ``HERMES_HOME=<tmp>/home/.hermes`` (every child).
+  ``HOME=<tmp>/home``, ``RABBIT_HOME=<tmp>/home/.rabbit`` (every child).
 * The turn-side checkpoints: ``BasePlatformAdapter._record_delivery_obligation``
   (record + mark_attempting) and ``_finalize_delivery_obligation``
   (mark_delivered) — the exact methods the adapter's final-send path calls.
@@ -223,7 +223,7 @@ if barrier_dir:
 
     dl._owner_alive = _gated_owner_alive
 
-home = Path(os.environ["HERMES_HOME"])
+home = Path(os.environ["RABBIT_HOME"])
 runner = object.__new__(GatewayRunner)
 runner.adapters = {Platform.TELEGRAM: JournalAdapter()}
 runner._profile_adapters = {}
@@ -259,14 +259,14 @@ class Cell:
     def __init__(self, tmp_path: Path):
         self.root = tmp_path
         self.home = tmp_path / "home"
-        self.hermes_home = self.home / ".hermes"
-        self.hermes_home.mkdir(parents=True)
-        (self.hermes_home / "config.yaml").write_text(
+        self.rabbit_home = self.home / ".rabbit"
+        self.rabbit_home.mkdir(parents=True)
+        (self.rabbit_home / "config.yaml").write_text(
             "gateway:\n  delivery_ledger: true\n", encoding="utf-8"
         )
         self.journal = tmp_path / "transport.jsonl"
         self.ids_file = tmp_path / "ids.json"
-        self.db_path = self.hermes_home / "state.db"
+        self.db_path = self.rabbit_home / "state.db"
         (tmp_path / "tmp").mkdir()
         self._boots = 0
 
@@ -278,11 +278,11 @@ class Cell:
             "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{inherited}" if inherited else str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1",
             "HOME": str(self.home),
-            "HERMES_HOME": str(self.hermes_home),
+            "RABBIT_HOME": str(self.rabbit_home),
             "TMPDIR": str(self.root / "tmp"),
-            # HOME/.hermes IS the temp home here, so the live-system guard would
+            # HOME/.rabbit IS the temp home here, so the live-system guard would
             # read it as production; bypass it in the CHILD only.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
             "CELL5_JOURNAL": str(self.journal),
             "CELL5_ROLE": role,
             "CELL5_CHAT_ID": CHAT_ID,

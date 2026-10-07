@@ -20,7 +20,7 @@ def local_toolchain(tmp_path, monkeypatch):
 
 
 def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeypatch, local_toolchain):
-    """The CI toolchain exports PM's Python (a command environment) as HERMES_PYTHON and never
+    """The CI toolchain exports PM's Python (a command environment) as RABBIT_PYTHON and never
     leaks installer policy (``UV_*``). uv itself IS placed on PATH — after the interpreter —
     because the test suites this toolchain serves drive real uv through ``shutil.which("uv")``.
     """
@@ -57,7 +57,7 @@ def test_ci_setup_exports_python_first_and_no_installer_policy(tmp_path, monkeyp
     exported = dict(line.split("=", 1) for line in files["GITHUB_ENV"].read_text(encoding="utf-8").splitlines())
     assert outputs["uv-path"] == str(uv_binary)
     assert not any(name.startswith("UV_") for name in exported)
-    assert exported["HERMES_PYTHON"] == outputs["python-path"]
+    assert exported["RABBIT_PYTHON"] == outputs["python-path"]
     path_entries = files["GITHUB_PATH"].read_text(encoding="utf-8").replace("\\", "/").splitlines()
     python_dir = Path(outputs["python-path"]).parent.as_posix()
     assert python_dir in path_entries
@@ -89,7 +89,7 @@ def test_ci_packages_exports_python_and_preserves_real_child_exit(tmp_path, monk
     monkeypatch.setenv("GITHUB_PATH", str(path))
     assert python_packages.main(["ci-probe==1.0"]) == 0
     values = dict(line.split("=", 1) for line in exports.read_text(encoding="utf-8").splitlines())
-    assert values["HERMES_PYTHON"] == str(python)
+    assert values["RABBIT_PYTHON"] == str(python)
     assert values["VIRTUAL_ENV"] == str(python.parent.parent)
     assert not any(name.startswith("UV_") for name in values)
     assert path.read_text(encoding="utf-8").strip() == str(python.parent)

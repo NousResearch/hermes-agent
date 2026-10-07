@@ -1,5 +1,5 @@
 """Every platform plugin's ``interactive_setup`` routes its "already configured? Reconfigure?"
-gate through ``hermes_cli.setup_platforms.declines_reconfigure``.
+gate through ``rabbit_cli.setup_platforms.declines_reconfigure``.
 
 The wizards used to hand-roll the gate (env check + info line + ``prompt_yes_no(..., False)``)
 with drifting wording and, for two of them, raw ``input()`` loops. Fixes to the shared gate
@@ -13,7 +13,7 @@ import importlib
 
 import pytest
 
-import hermes_cli.setup_platforms as setup_platforms_mod
+import rabbit_cli.setup_platforms as setup_platforms_mod
 
 # (plugin module, primary env var the shared gate keys on)
 _WIZARDS = [
@@ -36,11 +36,11 @@ _WIZARDS = [
 
 @pytest.mark.parametrize("module_name, env_var", _WIZARDS, ids=[m.split(".")[-2] for m, _ in _WIZARDS])
 def test_declining_reconfigure_goes_through_shared_gate(monkeypatch, tmp_path, module_name, env_var):
-    import hermes_cli.cli_output as cli_output_mod
-    import hermes_cli.config as config_mod
-    import hermes_cli.setup as setup_mod
+    import rabbit_cli.cli_output as cli_output_mod
+    import rabbit_cli.config as config_mod
+    import rabbit_cli.setup as setup_mod
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv(env_var, "already-set")
 
     gated: list[tuple[str, ...]] = []
@@ -57,7 +57,7 @@ def test_declining_reconfigure_goes_through_shared_gate(monkeypatch, tmp_path, m
         raise AssertionError("wizard fell through to its own prompts after the user declined")
 
     # Wizards import the gate lazily from setup_platforms; the gate reads prompt_yes_no through
-    # hermes_cli.setup. Everything else a wizard could do after declining must not happen.
+    # rabbit_cli.setup. Everything else a wizard could do after declining must not happen.
     monkeypatch.setattr(setup_platforms_mod, "declines_reconfigure", _spy_gate)
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
     monkeypatch.setattr(cli_output_mod, "prompt_yes_no", lambda *_a, **_kw: False)

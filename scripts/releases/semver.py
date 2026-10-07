@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from hermes_cli.update_channel import STABLE_TAG_RE
+from rabbit_cli.update_channel import STABLE_TAG_RE
 
 _CANARY_VERSION_RE = re.compile(r"^[0-9.]+[+]canary[.]20\d{6}T\d{6}Z$")
 

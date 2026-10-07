@@ -1,13 +1,13 @@
 interface ProductIdentity {
-  /** True when this artifact is Hermes Light (remote-only client). */
+  /** True when this artifact is Rabbit Light (remote-only client). */
   light: boolean
   /** True for a Store-submission build (Windows Store packaging identity). */
   store: boolean
-  /** Display name. e.g. "Hermes Light" */
+  /** Display name. e.g. "Rabbit Light" */
   displayName: string
-  /** OS-level app identity. e.g. "com.nousresearch.hermes-light" */
+  /** OS-level app identity. e.g. "com.seven0070.rabbit-light" */
   appId: string
-  /** app name in pascal case. e.g. "HermesLight" */
+  /** app name in pascal case. e.g. "RabbitLight" */
   appNamePascal: string
   /** Artifact prefix stays compatible with release archive consumers. */
   artifactNamePascal: string
@@ -15,7 +15,7 @@ interface ProductIdentity {
   windowsExecutableName: string
   /** Exposed payload CLI command. */
   cliName: string
-  /** OS-level app identity w/ org prefix. e.g. "NousResearch.HermesLight" */
+  /** OS-level app identity w/ org prefix. e.g. "Seven0070.RabbitLight" */
   msixAppIdWithOrg: string
   /** R2 identity token on channel builds; absent on legacy products. */
   readonly token?: string

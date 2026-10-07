@@ -4,7 +4,7 @@ Programs running inside a background PTY session (``terminal(background=true,
 pty=true)``) sometimes probe their "terminal" with ANSI queries — device
 status reports (``ESC[5n``), window-size queries (``ESC[18t``), cursor
 position reports (``ESC[6n``), or DEC private-mode queries
-(``ESC[?<mode>$p``). A real terminal emulator answers these on stdin; Hermes'
+(``ESC[?<mode>$p``). A real terminal emulator answers these on stdin; Rabbit'
 PTY has no emulator on the master side, so the subprocess either blocks
 forever waiting for a reply or the raw query bytes leak into the captured
 output as garbage.

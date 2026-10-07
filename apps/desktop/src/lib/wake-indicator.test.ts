@@ -7,7 +7,7 @@ describe('wake indicator lifecycle', () => {
 
   it('moves from detection to capture and hides when the wake-started session ends', async () => {
     const setState = vi.fn()
-    vi.stubGlobal('window', { hermesDesktop: { wakeIndicator: { setState } } })
+    vi.stubGlobal('window', { rabbitDesktop: { wakeIndicator: { setState } } })
     const { activateWakeIndicator, syncWakeIndicatorWithVoice } = await import('./wake-indicator')
 
     activateWakeIndicator()
@@ -22,7 +22,7 @@ describe('wake indicator lifecycle', () => {
 
   it('does not show for a manually started voice conversation', async () => {
     const setState = vi.fn()
-    vi.stubGlobal('window', { hermesDesktop: { wakeIndicator: { setState } } })
+    vi.stubGlobal('window', { rabbitDesktop: { wakeIndicator: { setState } } })
     const { syncWakeIndicatorWithVoice } = await import('./wake-indicator')
 
     expect(syncWakeIndicatorWithVoice(true, 'listening')).toBe(false)

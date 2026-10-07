@@ -36,7 +36,7 @@ def test_child_attached_to_running_parent_is_left_alone():
 def test_real_spawn_path_child_starts_interrupted(tmp_path, monkeypatch):
     """Through ``_build_child_agent`` with real AIAgents: the orchestrator is already stopped, so the
     grandchild it builds carries the interrupt before its conversation ever starts."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from run_agent import AIAgent
     from tools import delegate_tool as dt
     import tools.delegate_tool_config as dtc

@@ -80,13 +80,13 @@ beforeEach(() => {
     setEnabled: vi.fn(async () => undefined),
     takeRendererCrashes: vi.fn(async () => null)
   }
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { desktopMetrics: bridge }
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { desktopMetrics: bridge }
 })
 
 afterEach(() => {
   resetDesktopMetricsForTests()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 function exerciseEverything() {

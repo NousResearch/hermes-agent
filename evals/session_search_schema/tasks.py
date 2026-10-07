@@ -58,7 +58,7 @@ TASKS = {
 }
 
 SYSTEM = (
-    "You are Hermes, a personal AI agent with persistent memory across "
+    "You are Rabbit, a personal AI agent with persistent memory across "
     "sessions. You have a session_search tool over the user's past "
     "conversation history. Answer the user's question accurately and "
     "concisely. Today is 2026-08-26."

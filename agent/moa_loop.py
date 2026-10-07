@@ -71,7 +71,7 @@ def _redact_reference_text(text: Any) -> Any:
 
 def _moa_privacy_mode(moa_raw: Any) -> str:
     """Normalized privacy-filter mode from a raw ``moa`` config."""
-    from hermes_cli.moa_config import coerce_privacy_filter
+    from rabbit_cli.moa_config import coerce_privacy_filter
     raw = moa_raw if isinstance(moa_raw, dict) else {}
     return coerce_privacy_filter(raw.get("privacy_filter"))
 
@@ -123,8 +123,8 @@ _preset_cache: dict[tuple, Any] = {}
 def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     """``(preset, raw moa config)``; the resolved preset is cached per config file signature
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
-    from hermes_cli.config import get_config_path, load_config
-    from hermes_cli.moa_config import resolve_moa_preset
+    from rabbit_cli.config import get_config_path, load_config
+    from rabbit_cli.moa_config import resolve_moa_preset
     from utils import file_signature
     try:
         cfg_stamp = file_signature(get_config_path().stat())
@@ -223,7 +223,7 @@ def _slot_label(slot: dict[str, Any]) -> str:
 def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
     """Translate optional per-MoA-slot reasoning_effort into runtime config."""
     try:
-        from hermes_constants import parse_reasoning_effort
+        from rabbit_constants import parse_reasoning_effort
         return parse_reasoning_effort(slot.get("reasoning_effort"))
     except Exception:  # pragma: no cover - bad config must not break MoA
         return None
@@ -239,8 +239,8 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
     if cfg is not None:
         return cfg
     try:
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
+        from rabbit_cli.config import load_config
+        from rabbit_constants import resolve_reasoning_config
         return resolve_reasoning_config(load_config() or {}, str(aggregator.get("model") or ""))
     except Exception:  # pragma: no cover - bad config must not break MoA
         return None
@@ -254,10 +254,10 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
+    # rabbit_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
     # multiplex gateway two profiles can share (provider, model) with different accounts.
-    from hermes_constants import hermes_home_key
-    cache_key = (hermes_home_key(), provider, model)
+    from rabbit_constants import rabbit_home_key
+    cache_key = (rabbit_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
@@ -265,7 +265,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         return entry[1]
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
         rt = resolve_runtime_provider(requested=provider, target_model=model)
         out.update({k: rt[k] for k in ("base_url", "api_key", "api_mode") if rt.get(k)})
         overrides = rt.get("request_overrides")
@@ -620,7 +620,7 @@ def _run_references_parallel(
     total = len(reference_models)
     results: list[tuple[str, str, Any] | None] = [None] * total
     futures: dict[Any, int] = {}
-    # Propagate the turn's contextvars (approval callbacks, Nous conversation tag).
+    # Propagate the turn's contextvars (approval callbacks, conversation tag).
     from tools.thread_context import propagate_context_to_thread
     completed = 0
     executor = ThreadPoolExecutor(max_workers=min(_MAX_REFERENCE_WORKERS, total))
@@ -918,7 +918,7 @@ def aggregate_moa_context(
     )
     privacy_full = False
     try:
-        from hermes_cli.config import load_config as _load_config
+        from rabbit_cli.config import load_config as _load_config
         privacy_full = _moa_privacy_mode((_load_config() or {}).get("moa")) == "full"
     except Exception:  # pragma: no cover - privacy filter must never break a turn
         logger.debug("MoA privacy filter check failed", exc_info=True)
@@ -937,7 +937,7 @@ def aggregate_moa_context(
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
         "reference responses into concise, actionable guidance for the main "
-        "Hermes agent. Focus on next steps, tool-use strategy, risks, and any "
+        "Rabbit agent. Focus on next steps, tool-use strategy, risks, and any "
         "disagreements. Do not answer the user directly unless that is all that "
         "is needed; produce context the main agent should use in its normal loop.\n\n"
         f"Original user prompt:\n{user_prompt}\n\n"
@@ -966,7 +966,7 @@ def aggregate_moa_context(
 
     return (
         "[Mixture of Agents context — use this as private guidance for the "
-        "normal Hermes agent loop. You may call tools, continue reasoning, or "
+        "normal Rabbit agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
         f"Aggregator: {agg_label}\n"
         f"References: {_slot_labels(reference_models)}\n\n"
@@ -1522,8 +1522,8 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         resolved_preset = getattr(agent, "model", None)
     resolved_preset = str(resolved_preset or "default")
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+        from rabbit_cli.config import load_config
+        from rabbit_cli.moa_config import normalize_moa_config
         moa_cfg = normalize_moa_config(load_config().get("moa") or {})
         if resolved_preset not in (moa_cfg.get("presets") or {}):
             resolved_preset = moa_cfg.get("default_preset") or "default"

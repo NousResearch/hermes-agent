@@ -133,30 +133,7 @@ export function deprecatedCount(tools: readonly ToolRowModel[]): number {
   return tools.filter(tool => tool.deprecated).length
 }
 
-export interface ToolReadInput {
-  hasData: boolean
-  listHasApp: boolean
-  pending: boolean
-  reason: null | string
-}
-
-export function toolReadStatus({ hasData, listHasApp, pending, reason }: ToolReadInput): ToolsEditorStatus | null {
-  if (reason === 'CONNECTOR_NOT_FOUND') {
-    return listHasApp ? 'unavailable' : 'gone'
-  }
-
-  if (hasData) {
-    return null
-  }
-
-  if (reason !== null) {
-    return reason === 'NEEDS_NOUS_AUTH' ? 'signedOut' : 'unavailable'
-  }
-
-  return pending ? 'loading' : null
-}
-
-export function facetTools(tools: readonly ToolRowModel[], facet: string): string[] {
+export export function facetTools(tools: readonly ToolRowModel[], facet: string): string[] {
   return tools.filter(tool => tool.facet === facet && !tool.deprecated && tool.lockedBy === null).map(tool => tool.slug)
 }
 

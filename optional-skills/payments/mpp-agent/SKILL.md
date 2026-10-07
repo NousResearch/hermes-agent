@@ -1,19 +1,19 @@
 ---
+author: Teknium (teknium1), Hermes Agent
 name: mpp-agent
 description: Pay HTTP 402 APIs via Machine Payments Protocol (MPP).
 version: 0.1.0
-author: Teknium (teknium1), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  rabbit:
     tags: [Payments, MPP, HTTP-402, Tempo, Stripe]
     related_skills: [stripe-link-cli, stripe-projects]
 ---
 
 # MPP Agent Skill
 
-Wraps the Machine Payments Protocol (MPP, https://mpp.dev) clients so Hermes can pay for per-request API access against servers that respond with `HTTP 402 Payment Required`.
+Wraps the Machine Payments Protocol (MPP, https://mpp.dev) clients so Rabbit can pay for per-request API access against servers that respond with `HTTP 402 Payment Required`.
 
 Three client options, all distributed via npm. Pick the lightest one that solves the user's need. Gated `[linux, macos]` while the broader payments tooling matures on Windows.
 

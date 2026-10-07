@@ -1,0 +1,16 @@
+name: rabbit-atoll
+title: Rabbit Notch Plugin
+repo: https://github.com/himanusia/rabbit-notch-plugin
+sha: 298a67e9fc1f9e5a4ec821bdce9d516e7e72e968
+description: "Native Rabbit Agent plugin that runs the local Atoll notch monitor for Rabbit session and turn status on macOS. Disclosure — macOS only. Starts a detached Node daemon on every Rabbit session that reads state.db read-only and sends session titles, model/profile/token stats and a ≤96-char redacted preview of your latest request to the third-party Atoll notch app over localhost. rabbit notch setup clones and builds the author's Atoll fork (github.com/himanusia/Atoll at a pinned commit, not reviewed here) with Xcode and installs an unnotarized app to ~/Applications. Node deps install via Rabbit's npm ci prompt. Run rabbit notch stop before removing."
+maintainer: himanusia
+tier: community
+category: desktop
+version: "0.3.0"
+image: https://raw.githubusercontent.com/himanusia/rabbit-notch-plugin/298a67e9fc1f9e5a4ec821bdce9d516e7e72e968/assets/rabbit-atoll-thumbnail.jpg
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_start]
+  provides_middleware: []
+  requires_env: []

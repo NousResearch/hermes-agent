@@ -24,7 +24,7 @@ from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from rabbit_cli._subprocess_compat import windows_hide_flags
 
 if TYPE_CHECKING:
     from cron.scheduler import _CancelEventLike
@@ -76,7 +76,7 @@ def _get_script_timeout() -> int:
                 "Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default",
                 _sched._SCRIPT_TIMEOUT)
     resolved = _timeout_from_env_or_config(
-        "HERMES_CRON_SCRIPT_TIMEOUT", "script_timeout_seconds", _positive_int,
+        "RABBIT_CRON_SCRIPT_TIMEOUT", "script_timeout_seconds", _positive_int,
         "cron script timeout",
     )
     return _sched._DEFAULT_SCRIPT_TIMEOUT if resolved is None else resolved
@@ -86,20 +86,20 @@ _DEFAULT_MEDIA_SEND_TIMEOUT = 300
 
 
 def _get_media_send_timeout() -> int:
-    """Per-attachment media-send timeout: HERMES_CRON_MEDIA_SEND_TIMEOUT env, then
+    """Per-attachment media-send timeout: RABBIT_CRON_MEDIA_SEND_TIMEOUT env, then
     ``cron.media_send_timeout_seconds``, then 300s (long TTS audio can exceed a 30s window)."""
     resolved = _timeout_from_env_or_config(
-        "HERMES_CRON_MEDIA_SEND_TIMEOUT", "media_send_timeout_seconds", _positive_int,
+        "RABBIT_CRON_MEDIA_SEND_TIMEOUT", "media_send_timeout_seconds", _positive_int,
         "cron media-send timeout")
     return _DEFAULT_MEDIA_SEND_TIMEOUT if resolved is None else resolved
 
 
 def _get_session_db_timeout() -> float:
-    """Bound on run_job's SessionDB init: HERMES_CRON_SESSION_DB_TIMEOUT env, then
+    """Bound on run_job's SessionDB init: RABBIT_CRON_SESSION_DB_TIMEOUT env, then
     ``cron.session_db_timeout_seconds`` (in DEFAULT_CONFIG), then 10s. Unlike sibling timeouts,
     0 is meaningful (unlimited, debugging opt-in), so values pass through untouched."""
     resolved = _timeout_from_env_or_config(
-        "HERMES_CRON_SESSION_DB_TIMEOUT", "session_db_timeout_seconds", float,
+        "RABBIT_CRON_SESSION_DB_TIMEOUT", "session_db_timeout_seconds", float,
         "cron.session_db_timeout_seconds")
     return 10.0 if resolved is None else resolved
 
@@ -143,11 +143,11 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     interpreter: the store Python has the repo and managed site-packages only on its in-process
     ``sys.path``, so its children import neither (#123044). No ``PYTHONPATH``: everything the
     script spawns would inherit it and a foreign interpreter would load the store's compiled
-    extensions (#123440). The venv resolves Hermes from its generation's workspace snapshot,
+    extensions (#123440). The venv resolves Rabbit from its generation's workspace snapshot,
     rebuilt only on a dependency change, so the bootstrap puts the live checkout first.
-    Lazy installs are off for the script's process tree: a script importing ``hermes_bootstrap``
+    Lazy installs are off for the script's process tree: a script importing ``rabbit_bootstrap``
     could otherwise complete a source update and ``execv`` itself onto the bare store Python."""
-    from hermes_cli._launchers import resolve_store_python
+    from rabbit_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
     repo = Path(__file__).resolve().parents[1]
@@ -160,7 +160,7 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
         # The caller's interpreter is the bare store Python here — the #123044 failure mode.
         raise RuntimeError(f"dependency environment interpreter is missing: {python}")
     return ([str(python), "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(script)],
-            {"HERMES_DISABLE_LAZY_INSTALLS": "1"})
+            {"RABBIT_DISABLE_LAZY_INSTALLS": "1"})
 
 
 def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
@@ -179,7 +179,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         if sibling.exists():
             interpreter = sibling
 
-    from hermes_cli._launchers import resolve_store_python
+    from rabbit_cli._launchers import resolve_store_python
     from pm.environments import committed_venv, site_packages as dependency_site
 
     repo = Path(__file__).resolve().parents[1]
@@ -322,9 +322,9 @@ def _windows_cron_bootstrap_argv(
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Validate a job script path; ``(path, None)`` or ``(None, error)``. Scripts MUST resolve
-    inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
+    inside RABBIT_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
     traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
-    scripts_dir = _sched._get_hermes_home() / "scripts"
+    scripts_dir = _sched._get_rabbit_home() / "scripts"
     _ensure_cron_dir(scripts_dir)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -345,7 +345,7 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
         return None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
     path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
 
-    # Traversal / absolute-path / symlink escape guard — MUST stay inside HERMES_HOME/scripts/.
+    # Traversal / absolute-path / symlink escape guard — MUST stay inside RABBIT_HOME/scripts/.
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
@@ -359,7 +359,7 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
         return None, (
             f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
             f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
-            f"there too, or edit the job with `hermes cron edit`."
+            f"there too, or edit the job with `rabbit cron edit`."
         )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
@@ -417,7 +417,7 @@ def _script_argv(
         return [_bash, str(path)], {}, None
     if isinstance(interpreter, str) and interpreter.strip():
         # A user venv gets none of the managed-store overlays: the repo bootstrap / PYTHONPATH
-        # exist to run Hermes' own dependency venv and would shadow the user's packages.
+        # exist to run Rabbit' own dependency venv and would shadow the user's packages.
         python_exe, err = _resolve_cron_interpreter(interpreter)
         return ([python_exe, str(path)] if python_exe else None), {}, err
     if sys.platform != "win32":
@@ -438,7 +438,7 @@ def _run_job_script(
     §2.3). ``workdir`` sets the subprocess cwd only; the Python process cwd is NEVER mutated (an
     ``os.chdir()`` would leak into concurrent gateway sessions).
 
-    Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
+    Args: script_path: Path to the script. Relative paths are resolved against RABBIT_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for

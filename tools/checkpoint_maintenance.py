@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli.gitlock import clear_stale_tmp_packs
+from rabbit_cli.gitlock import clear_stale_tmp_packs
 from utils import rmtree_readonly
 from tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
@@ -425,9 +425,9 @@ def auto_prune_from_config() -> Dict[str, object]:
     """``maybe_auto_prune_checkpoints`` driven by the ``checkpoints:`` config section — the one
     startup/housekeeping entry point for the CLI and the gateway. ``delete_orphans`` is never
     honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
-    cleanup is only via explicit ``hermes checkpoints prune``. Never raises."""
+    cleanup is only via explicit ``rabbit checkpoints prune``. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         cfg = load_config().get("checkpoints") or {}
         if not cfg.get("auto_prune", False):
             return {"skipped": True}
@@ -448,7 +448,7 @@ def checkpoint_footprint_notice() -> Optional[str]:
     GB-scale store for a feature they never invoke. The cap is a floor of one snapshot per
     project, so a big store is expected, not broken — the notice names the opt-out. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         cfg = load_config().get("checkpoints") or {}
         if not cfg.get("enabled", False):
             return None
@@ -457,18 +457,18 @@ def checkpoint_footprint_notice() -> Optional[str]:
         size = int(status["total_size_bytes"])
         if cap_mb <= 0 or size < cap_mb * 1024 * 1024:
             return None
-        from hermes_cli.sizefmt import format_bytes
+        from rabbit_cli.sizefmt import format_bytes
         return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
                 f"{status['project_count']} project(s), above the {cap_mb} MB cap (one snapshot per project is "
-                f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "
-                f"`hermes checkpoints clear`; or lower `checkpoints.retention_days`.")
+                f"always kept). Not using /rollback? `rabbit config set checkpoints.enabled false` then "
+                f"`rabbit checkpoints clear`; or lower `checkpoints.retention_days`.")
     except Exception as exc:
         logger.debug("checkpoint footprint notice skipped: %s", exc)
         return None
 
 
 # ---------------------------------------------------------------------------
-# Public helpers for `hermes checkpoints` CLI
+# Public helpers for `rabbit checkpoints` CLI
 # ---------------------------------------------------------------------------
 
 def store_status(checkpoint_base: Optional[Path] = None) -> Dict:

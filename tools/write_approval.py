@@ -6,7 +6,7 @@ A per-subsystem boolean ``write_approval`` gates the agent's cross-session write
 origin (**foreground** turn or **background_review** fork). ``false`` (default)
 writes freely; ``true`` never commits directly: it prompts inline (memory,
 interactive CLI only) or **stages** the write under
-``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
+``<RABBIT_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def write_approval_enabled(subsystem: str) -> bool:
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
-        from hermes_cli.config import load_config, cfg_get
+        from rabbit_cli.config import load_config, cfg_get
         return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
     except Exception:
         return False
@@ -63,7 +63,7 @@ def _normalize_enabled(value: Any) -> bool:
 # --- Pending store (file-backed) ---
 
 def _pending_path(subsystem: str, pending_id: str) -> Path:
-    return get_hermes_home() / "pending" / subsystem / f"{pending_id}.json"
+    return get_rabbit_home() / "pending" / subsystem / f"{pending_id}.json"
 
 
 def _pending_files(subsystem: str) -> list:
@@ -166,7 +166,7 @@ class GateDecision:
 def _slash_review_surface() -> bool:
     """Whether the ACTIVE turn has a human who can type ``/<subsystem> pending``: the interactive
     CLI, TUI/desktop (exec route), and chat-gateway sessions all answer it now. Headless worker
-    contexts — cron (``HERMES_CRON_SESSION``), kanban (``HERMES_KANBAN_TASK``) and the unattended
+    contexts — cron (``RABBIT_CRON_SESSION``), kanban (``RABBIT_KANBAN_TASK``) and the unattended
     programmatic platforms (api_server, webhook delivery) — have nobody at a prompt, so the staged
     hint must not name a command nobody can deliver (#98330); it names the pending dir instead."""
     def _env(name: str) -> str:
@@ -175,15 +175,15 @@ def _slash_review_surface() -> bool:
             return get_session_env(name, "") or ""
         except Exception:  # standalone/tests: process env is the fallback
             return os.environ.get(name, "") or ""
-    if _env("HERMES_KANBAN_TASK").strip():
+    if _env("RABBIT_KANBAN_TASK").strip():
         return False
     try:
         from utils import is_truthy_value
-        if is_truthy_value(_env("HERMES_CRON_SESSION")):
+        if is_truthy_value(_env("RABBIT_CRON_SESSION")):
             return False
     except Exception:
         pass
-    platform = (_env("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_PLATFORM", "")).strip().lower()
+    platform = (_env("RABBIT_SESSION_PLATFORM") or os.environ.get("RABBIT_PLATFORM", "")).strip().lower()
     return platform not in {"webhook", "msgraph_webhook", "api_server"}
 
 

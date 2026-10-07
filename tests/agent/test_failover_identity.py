@@ -311,7 +311,7 @@ class TestRedecoratePromptCacheOnPolicyChange:
         prompt = "sys"
         guidance = (
             "[Mixture of Agents context — use this as private guidance for the "
-            "normal Hermes agent loop.]\nAggregator: agg\n\nadvice"
+            "normal Rabbit agent loop.]\nAggregator: agg\n\nadvice"
         )
         base = [
             {"role": "system", "content": prompt},

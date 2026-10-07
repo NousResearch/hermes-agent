@@ -25,7 +25,7 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
     }
   }
 
-  const offWindowState = window.hermesDesktop?.onWindowStateChanged?.((payload: WindowStatePayload) => {
+  const offWindowState = window.rabbitDesktop?.onWindowStateChanged?.((payload: WindowStatePayload) => {
     const next = payload?.isMinimized === true || payload?.isVisible === false
 
     if (windowPaused === next) {

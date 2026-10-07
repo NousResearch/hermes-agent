@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-MODULE = "hermes_cli.windows_store_update"
+MODULE = "rabbit_cli.windows_store_update"
 
 
 class State(IntEnum):

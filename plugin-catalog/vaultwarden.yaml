@@ -1,11 +1,11 @@
 name: vaultwarden
-repo: https://github.com/hansipie/hermes-vaultwarden
+repo: https://github.com/hansipie/rabbit-vaultwarden
 sha: a461ecf127299a701404233cec8f097ac0450225
 description: Vaultwarden / Bitwarden Password Manager (bw CLI) secret source
 maintainer: hansipie
 tier: community
 category: general
-docs_url: https://github.com/hansipie/hermes-vaultwarden#readme
+docs_url: https://github.com/hansipie/rabbit-vaultwarden#readme
 capabilities:
   provides_tools: []
   provides_hooks: []

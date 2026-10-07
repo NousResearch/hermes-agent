@@ -72,13 +72,13 @@ class GatewayProc:
     extra_config: str = ""
 
     def __post_init__(self) -> None:
-        self.home, self.hermes_home = write_chaos_home(
+        self.home, self.rabbit_home = write_chaos_home(
             self.root, self.base_url, extra=gateway_extra_config() + self.extra_config, **self.cfg)
-        plugin_dir = self.hermes_home / "plugins" / fake_platform.PLUGIN_DIR_NAME
+        plugin_dir = self.rabbit_home / "plugins" / fake_platform.PLUGIN_DIR_NAME
         plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "plugin.yaml").write_text(PLUGIN_MANIFEST, encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(PLUGIN_INIT, encoding="utf-8")
-        self.state_db = self.hermes_home / "state.db"
+        self.state_db = self.rabbit_home / "state.db"
         self.log_path = self.root / "gateway.log"
         self.events: list[Event] = []
         self._cond = threading.Condition()
@@ -97,7 +97,7 @@ class GatewayProc:
         listener.listen(1)
         listener.settimeout(1.0)
         self._listener = listener
-        env = hermetic_env(self.home, self.hermes_home, self.tag)
+        env = hermetic_env(self.home, self.rabbit_home, self.tag)
         for key in ("NOTIFY_SOCKET", "INVOCATION_ID", "WATCHDOG_USEC", "WATCHDOG_PID", "XDG_STATE_HOME",
                     "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
             env.pop(key, None)
@@ -105,11 +105,11 @@ class GatewayProc:
             fake_platform.PORT_ENV: str(listener.getsockname()[1]),
             fake_platform.ALLOW_ALL_ENV: "true",
             # Host rendezvous (one-gateway-per-user lock + record) must never see the live gateway.
-            "HERMES_GATEWAY_LOCK_DIR": str(self.root / "locks"),
-            "HERMES_GATEWAY_MAX_STARTS": "0",
+            "RABBIT_GATEWAY_LOCK_DIR": str(self.root / "locks"),
+            "RABBIT_GATEWAY_MAX_STARTS": "0",
             # The child's HOME is the tmp root, so the live-DB guard (pytest ancestry) would take
             # its tmp state.db for "production"; the documented child opt-out is safe here.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         })
         log = open(self.log_path, "wb")
         # Same process group as pytest (no start_new_session): when the runner kills a timed-out

@@ -115,9 +115,9 @@ def stage_native(args) -> int:
         base_env.setdefault(key, str(Path.home() / directory))
     with tempfile.TemporaryDirectory(prefix=".build-", dir=out) as work:
         env = {**base_env, "HOME": work, "USERPROFILE": work,
-               "HERMES_HOME": str(Path(work) / ".hermes"),
-               "HERMES_RUNTIME_DIR": str(out / "tools"),
-               "HERMES_PYTHON_SRC_ROOT": str(root),
+               "RABBIT_HOME": str(Path(work) / ".rabbit"),
+               "RABBIT_RUNTIME_DIR": str(out / "tools"),
+               "RABBIT_PYTHON_SRC_ROOT": str(root),
                "XDG_CACHE_HOME": str(Path(work) / "cache"),
                "XDG_CONFIG_HOME": str(Path(work) / "config"),
                "UV_CACHE_DIR": str(cache),
@@ -166,7 +166,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     store_dir = out / "tools"
     store_dir.mkdir(parents=True, exist_ok=True)
-    repo_dir = out / "hermes-agent"
+    repo_dir = out / "rabbit-agent"
     from scripts.bundles.payload import INERT_SNAPSHOT_DIRS, snapshot
     print(f"staging repo snapshot ({ref})…", flush=True)
     revision = subprocess.check_output(
@@ -264,7 +264,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     from scripts.bundles.native_prepared import publish_prepared
 
     site = dependency_site(venv_dir, python_fact["version"], current_target())
-    (site / "hermes-agent.pth").write_text(
+    (site / "rabbit-agent.pth").write_text(
         Path(os.path.relpath(repo_dir, site)).as_posix() + "\n", encoding="utf-8")
     from scripts.bundles.payload import relativize_links
     relativize_links(out)
@@ -272,7 +272,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     baked = bake_bytecode(out, python_bin)
     print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
     inputs = AgentInputs(
-        project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
+        project=repo_dir / "pyproject.toml", code=repo_dir, repo="rabbit-agent",
         placement="contained", target=current_target(), python=python_bin,
         site_packages=site, environment=venv_dir,
         tools=store_dir, pm_runtime=out / "pm-runtime", ref=ref,

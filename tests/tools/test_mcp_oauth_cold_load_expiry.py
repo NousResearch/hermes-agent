@@ -3,7 +3,7 @@
 PR #11383's consolidation fixed external-refresh reloading (mtime disk-watch)
 and 401 dedup, but left two underlying latent bugs in place:
 
-1. ``HermesTokenStorage.set_tokens`` persisted only relative ``expires_in``,
+1. ``RabbitTokenStorage.set_tokens`` persisted only relative ``expires_in``,
    which is meaningless after a process restart.
 2. The MCP SDK's ``OAuthContext._initialize`` loads ``current_tokens`` from
    storage but does NOT call ``update_token_expiry``, so
@@ -23,7 +23,7 @@ These tests pin the contract for Fix A:
 - ``set_tokens`` persists an absolute ``expires_at`` wall-clock timestamp.
 - ``get_tokens`` reconstructs ``expires_in`` from ``expires_at - now`` so
   the SDK's ``update_token_expiry`` computes the correct absolute expiry.
-- ``HermesMCPOAuthProvider._initialize`` seeds ``context.token_expiry_time``
+- ``RabbitMCPOAuthProvider._initialize`` seeds ``context.token_expiry_time``
   after loading, so ``is_token_valid()`` reports True only for tokens that
   are actually still valid, and the SDK's preemptive refresh fires for
   expired tokens with a live refresh_token.
@@ -42,18 +42,18 @@ import pytest
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 # ---------------------------------------------------------------------------
-# HermesTokenStorage — absolute expiry persistence
+# RabbitTokenStorage — absolute expiry persistence
 # ---------------------------------------------------------------------------
 
 class TestSetTokensAbsoluteExpiry:
     def test_set_tokens_persists_absolute_expires_at(self, tmp_path, monkeypatch):
         """Tokens round-tripped through disk must encode absolute expiry."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth import RabbitTokenStorage
 
-        storage = HermesTokenStorage("srv")
+        storage = RabbitTokenStorage("srv")
         before = time.time()
         asyncio.run(
             storage.set_tokens(
@@ -81,12 +81,12 @@ class TestSetTokensAbsoluteExpiry:
         self, tmp_path, monkeypatch
     ):
         """Tokens without a TTL must not gain a fabricated expires_at."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth import RabbitTokenStorage
 
-        storage = HermesTokenStorage("srv")
+        storage = RabbitTokenStorage("srv")
         asyncio.run(
             storage.set_tokens(
                 OAuthToken(
@@ -107,12 +107,12 @@ class TestGetTokensReconstructsExpiresIn:
         self, tmp_path, monkeypatch
     ):
         """Round-trip: expires_in on read must reflect time remaining."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from tools.mcp_oauth import RabbitTokenStorage
 
-        storage = HermesTokenStorage("srv")
+        storage = RabbitTokenStorage("srv")
         asyncio.run(
             storage.set_tokens(
                 OAuthToken(
@@ -137,8 +137,8 @@ class TestGetTokensReconstructsExpiresIn:
         self, tmp_path, monkeypatch
     ):
         """An already-expired token reloaded from disk must report expires_in=0."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+        from tools.mcp_oauth import RabbitTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -155,7 +155,7 @@ class TestGetTokensReconstructsExpiresIn:
             )
         )
 
-        storage = HermesTokenStorage("srv")
+        storage = RabbitTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
         assert reloaded.expires_in == 0, (
@@ -174,8 +174,8 @@ class TestGetTokensReconstructsExpiresIn:
         expires_in to zero so the SDK refreshes on next request. A fresh
         legacy-format file (mtime = now) keeps most of its TTL.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+        from tools.mcp_oauth import RabbitTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -197,7 +197,7 @@ class TestGetTokensReconstructsExpiresIn:
 
         os.utime(legacy_path, (stale_time, stale_time))
 
-        storage = HermesTokenStorage("srv")
+        storage = RabbitTokenStorage("srv")
         reloaded = asyncio.run(storage.get_tokens())
         assert reloaded is not None
         assert reloaded.expires_in == 0, (
@@ -206,7 +206,7 @@ class TestGetTokensReconstructsExpiresIn:
         )
 
 # ---------------------------------------------------------------------------
-# HermesMCPOAuthProvider._initialize — seed token_expiry_time
+# RabbitMCPOAuthProvider._initialize — seed token_expiry_time
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -219,17 +219,17 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     token_expiry_time. Our subclass must do it so ``is_token_valid()``
     reports correctly and the preemptive-refresh path fires when needed.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import RabbitTokenStorage
+    from tools.mcp_oauth_manager import _RABBIT_PROVIDER_CLS, reset_manager_for_tests
 
-    assert _HERMES_PROVIDER_CLS is not None
+    assert _RABBIT_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
-    storage = HermesTokenStorage("srv")
+    storage = RabbitTokenStorage("srv")
     await storage.set_tokens(
         OAuthToken(
             access_token="a",
@@ -252,9 +252,9 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
 
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Hermes Agent",
+        client_name="Rabbit Agent",
     )
-    provider = _HERMES_PROVIDER_CLS(
+    provider = _RABBIT_PROVIDER_CLS(
         server_name="srv",
         server_url="https://example.com/mcp",
         client_metadata=metadata,
@@ -284,17 +284,17 @@ async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
     need an expiry that is already in the past before the SDK selects its refresh
     or authorization-code path.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import RabbitTokenStorage, _get_token_dir
+    from tools.mcp_oauth_manager import _RABBIT_PROVIDER_CLS, reset_manager_for_tests
 
-    assert _HERMES_PROVIDER_CLS is not None
+    assert _RABBIT_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
-    storage = HermesTokenStorage("srv")
+    storage = RabbitTokenStorage("srv")
     await storage.set_tokens(
         OAuthToken(
             access_token="expired-access",
@@ -318,12 +318,12 @@ async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
         )
     )
 
-    provider = _HERMES_PROVIDER_CLS(
+    provider = _RABBIT_PROVIDER_CLS(
         server_name="srv",
         server_url="https://example.com/mcp",
         client_metadata=OAuthClientMetadata(
             redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-            client_name="Hermes Agent",
+            client_name="Rabbit Agent",
         ),
         storage=storage,
         redirect_handler=_noop_redirect,
@@ -367,7 +367,7 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     and we drop into full browser re-auth — visible to the user as an
     unwanted OAuth browser prompt every time the process restarts.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     # The SDK's httpx flavour (httpx2 on mcp >= 2.0). _prefetch_oauth_metadata
     # builds its client from the same module, so the MockTransport and the
@@ -381,13 +381,13 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     )
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import RabbitTokenStorage
+    from tools.mcp_oauth_manager import _RABBIT_PROVIDER_CLS, reset_manager_for_tests
 
-    assert _HERMES_PROVIDER_CLS is not None
+    assert _RABBIT_PROVIDER_CLS is not None
     reset_manager_for_tests()
 
-    storage = HermesTokenStorage("srv")
+    storage = RabbitTokenStorage("srv")
     await storage.set_tokens(
         OAuthToken(
             access_token="a",
@@ -458,9 +458,9 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
 
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Hermes Agent",
+        client_name="Rabbit Agent",
     )
-    provider = _HERMES_PROVIDER_CLS(
+    provider = _RABBIT_PROVIDER_CLS(
         server_name="srv",
         server_url="https://mcp.example.com",
         client_metadata=metadata,

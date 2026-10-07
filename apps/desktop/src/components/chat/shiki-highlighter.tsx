@@ -39,7 +39,7 @@ export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-c
  * via `defaultColor="light-dark()"`), and its output is cached by content so
  * warm-session switches never re-tokenize unchanged blocks (#95595).
  */
-interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
+interface RabbitSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
@@ -164,7 +164,7 @@ export function copyableCodeText(code: string): string {
   })
 }
 
-export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
+export const SyntaxHighlighter: FC<RabbitSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
   code,

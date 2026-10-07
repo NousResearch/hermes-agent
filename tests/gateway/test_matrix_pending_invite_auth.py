@@ -27,7 +27,7 @@ def _make_adapter():
         token="syt_test_token",
         extra={
             "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
+            "user_id": "@rabbit:example.org",
         },
     )
     adapter = MatrixAdapter(config)
@@ -38,7 +38,7 @@ def _make_adapter():
 
 
 def _member_invite_event(
-    state_key="@hermes:example.org",
+    state_key="@rabbit:example.org",
     sender="@alice:example.org",
     is_direct=True,
     membership="invite",

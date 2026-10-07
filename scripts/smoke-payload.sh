@@ -18,8 +18,8 @@ try {
   renameSync(original, moved)
   relocated = true
   const manifest = JSON.parse(readFileSync(join(moved, 'manifest.json'), 'utf8'))
-  const command = manifest.runtime.commands.hermes
-  if (!command) throw new Error('manifest has no hermes command')
+  const command = manifest.runtime.commands.rabbit
+  if (!command) throw new Error('manifest has no rabbit command')
   const executable = realpathSync(resolve(moved, command))
   const inside = relative(realpathSync(moved), executable)
   if (isAbsolute(command) || isAbsolute(inside) || inside === '..' || inside.startsWith(`..${sep}`)) {
@@ -27,8 +27,8 @@ try {
   }
   const home = join(scratch, 'home')
   mkdirSync(home)
-  const env = { HOME: home, USERPROFILE: home, HERMES_HOME: join(home, '.hermes'),
-    PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1', HERMES_DISABLE_LAZY_INSTALLS: '1',
+  const env = { HOME: home, USERPROFILE: home, RABBIT_HOME: join(home, '.rabbit'),
+    PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1', RABBIT_DISABLE_LAZY_INSTALLS: '1',
     UV_OFFLINE: '1', npm_config_offline: 'true' }
   // Keep OS process necessities only; no checkout, Python, PM, or Node overrides.
   for (const [key, value] of Object.entries(process.env)) {
@@ -37,12 +37,12 @@ try {
   // tools list crosses the real application/config/registry imports, unlike
   // version/help and PM's stdlib bootstrap fast paths.
   for (const args of [['--version'], ['--help'], ['tools', 'list'], ['pm', 'doctor']]) {
-    console.log(`— published hermes ${args.join(' ')} (relocated) —`)
+    console.log(`— published rabbit ${args.join(' ')} (relocated) —`)
     const child = spawnSync(executable, args, {
       cwd: home, env, stdio: 'inherit', timeout: 120000,
     })
     if (child.error) throw child.error
-    if (child.status !== 0) throw new Error(`hermes ${args.join(' ')} failed: ${child.status ?? child.signal}`)
+    if (child.status !== 0) throw new Error(`rabbit ${args.join(' ')} failed: ${child.status ?? child.signal}`)
   }
   // browser_exec's engine (browser-harness) runs on the store interpreter with only the
   // payload's site dir on PYTHONPATH (tools/browser_use_cli.py); -S drops any site of its own.

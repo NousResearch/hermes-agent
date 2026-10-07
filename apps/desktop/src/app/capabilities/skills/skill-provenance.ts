@@ -1,4 +1,4 @@
-import type { SkillInfo } from '@/types/hermes'
+import type { SkillInfo } from '@/types/rabbit'
 
 /**
  * #108032: an external mount is not a managed hub/bundled source — it is the user's

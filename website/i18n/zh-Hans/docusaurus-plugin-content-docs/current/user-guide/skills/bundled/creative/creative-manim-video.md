@@ -22,7 +22,7 @@ Manim CE 动画：3Blue1Brown 数学/算法视频。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在该 skill 被触发时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在该 skill 被触发时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Manim 视频制作流水线

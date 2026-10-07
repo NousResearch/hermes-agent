@@ -41,7 +41,7 @@ time.sleep(120)
 
 @pytest.fixture
 def host_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     yield tmp_path
     hr.release_host_lock(hr.ROLE_GATEWAY)
     hr.release_host_lock(hr.ROLE_SERVE)
@@ -52,7 +52,7 @@ def _tree() -> str:
 
 
 def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir, monkeypatch):
-    """The per-home lock is per HERMES_HOME (N profiles = N locks); the host lock is not.
+    """The per-home lock is per RABBIT_HOME (N profiles = N locks); the host lock is not.
 
     This is the whole point of the host layer: before it, a second profile's gateway took its
     own ``gateway.lock`` and nothing on the machine noticed.
@@ -62,7 +62,7 @@ def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir,
     for home in (home_a, home_b):
         home.mkdir()
 
-    env = {**os.environ, "HERMES_HOME": str(home_a), "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
+    env = {**os.environ, "RABBIT_HOME": str(home_a), "RABBIT_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
     child = subprocess.Popen(
         [sys.executable, "-c", _CHILD.format(tree=tree)], env=env, cwd=tree,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -75,7 +75,7 @@ def test_two_homes_take_their_own_per_home_lock_but_only_one_host_lock(host_dir,
         first = json.loads(line)
         assert first == {"per_home": True, "host": True}
 
-        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        monkeypatch.setenv("RABBIT_HOME", str(home_b))
         from gateway import status
 
         assert status.acquire_gateway_runtime_lock() is True, "second home must get its OWN lock"
@@ -140,7 +140,7 @@ def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not
     run ``atexit``: the record outlived its process and the 0600 token kept a LIVE session token
     on disk indefinitely, so the next launch attached to something that was gone."""
-    env = {**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
+    env = {**os.environ, "RABBIT_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
     child = subprocess.Popen(
         [sys.executable, "-c", _SIGTERM_CHILD.format(tree=_tree())], env=env, cwd=_tree(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -167,7 +167,7 @@ def test_unopenable_lock_dir_is_not_reported_as_another_owner(host_dir, monkeypa
     another gateway owned the host and sent them hunting a process that never existed."""
     blocked = host_dir / "blocked"
     blocked.write_text("not a directory", encoding="utf-8")
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(blocked / "locks"))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(blocked / "locks"))
 
     outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
 
@@ -180,7 +180,7 @@ def test_lock_cache_follows_the_lock_directory(host_dir, monkeypatch, tmp_path):
     "already held" for a directory it had never created, so ``owns_host_lock()`` lied."""
     assert hr.claim_host_lock(hr.ROLE_SERVE)[0] is hr.HostLockOutcome.ACQUIRED
     moved = tmp_path / "other-locks"
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(moved))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(moved))
 
     assert hr.owns_host_lock(hr.ROLE_SERVE) is False
     assert hr.claim_host_lock(hr.ROLE_SERVE)[0] is hr.HostLockOutcome.ACQUIRED
@@ -220,9 +220,9 @@ def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
     take their own "host" lock."""
     from gateway import status
 
-    monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_LOCK_DIR", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
 
     assert status._get_lock_dir().is_absolute()
-    assert status._get_lock_dir() == tmp_path / ".local" / "state" / "hermes" / status._LOCKS_DIRNAME
+    assert status._get_lock_dir() == tmp_path / ".local" / "state" / "rabbit" / status._LOCKS_DIRNAME

@@ -17,7 +17,7 @@ description: "通过 xurl CLI 使用 X/Twitter：发帖、搜索、私信、媒�
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/social-media/xurl` |
 | 版本 | `1.1.1` |
-| 作者 | xdevplatform + openclaw + Hermes Agent |
+| 作者 | xdevplatform + openclaw + Rabbit Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos |
 | 标签 | `twitter`, `x`, `social-media`, `xurl`, `official-api` |
@@ -25,7 +25,7 @@ description: "通过 xurl CLI 使用 X/Twitter：发帖、搜索、私信、媒�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # xurl — 通过官方 CLI 使用 X (Twitter) API
@@ -425,4 +425,4 @@ xurl --app staging /2/users/me             # 单次请求使用 staging
 
 - 上游 CLI：https://github.com/xdevplatform/xurl（X 开发者平台团队，Chris Park 等）
 - 上游 agent skill：https://github.com/openclaw/openclaw/blob/main/skills/xurl/SKILL.md
-- Hermes 适配：按 Hermes skill 规范重新格式化；安全防护规则原文保留。
+- Rabbit 适配：按 Rabbit skill 规范重新格式化；安全防护规则原文保留。

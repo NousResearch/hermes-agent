@@ -1,6 +1,6 @@
 """Scripted, recording loopback server for the OpenAI **Responses** wire dialect.
 
-The external boundary Hermes' ``codex_responses`` transport talks to (ChatGPT Codex,
+The external boundary Rabbit' ``codex_responses`` transport talks to (ChatGPT Codex,
 api.openai.com ``/v1/responses``, Responses-speaking relays). One real HTTP server on
 127.0.0.1 that:
 
@@ -123,7 +123,7 @@ _REQUEST_ADAPTER = TypeAdapter(ResponseCreateParamsStreaming)
 
 # Replayed output items the vendor accepts WITHOUT ``id`` under ``store: false``. The SDK
 # TypedDicts mark ``id`` required, but with nothing persisted server-side a replayed id has
-# nothing to resolve against (a foreign/unpersisted id 404s), so Hermes replays these items
+# nothing to resolve against (a foreign/unpersisted id 404s), so Rabbit replays these items
 # by content alone (``encrypted_content`` for reasoning, the text for assistant messages).
 # This is the ONLY relaxation of the oracle; every other field is still validated.
 _ID_OPTIONAL_REPLAY_TYPES = frozenset({"reasoning", "message"})

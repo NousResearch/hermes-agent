@@ -1,11 +1,11 @@
 name: artifact-relay
-repo: https://github.com/eloktev/hermes-artifact-relay
+repo: https://github.com/eloktev/rabbit-artifact-relay
 sha: c91fa9229121dd616a275a45447301eacca45e6f
 description: Publish and read private Markdown or HTML reports through your Artifact Relay server.
 maintainer: eloktev
 tier: community
 category: tools
-docs_url: https://github.com/eloktev/hermes-artifact-relay#readme
+docs_url: https://github.com/eloktev/rabbit-artifact-relay#readme
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: [artifact_read, artifact_publish]

@@ -27,7 +27,7 @@ from agent.sdk_transform_bypass import (
 def _wire_kwargs():
     return {
         "model": "gpt-5.6-sol",
-        "instructions": "You are Hermes.",
+        "instructions": "You are Rabbit.",
         "input": [
             {"role": "user", "content": [{"type": "input_text", "text": "Ping"}]},
             {"type": "function_call_output", "call_id": "c1", "output": "ok"},
@@ -104,7 +104,7 @@ class TestBypassSdkRequestTransform:
         assert bypassed is kwargs
 
     def test_env_escape_hatch_restores_passthrough(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CODEX_SDK_TRANSFORM", "1")
+        monkeypatch.setenv("RABBIT_CODEX_SDK_TRANSFORM", "1")
         kwargs = _wire_kwargs()
 
         assert _bypass_sdk_request_transform(kwargs) is kwargs

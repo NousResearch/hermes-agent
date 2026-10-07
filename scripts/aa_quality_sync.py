@@ -29,7 +29,7 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CATALOG_PATH = REPO_ROOT / "hermes_cli" / "local_runtime" / "catalog.json"
+CATALOG_PATH = REPO_ROOT / "rabbit_cli" / "local_runtime" / "catalog.json"
 AA_URL = "https://artificialanalysis.ai/api/v2/data/llms/models"
 
 # Catalog entry id -> AA slug. Hand-maintained: AA's naming rarely matches
@@ -83,7 +83,7 @@ def main() -> int:
         print(f"{entry_id:24s} {current:>9d} {proposed:>9d}{marker}")
 
     print("\nReview against the decision table before editing: a quality "
-          "change that flips cells in tests/hermes_cli/"
+          "change that flips cells in tests/rabbit_cli/"
           "test_local_recommendation.py is the actual decision being made.")
     print("Attribution: scores by Artificial Analysis "
           "(https://artificialanalysis.ai).")

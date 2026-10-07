@@ -70,7 +70,7 @@ def test_fully_refusing_ladder_warns_with_each_reason(
 
     monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
     monkeypatch.setattr(
-        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+        "rabbit_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
     monkeypatch.setattr(
         "agent.credential_pool.load_pool", lambda provider: _Pool(pool_available)
@@ -102,7 +102,7 @@ def test_recovered_ladder_does_not_warn(monkeypatch, caplog):
 
     monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
     monkeypatch.setattr(
-        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+        "rabbit_cli.fallback_config.resolve_entry_api_key", lambda entry: None
     )
     monkeypatch.setattr(
         agent_init,

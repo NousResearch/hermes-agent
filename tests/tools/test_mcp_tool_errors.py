@@ -2,7 +2,7 @@
 
 ``__cause__``/``__context__`` can form a cycle (the same OAuth error re-raised on the SSE fallback,
 a raised-and-caught pair) and stdio failures can nest deeper than the recursion limit; either used
-to turn ``hermes mcp test`` into a RecursionError that hid the real connect error (#111952, #111997).
+to turn ``rabbit mcp test`` into a RecursionError that hid the real connect error (#111952, #111997).
 """
 import sys
 

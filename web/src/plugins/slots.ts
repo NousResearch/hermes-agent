@@ -3,7 +3,7 @@
  *
  * Plugins can inject components into named locations in the app shell
  * (header-left, sidebar, backdrop, etc.) by calling
- * `window.__HERMES_PLUGINS__.registerSlot(pluginName, slotName, Component)`
+ * `window.__RABBIT_PLUGINS__.registerSlot(pluginName, slotName, Component)`
  * from their JS bundle. Multiple plugins can populate the same slot — they
  * render stacked in registration order.
  *
@@ -21,7 +21,7 @@ import React, { Fragment, useEffect, useState } from "react";
  *  Shell-wide slots:
  *  - `backdrop`         — optional full-viewport background decoration;
  *                         mounted behind shell chrome at z-0
- *  - `header-left`      — injected before the Hermes brand in the top bar
+ *  - `header-left`      — injected before the Rabbit brand in the top bar
  *  - `header-right`     — injected before the theme/language switchers
  *  - `header-banner`    — injected below the top nav bar, full-width
  *  - `sidebar`          — the cockpit sidebar rail (only rendered when
@@ -117,7 +117,7 @@ function _notifySlots() {
 }
 
 /** Register a component for a slot. Called by plugin bundles via
- *  `window.__HERMES_PLUGINS__.registerSlot(...)`.
+ *  `window.__RABBIT_PLUGINS__.registerSlot(...)`.
  *
  *  If the same (plugin, slot) pair is registered twice, the later call
  *  replaces the earlier one — this matches how React HMR expects plugin

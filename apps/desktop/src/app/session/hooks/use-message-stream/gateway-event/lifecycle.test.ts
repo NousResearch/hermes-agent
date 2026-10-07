@@ -2,13 +2,13 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useStatusSnapshot } from '@/app/shell/hooks/use-status-snapshot'
-import { getStatus } from '@/hermes'
+import { getStatus } from '@/rabbit'
 import { $setupReadyTick } from '@/store/live-sync'
 
 import { handleLifecycleEvent } from './lifecycle'
 import type { GatewayEventContext } from './types'
 
-vi.mock(import('@/hermes'), async importOriginal => ({
+vi.mock(import('@/rabbit'), async importOriginal => ({
   ...(await importOriginal()),
   getStatus: vi.fn()
 }))
@@ -19,10 +19,8 @@ function setupReadyContext(fromActiveSource: boolean): GatewayEventContext {
   const payload = {
     error: '',
     finished_at: 1_700_000_100,
-    free_tier_account: true,
-    free_tier_route: true,
     has_identity: true,
-    inference_provider: 'nous',
+    inference_provider: 'acme',
     other_providers: false,
     provider_configured: true
   }
@@ -81,13 +79,12 @@ describe('handleLifecycleEvent setup.ready', () => {
     vi.useRealTimers()
   })
 
-  it('claims the event and triggers one free-tier refresh plus one readiness evaluation from the active source', async () => {
+  it('claims the event and triggers one readiness evaluation from the active source', async () => {
     const requestGateway = await mountedStatusSnapshot()
 
     expect(handleLifecycleEvent(setupReadyContext(true))).toBe(true)
     await flushAsync()
 
-    expect(callsTo(requestGateway, 'free_tier.status')).toHaveLength(1)
     expect(callsTo(requestGateway, 'setup.runtime_check')).toHaveLength(1)
     expect(callsTo(requestGateway, 'setup.status')).toHaveLength(1)
     // The push is a readiness seam, not a status tick.

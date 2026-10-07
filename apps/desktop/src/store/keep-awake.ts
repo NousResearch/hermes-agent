@@ -22,9 +22,9 @@ import { type KeepAwakeMode, parseKeepAwakeMode } from '../../electron/power-sav
 
 export type { KeepAwakeMode }
 
-const KEY = 'hermes.desktop.keepAwakeMode.v1'
+const KEY = 'rabbit.desktop.keepAwakeMode.v1'
 /** The boolean the toggle persisted before modes existed; read once to migrate. */
-const LEGACY_KEY = 'hermes.desktop.keepAwake.v1'
+const LEGACY_KEY = 'rabbit.desktop.keepAwake.v1'
 
 function initialKeepAwakeMode(): KeepAwakeMode {
   const stored = parseKeepAwakeMode(storedString(KEY))
@@ -46,6 +46,6 @@ export function setKeepAwakeMode(mode: KeepAwakeMode): void {
 if (typeof window !== 'undefined') {
   $keepAwakeMode.subscribe(mode => {
     persistString(KEY, mode)
-    window.hermesDesktop?.setKeepAwake?.(mode)
+    window.rabbitDesktop?.setKeepAwake?.(mode)
   })
 }

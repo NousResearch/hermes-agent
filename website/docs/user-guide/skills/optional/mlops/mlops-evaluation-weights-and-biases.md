@@ -14,7 +14,7 @@ W&B: log ML experiments, sweeps, model registry, dashboards.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/weights-and-biases` |
+| Source | Optional — install with `rabbit skills install official/mlops/weights-and-biases` |
 | Path | `optional-skills/mlops/evaluation/weights-and-biases` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ W&B: log ML experiments, sweeps, model registry, dashboards.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Weights & Biases: ML Experiment Tracking & MLOps

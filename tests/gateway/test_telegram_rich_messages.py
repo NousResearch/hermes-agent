@@ -164,7 +164,7 @@ async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
 
     assert result.success is True
     # Streaming preview sends will be edited later, so they must not be born as
-    # rich messages until Hermes wires rich_message edits directly.
+    # rich messages until Rabbit wires rich_message edits directly.
     bot = adapter._bot
     assert bot is not None
     bot.do_api_request.assert_not_called()
@@ -807,7 +807,7 @@ def _reply_message_with_rich_blocks(
 @pytest.mark.asyncio
 async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     """A reply to a rich-sent message resolves the original text via the index."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from gateway.platforms.event import MessageType
     from gateway import rich_sent_store
 

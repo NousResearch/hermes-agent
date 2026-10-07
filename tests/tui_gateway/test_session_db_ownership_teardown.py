@@ -34,7 +34,7 @@ from tui_gateway import server
 
 
 class _RecordingDB:
-    """Stand-in for ``hermes_state.SessionDB`` that counts ``close()`` calls."""
+    """Stand-in for ``rabbit_state.SessionDB`` that counts ``close()`` calls."""
 
     def __init__(self, db_path=None, **_kwargs):
         self.db_path = db_path
@@ -178,7 +178,7 @@ def test_lazy_recall_open_is_owned_by_the_agent(monkeypatch):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
 
     agent = _bare_agent(_session_db=None, _persist_disabled=False)
     got = agent._get_session_db_for_recall()
@@ -261,7 +261,7 @@ def build_env(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     for name, value in [
         ("_set_session_context", lambda _key, cwd=None: []),
         ("_clear_session_context", lambda _tokens: None),
@@ -280,8 +280,8 @@ def build_env(monkeypatch, tmp_path):
     ]:
         if hasattr(server, name):
             monkeypatch.setattr(server, name, value)
-    monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: None)
-    monkeypatch.setattr(server, "reset_hermes_home_override", lambda _tok: None)
+    monkeypatch.setattr(server, "set_rabbit_home_override", lambda _home: None)
+    monkeypatch.setattr(server, "reset_rabbit_home_override", lambda _tok: None)
     yield types.SimpleNamespace(opened=opened, profile_home=str(profile_home))
 
 

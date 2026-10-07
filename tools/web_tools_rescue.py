@@ -34,9 +34,8 @@ def _ring_vendor_keyless(name: str) -> bool:
     """Did *name*'s own provider route this call through the anonymous keyless ring?
 
     Mirrors the predicate each ring provider evaluates before calling, so eligibility reflects what
-    actually happened. Firecrawl owns extra routes that bypass the ring without a key — the managed
-    Nous Tool Gateway (persisted ``nous`` selection, or the legacy never-configured fallback when the
-    gateway is ready) and a self-hosted ``FIRECRAWL_API_URL`` — so it is asked directly.
+    actually happened. Firecrawl owns an extra route that bypasses the ring without a key (a self-hosted
+    ``FIRECRAWL_API_URL``), so it is asked directly.
     """
     if name == "firecrawl":
         from plugins.web.firecrawl.provider import _use_keyless_ring
@@ -47,36 +46,11 @@ def _ring_vendor_keyless(name: str) -> bool:
     return use_keyless(name, get_provider_env(key_var) if key_var else "")
 
 
-def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
-    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
-    Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
-    from agent.web_search_provider import get_provider_env
-    from tools import web_tools as _wt
-    if (getattr(provider, "name", "") != "perplexity"
-            or get_provider_env("PERPLEXITY_API_KEY") or not _wt._managed_web_search() or not _wt._is_tool_gateway_ready()):
-        return None
-    logger.warning("web_search managed Perplexity failed (%s); serving this call from managed Firecrawl", (original_error or "")[:200])
-    try:
-        from agent.web_search_registry import get_provider
-        resp = get_provider("firecrawl").search(query, limit)
-    except Exception as exc:  # noqa: BLE001 — fallback is best-effort
-        resp = {"success": False, "error": str(exc)}
-    if not resp.get("success"):
-        logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
-        return None
-    resp.setdefault("data", {}).update(
-        fallback_from="managed_primary",
-        backend_error=f"Primary managed search failed this call ({(original_error or 'unknown error')[:300]}); "
-                      "result served by the managed fallback. The next call will use the primary again.",
-    )
-    return resp
-
-
 def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 
     Eligible: any call that did NOT go through the keyless ring — a non-ring backend, a ring vendor
-    in keyed mode, or a ring vendor routed through the managed gateway / a self-hosted instance. A
+    in keyed mode, or a ring vendor routed through a self-hosted instance. A
     ring vendor that walked the ring is NOT eligible: its failure means the ring already failed.
     """
     if not _keyless_rescue_enabled() or provider is None:

@@ -1,4 +1,4 @@
-import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+import { parseCommandDispatch, parseSlashCommand } from '@rabbit/shared/slash'
 
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SlashExecResponse } from '../gatewayTypes.js'
@@ -73,7 +73,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, type
     }
 
     // Registry-first fallback: widget apps registered AFTER the static
-    // command table was built (user widgets from $HERMES_HOME/tui-widgets,
+    // command table was built (user widgets from $RABBIT_HOME/tui-widgets,
     // /widgets-reload) dispatch straight off the live registry.
     if (getWidgetApp(parsed.name)) {
       countTyped()

@@ -6,9 +6,9 @@ import pytest
 # ---------------------------------------------------------------------------
 # OS gating
 #
-# Hermes runs on Linux, macOS and native Windows, and a lot of its behaviour
+# Rabbit runs on Linux, macOS and native Windows, and a lot of its behaviour
 # genuinely differs per host: PTY vs pywinpty, taskkill vs SIGTERM, launchd
-# vs systemd, Keychain vs libsecret, ``%LOCALAPPDATA%`` vs ``~/.hermes``.
+# vs systemd, Keychain vs libsecret, ``%LOCALAPPDATA%`` vs ``~/.rabbit``.
 #
 # Historically those code paths were tested by *faking* the host — patching
 # ``sys.platform`` to ``"win32"`` inside a Linux CI job. That gives a green

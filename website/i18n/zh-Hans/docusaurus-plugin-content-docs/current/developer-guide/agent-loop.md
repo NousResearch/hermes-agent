@@ -40,7 +40,7 @@ result = agent.run_conversation(
 
 ## API 模式
 
-Hermes 支持三种 API 执行模式，通过 provider 选择、显式参数和 base URL 启发式规则来确定：
+Rabbit 支持三种 API 执行模式，通过 provider 选择、显式参数和 base URL 启发式规则来确定：
 
 | API 模式 | 用途 | 客户端类型 |
 |----------|------|-----------|
@@ -214,9 +214,9 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 ### Session 持久化
 
 每轮结束后：
-- 消息保存到 session 存储（通过 `hermes_state.py` 使用 SQLite）
+- 消息保存到 session 存储（通过 `rabbit_state.py` 使用 SQLite）
 - 内存变更刷写到 `MEMORY.md` / `USER.md`
-- 可通过 `/resume` 或 `hermes chat --resume` 恢复 session
+- 可通过 `/resume` 或 `rabbit chat --resume` 恢复 session
 
 ## 关键源文件
 

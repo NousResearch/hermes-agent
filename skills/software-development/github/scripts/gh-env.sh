@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GitHub environment detection helper for Hermes Agent skills.
+# GitHub environment detection helper for Rabbit Agent skills.
 #
 # Usage (via terminal tool):
 #   source skills/github/github-auth/scripts/gh-env.sh
@@ -23,13 +23,13 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     GH_USER=$(gh api user --jq '.login' 2>/dev/null)
 elif [ -n "$GITHUB_TOKEN" ]; then
     GH_AUTH_METHOD="curl"
-elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env" 2>/dev/null; then
-    GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+elif _rabbit_env="${RABBIT_HOME:-$HOME/.rabbit}/.env"; [ -f "$_rabbit_env" ] && grep -q "^GITHUB_TOKEN=" "$_rabbit_env" 2>/dev/null; then
+    GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_rabbit_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi
 elif [ -f "$HOME/.git-credentials" ]; then
-    GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+    GITHUB_TOKEN=$(uv run python3 "${RABBIT_HOME:-$HOME/.rabbit}/skills/github/github-auth/scripts/git-credential-token.py")
     if [ -n "$GITHUB_TOKEN" ]; then
         GH_AUTH_METHOD="curl"
     fi

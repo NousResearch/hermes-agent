@@ -61,10 +61,10 @@ def main():
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    home = Path(tempfile.mkdtemp(prefix='hermes-acp-empty-'))
-    hermes = home / '.hermes'
-    hermes.mkdir()
-    (hermes / 'config.yaml').write_text(
+    home = Path(tempfile.mkdtemp(prefix='rabbit-acp-empty-'))
+    rabbit = home / '.rabbit'
+    rabbit.mkdir()
+    (rabbit / 'config.yaml').write_text(
         'model:\n  provider: custom\n  default: fixture-model\n'
         f'  base_url: http://127.0.0.1:{server.server_port}/v1\n'
         '  api_key: local-fixture-key\n  api_mode: chat_completions\n'
@@ -72,8 +72,8 @@ def main():
         'agent:\n  max_iterations: 1\n  disabled_toolsets: [all]\n'
     )
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ') if k in os.environ}
-    env.update(HOME=str(home), HERMES_HOME=str(hermes), PYTHONPATH=os.pathsep.join([str(repo), os.environ.get('PYTHONPATH', '')]),
-               HERMES_ACP_SKIP_CONFIGURED_MCP='1', OPENAI_API_KEY='local-fixture-key',
+    env.update(HOME=str(home), RABBIT_HOME=str(rabbit), PYTHONPATH=os.pathsep.join([str(repo), os.environ.get('PYTHONPATH', '')]),
+               RABBIT_ACP_SKIP_CONFIGURED_MCP='1', OPENAI_API_KEY='local-fixture-key',
                OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1')
     stderr = open(str(args.output) + '.stderr', 'w', encoding='utf-8')
     proc = subprocess.Popen([sys.executable, '-m', 'acp_adapter'], cwd=repo, env=env,
@@ -101,7 +101,7 @@ def main():
                 return response['result']
 
     def rows():
-        with sqlite3.connect(hermes / 'state.db') as db:
+        with sqlite3.connect(rabbit / 'state.db') as db:
             return db.execute('SELECT id, source, message_count FROM sessions ORDER BY id').fetchall()
 
     result = {'repo': str(repo), 'home': str(home)}
@@ -118,7 +118,7 @@ def main():
         forked = rpc('session/fork', {'sessionId': sid, 'cwd': str(home), 'mcpServers': []})
         result['fork_id'] = forked['sessionId']
         result['after_fork'] = rows()
-        with sqlite3.connect(hermes / 'state.db') as db:
+        with sqlite3.connect(rabbit / 'state.db') as db:
             result['messages'] = db.execute('SELECT session_id, role, content FROM messages ORDER BY id').fetchall()
         for session_id in (sid, result['fork_id']):
             assert [(r[1], r[2]) for r in result['messages'] if r[0] == session_id] == [
@@ -127,13 +127,13 @@ def main():
         assert any(r[0] == sid and r[2] > 0 for r in result['after_prompt'])
         assert any(r[0] == result['fork_id'] and r[2] > 0 for r in result['after_fork'])
         legacy = rpc('session/new', {'cwd': str(home), 'mcpServers': []})['sessionId']
-        with sqlite3.connect(hermes / 'state.db') as db:
+        with sqlite3.connect(rabbit / 'state.db') as db:
             db.execute("INSERT OR IGNORE INTO sessions (id, source, started_at) VALUES (?, 'acp', 1)",
                        (legacy,))
         moved = home / 'moved'
         moved.mkdir()
         rpc('session/load', {'sessionId': legacy, 'cwd': str(moved), 'mcpServers': []})
-        with sqlite3.connect(hermes / 'state.db') as db:
+        with sqlite3.connect(rabbit / 'state.db') as db:
             result['existing_empty_metadata'] = db.execute(
                 'SELECT model_config, message_count FROM sessions WHERE id = ?', (legacy,)).fetchone()
         assert json.loads(result['existing_empty_metadata'][0])['cwd'] == str(moved)

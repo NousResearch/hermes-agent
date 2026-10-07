@@ -42,7 +42,7 @@ class DirectOpenAILLM(OpenAILLM):
         from agent.secret_scope import get_secret
         api_key = self.config.api_key or get_secret("OPENAI_API_KEY", "")
         if not api_key:
-            raise ValueError("OpenAI API key is required for the Hermes Mem0 OSS provider")
+            raise ValueError("OpenAI API key is required for the Rabbit Mem0 OSS provider")
         from openai import OpenAI
         self.client = OpenAI(api_key=api_key, base_url=self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1")
 

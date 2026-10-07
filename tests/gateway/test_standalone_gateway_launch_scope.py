@@ -30,7 +30,7 @@ def standalone(tmp_path, monkeypatch):
     secondary = tmp_path / "profiles" / "roomie"
     secondary.mkdir(parents=True)
     (secondary / ".env").write_text("OPENAI_API_KEY=secondary-key\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setenv(INJECTED, "launch-env-injected")  # systemd / `op run` style injection
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(launch_profile_policy, "_snapshot", None)

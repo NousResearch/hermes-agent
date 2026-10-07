@@ -14,10 +14,10 @@ description: "在 Excel 中构建杠杆收购模型——资金来源与用途�
 
 | | |
 |---|---|
-| 来源 | 可选——通过 `hermes skills install official/finance/lbo-model` 安装 |
+| 来源 | 可选——通过 `rabbit skills install official/finance/lbo-model` 安装 |
 | 路径 | `optional-skills/finance/lbo-model` |
 | 版本 | `1.0.0` |
-| 作者 | Anthropic（由 Nous Research 改编） |
+| 作者 | Anthropic |
 | 许可证 | Apache-2.0 |
 | 平台 | linux, macos, windows |
 | 标签 | `finance`, `valuation`, `lbo`, `private-equity`, `excel`, `openpyxl`, `modeling` |
@@ -26,7 +26,7 @@ description: "在 Excel 中构建杠杆收购模型——资金来源与用途�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 ## 环境
@@ -294,9 +294,9 @@ python /path/to/excel-author/scripts/recalc.py model.xlsx
 
 ## 数据来源——优先使用 MCP，其次使用网络
 
-以下许多段落提到"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原始 Cowork 插件上下文中的商业金融数据 MCP。在 Hermes 中：
+以下许多段落提到"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原始 Cowork 插件上下文中的商业金融数据 MCP。在 Rabbit 中：
 
-- **如果配置了任何结构化金融数据 MCP**（Hermes 支持 MCP——参见 `native-mcp` skill），优先使用它获取时点可比数据、前例交易和文件。
+- **如果配置了任何结构化金融数据 MCP**（Rabbit 支持 MCP——参见 `native-mcp` skill），优先使用它获取时点可比数据、前例交易和文件。
 - **否则**，回退到：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国文件
   - 公司 IR 页面获取新闻稿、财报演示文稿

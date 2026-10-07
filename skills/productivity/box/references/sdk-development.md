@@ -1,6 +1,6 @@
 # SDK development
 
-Use this reference for shipped Box applications. For a one-off Hermes task, use the CLI references instead.
+Use this reference for shipped Box applications. For a one-off Rabbit task, use the CLI references instead.
 
 ## Start with the application
 
@@ -33,9 +33,9 @@ Import its Node SDK from the explicit SDK subpath:
 import BoxSDK from "box/sdk";
 ```
 
-The package also exposes a project-local Box CLI through `npx box`. Use that runner for development inside the application when useful, but do not silently replace the separately resolved Hermes CLI runner or its authenticated environment. If the project already uses `box-node-sdk`, extend that integration instead of migrating it without a concrete reason. For Python or another language, install its current official Box SDK rather than the npm package.
+The package also exposes a project-local Box CLI through `npx box`. Use that runner for development inside the application when useful, but do not silently replace the separately resolved Rabbit CLI runner or its authenticated environment. If the project already uses `box-node-sdk`, extend that integration instead of migrating it without a concrete reason. For Python or another language, install its current official Box SDK rather than the npm package.
 
-Store OAuth tokens and any custom Platform App client secret in the project's approved secret mechanism, not source control. When a custom Platform App needs additional scopes, use **User Authentication (OAuth 2.0)** and have the intended Box user grant access; do not add an impersonation path for normal application work. Keep exceptional enterprise administration outside the normal Hermes runtime and application identity; do not elevate the account the application normally uses.
+Store OAuth tokens and any custom Platform App client secret in the project's approved secret mechanism, not source control. When a custom Platform App needs additional scopes, use **User Authentication (OAuth 2.0)** and have the intended Box user grant access; do not add an impersonation path for normal application work. Keep exceptional enterprise administration outside the normal Rabbit runtime and application identity; do not elevate the account the application normally uses.
 
 ## OAuth client
 

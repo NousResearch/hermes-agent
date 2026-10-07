@@ -1,13 +1,13 @@
 ---
 title: 视觉与图像粘贴
-description: 将剪贴板中的图像粘贴到 Hermes CLI，进行多模态视觉分析。
+description: 将剪贴板中的图像粘贴到 Rabbit CLI，进行多模态视觉分析。
 sidebar_label: 视觉与图像粘贴
 sidebar_position: 7
 ---
 
 # 视觉与图像粘贴
 
-Hermes Agent 支持**多模态视觉**——你可以直接将剪贴板中的图像粘贴到 CLI，让 Agent 对其进行分析、描述或处理。图像以 base64 编码的内容块形式发送给模型，因此任何支持视觉的模型均可处理。
+Rabbit Agent 支持**多模态视觉**——你可以直接将剪贴板中的图像粘贴到 CLI，让 Agent 对其进行分析、描述或处理。图像以 base64 编码的内容块形式发送给模型，因此任何支持视觉的模型均可处理。
 
 ## 工作原理
 
@@ -19,7 +19,7 @@ Hermes Agent 支持**多模态视觉**——你可以直接将剪贴板中的图
 
 发送前可附加多张图像，每张图像都有独立徽章。按 `Ctrl+C` 可清除所有已附加图像。
 
-图像以带时间戳的 PNG 文件名保存至 `~/.hermes/images/`。
+图像以带时间戳的 PNG 文件名保存至 `~/.rabbit/images/`。
 
 ## 粘贴方式
 
@@ -33,11 +33,11 @@ Hermes Agent 支持**多模态视觉**——你可以直接将剪贴板中的图
 /paste
 ```
 
-输入 `/paste` 并按 Enter。Hermes 会检查剪贴板中是否有图像并附加。当你的终端重写了 `Cmd+V`/`Ctrl+V`，或剪贴板中只有图像而没有 bracketed-paste（括号粘贴）文本载荷可供检查时，这是最安全的选项。
+输入 `/paste` 并按 Enter。Rabbit 会检查剪贴板中是否有图像并附加。当你的终端重写了 `Cmd+V`/`Ctrl+V`，或剪贴板中只有图像而没有 bracketed-paste（括号粘贴）文本载荷可供检查时，这是最安全的选项。
 
 ### Ctrl+V / Cmd+V
 
-Hermes 现在将粘贴处理为分层流程：
+Rabbit 现在将粘贴处理为分层流程：
 - 优先进行普通文本粘贴
 - 若终端未能正常传递文本，则回退到原生剪贴板 / OSC52 文本
 - 当剪贴板或粘贴内容解析为图像或图像路径时，附加图像
@@ -50,7 +50,7 @@ Hermes 现在将粘贴处理为分层流程：
 
 ### `/terminal-setup`（适用于 VS Code / Cursor / Windsurf）
 
-如果你在 macOS 上的 VS Code 系列集成终端中运行 TUI，Hermes 可以安装推荐的 `workbench.action.terminal.sendSequence` 绑定，以获得更好的多行输入及撤销/重做一致性：
+如果你在 macOS 上的 VS Code 系列集成终端中运行 TUI，Rabbit 可以安装推荐的 `workbench.action.terminal.sendSequence` 绑定，以获得更好的多行输入及撤销/重做一致性：
 
 ```text
 /terminal-setup
@@ -78,7 +78,7 @@ Hermes 现在将粘贴处理为分层流程：
 
 ### macOS
 
-**无需任何配置。** Hermes 使用 `osascript`（macOS 内置）读取剪贴板。如需更快的性能，可选择安装 `pngpaste`：
+**无需任何配置。** Rabbit 使用 `osascript`（macOS 内置）读取剪贴板。如需更快的性能，可选择安装 `pngpaste`：
 
 ```bash
 brew install pngpaste
@@ -123,12 +123,12 @@ echo $XDG_SESSION_TYPE
 
 ### WSL2
 
-**无需额外配置。** Hermes 通过 `/proc/version` 自动检测 WSL2，并使用 `powershell.exe` 通过 .NET 的 `System.Windows.Forms.Clipboard` 访问 Windows 剪贴板。这是 WSL2 Windows 互操作的内置功能——`powershell.exe` 默认可用。
+**无需额外配置。** Rabbit 通过 `/proc/version` 自动检测 WSL2，并使用 `powershell.exe` 通过 .NET 的 `System.Windows.Forms.Clipboard` 访问 Windows 剪贴板。这是 WSL2 Windows 互操作的内置功能——`powershell.exe` 默认可用。
 
 剪贴板数据通过 stdout 以 base64 编码的 PNG 格式传输，无需路径转换或临时文件。
 
 :::info WSLg 说明
-如果你使用的是 WSLg（带 GUI 支持的 WSL2），Hermes 会优先尝试 PowerShell 路径，然后回退到 `wl-paste`。WSLg 的剪贴板桥接仅支持 BMP 格式的图像——Hermes 会使用 Pillow（如已安装）或 ImageMagick 的 `convert` 命令自动将 BMP 转换为 PNG。
+如果你使用的是 WSLg（带 GUI 支持的 WSL2），Rabbit 会优先尝试 PowerShell 路径，然后回退到 `wl-paste`。WSLg 的剪贴板桥接仅支持 BMP 格式的图像——Rabbit 会使用 Pillow（如已安装）或 ImageMagick 的 `convert` 命令自动将 BMP 转换为 PNG。
 :::
 
 #### 验证 WSL2 剪贴板访问
@@ -147,9 +147,9 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 ## SSH 与远程会话
 
-**通过 SSH 进行剪贴板图像粘贴无法完全正常工作。** 当你 SSH 到远程机器时，Hermes CLI 运行在远程主机上。剪贴板工具（`xclip`、`wl-paste`、`powershell.exe`、`osascript`）读取的是其所在机器的剪贴板——即远程服务器，而非你的本地机器。因此，本地剪贴板中的图像在远程端无法访问。
+**通过 SSH 进行剪贴板图像粘贴无法完全正常工作。** 当你 SSH 到远程机器时，Rabbit CLI 运行在远程主机上。剪贴板工具（`xclip`、`wl-paste`、`powershell.exe`、`osascript`）读取的是其所在机器的剪贴板——即远程服务器，而非你的本地机器。因此，本地剪贴板中的图像在远程端无法访问。
 
-文本有时仍可通过终端粘贴或 OSC52 传输，但图像剪贴板访问和本地截图临时路径始终绑定于运行 Hermes 的机器。
+文本有时仍可通过终端粘贴或 OSC52 传输，但图像剪贴板访问和本地截图临时路径始终绑定于运行 Rabbit 的机器。
 
 ### SSH 的变通方案
 
@@ -159,7 +159,7 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 3. **X11 转发**——使用 `ssh -X` 连接以转发 X11。这允许远程机器上的 `xclip` 访问你本地的 X11 剪贴板。需要本地运行 X 服务器（macOS 上为 XQuartz，Linux X11 桌面内置）。大图像传输较慢。
 
-4. **使用消息平台**——通过 Telegram、Discord、Slack 或 WhatsApp 向 Hermes 发送图像。这些平台原生支持图像上传，不受剪贴板/终端限制的影响。
+4. **使用消息平台**——通过 Telegram、Discord、Slack 或 WhatsApp 向 Rabbit 发送图像。这些平台原生支持图像上传，不受剪贴板/终端限制的影响。
 
 ## 为什么终端无法粘贴图像
 
@@ -173,7 +173,7 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 如果剪贴板中只有图像（无文本），终端没有任何内容可发送。目前没有标准的终端转义序列用于传输二进制图像数据，终端会直接忽略。
 
-这就是为什么 Hermes 使用独立的剪贴板检查——它不通过终端粘贴事件接收图像数据，而是直接通过子进程调用操作系统级工具（`osascript`、`powershell.exe`、`xclip`、`wl-paste`）独立读取剪贴板。
+这就是为什么 Rabbit 使用独立的剪贴板检查——它不通过终端粘贴事件接收图像数据，而是直接通过子进程调用操作系统级工具（`osascript`、`powershell.exe`、`xclip`、`wl-paste`）独立读取剪贴板。
 
 ## 支持的模型
 
@@ -192,14 +192,14 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 ## 图像路由（视觉模型 vs 纯文本模型）
 
-当用户附加图像时——无论来自 CLI 剪贴板、gateway（Telegram/Discord 图片）还是其他入口——Hermes 会根据当前模型是否支持视觉进行路由：
+当用户附加图像时——无论来自 CLI 剪贴板、gateway（Telegram/Discord 图片）还是其他入口——Rabbit 会根据当前模型是否支持视觉进行路由：
 
 | 你的模型 | 图像处理方式 |
 |---|---|
 | **支持视觉的模型**（GPT-4V、Claude with vision、Gemini、Qwen-VL、MiMo-VL、DeepSeek Flash / V4.1-Flash 等） | 使用上述提供商原生图像内容格式，以**真实像素**发送。无文本摘要层。 |
 | **纯文本模型**（DeepSeek V4 Pro、DeepSeek V3、较小的开源模型、旧版纯对话端点） | 通过 `vision_analyze` 辅助工具路由——辅助视觉模型描述图像，文本描述注入对话。 |
 
-无需手动配置——Hermes 在提供商元数据中查找当前模型的能力并自动选择正确路径。实际效果：你可以在会话中途切换视觉模型与非视觉模型，图像处理"开箱即用"，无需更改工作流。纯文本模型会获得关于图像的连贯上下文，而不是一个会被拒绝的损坏多模态载荷。
+无需手动配置——Rabbit 在提供商元数据中查找当前模型的能力并自动选择正确路径。实际效果：你可以在会话中途切换视觉模型与非视觉模型，图像处理"开箱即用"，无需更改工作流。纯文本模型会获得关于图像的连贯上下文，而不是一个会被拒绝的损坏多模态载荷。
 
 处理文本描述路径的辅助模型可在 `auxiliary.vision` 下配置——参见[辅助模型](../configuration.md#auxiliary-models)。
 

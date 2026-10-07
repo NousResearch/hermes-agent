@@ -11,7 +11,7 @@ import pytest
 from agent import codex_runtime, runtime_cwd
 from agent.transports import codex_app_server_session
 from agent.memory_provider import MemoryProvider
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 from tools import terminal_tool
 
@@ -41,7 +41,7 @@ class _CwdRecordingProvider(MemoryProvider):
 @pytest.fixture
 def workspace_runtime(monkeypatch, tmp_path):
     # server imports start a background GitHub update check; disable it before import.
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("rabbit_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
 
     old, new, other = (tmp_path / name for name in ("old-repo", "new-repo", "other-repo"))
@@ -59,7 +59,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **k: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
+    monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
     providers, agents, starts, network_attempts = [], [], [], []
 
     def load_provider(*a, **k):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,

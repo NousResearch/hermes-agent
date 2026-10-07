@@ -2,7 +2,7 @@ name: hades-coding-workflows
 repo: https://github.com/singhguri/hades-coding-workflows
 sha: b68546d66fe684a49633a9174e44362eff77cbfc
 description: Coding workflow skills — dual-model harness, subagent-driven development, and implementation
-  planning patterns for Hermes Agent
+  planning patterns for Rabbit Agent
 maintainer: singhguri
 tier: community
 category: automation

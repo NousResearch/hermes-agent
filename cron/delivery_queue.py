@@ -22,8 +22,8 @@ from typing import Any, Callable, Iterator, Optional
 
 from agent.redact import redact_sensitive_text
 from cron.executions import _owner_is_live, _process_start_time
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from rabbit_constants import get_rabbit_home
+from rabbit_time import now as _rabbit_now
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ def queue_path(home: Optional[Path] = None) -> Path:
     """The queue file of ``home`` (the active home when None); a test override wins."""
     if DELIVERY_DB is not None:
         return DELIVERY_DB
-    root = Path(home) if home is not None else get_hermes_home()
+    root = Path(home) if home is not None else get_rabbit_home()
     return root.resolve() / "cron" / "deliveries.db"
 
 
@@ -87,7 +87,7 @@ def _path() -> Path:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_cli.sqlite_util import add_column_if_missing
+    from rabbit_cli.sqlite_util import add_column_if_missing
 
     # SQLite cannot widen a CHECK in place. Preserve all old rows atomically,
     # including claimed sends, while admitting a distinct never-sent disposition.
@@ -138,9 +138,9 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``rabbit_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from hermes_cli.sqlite_util import open_db
+    from rabbit_cli.sqlite_util import open_db
 
     path = _path()
     conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, initialize=_initialize_schema)
@@ -156,7 +156,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     # Pruning is done explicitly by the paths that create terminal
     # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
     # read-only polls must not pay for a full-table UPDATE + COUNT.
-    from hermes_cli.sqlite_util import transaction
+    from rabbit_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn
@@ -194,7 +194,7 @@ def enqueue(
                 json.dumps(job, ensure_ascii=False, sort_keys=True),
                 str(content),
                 int(bool(for_failure)),
-                _hermes_now().isoformat(),
+                _rabbit_now().isoformat(),
             ),
         )
         row = conn.execute(
@@ -268,7 +268,7 @@ def _finish(execution_id: str, *, error: Optional[str], suppressed: bool = False
                  AND owner_process_id=? AND owner_pid=?""",
             (
                 status,
-                _hermes_now().isoformat(),
+                _rabbit_now().isoformat(),
                 safe_error,
                 execution_id,
                 _PROCESS_ID,
@@ -305,7 +305,7 @@ def recover_abandoned() -> int:
                 """UPDATE deliveries SET status='unknown', finished_at=?, error=?
                    WHERE execution_id=? AND status='delivering'""",
                 (
-                    _hermes_now().isoformat(),
+                    _rabbit_now().isoformat(),
                     error,
                     row["execution_id"],
                 ),
@@ -353,7 +353,7 @@ def _terminalize_wait_timeout(execution_id: str) -> str:
     a message the drain will still send.  Only a row caught mid-send is
     uncertain and gets fenced ``unknown``.
     """
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     uncertain_error = (
         "timed out while gateway delivery was in progress; outcome is unknown and "
         "was not retried"

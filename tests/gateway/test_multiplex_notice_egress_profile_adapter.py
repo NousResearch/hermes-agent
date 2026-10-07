@@ -60,7 +60,7 @@ async def test_shutdown_notice_for_secondary_session_uses_its_own_bot():
 @pytest.mark.asyncio
 async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tmp_path, monkeypatch):
     import gateway.run as gateway_run
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     r = _runner()
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42", profile="sec")
     event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=src, message_id="7")
@@ -74,7 +74,7 @@ async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tm
 @pytest.mark.asyncio
 async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkeypatch):
     from agent import estop
-    from hermes_cli import loops
+    from rabbit_cli import loops
 
     fired = []
 
@@ -101,7 +101,7 @@ async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkey
     route = {"platform": "telegram", "chat_id": "42", "chat_type": "dm", "user_id": "42", "profile": "sec"}
     state = SimpleNamespace(awaiting_response=False, next_due_at=0, route=route)
 
-    # `hermes pause`: loop wakeups are internal events that bypass the inbound estop gate, so the
+    # `rabbit pause`: loop wakeups are internal events that bypass the inbound estop gate, so the
     # watcher itself must hold the tick — unclaimed (fire_tick never runs), so it stays due for resume.
     estop.engage(reason="maintenance")
     try:

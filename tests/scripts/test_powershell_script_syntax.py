@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PS1_SCRIPTS = sorted(
     list(REPO_ROOT.glob("scripts/*.ps1"))
     + list(REPO_ROOT.glob("tests/install/*.ps1"))
-    + list(REPO_ROOT.glob("*.ps1"))  # repo-root scripts (setup-hermes.ps1, activate.ps1)
+    + list(REPO_ROOT.glob("*.ps1"))  # repo-root scripts (setup-rabbit.ps1, activate.ps1)
 )
 
 _HARNESS = """\
@@ -64,7 +64,7 @@ if ($failed) { exit 1 }
 # runs that copy with -File; see install_script.rs::prepare_cached_script_bytes.)
 FETCHED_AS_STRING = (
     REPO_ROOT / "scripts/install.ps1",
-    REPO_ROOT / "scripts/update-test/hermes-update-rehearsal.ps1",
+    REPO_ROOT / "scripts/update-test/rabbit-update-rehearsal.ps1",
 )
 
 

@@ -1,4 +1,4 @@
-"""Drive the real ``hermes fallback add`` under a Linux PTY into an ordinary picker error.
+"""Drive the real ``rabbit fallback add`` under a Linux PTY into an ordinary picker error.
 
 Run from the checkout with the project Python. No provider requests are sent: the picker
 target is a saved custom provider with ``discover_models: false``. The auth store is made
@@ -38,31 +38,31 @@ CONFIG = (
 def _persisted_model(root: Path, env: dict) -> dict:
     """``config.yaml`` ``model`` section as the CLI itself reads it (owner module, same env)."""
     out = subprocess.run(
-        [sys.executable, "-c", "import json; from hermes_cli.config import load_config; "
+        [sys.executable, "-c", "import json; from rabbit_cli.config import load_config; "
          "print(json.dumps(load_config().get('model')))"],
         cwd=root, env=env, capture_output=True, text=True, check=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 def run(root: Path, output: Path) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hermes_test_fallback_") as home:
-        hh = Path(home) / ".hermes"
+    with tempfile.TemporaryDirectory(prefix="rabbit_test_fallback_") as home:
+        hh = Path(home) / ".rabbit"
         hh.mkdir()
         (hh / "config.yaml").write_text(CONFIG, encoding="utf-8")
         (hh / ".env").write_text("OPENROUTER_API_KEY=local-not-used\n", encoding="utf-8")
         auth = hh / "auth.json"
-        auth.write_text(json.dumps({"version": 1, "providers": {}, "active_provider": "nous"}))
+        auth.write_text(json.dumps({"version": 1, "providers": {}, "active_provider": "openrouter"}))
         # A stub ``curses`` package forces every menu onto its numbered fallback so the PTY
         # exchange is line-oriented (the curses UI is not what is under test here).
         shim = Path(home) / "shim" / "curses"
         shim.mkdir(parents=True)
         (shim / "__init__.py").write_text("raise ImportError('curses disabled for PTY harness')\n")
-        env = {"PATH": os.environ["PATH"], "HOME": home, "HERMES_HOME": str(hh),
+        env = {"PATH": os.environ["PATH"], "HOME": home, "RABBIT_HOME": str(hh),
                "PYTHONPATH": f"{shim.parent}{os.pathsep}{root}", "PYTHONUNBUFFERED": "1",
                "TERM": "dumb", "LANG": "C.UTF-8"}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 120, 0, 0))
-        proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "fallback", "add"],
+        proc = subprocess.Popen([sys.executable, "-m", "rabbit_cli.main", "fallback", "add"],
                                 cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave,
                                 start_new_session=True)
         os.close(slave)

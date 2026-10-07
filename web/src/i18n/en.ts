@@ -55,12 +55,12 @@ export const en: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
+    brand: "Rabbit Agent",
     brandShort: "HA",
     closeNavigation: "Close navigation",
     closeModelTools: "Close model and tools",
     footer: {
-      org: "Nous Research",
+      org: "Sanath Patil",
     },
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
@@ -111,12 +111,11 @@ export const en: Translations = {
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
     multiplexStandaloneBanner:
-      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
+      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: rabbit gateway migrate --multiplex",
     dismiss: "Dismiss",
-    sharedMetricsTitle: "Help improve Hermes?",
+    sharedMetricsTitle: "Help improve Rabbit?",
     sharedMetricsBody:
-      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
-    sharedMetricsShare: "Send to Nous",
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; nothing is uploaded.",
     sharedMetricsLocal: "Local only",
     sharedMetricsOff: "No thanks",
     sharedMetricsDetails: "Details",
@@ -146,7 +145,7 @@ export const en: Translations = {
     recentSessions: "Recent Sessions",
     restartGateway: "Restart Gateway",
     restartGatewayConfirmMessage:
-      "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
+      "This restarts the Rabbit gateway process. Connected channels and active sessions will reconnect afterward.",
     restartGatewayConfirmTitle: "Restart gateway?",
     restartingGateway: "Restarting gateway…",
     running: "Running",
@@ -155,12 +154,12 @@ export const en: Translations = {
     starting: "Starting",
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
-    updateHermes: "Update Hermes",
-    updateHermesConfirmMessage:
-      "This runs hermes update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
-    updateHermesConfirmNow: "Update now",
-    updateHermesConfirmTitle: "Update Hermes?",
-    updatingHermes: "Updating Hermes…",
+    updateRabbit: "Update Rabbit",
+    updateRabbitConfirmMessage:
+      "This runs rabbit update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
+    updateRabbitConfirmNow: "Update now",
+    updateRabbitConfirmTitle: "Update Rabbit?",
+    updatingRabbit: "Updating Rabbit…",
     waitingForOutput: "Waiting for output…",
   },
 
@@ -418,7 +417,7 @@ export const en: Translations = {
       "Saved — restart the gateway to apply the change.",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
-      "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
+      "Discover, install, enable, and update Rabbit plugins (`rabbit plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
     installBtn: "Install",
@@ -435,8 +434,8 @@ export const en: Translations = {
     providersHint:
       "Writes memory.provider (empty = built-in) and context.engine to config.yaml. Takes effect next session.",
     refreshDashboard: "Rescan dashboard extensions",
-    removeConfirm: "Remove this plugin from ~/.hermes/plugins/?",
-    removeHint: "Only user-installed plugins under ~/.hermes/plugins can be removed.",
+    removeConfirm: "Remove this plugin from ~/.rabbit/plugins/?",
+    removeHint: "Only user-installed plugins under ~/.rabbit/plugins can be removed.",
     rescanHeading: "SPA plugin registry",
     rescanHint: "Rescan after adding files on disk so the dashboard sidebar picks up new manifests.",
     runtimeHeading: "Gateway runtime (YAML plugins)",
@@ -453,10 +452,10 @@ export const en: Translations = {
     hideFromSidebar: "Hide from sidebar",
     catalogHeading: "Plugin catalog",
     catalogHint:
-      "Curated, Nous-reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
+      "Curated, reviewed plugins pinned to exact commits. Install from here for supply-chain-safe versions.",
     catalogSearchPlaceholder: "Search catalog...",
     catalogEmpty: "No catalog entries match.",
-    catalogEmptyDocsLink: "Learn about Hermes plugins",
+    catalogEmptyDocsLink: "Learn about Rabbit plugins",
     catalogInstallBtn: "Install",
     catalogInstalledBadge: "Installed ✓",
     catalogUpdateBtn: "Update available",
@@ -478,7 +477,7 @@ export const en: Translations = {
     all: "All",
     categories: "Categories",
     filters: "Filters",
-    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `hermes skills search <topic>`.",
+    noSkills: "No skills installed yet. Browse the skills hub or create one here; from a terminal you can also run `rabbit skills search <topic>`.",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
     resultCount: "{count} result{s}",
@@ -496,7 +495,7 @@ export const en: Translations = {
   },
 
   config: {
-    configPath: "~/.hermes/config.yaml",
+    configPath: "~/.rabbit/config.yaml",
     filters: "Filters",
     sections: "Sections",
     exportConfig: "Export config as JSON",
@@ -556,7 +555,7 @@ export const en: Translations = {
     showValue: "Show real value",
     hideValue: "Hide value",
     customTitle: "Custom Keys",
-    customHint: "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
+    customHint: "Arbitrary environment variables stored in your .env that Rabbit doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
     customConfigured: "{count} custom key{s} set",
     addCustomKey: "Add a custom key",
     customKeyName: "Variable name",
@@ -627,11 +626,11 @@ export const en: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Rabbit Achievements",
       subtitle:
-        "Collectible Hermes badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears.",
+        "Collectible Rabbit badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears.",
       scan_subtitle:
-        "Scanning Hermes session history. First scan can take 5–10 seconds on large histories.",
+        "Scanning Rabbit session history. First scan can take 5–10 seconds on large histories.",
     },
     actions: {
       rescan: "Rescan",
@@ -646,7 +645,7 @@ export const en: Translations = {
       highest_tier: "Highest tier",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "Latest",
-      latest_hint_empty: "run Hermes more",
+      latest_hint_empty: "run Rabbit more",
       none_yet: "None yet",
     },
     state: {
@@ -677,10 +676,10 @@ export const en: Translations = {
       tiers_header: "Tiers",
       secret_header: "Secret achievements",
       secret_body:
-        "Secrets hide their exact trigger. Once Hermes sees a related signal, the card becomes Discovered and shows its requirement.",
+        "Secrets hide their exact trigger. Once Rabbit sees a related signal, the card becomes Discovered and shows its requirement.",
       scan_status_header: "Scan status",
       scan_status_body:
-        "Hermes is scanning local history once, then cards will appear automatically. Nothing is stuck if this takes a few seconds.",
+        "Rabbit is scanning local history once, then cards will appear automatically. Nothing is stuck if this takes a few seconds.",
       what_scanned_header: "What is scanned",
       what_scanned_body:
         "Sessions, tool calls, model metadata, errors, achievements, and local unlock state.",
@@ -727,7 +726,7 @@ export const en: Translations = {
         "Share on X opens a pre-filled post in a new tab. Click Copy image first if you want the 1200×630 badge attached — X lets you paste it right into the tweet composer. Download PNG saves the file for use anywhere.",
       clipboard_unsupported:
         "Clipboard image copy not supported in this browser — use Download instead.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: "Just unlocked {tier_part}\"{name}\" in Rabbit Agent ☤",
     },
   },
 

@@ -15,13 +15,13 @@ import { describe, expect, it, vi } from 'vitest'
 // on Win32 regardless of glass support.
 vi.hoisted(() => {
   Object.defineProperty(globalThis.navigator, 'platform', { configurable: true, value: 'Win32' })
-  Object.defineProperty(globalThis.window, 'hermesDesktop', {
+  Object.defineProperty(globalThis.window, 'rabbitDesktop', {
     configurable: true,
     value: { glassSupported: false }
   })
 })
 
-import { defaultTranslucencyValues } from '@hermes/shared/translucency'
+import { defaultTranslucencyValues } from '@rabbit/shared/translucency'
 
 import { $translucency, $translucencyBook, GLASS_SUPPORTED, setAppearance } from './translucency'
 

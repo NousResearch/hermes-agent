@@ -20,28 +20,28 @@ def external_skills_dir(tmp_path):
 
 
 @pytest.fixture
-def hermes_home(tmp_path):
-    """Create a minimal HERMES_HOME with config."""
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path):
+    """Create a minimal RABBIT_HOME with config."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "skills").mkdir()
     return home
 
 
 class TestGetExternalSkillsDirs:
-    def test_empty_config(self, hermes_home):
-        (hermes_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+    def test_empty_config(self, rabbit_home):
+        (rabbit_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
+        with patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert result == []
 
 
-    def test_valid_dir_returned(self, hermes_home, external_skills_dir):
-        (hermes_home / "config.yaml").write_text(
+    def test_valid_dir_returned(self, rabbit_home, external_skills_dir):
+        (rabbit_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert len(result) == 1
@@ -53,25 +53,25 @@ class TestGetExternalSkillsDirs:
 
 
 class TestGetAllSkillsDirs:
-    def test_local_always_first(self, hermes_home, external_skills_dir):
-        (hermes_home / "config.yaml").write_text(
+    def test_local_always_first(self, rabbit_home, external_skills_dir):
+        (rabbit_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}):
             from agent.skill_utils import get_all_skills_dirs
             result = get_all_skills_dirs()
-        assert result[0] == hermes_home / "skills"
+        assert result[0] == rabbit_home / "skills"
         assert result[1] == external_skills_dir.resolve()
 
 
 class TestExternalSkillsInFindAll:
-    def test_external_skills_found(self, hermes_home, external_skills_dir):
-        (hermes_home / "config.yaml").write_text(
+    def test_external_skills_found(self, rabbit_home, external_skills_dir):
+        (rabbit_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        local_skills = hermes_home / "skills"
+        local_skills = rabbit_home / "skills"
         with (
-            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import _find_all_skills
@@ -79,19 +79,19 @@ class TestExternalSkillsInFindAll:
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
 
-    def test_local_takes_precedence(self, hermes_home, external_skills_dir):
+    def test_local_takes_precedence(self, rabbit_home, external_skills_dir):
         """If the same skill name exists locally and externally, local wins."""
-        local_skills = hermes_home / "skills"
+        local_skills = rabbit_home / "skills"
         local_skill = local_skills / "my-external-skill"
         local_skill.mkdir(parents=True)
         (local_skill / "SKILL.md").write_text(
             "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n"
         )
-        (hermes_home / "config.yaml").write_text(
+        (rabbit_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
         with (
-            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import _find_all_skills
@@ -102,13 +102,13 @@ class TestExternalSkillsInFindAll:
 
 
 class TestExternalSkillView:
-    def test_skill_view_finds_external(self, hermes_home, external_skills_dir):
-        (hermes_home / "config.yaml").write_text(
+    def test_skill_view_finds_external(self, rabbit_home, external_skills_dir):
+        (rabbit_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        local_skills = hermes_home / "skills"
+        local_skills = rabbit_home / "skills"
         with (
-            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch.dict(os.environ, {"RABBIT_HOME": str(rabbit_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
             from tools.skills_tool import skill_view

@@ -37,7 +37,7 @@ export function VoiceFan({ autoSpeak, disabled, state, voiceStatus, onDictate, o
   const c = t.composer
   const wake = useStore($wakeWord)
 
-  const phrase = wake.phrase || 'hey hermes'
+  const phrase = wake.phrase || 'hey rabbit'
   const dictating = state.voice.active || voiceStatus !== 'idle'
   const wakeListening = wake.listening
   const wakePending = wake.pending

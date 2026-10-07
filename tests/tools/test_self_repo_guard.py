@@ -11,7 +11,7 @@ from tools.self_repo_guard import (
 
 @pytest.fixture
 def repo(tmp_path):
-    root = tmp_path / "hermes-agent"
+    root = tmp_path / "rabbit-agent"
     root.mkdir()
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "agent").mkdir()
@@ -61,7 +61,7 @@ class TestBlocksMutationsInSourceRepo:
         assert hit is True
 
     def test_relative_cd_into_repo(self, repo):
-        hit, _ = _detect("cd hermes-agent && git pull", repo.parent, repo)
+        hit, _ = _detect("cd rabbit-agent && git pull", repo.parent, repo)
         assert hit is True
 
     def test_mutation_after_safe_command(self, repo):
@@ -188,7 +188,7 @@ class TestBlocksMutationsInSourceRepo:
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
         monkeypatch.setenv("USERPROFILE", str(repo.parent))
-        hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
+        hit, _ = _detect("git -C ~/rabbit-agent checkout main", tmp_path, repo)
         assert hit is True
 
 
@@ -409,9 +409,9 @@ class TestBlockMessageGuidance:
 
 
 
-    def test_scratch_hint_honors_hermes_home(self, repo, monkeypatch, tmp_path):
-        home = tmp_path / "custom" / "hermes-home"
-        monkeypatch.setenv("HERMES_HOME", str(home))
+    def test_scratch_hint_honors_rabbit_home(self, repo, monkeypatch, tmp_path):
+        home = tmp_path / "custom" / "rabbit-home"
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         hit, msg = _detect("git rebase origin/main", repo, repo)
         assert hit is True
         assert str(home / "scratch") in msg

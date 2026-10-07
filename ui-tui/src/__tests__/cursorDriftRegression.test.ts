@@ -1,7 +1,7 @@
 /**
  * Pinned regression for the multi-line composer cursor-drift bug.
  *
- * Symptom: in `hermes --tui`, typing into the composer until the input
+ * Symptom: in `rabbit --tui`, typing into the composer until the input
  * wraps across multiple visual rows would leave several blank cells
  * between the last typed character and the (hardware) cursor block.
  * Worse on narrow terminals (the Cursor IDE built-in terminal in
@@ -21,7 +21,7 @@
  * the end-of-text position that wrap-ansi would render. Any future
  * regression that lets the two diverge re-introduces the drift.
  */
-import { wrapAnsi } from '@hermes/ink'
+import { wrapAnsi } from '@rabbit/ink'
 import { describe, expect, it } from 'vitest'
 
 import { cursorLayout, inputVisualHeight } from '../lib/inputMetrics.js'
@@ -38,7 +38,7 @@ const USER_REPORT_MESSAGE =
   // Paraphrase of the user's actual bug report, included verbatim so the
   // test is grounded in a realistic typing pattern (long single line,
   // mixed-length words, punctuation, no hard newlines).
-  'im in cursor terminal using hermes --tui and as i type multiline my caret at the end will often ' +
+  'im in cursor terminal using rabbit --tui and as i type multiline my caret at the end will often ' +
   'go.. randomly.. like multiple spaces away lol and idk why. theres no rhyme/reason really but ' +
   'there should literally never be a non-user added space at the end of my composer input right? ' +
   'i dont think it happens on new sessions but only existing ones. there have been a few prs to ' +

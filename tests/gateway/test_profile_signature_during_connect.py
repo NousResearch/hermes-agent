@@ -13,13 +13,13 @@ from gateway.run import GatewayRunner
 @pytest.mark.asyncio
 @pytest.mark.parametrize("startup", [False, True])
 async def test_config_saved_during_connect_is_rescanned(tmp_path, monkeypatch, startup):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        "rabbit_cli.profiles.get_active_profile_name", lambda: "default"
     )
     (profile / "config.yaml").write_text("model: {default: test}\n", encoding="utf-8")
     secrets = profile / ".env"

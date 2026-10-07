@@ -14,7 +14,7 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/audiocraft-audio-generation` |
+| Source | Optional — install with `rabbit skills install official/creative/audiocraft-audio-generation` |
 | Path | `optional-skills/creative/audiocraft-audio-generation` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
@@ -27,7 +27,7 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # AudioCraft: Audio Generation
@@ -576,8 +576,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

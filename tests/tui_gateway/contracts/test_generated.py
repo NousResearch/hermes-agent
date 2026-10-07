@@ -71,7 +71,6 @@ def emitted_event_names() -> set[str]:
     for src in _tool_module_candidates(REPO / "tools"):
         names.update(_DESKTOP_UI_EMIT.findall(_read(src)))
     names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
-    names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
     return names
 
 

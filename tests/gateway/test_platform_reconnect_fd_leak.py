@@ -299,7 +299,7 @@ class TestAPIServerDisconnectClosesResponseStore:
         We point the ``ResponseStore`` at a tmp db so we can verify
         its ``close()`` is called by ``APIServerAdapter.disconnect()``.
         The real ``ResponseStore.__init__`` opens a SQLite connection
-        to ``~/.hermes/response_store.db`` (or :memory: as a fallback),
+        to ``~/.rabbit/response_store.db`` (or :memory: as a fallback),
         which is exactly the resource that was leaking pre-fix.
         """
         import sqlite3

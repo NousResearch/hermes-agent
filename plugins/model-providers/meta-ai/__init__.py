@@ -1,6 +1,6 @@
 """Meta Model API (Muse Spark) provider profile — https://api.meta.ai/v1.
 
-Bundled from albertodepaola/hermes-meta-provider; rides entirely on
+Bundled from albertodepaola/rabbit-meta-provider; rides entirely on
 ProviderProfile hooks (zero core edits). The reasoning dial is emitted as a
 top-level ``reasoning_effort`` kwarg — not ``extra_body.reasoning``, whose
 emission is gated by a core host allowlist a third-party plugin must not edit.

@@ -245,7 +245,7 @@ def _install_secondary_reconnect_context(
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
+        "rabbit_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name
     )
     monkeypatch.setattr(
         "gateway.config.load_gateway_config",
@@ -300,13 +300,13 @@ class TestSecondaryProfileFatalRecovery:
             return True
 
         monkeypatch.setattr(
-            "hermes_cli.env_loader.hydrate_profile_secret_sources", slow_hydrate
+            "rabbit_cli.env_loader.hydrate_profile_secret_sources", slow_hydrate
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("rabbit_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
             coro = runner._start_one_profile_adapters(
                 "reviewer", Path("/profiles/reviewer"), {}
@@ -337,10 +337,10 @@ class TestSecondaryProfileFatalRecovery:
         _install_secondary_reconnect_context(monkeypatch, runner, adapter)
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
-        monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
+        monkeypatch.setattr("rabbit_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
         monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
-        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("rabbit_cli.plugins.discover_plugins", lambda: None)
 
         async def connect(a, platform):
             return True
@@ -373,9 +373,9 @@ class TestSecondaryProfileFatalRecovery:
         redelivery_homes = []
 
         async def redeliver(platform, *, profile=None):
-            from hermes_constants import get_hermes_home
+            from rabbit_constants import get_rabbit_home
 
-            redelivery_homes.append(Path(get_hermes_home()))
+            redelivery_homes.append(Path(get_rabbit_home()))
             return 0
 
         runner._redeliver_failed_obligations_for_platform.side_effect = redeliver
@@ -862,11 +862,11 @@ class TestSecondaryProfileConfigHandling:
             ]
 
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "rabbit_cli.profiles.profiles_to_serve",
             fake_profiles_to_serve,
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name",
+            "rabbit_cli.profiles.get_active_profile_name",
             lambda: "default",
         )
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
@@ -888,12 +888,12 @@ class TestSecondaryProfileConfigHandling:
     @pytest.mark.asyncio
     async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
         """Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
-        ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
+        ``served_profiles`` survived into a later single-profile run and every `rabbit -p X` surface
         kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
         import json
         from gateway.status import read_runtime_status
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         (tmp_path / "gateway_state.json").write_text(json.dumps(
             {"pid": 1, "gateway_state": "stopped", "served_profiles": ["default", "coder"]}))
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -920,14 +920,14 @@ class TestSecondaryProfileConfigHandling:
             )
 
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "rabbit_cli.profiles.profiles_to_serve",
             lambda multiplex, **kw: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],
         )
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name",
+            "rabbit_cli.profiles.get_active_profile_name",
             lambda: "default",
         )
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
@@ -1103,7 +1103,7 @@ class TestSecondaryProfileConfigHandling:
         assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
         if not paired:
             assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
-            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
+            assert "rabbit -p clientbot whatsapp" in statuses[-1][1]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:
@@ -1128,14 +1128,14 @@ class TestSecondaryProfileHookRegistration:
         profile_cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "write_file", "command": "~/.hermes/deny.sh"}
+                    {"matcher": "write_file", "command": "~/.rabbit/deny.sh"}
                 ],
                 "outbound": [
                     {"url": "http://127.0.0.1:9000/hook", "events": ["on_session_end"]}
                 ],
             }
         }
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: profile_cfg)
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: profile_cfg)
 
         seen = []
         monkeypatch.setattr(

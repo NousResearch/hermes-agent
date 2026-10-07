@@ -38,7 +38,7 @@ export function system32OpenSsh(systemRoot: string): string {
 
 /**
  * Git-for-Windows ssh.exe candidates, derived from the same install list
- * resolveGitBinary uses (Hermes PortableGit, UGit, Program Files, per-user).
+ * resolveGitBinary uses (Rabbit PortableGit, UGit, Program Files, per-user).
  * Git ships its MSYS OpenSSH at `<git root>\usr\bin\ssh.exe`, and every git
  * candidate is `<git root>\{cmd,bin}\git.exe`.
  */

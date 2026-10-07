@@ -1,15 +1,15 @@
-import type { ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionsResult } from '@rabbit/shared'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, renderHook, type RenderResult, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import type { HermesApiRequest, HermesConnection } from '@/global'
-import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { RabbitApiRequest, RabbitConnection } from '@/global'
+import type { LocalCatalogModel, LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
-vi.mock('@/hermes', async (): Promise<object> => ({
+vi.mock('@/rabbit', async (): Promise<object> => ({
   ...(await import('@/api/local-models')),
-  getHermesConfigRecord: async (): Promise<object> => ({}),
+  getRabbitConfigRecord: async (): Promise<object> => ({}),
   getGlobalModelOptions: async (): Promise<ModelOptionsResult> => ({ providers: [] })
 }))
 vi.mock('@/store/profile', async (): Promise<object> => {
@@ -26,7 +26,7 @@ vi.mock('@/store/profile', async (): Promise<object> => {
 vi.mock('@/store/session', async (): Promise<object> => {
   const { atom } = await import('nanostores')
 
-  return { $connection: atom<HermesConnection | null>(null), $defaultReasoningEffort: atom<string>('') }
+  return { $connection: atom<RabbitConnection | null>(null), $defaultReasoningEffort: atom<string>('') }
 })
 vi.mock('@/store/notifications', (): object => ({ notify: vi.fn(), notifyError: vi.fn() }))
 
@@ -103,7 +103,7 @@ const model: LocalCatalogModel = {
   fit_summary: 'fits'
 }
 
-const api = vi.fn(async (request: HermesApiRequest): Promise<unknown> => {
+const api = vi.fn(async (request: RabbitApiRequest): Promise<unknown> => {
   if (request.path.endsWith('/status')) {
     return structuredClone(status)
   }
@@ -153,7 +153,7 @@ beforeEach((): void => {
   $connection.set(null)
   vi.mocked(notify).mockClear()
   vi.mocked(notifyError).mockClear()
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+  Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { api } })
   setApiRequestConnection('A')
   setApiRequestProfile('work')
   $activeGatewayProfile.set('work')
@@ -315,7 +315,7 @@ it('follows an authoritative route change even when its descriptor is unchanged'
 it('discards late legacy completions and update notices without invalidating the new catalog', async (): Promise<void> => {
   setApiRequestConnection(null)
 
-  const connection: HermesConnection = {
+  const connection: RabbitConnection = {
     baseUrl: 'http://A',
     token: '',
     wsUrl: '',

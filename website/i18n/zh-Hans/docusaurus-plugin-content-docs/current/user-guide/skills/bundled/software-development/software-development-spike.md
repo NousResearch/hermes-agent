@@ -17,7 +17,7 @@ description: "在构建前验证想法的一次性实验"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/software-development/spike` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent（改编自 gsd-build/get-shit-done） |
+| 作者 | Rabbit Agent（改编自 gsd-build/get-shit-done） |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `spike`, `prototype`, `experiment`, `feasibility`, `throwaway`, `exploration`, `research`, `planning`, `mvp`, `proof-of-concept` |
@@ -26,7 +26,7 @@ description: "在构建前验证想法的一次性实验"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Spike
@@ -43,7 +43,7 @@ description: "在构建前验证想法的一次性实验"
 
 ## 如果用户安装了完整的 GSD 系统
 
-如果 `gsd-spike` 作为同级 skill 出现（通过 `npx get-shit-done-cc --hermes` 安装），当用户需要完整 GSD 工作流时，优先使用 **`gsd-spike`**：持久化的 `.planning/spikes/` 状态、跨会话的 MANIFEST 追踪、Given/When/Then 结论格式，以及与 GSD 其余部分集成的提交模式。本 skill 是面向未安装（或不需要）完整系统的用户的轻量独立版本。
+如果 `gsd-spike` 作为同级 skill 出现（通过 `npx get-shit-done-cc --rabbit` 安装），当用户需要完整 GSD 工作流时，优先使用 **`gsd-spike`**：持久化的 `.planning/spikes/` 状态、跨会话的 MANIFEST 追踪、Given/When/Then 结论格式，以及与 GSD 其余部分集成的提交模式。本 skill 是面向未安装（或不需要）完整系统的用户的轻量独立版本。
 
 ## 核心方法
 
@@ -94,7 +94,7 @@ Spike 并非不需要调研——你需要调研到足以选定正确方案，�
 3. **选定一个。** 说明原因。如果有 2 个以上可信方案，在 spike 内构建快速变体。
 4. **跳过调研**的情形：纯逻辑，无外部依赖。
 
-调研步骤使用 Hermes 工具：
+调研步骤使用 Rabbit 工具：
 
 - `web_search("python websocket streaming libraries 2025")` — 查找候选库
 - `web_extract(urls=["https://websockets.readthedocs.io/..."])` — 阅读实际文档（返回 markdown）
@@ -214,4 +214,4 @@ delegate_task(tasks=[
 
 ## 致谢
 
-改编自 GSD（Get Shit Done）项目的 `/gsd-spike` 工作流——MIT © 2025 Lex Christopherson（[gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)）。完整 GSD 系统提供持久化 spike 状态、MANIFEST 追踪，以及与更广泛的规格驱动开发流水线的集成；通过 `npx get-shit-done-cc --hermes --global` 安装。
+改编自 GSD（Get Shit Done）项目的 `/gsd-spike` 工作流——MIT © 2025 Lex Christopherson（[gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done)）。完整 GSD 系统提供持久化 spike 状态、MANIFEST 追踪，以及与更广泛的规格驱动开发流水线的集成；通过 `npx get-shit-done-cc --rabbit --global` 安装。

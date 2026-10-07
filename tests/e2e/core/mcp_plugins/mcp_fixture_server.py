@@ -3,7 +3,7 @@
 Runs over stdio (default) or streamable HTTP (``MCPE2E_TRANSPORT=http``) and records
 every JSON-RPC message it RECEIVES, byte-exact as parsed JSON, to ``MCPE2E_LOG``
 (one object per line). Tests assert on what the server actually got on the wire
-(arguments, ``_meta``), never on what Hermes believes it sent.
+(arguments, ``_meta``), never on what Rabbit believes it sent.
 
 Environment knobs (all optional):
 

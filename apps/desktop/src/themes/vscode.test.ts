@@ -1,4 +1,4 @@
-import { contrastRatio } from '@hermes/shared/color'
+import { contrastRatio } from '@rabbit/shared/color'
 import { describe, expect, it } from 'vitest'
 
 import { convertVscodeColorTheme, parseVscodeTheme, vscodeThemeSlug } from './vscode'

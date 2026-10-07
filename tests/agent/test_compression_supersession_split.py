@@ -20,7 +20,7 @@ from agent.conversation_compression import (
     _mark_compressor_working_attempt,
     compress_context,
 )
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _build_agent(tmp_path: Path, session_id: str):

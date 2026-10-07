@@ -8,19 +8,19 @@ test('a live primary keeps answering for its booted profile after the preference
   const pin = new PrimaryProfilePin()
   let preference: null | string = 'default'
 
-  // startHermes() boots the primary as the preference at that moment.
+  // startRabbit() boots the primary as the preference at that moment.
   assert.equal(pin.pin(preference), 'default')
   assert.equal(
     pin.resolve(() => preference),
     'default'
   )
 
-  // hermes:profile:remember rewrites active-profile.json without re-homing.
+  // rabbit:profile:remember rewrites active-profile.json without re-homing.
   preference = 'claude'
 
   // Routing must still see the running primary as "default": otherwise a
   // request for "default" falls through to the pool and a second backend is
-  // spawned for the same HERMES_HOME.
+  // spawned for the same RABBIT_HOME.
   assert.equal(
     pin.resolve(() => preference),
     'default'
@@ -40,9 +40,9 @@ test('teardown releases the pin so the next start follows the preference', () =>
 })
 
 // #108417: one authoritative launch-profile decision per startup attempt.
-// startHermes used to pin primaryProfileKey() at the top and separately
+// startRabbit used to pin primaryProfileKey() at the top and separately
 // re-read the preference deep inside the connection IIFE for --profile and
-// the child env — two reads that a mid-startup hermes:profile:remember could
+// the child env — two reads that a mid-startup rabbit:profile:remember could
 // split into "routing says alpha, argv says beta". resolveLaunchProfile makes
 // them ONE read with two encodings of the unset case.
 test('one launch decision feeds routing, argv, and env from the same read', () => {

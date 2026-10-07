@@ -63,7 +63,7 @@ def test_flapping_transport_reaches_park_within_budget(monkeypatch, tmp_path):
     """A transport that handshakes fine but immediately asks to reconnect
     (post-ready TaskGroup drop / keepalive failure) must park within a
     bounded number of spawns instead of respawning forever (#62212)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 
@@ -136,7 +136,7 @@ def test_proven_session_does_not_burn_budget(monkeypatch, tmp_path):
     """A session that proves healthy (keepalive success / tool call) before
     each drop must NOT accumulate toward the park — long-lived healthy
     servers with occasional blips keep reconnecting forever (#57604)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 

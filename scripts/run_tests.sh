@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Canonical test runner for hermes-agent. Run this instead of calling
+# Canonical test runner for rabbit-agent. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #
 # What this script enforces:
@@ -11,7 +11,7 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * The checkout's test environment (via scripts/run-in-hermes-env when needed)
+#   * The checkout's test environment (via scripts/run-in-rabbit-env when needed)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -40,35 +40,35 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Locate python ───────────────────────────────────────────────────────────
 # The suite runs under the checkout's isolated test environment (pm.testenv),
 # and only there: unless the inherited environment is current for this
-# checkout, this script re-executes itself under scripts/run-in-hermes-env,
+# checkout, this script re-executes itself under scripts/run-in-rabbit-env,
 # which syncs and applies it. That holds however the script is launched
 # (`scripts/run_tests.sh`, `bash scripts/run_tests.sh`, from CI or a shell), so
 # a branch switch or lock edit never runs the suite against the previous
 # dependency set.
 #
-# Without an activation, an explicit HERMES_PYTHON that has pytest is honored:
+# Without an activation, an explicit RABBIT_PYTHON that has pytest is honored:
 # the Nix devShell's editable venv and CI's minimal installer lanes provide
-# one on purpose. The import check matters: a wrapped `hermes` binary exports
-# HERMES_PYTHON pointing at a release venv without pytest.
+# one on purpose. The import check matters: a wrapped `rabbit` binary exports
+# RABBIT_PYTHON pointing at a release venv without pytest.
 _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/null; }
 # shellcheck source=scripts/_activation.sh
 . "$SCRIPT_DIR/_activation.sh"
-if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
-  PYTHON="$HERMES_PYTHON"
-  echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
+if [ -z "${__RABBIT_ACTIVATED:-}" ] && _has_pytest "${RABBIT_PYTHON:-}"; then
+  PYTHON="$RABBIT_PYTHON"
+  echo "▶ not activated — using RABBIT_PYTHON: $PYTHON"
 else
-  if ! hermes_activation_current "$REPO_ROOT"; then
-    if [ -n "${__HERMES_TESTS_REEXEC:-}" ]; then
-      echo "error: run-in-hermes-env did not produce a current environment for $REPO_ROOT" >&2
+  if ! rabbit_activation_current "$REPO_ROOT"; then
+    if [ -n "${__RABBIT_TESTS_REEXEC:-}" ]; then
+      echo "error: run-in-rabbit-env did not produce a current environment for $REPO_ROOT" >&2
       exit 1
     fi
-    echo "▶ environment missing or stale for $REPO_ROOT — re-running under run-in-hermes-env" >&2
-    export __HERMES_TESTS_REEXEC=1
-    exec "$SCRIPT_DIR/run-in-hermes-env" "$BASH" "${BASH_SOURCE[0]}" "$@"
+    echo "▶ environment missing or stale for $REPO_ROOT — re-running under run-in-rabbit-env" >&2
+    export __RABBIT_TESTS_REEXEC=1
+    exec "$SCRIPT_DIR/run-in-rabbit-env" "$BASH" "${BASH_SOURCE[0]}" "$@"
   fi
-  PYTHON="${__HERMES_TEST_PYTHON:-}"
+  PYTHON="${__RABBIT_TEST_PYTHON:-}"
   if ! _has_pytest "$PYTHON"; then
-    echo "error: activation provided no test interpreter with pytest (__HERMES_TEST_PYTHON=${PYTHON:-unset})" >&2
+    echo "error: activation provided no test interpreter with pytest (__RABBIT_TEST_PYTHON=${PYTHON:-unset})" >&2
     exit 1
   fi
 fi
@@ -77,8 +77,8 @@ fi
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
 EXTRA_PYTEST_PLUGINS=""
-if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
-  EXTRA_PYTHONPATH="$HOME/.hermes"
+if [ -f "$HOME/.rabbit/pytest_live_guard.py" ]; then
+  EXTRA_PYTHONPATH="$HOME/.rabbit"
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
@@ -125,37 +125,37 @@ _pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
 # The runner's own documented environment knobs must survive the hermetic
 # `env -i` below, or they are silent no-ops for anyone invoking this script:
 #
-#   * HERMES_TEST_WORKERS / PATHS / FILE_TIMEOUT / FILE_RETRIES / SLICE are
+#   * RABBIT_TEST_WORKERS / PATHS / FILE_TIMEOUT / FILE_RETRIES / SLICE are
 #     read by run_tests_parallel.py at argparse-default time — inside the
 #     stripped environment.
-#   * HERMES_TEST_IMAGE is read by tests/docker/conftest.py to skip its
+#   * RABBIT_TEST_IMAGE is read by tests/docker/conftest.py to skip its
 #     session-scoped `docker build`. CI's docker.yml sets it to the image
 #     the build step just loaded; stripping it made every per-file pytest
 #     subprocess rebuild the 5GB image from a cold builder cache instead
 #     (~4 min per worker per run, and the rebuilt image lacked the
-#     HERMES_GIT_SHA build-arg the workflow bakes in).
-#   * HERMES_E2E_REQUIRE_TUI turns a missing Ink TUI build into a failure in
+#     RABBIT_GIT_SHA build-arg the workflow bakes in).
+#   * RABBIT_E2E_REQUIRE_TUI turns a missing Ink TUI build into a failure in
 #     tests/e2e/core/terminal instead of a skip (set by the e2e CI job).
 #   * CI / GITHUB_ACTIONS tell suites they run on a disposable runner (e.g.
 #     tests/e2e/core/upgrade runs the real updater unsandboxed only there).
-#   * HERMES_E2E_WINDOWS_INSTALL opts tests/e2e/core/windows_update into running
-#     the real install.ps1 (it writes HKCU PATH); HERMES_E2E_MACHINE_ROOT,
-#     HERMES_E2E_PROFILES_ROOT and HERMES_E2E_ARTIFACTS place its fake machines,
+#   * RABBIT_E2E_WINDOWS_INSTALL opts tests/e2e/core/windows_update into running
+#     the real install.ps1 (it writes HKCU PATH); RABBIT_E2E_MACHINE_ROOT,
+#     RABBIT_E2E_PROFILES_ROOT and RABBIT_E2E_ARTIFACTS place its fake machines,
 #     their user profiles and the transcripts CI uploads.
 #
 # These are test-infrastructure knobs, not credentials — same class as the
-# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
+# RABBIT_RUN_SLOW_PET_TESTS / RABBIT_E2E_BROWSER / RABBIT_RUN_E2E opt-ins
 # forwarded below.
 # SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
 # OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
 # downloads, channel reads) need the host's pointer to verify TLS.
-# Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
+# Keep this an explicit allowlist (no RABBIT_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
-for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
-  HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
-  SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
-  HERMES_E2E_WINDOWS_INSTALL HERMES_E2E_MACHINE_ROOT HERMES_E2E_PROFILES_ROOT HERMES_E2E_ARTIFACTS; do
+for _test_var in RABBIT_TEST_IMAGE RABBIT_TEST_WORKERS RABBIT_TEST_PATHS \
+  RABBIT_TEST_FILE_TIMEOUT RABBIT_TEST_FILE_RETRIES RABBIT_TEST_SLICE \
+  SSL_CERT_FILE SSL_CERT_DIR RABBIT_GATEWAY_LOCK_DIR RABBIT_E2E_REQUIRE_TUI CI GITHUB_ACTIONS \
+  RABBIT_E2E_WINDOWS_INSTALL RABBIT_E2E_MACHINE_ROOT RABBIT_E2E_PROFILES_ROOT RABBIT_E2E_ARTIFACTS; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
@@ -188,9 +188,9 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   PYTHONUTF8=1 \
-  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
-  ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
-  ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
+  ${RABBIT_RUN_SLOW_PET_TESTS:+RABBIT_RUN_SLOW_PET_TESTS="$RABBIT_RUN_SLOW_PET_TESTS"} \
+  ${RABBIT_E2E_BROWSER:+RABBIT_E2E_BROWSER="$RABBIT_E2E_BROWSER"} \
+  ${RABBIT_RUN_E2E:+RABBIT_RUN_E2E="$RABBIT_RUN_E2E"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

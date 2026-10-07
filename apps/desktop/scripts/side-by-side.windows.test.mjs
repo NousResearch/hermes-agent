@@ -38,7 +38,7 @@ async function nativeProof() {
   const sdk = fs.readdirSync(sdkRoot).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
     .map(version => path.join(sdkRoot, version, sdkArch, 'makeappx.exe')).find(file => fs.existsSync(file))
   assert.ok(sdk, `Windows SDK makeappx.exe (${sdkArch}) is required`)
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sxs-sdk-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sxs-sdk-'))
   // Retain failed runs for native diagnostics. Successful SDK-only runs leave
   // a small receipt too; neither branch touches the source checkout's build/.
   console.log(`Native Windows fixture proof: ${root}`)
@@ -51,10 +51,10 @@ async function nativeProof() {
     ...['before-build', 'gen-msix-manifest', 'mac-sign', 'payload-digests', 'write-build-stamp', 'utils']
       .map(name => `apps/desktop/scripts/${name}.mjs`),
     'scripts/msix-shared.mjs', 'scripts/release-content-types.json', 'scripts/build/python.mjs',
-    'scripts/bundles/desktop_prepare.py', 'hermes_cli/release_channels.py', 'hermes_cli/__init__.py',
-    // desktop_prepare -> scripts.releases.versioning -> semver + hermes_cli.update_channel -> pm:
+    'scripts/bundles/desktop_prepare.py', 'rabbit_cli/release_channels.py', 'rabbit_cli/__init__.py',
+    // desktop_prepare -> scripts.releases.versioning -> semver + rabbit_cli.update_channel -> pm:
     // copy whole package trees so a new intra-package import cannot break the fixture.
-    'hermes_cli/update_channel.py', 'hermes_constants.py', 'scripts/releases', 'pm',
+    'rabbit_cli/update_channel.py', 'rabbit_constants.py', 'scripts/releases', 'pm',
   ]
   for (const file of copied) {
     fs.mkdirSync(path.dirname(path.join(work, file)), { recursive: true })
@@ -76,8 +76,8 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
 `)
   checked('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', iconsScript, '-Dir', path.join(desktop, 'assets/appx')])
   fs.symlinkSync(path.join(repo, 'node_modules'), path.join(work, 'node_modules'), 'junction')
-  const env = { ...process.env, HERMES_HOME: path.join(root, 'home'), HERMES_RUNTIME_DIR: path.join(root, 'runtime') }
-  for (const key of ['_HERMES_CHANNEL_REQUEST_JSON', 'HERMES_BUILD_COMMIT', 'HERMES_PAYLOAD_TAG', 'HERMES_PAYLOAD_VERSION', 'HERMES_DESKTOP_VARIANT', 'BUILD_NUMBER']) delete env[key]
+  const env = { ...process.env, RABBIT_HOME: path.join(root, 'home'), RABBIT_RUNTIME_DIR: path.join(root, 'runtime') }
+  for (const key of ['_RABBIT_CHANNEL_REQUEST_JSON', 'RABBIT_BUILD_COMMIT', 'RABBIT_PAYLOAD_TAG', 'RABBIT_PAYLOAD_VERSION', 'RABBIT_DESKTOP_VARIANT', 'BUILD_NUMBER']) delete env[key]
   const gitEnv = { ...env, GIT_AUTHOR_NAME: 'Native fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Native fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: '2026-09-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-09-01T00:00:00Z' }
   const git = (...args) => checked('git', args, { cwd: work, env: gitEnv })
   git('init', '-q')
@@ -91,36 +91,36 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
     schema: 1, buildId: 'a'.repeat(32), channel: 'sdk-preview', sequence,
     repository: 'fixture/project', commit: commitB, sourceVersion: '1.2.4', version: `0.0.${sequence}`,
     windowsVersion: `0.${Math.floor(sequence / 65536)}.${sequence % 65536}.0`,
-    identity: { token: 'ab12cd34ef56ab78', displayName: 'Hermes sdk-preview',
-      appId: 'ai.hermes.channel.hab12cd34ef56ab78', appNamePascal: 'HermesChannelab12cd34ef56ab78',
-      artifactNamePascal: 'HermesChannelab12cd34ef56ab78', cliName: 'hermes-sdk-preview',
-      windowsExecutableName: 'HermesChannelab12cd34ef56ab78', msixAppIdWithOrg: 'NousResearch.HermesChannelab12cd34ef56ab78' },
+    identity: { token: 'ab12cd34ef56ab78', displayName: 'Rabbit sdk-preview',
+      appId: 'ai.rabbit.channel.hab12cd34ef56ab78', appNamePascal: 'RabbitChannelab12cd34ef56ab78',
+      artifactNamePascal: 'RabbitChannelab12cd34ef56ab78', cliName: 'rabbit-sdk-preview',
+      windowsExecutableName: 'RabbitChannelab12cd34ef56ab78', msixAppIdWithOrg: 'Seven0070.RabbitChannelab12cd34ef56ab78' },
     bundleEnv: {}, publicBase: 'https://example.invalid'
   })
   const cases = [
-    ['stable', { HERMES_PAYLOAD_TAG: 'v1.2.3' }],
-    ['canary', { HERMES_PAYLOAD_TAG: 'v1.2.3+canary.20260902T000000Z' }],
-    ['canary-update', { HERMES_PAYLOAD_TAG: 'v1.2.3+canary.20260903T000000Z' }],
-    ['commit-a', { HERMES_BUILD_COMMIT: commitA, HERMES_PAYLOAD_VERSION: '1.2.4' }],
-    ['commit-b', { HERMES_BUILD_COMMIT: commitB, HERMES_PAYLOAD_VERSION: '1.2.4' }],
-    ...[65535, 65536, 0xffffffff].map(sequence => [`channel-${sequence}`, { _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(channelRequest(sequence)) }]),
+    ['stable', { RABBIT_PAYLOAD_TAG: 'v1.2.3' }],
+    ['canary', { RABBIT_PAYLOAD_TAG: 'v1.2.3+canary.20260902T000000Z' }],
+    ['canary-update', { RABBIT_PAYLOAD_TAG: 'v1.2.3+canary.20260903T000000Z' }],
+    ['commit-a', { RABBIT_BUILD_COMMIT: commitA, RABBIT_PAYLOAD_VERSION: '1.2.4' }],
+    ['commit-b', { RABBIT_BUILD_COMMIT: commitB, RABBIT_PAYLOAD_VERSION: '1.2.4' }],
+    ...[65535, 65536, 0xffffffff].map(sequence => [`channel-${sequence}`, { _RABBIT_CHANNEL_REQUEST_JSON: JSON.stringify(channelRequest(sequence)) }]),
   ]
   const rows = []
   const failures = []
   const check = (value, message) => { if (!value) failures.push(message) }
   for (const [label, flavorEnv] of cases) {
-    const childEnv = { ...env, HERMES_DESKTOP_VARIANT: 'bundled', ...flavorEnv }
+    const childEnv = { ...env, RABBIT_DESKTOP_VARIANT: 'bundled', ...flavorEnv }
     const node = args => checked(process.execPath, args, { cwd: work, env: childEnv })
     const packageDir = path.join(root, label)
     fs.mkdirSync(packageDir)
     const manifestDir = path.join(desktop, 'build/agent-payload')
     fs.rmSync(manifestDir, { recursive: true, force: true })
     fs.mkdirSync(path.join(manifestDir, 'bin'), { recursive: true })
-    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/hermes.exe'))
-    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/hermes-acp.exe'))
+    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/rabbit.exe'))
+    fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(manifestDir, 'bin/rabbit-acp.exe'))
     fs.writeFileSync(path.join(manifestDir, 'manifest.json'), JSON.stringify({
-      target: `win32-${process.arch}`, launchers: ['hermes', 'hermes-acp'],
-      runtime: { commands: { hermes: 'bin/hermes.exe', 'hermes-acp': 'bin/hermes-acp.exe' } },
+      target: `win32-${process.arch}`, launchers: ['rabbit', 'rabbit-acp'],
+      runtime: { commands: { rabbit: 'bin/rabbit.exe', 'rabbit-acp': 'bin/rabbit-acp.exe' } },
     }))
     // Fresh processes match the per-build module cache boundary. No fabricated
     // product identity/config; these are the production hook and generators.
@@ -146,7 +146,7 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
     fs.mkdirSync(path.join(packageDir, 'Public'))
     fs.cpSync(manifestDir, path.join(packageDir, 'app/resources/agent-payload'), { recursive: true })
     fs.copyFileSync(path.join(process.env.SystemRoot, 'System32/where.exe'), path.join(packageDir, 'app', facts.executable))
-    const expectedExecutable = path.win32.join('app/resources/agent-payload', facts.payload.runtime.commands.hermes)
+    const expectedExecutable = path.win32.join('app/resources/agent-payload', facts.payload.runtime.commands.rabbit)
     check(attribute(xml, 'Application', 'Executable') === path.win32.join('app', facts.executable), `${label}: application does not launch its GUI executable`)
     const aliasExtension = /<uap5:Extension\b[^>]*Category="windows.appExecutionAlias"[^>]*>/.exec(xml)?.[0]
     check(aliasExtension && attribute(aliasExtension, 'uap5:Extension', 'Executable') === expectedExecutable, `${label}: CLI alias does not launch its payload executable`)
@@ -169,17 +169,17 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
     check(aliases.length === 2 && aliases.includes(`${facts.identity.cliName}.exe`) && aliases.includes(`${facts.identity.cliName}-acp.exe`), `${label}: aliases ${aliases} do not match ${facts.identity.cliName}`)
     if (label !== 'stable') {
       for (const [command, payloadFile] of Object.entries(facts.payload.runtime.commands)) {
-        const alias = command.replace(/^hermes/, facts.identity.cliName) + '.exe'
+        const alias = command.replace(/^rabbit/, facts.identity.cliName) + '.exe'
         const extension = [...roundtrip.matchAll(/<uap5:Extension\b[\s\S]*?<\/uap5:Extension>/g)].map(match => match[0]).find(value => value.includes(`Alias="${alias}"`))
         check(extension && attribute(extension, 'uap5:Extension', 'Executable') === path.win32.join('app/resources/agent-payload', payloadFile), `${label}: ${alias} invokes the wrong entrypoint`)
       }
     }
     const descriptor = path.join(root, `${label}.appinstaller`)
-    if (facts.identity.channel && !flavorEnv._HERMES_CHANNEL_REQUEST_JSON) {
+    if (facts.identity.channel && !flavorEnv._RABBIT_CHANNEL_REQUEST_JSON) {
       const publisher = attribute(roundtrip, 'Identity', 'Publisher')
       const selfUri = `https://example.invalid/fixture/${facts.identity.channel}.appinstaller`
       const artifactUri = `https://example.invalid/fixture/${facts.app.name}-${version}-win.msixbundle`
-      checked(process.env.HERMES_PYTHON || 'python', [
+      checked(process.env.RABBIT_PYTHON || 'python', [
         '-m', 'scripts.bundles.release_artifacts', 'appinstaller', '--root', root, '--out', descriptor,
         '--identity', name, '--publisher', publisher, '--version', version,
         '--self-uri', selfUri, '--artifact-uri', artifactUri,
@@ -194,7 +194,7 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
       check(!fs.existsSync(descriptor), `${label}: commit build emitted App Installer feed`)
       check(facts.config.publish === null, `${label}: commit build config still publishes`)
     }
-    const row = { label, name, version, aliases, packageDir, cliName: facts.identity.cliName, commit: flavorEnv.HERMES_BUILD_COMMIT || null }
+    const row = { label, name, version, aliases, packageDir, cliName: facts.identity.cliName, commit: flavorEnv.RABBIT_BUILD_COMMIT || null }
     rows.push(row)
     console.log(`SDK pack/unpack PASS ${label}: ${name} ${version}; aliases=${aliases.join(',')}`)
   }

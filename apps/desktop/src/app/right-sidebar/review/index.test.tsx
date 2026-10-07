@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import type { HermesReviewFile } from '@/global'
+import type { RabbitReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $panesFlipped } from '@/store/layout'
 import {
@@ -16,7 +16,7 @@ import {
 
 import { ReviewPane } from './index'
 
-const file = (path: string): HermesReviewFile => ({ added: 1, path, removed: 0, staged: false, status: 'M' })
+const file = (path: string): RabbitReviewFile => ({ added: 1, path, removed: 0, staged: false, status: 'M' })
 
 function renderPane() {
   return render(

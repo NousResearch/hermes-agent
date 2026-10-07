@@ -29,7 +29,7 @@ from tools.mcp_tool import MCPServerTask
 def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog):
     """Consecutive transient failures: each retry logs at DEBUG, and the
     degraded→parked transition logs exactly one WARNING."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 
@@ -105,7 +105,7 @@ def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog
 def test_initial_retry_attempts_log_debug(monkeypatch, tmp_path, caplog):
     """Initial-connect per-attempt retries are DEBUG; only the final park
     (connecting→parked) is a WARNING."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 

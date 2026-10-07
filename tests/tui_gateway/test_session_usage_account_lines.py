@@ -36,7 +36,6 @@ def test_session_usage_rpc_ships_account_lines_for_the_live_route():
         with (
             patch.object(server, "_get_usage", return_value={"calls": 1, "input": 10, "output": 20, "total": 30}),
             patch("agent.account_usage.fetch_account_usage", _fetch),
-            patch("agent.account_usage.nous_credits_lines", lambda **kw: []),
         ):
             r = server._methods["session.usage"]("r1", {"session_id": sid})
     finally:

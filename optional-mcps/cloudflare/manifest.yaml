@@ -15,13 +15,13 @@ source: https://developers.cloudflare.com/agents/model-context-protocol/cloudfla
 # We pin `?codemode=false` deliberately. The server's default mode fronts
 # the API through its own search()/execute() indirection ("Code Mode"),
 # where the model must query a spec index and then write JavaScript that
-# runs in a provider-side sandbox. Hermes already has progressive tool
+# runs in a provider-side sandbox. Rabbit already has progressive tool
 # disclosure (tool_search) — stacking a second, server-side search layer
 # on top of it would mean two search hops before any real call, and our
 # tool_search would only ever see 2 opaque meta-tools instead of the real
 # surface. With codemode=false the server registers each API endpoint as
 # its own tool (~3,300 as of July 2026) with a real JSON Schema derived
-# from the endpoint's path/query/body parameters. Hermes's tool_search
+# from the endpoint's path/query/body parameters. Rabbit's tool_search
 # then defers the whole surface behind its bridge tools and searches the
 # FULL catalog with complete schemas — one disclosure layer, ours, with
 # total information. Calls go straight to the Cloudflare API; no sandbox
@@ -34,7 +34,7 @@ auth:
   type: oauth
   # Native MCP OAuth 2.1 (case 1) — the server publishes AS metadata with
   # Dynamic Client Registration at https://mcp.cloudflare.com/register.
-  # Hermes's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
+  # Rabbit's MCP client + mcp_oauth_manager handle discovery, DCR, PKCE,
   # token exchange, and refresh. During authorization Cloudflare lets you
   # scope exactly which account permissions the agent gets.
 
@@ -101,9 +101,9 @@ tools:
     - "*_user_load_balancers*"
 
 post_install: |
-  On first connection, Hermes opens a browser to authorize with Cloudflare.
+  On first connection, Rabbit opens a browser to authorize with Cloudflare.
   You pick the account and the permissions to grant — scope the token to
-  what you want the agent to touch. After auth, restart your Hermes session
+  what you want the agent to touch. After auth, restart your Rabbit session
   so the Cloudflare tools are loaded.
 
   This entry exposes each Cloudflare API endpoint as an individual tool.
@@ -111,17 +111,17 @@ post_install: |
   org-fleet, and read-only-analytics product families are disabled —
   ~1,400 tools), leaving ~1,900 tools for the products people actually
   drive from an agent: DNS, Workers, R2, KV, D1, Queues, Pages, WAF,
-  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Hermes's
+  rulesets, tunnels, Access, Stream, Images, AI, Vectorize. Rabbit's
   tool_search defers them all, so your context is not flooded — the agent
   discovers the right endpoint on demand with full schemas.
 
   Run a Zero Trust org or want Radar/Magic/API-Shield surfaces back?
   Delete their patterns from mcp_servers.cloudflare.tools.exclude in
-  ~/.hermes/config.yaml.
+  ~/.rabbit/config.yaml.
 
   Headless / CI alternative: instead of OAuth, create a Cloudflare API token
   at https://dash.cloudflare.com/profile/api-tokens and configure the server
-  with a bearer header in ~/.hermes/config.yaml:
+  with a bearer header in ~/.rabbit/config.yaml:
 
     mcp_servers:
       cloudflare:
@@ -131,11 +131,11 @@ post_install: |
 
   Prefer the provider-side Code Mode surface instead (2 search/execute
   meta-tools, ~1k-token schema, sandboxed JS composition)? Drop the
-  `?codemode=false` from the url. Not recommended together with Hermes
+  `?codemode=false` from the url. Not recommended together with Rabbit
   tool_search — you'd be stacking two tool-discovery layers.
 
   Cloudflare also runs product-specific MCP servers (same OAuth flow, add
-  manually via `hermes mcp add <name> --url <url>` if you want a narrower
+  manually via `rabbit mcp add <name> --url <url>` if you want a narrower
   surface): docs search (https://docs.mcp.cloudflare.com/mcp, no auth),
   Workers observability (https://observability.mcp.cloudflare.com/mcp),
   Browser Rendering (https://browser.mcp.cloudflare.com/mcp), Radar
@@ -145,4 +145,4 @@ post_install: |
   source URL above.
 
   Re-run the tool checklist any time with:
-    hermes mcp configure cloudflare
+    rabbit mcp configure cloudflare

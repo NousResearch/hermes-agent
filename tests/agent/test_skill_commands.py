@@ -77,7 +77,7 @@ class TestScanSkillCommands:
         from agent.skill_commands import get_skill_commands
 
         def _disabled_skills():
-            platform = os.getenv("HERMES_PLATFORM")
+            platform = os.getenv("RABBIT_PLATFORM")
             if platform == "telegram":
                 return {"telegram-only"}
             if platform == "discord":
@@ -93,14 +93,14 @@ class TestScanSkillCommands:
             _make_skill(tmp_path, "telegram-only")
             _make_skill(tmp_path, "discord-only")
 
-            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+            with patch.dict(os.environ, {"RABBIT_PLATFORM": "telegram"}):
                 telegram_commands = dict(get_skill_commands())
 
             assert "/shared" in telegram_commands
             assert "/discord-only" in telegram_commands
             assert "/telegram-only" not in telegram_commands
 
-            with patch.dict(os.environ, {"HERMES_PLATFORM": "discord"}):
+            with patch.dict(os.environ, {"RABBIT_PLATFORM": "discord"}):
                 discord_commands = dict(get_skill_commands())
 
             assert "/shared" in discord_commands
@@ -109,19 +109,19 @@ class TestScanSkillCommands:
 
             # Switching back to telegram must also rescan — not re-serve
             # the discord view that was just cached.
-            with patch.dict(os.environ, {"HERMES_PLATFORM": "telegram"}):
+            with patch.dict(os.environ, {"RABBIT_PLATFORM": "telegram"}):
                 telegram_again = dict(get_skill_commands())
 
             assert "/telegram-only" not in telegram_again
             assert "/discord-only" in telegram_again
 
     def test_get_skill_commands_rescans_when_session_platform_changes(self, tmp_path):
-        """``HERMES_SESSION_PLATFORM`` from the gateway session context must
-        also trigger a rescan, not just ``HERMES_PLATFORM`` (#14536).
+        """``RABBIT_SESSION_PLATFORM`` from the gateway session context must
+        also trigger a rescan, not just ``RABBIT_PLATFORM`` (#14536).
 
         Exercises the real ContextVar path: the gateway sets the active
         adapter via ``set_session_vars(platform=...)`` and the resolver
-        reads it via ``get_session_env``. Setting ``HERMES_SESSION_PLATFORM``
+        reads it via ``get_session_env``. Setting ``RABBIT_SESSION_PLATFORM``
         in ``os.environ`` would only test ``get_session_env``'s legacy
         env-var fallback — a regression that swapped ``get_session_env``
         for plain ``os.getenv`` would still pass while breaking concurrent
@@ -138,8 +138,8 @@ class TestScanSkillCommands:
 
         def _disabled_skills():
             platform = (
-                os.getenv("HERMES_PLATFORM")
-                or get_session_env("HERMES_SESSION_PLATFORM")
+                os.getenv("RABBIT_PLATFORM")
+                or get_session_env("RABBIT_SESSION_PLATFORM")
             )
             if platform == "telegram":
                 return {"telegram-only"}
@@ -183,13 +183,13 @@ class TestScanSkillCommands:
     def test_get_skill_commands_rescans_when_profile_home_changes(self, tmp_path):
         """Switching profiles must rescan even when the platform is unchanged
         (#88023): a Desktop session that switches profiles mid-session keeps
-        the same platform scope, so only ``HERMES_HOME`` moves. Each profile
+        the same platform scope, so only ``RABBIT_HOME`` moves. Each profile
         declares its own ``skills.external_dirs``, and the previous profile's
         skill list must not leak into the new one.
         """
         import agent.skill_commands as sc_mod
         from agent.skill_commands import get_skill_commands
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         empty_local_dir = tmp_path / "no-local-skills"
         empty_local_dir.mkdir()
@@ -213,22 +213,22 @@ class TestScanSkillCommands:
             patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
-            token = set_hermes_home_override(profile_a)
+            token = set_rabbit_home_override(profile_a)
             try:
                 profile_a_commands = dict(get_skill_commands())
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
 
             assert "/a-only" in profile_a_commands
             assert "/b-only" not in profile_a_commands
 
             # Switching profiles without touching the cache directly must
             # rescan — not keep serving profile_a's stale view.
-            token = set_hermes_home_override(profile_b)
+            token = set_rabbit_home_override(profile_b)
             try:
                 profile_b_commands = dict(get_skill_commands())
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
 
             assert "/b-only" in profile_b_commands
             assert "/a-only" not in profile_b_commands
@@ -241,7 +241,7 @@ class TestScanSkillCommands:
         """
         import agent.skill_commands as sc_mod
         from agent.skill_commands import build_skill_invocation_message, get_skill_commands
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         profile_b = tmp_path / "profiles" / "b"
         _make_skill(profile_b / "skills", "b-only", body="Body of b-only.")
@@ -250,7 +250,7 @@ class TestScanSkillCommands:
         with (
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
-            token = set_hermes_home_override(profile_b)
+            token = set_rabbit_home_override(profile_b)
             try:
                 commands = dict(get_skill_commands())
                 assert "/b-only" in commands
@@ -263,7 +263,7 @@ class TestScanSkillCommands:
                 # (normalize_skill_lookup_name must use the same live root).
                 msg = build_skill_invocation_message("/b-only", user_instruction="go")
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
         assert msg is not None and "Body of b-only." in msg
 
     def test_get_skill_commands_rescans_when_leaving_platform_scope(self, tmp_path, monkeypatch):
@@ -278,7 +278,7 @@ class TestScanSkillCommands:
         from agent.skill_commands import get_skill_commands
 
         def _disabled_skills():
-            if os.getenv("HERMES_PLATFORM") == "telegram":
+            if os.getenv("RABBIT_PLATFORM") == "telegram":
                 return {"telegram-only"}
             return set()
 
@@ -290,12 +290,12 @@ class TestScanSkillCommands:
             _make_skill(tmp_path, "shared")
             _make_skill(tmp_path, "telegram-only")
 
-            monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+            monkeypatch.setenv("RABBIT_PLATFORM", "telegram")
             telegram_commands = dict(get_skill_commands())
             assert "/telegram-only" not in telegram_commands
 
             # Drop back to no platform scope — bare CLI / cron / RL rollouts.
-            monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+            monkeypatch.delenv("RABBIT_PLATFORM", raising=False)
             bare_commands = dict(get_skill_commands())
 
             assert "/telegram-only" in bare_commands
@@ -528,7 +528,7 @@ class TestBuildPreloadedSkillsPrompt:
 
     def test_skips_disabled_skill(self, tmp_path, monkeypatch):
         """A globally-disabled skill must not be force-loaded via -s /
-        HERMES_TUI_SKILLS preloading (mirrors the bundle gate, #59156)."""
+        RABBIT_TUI_SKILLS preloading (mirrors the bundle gate, #59156)."""
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "enabled-skill", body="Enabled content.")
             _make_skill(tmp_path, "disabled-skill", body="SECRET DISABLED CONTENT.")
@@ -584,14 +584,14 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
             assert "LOCAL XDUP" in json.loads(skill_view(ident))["content"]
         _, loaded, missing = build_preloaded_skills_prompt(["dup-demo", "xdup", "a/one"])
         assert (loaded, missing) == (["xdup", "dup-demo"], [ambiguous])
-        from hermes_cli.oneshot import _build_preloaded_skills_prompt
+        from rabbit_cli.oneshot import _build_preloaded_skills_prompt
         with caplog.at_level("WARNING"):  # partial preload: the skip warning keeps the Ambiguous wording
             assert _build_preloaded_skills_prompt(["dup-demo", "xdup"])
         assert f"Skipping {ambiguous}. Continuing with: xdup" in caplog.text and "Unknown" not in caplog.text
         parts = _load_cron_skill_parts({"id": "j"}, ["dup-demo", "xdup"])
         assert ambiguous in parts[0] and "LOCAL XDUP" in "\n".join(parts)
 
-        # Disabling a duplicate by the exact path its row shows (what `hermes skills` / the web toggle
+        # Disabling a duplicate by the exact path its row shows (what `rabbit skills` / the web toggle
         # save) hides it from list and index and refuses the load — but not an unrelated, uniquely named
         # skill in another tier that merely sits at the same relative path.
         _make_skill(ext, "other", category="a", body="UNRELATED OTHER")
@@ -716,7 +716,7 @@ class TestSkillDirectoryHeader:
 
 
 class TestTemplateVarSubstitution:
-    """``${HERMES_SKILL_DIR}`` and ``${HERMES_SESSION_ID}`` in SKILL.md body
+    """``${RABBIT_SKILL_DIR}`` and ``${RABBIT_SESSION_ID}`` in SKILL.md body
     are replaced before the agent sees the content."""
 
     def test_substitutes_skill_dir(self, tmp_path):
@@ -724,7 +724,7 @@ class TestTemplateVarSubstitution:
             skill_dir = _make_skill(
                 tmp_path,
                 "templated",
-                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+                body="Run: node ${RABBIT_SKILL_DIR}/scripts/foo.js",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message("/templated")
@@ -732,7 +732,7 @@ class TestTemplateVarSubstitution:
         assert msg is not None
         assert f"node {skill_dir}/scripts/foo.js" in msg
         # The literal template token must not leak through.
-        assert "${HERMES_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
+        assert "${RABBIT_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
 
 
     def test_disable_template_vars_via_config(self, tmp_path):
@@ -746,14 +746,14 @@ class TestTemplateVarSubstitution:
             _make_skill(
                 tmp_path,
                 "no-sub",
-                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+                body="Run: node ${RABBIT_SKILL_DIR}/scripts/foo.js",
             )
             scan_skill_commands()
             msg = build_skill_invocation_message("/no-sub")
 
         assert msg is not None
         # Template token must survive when substitution is disabled.
-        assert "${HERMES_SKILL_DIR}/scripts/foo.js" in msg
+        assert "${RABBIT_SKILL_DIR}/scripts/foo.js" in msg
 
 
 class TestInlineShellExpansion:

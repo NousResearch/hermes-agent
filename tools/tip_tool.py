@@ -1,4 +1,4 @@
-"""Point at something in the Hermes desktop GUI and say one line about it — the quiet
+"""Point at something in the Rabbit desktop GUI and say one line about it — the quiet
 sibling of ``tour`` (same ``data-tour`` handles) with no scrim/spotlight/paging.
 Fire-and-forget: a tip is not a question, so blocking on a round-trip would stall the
 reply. Lives in ``desktop_ui`` and withdraws itself when the user turns tips off."""
@@ -29,7 +29,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
     except Exception as exc:
         return tool_error(f"Failed to show the tip: {exc}")
     if not ok:
-        return tool_error("tip is only available in the Hermes desktop app.")
+        return tool_error("tip is only available in the Rabbit desktop app.")
     return json.dumps({"success": True, "selector": selector}, ensure_ascii=False)
 
 

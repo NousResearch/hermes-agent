@@ -1,5 +1,5 @@
 """``platforms.api_server.tool_progress_events: false`` drops the custom
-``hermes.tool.progress`` SSE frames from streaming Chat Completions (#12020)."""
+``rabbit.tool.progress`` SSE frames from streaming Chat Completions (#12020)."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -38,11 +38,11 @@ def _stream_body(platform_cfg):
 
 def test_tool_progress_frames_emitted_by_default():
     body = _stream_body({"enabled": True, "token": "k"})
-    assert "event: hermes.tool.progress" in body
+    assert "event: rabbit.tool.progress" in body
     assert '"content": "done"' in body
 
 
 def test_tool_progress_events_false_suppresses_frames_but_keeps_content():
     body = _stream_body({"enabled": True, "token": "k", "tool_progress_events": False})
-    assert "hermes.tool.progress" not in body
+    assert "rabbit.tool.progress" not in body
     assert '"content": "done"' in body

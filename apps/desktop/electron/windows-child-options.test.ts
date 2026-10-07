@@ -11,20 +11,20 @@ import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-
 // be quoted before it reaches the shell. Direct execution (shell:false) and
 // non-Windows platforms are unchanged.
 test('windowsShellCommand quotes a spaced Windows shell command', () => {
-  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+  const command = String.raw`C:\Users\First Last\AppData\Local\rabbit\rabbit.cmd`
 
   assert.equal(windowsShellCommand(command, true, true), `"${command}"`)
 })
 
 test('windowsShellCommand leaves direct execution and non-Windows commands unchanged', () => {
-  const command = String.raw`C:\Users\First Last\AppData\Local\hermes\hermes.cmd`
+  const command = String.raw`C:\Users\First Last\AppData\Local\rabbit\rabbit.cmd`
 
   assert.equal(windowsShellCommand(command, false, true), command)
   assert.equal(windowsShellCommand(command, true, false), command)
 })
 
 test('windowsShellCommand never double-quotes an already-quoted command', () => {
-  const command = String.raw`"C:\Users\First Last\hermes.cmd"`
+  const command = String.raw`"C:\Users\First Last\rabbit.cmd"`
 
   assert.equal(windowsShellCommand(command, true, true), command)
 })

@@ -125,7 +125,7 @@ def _make_runner(*, compression_in_flight: bool):
         "max_iterations": 60,
     }
     runner._running_agents[sk] = agent_mock
-    # Past the Telegram follow-up grace window (HERMES_TELEGRAM_FOLLOWUP_
+    # Past the Telegram follow-up grace window (RABBIT_TELEGRAM_FOLLOWUP_
     # GRACE_SECONDS, default 3.0s) so the message reaches the PRIORITY
     # interrupt/steer/subagent-demotion block instead of the earlier
     # "just started, queue without interrupt" grace-period branch.

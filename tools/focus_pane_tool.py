@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reveal/focus a pane in the Hermes desktop GUI (``pane.reveal`` via ``desktop_ui``).
+"""Reveal/focus a pane in the Rabbit desktop GUI (``pane.reveal`` via ``desktop_ui``).
 
 The renderer runs each pane's own reveal path and only acts on the active window, so
 a background turn never moves the user's focus. URLs/files go through `desktop_preview`.
@@ -18,7 +18,7 @@ def focus_pane_tool(pane: str) -> str:
         return tool_error(f"pane must be one of: {', '.join(PANES)}.")
     return desktop_ui.emit_or_error(
         "pane.reveal", {"pane": name}, f"Failed to focus the {name} pane: ",
-        "Pane focus is only available in the Hermes desktop app.", {"success": True, "pane": name})
+        "Pane focus is only available in the Rabbit desktop app.", {"success": True, "pane": name})
 
 
 registry.register(
@@ -27,7 +27,7 @@ registry.register(
     schema={
         "name": "focus_pane",
         "description": (
-            "Reveal and focus a Hermes desktop pane when the user asks to see it: "
+            "Reveal and focus a Rabbit desktop pane when the user asks to see it: "
             "chat, files, terminal, review (git diff), or sessions. For URLs/"
             "files use the desktop_preview tool instead."
         ),

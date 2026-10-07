@@ -16,7 +16,7 @@ import { readKey, writeKey } from './storage'
 // CONNECTION scope: a `connectionScopedAtom` behaves like `persistentAtom`,
 // but its storage key follows the active connection. The local connection
 // keeps the BARE key — byte-identical behavior for single-backend users, the
-// same contract as `backendScopeKey` in @hermes/shared — while a remote
+// same contract as `backendScopeKey` in @rabbit/shared — while a remote
 // connection gets `<key>.remote.<encoded baseUrl>.<encoded profile>` by
 // default (the shape `workspaceCwdKey` already established). Gateway-wide
 // mirrors (pins) pass `{ includeProfile: false }` so a profile switch cannot
@@ -29,7 +29,7 @@ import { readKey, writeKey } from './storage'
 // profile keys). Backend-mirrored lists (pins) self-heal from the gateway's
 // own rows instead.
 
-/** Minimal slice of HermesConnection this module keys on. */
+/** Minimal slice of RabbitConnection this module keys on. */
 export interface ConnectionScopeDescriptor {
   baseUrl?: string
   mode?: 'local' | 'remote'

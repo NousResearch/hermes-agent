@@ -39,13 +39,13 @@ def _make_codex_agent(
     provider="openai-codex",
     base_url="https://chatgpt.com/backend-api/codex",
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
     # Every test here reasons about the built-in TTFB defaults; a developer shell override
     # must not leak in (tests that need an override setenv it after this).
-    for name in ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS",
-                 "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "HERMES_CODEX_TTFB_STRICT"):
+    for name in ("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "RABBIT_CODEX_TTFB_MAX_SECONDS",
+                 "RABBIT_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "RABBIT_CODEX_TTFB_STRICT"):
         monkeypatch.delenv(name, raising=False)
     from run_agent import AIAgent
 
@@ -75,7 +75,7 @@ def _shorten_implicit_idle_watchdog(monkeypatch, helpers, timeout=2.0, **overrid
     """Keep the resolver on its implicit branch while scaling time for tests.
 
     ``timeout`` shortens ``idle_timeout``; ``overrides`` set any other resolved field."""
-    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
     original = helpers._resolve_nonstream_watchdogs
 
     def resolve(agent, api_kwargs):
@@ -113,7 +113,7 @@ def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypa
     prefill grace); hosted endpoints keep the 120s default."""
     from agent import chat_completion_helpers as h
 
-    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    monkeypatch.setenv("RABBIT_LOCAL_STREAM_STALE_TIMEOUT", "600")
     local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
     hosted = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="https://api.example.com/v1")
     kwargs = {"model": "qwen3-27b", "input": "hi"}
@@ -123,12 +123,12 @@ def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypa
 
 
 def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
-    """An operator-set HERMES_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
+    """An operator-set RABBIT_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
     from agent import chat_completion_helpers as h
 
-    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    monkeypatch.setenv("RABBIT_LOCAL_STREAM_STALE_TIMEOUT", "600")
     local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "45")
 
     assert h._resolve_nonstream_watchdogs(local, {"model": "qwen3-27b", "input": "hi"}).ttfb_timeout == 45.0
 
@@ -139,7 +139,7 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
 
     closes: list = []
     statuses: list[str] = []
@@ -195,7 +195,7 @@ def test_ttfb_installs_and_retires_the_codex_request_token(tmp_path, monkeypatch
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "1")
 
     closes: list = []
     seen = {"token_while_running": None}
@@ -248,7 +248,7 @@ def test_ttfb_does_not_kill_when_events_flow(tmp_path, monkeypatch):
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "0.4")
 
     closes: list = []
     dummy_client = SimpleNamespace()
@@ -314,9 +314,9 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
         tmp_path, monkeypatch, provider=provider, base_url=base_url
     )
     if idle_env is None:
-        monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.delenv("RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
     else:
-        monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_env)
+        monkeypatch.setenv("RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_env)
 
     watchdogs = h._resolve_nonstream_watchdogs(
         agent, {"model": "gpt-5.6-sol", "input": "x" * input_chars}
@@ -377,9 +377,9 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     _shorten_implicit_idle_watchdog(monkeypatch, h)
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "2")
-    monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
-    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "2")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_STRICT", "1")
+    monkeypatch.setenv("RABBIT_CODEX_HARD_TIMEOUT_SECONDS", "5")
 
     closes: list = []
     attempts = {"count": 0}
@@ -607,9 +607,9 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
+    # Real default TTFB threshold (no RABBIT_CODEX_TTFB_* override) → for a
     # >10k-token request the no-event TTFB watchdog is auto-disabled.
-    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("RABBIT_CODEX_HARD_TIMEOUT_SECONDS", "3")
 
     closes: list = []
     dummy_client = SimpleNamespace()
@@ -667,13 +667,13 @@ def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypa
 
 
 def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
-    """An explicit HERMES_CODEX_TTFB_MAX_SECONDS override still bounds the
+    """An explicit RABBIT_CODEX_TTFB_MAX_SECONDS override still bounds the
     scaled cutoff."""
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
     agent.reasoning_config = {"enabled": False}
-    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_MAX_SECONDS", "90")
 
     huge_input = "x" * 440_000
     wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})

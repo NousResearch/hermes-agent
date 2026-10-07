@@ -1,7 +1,7 @@
 """Harness for the messaging-adapter contract suite.
 
-``GatewayUnderTest`` runs the REAL ``hermes gateway run`` (``python -m hermes_cli.main gateway run``)
-in a child process on a throwaway HOME/HERMES_HOME, with the real platform adapter plugin loaded and
+``GatewayUnderTest`` runs the REAL ``rabbit gateway run`` (``python -m rabbit_cli.main gateway run``)
+in a child process on a throwaway HOME/RABBIT_HOME, with the real platform adapter plugin loaded and
 its SDK pointed at a local stand-in platform server (``tests/fakes/platforms``). The model is
 ``tests/fakes/fake_llm_provider.FakeLLMServer`` driven by a ``Director`` that answers per inbound
 token. Nothing on our side of the platform boundary is mocked.
@@ -20,15 +20,15 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from tests.fakes.fake_llm_provider import Text, write_hermes_home
+from tests.fakes.fake_llm_provider import Text, write_rabbit_home
 from tests.fakes.platforms._standin import wait_until
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _STRIP_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
-_STRIP_PREFIXES = ("HERMES_", "TELEGRAM_", "DISCORD_", "SLACK_", "OPENAI_", "ANTHROPIC_", "OPENROUTER_",
+_STRIP_PREFIXES = ("RABBIT_", "TELEGRAM_", "DISCORD_", "SLACK_", "OPENAI_", "ANTHROPIC_", "OPENROUTER_",
                    "GATEWAY_", "NOUS_")
 _TOKEN_RE = re.compile(r"\[in:([A-Za-z0-9_.-]+)\]")
 
@@ -52,11 +52,11 @@ def hermetic_env(home: Path, extra: Optional[Dict[str, str]] = None) -> Dict[str
     extra = dict(extra or {})
     shim = extra.pop("PYTHONPATH_PREPEND", "")
     env.update(
-        HOME=str(home), HERMES_HOME=str(home / ".hermes"), XDG_STATE_HOME=str(home / ".local" / "state"),
+        HOME=str(home), RABBIT_HOME=str(home / ".rabbit"), XDG_STATE_HOME=str(home / ".local" / "state"),
         # a stand-in's sitecustomize shim (if any) first, then the checkout under test
         PYTHONPATH=os.pathsep.join(p for p in (shim, str(REPO_ROOT)) if p),
         NO_COLOR="1", TERM="dumb", NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost",
-        HERMES_STATE_DB_GUARD_BYPASS="1", HERMES_DISABLE_LAZY_INSTALLS="1", TZ="UTC", PYTHONUNBUFFERED="1",
+        RABBIT_STATE_DB_GUARD_BYPASS="1", RABBIT_DISABLE_LAZY_INSTALLS="1", TZ="UTC", PYTHONUNBUFFERED="1",
         TIRITH_ENABLED="false", AWS_EC2_METADATA_DISABLED="true",
     )
     env.update(extra or {})
@@ -101,13 +101,13 @@ class Director:
 
 
 class GatewayUnderTest:
-    """A real ``hermes gateway run`` child on its own fake HOME; SIGTERM stop + restart on the same state."""
+    """A real ``rabbit gateway run`` child on its own fake HOME; SIGTERM stop + restart on the same state."""
 
     def __init__(self, root: Path, *, llm_base_url: str, config: Dict[str, Any], env: Dict[str, str],
                  ready: Callable[[], bool]) -> None:
         self.root = root
         self.home = root / "home"
-        self.hermes_home = self.home / ".hermes"
+        self.rabbit_home = self.home / ".rabbit"
         self.log_path = root / "gateway.log"
         self._env = dict(env)
         self._ready = ready
@@ -115,7 +115,7 @@ class GatewayUnderTest:
         # fake model to judge it).
         base = {"updates": {"check": False},
                 "approvals": {"mode": "manual", "destructive_slash_confirm": False}}
-        cfg_path = write_hermes_home(self.hermes_home, llm_base_url) / "config.yaml"
+        cfg_path = write_rabbit_home(self.rabbit_home, llm_base_url) / "config.yaml"
         merged = _deep_merge(_deep_merge(yaml.safe_load(cfg_path.read_text()), base), config)
         cfg_path.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
         self.proc: Optional[subprocess.Popen] = None
@@ -123,13 +123,13 @@ class GatewayUnderTest:
 
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "state.db"
+        return self.rabbit_home / "state.db"
 
     def start(self, timeout: float = 60.0) -> "GatewayUnderTest":
         assert self.proc is None or self.proc.poll() is not None
         log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - handed to the child
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "hermes_cli.main", "gateway", "run"], cwd=str(self.home),
+            [sys.executable, "-m", "rabbit_cli.main", "gateway", "run"], cwd=str(self.home),
             env=hermetic_env(self.home, dict(self._env)), stdin=subprocess.DEVNULL, stdout=log,
             stderr=subprocess.STDOUT, start_new_session=True)
         log.close()
@@ -159,7 +159,7 @@ class GatewayUnderTest:
         return proc.returncode
 
     def run_cli(self, *argv: str, timeout: float = 120.0) -> subprocess.CompletedProcess:
-        return subprocess.run([sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(self.home),
+        return subprocess.run([sys.executable, "-m", "rabbit_cli.main", *argv], cwd=str(self.home),
                               env=hermetic_env(self.home, dict(self._env)), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=timeout)
 
@@ -170,7 +170,7 @@ class GatewayUnderTest:
         out = []
         # the child's stdout/stderr, then its INFO-level log (where turn/delivery progress lands)
         for label, path in (("gateway stdout", self.log_path),
-                            ("gateway.log (INFO)", self.hermes_home / "logs" / "gateway.log")):
+                            ("gateway.log (INFO)", self.rabbit_home / "logs" / "gateway.log")):
             try:
                 out.append(f"--- {label} tail\n" + path.read_text(errors="replace")[-n:])
             except OSError:
@@ -180,7 +180,7 @@ class GatewayUnderTest:
     def active_agents(self) -> Optional[int]:
         """In-flight turns as the gateway persists them to ``gateway_state.json`` at every turn boundary."""
         try:
-            return int(json.loads((self.hermes_home / "gateway_state.json").read_text()).get("active_agents"))
+            return int(json.loads((self.rabbit_home / "gateway_state.json").read_text()).get("active_agents"))
         except (OSError, ValueError, TypeError):
             return None
 

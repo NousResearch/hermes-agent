@@ -44,9 +44,9 @@ export async function ensureWindowsBundleTools({
   config = require('../electron-builder.config.cjs'),
   resourcesDir = defaultResourcesDir(config),
   load = loadBuilderTools,
-  prepared = process.env.HERMES_PREPARED_PACKAGING,
+  prepared = process.env.RABBIT_PREPARED_PACKAGING,
   source = path.resolve(import.meta.dirname, '../../..'),
-  target = process.env.HERMES_PREPARED_TARGET,
+  target = process.env.RABBIT_PREPARED_TARGET,
 } = {}) {
   if (prepared) return consumeWindowsBundleTools(prepared, source, signing, target)
   const builder = await load()

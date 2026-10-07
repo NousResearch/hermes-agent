@@ -59,7 +59,7 @@ async def test_timed_out_codex_hygiene_worker_remains_visible_to_shutdown():
         runner,
         "tg:123",
         "sess-1",
-        auto_mode="hermes",
+        auto_mode="rabbit",
         history=[{"role": "user", "content": "hello"}],
         approx_tokens=100,
         timeout_seconds=0.01,

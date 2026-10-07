@@ -55,7 +55,7 @@ def test_index_credentials_match_the_exact_origin(monkeypatch, url, token):
 
     headers = {key.lower(): value for key, value in transport.sent[-1][1].items()}
     assert headers.get("authorization") == (f"Bearer {token}" if token else None)
-    assert headers["user-agent"] == "hermes-pm"
+    assert headers["user-agent"] == "rabbit-pm"
 
 
 @pytest.mark.parametrize("reader", ["json", "text", "release-digest"])

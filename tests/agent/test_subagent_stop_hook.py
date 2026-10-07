@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.delegate_tool import _summarize_tool_arguments, delegate_task
-from hermes_cli import plugins
+from rabbit_cli import plugins
 
 
 def _make_parent(depth: int = 0, session_id: str = "parent-1"):
@@ -121,7 +121,7 @@ class TestSingleTask:
             return real_invoke(hook_name, **kwargs)
 
         with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+             patch("rabbit_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
@@ -195,7 +195,7 @@ class TestBatchMode:
             return real_invoke(hook_name, **kwargs)
 
         with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+             patch("rabbit_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
                  "summary": "A", "api_calls": 1, "duration_seconds": 1.0,

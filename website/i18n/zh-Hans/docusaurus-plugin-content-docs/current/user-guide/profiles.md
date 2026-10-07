@@ -4,44 +4,44 @@ sidebar_position: 2
 
 # Profiles：运行多个 Agent
 
-在同一台机器上运行多个独立的 Hermes agent——每个 agent 拥有各自的配置、API 密钥、记忆、会话、技能和 gateway 状态。
+在同一台机器上运行多个独立的 Rabbit agent——每个 agent 拥有各自的配置、API 密钥、记忆、会话、技能和 gateway 状态。
 
 ## 什么是 profile？
 
-profile 是一个独立的 Hermes 主目录。每个 profile 拥有自己的目录，其中包含各自的 `config.yaml`、`.env`、`SOUL.md`、记忆、会话、技能、cron 任务和状态数据库。profile 让你可以为不同用途运行独立的 agent——编程助手、个人机器人、研究 agent——而不会混淆 Hermes 状态。
+profile 是一个独立的 Rabbit 主目录。每个 profile 拥有自己的目录，其中包含各自的 `config.yaml`、`.env`、`SOUL.md`、记忆、会话、技能、cron 任务和状态数据库。profile 让你可以为不同用途运行独立的 agent——编程助手、个人机器人、研究 agent——而不会混淆 Rabbit 状态。
 
 创建 profile 后，它会自动成为独立的命令。创建名为 `coder` 的 profile，你立即就拥有了 `coder chat`、`coder setup`、`coder gateway start` 等命令。
 
 ### Profile、agent 与 bot
 
-这几个术语描述的是 Hermes 的不同部分：
+这几个术语描述的是 Rabbit 的不同部分：
 
 - **Profile** 是一个助手的配置和数据的持久化主目录。它在多次对话和重启之间保持同一份状态。
 
-- **Agent** 是使用该配置和状态运行中的 Hermes 助手。"Hermes Agent" 同时也是产品的名称。
+- **Agent** 是使用该配置和状态运行中的 Rabbit 助手。"Rabbit Agent" 同时也是产品的名称。
 
 - **Bot 模式中的 Bot** 是以具名条目出现在桌面应用 [Bot 模式](./bot-mode)花名册中的 profile，带有头像和一个持久的 Bot Chat。同一个 profile 仍然可以从 CLI 访问。每个 Bot 都是一个 profile，但并非每个 profile 都是 Bot：当 Bot 模式把它的花名册展示信息（标题、头像、分区、隐藏状态）写入该 profile 的元数据并固定其规范 Bot Chat 时，这个 profile 才成为 Bot。一个只在 CLI、Docker 或 gateway 中使用、从未加入花名册的 profile 仍然只是普通 profile。
 
-- **消息平台 bot** 是 Telegram、Discord、Slack 等平台上的一个账号，通过 gateway 连接到 Hermes。它的 [bot token](#不同的-bot-token) 标识的是那个平台账号。
+- **消息平台 bot** 是 Telegram、Discord、Slack 等平台上的一个账号，通过 gateway 连接到 Rabbit。它的 [bot token](#不同的-bot-token) 标识的是那个平台账号。
 
 - **子 agent（subagent）** 是由 [`delegate_task`](./features/delegation.md) 为某个任务派生出的子助手，拥有全新的对话。独立的对话不等于独立的 profile。
 
 ## 快速开始
 
 ```bash
-hermes profile create coder       # 创建 profile + "coder" 命令别名
+rabbit profile create coder       # 创建 profile + "coder" 命令别名
 coder setup                       # 配置 API 密钥和模型
 coder chat                        # 开始对话
 ```
 
-就这些。`coder` 现在是拥有独立配置、记忆和状态的 Hermes profile。
+就这些。`coder` 现在是拥有独立配置、记忆和状态的 Rabbit profile。
 
 ## 创建 profile
 
 ### 空白 profile
 
 ```bash
-hermes profile create mybot
+rabbit profile create mybot
 ```
 
 创建一个预置了内置技能的全新 profile。运行 `mybot setup` 配置 API 密钥、模型和 gateway token。
@@ -49,37 +49,37 @@ hermes profile create mybot
 如果你计划将此 profile 用作 kanban（看板）工作节点（或希望 kanban 编排器将任务路由到它），在创建时传入 `--description "<角色>"` 以便编排器了解其能力：
 
 ```bash
-hermes profile create researcher --description "Reads source code and external docs, writes findings."
+rabbit profile create researcher --description "Reads source code and external docs, writes findings."
 ```
 
-你也可以稍后通过 `hermes profile describe` 设置或自动生成描述——完整路由模型请参阅 [Kanban 指南](./features/kanban#auto-vs-manual-orchestration)。
+你也可以稍后通过 `rabbit profile describe` 设置或自动生成描述——完整路由模型请参阅 [Kanban 指南](./features/kanban#auto-vs-manual-orchestration)。
 
 ### 仅克隆配置（`--clone`）
 
 ```bash
-hermes profile create work --clone
+rabbit profile create work --clone
 ```
 
-将当前 profile 的 `config.yaml`、`.env`、`SOUL.md`、skills 以及精选记忆文件 `memories/MEMORY.md` 和 `memories/USER.md` 复制到新 profile——记忆与 `SOUL.md` 一样被视为 agent 身份的一部分。会话、`state.db`、cron 任务及其他内容均从空白开始。若也想要空白记忆，请不加 `--clone` 创建 profile，或在创建后删除这两个文件；文件不存在时 agent 不会回退读取其他 profile 的记忆。编辑 `~/.hermes/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.hermes/profiles/work/SOUL.md` 可设置不同的人格。
+将当前 profile 的 `config.yaml`、`.env`、`SOUL.md`、skills 以及精选记忆文件 `memories/MEMORY.md` 和 `memories/USER.md` 复制到新 profile——记忆与 `SOUL.md` 一样被视为 agent 身份的一部分。会话、`state.db`、cron 任务及其他内容均从空白开始。若也想要空白记忆，请不加 `--clone` 创建 profile，或在创建后删除这两个文件；文件不存在时 agent 不会回退读取其他 profile 的记忆。编辑 `~/.rabbit/profiles/work/.env` 可使用不同的 API 密钥，编辑 `~/.rabbit/profiles/work/SOUL.md` 可设置不同的人格。
 
 ### 克隆全部内容（`--clone-all`）
 
 ```bash
-hermes profile create backup --clone-all
+rabbit profile create backup --clone-all
 ```
 
-复制**所有内容**——配置、API 密钥、人格、记忆、技能、cron 任务、插件。会排除每个 profile 自己的历史数据（会话历史、`state.db`、`backups/`、`state-snapshots/`、`checkpoints/`），这些数据属于源 profile 且可能达到数十 GB。若要包含历史的完整备份，请使用 `hermes profile export` 或 `hermes backup`。
+复制**所有内容**——配置、API 密钥、人格、记忆、技能、cron 任务、插件。会排除每个 profile 自己的历史数据（会话历史、`state.db`、`backups/`、`state-snapshots/`、`checkpoints/`），这些数据属于源 profile 且可能达到数十 GB。若要包含历史的完整备份，请使用 `rabbit profile export` 或 `rabbit backup`。
 
 ### 从指定 profile 克隆
 
 ```bash
-hermes profile create work --clone-from coder
+rabbit profile create work --clone-from coder
 ```
 
 `--clone-from <source>` 会直接选择源 profile，并隐含执行 config/skills/SOUL 克隆。若要完整复制该源 profile，请与 `--clone-all` 组合使用：
 
 ```bash
-hermes profile create work-backup --clone-from coder --clone-all
+rabbit profile create work-backup --clone-from coder --clone-all
 ```
 
 :::tip Honcho 记忆 + profiles
@@ -101,28 +101,28 @@ coder skills list             # 列出 coder 的技能
 coder config set model.default anthropic/claude-sonnet-4
 ```
 
-别名支持所有 hermes 子命令——底层实际上是 `hermes -p <name>`。
+别名支持所有 rabbit 子命令——底层实际上是 `rabbit -p <name>`。
 
 ### `-p` 标志
 
 你也可以通过任意命令显式指定 profile：
 
 ```bash
-hermes -p coder chat
-hermes --profile=coder doctor
-hermes chat -p coder -q "hello"    # 可在任意位置使用
+rabbit -p coder chat
+rabbit --profile=coder doctor
+rabbit chat -p coder -q "hello"    # 可在任意位置使用
 ```
 
-### 粘性默认值（`hermes profile use`）
+### 粘性默认值（`rabbit profile use`）
 
 ```bash
-hermes profile use coder
-hermes chat                   # 现在指向 coder
-hermes tools                  # 配置 coder 的工具
-hermes profile use default    # 切换回默认
+rabbit profile use coder
+rabbit chat                   # 现在指向 coder
+rabbit tools                  # 配置 coder 的工具
+rabbit profile use default    # 切换回默认
 ```
 
-设置默认值后，普通 `hermes` 命令将指向该 profile。类似于 `kubectl config use-context`。
+设置默认值后，普通 `rabbit` 命令将指向该 profile。类似于 `kubectl config use-context`。
 
 ### 了解当前所在 profile
 
@@ -130,13 +130,13 @@ CLI 始终显示当前活跃的 profile：
 
 - **提示符**：显示 `coder ❯` 而非 `❯`
 - **启动横幅**：启动时显示 `Profile: coder`
-- **`hermes profile`**：显示当前 profile 名称、路径、模型、gateway 状态
+- **`rabbit profile`**：显示当前 profile 名称、路径、模型、gateway 状态
 
 ## Profile vs 工作区 vs 沙箱
 
 profile 常与工作区或沙箱混淆，但它们是不同的概念：
 
-- **profile** 为 Hermes 提供独立的状态目录：`config.yaml`、`.env`、`SOUL.md`、会话、记忆、日志、cron 任务和 gateway 状态。
+- **profile** 为 Rabbit 提供独立的状态目录：`config.yaml`、`.env`、`SOUL.md`、会话、记忆、日志、cron 任务和 gateway 状态。
 - **工作区**或**工作目录**是终端命令的起始位置，由 `terminal.cwd` 单独控制。
 - **沙箱**用于限制文件系统访问。profile **不**对 agent 进行沙箱隔离。
 
@@ -150,7 +150,7 @@ terminal:
   cwd: /absolute/path/to/project
 ```
 
-在 local 后端使用 `cwd: "."` 表示"Hermes 启动时所在的目录"，而非"profile 目录"。
+在 local 后端使用 `cwd: "."` 表示"Rabbit 启动时所在的目录"，而非"profile 目录"。
 
 另请注意：
 
@@ -173,10 +173,10 @@ assistant gateway start       # 启动 assistant 的 gateway（独立进程）
 
 ```bash
 # 编辑 coder 的 token
-nano ~/.hermes/profiles/coder/.env
+nano ~/.rabbit/profiles/coder/.env
 
 # 编辑 assistant 的 token
-nano ~/.hermes/profiles/assistant/.env
+nano ~/.rabbit/profiles/assistant/.env
 ```
 
 ### 安全性：token 锁
@@ -186,14 +186,14 @@ nano ~/.hermes/profiles/assistant/.env
 ### 持久化服务
 
 ```bash
-coder gateway install         # 创建 hermes-gateway-coder systemd/launchd 服务
-assistant gateway install     # 创建 hermes-gateway-assistant 服务
+coder gateway install         # 创建 rabbit-gateway-coder systemd/launchd 服务
+assistant gateway install     # 创建 rabbit-gateway-assistant 服务
 ```
 
 每个 profile 拥有独立的服务名称，各自独立运行。
 
 :::note 在官方 Docker 镜像中
-各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `hermes profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`hermes -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](./docker.md#per-profile-gateway-supervision)。
+各 profile 的 gateway 由 [s6-overlay](https://github.com/just-containers/s6-overlay)（容器中的 PID 1）监管，因此 `rabbit profile create <name>` 会自动在 `/run/service/gateway-<name>/` 注册 s6 服务槽。`rabbit -p <name> gateway start/stop/restart` 会调度到 `s6-svc` 而非直接启动裸进程——崩溃后自动重启，`docker restart` 会保留之前运行的 gateway 集合。详见 [各 profile gateway 监管](./docker.md#per-profile-gateway-supervision)。
 :::
 
 ## 配置 profile
@@ -206,7 +206,7 @@ assistant gateway install     # 创建 hermes-gateway-assistant 服务
 
 ```bash
 coder config set model.default anthropic/claude-sonnet-4
-echo "You are a focused coding assistant." > ~/.hermes/profiles/coder/SOUL.md
+echo "You are a focused coding assistant." > ~/.rabbit/profiles/coder/SOUL.md
 ```
 
 如果你希望此 profile 默认在特定项目中工作，还需设置其 `terminal.cwd`：
@@ -217,10 +217,10 @@ coder config set terminal.cwd /absolute/path/to/project
 
 ## 更新
 
-`hermes update` 拉取一次代码（共享），并自动将新的内置技能同步到**所有** profile：
+`rabbit update` 拉取一次代码（共享），并自动将新的内置技能同步到**所有** profile：
 
 ```bash
-hermes update
+rabbit update
 # → Code updated (12 commits)
 # → Skills synced: default (up to date), coder (+2 new), assistant (+2 new)
 ```
@@ -230,46 +230,46 @@ hermes update
 ## 管理 profile
 
 ```bash
-hermes profile list           # 显示所有 profile 及其状态
-hermes profile show coder     # 显示某个 profile 的详细信息
-hermes profile rename coder dev-bot   # 重命名（更新别名；移除旧名称的网关服务）
-hermes profile export coder   # 导出为 coder.tar.gz
-hermes profile import coder.tar.gz   # 从归档文件导入
+rabbit profile list           # 显示所有 profile 及其状态
+rabbit profile show coder     # 显示某个 profile 的详细信息
+rabbit profile rename coder dev-bot   # 重命名（更新别名；移除旧名称的网关服务）
+rabbit profile export coder   # 导出为 coder.tar.gz
+rabbit profile import coder.tar.gz   # 从归档文件导入
 ```
 
 ## 删除 profile
 
 ```bash
-hermes profile delete coder
+rabbit profile delete coder
 ```
 
 此操作将停止 gateway、移除 systemd/launchd 服务、移除命令别名并删除所有 profile 数据。系统会要求你输入 profile 名称以确认。
 
-使用 `--yes` 跳过确认：`hermes profile delete coder --yes`
+使用 `--yes` 跳过确认：`rabbit profile delete coder --yes`
 
 :::note
-你无法删除默认 profile（`~/.hermes`）。如需删除所有内容，请使用 `hermes uninstall`。
+你无法删除默认 profile（`~/.rabbit`）。如需删除所有内容，请使用 `rabbit uninstall`。
 :::
 
 ## Tab 补全
 
 ```bash
 # Bash
-eval "$(hermes completion bash)"
+eval "$(rabbit completion bash)"
 
 # Zsh
-eval "$(hermes completion zsh)"
+eval "$(rabbit completion zsh)"
 ```
 
 将该行添加到 `~/.bashrc` 或 `~/.zshrc` 以启用持久补全。支持补全 `-p` 后的 profile 名称、profile 子命令及顶级命令。
 
 ## 工作原理
 
-profile 使用 `HERMES_HOME` 环境变量。运行 `coder chat` 时，包装脚本在启动 hermes 前将 `HERMES_HOME` 设置为 `~/.hermes/profiles/coder`。由于代码库中 119+ 个文件通过 `get_hermes_home()` 解析路径，Hermes 状态会自动限定在 profile 目录范围内——包括配置、会话、记忆、技能、状态数据库、gateway PID、日志和 cron 任务。
+profile 使用 `RABBIT_HOME` 环境变量。运行 `coder chat` 时，包装脚本在启动 rabbit 前将 `RABBIT_HOME` 设置为 `~/.rabbit/profiles/coder`。由于代码库中 119+ 个文件通过 `get_rabbit_home()` 解析路径，Rabbit 状态会自动限定在 profile 目录范围内——包括配置、会话、记忆、技能、状态数据库、gateway PID、日志和 cron 任务。
 
-这与终端工作目录是分开的。工具执行从 `terminal.cwd` 开始（或在 local 后端使用 `cwd: "."` 时从启动目录开始），而非自动从 `HERMES_HOME` 开始。
+这与终端工作目录是分开的。工具执行从 `terminal.cwd` 开始（或在 local 后端使用 `cwd: "."` 时从启动目录开始），而非自动从 `RABBIT_HOME` 开始。
 
-默认 profile 就是 `~/.hermes` 本身。无需迁移——现有安装的工作方式完全不变。
+默认 profile 就是 `~/.rabbit` 本身。无需迁移——现有安装的工作方式完全不变。
 
 ## 将 profile 作为发行版共享
 
@@ -277,10 +277,10 @@ profile 使用 `HERMES_HOME` 环境变量。运行 `coder chat` 时，包装脚�
 
 ```bash
 # 从 git 仓库安装完整 agent
-hermes profile install github.com/you/research-bot --alias
+rabbit profile install github.com/you/research-bot --alias
 
 # 当作者发布新版本时更新（保留你的记忆和 .env）
-hermes profile update research-bot
+rabbit profile update research-bot
 ```
 
 完整指南请参阅 **[Profile 发行版：共享完整 Agent](./profile-distributions.md)**——包括编写、发布、更新语义、安全模型和使用场景。

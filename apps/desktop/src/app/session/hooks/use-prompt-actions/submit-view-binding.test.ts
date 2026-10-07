@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeSessionId, setActiveSessionId } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import type { ClientSessionState } from '../../../types'
 

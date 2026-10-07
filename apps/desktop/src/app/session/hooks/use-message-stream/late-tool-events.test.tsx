@@ -1,4 +1,4 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventName } from '@rabbit/shared'
 // Tool events route to the bubble that owns the call id, not to whatever is
 // streaming now. A result that lands AFTER its part was sealed (interim
 // commentary, mid-turn user insert, turn settle) must re-attach to that part

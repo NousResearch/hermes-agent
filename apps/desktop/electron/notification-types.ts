@@ -1,4 +1,4 @@
-export interface HermesNotification {
+export interface RabbitNotification {
   title?: string
   body?: string
   silent?: boolean

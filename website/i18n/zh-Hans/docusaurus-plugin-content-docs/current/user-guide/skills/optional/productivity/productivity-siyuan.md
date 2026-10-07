@@ -14,7 +14,7 @@ description: "通过 curl 调用 SiYuan Note API，在自托管知识库中搜�
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/productivity/siyuan` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/productivity/siyuan` 安装 |
 | 路径 | `optional-skills/productivity/siyuan` |
 | 版本 | `1.0.0` |
 | 作者 | FEUAZUR |
@@ -26,7 +26,7 @@ description: "通过 curl 调用 SiYuan Note API，在自托管知识库中搜�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # SiYuan Note API
@@ -37,7 +37,7 @@ description: "通过 curl 调用 SiYuan Note API，在自托管知识库中搜�
 
 1. 安装并运行 SiYuan（桌面版或 Docker）
 2. 获取 API token：**设置 > 关于 > API token**
-3. 将其存储在 `~/.hermes/.env` 中：
+3. 将其存储在 `~/.rabbit/.env` 中：
    ```
    SIYUAN_TOKEN=your_token_here
    SIYUAN_URL=http://127.0.0.1:6806
@@ -294,7 +294,7 @@ SQL 查询中常见的 `type` 值：
 如果您更倾向于使用原生集成而非 curl，可安装 SiYuan MCP server：
 
 ```yaml
-# In ~/.hermes/config.yaml under mcp_servers:
+# In ~/.rabbit/config.yaml under mcp_servers:
 mcp_servers:
   siyuan:
     command: npx

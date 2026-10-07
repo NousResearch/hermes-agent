@@ -35,7 +35,7 @@ function post(frame: HTMLIFrameElement, origin: string, data: unknown, source = 
 }
 
 describe('SocialEmbedRenderer', () => {
-  // The app document holds the preload bridge (window.hermesDesktop), so no
+  // The app document holds the preload bridge (window.rabbitDesktop), so no
   // vendor script may ever be loaded into it.
   it.each([
     ['https://x.com/jack/status/20', 'https://platform.twitter.com/embed/Tweet.html?id=20&theme=light&dnt=true'],

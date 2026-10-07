@@ -36,7 +36,7 @@ export function statusDrawerKey(scope: StatusDrawerScope): string {
 
 /** Only hidden drawers need an entry; new conversations keep the existing open default. */
 export const $collapsedStatusDrawers = persistentAtom<string[]>(
-  'hermes.desktop.collapsedStatusDrawers.v1',
+  'rabbit.desktop.collapsedStatusDrawers.v1',
   [],
   Codecs.json(value =>
     Array.isArray(value)

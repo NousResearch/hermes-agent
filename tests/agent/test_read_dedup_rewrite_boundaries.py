@@ -25,12 +25,12 @@ FILE_KEY = ("/x/big.txt", 1, 2000)
 @pytest.fixture
 def served(tmp_path, monkeypatch):
     """One real skill served to TASK, and one file read already served in the current generation."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     skill_dir = home / "skills" / "demo-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: Demo.\n---\n# demo-skill\n\nDo the demo steps.\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     reset_skill_view_dedup()
     call = {"id": "call_skill", "type": "function",
             "function": {"name": "skill_view", "arguments": json.dumps({"name": "demo-skill"})}}

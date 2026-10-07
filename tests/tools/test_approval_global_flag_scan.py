@@ -21,7 +21,7 @@ def test_long_flag_runs_still_reach_the_target():
 from tools.approval_detection import detect_dangerous_command
 run = "--opt val --flag=x -q - " * 58
 cases = {
-    f"hermes {run}gateway restart": "stop/restart hermes gateway (kills running agents)",
+    f"rabbit {run}gateway restart": "stop/restart rabbit gateway (kills running agents)",
     f"docker {run}-H ssh://prod ps": "docker with remote daemon redirect (-H/--host)",
     f"docker {run}--context=prod ps": "docker with daemon redirect (--context: alternate daemon)",
     f"podman {run}--url tcp://prod ps": "podman with remote daemon redirect (--url/--connection/--identity)",
@@ -37,7 +37,7 @@ for command, description in cases.items():
 def test_nonmatching_flag_runs_finish():
     _run('''
 from tools.approval_detection import detect_dangerous_command
-for prefix in ("rclone lsf $HOME/.hermes --recursive --files-only", "hermes", "docker",
+for prefix in ("rclone lsf $HOME/.rabbit --recursive --files-only", "rabbit", "docker",
                "docker compose", "podman"):
     for run in ("--exclude " * 58, "--opt val " * 58, "--opt=val " * 58, "--opt" + " " * 100 + "val "):
         assert detect_dangerous_command(f"{prefix} {run}ps 2>/dev/null")[0] is False, prefix
@@ -46,7 +46,7 @@ for prefix in ("rclone lsf $HOME/.hermes --recursive --files-only", "hermes", "d
 
 def test_value_whitespace_decisions_are_unchanged():
     # The fix must not move any approval decision: docker/podman values follow exactly one
-    # whitespace character, as before, while hermes values may follow a whitespace run.
+    # whitespace character, as before, while rabbit values may follow a whitespace run.
     _run('''
 from tools.approval_detection import detect_dangerous_command
 cases = {
@@ -59,7 +59,7 @@ cases = {
     "podman --log-level  debug --url tcp://prod ps": False,
     "docker compose --project-name  demo down": False,
     "docker compose --project-name demo  down": True,
-    "hermes --config  x.yaml gateway restart": True,
+    "rabbit --config  x.yaml gateway restart": True,
 }
 for command, dangerous in cases.items():
     assert detect_dangerous_command(command)[0] is dangerous, command

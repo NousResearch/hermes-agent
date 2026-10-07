@@ -9,7 +9,7 @@ import { test } from 'vitest'
 import { gitRootForIpc } from './git-root'
 
 function mkTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-root-'))
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-git-root-'))
 }
 
 test('gitRootForIpc returns null for invalid and device paths', async () => {

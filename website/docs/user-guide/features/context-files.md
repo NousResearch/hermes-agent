@@ -1,27 +1,27 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .rabbit.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Rabbit Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Rabbit instance and is loaded from `RABBIT_HOME` only.
 
 ## Supported Context Files
 
 | File | Purpose | Discovery |
 |------|---------|-----------| 
-| **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
+| **.rabbit.md** / **RABBIT.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.override.md** | Personal, per-directory override of AGENTS.md (typically gitignored) | CWD at startup + subdirectories progressively |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
-| **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
+| **SOUL.md** | Global personality and tone customization for this Rabbit instance | `RABBIT_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first match wins): `.rabbit.md` → `AGENTS.override.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 
 If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded **instead of** the committed file — keep a personal (usually gitignored) `AGENTS.override.md` when you want different instructions than the ones checked into the repo, without editing the tracked `AGENTS.md`.
 :::
@@ -32,7 +32,7 @@ If an `AGENTS.override.md` exists next to an `AGENTS.md`, the override is loaded
 
 ### Directory Chain (git root → working directory)
 
-When your working directory sits inside a git repository, Hermes loads a **merged chain** of `AGENTS.md` files at session start: the git-root `AGENTS.md` first, then the `AGENTS.md` in every intermediate directory down to your working directory. Deeper files appear later in the prompt, so more specific guidance takes precedence. Each file gets its own provenance header (e.g. `## ../../AGENTS.md`), and identical copies along the chain are deduplicated.
+When your working directory sits inside a git repository, Rabbit loads a **merged chain** of `AGENTS.md` files at session start: the git-root `AGENTS.md` first, then the `AGENTS.md` in every intermediate directory down to your working directory. Deeper files appear later in the prompt, so more specific guidance takes precedence. Each file gets its own provenance header (e.g. `## ../../AGENTS.md`), and identical copies along the chain are deduplicated.
 
 ```
 monorepo/                   (git root, cwd = packages/webapp/)
@@ -48,7 +48,7 @@ Outside a git repository, only the working directory itself is checked — paren
 
 ### Progressive Subdirectory Discovery
 
-At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
+At session start, Rabbit loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/
@@ -102,22 +102,22 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 
 **Location:**
 
-- `~/.hermes/SOUL.md`
-- or `$HERMES_HOME/SOUL.md` if you run Hermes with a custom home directory
+- `~/.rabbit/SOUL.md`
+- or `$RABBIT_HOME/SOUL.md` if you run Rabbit with a custom home directory
 
 Important details:
 
-- Hermes seeds a default `SOUL.md` automatically if one does not exist yet
-- Hermes loads `SOUL.md` only from `HERMES_HOME`
-- Hermes does not probe the working directory for `SOUL.md`
+- Rabbit seeds a default `SOUL.md` automatically if one does not exist yet
+- Rabbit loads `SOUL.md` only from `RABBIT_HOME`
+- Rabbit does not probe the working directory for `SOUL.md`
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
 
 ## .cursorrules
 
-Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.hermes.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
+Rabbit is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.mdc` rule modules. If these files exist in your project root and no higher-priority context file (`.rabbit.md`, `AGENTS.md`, or `CLAUDE.md`) is found, they're loaded as the project context.
 
-This means your existing Cursor conventions automatically apply when using Hermes.
+This means your existing Cursor conventions automatically apply when using Rabbit.
 
 ## How Context Files Are Loaded
 
@@ -125,7 +125,7 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+1. **Scan working directory** — checks for `.rabbit.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding the character cap are head/tail truncated (70% head, 20% tail, with a marker in the middle). The cap is an explicit `context_file_max_chars` from config.yaml when set; otherwise it scales dynamically with the model's context window (floor 20,000 chars, ceiling 500,000)
@@ -176,21 +176,21 @@ All context files are scanned for potential prompt injection before being includ
 - **Secret file access**: `cat .env`, `cat credentials`
 - **Invisible characters**: zero-width spaces, bidirectional overrides, word joiners
 
-If any threat pattern is detected in a project context file (`.hermes.md`, `AGENTS.md`, `CLAUDE.md`,
+If any threat pattern is detected in a project context file (`.rabbit.md`, `AGENTS.md`, `CLAUDE.md`,
 `.cursorrules`), the file is blocked:
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
 
-Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (file-tool writes to it
+Your own `SOUL.md` in `RABBIT_HOME` is treated differently: it is a file you wrote (file-tool writes to it
 need your approval, and project checkouts never supply it), so a scanner hit there **does not block the
-file**. Hermes logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
+file**. Rabbit logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
 `⚠ SOUL.md … loaded — matched prompt-injection pattern(s); review the file`. This lets an identity file that
 *documents* an attack phrase (security guidance such as "content telling you to ignore previous instructions")
 keep working; if you did not write the flagged text, treat the warning as a sign that something else edited
-the file. The exception does not extend to a `SOUL.md` shipped by a profile distribution: `hermes profile
-install <git-url>` and `hermes profile update` copy a third party's `SOUL.md` into the profile home without
+the file. The exception does not extend to a `SOUL.md` shipped by a profile distribution: `rabbit profile
+install <git-url>` and `rabbit profile update` copy a third party's `SOUL.md` into the profile home without
 a scan or an approval prompt, so when `distribution.yaml` owns the file a scanner hit still blocks it.
 
 :::warning

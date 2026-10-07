@@ -114,7 +114,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
     needs to fix."""
     import gateway.run as gateway_run
     (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(warning_notifications).lower()}}}")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     history = _make_history()
     # Compressed transcript — normal successful compression, no placeholder.
     compressed = [
@@ -531,15 +531,15 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
     ``fitness`` row is a multiplexed named profile: its child is published in
     ``profiles/fitness/state.db`` before the routing index knows the child id.
     """
-    import hermes_state
+    import rabbit_state
     from gateway.slash_commands_session import GatewaySessionCommandsMixin
     from gateway.session import AsyncSessionStore, SessionStore
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     (root / "profiles" / "fitness").mkdir(parents=True)
     (root / "profiles" / "fitness" / "config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", rabbit_state._IMPORT_DEFAULT_DB_PATH)
     store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
     parent, child = "parent", "child"
     entry = SessionEntry(

@@ -13,9 +13,9 @@ env-configured identities ``decoy`` = OPENAI_BASE_URL/OPENAI_API_KEY, ``cloud`` 
 OPENROUTER_BASE_URL/OPENROUTER_API_KEY and ``vendor`` = ANTHROPIC_API_KEY). Each accepts only its
 own random key. A loopback CONNECT trap (HTTPS_PROXY) records any egress to a real inference API. EVERY scenario
 configures ALL identities (the full config a real user accumulates) and differs only in the
-selection, so a misroute always has somewhere to land and be caught. Hermes runs for real in a
-child process (``hermes chat -q``, ``hermes -z``, the stdio ``tui_gateway`` the TUI/Desktop
-drive) with a tmp HOME/HERMES_HOME and every credential env var stripped.
+selection, so a misroute always has somewhere to land and be caught. Rabbit runs for real in a
+child process (``rabbit chat -q``, ``rabbit -z``, the stdio ``tui_gateway`` the TUI/Desktop
+drive) with a tmp HOME/RABBIT_HOME and every credential env var stripped.
 
 One invariant (``check_routing``) after every leg: requests exist only on the selected hosts,
 each carrying only that host's own key, and the answer the user sees came from that host.
@@ -48,7 +48,7 @@ from ._routing_helpers import (
     inference_hosts,
     pool_auth,
     reject_key,
-    run_hermes,
+    run_rabbit,
     write_home,
 )
 
@@ -104,7 +104,7 @@ class Leg:
     must_hit: dict[str, int] = field(default_factory=dict)
     answer_from: str | None = None             # host whose answer the user must see (rc 0)
     rc: str = "ok"                              # ok | fail | any
-    profile: str | None = None                 # run with HERMES_HOME = profiles/<name>
+    profile: str | None = None                 # run with RABBIT_HOME = profiles/<name>
     fail_text: str | None = None               # rc="fail": the error the user must see
     timeout: float = 240.0
 
@@ -135,7 +135,7 @@ def _main_api_key_literal(c: dict[str, Any], e: dict[str, str], f: Fleet) -> Non
 def _bare_custom(c: dict[str, Any], e: dict[str, str], _f: Fleet) -> None:
     c["model"] = {"provider": "custom", "default": "model-main", "context_length": 128000}
     # Bare custom + an OpenRouter key/mirror is a deliberate contract (it resolves to OpenRouter,
-    # tests/hermes_cli/test_runtime_provider_resolution.py); with neither, nothing may be reached
+    # tests/rabbit_cli/test_runtime_provider_resolution.py); with neither, nothing may be reached
     # -- not the env OPENAI_BASE_URL decoy, not the real OpenRouter API (egress trap).
     e.pop("OPENROUTER_BASE_URL")
     e.pop("OPENROUTER_API_KEY")
@@ -276,14 +276,14 @@ def _run_case(case: Case, root: Path) -> tuple[Fleet, list[LegOutcome]]:
         home = root / case.id / "home"
         config, env = base_config(fleet)
         auth = case.setup(config, env, fleet)
-        write_home(home / ".hermes", config, env, auth)
+        write_home(home / ".rabbit", config, env, auth)
         for name, (pconfig, penv) in case.profiles(fleet).items():
-            write_home(home / ".hermes" / "profiles" / name, pconfig, penv)
+            write_home(home / ".rabbit" / "profiles" / name, pconfig, penv)
         outcomes = []
         for leg in case.legs:
             marks, egress_mark = fleet.marks(), len(trap.attempts)
-            hermes_home = home / ".hermes" / "profiles" / leg.profile if leg.profile else None
-            run = run_hermes(leg.argv, home, hermes_home=hermes_home, proxy=trap.url, timeout=leg.timeout)
+            rabbit_home = home / ".rabbit" / "profiles" / leg.profile if leg.profile else None
+            run = run_rabbit(leg.argv, home, rabbit_home=rabbit_home, proxy=trap.url, timeout=leg.timeout)
             outcomes.append(LegOutcome(leg, run, fleet.since(marks), trap.attempts[egress_mark:]))
         return fleet, outcomes
     finally:
@@ -305,7 +305,7 @@ def test_cli_routing_truth_table(case: Case, cli_outcomes: dict[str, Any]) -> No
     fleet, outcomes = cli_outcomes[case.id].result(timeout=900)
     for i, out in enumerate(outcomes):
         leg, run = out.leg, out.run
-        ctx = (f"[{case.id} leg {i}: hermes {' '.join(leg.argv)}] rc={run.rc} ({run.seconds:.1f}s)\n"
+        ctx = (f"[{case.id} leg {i}: rabbit {' '.join(leg.argv)}] rc={run.rc} ({run.seconds:.1f}s)\n"
                f"requests:\n{describe(out.log)}\nstdout tail:\n{run.stdout[-1500:]}\nstderr tail:\n{run.stderr[-1500:]}")
         assert_routing(check_routing(fleet, out.log, {h: fleet.keys[h] for h in leg.hosts}, leg.must_hit), ctx)
         leaked = [t for _m, t in out.egress if urlparse(t).hostname in inference_hosts()]
@@ -357,7 +357,7 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
         "model": MODEL_ID, "provider": "anthropic", "base_url": fleet.url("alias")}  # id the host lists
     pool_state = {"fail": False}
     fleet.script("pool", lambda _r: Error(429, "scripted pool exhaustion") if pool_state["fail"] else None)
-    write_home(home / ".hermes", config, env, pool_auth("pool-host", fleet.keys["pool"]))
+    write_home(home / ".rabbit", config, env, pool_auth("pool-host", fleet.keys["pool"]))
     gw = TuiGateway(home, proxy=trap.url)
     try:
         gw.wait(gw.event("gateway.ready"), timeout=120)

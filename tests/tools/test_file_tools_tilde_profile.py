@@ -8,10 +8,10 @@ gateway process's ``HOME``.  In profile mode (Docker, systemd, s6) the gateway
 "no such file or directory".
 
 The fix adds ``_expand_tilde()`` which delegates to
-``hermes_constants.get_subprocess_home()`` — the same policy the terminal tool
+``rabbit_constants.get_subprocess_home()`` — the same policy the terminal tool
 uses for subprocess environments.
 
-See: https://github.com/NousResearch/hermes-agent/issues/48552
+See: https://github.com/seven0070/Rabbit-/issues/48552
 """
 
 import os
@@ -34,14 +34,14 @@ class TestExpandTilde:
     @pytest.mark.platforms("linux")
     def test_tilde_expands_to_profile_home(self):
         """When get_subprocess_home returns a value, ~/path uses it."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+        with patch("rabbit_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
             result = ft._expand_tilde("~/scratch/file.txt")
         assert result == "/opt/data/profiles/coder/home/scratch/file.txt"
 
 
     def test_empty_path_unchanged(self):
         """Empty string returns empty."""
-        with patch("hermes_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
+        with patch("rabbit_constants.get_subprocess_home", return_value="/opt/data/profiles/coder/home"):
             assert ft._expand_tilde("") == ""
 
 
@@ -62,7 +62,7 @@ class TestResolvePathUsesProfileHome:
         monkeypatch.setenv("HOME", str(process_home))
         monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
-        with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
+        with patch("rabbit_constants.get_subprocess_home", return_value=str(profile_home)):
             resolved = ft._resolve_path_for_task("~/test_file.txt", task_id="test")
 
         assert str(resolved).startswith(str(profile_home))
@@ -78,7 +78,7 @@ class TestResolvePathUsesProfileHome:
         monkeypatch.setenv("HOME", str(process_home))
         monkeypatch.setattr(terminal_tool, "_session_cwd", {})
 
-        with patch("hermes_constants.get_subprocess_home", return_value=str(profile_home)):
+        with patch("rabbit_constants.get_subprocess_home", return_value=str(profile_home)):
             # _resolve_base_dir uses the workspace root from config; if it contains ~,
             # it should resolve to profile home
             resolved = ft._resolve_path_for_task("~/data/config.json", task_id="test")

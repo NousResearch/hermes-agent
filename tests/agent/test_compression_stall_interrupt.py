@@ -25,7 +25,7 @@ from agent.conversation_compression import (
     compress_context,
     compression_attempt_stalled,
 )
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _build_agent(tmp_path: Path, session_id: str = "STALL_INTERRUPT_96775"):

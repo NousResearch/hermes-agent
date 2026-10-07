@@ -9,10 +9,10 @@ test('serveBackendArgs pins a profile when provided', () => {
 })
 
 test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
-  const serve = ['-m', 'hermes_cli.main', '--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0']
+  const serve = ['-m', 'rabbit_cli.main', '--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0']
   assert.deepEqual(dashboardFallbackArgs(serve), [
     '-m',
-    'hermes_cli.main',
+    'rabbit_cli.main',
     '--profile',
     'worker',
     'dashboard',
@@ -27,10 +27,10 @@ test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
 test('dashboardFallbackArgs skips a profile named "serve" and rewrites the subcommand', () => {
   // The profile VALUE 'serve' is not the subcommand: rewriting at index 1
   // yields `--profile dashboard --no-open serve`, which still runs `serve`.
-  const serve = ['-m', 'hermes_cli.main', '--profile', 'serve', 'serve', '--host', '127.0.0.1', '--port', '0']
+  const serve = ['-m', 'rabbit_cli.main', '--profile', 'serve', 'serve', '--host', '127.0.0.1', '--port', '0']
   assert.deepEqual(dashboardFallbackArgs(serve), [
     '-m',
-    'hermes_cli.main',
+    'rabbit_cli.main',
     '--profile',
     'serve',
     'dashboard',
@@ -75,7 +75,7 @@ test('dashboardFallbackArgs leaves a serve-looking profile value alone when ther
 })
 
 test('dashboardFallbackArgs is a no-op (copy) when there is no serve token', () => {
-  const args = ['-m', 'hermes_cli.main', 'dashboard', '--no-open']
+  const args = ['-m', 'rabbit_cli.main', 'dashboard', '--no-open']
   const out = dashboardFallbackArgs(args)
   assert.deepEqual(out, args)
 })
@@ -89,7 +89,7 @@ test('sourceDeclaresServe detects the serve subparser registration', () => {
 test('sourceDeclaresServe does not false-positive on the substring "server"', () => {
   const oldSource = `
     dashboard_parser = subparsers.add_parser("dashboard", help="Start the web UI dashboard")
-    from hermes_cli.web_server import start_server  # web server
+    from rabbit_cli.web_server import start_server  # web server
   `
 
   assert.equal(sourceDeclaresServe(oldSource), false)

@@ -20,27 +20,27 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     yield home
 
 
 @pytest.fixture()
-def server(hermes_home):
+def server(rabbit_home):
     # Mocks are scoped to the initial import only (see
     # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "rabbit_cli.env_loader": MagicMock(),
+            "rabbit_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
@@ -50,7 +50,7 @@ def server(hermes_home):
     # Restore in place instead of clear+reload: importlib.reload
     # re-registers atexit hooks (duplicate ThreadPoolExecutor shutdowns
     # race the stderr buffer at interpreter exit — same class as PR #34217)
-    # and re-captures module-level paths like _hermes_home against this
+    # and re-captures module-level paths like _rabbit_home against this
     # test's soon-deleted tmpdir, breaking later files in the same process.
     mod._methods.clear()
     mod._methods.update(methods)
@@ -60,8 +60,8 @@ def server(hermes_home):
 
 
 @pytest.fixture()
-def db(hermes_home):
-    return SessionDB(db_path=hermes_home / "state.db")
+def db(rabbit_home):
+    return SessionDB(db_path=rabbit_home / "state.db")
 
 
 @pytest.fixture()

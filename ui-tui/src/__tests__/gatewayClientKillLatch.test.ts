@@ -101,25 +101,25 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
   let originalSidecarUrl: string | undefined
 
   beforeEach(() => {
-    originalGatewayUrl = process.env.HERMES_TUI_GATEWAY_URL
-    originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
-    delete process.env.HERMES_TUI_GATEWAY_URL
-    delete process.env.HERMES_TUI_SIDECAR_URL
+    originalGatewayUrl = process.env.RABBIT_TUI_GATEWAY_URL
+    originalSidecarUrl = process.env.RABBIT_TUI_SIDECAR_URL
+    delete process.env.RABBIT_TUI_GATEWAY_URL
+    delete process.env.RABBIT_TUI_SIDECAR_URL
     fakeSpawn.mockClear()
     FakeChildProcess.instances.length = 0
   })
 
   afterEach(() => {
     if (originalGatewayUrl === undefined) {
-      delete process.env.HERMES_TUI_GATEWAY_URL
+      delete process.env.RABBIT_TUI_GATEWAY_URL
     } else {
-      process.env.HERMES_TUI_GATEWAY_URL = originalGatewayUrl
+      process.env.RABBIT_TUI_GATEWAY_URL = originalGatewayUrl
     }
 
     if (originalSidecarUrl === undefined) {
-      delete process.env.HERMES_TUI_SIDECAR_URL
+      delete process.env.RABBIT_TUI_SIDECAR_URL
     } else {
-      process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
+      process.env.RABBIT_TUI_SIDECAR_URL = originalSidecarUrl
     }
 
     fakeSpawn.mockClear()

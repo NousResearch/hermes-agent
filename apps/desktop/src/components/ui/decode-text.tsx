@@ -40,7 +40,7 @@ export interface DecodeTextProps extends Omit<ComponentProps<'span'>, 'prefix'> 
   /** Replay after the hold (a progress surface such as the boot overlay), or
    *  resolve once and stop. Off by default: a quiet placeholder that replays
    *  forever is a 22 Hz setState ticker for as long as it is on screen — the
-   *  empty-zone "HERMES" mark alone held the idle renderer at ~16 commits/s
+   *  empty-zone "RABBIT" mark alone held the idle renderer at ~16 commits/s
    *  (#98394). */
   loop?: boolean
   /** Blinking dither-cursor square after the text. */

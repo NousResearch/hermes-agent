@@ -7,7 +7,7 @@ import {
   ejectLocalModel,
   quickstartLocalModels,
   setLocalServer
-} from '@/hermes'
+} from '@/rabbit'
 import { useI18n } from '@/i18n'
 import type { Translations } from '@/i18n/types'
 import {
@@ -19,7 +19,7 @@ import {
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
-import type { LocalCatalogModel, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalRuntimeJob } from '@/types/rabbit'
 
 import { useScopedLocalModelsOwner } from './local-models-owner'
 

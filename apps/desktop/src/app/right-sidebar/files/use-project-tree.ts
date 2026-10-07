@@ -169,7 +169,7 @@ async function fallbackRootFor(cwd: string, sourceIsRemote: boolean): Promise<st
     return null
   }
 
-  const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
+  const sanitize = window.rabbitDesktop?.sanitizeWorkspaceCwd
 
   if (!sanitize) {
     return null

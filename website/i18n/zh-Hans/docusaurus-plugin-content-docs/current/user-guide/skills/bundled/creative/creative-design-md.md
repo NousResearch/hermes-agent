@@ -17,7 +17,6 @@ description: "编写/验证/导出 Google 的 DESIGN"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/creative/design-md` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `design`, `design-system`, `tokens`, `ui`, `accessibility`, `wcag`, `tailwind`, `dtcg`, `google` |
@@ -26,7 +25,7 @@ description: "编写/验证/导出 Google 的 DESIGN"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # DESIGN.md Skill

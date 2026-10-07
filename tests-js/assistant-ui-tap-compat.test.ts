@@ -1,7 +1,7 @@
 /**
  * Invariant: the @assistant-ui dependency cluster agrees on one tap version.
  *
- * The Hermes desktop app (``apps/desktop``) is built from source on every
+ * The Rabbit desktop app (``apps/desktop``) is built from source on every
  * install/update via ``scripts/install.ps1`` → ``npm ci``/``npm install`` →
  * ``tsc -b && vite build``. The ``@assistant-ui`` packages share an internal
  * reactivity lib, ``@assistant-ui/tap``, and they only interoperate when they

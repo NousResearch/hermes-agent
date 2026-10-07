@@ -47,8 +47,8 @@ def test_worker_children_get_eof_while_control_pipe_stays_open(tmp_path, isolate
         "arguments": {"cache": str(tmp_path)}, "callbacks": [], "packages": [],
         "context": {"repo": str(root), "lockfile": str(root / "pm/lock.json")},
     }
-    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home"),
-           "HERMES_RUNTIME_DIR": str(tmp_path / "tools")}
+    env = {**os.environ, "RABBIT_HOME": str(tmp_path / "home"),
+           "RABBIT_RUNTIME_DIR": str(tmp_path / "tools")}
     with (tmp_path / "diagnostics.log").open("w+") as diagnostics:
         with subprocess.Popen([str(isolated_python), "-I", "-c", script],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,

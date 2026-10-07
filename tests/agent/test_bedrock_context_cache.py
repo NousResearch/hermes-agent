@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import bedrock_adapter as ba
 from agent import model_metadata as mm
@@ -23,7 +23,7 @@ from agent.context_compressor import ContextCompressor
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
     monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "us-east-1")
     yield tmp_path
@@ -99,7 +99,7 @@ def test_failure_memo_retry_scope_and_expiry(isolated_home, monkeypatch, base_ur
     elif retry == "profile":
         new_home = isolated_home / "other-profile"
         new_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(new_home))
+        monkeypatch.setenv("RABBIT_HOME", str(new_home))
     else:
         base_url = "https://bedrock-runtime.us-east-1.amazonaws.com/other"
     assert mm.get_model_context_length(model, provider="bedrock", base_url=base_url) == 96_000
@@ -224,7 +224,7 @@ def test_malformed_or_mismatched_provenance_requires_revalidation(isolated_home,
 
 
 def test_context_local_profile_memos_do_not_cross_and_expired_rows_are_pruned(isolated_home, monkeypatch):
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
 
     probe = Mock(side_effect=[None, None, 96_000])
     monkeypatch.setattr(ba, "probe_bedrock_context_length", probe)
@@ -235,11 +235,11 @@ def test_context_local_profile_memos_do_not_cross_and_expired_rows_are_pruned(is
     for key in mm._BEDROCK_PROBE_FAILURE_CACHE:
         if "unknown.future" in key:
             mm._BEDROCK_PROBE_FAILURE_CACHE[key] = time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
-    token = set_hermes_home_override(isolated_home / "routed-profile")
+    token = set_rabbit_home_override(isolated_home / "routed-profile")
     try:
         assert mm.get_model_context_length(model, provider="bedrock") == 96_000
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     assert probe.call_count == 3
     assert all("unknown.future" not in key for key in mm._BEDROCK_PROBE_FAILURE_CACHE)
     assert mm.get_model_context_length(model, provider="bedrock") == 500_000

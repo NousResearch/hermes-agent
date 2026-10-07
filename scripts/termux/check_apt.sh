@@ -7,7 +7,7 @@ suite="${1:?APT suite required}"
 expected="${2:?expected package version required}"
 repository="${3:-file:/apt}"
 ctmp=/tmp  # no-tmp: ok — where the caller mounts validate_installed.py inside this container
-work="$(mktemp -d "$PREFIX/tmp/hermes-apt-proof.XXXXXX")"
+work="$(mktemp -d "$PREFIX/tmp/rabbit-apt-proof.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/lists/partial" "$work/archives/partial"
 printf 'deb [signed-by=/apt/key.asc by-hash=force] %s %s main\n' "$repository" "$suite" > "$work/sources.list"
@@ -21,18 +21,18 @@ apt_options=(
 )
 mkdir -p "$work/state"
 printf 'user data survives package replacement\n' > "$work/state/sentinel"
-export HERMES_HOME="$work/state"
+export RABBIT_HOME="$work/state"
 if [ -f /previous.deb ]; then
     dpkg --force-not-root --force-script-chrootless --install /previous.deb
-    previous="$(dpkg-query -W -f='${Version}' hermes-agent)"
+    previous="$(dpkg-query -W -f='${Version}' rabbit-agent)"
     dpkg --compare-versions "$expected" gt "$previous"
 fi
 apt-get "${apt_options[@]}" update
-apt-get "${apt_options[@]}" --yes install hermes-agent
-actual="$(dpkg-query -W -f='${Version}' hermes-agent)"
+apt-get "${apt_options[@]}" --yes install rabbit-agent
+actual="$(dpkg-query -W -f='${Version}' rabbit-agent)"
 [ "$actual" = "$expected" ]
 [ "$(cat "$work/state/sentinel")" = 'user data survives package replacement' ]
-root="$PREFIX/lib/hermes-agent"
+root="$PREFIX/lib/rabbit-agent"
 export LD_LIBRARY_PATH="$root/tools/python$PREFIX/lib:$root/tools/node$PREFIX/lib:$root/tools/ffmpeg$PREFIX/lib:$root/runtime-libs/lib:$PREFIX/lib"
 export PYTHONPATH="$root/app"
 "$root/venv/bin/python" "$ctmp/validate_installed.py"

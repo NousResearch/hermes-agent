@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Ty
 
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-from hermes_cli.route_identity import normalize_route_base_url
+from rabbit_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
 
 # input[].id / function names longer than this are a non-retryable 400 ("string too
-# long"). Codex message ids can run 400+ chars; Hermes ``msg_...`` ids stay under the cap.
+# long"). Codex message ids can run 400+ chars; Rabbit ``msg_...`` ids stay under the cap.
 _MAX_RESPONSES_ITEM_ID_LENGTH = 64
 
 # Provider-executed built-in tools: declared by ``type`` alone, run server-side,
@@ -229,7 +229,7 @@ def _input_image_part(part: Dict[str, Any], role: str = "user", *, keep_empty_ur
     if not _nonempty_str(url) and not keep_empty_url:
         return None
     url = str(url or "")
-    # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
+    # Lazy import: the prep module only depends on rabbit_constants at import time (no cycle).
     from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     mime = unsupported_inline_image_media_type(url)
     if mime == "image/svg+xml":
@@ -412,7 +412,7 @@ def _replay_reasoning_items(
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
     another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
-    matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
+    matching issuer. ``id`` (store=False lookups 404) and the Rabbit provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -569,7 +569,7 @@ def _chat_messages_to_responses_input(
 
     Earlier (PR #26644, May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface rejected
     replayed ``encrypted_content`` reasoning items minted by prior turns, and we stripped them. That
-    decision was wrong — xAI explicitly relies on Hermes threading encrypted reasoning back across turns for
+    decision was wrong — xAI explicitly relies on Rabbit threading encrypted reasoning back across turns for
     cross-turn coherence (the whole point of their partnership integration). We now replay encrypted
     reasoning on every Responses transport (xAI, native Codex, custom relays) and let xAI tell us explicitly
     if a specific surface ever rejects a payload.
@@ -588,7 +588,7 @@ def _chat_messages_to_responses_input(
     pre-checkpoint item from every later request, on a model that cannot decrypt the blob (#85914). Default
     False = pre-feature wire, which is also correct for every caller that never sends ``context_management``
     (auxiliary/compression client, ad-hoc ``convert_messages``). Dropping the checkpoint costs nothing:
-    Hermes' local history is never truncated by native compaction, so the full conversation is still on the
+    Rabbit' local history is never truncated by native compaction, so the full conversation is still on the
     wire.
     """
     items: List[Dict[str, Any]] = []

@@ -14,7 +14,7 @@ description: "使用 Scrapling 进行网页抓取——HTTP 获取、隐身浏�
 
 | | |
 |---|---|
-| 来源 | 可选——使用 `hermes skills install official/research/scrapling` 安装 |
+| 来源 | 可选——使用 `rabbit skills install official/research/scrapling` 安装 |
 | 路径 | `optional-skills/research/scrapling` |
 | 版本 | `1.0.0` |
 | 作者 | FEUAZUR |
@@ -26,7 +26,7 @@ description: "使用 Scrapling 进行网页抓取——HTTP 获取、隐身浏�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Scrapling

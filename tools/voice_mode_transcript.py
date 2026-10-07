@@ -11,7 +11,7 @@ def _voice_config() -> dict:
     """``voice`` section of config.yaml, or ``{}`` when missing, malformed, or the
     config system can't be imported (broken config mid-install)."""
     with suppress(Exception):
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         voice_cfg = load_config().get("voice", {})
         return voice_cfg if isinstance(voice_cfg, dict) else {}
     return {}
@@ -65,7 +65,7 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
 
 
 # Similarity ratio (difflib.SequenceMatcher) above which a playback-phase barge transcript
-# is treated as a self-capture of Hermes' own TTS: the full-duplex listener has no echo
+# is treated as a self-capture of Rabbit' own TTS: the full-duplex listener has no echo
 # cancellation, so speaker bleed can be transcribed near-verbatim (TTS -> STT -> TTS loop).
 DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD = 0.6
 
@@ -83,7 +83,7 @@ def _normalize_for_echo_compare(text: str) -> str:
 def is_tts_echo(transcript: str, spoken_text: str,
                 threshold: float = DEFAULT_TTS_ECHO_SIMILARITY_THRESHOLD) -> bool:
     """True when *transcript* looks like a self-capture of *spoken_text*. Character-level similarity
-    (language-agnostic): a genuine interjection rarely matches Hermes' own words, so a high ratio signals
+    (language-agnostic): a genuine interjection rarely matches Rabbit' own words, so a high ratio signals
     speaker-bleed (fail-closed guard for the playback-phase listener). Playback capture spans only pre-roll
     plus time-to-silence, so for long replies the transcript is a FRAGMENT and the whole-string ratio dilutes
     toward 0; when it misses, a transcript-sized window slides across `spoken_text`. Transcripts shorter than

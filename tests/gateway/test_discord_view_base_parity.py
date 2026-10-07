@@ -1,4 +1,4 @@
-"""Parity tests for the shared ``_HermesView`` base behind the Discord component views.
+"""Parity tests for the shared ``_RabbitView`` base behind the Discord component views.
 
 Every view must keep its own user-visible rejection strings and the shared
 timeout behaviour (buttons disabled, embed greyed with the expiry footer).

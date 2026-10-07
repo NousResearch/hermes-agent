@@ -1,5 +1,5 @@
 {
-  "_comment": "Pinned runtime libraries for Python, Node, uv, and ffmpeg. The ffmpeg set follows the real binaries' recursive DT_NEEDED dependencies; libc and Android system libraries remain platform-provided. Artifacts and hashes were verified from the Termux package pool. The pool deletes a package's previous archive when it rebuilds, so a pin can 404 without warning: `hermes pm update --termux --check` reports the retired rows and `--termux` repins them.",
+  "_comment": "Pinned runtime libraries for Python, Node, uv, and ffmpeg. The ffmpeg set follows the real binaries' recursive DT_NEEDED dependencies; libc and Android system libraries remain platform-provided. Artifacts and hashes were verified from the Termux package pool. The pool deletes a package's previous archive when it rebuilds, so a pin can 404 without warning: `rabbit pm update --termux --check` reports the retired rows and `--termux` repins them.",
   "licenses": {
     "sha256": "a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9",
     "url": "https://packages.termux.dev/apt/termux-main/pool/main/t/termux-licenses/termux-licenses_2.2_all.deb",

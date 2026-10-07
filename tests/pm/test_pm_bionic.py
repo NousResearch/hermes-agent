@@ -93,7 +93,7 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
     from tests.termux_fixtures import build_deb
 
     target = "linux-arm64-bionic"
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     facts = paths.facts_path()
     facts.parent.mkdir(parents=True, exist_ok=True)

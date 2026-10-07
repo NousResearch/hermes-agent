@@ -17,18 +17,18 @@ beforeEach(() => {
 
   document.body.replaceChildren()
   // The host hangs off documentElement, so clearing body does not reach it.
-  document.querySelector('hermes-watch')?.remove()
-  delete (window as unknown as Record<string, unknown>).__hermesWatch
+  document.querySelector('rabbit-watch')?.remove()
+  delete (window as unknown as Record<string, unknown>).__rabbitWatch
 })
 
 /** The overlay lives in a closed shadow root, so a test can only see the host. */
-const host = () => document.querySelector('hermes-watch')
+const host = () => document.querySelector('rabbit-watch')
 
 /** …except through the parts the engine parks on the window for its own reuse,
  *  which is the only way to inspect what the overlay actually drew. */
 const drawn = () =>
-  (window as unknown as { __hermesWatch: { parts: Record<string, HTMLElement> & { shadow: ShadowRoot } } })
-    .__hermesWatch.parts
+  (window as unknown as { __rabbitWatch: { parts: Record<string, HTMLElement> & { shadow: ShadowRoot } } })
+    .__rabbitWatch.parts
 
 /** Everything the overlay drew for this action. The cursor is the only fixed
  *  layer — every box and pin is a mark that comes and goes. */
@@ -44,7 +44,7 @@ describe('watchInPage', () => {
     watchInPage(document, holder, 'aim')
     watchInPage(document, holder, 'strike')
 
-    expect(document.querySelectorAll('hermes-watch')).toHaveLength(1)
+    expect(document.querySelectorAll('rabbit-watch')).toHaveLength(1)
     expect(host()?.parentElement).toBe(document.documentElement)
   })
 
@@ -182,7 +182,7 @@ describe('watchInPage', () => {
     document.body.append(target)
 
     const stamp = (value: number) => {
-      ;(window as unknown as Record<string, unknown>).__hermesWatchTag = value
+      ;(window as unknown as Record<string, unknown>).__rabbitWatchTag = value
     }
 
     stamp(1)
@@ -200,7 +200,7 @@ describe('watchInPage', () => {
 
     expect(drawn().host).not.toBe(first)
     // …and the old one goes with it, rather than stacking a second overlay.
-    expect(document.querySelectorAll('hermes-watch')).toHaveLength(1)
+    expect(document.querySelectorAll('rabbit-watch')).toHaveLength(1)
   })
 
   it('clear releases the target so the tracking loop can stop', () => {

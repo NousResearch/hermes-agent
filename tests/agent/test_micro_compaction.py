@@ -825,8 +825,8 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
     history as compacted rows, so no display projection (resume, REST page, legacy page, prompt
     timeline) may also paint the merged row. The model view still holds each input exactly once."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from hermes_state import SessionDB
-    from hermes_state_timeline import get_session_timeline
+    from rabbit_state import SessionDB
+    from rabbit_state_timeline import get_session_timeline
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s", source="cli")
@@ -866,7 +866,7 @@ def test_superseding_marker_never_shows_a_user_input_twice_in_display_history(tm
 def _held_session(tmp_path, mode: str):
     """A real SessionDB session plus the compressor and the history it holds (as a resume restores it:
     row ids and persisted markers included) for a prune or a micro-compaction pass."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("s", source="cli")

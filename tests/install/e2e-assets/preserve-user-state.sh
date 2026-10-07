@@ -24,17 +24,17 @@
 #   user_state_before_upgrade   snapshot   ->  $USER_STATE_SNAPSHOT
 #   user_state_after_upgrade    verify      (exit 1 on violation)
 #
-# Requires: HERMES_HOME set (the leg's isolated home), WORK_ROOT, LOG_DIR,
+# Requires: RABBIT_HOME set (the leg's isolated home), WORK_ROOT, LOG_DIR,
 # REPO_ROOT. Verifier: tests/install/e2e-assets/verify-user-state.py
-# (stdlib-only; runs under python3 or $HERMES_E2E_PYTHON).
+# (stdlib-only; runs under python3 or $RABBIT_E2E_PYTHON).
 
 USER_STATE_SNAPSHOT="$WORK_ROOT/user-state-snapshot.json"
 USER_STATE_REPORT="$LOG_DIR/user-state-report.json"
 USER_STATE_VERIFIER="$REPO_ROOT/tests/install/e2e-assets/verify-user-state.py"
 
 _user_state_python() {
-  if [ -n "${HERMES_E2E_PYTHON:-}" ]; then
-    printf '%s' "$HERMES_E2E_PYTHON"
+  if [ -n "${RABBIT_E2E_PYTHON:-}" ]; then
+    printf '%s' "$RABBIT_E2E_PYTHON"
   else
     printf 'python3'
   fi
@@ -46,7 +46,7 @@ user_state_before_upgrade() {
   [ ! -e "$USER_STATE_SNAPSHOT" ] || fail "refusing to overwrite an existing user-state snapshot"
   local py rc=0
   py="$(_user_state_python)"
-  "$py" "$USER_STATE_VERIFIER" snapshot --home "$HERMES_HOME" --out "$USER_STATE_SNAPSHOT" \
+  "$py" "$USER_STATE_VERIFIER" snapshot --home "$RABBIT_HOME" --out "$USER_STATE_SNAPSHOT" \
     2>&1 | ts_prefix > "$LOG_DIR/user-state-snapshot.log" || rc=$?
   log_group "user-state snapshot transcript" "$LOG_DIR/user-state-snapshot.log"
   # 3 = inconclusive (nothing to protect). That is a broken leg, not a pass:
@@ -61,7 +61,7 @@ user_state_after_upgrade() {
     || fail "no pre-upgrade user-state snapshot; cannot claim preservation"
   local py rc=0
   py="$(_user_state_python)"
-  "$py" "$USER_STATE_VERIFIER" verify --home "$HERMES_HOME" \
+  "$py" "$USER_STATE_VERIFIER" verify --home "$RABBIT_HOME" \
     --snapshot "$USER_STATE_SNAPSHOT" --report "$USER_STATE_REPORT" \
     > "$LOG_DIR/user-state-verify.log" 2>&1 || rc=$?
   log_group "user-state verify transcript" "$LOG_DIR/user-state-verify.log"

@@ -17,7 +17,7 @@ Drive the desktop background-first; escalate on signal.
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/computer-use` |
 | Version | `2.1.0` |
-| Author | Francesco Bonacci (f-trycua), Hermes Agent |
+| Author | Francesco Bonacci (f-trycua), Rabbit Agent |
 | License | MIT |
 | Platforms | macos, windows, linux |
 | Tags | `computer-use`, `desktop`, `automation`, `gui`, `cross-platform` |
@@ -25,7 +25,7 @@ Drive the desktop background-first; escalate on signal.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Computer Use (universal, any-model, cross-platform)
@@ -40,11 +40,11 @@ Everything here works with any tool-capable model — Claude, GPT, Gemini,
 or an open model on a local OpenAI-compatible endpoint. There is no
 Anthropic-native schema to learn.
 
-Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
-This skill teaches the Hermes `computer_use` **action vocabulary**, which is
+Rabbit drives [cua-driver](https://github.com/trycua/cua) under the hood.
+This skill teaches the Rabbit `computer_use` **action vocabulary**, which is
 NOT the driver's raw MCP vocabulary. Call the actions documented below and
-never the driver's tools by name: `capture` is a Hermes action that maps to
-the driver's `get_window_state`; `element=N` is a Hermes argument that the
+never the driver's tools by name: `capture` is a Rabbit action that maps to
+the driver's `get_window_state`; `element=N` is a Rabbit argument that the
 wrapper translates into the driver's `element_token` handle. If you see a
 driver-side error mentioning `snapshot_id`, `element_token`, or "no reviewed
 risk classification", you (or a stale description) called the raw driver
@@ -103,12 +103,12 @@ computer_use(action="click", element=7, capture_after=True)
 | `ax` | Element list only, no image | Text-only models, or when you don't need to see pixels |
 
 Current drivers always return the screenshot AND the tree in one call;
-`mode` decides what Hermes hands back to you, not what the driver does.
+`mode` decides what Rabbit hands back to you, not what the driver does.
 There is no numbered overlay burned into the screenshot — the index list is
 the map; ground on both and cross-check (the tree lies on some surfaces).
 
 **No vision model?** If your main model can't read images (or the provider
-rejects image tool results), Hermes routes the screenshot through the
+rejects image tool results), Rabbit routes the screenshot through the
 auxiliary vision model and you get a text description instead of pixels.
 Configure `auxiliary.vision` in `config.yaml` to pick that model, or use
 `mode="ax"` and drive by element index without a screenshot at all.
@@ -315,16 +315,16 @@ in your conversation context.
 
 | Symptom | Likely cause + remedy |
 |---|---|
-| `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
-| Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
+| `cua-driver not installed` | Run `rabbit computer-use install`, or `rabbit tools` and enable Computer Use |
+| Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `rabbit computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
 | `code:"stale"` / "element_token is stale" | Indices belong to one snapshot. Re-`capture`, read the new indices, then act. Never reuse an index across a capture |
-| "bare element_index is not accepted" / `snapshot_id_required` | The driver saw a raw index without its token. This is a wrapper defect, not something you fix by passing `snapshot_id` (Hermes has no such argument). Re-capture once; if it repeats, tell the user to run `hermes update` and fall back to `coordinate=[x, y]` from the capture's bounds meanwhile |
-| "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Hermes side |
+| "bare element_index is not accepted" / `snapshot_id_required` | The driver saw a raw index without its token. This is a wrapper defect, not something you fix by passing `snapshot_id` (Rabbit has no such argument). Re-capture once; if it repeats, tell the user to run `rabbit update` and fall back to `coordinate=[x, y]` from the capture's bounds meanwhile |
+| "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Rabbit side |
 | Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
-| Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
+| Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `rabbit computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
-| `hermes computer-use doctor` says "could not be started … Access is denied" (Windows) | The Hermes venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Hermes spawns (e.g. `bws.exe`) |
-| Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
+| `rabbit computer-use doctor` says "could not be started … Access is denied" (Windows) | The Rabbit venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `RABBIT_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Rabbit spawns (e.g. `bws.exe`) |
+| Anything else weird | **First action: ask the user to run `rabbit computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`
 
@@ -341,7 +341,7 @@ in your conversation context.
 
 ## Going deeper — read the cua-driver skill pack
 
-Hermes intentionally keeps THIS skill focused on the Hermes-side
+Rabbit intentionally keeps THIS skill focused on the Rabbit-side
 `computer_use` action vocabulary. The platform-specific deep dives
 (macOS no-foreground contract, Windows UIA + Session 0, Linux AT-SPI +
 X11/Wayland nuances, recording trajectory + video, browser-page
@@ -352,7 +352,7 @@ cua-driver team ships and maintains for every other agent harness.
 cua-driver skills install
 ```
 
-links the pack into `~/.hermes/skills/cua-driver` (Hermes is a detected
+links the pack into `~/.rabbit/skills/cua-driver` (Rabbit is a detected
 agent; `cua-driver skills status` shows the link state). You'll then have:
 
 - `SKILL.md` — the cross-platform core (snapshot invariant, no-
@@ -369,4 +369,4 @@ agent; `cua-driver skills status` shows the link state). You'll then have:
 
 Those files describe the driver's OWN MCP tools (`get_window_state`,
 `element_token`, `snapshot_id`, …). Read them for platform context; keep
-calling the Hermes actions from this file — the wrapper does the translation.
+calling the Rabbit actions from this file — the wrapper does the translation.

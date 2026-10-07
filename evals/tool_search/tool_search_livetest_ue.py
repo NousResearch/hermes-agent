@@ -3,7 +3,7 @@
 
 Registers the actual tool schemas captured live from Epic's UE 5.8
 ModelContextProtocol + AllToolsets plugins (probe_raw_5.8.0_alltoolsets.json,
-probe date 2026-07-02) into the Hermes tool registry with mock handlers,
+probe date 2026-07-02) into the Rabbit tool registry with mock handlers,
 then runs UE-realistic scenarios in three modes:
 
   eager    — all schemas in the tools array (at 830 tools: ~165K tokens)
@@ -162,10 +162,10 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
     # 830-tool catalogs need headroom: full listing ~ names+descs won't fit 4K,
     # so give the full scale a real budget (names+descs ~ 26K est; names-only ~8K).
     lmax = int(os.environ.get("TS_UE_LISTING_MAX", "30000" if scale == "full" else "4000"))
-    hermes_home = base.setup_isolated_home(
+    rabbit_home = base.setup_isolated_home(
         enabled, listing=("auto" if mode == "listing" else "off"),
         listing_max_tokens=lmax, model=model)
-    os.environ["HERMES_HOME"] = str(hermes_home)
+    os.environ["RABBIT_HOME"] = str(rabbit_home)
     base.reset_module_state()
     n_registered = register_epic_tools(scale)
 
@@ -265,7 +265,7 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
         "final_response": base._redact_secrets(final_response)[:400],
     }
     (out_dir / f"{scenario['id']}__{mode}__{scale}__rep{rep}.json").write_text(json.dumps(rec, indent=1), encoding="utf-8")
-    shutil.rmtree(Path(os.environ["HERMES_HOME"]).parent, ignore_errors=True)
+    shutil.rmtree(Path(os.environ["RABBIT_HOME"]).parent, ignore_errors=True)
     return rec
 
 

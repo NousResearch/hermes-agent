@@ -19,7 +19,7 @@ test('the resolved dmgbuild uses its paired Python and preserves args, results a
   }
   const wrapped = wrapDmgbuildExecFile(original, chunk => output.push(chunk))
   const vendor = path.resolve('tool cache', 'dmgbuild bundle')
-  const args = ['-s', 'settings with spaces.json', 'Install Hermes Agent', 'output.dmg']
+  const args = ['-s', 'settings with spaces.json', 'Install Rabbit Agent', 'output.dmg']
   const options = { maxBuffer: 1024, env: { KEEP: 'value', PYTHONPATH: 'old' } }
   const callback = () => {}
 
@@ -40,7 +40,7 @@ test('prepared supplier overrides retain the paired-Python diagnostic route', ()
   const wrapped = wrapDmgbuildExecFile((...args) => { calls.push(args); return {} })
   const binary = path.resolve('prepared', 'dmgbuild')
   wrapped(binary, ['-s', 'settings.json', 'Volume', 'out.dmg'], { env: {
-    CUSTOM_DMGBUILD_PATH: binary, HERMES_PREPARED_PACKAGING: '/work/prepared.json',
+    CUSTOM_DMGBUILD_PATH: binary, RABBIT_PREPARED_PACKAGING: '/work/prepared.json',
   } }, () => {})
   expect(calls[0][0]).toBe(path.join(path.dirname(binary), 'python/bin/python3'))
   expect(calls[0][2].env.PYTHONPATH).toBe(path.join(path.dirname(binary), 'python/lib'))

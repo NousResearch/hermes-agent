@@ -8,7 +8,7 @@
  * removes the host entirely so nothing can stick over the page.
  */
 
-export const ANNOTATE_HOST_TAG = 'hermes-annotate'
+export const ANNOTATE_HOST_TAG = 'rabbit-annotate'
 
 export interface AnnotatePageRect {
   height: number
@@ -486,13 +486,13 @@ export function annotateInPage(doc: Document): AnnotateInPage {
       return
     }
 
-    const stale = doc.querySelectorAll('hermes-annotate')
+    const stale = doc.querySelectorAll('rabbit-annotate')
 
     for (let i = 0; i < stale.length; i++) {
       stale[i].remove()
     }
 
-    host = doc.createElement('hermes-annotate')
+    host = doc.createElement('rabbit-annotate')
     host.setAttribute('aria-hidden', 'true')
     host.setAttribute('data-annotate-host', 'true')
     style(host, {

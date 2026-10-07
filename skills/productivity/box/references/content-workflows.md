@@ -45,7 +45,7 @@ When the user asks for a Box Note, create a native note from Markdown through `b
 
 ```bash
 box files:update <FILE_ID> --name "Renamed.pdf" --json --fields id,name
-box files:update <FILE_ID> --description "Updated by Hermes" --tags "reviewed,2026" --json
+box files:update <FILE_ID> --description "Updated by Rabbit" --tags "reviewed,2026" --json
 box files:move <FILE_ID> <NEW_PARENT_ID> --json --fields id,name,parent
 box folders:move <FOLDER_ID> <NEW_PARENT_ID> --json --fields id,name,parent
 ```

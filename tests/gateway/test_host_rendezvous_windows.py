@@ -3,7 +3,7 @@
 ``os.open(..., 0o600)`` sets NO ACLs on Windows, so the host token — which holds the backend's
 LIVE session token — would inherit whatever the parent directory grants. The SSH runtime's
 protected owner+SYSTEM DACL writer is the repo's primitive for this credential class
-(``tests/hermes_cli/test_ssh_session_token_parser.py`` documents why); this proves the host
+(``tests/rabbit_cli/test_ssh_session_token_parser.py`` documents why); this proves the host
 rendezvous actually uses it, and that the host lock still works on that path.
 """
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.platforms("windows")
 
 @pytest.fixture
 def host_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     yield tmp_path
     hr.release_host_lock(hr.ROLE_SERVE)
 
@@ -25,7 +25,7 @@ def _assert_private_dacl(path):
     import ntsecuritycon
     import win32security
 
-    from hermes_cli import windows_ssh_runtime as wsr
+    from rabbit_cli import windows_ssh_runtime as wsr
 
     descriptor = win32security.GetFileSecurity(
         str(path), win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION)

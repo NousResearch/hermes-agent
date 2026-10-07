@@ -1,6 +1,6 @@
 # 轨迹格式
 
-Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训练数据、调试产物和强化学习数据集。
+Rabbit Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训练数据、调试产物和强化学习数据集。
 
 源文件：`agent/trajectory.py`、`run_agent.py`（搜索 `_save_trajectory`）、`batch_runner.py`
 
@@ -155,7 +155,7 @@ API 格式的工具调用（含 `tool_call_id`、函数名、JSON 字符串形�
 
 ### 系统消息
 
-系统消息在保存时生成（不取自对话内容），遵循 Hermes 函数调用 prompt 模板，包含：
+系统消息在保存时生成（不取自对话内容），遵循 Rabbit 函数调用 prompt 模板，包含：
 
 - 说明函数调用协议的前言
 - 包含 JSON 工具定义的 `<tools>` XML 块

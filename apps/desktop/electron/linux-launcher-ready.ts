@@ -1,17 +1,17 @@
 /**
- * Tells the `hermes desktop` launcher that the main window is on screen.
+ * Tells the `rabbit desktop` launcher that the main window is on screen.
  *
  * On Linux an app-grid launch defers writing the app's own `.desktop` entry
  * until the window has mapped: unpatched gnome-shell (before GNOME MR !4428)
  * drops a STARTING ShellApp's last reference when its entry changes, and the
  * next idle GC takes down the whole Wayland session (#111906). The launcher
- * hands us the write end of a pipe in `HERMES_DESKTOP_READY_FD`; one byte means
+ * hands us the write end of a pipe in `RABBIT_DESKTOP_READY_FD`; one byte means
  * "mapped, safe to heal". A launch without the variable is a no-op.
  */
 
 import fs from 'node:fs'
 
-export const LAUNCHER_READY_FD_ENV = 'HERMES_DESKTOP_READY_FD'
+export const LAUNCHER_READY_FD_ENV = 'RABBIT_DESKTOP_READY_FD'
 
 type ReadyFdIo = {
   writeSync: (fd: number, data: string) => number

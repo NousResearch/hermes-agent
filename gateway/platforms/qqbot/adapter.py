@@ -191,7 +191,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         for ok, code, what, hint in (
             (AIOHTTP_AVAILABLE, "qq_missing_dependency", "aiohttp not installed",
              f". Run: {install_hint('messaging')}"),
-            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: hermes pm repair"),
+            (HTTPX_AVAILABLE, "qq_missing_dependency", "httpx not installed", ". Run: rabbit pm repair"),
             (self._app_id and self._client_secret, "qq_missing_credentials",
              "QQ_APP_ID and QQ_CLIENT_SECRET are required", "")):
             if not ok:
@@ -480,7 +480,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             "token": f"QQBot {token}",
             "intents": (1 << 25) | (1 << 30) | (1 << 12) | (1 << 26),
             "shard": [0, 1],
-            "properties": {"$os": "macOS", "$browser": "hermes-agent", "$device": "hermes-agent"}}}
+            "properties": {"$os": "macOS", "$browser": "rabbit-agent", "$device": "rabbit-agent"}}}
         await self._send_ws_auth("Identify", payload, "Identify sent")
 
     async def _send_resume(self) -> None:
@@ -686,7 +686,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
         tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
-        ``~/.hermes/.update_response``; anything else is ignored at DEBUG."""
+        ``~/.rabbit/.update_response``; anything else is ignored at DEBUG."""
         button_data = event.button_data
         if not button_data:
             return
@@ -729,10 +729,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     @staticmethod
     def _write_update_response(answer: str, operator: str = "") -> None:
         """Atomically (tmp + rename) write the update-prompt answer to
-        ``.update_response``, polled by the detached ``hermes update --gateway`` watcher."""
+        ``.update_response``, polled by the detached ``rabbit update --gateway`` watcher."""
         try:
-            from hermes_constants import get_hermes_home
-            response_path = get_hermes_home() / ".update_response"
+            from rabbit_constants import get_rabbit_home
+            response_path = get_rabbit_home() / ".update_response"
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
@@ -1500,7 +1500,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Yes/No update-confirmation prompt; button clicks (``update_prompt:y|n``)
-        are written to ``~/.hermes/.update_response`` by the interaction callback."""
+        are written to ``~/.rabbit/.update_response`` by the interaction callback."""
         del session_key, metadata  # present for contract parity only.
         default_hint = f" (default: {default})" if default else ""
         content = f"☤ **Update Needs Your Input**\n\n{prompt}{default_hint}"

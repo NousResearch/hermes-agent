@@ -40,11 +40,11 @@ python3 evals/session_search_schema/runner.py \
 python3 evals/session_search_schema/report.py results/<model>.jsonl
 ```
 
-Requires `OPENROUTER_API_KEY` in `~/.hermes/.env` (or env). The seeded DB is
+Requires `OPENROUTER_API_KEY` in `~/.rabbit/.env` (or env). The seeded DB is
 rebuilt fresh in a temp dir per invocation; nothing touches your real
 `state.db`.
 
-Rules of engagement (hermesbench discipline):
+Rules of engagement (rabbitbench discipline):
 
 - 3 reps minimum; n=1 cell differences are noise — pull the transcript
   (`calls` + `final` in the JSONL) before diagnosing any miss.

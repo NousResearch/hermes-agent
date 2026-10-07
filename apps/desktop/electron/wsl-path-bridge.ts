@@ -6,7 +6,7 @@ import fs from 'node:fs'
 // mode). Only the Windows-side direction lives here: the native folder dialog's
 // defaultPath and the fs read path. The reverse (whatever path the backend
 // receives → POSIX) is handled once, gateway-side, in
-// hermes_constants.translate_cwd_for_wsl_backend, so it stays picker-agnostic.
+// rabbit_constants.translate_cwd_for_wsl_backend, so it stays picker-agnostic.
 
 const IS_WINDOWS = process.platform === 'win32'
 const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/

@@ -47,7 +47,7 @@ def link_extension(extension: Path, library: Path) -> bool:
 
 def repair_wheel(wheel: Path, library: Path, *, repair=link_extension) -> int:
     """Repair native members without extracting untrusted archive paths."""
-    with tempfile.TemporaryDirectory(prefix="hermes-wheel-link-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="rabbit-wheel-link-") as tmp:
         native = Path(tmp) / "extension.so"
         with zipfile.ZipFile(wheel) as archive:
             if not any(info.filename.endswith(".so") for info in archive.infolist()):

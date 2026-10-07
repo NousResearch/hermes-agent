@@ -1,6 +1,6 @@
 """A user-installed memory provider parked in ``plugins.disabled`` must not load.
 
-The Plugins hub / `hermes plugins disable` write the deny-list; ``plugins/memory`` never read it, so
+The Plugins hub / `rabbit plugins disable` write the deny-list; ``plugins/memory`` never read it, so
 the UI said "disabled" while the provider kept loading at every agent init.
 """
 
@@ -10,7 +10,7 @@ import contextlib
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from plugins.memory import find_provider_dir, load_memory_provider
 
 _PROVIDER = """
@@ -33,24 +33,24 @@ def register(ctx):
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     enabled, disabled = tmp_path / "enabled", tmp_path / "disabled"
-    for hermes_home in (enabled, disabled):
-        provider_dir = hermes_home / "plugins" / "fakemem"
+    for rabbit_home in (enabled, disabled):
+        provider_dir = rabbit_home / "plugins" / "fakemem"
         provider_dir.mkdir(parents=True)
         (provider_dir / "plugin.yaml").write_text(
             "name: fakemem-manifest\nkind: exclusive\n", encoding="utf-8"
         )
         (provider_dir / "__init__.py").write_text(_PROVIDER, encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(enabled))
+    monkeypatch.setenv("RABBIT_HOME", str(enabled))
     return enabled, disabled
 
 
 @contextlib.contextmanager
 def _scoped_home(home):
-    token = set_hermes_home_override(home)
+    token = set_rabbit_home_override(home)
     try:
         yield
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_disabled_user_provider_is_found_but_never_loaded(homes):

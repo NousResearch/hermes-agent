@@ -1,4 +1,4 @@
-import { getLocalModelsJobs, getLocalModelsStatus } from '@/hermes'
+import { getLocalModelsJobs, getLocalModelsStatus } from '@/rabbit'
 import type { Translations } from '@/i18n/types'
 import { queryClient } from '@/lib/query-client'
 import { localSetupDue } from '@/lib/tips/local-cta'
@@ -7,7 +7,7 @@ import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localRuntimeInstallBusy, startLocalRuntimeInstall } from '@/store/local-runtime-jobs'
 import { $connection } from '@/store/session'
 import { $activeTip, $retiredTips, $tipsEnabled, $tipShownAt, dismissTip, showTip } from '@/store/tips'
-import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
 let snapshot: { readAt: number; status: LocalModelsStatus | null; jobs: LocalRuntimeJob[] } | null = null
 let pending = false

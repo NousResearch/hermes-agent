@@ -21,7 +21,7 @@ export function SidebarFooter({ status }: SidebarFooterProps) {
       </Typography>
 
       <a
-        href="https://nousresearch.com"
+        href="https://github.com/seven0070/Rabbit-"
         target="_blank"
         rel="noopener noreferrer"
         className={cn(

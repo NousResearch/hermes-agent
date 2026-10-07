@@ -7,7 +7,7 @@ sidebar_position: 8
 
 # 备用提供商
 
-Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话正常运行：
+Rabbit Agent 具备三层弹性机制，在提供商出现问题时保持会话正常运行：
 
 1. **[凭据池](./credential-pools.md)** — 在*同一*提供商的多个 API 密钥之间轮换（优先尝试）
 2. **主模型备用** — 当主模型失败时，自动切换到*不同*的提供商:模型
@@ -17,19 +17,19 @@ Hermes Agent 具备三层弹性机制，在提供商出现问题时保持会话�
 
 ## 主模型备用
 
-当主 LLM 提供商遇到错误——速率限制、服务器过载、认证失败、连接中断——Hermes 可以在会话中途自动切换到备用提供商:模型对，且不会丢失对话内容。
+当主 LLM 提供商遇到错误——速率限制、服务器过载、认证失败、连接中断——Rabbit 可以在会话中途自动切换到备用提供商:模型对，且不会丢失对话内容。
 
 ### 配置
 
 最简便的方式是使用交互式管理器：
 
 ```bash
-hermes fallback
+rabbit fallback
 ```
 
-`hermes fallback` 复用 `hermes model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
+`rabbit fallback` 复用 `rabbit model` 的提供商选择器——相同的提供商列表、相同的凭据提示、相同的验证流程。使用子命令 `add`、`list`（别名 `ls`）、`remove`（别名 `rm`）和 `clear` 来管理备用链。更改会持久化到 `config.yaml` 顶层的 `fallback_providers:` 列表中。
 
-如果你更倾向于直接编辑 YAML，可在 `~/.hermes/config.yaml` 中添加 `fallback_model` 部分：
+如果你更倾向于直接编辑 YAML，可在 `~/.rabbit/config.yaml` 中添加 `fallback_model` 部分：
 
 ```yaml
 fallback_model:
@@ -40,7 +40,7 @@ fallback_model:
 `provider` 和 `model` 均为**必填项**。若任一缺失，备用功能将被禁用。
 
 :::note `fallback_model` 与 `fallback_providers`
-`fallback_model`（单数）是旧版单备用键——Hermes 仍支持以保持向后兼容。`fallback_providers`（复数，列表）支持按顺序尝试多个备用；`hermes fallback` 写入此键。当两者同时设置时，Hermes 会合并它们，`fallback_providers` 优先。
+`fallback_model`（单数）是旧版单备用键——Rabbit 仍支持以保持向后兼容。`fallback_providers`（复数，列表）支持按顺序尝试多个备用；`rabbit fallback` 写入此键。当两者同时设置时，Rabbit 会合并它们，`fallback_providers` 优先。
 :::
 
 ### 支持的提供商
@@ -49,8 +49,7 @@ fallback_model:
 |----------|-------|-------------|
 | AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
-| Nous Portal | `nous` | `hermes setup --portal`（全新安装）或 `hermes auth add nous`（OAuth） |
-| OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
+| OpenAI Codex | `openai-codex` | `rabbit model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth） |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | 外部进程（编辑器集成） |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
@@ -65,10 +64,10 @@ fallback_model:
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY`（别名：`GEMINI_API_KEY`） |
 | xAI（Grok） | `xai`（别名 `grok`） | `XAI_API_KEY`（可选：`XAI_BASE_URL`） |
-| xAI Grok OAuth（SuperGrok） | `xai-oauth`（别名 `grok-oauth`） | `hermes model` → xAI Grok OAuth（浏览器登录；需 SuperGrok 订阅） |
+| xAI Grok OAuth（SuperGrok） | `xai-oauth`（别名 `grok-oauth`） | `rabbit model` → xAI Grok OAuth（浏览器登录；需 SuperGrok 订阅） |
 | AWS Bedrock | `bedrock` | 标准 boto3 认证（`AWS_REGION` + `AWS_PROFILE` 或 `AWS_ACCESS_KEY_ID`） |
-| Qwen Portal（OAuth） | `qwen-oauth` | `hermes model`（Qwen Portal OAuth；可选：`HERMES_QWEN_BASE_URL`） |
-| MiniMax（OAuth） | `minimax-oauth` | `hermes model`（MiniMax 门户 OAuth） |
+| Qwen Portal（OAuth） | `qwen-oauth` | `rabbit model`（Qwen Portal OAuth；可选：`RABBIT_QWEN_BASE_URL`） |
+| MiniMax（OAuth） | `minimax-oauth` | `rabbit model`（MiniMax 门户 OAuth） |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
@@ -108,7 +107,7 @@ fallback_model:
 - **未找到**（HTTP 404）——立即触发
 - **无效响应**——API 多次返回格式错误或空响应时
 
-触发后，Hermes 将：
+触发后，Rabbit 将：
 
 1. 解析备用提供商的凭据
 2. 构建新的 API 客户端
@@ -118,7 +117,7 @@ fallback_model:
 切换是无感知的——对话历史、工具调用和上下文均被保留。Agent 从中断处继续，只是使用了不同的模型。
 
 :::info 按轮次，而非按会话
-备用机制的**作用域为单次轮次**：每条新用户消息都从主模型重新开始。若主模型在某轮次中途失败，备用仅对该轮次生效。下一条消息时，Hermes 会再次尝试主模型。在单次轮次内，备用最多激活一次——若备用也失败，则进入常规错误处理流程（重试，然后返回错误消息）。这既防止了单轮次内的级联故障转移循环，又让主模型在每轮次都有重新尝试的机会。
+备用机制的**作用域为单次轮次**：每条新用户消息都从主模型重新开始。若主模型在某轮次中途失败，备用仅对该轮次生效。下一条消息时，Rabbit 会再次尝试主模型。在单次轮次内，备用最多激活一次——若备用也失败，则进入常规错误处理流程（重试，然后返回错误消息）。这既防止了单轮次内的级联故障转移循环，又让主模型在每轮次都有重新尝试的机会。
 :::
 
 ### 示例
@@ -132,17 +131,6 @@ model:
 fallback_model:
   provider: openrouter
   model: anthropic/claude-sonnet-4
-```
-
-**以 Nous Portal 作为 OpenRouter 的备用：**
-```yaml
-model:
-  provider: openrouter
-  default: anthropic/claude-opus-4
-
-fallback_model:
-  provider: nous
-  model: nous-hermes-3
 ```
 
 **以本地模型作为云端的备用：**
@@ -172,14 +160,14 @@ fallback_model:
 | 辅助任务（视觉、压缩等） | ✘（使用各自的提供商链——见下文） |
 
 :::tip
-没有针对主备用链的环境变量——只能通过 `config.yaml` 或 `hermes fallback` 进行配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
+没有针对主备用链的环境变量——只能通过 `config.yaml` 或 `rabbit fallback` 进行配置。这是有意为之：备用配置是一个经过深思熟虑的选择，不应被过期的 shell 导出变量覆盖。
 :::
 
 ---
 
 ## 辅助任务备用
 
-Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己的提供商解析链，充当内置的备用系统。
+Rabbit 为附属任务使用独立的轻量级模型。每个任务都有自己的提供商解析链，充当内置的备用系统。
 
 ### 具有独立提供商解析的任务
 
@@ -192,27 +180,27 @@ Hermes 为附属任务使用独立的轻量级模型。每个任务都有自己�
 | 审批 | 智能命令审批分类 | `auxiliary.approval` |
 | 标题生成 | 会话标题摘要 | `auxiliary.title_generation` |
 | 评审 | `/review` 评审子智能体（完整智能体，而非单次 LLM 调用） | `auxiliary.review` |
-| Triage Specifier | `hermes kanban specify` / 看板（kanban）✨ 按钮——将单行 triage 任务扩展为完整规格 | `auxiliary.triage_specifier` |
+| Triage Specifier | `rabbit kanban specify` / 看板（kanban）✨ 按钮——将单行 triage 任务扩展为完整规格 | `auxiliary.triage_specifier` |
 
 ### 自动检测链
 
-当任务的提供商设置为 `"auto"`（默认值）时，Hermes 按顺序尝试各提供商，直到找到可用的：
+当任务的提供商设置为 `"auto"`（默认值）时，Rabbit 按顺序尝试各提供商，直到找到可用的：
 
 **文本任务（压缩等）：**
 
 ```text
-OpenRouter → Nous Portal → 自定义端点 → Codex OAuth →
+OpenRouter → 自定义端点 → Codex OAuth →
 API 密钥提供商（z.ai、Kimi、MiniMax、Xiaomi MiMo、Hugging Face、Anthropic）→ 放弃
 ```
 
 **视觉任务：**
 
 ```text
-主提供商（若支持视觉）→ OpenRouter → Nous Portal →
+主提供商（若支持视觉）→ OpenRouter →
 Codex OAuth → Anthropic → 自定义端点 → 放弃
 ```
 
-若解析到的提供商在调用时失败，Hermes 还有内部重试机制：若该提供商不是 OpenRouter 且未设置显式 `base_url`，则尝试以 OpenRouter 作为最后备用。
+若解析到的提供商在调用时失败，Rabbit 还有内部重试机制：若该提供商不是 OpenRouter 且未设置显式 `base_url`，则尝试以 OpenRouter 作为最后备用。
 
 ### 配置辅助提供商
 
@@ -221,7 +209,7 @@ Codex OAuth → Anthropic → 自定义端点 → 放弃
 ```yaml
 auxiliary:
   vision:
-    provider: "auto"              # auto | openrouter | nous | codex | main | anthropic
+    provider: "auto"              # auto | openrouter | codex | main | anthropic
     model: ""                     # 例如 "openai/gpt-4o"
     base_url: ""                  # 直接端点（优先于 provider）
     api_key: ""                   # base_url 的 API 密钥
@@ -268,8 +256,7 @@ fallback_model:
 |----------|-------------|-------------|
 | `"auto"` | 按顺序尝试各提供商直到找到可用的（默认） | 至少配置一个提供商 |
 | `"openrouter"` | 强制使用 OpenRouter | `OPENROUTER_API_KEY` |
-| `"nous"` | 强制使用 Nous Portal | `hermes auth` |
-| `"codex"` | 强制使用 Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
+| `"codex"` | 强制使用 Codex OAuth | `rabbit model` → ChatGPT or Codex Subscription |
 | `"main"` | 使用主 Agent 当前的提供商（仅限辅助任务） | 已配置活跃的主提供商 |
 | `"anthropic"` | 强制使用 Anthropic 原生 | `ANTHROPIC_API_KEY` 或 Claude Code 凭据 |
 
@@ -285,18 +272,18 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` 优先于 `provider`。Hermes 使用配置的 `api_key` 进行认证，若未设置则回退到 `OPENAI_API_KEY`。对于自定义端点，**不会**复用 `OPENROUTER_API_KEY`。
+`base_url` 优先于 `provider`。Rabbit 使用配置的 `api_key` 进行认证，若未设置则回退到 `OPENAI_API_KEY`。对于自定义端点，**不会**复用 `OPENROUTER_API_KEY`。
 
 ---
 
 ## 辅助任务容量错误备用
 
-当你设置了显式的辅助提供商（例如 `auxiliary.vision.provider: glm`）时，Hermes 将其视为首选——但若该提供商因**容量错误**（HTTP 402 付款要求、HTTP 429 每日配额耗尽、连接失败）而无法处理请求，Hermes 会通过分层链进行备用，而不是静默失败：
+当你设置了显式的辅助提供商（例如 `auxiliary.vision.provider: glm`）时，Rabbit 将其视为首选——但若该提供商因**容量错误**（HTTP 402 付款要求、HTTP 429 每日配额耗尽、连接失败）而无法处理请求，Rabbit 会通过分层链进行备用，而不是静默失败：
 
 1. **主辅助提供商** — 你配置的那个（始终优先尝试）
 2. **`auxiliary.<task>.fallback_chain`** — 你的每任务覆盖列表（若已配置）
 3. **主 Agent 提供商 + 模型** — 最后的安全网（始终尝试，即使未配置链）
-4. **警告 + 重新抛出** — 若所有层均失败，Hermes 以 WARNING 级别记录 `Auxiliary <task>: ... all fallbacks exhausted` 并重新抛出原始错误
+4. **警告 + 重新抛出** — 若所有层均失败，Rabbit 以 WARNING 级别记录 `Auxiliary <task>: ... all fallbacks exhausted` 并重新抛出原始错误
 
 瞬时 HTTP 429 速率限制（`Retry-After: ...`）被视为请求约束，而非容量问题——它们遵守你的显式提供商选择，**不会**触发备用链。只有每日/每月配额耗尽、付款错误和连接失败才会绕过显式提供商限制。
 
@@ -314,8 +301,8 @@ auxiliary:
     fallback_chain:
       - provider: openrouter
         model: google/gemini-3-flash-preview
-      - provider: nous
-        model: anthropic/claude-sonnet-4
+      - provider: anthropic
+        model: claude-sonnet-4
 
   compression:
     provider: openrouter
@@ -328,13 +315,13 @@ auxiliary:
 
 ### 触发备用的提供商配额错误
 
-Hermes 将以下情况识别为等同于 402 额度耗尽的容量错误（而非瞬时速率限制）：
+Rabbit 将以下情况识别为等同于 402 额度耗尽的容量错误（而非瞬时速率限制）：
 
 - Bedrock / LiteLLM：`Too many tokens per day`、`daily limit`、`tokens per day`
 - Vertex AI / GCP：`quota exceeded`、`resource exhausted`、`RESOURCE_EXHAUSTED`
 - 通用：`daily quota`、`quota_exceeded`
 
-若你的提供商对每日配额耗尽返回不同的错误信息，而 Hermes 未触发备用，这是一个 bug——请附上确切的错误字符串提交 issue。
+若你的提供商对每日配额耗尽返回不同的错误信息，而 Rabbit 未触发备用，这是一个 bug——请附上确切的错误字符串提交 issue。
 
 ---
 
@@ -345,7 +332,7 @@ Hermes 将以下情况识别为等同于 402 额度耗尽的容量错误（而�
 ```yaml
 auxiliary:
   compression:
-    provider: "auto"                              # auto | openrouter | nous | main
+    provider: "auto"                              # auto | openrouter | main
     model: "google/gemini-3-flash-preview"
 ```
 
@@ -353,7 +340,7 @@ auxiliary:
 旧版配置中的 `compression.summary_model` / `compression.summary_provider` / `compression.summary_base_url` 会在首次加载时自动迁移到 `auxiliary.compression.*`（配置版本 17）。
 :::
 
-若压缩没有可用的提供商，Hermes 会直接丢弃中间对话轮次而不生成摘要，而不是让会话失败。
+若压缩没有可用的提供商，Rabbit 会直接丢弃中间对话轮次而不生成摘要，而不是让会话失败。
 
 ---
 

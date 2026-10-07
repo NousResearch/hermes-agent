@@ -64,7 +64,7 @@ export async function buildWeb(options) {
 if (isMain(import.meta.url)) {
   try {
     const options = process.argv.length === 2
-      ? { source: repoRoot, icons: repoRoot, out: path.join(repoRoot, 'hermes_cli/web_dist') }
+      ? { source: repoRoot, icons: repoRoot, out: path.join(repoRoot, 'rabbit_cli/web_dist') }
       : frontendArgs(process.argv.slice(2), { icons: { type: 'string' } })
     const result = await buildWeb(options)
     console.log(`built ${result.index}`)

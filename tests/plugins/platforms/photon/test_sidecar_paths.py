@@ -1,8 +1,8 @@
 """Tests for the Photon sidecar directory resolver (NS-606).
 
 Hosted/managed images keep the plugin tree under an immutable
-``/opt/hermes``; ``resolve_sidecar_dir`` must run in place when the deps are
-baked and current, and mirror the sidecar to the writable ``HERMES_HOME``
+``/opt/rabbit``; ``resolve_sidecar_dir`` must run in place when the deps are
+baked and current, and mirror the sidecar to the writable ``RABBIT_HOME``
 volume when a runtime install is unavoidable.
 """
 
@@ -68,7 +68,7 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
     """Image update changes index.mjs → re-copied; installed deps survive."""
     monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
     home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     source = tmp_path / "src"
     _seed_source(source)
     _freeze_writability(monkeypatch, writable=False)
@@ -106,8 +106,8 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
     """Importing the adapter must not probe the filesystem or mirror files.
 
     resolve_sidecar_dir() touch/unlink-probes the source tree and may copy
-    files to HERMES_HOME; the adapter and CLI resolve lazily on first use so
-    a bare import (plugin discovery, `hermes --help`, test collection) has
+    files to RABBIT_HOME; the adapter and CLI resolve lazily on first use so
+    a bare import (plugin discovery, `rabbit --help`, test collection) has
     no filesystem side effects.
     """
     import importlib

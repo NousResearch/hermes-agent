@@ -23,11 +23,11 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
 
     _, repo = _seed_repo(tmp_path)
     sha = _git("rev-parse", "HEAD", cwd=repo)
-    monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
+    monkeypatch.setenv("RABBIT_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
-    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
-    monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
+    defaults = {"RABBIT_GUEST_ONBOARDING": "1", "RABBIT_DATA_DIR_SUFFIX": "magic-test", "RABBIT_HOME": None}
+    monkeypatch.setenv("RABBIT_BUNDLE_ENV_JSON", json.dumps(defaults))
     request = BuildRequest.create(repo, tag=None, commit=sha, variant=variant,
                                   work=tmp_path / "work", cache=tmp_path / "cache", bundle_env=defaults)
     from pm.lock import Facts, Lockfile
@@ -54,12 +54,12 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     prepared = PreparedDesktop(request, binaries["python"], binaries["node"], Path(sys.executable),
                                tmp_path / "native", tmp_path / "packager", None, {}, "fixture-toolchain")
     env = build_environment(prepared, variant, os.environ)
-    assert env.get("HERMES_PAYLOAD_TAG", "") == ""
-    assert env["HERMES_BUILD_COMMIT"] == sha
+    assert env.get("RABBIT_PAYLOAD_TAG", "") == ""
+    assert env["RABBIT_BUILD_COMMIT"] == sha
     assert env["GITHUB_SHA"] == sha
-    assert env["HERMES_PYTHON"] == str(binaries["python"])
-    assert env["HERMES_PAYLOAD_VERSION"] == "0.1.2"
-    assert json.loads(env["HERMES_BUNDLE_ENV_JSON"]) == defaults
+    assert env["RABBIT_PYTHON"] == str(binaries["python"])
+    assert env["RABBIT_PAYLOAD_VERSION"] == "0.1.2"
+    assert json.loads(env["RABBIT_BUNDLE_ENV_JSON"]) == defaults
     assert "BUILD_NUMBER" not in env
     shutil.rmtree(repo / "pm")
 
@@ -98,7 +98,7 @@ def test_termux_commit_args_reach_prerequisite_checks_without_mutation(tmp_path)
     helper.mkdir()
     # Empty prerequisite commands are not build substitutes: stop at the first
     # actual prerequisite check, before any payload or output is created.
-    env = _child_env(PATH=str(helper), HERMES_PAYLOAD_TAG="")
+    env = _child_env(PATH=str(helper), RABBIT_PAYLOAD_TAG="")
     scripts = [repo / "scripts/termux/termux_build.sh", repo / "scripts/termux/build_deb.sh"]
     for script in scripts:
         args = ["--repo", str(repo), "--commit", "a" * 40, "--out", str(out)]

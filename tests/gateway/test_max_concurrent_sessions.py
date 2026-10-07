@@ -14,7 +14,7 @@ from gateway.session import SessionSource, build_session_key
 
 @pytest.fixture(autouse=True)
 def _isolated_active_session_registry(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
 
 
 class _FakeAdapter:
@@ -93,7 +93,7 @@ def _occupy_session(runner: GatewayRunner, chat_id: str = "busy"):
 
 
 def _silence_global_gateway_hooks(monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
+    monkeypatch.setattr("rabbit_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
     monkeypatch.setattr("tools.slash_confirm.get_pending", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.slash_confirm.clear_if_stale", lambda *args, **kwargs: None)
     monkeypatch.setattr("tools.approval.has_blocking_approval", lambda *args, **kwargs: False)

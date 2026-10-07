@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // `theme.js` reads `process.env` at module-load to compute DEFAULT_THEME,
 // and `fromSkin` closes over DEFAULT_THEME.  A developer shell with
-// HERMES_TUI_THEME=light (or HERMES_TUI_BACKGROUND set to something
+// RABBIT_TUI_THEME=light (or RABBIT_TUI_BACKGROUND set to something
 // bright) would flip the base and turn these assertions into a local-
 // only failure.  We sterilize the relevant env vars + dynamically
 // import the module fresh so EVERY symbol that closes over the env
@@ -12,9 +12,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // `detectLightMode` takes env as an explicit arg, so it's safe to import
 // statically — but we stay consistent and dynamic-import it too.
 const RELEVANT_ENV = [
-  'HERMES_TUI_LIGHT',
-  'HERMES_TUI_THEME',
-  'HERMES_TUI_BACKGROUND',
+  'RABBIT_TUI_LIGHT',
+  'RABBIT_TUI_THEME',
+  'RABBIT_TUI_BACKGROUND',
   'COLORFGBG',
   'COLORTERM',
   'TERM_PROGRAM'
@@ -69,14 +69,14 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' })).toBe(true)
   })
 
-  it('honors HERMES_TUI_LIGHT on/off', async () => {
+  it('honors RABBIT_TUI_LIGHT on/off', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ HERMES_TUI_LIGHT: '1' })).toBe(true)
-    expect(detectLightMode({ HERMES_TUI_LIGHT: 'true' })).toBe(true)
-    expect(detectLightMode({ HERMES_TUI_LIGHT: 'on' })).toBe(true)
-    expect(detectLightMode({ HERMES_TUI_LIGHT: '0' })).toBe(false)
-    expect(detectLightMode({ HERMES_TUI_LIGHT: 'off' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_LIGHT: '1' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_LIGHT: 'true' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_LIGHT: 'on' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_LIGHT: '0' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_LIGHT: 'off' })).toBe(false)
   })
 
   it('sniffs COLORFGBG bg slots 7 and 15 as light (#11300)', async () => {
@@ -102,31 +102,31 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ COLORFGBG: '15;' })).toBe(false)
   })
 
-  it('lets HERMES_TUI_LIGHT=0 override a light COLORFGBG', async () => {
+  it('lets RABBIT_TUI_LIGHT=0 override a light COLORFGBG', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ COLORFGBG: '0;15', HERMES_TUI_LIGHT: '0' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '0;15', RABBIT_TUI_LIGHT: '0' })).toBe(false)
   })
 
-  it('honors HERMES_TUI_THEME=light/dark as a symmetric explicit override', async () => {
+  it('honors RABBIT_TUI_THEME=light/dark as a symmetric explicit override', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ HERMES_TUI_THEME: 'light' })).toBe(true)
-    expect(detectLightMode({ HERMES_TUI_THEME: 'dark' })).toBe(false)
-    expect(detectLightMode({ COLORFGBG: '0;15', HERMES_TUI_THEME: 'dark' })).toBe(false)
-    expect(detectLightMode({ COLORFGBG: '15;0', HERMES_TUI_THEME: 'light' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_THEME: 'light' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_THEME: 'dark' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '0;15', RABBIT_TUI_THEME: 'dark' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '15;0', RABBIT_TUI_THEME: 'light' })).toBe(true)
   })
 
-  it('uses HERMES_TUI_BACKGROUND luminance when COLORFGBG is missing', async () => {
+  it('uses RABBIT_TUI_BACKGROUND luminance when COLORFGBG is missing', async () => {
     const { detectLightMode } = await importThemeWithCleanEnv()
 
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#ffffff' })).toBe(true)
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#000000' })).toBe(false)
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#1e1e1e' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#ffffff' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#000000' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#1e1e1e' })).toBe(false)
     // Three-char hex normalises like CSS.
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fff' })).toBe(true)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#fff' })).toBe(true)
     // Garbage falls through to the default-dark path.
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: 'not-a-colour' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: 'not-a-colour' })).toBe(false)
   })
 
   it('rejects partially-invalid hex instead of silently truncating', async () => {
@@ -134,12 +134,12 @@ describe('detectLightMode', () => {
     // `parseInt('fffgff'.slice(2,4), 16)` would return 15 — the strict
     // regex must reject these inputs so they fall through to default-
     // dark instead of producing a false-positive light reading.
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fffgff' })).toBe(false)
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: 'ffggff' })).toBe(false)
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#xyz' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#fffgff' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: 'ffggff' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#xyz' })).toBe(false)
     // Wrong length also rejected (no implicit padding/truncation).
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fffff' })).toBe(false)
-    expect(detectLightMode({ HERMES_TUI_BACKGROUND: '#fffffff' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#fffff' })).toBe(false)
+    expect(detectLightMode({ RABBIT_TUI_BACKGROUND: '#fffffff' })).toBe(false)
   })
 
   it('treats COLORFGBG as authoritative when present so it dominates the TERM_PROGRAM allow-list', async () => {
@@ -159,7 +159,7 @@ describe('detectLightMode', () => {
 describe('fromSkin', () => {
   // `fromSkin` closes over DEFAULT_THEME (which is env-derived), so we
   // must dynamic-import it after sterilizing env — otherwise an ambient
-  // HERMES_TUI_THEME=light would flip the base palette and make these
+  // RABBIT_TUI_THEME=light would flip the base palette and make these
   // assertions order-dependent on the developer's shell.
 
   it('overrides banner colors', async () => {
@@ -177,7 +177,7 @@ describe('fromSkin', () => {
   it('derives completion current background from resolved completion background (polarity-compatible)', async () => {
     // Light terminal + light-authored menu fill: the skin's fill is honored
     // and the current-row derivation mixes off it.
-    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { fromSkin } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
 
     const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
 
@@ -286,7 +286,7 @@ describe('fromSkin', () => {
   })
 
   it('a skin background outranks the cached host background for adaptation and tone derivation', async () => {
-    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { fromSkin } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
 
     const theme = fromSkin({ background: '#000000', ui_text: '#ffa726' }, {})
 
@@ -298,7 +298,7 @@ describe('fromSkin', () => {
   })
 
   it('skinIsLight: the authored background decides; host detection only when absent', async () => {
-    const { skinIsLight } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { skinIsLight } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
 
     expect(skinIsLight({ background: '#000000' })).toBe(false)
     expect(skinIsLight({ background: '#f5f5f5' })).toBe(true)
@@ -391,7 +391,7 @@ describe('derived tone ladder', () => {
     // within a-few-RGB-units of the original (imperceptible), so knob edits
     // that drift the classic look fail here instead of shipping as vibes.
     const dark = await importThemeWithCleanEnv()
-    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const light = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
 
     const cases: Array<[string, string, string]> = [
       [dark.DARK_THEME.color.muted, '#CC9B1F', 'dark muted'],
@@ -448,7 +448,7 @@ describe('derived tone ladder', () => {
 
 describe('background-aware adaptation (OSC-11 light terminals)', () => {
   it('renders a dark-authored skin on light like minimumContrastRatio hosts do (the standardized look)', async () => {
-    const { contrastRatio, fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
     const { color } = fromSkin(SLATE_COLORS, {})
 
     // The authored palette IS the design: slate's airy pastels (~1.5:1) pass
@@ -479,7 +479,7 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
   })
 
   it('rescues near-invisible colors with a hue-preserving multiplicative lift', async () => {
-    const { contrastRatio, fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
     // The default dark cream (#FFF8DC, 1.08:1 on white) is genuinely invisible.
     const { color } = fromSkin({ banner_text: '#FFF8DC' }, {})
 
@@ -494,7 +494,7 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
   })
 
   it('leaves the same skin untouched on a dark background', async () => {
-    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#1e1e2e' })
+    const { fromSkin } = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#1e1e2e' })
     const { color } = fromSkin(SLATE_COLORS, {})
 
     expect(color.text).toBe('#c9d1d9')
@@ -507,12 +507,12 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
 
     expect(dark.fromSkin({}, {}).color).toEqual(dark.DARK_THEME.color)
 
-    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const light = await importThemeWithEnv({ RABBIT_TUI_BACKGROUND: '#ffffff' })
 
     expect(light.fromSkin({}, {}).color).toEqual(light.LIGHT_THEME.color)
   })
 
-  it('defaultThemeForCurrentBackground follows a late HERMES_TUI_BACKGROUND write', async () => {
+  it('defaultThemeForCurrentBackground follows a late RABBIT_TUI_BACKGROUND write', async () => {
     const { DARK_THEME, DEFAULT_THEME, defaultThemeForCurrentBackground, LIGHT_THEME } = await importThemeWithCleanEnv()
 
     // Module loaded dark (clean env)…
@@ -520,7 +520,7 @@ describe('background-aware adaptation (OSC-11 light terminals)', () => {
     expect(luminance(DEFAULT_THEME.color.completionBg)).toBeLessThanOrEqual(0.35)
 
     // …then the OSC-11 answer lands and is cached into the env slot.
-    expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
+    expect(defaultThemeForCurrentBackground({ RABBIT_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
   })
 
   it('gives tool + thinking their own keys, defaulting to accent + muted', async () => {

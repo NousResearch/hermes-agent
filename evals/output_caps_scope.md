@@ -3,7 +3,7 @@
 Run from a checkout (Python dependencies installed):
 
 ```sh
-HERMES_HOME=$(mktemp -d) FULL_OUTPUT_CAP_SURFACES=1 \
+RABBIT_HOME=$(mktemp -d) FULL_OUTPUT_CAP_SURFACES=1 \
   VERIFY_OUTPUT_CAP_REMOVAL=1 PYTHONPATH=$PWD \
   .venv/bin/python evals/output_caps_local_capture.py
 ```
@@ -13,11 +13,11 @@ harness runs against the unchanged baseline with `VERIFY_OUTPUT_CAP_REMOVAL`
 unset, using that checkout's working directory and `PYTHONPATH`. Capture bodies,
 not the fake response length, are the oracle. The fixture exercises installed
 OpenAI, Anthropic and boto3 SDKs; the latter is a local Converse capture, **not an
-AWS call**. The PTY transcript is saved under the disposable `HERMES_HOME`.
+AWS call**. The PTY transcript is saved under the disposable `RABBIT_HOME`.
 
 ## Boundary
 
-Removed: `HERMES_MAX_TOKENS`, `model.max_tokens`, dedicated named/custom provider
+Removed: `RABBIT_MAX_TOKENS`, `model.max_tokens`, dedicated named/custom provider
 `max_output_tokens` fields, model metadata output overrides, batch CLI cap,
 MoA preset/reference/slot caps, and auxiliary compression user caps. Dedicated
 caps are no longer lifted through gateway/API/CLI, child, review or curator

@@ -83,7 +83,7 @@ def _flush_dirty_sessions(now: float | None = None) -> int:
 
 def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     """Bounded flush of ALL in-memory sessions on the way out, on a daemon worker joined with the budget so a
-    hung SQLite write can't block exit past ``HERMES_TUI_EXIT_FLUSH_BUDGET_S`` (default 5s). Running sessions
+    hung SQLite write can't block exit past ``RABBIT_TUI_EXIT_FLUSH_BUDGET_S`` (default 5s). Running sessions
     are included — the process is dying, a partial transcript beats loss."""
     budget = _EXIT_FLUSH_BUDGET_S if budget_s is None else max(0.0, budget_s)
     if budget <= 0:
@@ -99,7 +99,7 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
                 break
             result["flushed"] += _flush_session_messages(session)
 
-    worker = threading.Thread(target=_run, daemon=True, name="hermes-exit-flush")
+    worker = threading.Thread(target=_run, daemon=True, name="rabbit-exit-flush")
     worker.start()
     worker.join(budget)
     # Silent loss is the failure mode this guard exists to prevent: both callers discard the return
@@ -108,7 +108,7 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     if result["flushed"] < flushable:
         logger.warning(
             "Exit flush persisted %d of %d in-memory session transcript(s) within %.1fs; the rest "
-            "may have been lost (HERMES_TUI_EXIT_FLUSH_BUDGET_S)",
+            "may have been lost (RABBIT_TUI_EXIT_FLUSH_BUDGET_S)",
             result["flushed"], flushable, budget)
     return result["flushed"]
 
@@ -199,7 +199,7 @@ def install_exit_flush_signal_handlers() -> bool:
 
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
-    # standalone `hermes --tui` and must NOT count as dead.
+    # standalone `rabbit --tui` and must NOT count as dead.
     if transport is _detached_ws_transport:
         return True
     if isinstance(transport, FanoutTransport):
@@ -270,7 +270,7 @@ def _reap_idle_sessions() -> None:
         logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
         return
     try:
-        from hermes_cli.mem_trim import trim_memory
+        from rabbit_cli.mem_trim import trim_memory
         trim_memory(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
@@ -313,7 +313,7 @@ def _reclaim_orphaned_leases() -> None:
     except Exception:
         logger.debug("stale deferred lease sweep failed", exc_info=True)
     try:
-        from hermes_cli.active_sessions import release_orphaned_leases
+        from rabbit_cli.active_sessions import release_orphaned_leases
         if dropped := release_orphaned_leases(_own_live_lease_ids()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
@@ -325,7 +325,7 @@ def _reclaim_orphaned_leases() -> None:
 # never a running / pending / mid-build / live-transport one (reopening re-resumes from the DB). 0/null disables.
 def _max_live_sessions() -> int:
     try:
-        from hermes_cli.active_sessions import coerce_max_concurrent_sessions
+        from rabbit_cli.active_sessions import coerce_max_concurrent_sessions
         cfg = _load_cfg() or {}
         raw = cfg.get("max_live_sessions")
         if raw is None and isinstance(gateway_cfg := cfg.get("gateway"), dict):
@@ -427,7 +427,7 @@ def _sweep_orphaned_session_rows() -> list[str]:
 # "owned by a live but idle backend" from "truly orphaned" (else the first process to restart reaped every
 # inactive row of the other N−1). Refresh 60s default — far shorter than the 6h TTL so a refresh always lands
 # inside the staleness window. Removed at exit; a crashed row ages out.
-_HEARTBEAT_REFRESH_S = max(0.0, env_float("HERMES_GATEWAY_HEARTBEAT_REFRESH_S", 60.0))
+_HEARTBEAT_REFRESH_S = max(0.0, env_float("RABBIT_GATEWAY_HEARTBEAT_REFRESH_S", 60.0))
 _heartbeat_refresher_started = False
 _heartbeat_refresher_lock = threading.Lock()
 _BACKEND_NONCE = secrets.token_hex(4)
@@ -496,7 +496,7 @@ def _start_backend_heartbeat_refresher() -> None:
                 db.clear_backend_heartbeat(_backend_id_for_this_process())
 
     atexit.register(_atexit_clear)
-    threading.Thread(target=_loop, name="hermes-gateway-heartbeat", daemon=True).start()
+    threading.Thread(target=_loop, name="rabbit-gateway-heartbeat", daemon=True).start()
 
 
 def _schedule_startup_orphan_sweep() -> None:

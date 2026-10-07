@@ -4,7 +4,7 @@ import { type FC, useEffect, useState } from 'react'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
-// Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
+// Sender-side inter-agent delivery: `rabbit -p <agent> chat … -q "Message
 // from 🤖 <sender>…"` run through the terminal tool IS the messaging
 // pipeline (the Bot Mode / multi-profile convention shipped with #85855).
 // Rendering it as a terminal transcript makes the sending bot's chat read
@@ -12,7 +12,7 @@ import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/compon
 // quiet run returns the recipient's reply, "Message from X" — the same
 // compact event notices the receiving chat shows.
 const DELIVERY_COMMAND_RE =
-  /(?:^|[;&|]\s*|\bhermes\s+)-p\s+("?)([a-z0-9][a-z0-9_-]{0,63})\1\s+chat\b[\s\S]*?-q\s+["']Message from/iu
+  /(?:^|[;&|]\s*|\brabbit\s+)-p\s+("?)([a-z0-9][a-z0-9_-]{0,63})\1\s+chat\b[\s\S]*?-q\s+["']Message from/iu
 
 export function deliveryTargetFromCommand(command: string): null | string {
   const match = DELIVERY_COMMAND_RE.exec(command)

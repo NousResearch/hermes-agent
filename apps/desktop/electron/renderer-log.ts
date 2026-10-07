@@ -60,7 +60,7 @@ function isConsoleMessageDetails(value: unknown): value is ConsoleMessageDetails
 }
 
 /** Format Electron's canonical console-message event object into one line, or
- *  null for non-error or malformed events. Hermes's pinned Electron 40.x line
+ *  null for non-error or malformed events. Rabbit's pinned Electron 40.x line
  *  puts severity and source metadata on the event object itself; accepting one
  *  listener argument also avoids Electron's deprecated positional
  *  `(event, level, message, line, sourceId)` path. */
@@ -93,7 +93,7 @@ export function attachRendererConsoleCapture(win: WindowLike, label: string, log
   })
 }
 
-/** Format a renderer error-boundary report (hermes:logs:renderer-error IPC)
+/** Format a renderer error-boundary report (rabbit:logs:renderer-error IPC)
  *  for desktop.log. Boundary catches carry the component stack — the one piece
  *  of context a minified console line loses — so persist it alongside.
  *  Inputs are renderer-supplied: clamp so a hostile/buggy payload cannot bloat

@@ -18,7 +18,7 @@ from tools.registry import registry
 def test_dispatched_child_prompt_matches_depth_capability(
     tmp_path, monkeypatch, legacy_role, parent_depth, max_depth, enabled,
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     parent = MagicMock()
     parent._delegate_depth = parent_depth
     parent._active_children = []

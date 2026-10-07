@@ -1,6 +1,6 @@
 """Regression tests for issue #68483.
 
-Running a state-writing ``hermes cron`` CLI command as root (the default for
+Running a state-writing ``rabbit cron`` CLI command as root (the default for
 ``docker exec``) rewrote ``jobs.json`` as ``root:root`` mode 600 via the
 mkstemp + atomic_replace pattern, silently locking out the unprivileged
 gateway ticker — which then failed every tick with PermissionError while the
@@ -12,7 +12,7 @@ Two behavior contracts are pinned here:
    of the rewritten ``jobs.json`` back to its previous owner; unprivileged
    writers must not attempt a chown at all.
 2. Zombie-ticker surfacing: a failing tick must persist the failure reason
-   (``ticker_last_error``) where ``hermes cron status`` can show it, and a
+   (``ticker_last_error``) where ``rabbit cron status`` can show it, and a
    subsequent clean tick must clear it.
 """
 
@@ -192,7 +192,7 @@ class TestTickerLoopRecordsErrors:
 
         msg = jobs.get_ticker_last_error()
         assert msg is not None, (
-            "a failing tick must persist its reason for `hermes cron status` "
+            "a failing tick must persist its reason for `rabbit cron status` "
             "to surface (#68483)"
         )
         assert "Permission denied" in msg
@@ -208,15 +208,15 @@ class TestTickerLoopRecordsErrors:
 
 
 # =========================================================================
-# 3. `hermes cron status` surfaces the failure reason
+# 3. `rabbit cron status` surfaces the failure reason
 # =========================================================================
 
 
 class TestCronStatusSurfacesError:
     def test_status_shows_last_error_and_permission_hint(self, monkeypatch, capsys):
-        from hermes_cli import cron as cron_cli
+        from rabbit_cli import cron as cron_cli
 
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
+        monkeypatch.setattr("rabbit_cli.gateway.find_gateway_pids", lambda: [4321])
         monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)   # alive
         monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 9_999.0)  # failing
         monkeypatch.setattr(

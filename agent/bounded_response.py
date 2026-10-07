@@ -1,6 +1,6 @@
 """Bounded reads of HTTP error response bodies.
 
-On a non-OK *streaming* response Hermes reads the body for a diagnostic (only ever shown truncated to
+On a non-OK *streaming* response Rabbit reads the body for a diagnostic (only ever shown truncated to
 a few hundred chars). A bare ``response.read()`` is unbounded two ways: arbitrarily large body
 (memory) or a body that stalls forever (hang). ``read_streaming_error_body`` caps bytes and enforces a
 hard wall-clock deadline; callers use the returned text instead of ``response.text`` (unbounded /

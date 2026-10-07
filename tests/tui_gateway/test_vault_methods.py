@@ -19,9 +19,9 @@ import tui_gateway.server as srv
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    h = tmp_path / ".hermes"
+    h = tmp_path / ".rabbit"
     h.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setenv("RABBIT_HOME", str(h))
     return h
 
 
@@ -105,7 +105,7 @@ def _sources_rows(home):
 
 
 def test_enabling_a_detected_manager_reports_it_enabled(home, monkeypatch):
-    """The Settings toggle and `hermes vault sources --enable` both clear the opt-out override;
+    """The Settings toggle and `rabbit vault sources --enable` both clear the opt-out override;
     the shipped default must then agree with `is_enabled()`'s zero-config contract — an installed
     manager becomes a login source instead of silently staying off (#109546)."""
     monkeypatch.setattr(

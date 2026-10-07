@@ -1,8 +1,8 @@
 ---
+author: Teknium (teknium1), Hermes Agent
 name: pokemon-player
 description: "Play Pokemon via headless emulator + RAM reads."
 version: 1.0.0
-author: Teknium (teknium1), Hermes Agent
 license: MIT
 tags: [gaming, pokemon, emulator, pyboy, gameplay, gameboy]
 platforms: [linux, macos, windows]
@@ -74,7 +74,7 @@ This is faster than loading via the API after startup.
 
 ### Step 1: OBSERVE — check state AND take a screenshot
 GET /state for position, HP, battle, dialog.
-GET /screenshot and save to ~/.hermes/cache/scratch/pokemon.png, then use vision_analyze.
+GET /screenshot and save to ~/.rabbit/cache/scratch/pokemon.png, then use vision_analyze.
 Always do BOTH — RAM state gives numbers, vision gives spatial awareness.
 
 ### Step 2: ORIENT

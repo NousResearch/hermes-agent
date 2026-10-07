@@ -1,6 +1,6 @@
 // Overlays, pickers and dialogs: prompts, model/pet pickers, hubs, agents panel,
-// billing/subscription, connection setup. Owned namespaces: `overlay`, `prompt`,
-// `picker`, `hub`, `agents`, `billing`, `connection`, `journey`.
+// connection setup. Owned namespaces: `overlay`, `prompt`, `picker`, `hub`,
+// `agents`, `connection`, `journey`.
 
 export const overlaysEn = {
   prompt: {

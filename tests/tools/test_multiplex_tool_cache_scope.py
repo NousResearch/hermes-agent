@@ -8,10 +8,10 @@ import json
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 def _make_home(root: Path, cfg: dict, env: str = "") -> Path:
@@ -27,19 +27,19 @@ class _scoped:
         self.home = home
 
     def __enter__(self):
-        self._t1 = set_hermes_home_override(str(self.home))
+        self._t1 = set_rabbit_home_override(str(self.home))
         self._t2 = set_secret_scope(build_profile_secret_scope(self.home))
 
     def __exit__(self, *_):
         reset_secret_scope(self._t2)
-        reset_hermes_home_override(self._t1)
+        reset_rabbit_home_override(self._t1)
 
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
     a = _make_home(tmp_path / "A", {}, "CAMOFOX_URL=http://camofox-a:9377\n")
     b = _make_home(tmp_path / "A" / "profiles" / "B", {}, "CAMOFOX_URL=http://camofox-b:9377\n")
-    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.setenv("RABBIT_HOME", str(a))
     monkeypatch.delenv("CAMOFOX_URL", raising=False)
     return a, b
 
@@ -83,7 +83,7 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     b = _make_home(tmp_path / "A" / "profiles" / "B", {**main, "security": {"tirith_path": str(bin_b)},
                                                        "auxiliary": {"vision": {"provider": "openai", "model": "gpt-4o-mini"},
                                                                      "summary": {"max_concurrency": 7}}})
-    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.setenv("RABBIT_HOME", str(a))
     (a / "cache" / "image_token_costs.json").write_text(json.dumps({"m@gw.example": 1000}), encoding="utf-8")
     (b / "cache" / "image_token_costs.json").write_text(json.dumps({"m@gw.example": 3000}), encoding="utf-8")
 

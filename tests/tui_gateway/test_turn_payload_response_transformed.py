@@ -30,7 +30,7 @@ def test_complete_turn_payload_forwards_response_transformed_only_when_set(monke
     assert payload["text"] == "example-service.internal"
     assert payload.get("response_transformed") is True
     # The real emit path validates against the wire contract (extra="forbid"); under
-    # HERMES_TEST_ISOLATION an undeclared key raises ContractViolation here.
+    # RABBIT_TEST_ISOLATION an undeclared key raises ContractViolation here.
     frame = srv._event_frame("message.complete", "sid", payload)
     assert frame["params"]["payload"]["response_transformed"] is True
 

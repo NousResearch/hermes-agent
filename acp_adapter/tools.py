@@ -1,4 +1,4 @@
-"""ACP tool-call helpers for mapping hermes tools to ACP ToolKind and building content."""
+"""ACP tool-call helpers for mapping rabbit tools to ACP ToolKind and building content."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from agent.display import build_tool_preview
 
 logger = logging.getLogger(__name__)
 
-# Hermes tool name -> ACP ToolKind (anything unlisted is "other").
+# Rabbit tool name -> ACP ToolKind (anything unlisted is "other").
 TOOL_KIND_MAP: Dict[str, ToolKind] = {
     name: kind
     for kind, names in {
@@ -60,7 +60,7 @@ _Formatter = Callable[[str, Optional[str], Optional[Args]], Optional[str]]
 
 
 def get_tool_kind(tool_name: str) -> ToolKind:
-    """Return the ACP ToolKind for a hermes tool, defaulting to 'other'."""
+    """Return the ACP ToolKind for a rabbit tool, defaulting to 'other'."""
     return TOOL_KIND_MAP.get(tool_name, "other")
 
 
@@ -140,7 +140,7 @@ def _args_json(arguments: Any) -> str:
 def _json_loads_maybe(value: Optional[str]) -> Any:
     """Decode a JSON string; non-strings pass through, undecodable strings yield None.
 
-    Some Hermes tools append a human hint after the payload (``{...}\\n\\n[Hint: ...]``),
+    Some Rabbit tools append a human hint after the payload (``{...}\\n\\n[Hint: ...]``),
     so fall back to decoding the first JSON value to keep the structured rendering path."""
     if not isinstance(value, str):
         return value
@@ -166,7 +166,7 @@ def _fenced_text(text: str, language: str = "") -> str:
 
 
 def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> bool:
-    """Return True when a structured Hermes tool result clearly failed.
+    """Return True when a structured Rabbit tool result clearly failed.
 
     Deliberately conservative: plain text may legitimately contain "error", so
     only structured tool-level failures map to ACP failed status."""
@@ -191,7 +191,7 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 
 def build_tool_title(tool_name: str, args: Args) -> str:
     """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
-    every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;
+    every other Rabbit surface, so ACP clients never show a different summary than the CLI/TUI;
     bare tool name when the arguments yield no preview."""
     preview = build_tool_preview(tool_name, args, max_len=80)
     return f"{tool_name}: {preview}" if preview else tool_name
@@ -778,7 +778,7 @@ _START_CONTENT_BUILDERS: Dict[str, Optional[Callable[[Args], Any]]] = {
 
 
 def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:
-    """Create a ToolCallStart event for the given hermes tool invocation.
+    """Create a ToolCallStart event for the given rabbit tool invocation.
 
     A malformed argument (e.g. a non-string ``command``/``path`` from a model
     ignoring the schema) must never abort the render — this runs on the live

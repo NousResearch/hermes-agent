@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @contextmanager
 def build_lock(source: Path):
-    from hermes_cli.runtime_state import _lock
+    from rabbit_cli.runtime_state import _lock
 
     directory = source / ".build"
     if directory.is_symlink():
@@ -38,7 +38,7 @@ def build_environment(prepared: PreparedDesktop, variant: str, inherited: Mappin
     if prepared.python != selection.entries["python"].binary or prepared.node != selection.entries["node"].binary:
         raise ValueError("prepared Python/Node paths do not match selected tools; prepare again")
     env = selection.environment(env)
-    env["HERMES_PYTHON"] = str(prepared.python)
+    env["RABBIT_PYTHON"] = str(prepared.python)
     return identity_environment(request, variant, env)
 
 
@@ -49,28 +49,28 @@ def identity_environment(request: BuildRequest, variant: str, inherited: Mapping
         raise ValueError("channel builds currently support only the bundled variant")
     env = dict(inherited)
     env.update(CI="true", PYTHONUTF8="1", GITHUB_SHA=request.commit,
-               HERMES_DESKTOP_VARIANT=variant,
-               HERMES_PAYLOAD_VERSION=request.version,
-               HERMES_BUNDLE_ENV_JSON=json.dumps(request.bundle_env, sort_keys=True))
+               RABBIT_DESKTOP_VARIANT=variant,
+               RABBIT_PAYLOAD_VERSION=request.version,
+               RABBIT_BUNDLE_ENV_JSON=json.dumps(request.bundle_env, sort_keys=True))
     if request.release_epoch is None:
-        env.pop("HERMES_RELEASE_EPOCH", None)
+        env.pop("RABBIT_RELEASE_EPOCH", None)
     else:
-        env["HERMES_RELEASE_EPOCH"] = str(request.release_epoch)
+        env["RABBIT_RELEASE_EPOCH"] = str(request.release_epoch)
     env.pop("BUILD_NUMBER", None)
     env.pop("GITHUB_HEAD_REF", None)
-    env.pop("_HERMES_CHANNEL_REQUEST_JSON", None)
+    env.pop("_RABBIT_CHANNEL_REQUEST_JSON", None)
     if request.channel_request is not None:
-        env["_HERMES_CHANNEL_REQUEST_JSON"] = json.dumps(request.channel_request, sort_keys=True)
+        env["_RABBIT_CHANNEL_REQUEST_JSON"] = json.dumps(request.channel_request, sort_keys=True)
         env["GITHUB_REPOSITORY"] = request.channel_request["repository"]
-        for key in ("HERMES_BUILD_COMMIT", "HERMES_PAYLOAD_TAG", "GITHUB_REF_NAME"):
+        for key in ("RABBIT_BUILD_COMMIT", "RABBIT_PAYLOAD_TAG", "GITHUB_REF_NAME"):
             env.pop(key, None)
     elif request.tag is None:
-        env["HERMES_BUILD_COMMIT"] = request.commit
-        env.pop("HERMES_PAYLOAD_TAG", None)
+        env["RABBIT_BUILD_COMMIT"] = request.commit
+        env.pop("RABBIT_PAYLOAD_TAG", None)
         env.pop("GITHUB_REF_NAME", None)
     else:
-        env.pop("HERMES_BUILD_COMMIT", None)
-        env["HERMES_PAYLOAD_TAG"] = request.tag
+        env.pop("RABBIT_BUILD_COMMIT", None)
+        env["RABBIT_PAYLOAD_TAG"] = request.tag
         env["GITHUB_REF_NAME"] = request.tag
     return env
 
@@ -89,7 +89,7 @@ def packaging_environment(build: Mapping[str, str], inherited: Mapping[str, str]
     if target.startswith("darwin-"):
         # Security.framework needs the login HOME for both key import and signing,
         # even with an explicit keychain. Keep dependency preparation isolated.
-        env["HOME"] = inherited.get("HERMES_REAL_HOME") or inherited.get("HOME") or str(Path.home())
+        env["HOME"] = inherited.get("RABBIT_REAL_HOME") or inherited.get("HOME") or str(Path.home())
     return env
 
 

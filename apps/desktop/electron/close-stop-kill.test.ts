@@ -15,8 +15,8 @@ test('close/stop surfaces a taskkill failure and does not clear a lock a live ho
   const cleared: string[] = []
 
   const locks: RuntimeLock[] = [
-    { path: 'C:\\Users\\me\\.hermes\\gateway.lock', holderPids: [4242], held: true },
-    { path: 'C:\\Users\\me\\.hermes\\profiles\\other\\gateway.lock', holderPids: [], held: false }
+    { path: 'C:\\Users\\me\\.rabbit\\gateway.lock', holderPids: [4242], held: true },
+    { path: 'C:\\Users\\me\\.rabbit\\profiles\\other\\gateway.lock', holderPids: [], held: false }
   ]
 
   const result = finishWindowsCloseStop([4242], locks, {
@@ -36,8 +36,8 @@ test('close/stop surfaces a taskkill failure and does not clear a lock a live ho
   assert.equal(result.taskkillFailures[0].pid, 4242)
   assert.deepEqual(result.remainingPids, [4242])
   assert.equal(result.liveFailure, true)
-  assert.deepEqual(cleared, ['C:\\Users\\me\\.hermes\\profiles\\other\\gateway.lock'])
-  assert.deepEqual(result.retainedLocks, ['C:\\Users\\me\\.hermes\\gateway.lock'])
+  assert.deepEqual(cleared, ['C:\\Users\\me\\.rabbit\\profiles\\other\\gateway.lock'])
+  assert.deepEqual(result.retainedLocks, ['C:\\Users\\me\\.rabbit\\gateway.lock'])
 })
 
 test('close/stop inventories owned PIDs after the tree kill and clears only unheld locks', () => {

@@ -36,7 +36,7 @@ def homes(tmp_path, monkeypatch):
     """A launch home with no plugins and a profile home shipping the vault plugin."""
     launch = tmp_path / "launch"
     launch.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     profile = tmp_path / "profile"
     plugin_dir = profile / "plugins" / "test-vault"
     plugin_dir.mkdir(parents=True)
@@ -49,8 +49,8 @@ def homes(tmp_path, monkeypatch):
     )
     yield launch, profile
     import agent.secret_sources.registry as registry
-    from hermes_cli.env_loader import reset_secret_source_cache
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from rabbit_cli.env_loader import reset_secret_source_cache
+    from rabbit_cli.plugins import _reset_plugin_managers_for_tests
 
     registry._reset_registry_for_tests()
     reset_secret_source_cache()

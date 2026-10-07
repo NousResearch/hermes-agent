@@ -111,7 +111,7 @@ interface WatchSpot {
 /** Draw one stage of the agent's action. `label` is only read by `pin`.
  *  Self-contained. */
 export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStage, label?: string): void {
-  const win = doc.defaultView as (Window & { __hermesWatch?: Record<string, unknown> }) | null
+  const win = doc.defaultView as (Window & { __rabbitWatch?: Record<string, unknown> }) | null
 
   if (!win || !doc.documentElement) {
     return
@@ -188,7 +188,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
   // of them buries the outlines under a wall of colliding tags. The outlines are
   // the readout at that size; the names are noise.
   const busy = 25
-  const state = win.__hermesWatch || (win.__hermesWatch = {})
+  const state = win.__rabbitWatch || (win.__rabbitWatch = {})
 
   // One row per kind of mark. `life` is how long it stays up; 0 means it stays
   // until the agent takes it down, which is the whole difference between a mark
@@ -296,13 +296,13 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
   const build = () => {
     // A host from an earlier build of this function may still be on the page.
     // Clear it out rather than stacking a second.
-    const stale = doc.querySelectorAll('hermes-watch')
+    const stale = doc.querySelectorAll('rabbit-watch')
 
     for (let i = 0; i < stale.length; i++) {
       stale[i].remove()
     }
 
-    const host = doc.createElement('hermes-watch')
+    const host = doc.createElement('rabbit-watch')
 
     host.setAttribute('aria-hidden', 'true')
     host.setAttribute('popover', 'manual')
@@ -836,7 +836,7 @@ export function watchInPage(doc: Document, holder: WatchHolder, stage: WatchStag
   // the previous version and are still sitting on the page. Same failure across
   // an app upgrade under a long-lived tab; it just looks like "HMR isn't picking
   // this up" in dev.
-  const stamp = (win as unknown as { __hermesWatchTag?: number }).__hermesWatchTag
+  const stamp = (win as unknown as { __rabbitWatchTag?: number }).__rabbitWatchTag
 
   if (state.tag !== stamp) {
     state.tag = stamp

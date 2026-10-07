@@ -4,7 +4,7 @@ A multiplexed gateway serves every profile from one process.  ``SessionStore``
 used to bind a single ``SessionDB`` during ``__init__``, freezing it to the
 process's own root home, so a named profile's sessions were physically written
 to the root ``state.db`` even though ``_profile_runtime_scope`` had already
-redirected ``get_hermes_home()`` for that turn.  The rows carried the correct
+redirected ``get_rabbit_home()`` for that turn.  The rows carried the correct
 ``profile_name``, which is why the only visible symptom was the desktop listing
 a profile's session under the default bot: the desktop reads
 ``profiles/<name>/state.db``, which never received the write.
@@ -36,41 +36,41 @@ from gateway.config import GatewayConfig
 from gateway.platforms.base import Platform, SessionSource
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionStore
-from hermes_constants import (
-    get_hermes_home,
-    reset_hermes_home_override,
-    set_hermes_home_override,
+from rabbit_constants import (
+    get_rabbit_home,
+    reset_rabbit_home_override,
+    set_rabbit_home_override,
 )
 
 
 @pytest.fixture
 def multiplex_homes(tmp_path, monkeypatch):
-    """A root home plus a named profile home, with HERMES_HOME on the root.
+    """A root home plus a named profile home, with RABBIT_HOME on the root.
 
     Mirrors the reported layout: one gateway process launched under the root
     home, serving a ``fitness`` profile whose store lives under
     ``profiles/fitness``.
     """
-    import hermes_state
+    import rabbit_state
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "fitness"
     root.mkdir(parents=True)
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")  # identity marker: a bare dir is not a profile
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
 
-    # The suite-wide fixture in conftest re-points ``hermes_state.DEFAULT_DB_PATH``
+    # The suite-wide fixture in conftest re-points ``rabbit_state.DEFAULT_DB_PATH``
     # at a fake home, which trips the deliberate escape hatch in
     # ``_default_db_path()``: a re-pointed constant wins over everything,
     # including the context-local override.  That is correct for tests that
     # want one fixed DB, but it would pin every lookup here to a single path
     # and make these assertions vacuous.  Restore the import-time snapshot so
-    # the hatch is closed and resolution goes through ``get_hermes_home()``,
-    # which is what production does.  ``HERMES_HOME`` above still keeps that
+    # the hatch is closed and resolution goes through ``get_rabbit_home()``,
+    # which is what production does.  ``RABBIT_HOME`` above still keeps that
     # resolution inside ``tmp_path``, so no real store is ever opened.
     monkeypatch.setattr(
-        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+        rabbit_state, "DEFAULT_DB_PATH", rabbit_state._IMPORT_DEFAULT_DB_PATH
     )
     return root, profile
 
@@ -122,7 +122,7 @@ def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_h
     seen = []
 
     async def capture_scope(event):
-        seen.append(Path(get_hermes_home()))
+        seen.append(Path(get_rabbit_home()))
 
     runner._handle_message = capture_scope
     event = MessageEvent(
@@ -138,7 +138,7 @@ def test_primary_handler_enters_routed_profile_scope_before_dispatch(multiplex_h
     asyncio.run(runner._primary_message_handler()(event))
 
     assert seen == [profile]
-    assert Path(get_hermes_home()) == root
+    assert Path(get_rabbit_home()) == root
 
 
 def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_homes):
@@ -166,7 +166,7 @@ def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_
     seen = []
 
     async def capture_scope(event):
-        seen.append((Path(get_hermes_home()), event.source.profile_route_rejected))
+        seen.append((Path(get_rabbit_home()), event.source.profile_route_rejected))
 
     runner._handle_message = capture_scope
     source = SessionSource(
@@ -215,7 +215,7 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
     async def capture_scope_and_auth(event):
         seen.append(
             (
-                Path(get_hermes_home()),
+                Path(get_rabbit_home()),
                 runner._is_user_authorized_for_source(event.source),
             )
         )
@@ -240,14 +240,14 @@ def test_primary_route_keeps_transport_authorization_scope(multiplex_homes):
         set_multiplex_active(previous_multiplex)
 
     assert seen == [(profile, True)]
-    assert Path(get_hermes_home()) == root
+    assert Path(get_rabbit_home()) == root
 
 
 def test_two_primary_routed_turns_reload_profile_transcript(multiplex_homes):
     """A second routed turn sees the first turn in the profile database."""
     from gateway.profile_routing import ProfileRoute
     from gateway.run import GatewayRunner
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     root, profile = multiplex_homes
     (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
@@ -313,11 +313,11 @@ def test_db_handle_follows_the_active_profile_scope(multiplex_homes):
     # Constructed outside any scope, exactly as the gateway constructs it.
     assert Path(store._db.db_path) == root / "state.db"
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         assert Path(store._db.db_path) == profile / "state.db"
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     # And the scope is restored once the turn's scope exits.
     assert Path(store._db.db_path) == root / "state.db"
@@ -333,11 +333,11 @@ def test_write_under_profile_scope_lands_in_profile_store(multiplex_homes):
     root, profile = multiplex_homes
     store = _make_store(root)
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         store._db.create_session("20260817_233028_542fda58", "feishu")
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert _session_ids(profile / "state.db") == {"20260817_233028_542fda58"}
     assert _session_ids(root / "state.db") == set()
@@ -352,12 +352,12 @@ def test_handles_are_cached_per_path(multiplex_homes):
     root_second = store._db
     assert root_first is root_second
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         profile_first = store._db
         profile_second = store._db
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert profile_first is profile_second
     assert profile_first is not root_first
@@ -375,19 +375,19 @@ def test_explicitly_pinned_handle_still_wins(multiplex_homes):
 
     sentinel = object()
     store._db = sentinel
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         assert store._db is sentinel
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     # Disabling the DB (the JSONL-fallback path) must survive scope changes.
     store._db = None
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         assert store._db is None
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
@@ -403,11 +403,11 @@ def test_close_all_db_handles_sweeps_every_profile_handle(multiplex_homes):
     store = _make_store(root)
 
     root_db = store._db
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         profile_db = store._db
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     assert root_db is not profile_db
 
     store.close_all_db_handles()
@@ -445,24 +445,24 @@ def test_runner_session_db_follows_the_active_profile_scope(multiplex_homes):
     root_db = runner._session_db
     assert Path(root_db._db.db_path) == root / "state.db"
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         profile_db = runner._session_db
         assert Path(profile_db._db.db_path) == profile / "state.db"
         # Cached per path: same wrapper identity on re-access.
         assert runner._session_db is profile_db
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert runner._session_db is root_db
 
     # Pinning (how suites install fakes / disable the DB) wins across scopes.
     runner._session_db = None
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         assert runner._session_db is None
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     runner._session_db_pinned = _SESSION_DB_UNPINNED
 
     runner.close_all_session_db_handles()
@@ -519,11 +519,11 @@ def test_scoped_inbound_turn_lands_in_profile_store(multiplex_homes):
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         entry = store.get_or_create_session(_profile_source())
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert entry.session_key.startswith("agent:fitness:")
     assert _session_ids(profile / "state.db") == {entry.session_id}
@@ -535,11 +535,11 @@ def test_unscoped_explicit_reset_reaches_the_key_owner_store(multiplex_homes):
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         entry = store.get_or_create_session(_profile_source())
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     # No ambient profile scope: the key must still own both sides of the reset.
     replacement = store.reset_session(entry.session_key)
@@ -560,20 +560,20 @@ def test_unscoped_staleness_check_reads_the_key_owner_store(multiplex_homes):
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         entry = store.get_or_create_session(_profile_source())
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     # Alive in the profile store, and the root store has never heard of it.
     assert store._is_session_ended_in_db(entry.session_id) is False
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         store._db.end_session(entry.session_id, "agent_close")
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert store._is_session_ended_in_db(entry.session_id) is True
 
@@ -615,7 +615,7 @@ def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes)
         # B: the routed profile's row lives only in profiles/fitness/state.db. Routing has moved
         # the key on while this process's cached agent still holds the old id: that id is in no
         # index, so only the key names its store (the launch store has never heard of it).
-        token = set_hermes_home_override(str(profile))
+        token = set_rabbit_home_override(str(profile))
         try:
             b_entry = store.get_or_create_session(_profile_source())
             with store._lock:
@@ -625,7 +625,7 @@ def test_cached_agent_dead_check_reads_the_routed_profile_store(multiplex_homes)
             store._db.end_session(b_entry.session_id, "session_reset")  # ended outside the gateway
             assert guard(b_entry, "some-other-live-session") == (b_entry.session_id, True)
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
         # A again: B's scope and B's ended row change nothing for the default profile.
         assert guard(a_entry, "some-other-live-session") == (a_entry.session_id, False)
@@ -718,7 +718,7 @@ def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
     ownership check the failure would be indistinguishable from "no named
     owner" and silently route the row to root.
     """
-    import hermes_cli.profiles as profiles_mod
+    import rabbit_cli.profiles as profiles_mod
 
     root, _profile = multiplex_homes
     store = _multiplex_store(root)
@@ -756,14 +756,14 @@ def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_ho
     parent_id = "20260830_100000_parent01"
     child_id = "20260830_100500_child001"
 
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         db = store._db
         db.create_session(parent_id, "telegram")
         db.create_session(child_id, "telegram", parent_session_id=parent_id)
         db.end_session(parent_id, "compression")
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     entry = SessionEntry(
         session_key=key,
@@ -777,11 +777,11 @@ def test_compression_child_write_stays_in_the_parents_profile_store(multiplex_ho
     store.append_to_transcript(parent_id, {"role": "user", "content": "after-compaction"})
 
     # 1. the row landed on the child, in the profile store
-    token = set_hermes_home_override(str(profile))
+    token = set_rabbit_home_override(str(profile))
     try:
         rows = store._db.get_messages(child_id)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     assert [r["content"] for r in rows] == ["after-compaction"]
 
     # 2. the pending queue drained
@@ -818,12 +818,12 @@ def test_crash_marker_from_a_secondary_profile_survives_restart(multiplex_homes)
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
-    scope = set_hermes_home_override(str(profile))
+    scope = set_rabbit_home_override(str(profile))
     try:
         entry = store.get_or_create_session(_profile_source())
         assert store.mark_turn_active(entry.session_key) is not None
     finally:
-        reset_hermes_home_override(scope)
+        reset_rabbit_home_override(scope)
 
     # Restart: fresh store, fresh index, no profile scope anywhere.
     restarted = _restarted_store(root)
@@ -844,11 +844,11 @@ def test_default_namespace_rows_stay_in_launch_store_under_secondary_scope(multi
     root, profile = multiplex_homes
     store = _multiplex_store(root)
 
-    scope = set_hermes_home_override(str(profile))
+    scope = set_rabbit_home_override(str(profile))
     try:
         db = store._db_for_key("agent:main:telegram:dm:1")
     finally:
-        reset_hermes_home_override(scope)
+        reset_rabbit_home_override(scope)
 
     assert Path(db.db_path) == root / "state.db"
 
@@ -876,9 +876,9 @@ def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
     assert _parse_session_key(main_key)["profile"] == "main"
     assert "profile" not in _parse_session_key(default_key)
 
-    scope = set_hermes_home_override(str(main_home))
+    scope = set_rabbit_home_override(str(main_home))
     try:
         assert Path(store._db_for_key(main_key).db_path) == main_home / "state.db"
         assert Path(store._db_for_key(default_key).db_path) == root / "state.db"
     finally:
-        reset_hermes_home_override(scope)
+        reset_rabbit_home_override(scope)

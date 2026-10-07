@@ -14,19 +14,18 @@ description: "使用 FastMCP 在 Python 中构建、测试、检查、安装和�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mcp/fastmcp` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mcp/fastmcp` 安装 |
 | 路径 | `optional-skills/mcp/fastmcp` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `MCP`, `FastMCP`, `Python`, `Tools`, `Resources`, `Prompts`, `Deployment` |
-| 相关 skill | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
+| 相关 skill | [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # FastMCP
@@ -40,11 +39,11 @@ description: "使用 FastMCP 在 Python 中构建、测试、检查、安装和�
 - 在 Python 中创建新的 MCP 服务器
 - 将 API、数据库、CLI 或文件处理工作流封装为 MCP 工具
 - 除工具外还需暴露资源或 prompt
-- 在接入 Hermes 或其他客户端之前，使用 FastMCP CLI 对服务器进行冒烟测试
+- 在接入 Rabbit 或其他客户端之前，使用 FastMCP CLI 对服务器进行冒烟测试
 - 将服务器安装到 Claude Code、Claude Desktop、Cursor 或类似的 MCP 客户端
 - 为 HTTP 部署准备 FastMCP 服务器仓库
 
-若服务器已存在且只需连接到 Hermes，请使用 `native-mcp`。若目标是对现有 MCP 服务器进行临时 CLI 访问而非构建新服务器，请使用 `mcporter`。
+若服务器已存在且只需连接到 Rabbit，请使用 `native-mcp`。若目标是对现有 MCP 服务器进行临时 CLI 访问而非构建新服务器，请使用 `mcporter`。
 
 ## 前置条件
 
@@ -95,7 +94,7 @@ pip install httpx
 直接复制模板或使用脚手架辅助工具：
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
+python ~/.rabbit/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
   --template api_wrapper \
   --name "Acme API" \
   --output ./acme_server.py
@@ -104,7 +103,7 @@ python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
 可用模板：
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
+python ~/.rabbit/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
 ```
 
 如手动复制，请将 `__SERVER_NAME__` 替换为实际服务器名称。
@@ -185,9 +184,9 @@ fastmcp install cursor acme_server.py -e .
 
 使用 `fastmcp discover` 检查机器上已配置的命名 MCP 服务器。
 
-若目标是集成到 Hermes，可选择：
+若目标是集成到 Rabbit，可选择：
 
-- 使用 `native-mcp` skill，在 `~/.hermes/config.yaml` 中配置服务器，或
+- 使用 `native-mcp` skill，在 `~/.rabbit/config.yaml` 中配置服务器，或
 - 在接口稳定之前，在开发阶段继续使用 FastMCP CLI 命令
 
 ### 7. 本地契约稳定后再部署
@@ -306,9 +305,9 @@ fastmcp call server.py your_tool_name --json
 
 这通常会暴露命名不匹配、缺少必填参数或返回值无法序列化等问题。
 
-### Hermes 无法看到已部署的服务器
+### Rabbit 无法看到已部署的服务器
 
-服务器构建部分可能正确，但 Hermes 配置有误。加载 `native-mcp` skill 并在 `~/.hermes/config.yaml` 中配置服务器，然后重启 Hermes。
+服务器构建部分可能正确，但 Rabbit 配置有误。加载 `native-mcp` skill 并在 `~/.rabbit/config.yaml` 中配置服务器，然后重启 Rabbit。
 
 ## 参考资料
 

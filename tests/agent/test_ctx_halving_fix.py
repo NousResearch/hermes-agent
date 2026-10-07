@@ -71,7 +71,7 @@ class TestContextOverflowLimitSelection:
     """Context-overflow recovery must not invent a lower window size.
 
     Some providers only say "input exceeds the context window" without telling
-    Hermes what the actual maximum is.  In that case we may compress the
+    Rabbit what the actual maximum is.  In that case we may compress the
     conversation, but must not silently probe-step from a user-configured 1M
     window down to 256K/128K/64K/etc.
     """

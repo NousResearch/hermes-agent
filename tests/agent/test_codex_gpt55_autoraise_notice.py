@@ -7,7 +7,7 @@ Covers two layers:
 2. The per-profile dedupe marker (#54432) — the notice must show at most once
    per profile/config state. Before the fix it re-fired on every agent init,
    and because the gateway rebuilds the agent per inbound message it spammed
-   Discord etc. The gate persists a marker under ``$HERMES_HOME``
+   Discord etc. The gate persists a marker under ``$RABBIT_HOME``
    (profile-scoped, isolated to a tempdir by the conftest autouse fixture)
    keyed on the model slug + displayed from→to percentages, so an unchanged
    threshold stays silent across restarts while a changed threshold (or a
@@ -20,8 +20,8 @@ import contextlib
 import io
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from rabbit_constants import get_rabbit_home
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 from agent.agent_init import (
@@ -51,7 +51,7 @@ def _config(*, show_notice: bool) -> dict:
 
 def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     """Construct a real Codex gpt-5.5 agent under an isolated config."""
-    from hermes_cli import config as config_mod
+    from rabbit_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
 
@@ -96,9 +96,9 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
 
 # ── per-profile dedupe marker (#54432) ───────────────────────────────────────
 
-def test_marker_lives_under_hermes_home() -> None:
+def test_marker_lives_under_rabbit_home() -> None:
     marker = _codex_gpt55_autoraise_notice_marker()
-    assert marker.parent == get_hermes_home()
+    assert marker.parent == get_rabbit_home()
 
 def test_changed_threshold_renotifies_once() -> None:
     _record_codex_gpt55_autoraise_notice(AUTORAISE)

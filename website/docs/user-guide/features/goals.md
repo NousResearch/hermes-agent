@@ -1,18 +1,18 @@
 ---
 sidebar_position: 16
 title: "Persistent Goals"
-description: "Set a standing goal and let Hermes keep working across turns until it's done. Our take on the Ralph loop."
+description: "Set a standing goal and let Rabbit keep working across turns until it's done. Our take on the Ralph loop."
 ---
 
 # Persistent Goals (`/goal`)
 
-`/goal` gives Hermes a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Hermes automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or the turn budget runs out.
+`/goal` gives Rabbit a standing objective that survives across turns. After every turn a lightweight judge model checks whether the goal is satisfied by the assistant's last response. If not, Rabbit automatically feeds a continuation prompt back into the same session and keeps working — until the goal is achieved, you pause or clear it, or the turn budget runs out.
 
-It's our take on the **Ralph loop**, directly inspired by [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut (OpenAI). The core idea — keep a goal alive across turns and don't stop until it's achieved — is theirs. The implementation here is independent and adapted to Hermes' architecture.
+It's our take on the **Ralph loop**, directly inspired by [Codex CLI 0.128.0's `/goal`](https://github.com/openai/codex) by Eric Traut (OpenAI). The core idea — keep a goal alive across turns and don't stop until it's achieved — is theirs. The implementation here is independent and adapted to Rabbit' architecture.
 
 ## When to use it
 
-Use `/goal` for tasks where you want Hermes to iterate on its own without you re-prompting every turn:
+Use `/goal` for tasks where you want Rabbit to iterate on its own without you re-prompting every turn:
 
 - "Fix every lint error in `src/` and verify `ruff check` passes"
 - "Port feature X from repo Y, including tests, and get CI green"
@@ -23,7 +23,7 @@ Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *y
 
 ## Goals vs Kanban: which one do I want?
 
-`/goal` and [Kanban](./kanban) both keep Hermes working without you re-prompting, so it's tempting to assume one flows into the other. It doesn't — the boundary is sharp:
+`/goal` and [Kanban](./kanban) both keep Rabbit working without you re-prompting, so it's tempting to assume one flows into the other. It doesn't — the boundary is sharp:
 
 - **`/goal` is single-session.** The loop feeds continuation prompts back into *this* conversation until the judge says done. Setting a goal never creates a kanban card, never assigns work to another profile, and never fans out. There is no handoff to the board, implicit or otherwise.
 - **Kanban is a board of many tasks.** Each card is dispatched to its own worker process with its own session. Cards, dependencies, assignees, and handoffs live on the board — not in `/goal`.
@@ -32,25 +32,25 @@ Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *y
 | You want | Reach for |
 |---|---|
 | Keep iterating on one task in this chat until it's done | `/goal <text>` |
-| Many independent tasks, with dependencies, handoffs, or multiple profiles | [Kanban](./kanban) — `hermes kanban create …` |
+| Many independent tasks, with dependencies, handoffs, or multiple profiles | [Kanban](./kanban) — `rabbit kanban create …` |
 | One card on the board that should keep iterating until its acceptance criteria are met | A kanban card with `--goal` |
 
 :::note
-If you want work on the board, put it there yourself (`hermes kanban create …`) — `/goal` won't do it for you. The reverse is also true: pausing, resuming, or clearing a goal in this chat never creates, claims, or moves a kanban card.
+If you want work on the board, put it there yourself (`rabbit kanban create …`) — `/goal` won't do it for you. The reverse is also true: pausing, resuming, or clearing a goal in this chat never creates, claims, or moves a kanban card.
 :::
 
 ## Quick start
 
 ```
-/goal Fix every failing test in tests/hermes_cli/ and make sure scripts/run_tests.sh passes for that directory
+/goal Fix every failing test in tests/rabbit_cli/ and make sure scripts/run_tests.sh passes for that directory
 ```
 
 What you'll see:
 
 1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
-2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
+2. **Turn 1 runs** — Rabbit starts working as if you'd sent the goal as a normal message.
 3. **Judge runs** — after the turn, the judge model decides `done`, `continue`, or `blocked`.
-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
+4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Rabbit takes the next step automatically.
 5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
 
 ## Commands
@@ -74,13 +74,13 @@ What you'll see:
 
 The classic CLI, TUI, Desktop, dashboard chat, and messaging gateway use one shared `/goal` command handler. This includes draft/show, inline contracts, wait/unwait, quality gates, and the clear/stop/done aliases. Desktop goal controls use the same handler, too. ACP does not currently advertise or implement `/goal`.
 
-`/goal draft <text>` both creates the goal and starts its first turn, including when drafting is unavailable and Hermes falls back to a free-form goal. `draft` is a whole-word subcommand: `/goal drafting docs` keeps `drafting docs` as the literal objective without calling the draft model.
+`/goal draft <text>` both creates the goal and starts its first turn, including when drafting is unavailable and Rabbit falls back to a free-form goal. `draft` is a whole-word subcommand: `/goal drafting docs` keeps `drafting docs` as the literal objective without calling the draft model.
 
 Messaging platforms retain their access rules: `/goal gate add` requires an explicitly configured gateway admin; listing, removing, and clearing gates remain available for recovery. Rendering and turn scheduling are surface-specific, but command parsing and persisted goal changes are shared.
 
 ## Completion contracts
 
-A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.
+A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Rabbit adapts this as an optional **completion contract** layered on top of the existing goal loop.
 
 A contract has five fields, all optional:
 
@@ -90,19 +90,19 @@ A contract has five fields, all optional:
 | `verification` | The specific test / command / artifact that *proves* the outcome. |
 | `constraints` | What must not change or regress. |
 | `boundaries` | Which files, dirs, tools, or systems are in scope. |
-| `stop_when` | The condition under which Hermes should stop and ask for input. |
+| `stop_when` | The condition under which Rabbit should stop and ask for input. |
 
 When a contract is set, both prompts change: the **continuation prompt** tells the agent to target the verification surface and respect the constraints, and the **judge prompt** decides `done` *only when the verification criterion is met with concrete evidence* (a command result, file excerpt, test output) — not a loose "looks done" claim. This directly tightens the most common `/goal` failure mode (premature completion or endless over-continuation on an underspecified objective).
 
 ### Two ways to set a contract
 
-**1. Let Hermes draft it** (recommended — adapted from Codex's "let the agent draft the goal" tip):
+**1. Let Rabbit draft it** (recommended — adapted from Codex's "let the agent draft the goal" tip):
 
 ```
 /goal draft Migrate the auth service from session cookies to JWT
 ```
 
-Hermes expands your one-liner into a full contract via the `goal_judge` auxiliary model, sets it, and shows you the result so you can review or tighten any field. If the aux model is unavailable, it falls back to a plain free-form goal — drafting never blocks setting a goal.
+Rabbit expands your one-liner into a full contract via the `goal_judge` auxiliary model, sets it, and shows you the result so you can review or tighten any field. If the aux model is unavailable, it falls back to a plain free-form goal — drafting never blocks setting a goal.
 
 **2. Write it inline** with `field: value` lines:
 
@@ -139,7 +139,7 @@ A completion contract makes the judge stricter, but the judge is still an LLM re
 
 ```
 /goal Fix the flaky session tests
-/goal gate add scripts/run_tests.sh tests/hermes_cli/test_goals.py
+/goal gate add scripts/run_tests.sh tests/rabbit_cli/test_goals.py
 ```
 
 How it works, each turn:
@@ -169,7 +169,7 @@ You don't type anything for this — it's the judge's decision, made from the pr
 
 | Command | What it does |
 |---|---|
-| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. The PID must be a live process on the Hermes host; a remote or already-exited PID is rejected (and a judge `wait_on_pid` naming one continues instead of parking). |
+| `/goal wait <pid> [reason]` | Manually park the loop until the process with that PID exits. The PID must be a live process on the Rabbit host; a remote or already-exited PID is rejected (and a judge `wait_on_pid` naming one continues instead of parking). |
 | `/goal unwait` | Clear any wait barrier (judge- or manually-set) and resume immediately. |
 
 The barrier (pid- or time-based) is persisted with the goal in `SessionDB.state_meta`, so it survives `/resume`. `/goal pause`, `/goal resume`, and `/goal clear` all drop it. If the PID is already dead when the barrier is set (or dies while parked), or the time deadline passes, the barrier clears on the next check — a stale barrier can never wedge the loop.
@@ -180,7 +180,7 @@ Typical flow: the agent pushes a PR, starts a CI watcher with `terminal(backgrou
 
 ### The judge
 
-After every turn, Hermes calls an auxiliary model with:
+After every turn, Rabbit calls an auxiliary model with:
 
 - The standing goal text
 - The agent's most recent final response (last ~4 KB of text)
@@ -190,11 +190,11 @@ The judge is deliberately conservative: it marks a goal `done` only when the res
 
 ### Fail-open semantics
 
-If the judge errors (network blip, malformed response, unavailable aux client), Hermes treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
+If the judge errors (network blip, malformed response, unavailable aux client), Rabbit treats the verdict as `continue` — a broken judge never wedges progress. The **turn budget** is the real backstop.
 
 ### Turn budget
 
-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Rabbit auto-pauses and tells you exactly how to proceed:
 
 ```
 ⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
@@ -220,15 +220,15 @@ Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That me
 
 ### Prompt cache
 
-The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
+The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Rabbit' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
 
 ## Configuration
 
-Add to `~/.hermes/config.yaml`:
+Add to `~/.rabbit/config.yaml`:
 
 ```yaml
 goals:
-  # Max continuation turns before Hermes auto-pauses and asks you to
+  # Max continuation turns before Rabbit auto-pauses and asks you to
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
@@ -250,31 +250,31 @@ The judge call is small (~200 output tokens) and runs once per turn, so a cheap 
 ## Example walkthrough
 
 ```
-You: /goal Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
+You: /goal Create four files ~/.rabbit/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
-  ⊙ Goal set (20-turn budget): Create four files ~/.hermes/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
+  ⊙ Goal set (20-turn budget): Create four files ~/.rabbit/cache/scratch/note_{1..4}.txt, one per turn, each containing its number as text
 
-Hermes: Creating ~/.hermes/cache/scratch/note_1.txt now.
-  💻 echo "1" > ~/.hermes/cache/scratch/note_1.txt   (0.1s)
-  I've created ~/.hermes/cache/scratch/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
+Rabbit: Creating ~/.rabbit/cache/scratch/note_1.txt now.
+  💻 echo "1" > ~/.rabbit/cache/scratch/note_1.txt   (0.1s)
+  I've created ~/.rabbit/cache/scratch/note_1.txt with the content "1". I'll continue with the remaining files on the next turn as you specified.
 
   ↻ Continuing toward goal (1/20): Only 1 of 4 files has been created; 3 files remain.
 
-Hermes: [Continuing toward your standing goal]
-  💻 echo "2" > ~/.hermes/cache/scratch/note_2.txt   (0.1s)
-  Created ~/.hermes/cache/scratch/note_2.txt. Two more to go.
+Rabbit: [Continuing toward your standing goal]
+  💻 echo "2" > ~/.rabbit/cache/scratch/note_2.txt   (0.1s)
+  Created ~/.rabbit/cache/scratch/note_2.txt. Two more to go.
 
   ↻ Continuing toward goal (2/20): 2 of 4 files created; 2 remain.
 
-Hermes: [Continuing toward your standing goal]
-  💻 echo "3" > ~/.hermes/cache/scratch/note_3.txt   (0.1s)
-  Created ~/.hermes/cache/scratch/note_3.txt.
+Rabbit: [Continuing toward your standing goal]
+  💻 echo "3" > ~/.rabbit/cache/scratch/note_3.txt   (0.1s)
+  Created ~/.rabbit/cache/scratch/note_3.txt.
 
   ↻ Continuing toward goal (3/20): 3 of 4 files created; 1 remains.
 
-Hermes: [Continuing toward your standing goal]
-  💻 echo "4" > ~/.hermes/cache/scratch/note_4.txt   (0.1s)
-  All four files have been created: ~/.hermes/cache/scratch/note_1.txt through ~/.hermes/cache/scratch/note_4.txt, each containing its number.
+Rabbit: [Continuing toward your standing goal]
+  💻 echo "4" > ~/.rabbit/cache/scratch/note_4.txt   (0.1s)
+  All four files have been created: ~/.rabbit/cache/scratch/note_1.txt through ~/.rabbit/cache/scratch/note_4.txt, each containing its number.
 
   ✓ Goal achieved: All four files were created with the specified content, completing the goal.
 
@@ -295,4 +295,4 @@ If you find a judge verdict unconvincing, the reason text in the `↻ Continuing
 
 ## Attribution
 
-`/goal` is Hermes' take on the **Ralph loop** pattern. The user-facing design — keep a goal alive across turns, don't stop until it's achieved, with create/pause/resume/clear controls — was popularised and shipped in [Codex CLI 0.128.0](https://github.com/openai/codex) by Eric Traut on OpenAI's Codex team. Our implementation is independent (central `CommandDef` registry, `SessionDB.state_meta` persistence, auxiliary-client judge, adapter-FIFO continuation on the gateway side) but the idea is theirs. Credit where credit's due.
+`/goal` is Rabbit' take on the **Ralph loop** pattern. The user-facing design — keep a goal alive across turns, don't stop until it's achieved, with create/pause/resume/clear controls — was popularised and shipped in [Codex CLI 0.128.0](https://github.com/openai/codex) by Eric Traut on OpenAI's Codex team. Our implementation is independent (central `CommandDef` registry, `SessionDB.state_meta` persistence, auxiliary-client judge, adapter-FIFO continuation on the gateway side) but the idea is theirs. Credit where credit's due.

@@ -12,7 +12,7 @@ const click = (init: Partial<MouseEvent> = {}) => ({ ctrlKey: false, metaKey: fa
 beforeEach(() => {
   openExternal.mockClear()
   closeRightRail()
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { openExternal } })
+  Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { openExternal } })
   // jsdom reports a non-mac platform, so the activation modifier resolves to
   // Ctrl unless we say otherwise.
   Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })

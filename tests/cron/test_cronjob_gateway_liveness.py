@@ -4,7 +4,7 @@ The builtin cron ticker only runs inside the gateway process. Before the
 fix, ``cronjob(action="create")`` returned a clean success even with no
 gateway running, so the agent confidently told the user a recurring task
 was scheduled while the job could never fire. The CLI already warned
-(``hermes cron list`` / ``hermes cron status``); the agent path did not.
+(``rabbit cron list`` / ``rabbit cron status``); the agent path did not.
 
 Contract pinned here:
 
@@ -23,17 +23,17 @@ import json
 import pytest
 
 @pytest.fixture
-def hermes_env(tmp_path, monkeypatch):
-    """Isolate HERMES_HOME for each test so jobs don't leak."""
-    home = tmp_path / ".hermes"
+def rabbit_env(tmp_path, monkeypatch):
+    """Isolate RABBIT_HOME for each test so jobs don't leak."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "cron").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     import importlib
 
-    import hermes_constants
-    importlib.reload(hermes_constants)
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
     import cron.jobs
     importlib.reload(cron.jobs)
     import cron.scheduler
@@ -55,7 +55,7 @@ def _create_job() -> dict:
     )
 
 class TestCreateSurfacesGatewayLiveness:
-    def test_create_with_gateway_running_has_no_warning(self, hermes_env):
+    def test_create_with_gateway_running_has_no_warning(self, rabbit_env):
         with patch_liveness(provider="builtin", pids=[12345]) as patches:
             result = _create_job()
 
@@ -63,7 +63,7 @@ class TestCreateSurfacesGatewayLiveness:
         assert result["gateway_running"] is True
         assert "warning" not in result
 
-    def test_create_without_gateway_warns_not_scheduled(self, hermes_env):
+    def test_create_without_gateway_warns_not_scheduled(self, rabbit_env):
         with (
             patch_liveness(provider="builtin", pids=[]),
         ):
@@ -75,17 +75,17 @@ class TestCreateSurfacesGatewayLiveness:
         assert result["gateway_running"] is False
         assert result.get("warning"), "the model must be told the job won't fire (#87033)"
 
-    def test_non_builtin_provider_is_exempt(self, hermes_env):
-        """External schedulers (e.g. Chronos) fire without the gateway —
+    def test_non_builtin_provider_is_exempt(self, rabbit_env):
+        """External schedulers fire without the gateway —
         no false alarm may be raised for them."""
-        with patch_liveness(provider="chronos", pids=[]):
+        with patch_liveness(provider="acme-scheduler", pids=[]):
             result = _create_job()
 
         assert result["success"] is True
         assert result["gateway_running"] is True
         assert "warning" not in result
 
-    def test_failed_probe_stays_neutral(self, hermes_env):
+    def test_failed_probe_stays_neutral(self, rabbit_env):
         """If liveness cannot be determined, say nothing either way."""
         with patch_liveness(provider=None, pids=[]):  # probe raises → None
             result = _create_job()
@@ -104,7 +104,7 @@ class TestListSurfacesGatewayLiveness:
 
         return json.loads(cronjob(action="list"))
 
-    def test_list_with_gateway_running_has_no_warning(self, hermes_env):
+    def test_list_with_gateway_running_has_no_warning(self, rabbit_env):
         _create_job()  # ensure at least one job exists
         with patch_liveness(provider="builtin", pids=[12345]):
             result = self._list_jobs()
@@ -114,7 +114,7 @@ class TestListSurfacesGatewayLiveness:
         assert result["gateway_running"] is True
         assert "warning" not in result
 
-    def test_list_without_gateway_warns_jobs_inert(self, hermes_env):
+    def test_list_without_gateway_warns_jobs_inert(self, rabbit_env):
         _create_job()
         with patch_liveness(provider="builtin", pids=[]):
             result = self._list_jobs()
@@ -123,7 +123,7 @@ class TestListSurfacesGatewayLiveness:
         assert result["gateway_running"] is False
         assert result.get("warning"), "the model must be told the listed jobs won't fire (#87033)"
 
-    def test_list_empty_without_gateway_stays_quiet(self, hermes_env):
+    def test_list_empty_without_gateway_stays_quiet(self, rabbit_env):
         """Nothing scheduled + no gateway → no alarm; there is nothing inert."""
         with patch_liveness(provider="builtin", pids=[]):
             result = self._list_jobs()
@@ -132,9 +132,9 @@ class TestListSurfacesGatewayLiveness:
         assert result["count"] == 0
         assert "warning" not in result
 
-    def test_list_non_builtin_provider_is_exempt(self, hermes_env):
+    def test_list_non_builtin_provider_is_exempt(self, rabbit_env):
         _create_job()
-        with patch_liveness(provider="chronos", pids=[]):
+        with patch_liveness(provider="acme-scheduler", pids=[]):
             result = self._list_jobs()
 
         assert result["success"] is True
@@ -173,19 +173,19 @@ class _LivenessPatches:
 
         self._stack.enter_context(
             patch(
-                "hermes_cli.cron._active_cron_provider_name",
+                "rabbit_cli.cron._active_cron_provider_name",
                 side_effect=_fake_provider_name,
             )
         )
         self._stack.enter_context(
             patch(
-                "hermes_cli.gateway.find_gateway_pids",
+                "rabbit_cli.gateway.find_gateway_pids",
                 return_value=list(self._pids),
             )
         )
         self._stack.enter_context(
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "rabbit_cli.gateway.named_profile_served_by_running_multiplexer",
                 return_value=False,
             )
         )
@@ -213,7 +213,7 @@ class TestRuntimeLockFirstLiveness:
     gateway's lifetime and short-circuits to True before the pid scan.
     """
 
-    def test_lock_active_reports_alive_despite_empty_pid_scan(self, hermes_env):
+    def test_lock_active_reports_alive_despite_empty_pid_scan(self, rabbit_env):
         """The reported false alarm: lock held, pid scan empty → alive."""
         _create_job()
         with patch_liveness(provider="builtin", pids=[], lock_active=True):
@@ -228,26 +228,26 @@ class TestRuntimeLockFirstLiveness:
     def test_lock_inactive_falls_back_to_pid_scan(self):
         from unittest.mock import patch
 
-        import hermes_cli.cron as cron_cli
+        import rabbit_cli.cron as cron_cli
 
         with (
-            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("rabbit_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
-            patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
+            patch("rabbit_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
 
     def test_no_lock_no_pids_is_false(self):
         from unittest.mock import patch
 
-        import hermes_cli.cron as cron_cli
+        import rabbit_cli.cron as cron_cli
 
         with (
-            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("rabbit_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
-            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch("rabbit_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "rabbit_cli.gateway.named_profile_served_by_running_multiplexer",
                 return_value=False,
             ),
         ):
@@ -259,15 +259,15 @@ class TestRuntimeLockFirstLiveness:
         when both probes fail)."""
         from unittest.mock import patch
 
-        import hermes_cli.cron as cron_cli
+        import rabbit_cli.cron as cron_cli
 
         with (
-            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("rabbit_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch(
                 "gateway.status.is_gateway_runtime_lock_active",
                 side_effect=OSError("lock probe failed"),
             ),
-            patch("hermes_cli.gateway.find_gateway_pids", return_value=[424242]),
+            patch("rabbit_cli.gateway.find_gateway_pids", return_value=[424242]),
         ):
             assert cron_cli._builtin_gateway_liveness() is True
 
@@ -276,15 +276,15 @@ class TestRuntimeLockFirstLiveness:
         from unittest.mock import patch
 
         from cron.jobs import record_ticker_heartbeat
-        import hermes_cli.cron as cron_cli
+        import rabbit_cli.cron as cron_cli
 
         record_ticker_heartbeat(success=True)
         with (
-            patch("hermes_cli.cron._active_cron_provider_name", return_value="builtin"),
+            patch("rabbit_cli.cron._active_cron_provider_name", return_value="builtin"),
             patch("gateway.status.is_gateway_runtime_lock_active", return_value=False),
-            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch("rabbit_cli.gateway.find_gateway_pids", return_value=[]),
             patch(
-                "hermes_cli.gateway.named_profile_served_by_running_multiplexer",
+                "rabbit_cli.gateway.named_profile_served_by_running_multiplexer",
                 return_value=True,
             ),
         ):

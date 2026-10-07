@@ -53,7 +53,7 @@ test('a desktop-serve publication matches the ledger record by pid, port, and fi
 })
 
 test('lookup adopts an owner-only desktop-serve token and ignores a world-readable one', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-host-token-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-host-token-'))
   const token = 'published-session-token'
 
   const record = {
@@ -86,7 +86,7 @@ test('lookup adopts an owner-only desktop-serve token and ignores a world-readab
 })
 
 test('a withheld dashboard token adopts the on-disk published token instead of spawning', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-host-token-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-host-token-'))
   const token = 'published-session-token'
 
   fs.chmodSync(directory, 0o700)

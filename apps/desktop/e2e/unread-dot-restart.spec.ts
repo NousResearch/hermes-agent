@@ -89,7 +89,7 @@ test.describe('unread dot survives app restart', () => {
   })
 
   /** Relaunch the desktop app against the SAME sandbox (same userData →
-   *  same localStorage, same HERMES_HOME → same session store). */
+   *  same localStorage, same RABBIT_HOME → same session store). */
   async function restartApp(): Promise<void> {
     await app.close()
 

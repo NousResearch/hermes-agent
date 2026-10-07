@@ -1,14 +1,14 @@
 ---
 sidebar_position: 5
 title: "WhatsApp"
-description: "Set up Hermes Agent as a WhatsApp bot via the built-in Baileys bridge"
+description: "Set up Rabbit Agent as a WhatsApp bot via the built-in Baileys bridge"
 ---
 
 # WhatsApp Setup
 
-Hermes connects to WhatsApp through a built-in bridge based on **Baileys**. This works by emulating a WhatsApp Web session — **not** through the official WhatsApp Business API. No Meta developer account or Business verification is required.
+Rabbit connects to WhatsApp through a built-in bridge based on **Baileys**. This works by emulating a WhatsApp Web session — **not** through the official WhatsApp Business API. No Meta developer account or Business verification is required.
 
-> Run `hermes gateway setup` and pick **WhatsApp** for a guided walk-through.
+> Run `rabbit gateway setup` and pick **WhatsApp** for a guided walk-through.
 
 :::tip Two WhatsApp integrations
 This page is for the **Baileys bridge** — quick to set up, personal accounts, no public URL needed, ban risk.
@@ -27,14 +27,14 @@ WhatsApp does **not** officially support third-party bots outside the Business A
 
 :::warning WhatsApp Web Protocol Updates
 WhatsApp periodically updates their Web protocol, which can temporarily break compatibility
-with third-party bridges. When this happens, Hermes will update the bridge dependency. If the
-bot stops working after a WhatsApp update, pull the latest Hermes version and re-pair.
+with third-party bridges. When this happens, Rabbit will update the bridge dependency. If the
+bot stops working after a WhatsApp update, pull the latest Rabbit version and re-pair.
 :::
 
 ## Multiple profiles
 
 The host multiplexer can serve a separate paired WhatsApp session for each profile.
-Run `hermes -p work whatsapp` to pair a secondary profile, then enable WhatsApp
+Run `rabbit -p work whatsapp` to pair a secondary profile, then enable WhatsApp
 for that profile. An enabled profile without `creds.json` is skipped with the
 `whatsapp_unpaired` status and its pairing command.
 
@@ -44,7 +44,7 @@ record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
 subsequent starts. Operators can pre-create that file with a port number; delete
 it to have a new port allocated. The launch profile uses port 3000 unless it
 already has that file (from serving as a secondary), in which case its gateway
-and `hermes send --to whatsapp:<chat_id>` both keep using the recorded port.
+and `rabbit send --to whatsapp:<chat_id>` both keep using the recorded port.
 
 A secondary adopts a bridge already running on its port only when its own
 session pidfile identifies that process (pid, kernel start time, and the port it
@@ -53,7 +53,7 @@ what a gateway crash leaves behind. An unhealthy one is reaped by that same
 identity and restarted. Any other process bound on the port is a fatal error
 for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a
 distinct free port, or stop the process holding it. Other
-profiles continue running. `hermes gateway status --profile work` reports the
+profiles continue running. `rabbit gateway status --profile work` reports the
 profile's own WhatsApp adapter rather than shared ingress.
 
 Profiles that each run their own gateway, rather than one multiplexed gateway,
@@ -73,11 +73,11 @@ adopted and never stopped: the second profile's WhatsApp fails to start with
 `whatsapp_bridge_foreign_session`, naming the port and the other session. A
 process that holds the port but does not answer `/health` in time is left
 running too, and WhatsApp fails with the retryable
-`whatsapp_bridge_unresponsive`. `hermes send --to whatsapp:<chat_id>` and cron
+`whatsapp_bridge_unresponsive`. `rabbit send --to whatsapp:<chat_id>` and cron
 delivery check the same field and send nothing through another profile's bridge
 or through one whose `/health` fails. If you
 override `session_path`, keep it distinct per profile, or the profiles share one
-WhatsApp login. Bridges started by an older Hermes report no session directory
+WhatsApp login. Bridges started by an older Rabbit report no session directory
 and are restarted once, as after a bridge update.
 
 ## Two Modes
@@ -101,7 +101,7 @@ Unlike older browser-driven bridges, the current Baileys-based bridge does **not
 ## Step 1: Run the Setup Wizard
 
 ```bash
-hermes whatsapp
+rabbit whatsapp
 ```
 
 The wizard will:
@@ -141,13 +141,13 @@ After getting the number:
 
 1. Install WhatsApp on a phone (or use WhatsApp Business app with dual-SIM)
 2. Register the new number with WhatsApp
-3. Run `hermes whatsapp` and scan the QR code from that WhatsApp account
+3. Run `rabbit whatsapp` and scan the QR code from that WhatsApp account
 
 ---
 
-## Step 3: Configure Hermes
+## Step 3: Configure Rabbit
 
-Add the following to your `~/.hermes/.env` file:
+Add the following to your `~/.rabbit/.env` file:
 
 ```bash
 # Required
@@ -167,7 +167,7 @@ To use the pairing flow instead, remove both variables and rely on the
 [DM pairing system](../security.md#dm-pairing-system).
 :::
 
-Optional behavior settings in `~/.hermes/config.yaml`:
+Optional behavior settings in `~/.rabbit/config.yaml`:
 
 ```yaml
 unauthorized_dm_behavior: pair
@@ -196,9 +196,9 @@ bot, or `/commands` (groups in `free_response_chats` are exempt).
 Then start the gateway:
 
 ```bash
-hermes gateway              # Foreground
-hermes gateway install      # Install as a user service
-sudo hermes gateway install --system   # Linux only: boot-time system service
+rabbit gateway              # Foreground
+rabbit gateway install      # Install as a user service
+sudo rabbit gateway install --system   # Linux only: boot-time system service
 ```
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
@@ -207,7 +207,7 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ## Session Persistence
 
-The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:
+The Baileys bridge saves its session under `~/.rabbit/platforms/whatsapp/session`. This means:
 
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
@@ -221,7 +221,7 @@ If the session breaks (phone reset, WhatsApp update, manually unlinked), you'll 
 errors in the gateway logs. To fix it:
 
 ```bash
-hermes whatsapp
+rabbit whatsapp
 ```
 
 This generates a fresh QR code. Scan it again and the session is re-established. The gateway
@@ -232,14 +232,14 @@ with reconnection logic.
 
 ## Voice Messages
 
-Hermes supports voice on WhatsApp:
+Rabbit supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+- Agent responses are prefixed with "☤ **Rabbit Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
@@ -290,7 +290,7 @@ All of this works out of the box in bot (Baileys) mode; no configuration needed.
 WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **0.3s**, extended to **1s** for very long fragments; capped at 2s / 4s). Tune via `config.yaml`:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 gateway:
   platforms:
     whatsapp:
@@ -312,14 +312,14 @@ Replying to (quoting) an earlier message gives the agent the quoted text as cont
 | Problem | Solution |
 |---------|----------|
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
-| **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
-| **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
-| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
-| **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
-| **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
-| **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
+| **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `rabbit whatsapp`. |
+| **Session not persisting** | Check that `~/.rabbit/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
+| **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `rabbit whatsapp` if needed. |
+| **Bridge crashes or reconnect loops** | Restart the gateway, update Rabbit, and re-pair if the session was invalidated by a WhatsApp protocol change. |
+| **Bot stops working after WhatsApp update** | Update Rabbit to get the latest bridge version, then re-pair. |
+| **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `rabbit gateway install` to re-snapshot your current PATH into the plist, then `rabbit gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
 | **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
-| **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
+| **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.rabbit/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---
 
@@ -339,8 +339,8 @@ whatsapp:
   unauthorized_dm_behavior: ignore
 ```
 
-- The `~/.hermes/platforms/whatsapp/session` directory contains full session credentials — protect it like a password
-- Set file permissions: `chmod 700 ~/.hermes/platforms/whatsapp/session`
+- The `~/.rabbit/platforms/whatsapp/session` directory contains full session credentials — protect it like a password
+- Set file permissions: `chmod 700 ~/.rabbit/platforms/whatsapp/session`
 - Use a **dedicated phone number** for the bot to isolate risk from your personal account
 - If you suspect compromise, unlink the device from WhatsApp → Settings → Linked Devices
 - Phone numbers in logs are partially redacted, but review your log retention policy

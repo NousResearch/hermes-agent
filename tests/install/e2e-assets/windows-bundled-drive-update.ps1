@@ -10,9 +10,9 @@
 # accessibility engages for a UIA client.
 #
 # Sequence, each step polled with screenshots into -ProofDir:
-#   1. find the Hermes window (by process id, NOT window-title guesswork)
+#   1. find the Rabbit window (by process id, NOT window-title guesswork)
 #   2. click the in-app update trigger: the "Update now" button (i18n 'en'
-#      updates-overlay: "A new version of Hermes is ready. Update now and
+#      updates-overlay: "A new version of Rabbit is ready. Update now and
 #      Windows will finish it for you."). Names matched case-insensitively
 #      on 'update' for the button the app owns; NEVER an internal apply call.
 #   3. when the OS App Installer confirmation window appears, click its
@@ -133,7 +133,7 @@ while ((Get-Date) -lt $deadline -and -not $clicked) {
     if ($win) {
         $hit = Find-InvokableButton -Root $win -Patterns @(
             '^Update now',            # en: the packaged overlay's primary action
-            'Update Hermes',          # en settings: About surface
+            'Update Rabbit',          # en settings: About surface
             '^Update$'
         )
         if ($hit) {

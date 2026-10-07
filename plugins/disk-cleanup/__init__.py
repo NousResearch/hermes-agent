@@ -1,4 +1,4 @@
-"""disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
+"""disk-cleanup plugin — auto-cleanup of ephemeral Rabbit session files.
 
 ``pre_tool_call`` + ``post_tool_call`` silently track test/temp paths CREATED by write_file/patch/terminal;
 ``on_session_end`` runs :func:`disk_cleanup.quick` when any test file was tracked this turn;
@@ -38,7 +38,7 @@ def _extract_paths_from_terminal(args: Dict[str, Any]) -> Set[str]:
     paths: Set[str] = set()
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
-        # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`.
+        # Tokenise the command — catches `touch /tmp/rabbit-x/test_foo.py`.
         # ``posix`` follows the host so Windows backslash paths survive
         # (``shlex.split(posix=True)`` would eat them as escapes).
         # Non-posix mode keeps quote characters in tokens, so strip a fully
@@ -151,7 +151,7 @@ Subcommands:
 
 Categories: temp | test | research | download | chrome-profile | cron-output | other
 
-All operations are scoped to HERMES_HOME and /tmp/hermes-*.  # no-tmp: ok — legacy scratch scope this plugin cleans up
+All operations are scoped to RABBIT_HOME and /tmp/rabbit-*.  # no-tmp: ok — legacy scratch scope this plugin cleans up
 Test files are auto-tracked on write_file / terminal and auto-cleaned at session end.
 """
 
@@ -198,7 +198,7 @@ def _cmd_track(argv: List[str]) -> str:
         return f"Unknown category '{category}'. Allowed: {sorted(dg.ALLOWED_CATEGORIES)}"
     if dg.track(path_arg, category, silent=True):
         return f"Tracked {path_arg} as '{category}'."
-    return f"Not tracked (already present, missing, or outside HERMES_HOME): {path_arg}"
+    return f"Not tracked (already present, missing, or outside RABBIT_HOME): {path_arg}"
 
 
 def _cmd_forget(argv: List[str]) -> str:
@@ -233,4 +233,4 @@ def register(ctx) -> None:
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command("disk-cleanup", handler=_handle_slash,
-                         description="Track and clean up ephemeral Hermes session files.")
+                         description="Track and clean up ephemeral Rabbit session files.")

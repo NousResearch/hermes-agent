@@ -2,10 +2,10 @@
 the FULL runtime scope of the requested profile (home + secrets + terminal), the launch profile
 included once the process multiplexes.
 
-Regression for the silent cross-profile secret leak class: ``hermes serve`` hosted many profile
+Regression for the silent cross-profile secret leak class: ``rabbit serve`` hosted many profile
 homes but never called ``set_multiplex_active(True)``, so every unscoped ``get_secret`` read for a
 secondary silently returned the LAUNCH profile's ``os.environ`` value; ``@_profile_scoped`` bound
-only HERMES_HOME. And the launch-profile asymmetry: a default-member hosted-room turn in a
+only RABBIT_HOME. And the launch-profile asymmetry: a default-member hosted-room turn in a
 ``multiplex_profiles: true`` gateway died at agent build with ``UnscopedSecretError``.
 """
 
@@ -35,28 +35,28 @@ B_CODEX_URL = "https://secondary.example.invalid/codex"
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
     """Launch home (root) + secondary ``profiles/b``; B's config references both tokens."""
-    root = tmp_path / "hermes_home"
+    root = tmp_path / "rabbit_home"
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
     (root / ".env").write_text(
-        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n"
-        f"HERMES_CODEX_BASE_URL={A_CODEX_URL}\n",
+        f"A_ONLY_TOKEN={A_VAL}\nRABBIT_API_KEY={A_API_KEY}\nRABBIT_BASE_URL={A_BASE_URL}\n"
+        f"RABBIT_CODEX_BASE_URL={A_CODEX_URL}\n",
         encoding="utf-8")
     (b / ".env").write_text(
-        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n"
-        f"HERMES_CODEX_BASE_URL={B_CODEX_URL}\n",
+        f"B_ONLY_TOKEN={B_VAL}\nRABBIT_API_KEY={B_API_KEY}\nRABBIT_BASE_URL={B_BASE_URL}\n"
+        f"RABBIT_CODEX_BASE_URL={B_CODEX_URL}\n",
         encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
             "probe:\n  a_ref: ${A_ONLY_TOKEN}\n  b_ref: ${B_ONLY_TOKEN}\n  env_ref: ${INJECTED_TOKEN}\n",
             encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
-    monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
-    monkeypatch.setenv("HERMES_BASE_URL", A_BASE_URL)
-    monkeypatch.setenv("HERMES_CODEX_BASE_URL", A_CODEX_URL)
+    monkeypatch.setenv("RABBIT_API_KEY", A_API_KEY)
+    monkeypatch.setenv("RABBIT_BASE_URL", A_BASE_URL)
+    monkeypatch.setenv("RABBIT_CODEX_BASE_URL", A_CODEX_URL)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
-    monkeypatch.setattr(server, "_hermes_home", root)
+    monkeypatch.setattr(server, "_rabbit_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(lpp, "_snapshot", None)
     from agent import secret_scope
@@ -117,20 +117,20 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     seen = {}
 
     def fake_oneshot(**kwargs):
-        seen["oneshot"] = (Path(os.environ.get("HERMES_HOME", "")), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
-        from hermes_constants import get_hermes_home
-        seen["oneshot_home"] = Path(get_hermes_home())
+        seen["oneshot"] = (Path(os.environ.get("RABBIT_HOME", "")), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
+        from rabbit_constants import get_rabbit_home
+        seen["oneshot_home"] = Path(get_rabbit_home())
         return "t"
 
     monkeypatch.setattr("agent.oneshot.run_oneshot", fake_oneshot)
     monkeypatch.setattr(server, "_model_picker_context", lambda agent: object())
 
     def build_payload(ctx, **kwargs):
-        from hermes_constants import get_hermes_home
-        seen["options"] = (Path(get_hermes_home()), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
+        from rabbit_constants import get_rabbit_home
+        seen["options"] = (Path(get_rabbit_home()), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
         return {"providers": []}
 
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload", build_payload)
+    monkeypatch.setattr("rabbit_cli.inventory.build_model_options_payload", build_payload)
 
     r = server._methods["llm.oneshot"]("r1", {"profile": "b", "instructions": "x", "input": "y"})
     assert r["result"]["text"] == "t"
@@ -144,13 +144,13 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
 def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
     """Manual compression must resolve secrets from its session across an A→B→A sequence."""
     from agent.secret_scope import get_secret
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     root, b = two_homes
     seen = []
 
     def observe_scope():
-        seen.append((Path(get_hermes_home()), get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
+        seen.append((Path(get_rabbit_home()), get_secret("A_ONLY_TOKEN"), get_secret("B_ONLY_TOKEN")))
 
     def invoke(profile_home):
         sid = f"compress-{len(seen)}"
@@ -207,7 +207,7 @@ def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, 
 def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
     """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
     from agent.secret_scope import UnscopedSecretError, get_secret
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
     from tui_gateway.transport import StdioTransport
 
     root, b = two_homes
@@ -215,10 +215,10 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
 
     def fake_start_review(agent, snapshot, prompt):
         seen.append((
-            Path(get_hermes_home()),
+            Path(get_rabbit_home()),
             get_secret("A_ONLY_TOKEN"),
             get_secret("B_ONLY_TOKEN"),
-            get_secret("HERMES_CODEX_BASE_URL"),
+            get_secret("RABBIT_CODEX_BASE_URL"),
         ))
         return {"status": "dispatched", "delegation_id": "deleg_x"}
 
@@ -253,7 +253,7 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
     invoke(None)
     _probe("b")
     with pytest.raises(UnscopedSecretError):
-        get_secret("HERMES_CODEX_BASE_URL")
+        get_secret("RABBIT_CODEX_BASE_URL")
     invoke(b)
     invoke(None)
 
@@ -262,7 +262,7 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
         (b, None, B_VAL, B_CODEX_URL),
         (root, A_VAL, None, A_CODEX_URL),
     ]
-    assert os.environ["HERMES_CODEX_BASE_URL"] == A_CODEX_URL
+    assert os.environ["RABBIT_CODEX_BASE_URL"] == A_CODEX_URL
 
 
 def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
@@ -271,7 +271,7 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
     reads ``get_secret`` with no scope active and the mirror reports "live session sync failed:
     ... UnscopedSecretError" while the session stays on its previous route."""
     from agent.secret_scope import UnscopedSecretError, get_secret
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     root, b = two_homes
     seen = []
@@ -279,10 +279,10 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
     def fake_apply_model_switch(sid, session, arg, **kwargs):
         # What switch_model → resolve_runtime does with get_secret for the target provider.
         seen.append((
-            Path(get_hermes_home()),
+            Path(get_rabbit_home()),
             get_secret("A_ONLY_TOKEN"),
             get_secret("B_ONLY_TOKEN"),
-            get_secret("HERMES_API_KEY"),
+            get_secret("RABBIT_API_KEY"),
         ))
         return {"warning": ""}
 
@@ -308,7 +308,7 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
     assert invoke(None) == ""  # no warning — the switch resolved its credential
     _probe("b")  # activate multiplexing and freeze the launch profile's own secret scope
     with pytest.raises(UnscopedSecretError):
-        get_secret("HERMES_API_KEY")
+        get_secret("RABBIT_API_KEY")
     assert invoke(b) == ""
     assert invoke(None) == ""
 
@@ -317,7 +317,7 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
         (b, None, B_VAL, B_API_KEY),
         (root, A_VAL, None, A_API_KEY),
     ]
-    assert os.environ["HERMES_API_KEY"] == A_API_KEY
+    assert os.environ["RABBIT_API_KEY"] == A_API_KEY
     assert "B_ONLY_TOKEN" not in os.environ
 
 
@@ -350,7 +350,7 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
     """The C6 asymmetry: a default-profile session (``profile_home`` None) in a multiplexing process
     must bind the launch profile's own scope for its agent build instead of running unscoped."""
     from agent.secret_scope import current_secret_scope, set_multiplex_active
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     root, _b = two_homes
     set_multiplex_active(True)  # the messaging gateway's flip (GatewayRunner.__init__)
@@ -359,7 +359,7 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
         scope = current_secret_scope()
         assert scope is not None and scope["A_ONLY_TOKEN"] == A_VAL and scope["INJECTED_TOKEN"] == ENV_VAL
         assert "B_ONLY_TOKEN" not in scope
-        assert Path(get_hermes_home()) == root
+        assert Path(get_rabbit_home()) == root
     finally:
         server._release_build_profile_scopes(scopes)
     assert current_secret_scope() is None
@@ -369,8 +369,8 @@ class _MemoryManager:
     """Stands in for an external memory provider: ``system_prompt_block()`` reads its credential via get_secret."""
     def build_system_prompt(self):
         from agent.secret_scope import get_secret
-        from hermes_constants import get_hermes_home
-        return f"{get_hermes_home()}|{get_secret('MEM_PROVIDER_KEY')}"
+        from rabbit_constants import get_rabbit_home
+        return f"{get_rabbit_home()}|{get_secret('MEM_PROVIDER_KEY')}"
 
 
 def _prompt_building_session(profile_home, key):

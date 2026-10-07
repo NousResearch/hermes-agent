@@ -17,7 +17,6 @@ description: "调试 Node"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/software-development/node-inspect-debugger` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `debugging`, `nodejs`, `node-inspect`, `cdp`, `breakpoints`, `ui-tui` |
@@ -26,7 +25,7 @@ description: "调试 Node"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
 :::
 
 # Node.js Inspect 调试器
@@ -185,14 +184,14 @@ const CDP = require('chrome-remote-interface');
 node /tmp/cdp-debug.js
 ```
 
-Hermes 专项说明：`chrome-remote-interface` 不在 `ui-tui/package.json` 中。如果不想污染项目，可将其安装到临时目录：
+Rabbit 专项说明：`chrome-remote-interface` 不在 `ui-tui/package.json` 中。如果不想污染项目，可将其安装到临时目录：
 
 ```bash
 mkdir -p /tmp/cdp-tools && cd /tmp/cdp-tools && npm i chrome-remote-interface
 NODE_PATH=/tmp/cdp-tools/node_modules node /tmp/cdp-debug.js
 ```
 
-## 调试 Hermes ui-tui
+## 调试 Rabbit ui-tui
 
 TUI 基于 Ink + tsx 构建。两种常见场景：
 
@@ -201,7 +200,7 @@ TUI 基于 Ink + tsx 构建。两种常见场景：
 `ui-tui/package.json` 有 `npm run dev`（tsx --watch）。直接运行 tsx 并添加 `--inspect-brk`：
 
 ```bash
-cd /home/bb/hermes-agent/ui-tui
+cd /home/bb/rabbit-agent/ui-tui
 npm run build    # produce dist/ once so transpile isn't needed on first load
 node --inspect-brk dist/entry.js
 # In another terminal:
@@ -217,13 +216,13 @@ cont
 
 暂停后，进入 `repl` → 检查 `props`、state 引用、`useInput` 处理器的值等。
 
-### 调试运行中的 `hermes --tui`
+### 调试运行中的 `rabbit --tui`
 
 TUI 由 Python CLI 启动 Node。最简路径：
 
 ```bash
 # 1. Launch TUI
-hermes --tui &
+rabbit --tui &
 TUI_PID=$(pgrep -f 'ui-tui/dist/entry' | head -1)
 
 # 2. Enable inspector on that Node PID
@@ -245,7 +244,7 @@ node inspect ws://127.0.0.1:9229/<uuid>
 ## 在调试器下运行 Vitest 测试
 
 ```bash
-cd /home/bb/hermes-agent/ui-tui
+cd /home/bb/rabbit-agent/ui-tui
 # Run a single test file paused on entry
 node --inspect-brk ./node_modules/vitest/vitest.mjs run --no-file-parallelism src/app/foo.test.tsx
 ```
@@ -292,7 +291,7 @@ require('fs').writeFileSync('/tmp/heap.heapsnapshot', chunks.join(''));
 
 5. **后台进程被杀死。** 在目标进程暂停时 `Ctrl+C` 退出 `node inspect`，目标进程会保持暂停状态。请先执行 `cont`，或显式 `kill` 目标进程。
 
-6. **在 agent 终端中运行 `node inspect`。** 它是一个 PTY 友好的 REPL。在 Hermes 中，使用 `terminal(pty=true)` 或 `background=true` + `process(action='submit', data='...')` 启动它。非 PTY 前台模式适用于单次命令，但不适合交互式单步调试。
+6. **在 agent 终端中运行 `node inspect`。** 它是一个 PTY 友好的 REPL。在 Rabbit 中，使用 `terminal(pty=true)` 或 `background=true` + `process(action='submit', data='...')` 启动它。非 PTY 前台模式适用于单次命令，但不适合交互式单步调试。
 
 7. **安全性。** `--inspect=0.0.0.0:9229` 会暴露任意代码执行能力。除非处于隔离网络，否则始终绑定到 `127.0.0.1`（默认值）。
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import i18n
 
@@ -94,7 +94,7 @@ def test_catalog_values_have_no_escaped_newlines(lang: str):
 
 def test_default_when_nothing_set(monkeypatch):
     """With no env var and no config override, falls back to English."""
-    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.delenv("RABBIT_LANGUAGE", raising=False)
     # Force config lookup to return None -- patch the cached reader.
     i18n.reset_language_cache()
     monkeypatch.setattr(i18n, "_config_language", lambda: None)
@@ -102,27 +102,27 @@ def test_default_when_nothing_set(monkeypatch):
 
 
 def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
-    """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
+    """RABBIT_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""
     from agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     default_home = tmp_path / "default"; default_home.mkdir()
     prof_b = tmp_path / "b"; prof_b.mkdir()
     (default_home / "config.yaml").write_text("display:\n  language: fr\n")
     (prof_b / "config.yaml").write_text("display:\n  language: de\n")
-    monkeypatch.setenv("HERMES_LANGUAGE", "zh")  # default profile's .env, bridged into environ
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_LANGUAGE", "zh")  # default profile's .env, bridged into environ
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
     i18n.reset_language_cache()
     secret_scope.set_multiplex_active(True)  # pins the launch home; a served turn binds an override
     token = secret_scope.set_secret_scope({})
     try:
         assert i18n.get_language() == "fr"  # scoped miss: env ignored, this profile's config wins
-        home_token = set_hermes_home_override(prof_b)
+        home_token = set_rabbit_home_override(prof_b)
         try:
             assert i18n.get_language() == "de"  # not the first profile's cached "fr"
         finally:
-            reset_hermes_home_override(home_token)
+            reset_rabbit_home_override(home_token)
     finally:
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(False)
@@ -167,9 +167,9 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 
 
 def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
-    """A bogus HERMES_BUNDLED_LOCALES falls through to source/wheel resolution
+    """A bogus RABBIT_BUNDLED_LOCALES falls through to source/wheel resolution
     instead of returning a path that doesn't exist."""
-    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(tmp_path / "does-not-exist"))
+    monkeypatch.setenv("RABBIT_BUNDLED_LOCALES", str(tmp_path / "does-not-exist"))
     result = i18n._locales_dir()
     assert result != tmp_path / "does-not-exist"
     # In a source checkout this is the repo-root locales dir.

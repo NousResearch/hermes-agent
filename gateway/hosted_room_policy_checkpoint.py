@@ -111,12 +111,12 @@ class HostedRoomPolicyCheckpoint:
 
     def _connect(self) -> sqlite3.Connection:
         # Late import: a gateway that outlives an on-disk upgrade has the OLD sqlite_util cached.
-        from hermes_cli.sqlite_util import open_db
+        from rabbit_cli.sqlite_util import open_db
 
         return open_db(self.db_path, db_label="shared-state.db (room policy checkpoint)", busy_timeout_ms=10_000)
 
     def _transaction(self):
-        from hermes_cli.sqlite_util import transaction
+        from rabbit_cli.sqlite_util import transaction
 
         return transaction(self._connect())
 

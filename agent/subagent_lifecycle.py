@@ -1,4 +1,4 @@
-"""Public, plugin-safe lifecycle API for delegated Hermes subagents: immutable contracts, not ``AIAgent``
+"""Public, plugin-safe lifecycle API for delegated Rabbit subagents: immutable contracts, not ``AIAgent``
 objects. Plugins obtain it via ``PluginContext.subagent_lifecycle``."""
 
 from __future__ import annotations
@@ -156,9 +156,9 @@ class _Registry:
 
 _REGISTRY = _Registry()
 from tools.daemon_pool import DaemonThreadPoolExecutor as _DaemonExecutor  # daemon: a wedged child never blocks exit
-_EXECUTOR = _DaemonExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
+_EXECUTOR = _DaemonExecutor(max_workers=8, thread_name_prefix="rabbit-lifecycle")
 _SECRET = secrets.token_bytes(32)
-_ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar("hermes_subagent_lifecycle_parent", default=None)
+_ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar("rabbit_subagent_lifecycle_parent", default=None)
 
 
 @contextmanager
@@ -224,9 +224,9 @@ _REQUEST_REJECTIONS: tuple[tuple[Callable[[Any], bool], str], ...] = (
     (lambda r: r.role not in {"leaf", "orchestrator"}, "role must be 'leaf' or 'orchestrator'."),
     (lambda r: r.timeout_seconds is not None, "Per-launch timeout is not supported; configure delegation timeout explicitly."),
     (lambda r: r.working_directory is not None,
-     "working_directory is not supported because Hermes delegates use isolated task environments."),
+     "working_directory is not supported because Rabbit delegates use isolated task environments."),
     (lambda r: bool(r.blocked_tools),
-     "Per-tool blocking is not supported; use allowed_toolsets. Hermes always blocks unsafe child tools."),
+     "Per-tool blocking is not supported; use allowed_toolsets. Rabbit always blocks unsafe child tools."),
 )
 
 
@@ -245,7 +245,7 @@ class SubagentLifecycleService:
     def launch(self, request: SubagentLaunchRequest) -> SubagentHandle:
         parent = self._parent_agent_resolver()
         if parent is None:
-            raise SubagentLifecycleError("No active Hermes parent session is available.")
+            raise SubagentLifecycleError("No active Rabbit parent session is available.")
         self._validate_request(request, parent)
         parent_session_id = _session_id_of(parent)
         if request.parent_session_id and request.parent_session_id != parent_session_id:
@@ -264,7 +264,7 @@ class SubagentLifecycleService:
         )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
-            raise SubagentLifecycleError("Hermes failed to assign a child identity.")
+            raise SubagentLifecycleError("Rabbit failed to assign a child identity.")
         created = time.time()
         handle = SubagentHandle(
             PUBLIC_CONTRACT_VERSION, subagent_id, parent_session_id, request.correlation_id, created,

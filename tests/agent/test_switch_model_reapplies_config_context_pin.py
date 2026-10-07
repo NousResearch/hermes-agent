@@ -65,8 +65,8 @@ def test_switch_back_to_configured_default_route_restores_context_pin():
     agent = _make_agent(config_context_length=PIN)
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("rabbit_cli.config.load_config", return_value=cfg),
+        patch("rabbit_cli.config.load_config_readonly", return_value=cfg),
         patch("agent.model_metadata.get_model_context_length", return_value=1_000_000),
     ):
         agent.switch_model("other-model", "openrouter", api_key="sk-new", base_url=OTHER_ROUTE)
@@ -83,8 +83,8 @@ def test_switch_to_other_route_does_not_inherit_context_pin():
     agent = _make_agent(config_context_length=PIN)
 
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg),
-        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("rabbit_cli.config.load_config", return_value=cfg),
+        patch("rabbit_cli.config.load_config_readonly", return_value=cfg),
     ):
         applied = _switch(agent, "unrelated-model", "openrouter", OTHER_ROUTE)
 

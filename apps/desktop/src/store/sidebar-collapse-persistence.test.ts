@@ -98,7 +98,7 @@ describe('sidebar collapse persistence', () => {
         expect(tree.isStripTabHidden('review')).toBe(true)
         expect(findGroup(tree.$layoutTree.get()!, 'sidebar')).toMatchObject({ active: 'bots', minimized: false })
         expect(findGroup(tree.$layoutTree.get()!, 'other')?.minimized).toBe(true)
-        expect(JSON.parse(window.localStorage.getItem('hermes.desktop.hiddenStripTabs.v1')!)).toEqual(['review'])
+        expect(JSON.parse(window.localStorage.getItem('rabbit.desktop.hiddenStripTabs.v1')!)).toEqual(['review'])
         const restored = tree.$layoutTree.get()
         open(true)
         expect(tree.$layoutTree.get()).toBe(restored)

@@ -3,7 +3,7 @@
 Build the real image and verify the actual runtime behavior:
 
   1. docker run --user <arbitrary-uid> is rejected with actionable guidance
-  2. --user <hermes-uid> (10000) is allowed (supported non-root start)
+  2. --user <rabbit-uid> (10000) is allowed (supported non-root start)
 
 Root start (the default) is covered by test_main_invocation.py.
 """
@@ -29,17 +29,17 @@ def test_arbitrary_user_uid_rejected(
     )
     combined = r.stdout + r.stderr
     # Must mention the remediation env vars
-    assert "HERMES_UID" in combined or "PUID" in combined, (
+    assert "RABBIT_UID" in combined or "PUID" in combined, (
         f"rejection message missing remediation guidance: {combined[-500:]}"
     )
 
 
 
 
-def test_user_pinned_to_hermes_uid_works(
+def test_user_pinned_to_rabbit_uid_works(
     built_image: str,
 ) -> None:
-    """docker run --user 10000:10000 (the hermes UID) must be allowed.
+    """docker run --user 10000:10000 (the rabbit UID) must be allowed.
 
     This is the supported non-root start from #34648 / #34837.
     """
@@ -49,6 +49,6 @@ def test_user_pinned_to_hermes_uid_works(
         capture_output=True, text=True, timeout=60,
     )
     assert r.returncode == 0, (
-        f"--user 10000:10000 (hermes UID) was rejected: {r.stderr[-500:]}"
+        f"--user 10000:10000 (rabbit UID) was rejected: {r.stderr[-500:]}"
     )
     assert "OK" in r.stdout

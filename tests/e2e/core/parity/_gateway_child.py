@@ -1,7 +1,7 @@
 """Lane-private child process for ``_drive_gateway.drive_gateway``.
 
 Runs the REAL messaging gateway entrypoint (``gateway.run.main`` — what
-``python -m gateway.run`` / the ``hermes gateway run`` service executes: host
+``python -m gateway.run`` / the ``rabbit gateway run`` service executes: host
 attach decision, PID claim, MCP discovery, ``GatewayRunner.start()``, signal
 handlers, the graceful shutdown tail) with exactly one substitution: the
 Telegram adapter instance is a recording fake. Everything behind the adapter
@@ -12,7 +12,7 @@ The fake adapter injects ONE inbound DM through the adapter's normal
 ``handle_message`` path once the runner is running, prints every outbound
 ``send()`` and the ``on_processing_complete`` outcome as ``PARITY-GW <json>``
 lines on stdout, and otherwise waits for the parent's normal stop
-(planned-stop marker + SIGTERM, exactly like ``hermes gateway stop``).
+(planned-stop marker + SIGTERM, exactly like ``rabbit gateway stop``).
 """
 
 from __future__ import annotations

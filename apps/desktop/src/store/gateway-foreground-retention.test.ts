@@ -14,10 +14,10 @@ const gatewayMocks = vi.hoisted(() => ({
   closed: [] as string[]
 }))
 
-vi.mock('@/hermes', async importActual => ({
+vi.mock('@/rabbit', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
   setApiRequestConnection: vi.fn(),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     wsUrl = ''
     connect = async (wsUrl: string): Promise<void> => {
@@ -53,7 +53,7 @@ const { stampSecondaryProfileOwner } = await import('./session-event-provenance'
 const { $selectedStoredSessionId, $sessions, setActiveSessionId } = await import('@/store/session')
 
 function installDesktop(): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
     getConnection: vi.fn(async (profile?: string) => ({
       authMode: 'token',
       profile: profile || 'default',
@@ -102,7 +102,7 @@ afterEach(() => {
   setActiveSessionId(null)
   $selectedStoredSessionId.set(null)
   vi.clearAllMocks()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('foreground tile retention vs. the live-work pruner (#93892)', () => {

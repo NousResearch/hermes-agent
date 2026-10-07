@@ -1,8 +1,8 @@
 """Tests for real-profile browsing: resolvers, snapshot, launch routing, consent.
 
 The consent path never drives the live default profile: it snapshots into
-``~/.hermes/browser-profile/<browser>/`` and launches the user's real binary
-on the copy with a devtools port (see hermes_cli.browser_connect). These tests
+``~/.rabbit/browser-profile/<browser>/`` and launches the user's real binary
+on the copy with a devtools port (see rabbit_cli.browser_connect). These tests
 exercise the real functions with real file I/O wherever possible — the mocks
 are limited to OS detection and process launch.
 """
@@ -36,7 +36,7 @@ class TestRealProfileResolvers:
 
 
     def test_data_dir_unknown_browser_is_none(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         assert bc.real_profile_data_dir("firefox", "Windows") is None
 
 
@@ -66,10 +66,10 @@ class TestSnapshotRealProfile:
         return root
 
     def test_fresh_snapshot_copies_auth_and_skips_caches(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
-        home = tmp_path / "hermes-home"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        home = tmp_path / "rabbit-home"
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
@@ -86,10 +86,10 @@ class TestSnapshotRealProfile:
         assert not (home / "browser-profile" / "chrome" / "SingletonLock").exists()
 
     def test_existing_snapshot_refreshes_auth_files_only(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
-        home = tmp_path / "hermes-home"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        home = tmp_path / "rabbit-home"
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
 
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
@@ -105,8 +105,8 @@ class TestSnapshotRealProfile:
         assert copy_history.read_text() == "agent-session-history"
 
     def test_missing_source_fails_closed(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        import rabbit_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: tmp_path / "hh")
         dst, err = bc.snapshot_real_profile("chrome", src=str(tmp_path / "nope"))
         assert dst is None
         assert err
@@ -120,10 +120,10 @@ class TestSnapshotRealProfile:
         """
         import stat
 
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
-        home = tmp_path / "hermes-home"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        home = tmp_path / "rabbit-home"
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         old_umask = os.umask(0o022)  # the common default that produced 0644
         try:
             dst, err = bc.snapshot_real_profile("chrome", src=str(src))
@@ -146,10 +146,10 @@ class TestSnapshotRealProfile:
         """A snapshot left 0644 by an older build tightens on the next pass."""
         import stat
 
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._make_profile(tmp_path / "real")
-        home = tmp_path / "hermes-home"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        home = tmp_path / "rabbit-home"
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None and dst
         cookies = os.path.join(dst, "Default", "Cookies")
@@ -175,7 +175,7 @@ class TestRealProfileCdpLaunch:
     def test_non_chromium_default_fails_closed(self):
         self._reset()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value=None):
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value=None):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None
         assert err
@@ -183,8 +183,8 @@ class TestRealProfileCdpLaunch:
     def test_snapshot_failure_fails_closed(self):
         self._reset()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("rabbit_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None
         assert err and "boom" in err
@@ -206,7 +206,7 @@ class TestRealProfileCdpLaunch:
 
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value=None):
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value=None):
             bt._real_profile_cdp_lock.acquire()
             worker = threading.Thread(target=resolve, daemon=True)
             try:
@@ -261,9 +261,9 @@ class TestRealProfileCdpLaunch:
             return FakeChrome()
 
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
-             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("rabbit_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("rabbit_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
@@ -302,9 +302,9 @@ class TestRealProfileCdpLaunch:
             return FakeChrome()
 
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
-             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("rabbit_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("rabbit_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
@@ -322,7 +322,7 @@ class TestRealProfileCdpLaunch:
 
     @pytest.mark.parametrize("live_browser_id", ["/devtools/browser/x", "/devtools/browser/other"])
     def test_reattaches_to_surviving_chrome_instead_of_overlaying_its_profile(self, tmp_path, live_browser_id):
-        """The attach daemon of a crashed owner gets reaped, but its Chrome (Hermes-launched,
+        """The attach daemon of a crashed owner gets reaped, but its Chrome (Rabbit-launched,
         own session) survives holding the copy dir: re-attach, never re-run the snapshot.
         A DevToolsActivePort left by a crash whose port was recycled by ANOTHER CDP server
         (browser id mismatch) must not be attached to; the normal launch path runs."""
@@ -331,9 +331,9 @@ class TestRealProfileCdpLaunch:
         version = Mock()
         version.json.return_value = {"webSocketDebuggerUrl": f"ws://127.0.0.1:41000{live_browser_id}"}
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("rabbit_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("rabbit_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
              patch("requests.get", return_value=version), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value=None), \
              patch.object(bt_real_profile, "_attach_agent_browser_to_real_profile",
@@ -379,7 +379,7 @@ class TestAgentBrowserCliCapture:
              patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
              patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
             start = time.monotonic()
-            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+            cdp = bt_real_profile._agent_browser_get_cdp("rabbit-real-profile")
             elapsed = time.monotonic() - start
 
         assert cdp == "http://127.0.0.1:41022"
@@ -402,7 +402,7 @@ class TestAgentBrowserCliCapture:
         with patch.object(bt_install, "_find_agent_browser", return_value=str(stub)), \
              patch.object(bt_session, "_agent_browser_argv", return_value=[sys.executable, str(stub)]), \
              patch.object(bt_real_profile, "_real_profile_daemon_env", return_value=({}, str(tmp_path))):
-            cdp = bt_real_profile._agent_browser_get_cdp("hermes-real-profile")
+            cdp = bt_real_profile._agent_browser_get_cdp("rabbit-real-profile")
 
         assert cdp == "http://127.0.0.1:41022"
         assert not list(tmp_path.glob("_std*_rp-*"))
@@ -472,15 +472,15 @@ class TestConsentConfigRead:
 
 
     def test_consent_default_off(self):
-        with patch("hermes_cli.config.read_raw_config", return_value={}):
+        with patch("rabbit_cli.config.read_raw_config", return_value={}):
             assert bt_cloud._use_real_profile() is False
 
     def test_consent_revocation_takes_effect_immediately(self):
         """No process-lifetime caching: consent is a per-use read."""
-        with patch("hermes_cli.config.read_raw_config",
+        with patch("rabbit_cli.config.read_raw_config",
                    return_value={"browser": {"use_real_profile": True}}):
             assert bt_cloud._use_real_profile() is True
-        with patch("hermes_cli.config.read_raw_config",
+        with patch("rabbit_cli.config.read_raw_config",
                    return_value={"browser": {"use_real_profile": False}}):
             assert bt_cloud._use_real_profile() is False
 
@@ -616,25 +616,25 @@ class TestChannelIdentity:
     """
 
     def test_linux_beta_not_normalized_to_stable(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         with patch.object(bc.subprocess, "run",
                           return_value=Mock(stdout="google-chrome-beta.desktop\n")):
             assert bc._detect_default_linux() == bc.UNSUPPORTED_CHANNEL
 
     def test_linux_stable_still_resolves(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         with patch.object(bc.subprocess, "run",
                           return_value=Mock(stdout="google-chrome.desktop\n")):
             assert bc._detect_default_linux() == "chrome"
 
     def test_linux_flatpak_beta_not_stable(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         with patch.object(bc.subprocess, "run",
                           return_value=Mock(stdout="com.google.chrome.beta.desktop\n")):
             assert bc._detect_default_linux() == bc.UNSUPPORTED_CHANNEL
 
     def test_darwin_canary_not_normalized(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         with patch.object(bc, "_launchservices_https_handler",
                           return_value="com.google.chrome.canary"):
             with patch.object(bc.subprocess, "run", return_value=Mock(stdout="")):
@@ -642,7 +642,7 @@ class TestChannelIdentity:
 
 
     def test_windows_progid_maps(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         # Stable ProgIds → family; channel ProgIds are in the channel set.
         assert dict(bc._WINDOWS_PROGID_MAP)["chromehtml"] == "chrome"
         assert "chromebhtml" in bc._WINDOWS_CHANNEL_PROGIDS   # Beta
@@ -654,12 +654,12 @@ class TestChannelIdentity:
     def test_channel_sentinel_fails_closed_in_cdp(self):
         """A channel default → _real_profile_cdp fails closed, never launches."""
         import tools.browser_tool as bt
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         bt._real_profile_cdp_cache.clear()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium",
+             patch("rabbit_cli.browser_connect.detect_default_chromium",
                    return_value=bc.UNSUPPORTED_CHANNEL), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
+             patch("rabbit_cli.browser_connect.snapshot_real_profile") as snap:
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None
         assert err
@@ -667,16 +667,16 @@ class TestChannelIdentity:
         bt._real_profile_cdp_cache.clear()
 
     def test_data_dir_rejects_sentinel(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         assert bc.real_profile_data_dir(bc.UNSUPPORTED_CHANNEL, "Linux") is None
         assert bc.chromium_executable(bc.UNSUPPORTED_CHANNEL, "Linux") is None
 
 
 class TestSnapshotIsCredentialStore:
-    """The copied Cookies/Login Data must live inside Hermes' secret lifecycle."""
+    """The copied Cookies/Login Data must live inside Rabbit' secret lifecycle."""
 
     def test_excluded_from_backup(self):
-        import hermes_cli.backup as bk
+        import rabbit_cli.backup as bk
         # Hyphen snapshot dirs are any-depth; Browser Use CLI underscore dir is root-scoped.
         assert bk._should_exclude(
             __import__("pathlib").Path("browser-profile/chrome/Default/Cookies")
@@ -689,19 +689,19 @@ class TestSnapshotIsCredentialStore:
 
     def test_read_guard_blocks_snapshot(self, tmp_path, monkeypatch):
         import agent.file_safety as fs
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         (home / "browser-profile" / "chrome" / "Default").mkdir(parents=True)
         cookies = home / "browser-profile" / "chrome" / "Default" / "Cookies"
         cookies.write_text("secret-cookie-db")
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         err = fs.get_read_block_error(str(cookies))
         assert err
 
     def test_read_guard_allows_normal_file(self, tmp_path, monkeypatch):
         import agent.file_safety as fs
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         normal = tmp_path / "notes.txt"
         normal.write_text("hello")
         assert fs.get_read_block_error(str(normal)) is None
@@ -727,10 +727,10 @@ class TestReviewBugFixes:
         return root
 
     def test_last_used_profile_lands_in_copy_default(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._multi_profile(tmp_path / "real")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         # The copy's Default must carry PROFILE 6's session, not Default's.
@@ -739,7 +739,7 @@ class TestReviewBugFixes:
         assert _auth_db((home / "browser-profile" / "chrome" / "Default" / "Login Data")) == "profile6-logins"
 
     def test_last_used_falls_back_to_default(self, tmp_path):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         root = tmp_path / "d"
         (root / "Default").mkdir(parents=True)
         (root / "Local State").write_text('{"profile": {"last_used": "Profile 9"}}')  # not present
@@ -747,10 +747,10 @@ class TestReviewBugFixes:
 
 
     def test_refresh_remirrors_last_used(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._multi_profile(tmp_path / "real")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         bc.snapshot_real_profile("chrome", src=str(src))          # fresh
         _auth_db((src / "Profile 6" / "Cookies"), "PROFILE6-REFRESHED")
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))  # refresh
@@ -773,7 +773,7 @@ class TestReviewBugFixes:
     # ── Bug 1: macOS 26 LSHandlers parser ──
 
     def test_macos26_detect_returns_chrome(self):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         dump = (
             "( { LSHandlerPreferredVersions = { LSHandlerRoleAll = \"7559.97\"; }; "
             "LSHandlerRoleAll = \"com.google.chrome\"; LSHandlerURLScheme = https; } )"
@@ -789,7 +789,7 @@ class TestReviewBugFixes:
         bt._real_profile_cdp_cache.clear()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium") as det:
+             patch("rabbit_cli.browser_connect.detect_default_chromium") as det:
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None
         assert err and "lightpanda" in err.lower() and "browser.engine" in err.lower()
@@ -812,10 +812,10 @@ class TestReviewRound3:
     # ── ② torn first copy must not poison freshness ──
 
     def test_torn_copy_is_redone_not_overlaid(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         dst = bc.real_profile_copy_dir("chrome")
         # Simulate a torn first copy: Default exists but NO done marker.
         os.makedirs(os.path.join(dst, "Default"))
@@ -828,13 +828,13 @@ class TestReviewRound3:
 
     # ── ④ only the active profile is copied, never the others ──
     def test_only_active_profile_copied(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         # Add a non-active profile with its own cookies — must NOT be copied.
         (src / "Profile 3").mkdir()
         _auth_db((src / "Profile 3" / "Cookies"), "PROFILE3-SHOULD-NOT-COPY")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         assert err is None
         copy = home / "browser-profile" / "chrome"
@@ -845,9 +845,9 @@ class TestReviewRound3:
 
     # ── ③ consent-off deletes the snapshot store ──
     def test_cleanup_removes_store(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         store = home / "browser-profile" / "chrome" / "Default"
         store.mkdir(parents=True)
         (store / "Cookies").write_text("secret")
@@ -855,25 +855,25 @@ class TestReviewRound3:
         assert not (home / "browser-profile").exists()
 
     def test_cleanup_idempotent_when_absent(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        import rabbit_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: tmp_path / "hh")
         bc.cleanup_real_profile_snapshots()  # no raise
 
     # ── Windows lock probe (unit; the live share-lock is proven in the
     #    windows-latest E2E — here we cover the probe's contract portably) ──
     def test_lock_probe_false_when_readable(self, tmp_path):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         (tmp_path / "Default" / "Network").mkdir(parents=True)
         (tmp_path / "Default" / "Network" / "Cookies").write_bytes(b"db")
         assert bc._profile_is_locked(str(tmp_path), "Default") is False
 
     def test_lock_probe_false_when_no_cookie_db(self, tmp_path):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         (tmp_path / "Default").mkdir(parents=True)
         assert bc._profile_is_locked(str(tmp_path), "Default") is False
 
     def test_lock_probe_true_on_permissionerror(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         (tmp_path / "Default").mkdir(parents=True)
         (tmp_path / "Default" / "Cookies").write_bytes(b"db")
         import builtins
@@ -890,10 +890,10 @@ class TestReviewRound3:
     def test_snapshot_fails_fast_when_locked(self, tmp_path, monkeypatch):
         """snapshot_real_profile always BLOCKS when locked — never kills, never
         proceeds to a heavy copy. autoclose off → plain quit guidance."""
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
         monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: False)
         called = {"copytree": 0}
@@ -909,11 +909,11 @@ class TestReviewRound3:
     def test_snapshot_blocks_when_locked_even_with_autoclose(self, tmp_path, monkeypatch):
         """Even with autoclose armed, snapshot_real_profile does NOT kill — it
         blocks and defers the close to the explicit, user-approved step. The
-        message offers the close (mentions Hermes can close it)."""
-        import hermes_cli.browser_connect as bc
+        message offers the close (mentions Rabbit can close it)."""
+        import rabbit_cli.browser_connect as bc
         src = self._multi(tmp_path / "real")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         monkeypatch.setattr(bc, "_profile_is_locked", lambda s, p: True)
         monkeypatch.setattr(bc, "_real_profile_autoclose", lambda: True)
         killed = {"n": 0}
@@ -927,7 +927,7 @@ class TestReviewRound3:
     def test_processes_holding_profile_identity_binding(self, tmp_path, monkeypatch):
         """The process matcher requires BOTH a browser binary AND this exact
         user-data-dir in the cmdline — never a same-name process on another dir."""
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
 
         class FakeProc:
             def __init__(self, name, cmdline):
@@ -957,7 +957,7 @@ class TestReviewRound3:
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \
-             patch("hermes_cli.browser_connect.cleanup_real_profile_snapshots",
+             patch("rabbit_cli.browser_connect.cleanup_real_profile_snapshots",
                    side_effect=lambda: called.__setitem__("n", called["n"] + 1)):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp is None and err is None
@@ -972,12 +972,12 @@ class TestReviewRound3:
         bt._real_profile_cdp_cache.clear()
         with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
              patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("rabbit_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("rabbit_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
              patch.object(bt_real_profile, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
              patch.object(bt_real_profile, "_cdp_http_ready", return_value=True), \
              patch.object(bt_real_profile, "_cdp_on_data_dir", return_value=True), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
+             patch("rabbit_cli.browser_connect.snapshot_real_profile") as snap:
             cdp, err = bt_real_profile._real_profile_cdp()
         assert cdp == "http://127.0.0.1:9251" and err is None
         snap.assert_not_called()  # ← the fix: no overlay while a live browser owns the dir
@@ -1004,12 +1004,12 @@ class TestWindowsLockedProfileCopy:
         return root, con  # caller keeps con open to simulate the live lock
 
     def test_locked_cookie_db_copied_via_backup(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         import sqlite3, shutil
         src, con = self._locked_src(tmp_path / "real")
         con.execute("BEGIN"); con.execute("insert into cookies values('u','uncommitted')")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         try:
             dst, err = bc.snapshot_real_profile("chrome", src=str(src))
         finally:
@@ -1023,7 +1023,7 @@ class TestWindowsLockedProfileCopy:
         assert not (home / "browser-profile" / "chrome" / "Default" / "Cookies-journal").exists()
 
     def test_copy_auth_file_backs_up_db(self, tmp_path):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         import sqlite3
         src = str(tmp_path / "Cookies")
         con = sqlite3.connect(src); con.execute("create table cookies(x)"); con.execute("insert into cookies values(1)"); con.commit(); con.close()
@@ -1036,7 +1036,7 @@ class TestWindowsLockedProfileCopy:
         import sqlite3
         import subprocess
         import sys
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
 
         src, dst = tmp_path / "Cookies", tmp_path / "out" / "Cookies"
         dst.parent.mkdir()
@@ -1050,7 +1050,7 @@ class TestWindowsLockedProfileCopy:
         try:
             result = subprocess.run(
                 [sys.executable, "-c",
-                 "from hermes_cli.browser_connect import _copy_auth_file; "
+                 "from rabbit_cli.browser_connect import _copy_auth_file; "
                  "import sys; print(_copy_auth_file(sys.argv[1], sys.argv[2]))",
                  str(src), str(dst)],
                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL)
@@ -1071,7 +1071,7 @@ class TestWindowsLockedProfileCopy:
         import sqlite3
         import subprocess
         import sys
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
 
         src, dst = tmp_path / "Cookies", tmp_path / "out" / "Cookies"
         dst.parent.mkdir()
@@ -1102,7 +1102,7 @@ class TestWindowsLockedProfileCopy:
         """A large DB on a slow disk that is still copying pages past the deadline must not
         get the lock wording (whose all-locked message tells the user to quit the browser)."""
         import sqlite3
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = str(tmp_path / "Web Data")
         con = sqlite3.connect(src)
         con.execute("create table t(x)")
@@ -1114,7 +1114,7 @@ class TestWindowsLockedProfileCopy:
         assert "write lock" not in reason and "exceeded" in reason
 
     def test_copy_auth_file_plain_for_non_db(self, tmp_path):
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         src = str(tmp_path / "Preferences"); open(src, "w").write('{"k":1}')
         dst = str(tmp_path / "out" / "Preferences")
         assert bc._copy_auth_file(src, dst) is None
@@ -1123,14 +1123,14 @@ class TestWindowsLockedProfileCopy:
     def test_fail_closed_when_db_unreadable(self, tmp_path, monkeypatch):
         """If even the online-backup can't read the DB, snapshot fails closed
         rather than launching a silently signed-out session."""
-        import hermes_cli.browser_connect as bc
+        import rabbit_cli.browser_connect as bc
         root = tmp_path / "real"
         (root / "Default").mkdir(parents=True)
         (root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
         (root / "Default" / "Cookies").write_text("not-a-db")
         (root / "Default" / "Preferences").write_text("{}")
         home = tmp_path / "hh"
-        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc, "get_rabbit_home", lambda: home)
         # Force both sqlite-backup and raw copy to fail for the DB.
         monkeypatch.setattr(bc, "_copy_auth_file",
                             lambda s, d: "file is not a database" if os.path.basename(s) in bc._SQLITE_AUTH_DBS else None)

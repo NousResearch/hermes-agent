@@ -1,11 +1,11 @@
-"""Entrypoint driver for the parity matrix: cron run-now (``hermes cron run <id>``).
+"""Entrypoint driver for the parity matrix: cron run-now (``rabbit cron run <id>``).
 
-Follows the driver contract in ``_drive_cli``. ``hermes cron create`` writes the
+Follows the driver contract in ``_drive_cli``. ``rabbit cron create`` writes the
 job (``--deliver local``: no platform; ``--workdir``: cron's documented
-per-job cwd/context channel, see ``hermes cron create --help``), then
-``hermes cron run <id>`` executes it. With no gateway owning the store the CLI
+per-job cwd/context channel, see ``rabbit cron create --help``), then
+``rabbit cron run <id>`` executes it. With no gateway owning the store the CLI
 runs the job synchronously through ``cron.scheduler.run_job`` — the same agent
-build the ticker uses (``hermes_cli/cron.py::_job_action`` forces the
+build the ticker uses (``rabbit_cli/cron.py::_job_action`` forces the
 synchronous path) — and prints ``Ran now: succeeded.``. The job's saved output
 file (``cron/output/<id>/<ts>.md``, ``## Response`` section) is what cron
 delivers locally, so that is ``final_text``.
@@ -20,18 +20,18 @@ from __future__ import annotations
 import re
 import subprocess
 
-from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, hermes_argv
+from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, rabbit_argv
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 # cron/scheduler.py::_resolve_cron_enabled_toolsets -> _get_platform_tools(cfg, "cron") default.
-CRON_TOOLSET = "hermes-cron"
+CRON_TOOLSET = "rabbit-cron"
 _JOB_ID = re.compile(r"Created job: (\S+)")
 _RESPONSE = re.compile(r"^## Response\s*\n(.*)\Z", re.S | re.M)
 
 
 def _cron(ph: ParityHome, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        hermes_argv("cron", *args), cwd=ph.home, env=ph.env(), capture_output=True, text=True,
+        rabbit_argv("cron", *args), cwd=ph.home, env=ph.env(), capture_output=True, text=True,
         timeout=TURN_TIMEOUT, stdin=subprocess.DEVNULL,
     )
 
@@ -41,16 +41,16 @@ def drive_cron(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
                     "--workdir", str(ph.project))
     match = _JOB_ID.search(created.stdout)
     assert created.returncode == 0 and match, (
-        f"hermes cron create exited {created.returncode}: {created.stdout[-1000:]} {created.stderr[-2000:]}")
+        f"rabbit cron create exited {created.returncode}: {created.stdout[-1000:]} {created.stderr[-2000:]}")
     job_id = match.group(1)
 
     ran = _cron(ph, "run", job_id)
-    assert ran.returncode == 0, f"hermes cron run exited {ran.returncode}: {ran.stderr[-2000:]}"
+    assert ran.returncode == 0, f"rabbit cron run exited {ran.returncode}: {ran.stderr[-2000:]}"
     # Anything but a synchronous verdict means the run was handed to a ticker/background
     # worker this driver cannot observe — a harness problem, not a parity result.
-    assert "Ran now:" in ran.stdout, f"hermes cron run did not execute synchronously: {ran.stdout[-1000:]}"
+    assert "Ran now:" in ran.stdout, f"rabbit cron run did not execute synchronously: {ran.stdout[-1000:]}"
 
-    outputs = sorted((ph.hermes_home / "cron" / "output" / job_id).glob("*.md"))
+    outputs = sorted((ph.rabbit_home / "cron" / "output" / job_id).glob("*.md"))
     final_text = None
     if outputs:
         body = outputs[-1].read_text(encoding="utf-8")

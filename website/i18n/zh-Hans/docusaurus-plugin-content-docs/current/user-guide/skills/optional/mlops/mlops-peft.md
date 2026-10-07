@@ -14,7 +14,7 @@ description: "使用 LoRA、QLoRA 及 25+ 种方法对 LLM 进行参数高效微
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/peft` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/peft` 安装 |
 | 路径 | `optional-skills/mlops/peft` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "使用 LoRA、QLoRA 及 25+ 种方法对 LLM 进行参数高效微
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # PEFT（参数高效微调）
@@ -440,8 +440,8 @@ TrainingArguments(learning_rate=1e-4)
 
 ## 参考资料
 
-- **[高级用法](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/peft/references/advanced-usage.md)** — DoRA、LoftQ、秩稳定化、自定义模块
-- **[故障排查](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/peft/references/troubleshooting.md)** — 常见错误、调试、优化
+- **[高级用法](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/peft/references/advanced-usage.md)** — DoRA、LoftQ、秩稳定化、自定义模块
+- **[故障排查](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/peft/references/troubleshooting.md)** — 常见错误、调试、优化
 
 ## 资源
 

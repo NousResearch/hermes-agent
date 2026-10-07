@@ -24,7 +24,7 @@ function runGit(gitBin, args, cwd): Promise<string> {
 // Fetch `<remote>/<branch>` by explicit refspec; true when the remote has the
 // branch. A tag-pinned narrow clone maps only the tag in remote.<remote>.fetch,
 // so a by-name fetch writes FETCH_HEAD without creating the tracking ref
-// (#125686). Same refspec as `hermes update`: the `+` matters on a depth-1
+// (#125686). Same refspec as `rabbit update`: the `+` matters on a depth-1
 // clone, where the new tip need not descend from the old one.
 async function fetchTrackingRef(gitBin, root, remote, branch): Promise<boolean> {
   return gitOk(gitBin, ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`], root)
@@ -210,9 +210,9 @@ async function ensureGitRepo(gitBin, dir) {
       gitBin,
       [
         '-c',
-        'user.email=hermes@localhost',
+        'user.email=rabbit@localhost',
         '-c',
-        'user.name=Hermes',
+        'user.name=Rabbit',
         'commit',
         '--allow-empty',
         '-m',
@@ -328,7 +328,7 @@ async function addWorktree(repoPath, options, gitBin) {
   }
 
   const slug = slugify(opts.name || `work-${Date.now().toString(36)}`)
-  const branch = sanitizeBranch(opts.branch) || `hermes/${slug}`
+  const branch = sanitizeBranch(opts.branch) || `rabbit/${slug}`
   const dir = uniqueDir(path.join(root, '.worktrees', slug))
 
   const args = ['worktree', 'add', '-b', branch, dir]

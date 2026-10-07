@@ -1,12 +1,12 @@
 ---
 sidebar_position: 27
 title: "Troubleshooting: \"My Agent Feels Dumber\""
-description: "A diagnostic checklist for when Hermes seems less capable than before or forgets things mid-session — model switches, context pressure, wrong context detection, and the frozen memory snapshot"
+description: "A diagnostic checklist for when Rabbit seems less capable than before or forgets things mid-session — model switches, context pressure, wrong context detection, and the frozen memory snapshot"
 ---
 
 # Troubleshooting: "My Agent Feels Dumber"
 
-Sometimes Hermes seems less sharp than it was yesterday, or forgets something you told it twenty minutes ago. This is almost never mysterious — there's usually one specific, checkable cause. Work through this checklist in order: the steps are sorted by how often each one turns out to be the answer.
+Sometimes Rabbit seems less sharp than it was yesterday, or forgets something you told it twenty minutes ago. This is almost never mysterious — there's usually one specific, checkable cause. Work through this checklist in order: the steps are sorted by how often each one turns out to be the answer.
 
 ## 1. Check which model the session is actually using
 
@@ -50,10 +50,10 @@ Use `/compress` regularly during long sessions rather than waiting for problems,
 
 **Check:** Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
-**What it means:** Hermes may have auto-detected the wrong context length for your model. Set it explicitly:
+**What it means:** Rabbit may have auto-detected the wrong context length for your model. Set it explicitly:
 
 ```yaml
-# In ~/.hermes/config.yaml
+# In ~/.rabbit/config.yaml
 model:
   default: your-model-name
   context_length: 131072  # your model's actual context window
@@ -70,13 +70,13 @@ providers:
         context_length: 64000
 ```
 
-Ollama users: if you set a custom `num_ctx`, set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured. On a running gateway, edits to `model.context_length` or any `compression.*` key take effect on the next message — no restart needed.
+Ollama users: if you set a custom `num_ctx`, set the matching context length in Rabbit — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured. On a running gateway, edits to `model.context_length` or any `compression.*` key take effect on the next message — no restart needed.
 
 See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
 
 ## 4. "I told it something and it forgot" — the frozen memory snapshot
 
-**Symptom:** You asked Hermes to remember something during this session, it confirmed the save, but later in the *same* session it doesn't seem to know it.
+**Symptom:** You asked Rabbit to remember something during this session, it confirmed the save, but later in the *same* session it doesn't seem to know it.
 
 **Check:** Nothing is broken — check the timing. Memory saved mid-session is written to disk immediately, but the system prompt won't reflect it until the next session.
 
@@ -90,9 +90,9 @@ See [Persistent Memory](../user-guide/features/memory.md#how-memory-appears-in-t
 
 ## 5. Memory is bounded and curated — not a transcript
 
-**Symptom:** Hermes doesn't recall a detail from a session last week, even though you discussed it at length.
+**Symptom:** Rabbit doesn't recall a detail from a session last week, even though you discussed it at length.
 
-**Check:** Memory capacity and contents. The system prompt memory header shows usage (e.g., `[67% — 1,474/2,200 chars]`), and `hermes journey list` shows every saved memory entry and skill.
+**Check:** Memory capacity and contents. The system prompt memory header shows usage (e.g., `[67% — 1,474/2,200 chars]`), and `rabbit journey list` shows every saved memory entry and skill.
 
 **What it means:** Persistent memory is intentionally bounded — 2,200 chars (~800 tokens) for MEMORY.md and 1,375 chars (~500 tokens) for USER.md. It holds curated key facts, not conversation transcripts. Things worth saving are preferences, environment facts, conventions, and corrections; raw discussion detail is not stored there by design.
 
@@ -102,20 +102,20 @@ You can also help directly: say "remember this for next time" after a productive
 
 ## 6. Check that skills and tools are loaded
 
-**Symptom:** Hermes used to handle a specific workflow expertly and now approaches it naively, or says it can't do something it did before.
+**Symptom:** Rabbit used to handle a specific workflow expertly and now approaches it naively, or says it can't do something it did before.
 
 **Check:**
 
 - `/skills` — browse installed skills (a skill the agent relied on may have been removed).
-- `/reload-skills` — re-scan `~/.hermes/skills/` for newly installed or removed skills.
+- `/reload-skills` — re-scan `~/.rabbit/skills/` for newly installed or removed skills.
 - `/tools list` — see available tools; a tool disabled earlier with `/tools disable` stays out of the agent's toolset for the session.
 - `/context all` — per-skill and per-toolset cost listing, which doubles as an inventory of what's actually loaded.
 
-**What it means:** Skills are the agent's procedural knowledge — multi-step workflows and tool-specific instructions. If a skill is missing or a toolset was trimmed (e.g., a session started with `hermes chat -t "terminal"` to reduce prompt weight), the agent genuinely has less to work with in that session. Re-enable tools with `/tools enable`, or invoke the skill explicitly by name (`/github-pr-workflow`) to confirm it loads.
+**What it means:** Skills are the agent's procedural knowledge — multi-step workflows and tool-specific instructions. If a skill is missing or a toolset was trimmed (e.g., a session started with `rabbit chat -t "terminal"` to reduce prompt weight), the agent genuinely has less to work with in that session. Re-enable tools with `/tools enable`, or invoke the skill explicitly by name (`/github-pr-workflow`) to confirm it loads.
 
 ## 7. Compression side-effects
 
-**Symptom:** After a long session (or right after running `/compress`), Hermes remembers the broad strokes but has lost fine detail from earlier in the conversation.
+**Symptom:** After a long session (or right after running `/compress`), Rabbit remembers the broad strokes but has lost fine detail from earlier in the conversation.
 
 **Check:** Whether compression has fired — `/usage` and `/context` show compression stats and context state on messaging platforms, and manual `/compress` always reports its result.
 
@@ -123,7 +123,7 @@ You can also help directly: say "remember this for next time" after a productive
 
 - Recent messages are protected: by default the last 20 messages stay uncompressed (`protect_last_n`) and the opening exchange is pinned (`protect_first_n: 3`) so the original goal stays visible.
 - Compaction is non-destructive: with the default `compression.in_place: true`, the session keeps one durable id and pre-compaction turns are soft-archived — still searchable via `session_search` and recoverable, not deleted.
-- With `in_place: false` (legacy behavior), each compaction rotates to a **new session linked to the old one** — a titled session becomes `"my project" → "my project #2" → "my project #3"`. If you resume by title, `hermes -c "my project"` automatically picks the most recent variant.
+- With `in_place: false` (legacy behavior), each compaction rotates to a **new session linked to the old one** — a titled session becomes `"my project" → "my project #2" → "my project #3"`. If you resume by title, `rabbit -c "my project"` automatically picks the most recent variant.
 - A focus topic narrows what a full summary preserves: `/compress focus auth-refactor` keeps that thread's detail at the expense of the rest.
 
 If a compressed-away detail matters, ask the agent to search for it (`session_search` reaches the archived turns), or re-paste the key facts into the conversation.

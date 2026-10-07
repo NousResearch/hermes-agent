@@ -233,12 +233,12 @@ class TestResolveToolsetMemo:
 
         monkeypatch.setattr(toolsets_mod, "get_toolset", counting_get_toolset)
 
-        resolve_toolset("hermes-cli")
+        resolve_toolset("rabbit-cli")
         assert get_toolset_calls["n"] == 1
 
         # Simulate a registry mutation bumping the generation.
         registry._generation += 1
-        resolve_toolset("hermes-cli")
+        resolve_toolset("rabbit-cli")
         assert get_toolset_calls["n"] == 2, (
             "generation bump must invalidate the memo and re-resolve"
         )

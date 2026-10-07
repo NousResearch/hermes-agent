@@ -43,7 +43,7 @@ describe('toast titles', () => {
   it('makes a local pool-slot timeout actionable without changing ordinary errors', () => {
     notifyError(
       new Error(
-        `Error invoking remote method 'hermes:connection': Error: Local backend start for "research" timed out while waiting for a free slot.`
+        `Error invoking remote method 'rabbit:connection': Error: Local backend start for "research" timed out while waiting for a free slot.`
       ),
       'Failed to switch to profile "research"'
     )

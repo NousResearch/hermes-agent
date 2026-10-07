@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MIT License. Part of the Hermes docx skill.
+# MIT License. Part of the Rabbit docx skill.
 """Read a .docx: text, structure outline, styles, images, revision detection.
 
 Usage:

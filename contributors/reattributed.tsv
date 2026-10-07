@@ -1,4 +1,4 @@
-# Commits on main authored as `Hermes Agent <agent@hermes.local>` that were Brooklyn Nicholson's
+# Commits on main authored as `Rabbit Agent <agent@rabbit.local>` that were Brooklyn Nicholson's
 # (GitHub: OutThisLife) agent-assisted work. A repo-local git identity on her machine stamped them
 # with an address no GitHub account can verify, so GitHub credited them to nobody. main can't be
 # rewritten, so each row below has a matching attribution commit, authored by her at the original
@@ -59,7 +59,7 @@ a3a85a3143a54305cafd79065a22de5b51395027	2026-09-25T11:36:20-05:00	fix(agent): c
 ec5c9c738acc0b3ed5770c25497ec335cbfe8d33	2026-09-25T11:28:21-05:00	fix(processes): persist_on_release keeps background jobs alive across lifecycle kill sweeps (#41225)
 0cf900ea172d84fc0aef3afbc1de2bd787cc2043	2026-09-24T23:45:27-05:00	fix(skills): keep built-in provenance for skills the catalog dropped
 70f7fa05caf880ba3ae2bac4e13655cfde1dfca5	2026-09-24T23:13:53-05:00	fix(providers): keep llamacpp as the model table's managed-runtime id
-4c286ae7a0dcb86e70a7ad8c23c0f05c89e33ec3	2026-09-25T14:02:49-05:00	test(desktop): load @hermes/shared once in the connection-registry contract test
+4c286ae7a0dcb86e70a7ad8c23c0f05c89e33ec3	2026-09-25T14:02:49-05:00	test(desktop): load @rabbit/shared once in the connection-registry contract test
 541e4dc0ba6d50e3e4554611c3e6b2c0865187c4	2026-09-25T12:36:17-05:00	fix(agent): protect the runtime's own interpreter from agent deletes
 3bbe5c593a3d10ced10fad09489b0123890abc11	2026-09-25T11:42:31-05:00	fix(tui): propagate the live agent's provider into the slash worker (#57283)
 954d94c3b008117a067d978dcedbdee0a09ce740	2026-09-25T12:27:19-05:00	fix(cli): name Windows Smart App Control when it blocks the dashboard runtime
@@ -104,12 +104,12 @@ ab0e060bd77c73bd944dea4aea4c5e1aebfdeb01	2026-09-25T18:08:03-05:00	fix(desktop):
 f8dddd71510f72eabe1732506dac53a78fdee3fd	2026-09-25T18:16:52-05:00	test(desktop): match the leaf name span now that badge chips wrap the row label
 f84db42a32b28a00a2ef1e11e5471a27d22cc37f	2026-09-25T11:06:00-05:00	fix(cron): deduplicate cross-profile jobs in GET /api/cron/jobs
 40347fd40d732bfad9b403cc224b2054becd22d5	2026-09-25T11:37:53-05:00	fix(mcp): resolve bare uv/uvx under GUI-style PATHs (#37589)
-678a4762b887f3eabe5cad11254b2ab1ae859485	2026-09-25T13:26:28-05:00	fix(mcp): move uv/uvx known-dir table into hermes_platform resolver
+678a4762b887f3eabe5cad11254b2ab1ae859485	2026-09-25T13:26:28-05:00	fix(mcp): move uv/uvx known-dir table into rabbit_platform resolver
 67c6fdc092331ab6c51a7d00612031614ccd3570	2026-09-25T11:36:29-05:00	fix(desktop): stop home-directory repo scans when no roots are configured
 d10afb5a8851be2b0f6fe5d3b04022c3a8877d6c	2026-09-25T18:52:11-05:00	fix(tests): import CONFIG_SCHEMA from its defining module
 3521034ed6b282ba6126b73bb04e3c958570432d	2026-09-24T18:51:45-05:00	fix(desktop): isolate Inbox session actions from the row resume (#85163)
 1ec4957d4c31b719fb4d8caf546fc44c43edfb81	2026-09-24T18:55:04-05:00	fix(desktop): drop ghost sidebar rows absorbed by a reorganized compression chain (#85331)
-7c80df7120781f55749b8843d6ef8016f8672eba	2026-09-24T22:18:52-05:00	fix(test): use hermes_yaml instead of bare pyyaml in onboarding test
+7c80df7120781f55749b8843d6ef8016f8672eba	2026-09-24T22:18:52-05:00	fix(test): use rabbit_yaml instead of bare pyyaml in onboarding test
 8507948c04714622327a61371cb0f06a0073a3af	2026-09-25T17:49:50-05:00	fix(desktop): qualify lineage absorption members by profile (#92454)
 b07d307bae64313e4aecaeb1c73dc95e03be204f	2026-09-25T10:08:28-05:00	fix(tui): bind side-agent UI owner; skip secret prompts with no owner
 283de37b6b4edfce7429f63ff9b0eee6b4882311	2026-09-25T18:13:06-05:00	fix(tui): refuse secret requests after the owning runtime closes
@@ -139,7 +139,7 @@ b5b344ca5825298e19c3e133ff54a34cbf27a75b	2026-09-25T13:22:45-05:00	fix(desktop):
 2497c3c539c37f0cf2140b856d36d45485fb3426	2026-09-25T18:54:12-05:00	fix(desktop): pass provider_primary through /api/env so a card keeps its own key
 c2af461706ae0dbab7271caf45bb9eefde4cdc53	2026-09-25T18:54:13-05:00	test(desktop): fixture where a shared credential arrives with primary: false
 a052836559683da8f98b538b3aee795aede42fde	2026-09-24T23:51:37-05:00	fix(mcp): connect servers added to config on the next agent build
-b148d976023afc6972fc77cce6b9595b86e022e6	2026-09-24T23:51:37-05:00	fix(mcp): point `hermes mcp add` and `configure` at /reload-mcp
+b148d976023afc6972fc77cce6b9595b86e022e6	2026-09-24T23:51:37-05:00	fix(mcp): point `rabbit mcp add` and `configure` at /reload-mcp
 4503c2458beec8aacd0516c7d9496dec4fec122a	2026-09-24T23:10:29-05:00	fix(tui_gateway): honor prefill_messages_file on the Desktop agent path
 a79311ba9581886e3fe58243018099a0694e5740	2026-09-25T00:10:48-05:00	test(tui_gateway): drop PyYAML import from prefill regression test
 15e26c76f35d28afc77bf924088cbb6b5c2781e9	2026-09-24T23:10:15-05:00	fix(dashboard): list --port 0 serve backends in --status

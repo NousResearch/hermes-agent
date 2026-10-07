@@ -1,5 +1,5 @@
 name: osv-ref
-repo: https://github.com/EloquentBrush0x/hermes-context-refs
+repo: https://github.com/EloquentBrush0x/rabbit-context-refs
 sha: 43ab2b75e660db5edcfe2f215776294c45408b40
 subdir: osv-ref
 description: >-
@@ -12,10 +12,10 @@ description: >-
 maintainer: EloquentBrush0x
 tier: community
 category: web
-requires_hermes: ">=0.21"
-docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/osv-ref
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/rabbit-context-refs/tree/main/osv-ref
 version: "1.0.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/43ab2b75e660db5edcfe2f215776294c45408b40/docs/osv-ref-card.png
+image: https://raw.githubusercontent.com/EloquentBrush0x/rabbit-context-refs/43ab2b75e660db5edcfe2f215776294c45408b40/docs/osv-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []

@@ -13,7 +13,7 @@ run_py() {
   local with_var="$1"; shift
   if [ "$with_var" = yes ]; then
     PYTHONPATH="$CAP_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-      HERMES_E2E_CAPTURE_LAUNCH="$WORK/spec.json" python3 "$@"
+      RABBIT_E2E_CAPTURE_LAUNCH="$WORK/spec.json" python3 "$@"
   else
     PYTHONPATH="$CAP_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$@"
   fi
@@ -41,7 +41,7 @@ rm -f "$WORK"/spec.json*
 run_py yes -c '
 import subprocess, tempfile
 tmp = tempfile.gettempdir()
-r = subprocess.run(["npm", "exec", "--", "electron", "."], cwd=tmp, env={"HERMES_DESKTOP_CWD": tmp, "PATH": "/usr/bin"})
+r = subprocess.run(["npm", "exec", "--", "electron", "."], cwd=tmp, env={"RABBIT_DESKTOP_CWD": tmp, "PATH": "/usr/bin"})
 assert r.returncode == 0, r
 '
 [ -e "$WORK/spec.json" ] || fail "treatment 1: no spec written"
@@ -52,7 +52,7 @@ tmp = tempfile.gettempdir()
 spec = json.load(open(sys.argv[1]))
 assert spec["argv"] == ["npm", "exec", "--", "electron", "."], spec["argv"]
 assert spec["cwd"] == tmp, spec["cwd"]
-assert spec["env"]["HERMES_DESKTOP_CWD"] == tmp, "env= kwarg not captured"
+assert spec["env"]["RABBIT_DESKTOP_CWD"] == tmp, "env= kwarg not captured"
 assert spec["matchedShape"] == "source"
 print("spec contents OK")
 EOF
@@ -62,7 +62,7 @@ echo "--- treatment 2: packaged shape captured, not spawned"
 rm -f "$WORK"/spec.json*
 run_py yes -c '
 import subprocess, tempfile
-exe = "/x/apps/desktop/release/linux-unpacked/Hermes"
+exe = "/x/apps/desktop/release/linux-unpacked/Rabbit"
 r = subprocess.run([exe, "--no-sandbox"], cwd=tempfile.gettempdir(), env={"PATH": "/usr/bin"})
 assert r.returncode == 0, r   # a real spawn of this path would ENOENT
 '
@@ -73,7 +73,7 @@ echo "--- treatment 3: windows-style packaged argv matches too"
 rm -f "$WORK"/spec.json*
 run_py yes -c '
 import subprocess
-r = subprocess.run(["C:\\x\\apps\\desktop\\release\\win-unpacked\\Hermes.exe"], env={})
+r = subprocess.run(["C:\\x\\apps\\desktop\\release\\win-unpacked\\Rabbit.exe"], env={})
 assert r.returncode == 0
 '
 [ "$(cat "$WORK/spec.json.captured")" = "packaged" ] || fail "treatment 3: wrong shape"

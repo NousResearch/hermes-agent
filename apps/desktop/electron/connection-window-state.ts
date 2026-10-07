@@ -4,14 +4,14 @@ import type { BrowserWindow, WebContents } from 'electron'
  * Live window state to attach to a connection reply (#102451).
  *
  * A republished connection must carry the calling window's CURRENT chrome state
- * (fullscreen, maximized, …), not whatever `startHermes()` baked into the cached
+ * (fullscreen, maximized, …), not whatever `startRabbit()` baked into the cached
  * backend descriptor at mint time. The backend pool entry outlives renderer
  * reloads, reconnects and sleep/wake, so a mint-time `...getWindowState()`
  * spread goes stale the moment the user toggles fullscreen — and a stale
  * `isFullscreen: false` overwrites the live flag in the renderer, losing the
  * fullscreen titlebar inset until the next toggle. Reading the state at IPC
  * reply time keeps every republish consistent with the
- * `hermes:window-state-changed` live-push path.
+ * `rabbit:window-state-changed` live-push path.
  *
  * `undefined` when no usable window exists (sender gone, fallback destroyed) —
  * callers then leave the connection's own (possibly stale) fields untouched

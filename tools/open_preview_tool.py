@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
+"""Open a URL, dev server, or file in the Rabbit desktop GUI's preview pane.
 
 Registration lives in the `desktop_preview` tool (``tools.preview_tool``); this module keeps
 the normalizer + open action. Emits ``preview.open`` via ``desktop_ui``: the renderer opens
@@ -85,5 +85,5 @@ def open_preview_tool(url: str, label: str = "") -> str:
         "preview.open",
         {"url": target, "label": label},
         "Failed to open the preview pane: ",
-        "The preview pane is only available in the Hermes desktop app.",
+        "The preview pane is only available in the Rabbit desktop app.",
         {"success": True, "url": target, "label": label})

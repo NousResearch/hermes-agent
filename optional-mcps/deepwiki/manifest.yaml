@@ -6,7 +6,7 @@ name: deepwiki
 description: Ask questions about any public GitHub repo (Devin's DeepWiki).
 source: https://docs.devin.ai/work-with-devin/deepwiki-mcp
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). No authentication required (verified live:
 # initialize succeeds anonymously).
 

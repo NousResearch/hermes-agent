@@ -14,7 +14,7 @@ Embedding database for RAG and semantic search.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/chroma` |
+| Source | Optional — install with `rabbit skills install official/mlops/chroma` |
 | Path | `optional-skills/mlops/chroma` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ Embedding database for RAG and semantic search.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Chroma - Open-Source Embedding Database

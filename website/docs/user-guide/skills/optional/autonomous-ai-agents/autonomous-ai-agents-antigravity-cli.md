@@ -14,27 +14,27 @@ Operate the Antigravity CLI (agy): plugins, auth, sandbox.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/autonomous-ai-agents/antigravity-cli` |
+| Source | Optional — install with `rabbit skills install official/autonomous-ai-agents/antigravity-cli` |
 | Path | `optional-skills/autonomous-ai-agents/antigravity-cli` |
 | Version | `0.2.0` |
-| Author | Tony Simons (asimons81), Hermes Agent |
+| Author | Tony Simons (asimons81), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Coding-Agent`, `Antigravity`, `CLI`, `Auth`, `Plugins`, `Sandbox` |
-| Related skills | [`grok`](../../optional/autonomous-ai-agents/autonomous-ai-agents-grok.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
+| Related skills | [`grok`](../../optional/autonomous-ai-agents/autonomous-ai-agents-grok.md), [`codex`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-codex.md), [`claude-code`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md), [`rabbit-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent.md) |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Antigravity CLI (`agy`)
 
 Operator guide for the Antigravity CLI, invoked as `agy`. Run all `agy`
-commands through the Hermes `terminal` tool; inspect its config and logs with
+commands through the Rabbit `terminal` tool; inspect its config and logs with
 `read_file`. This skill is reference + procedure — it does not wrap a network
-API, so there is nothing to authenticate from Hermes itself.
+API, so there is nothing to authenticate from Rabbit itself.
 
 ## When to Use
 

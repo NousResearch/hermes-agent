@@ -15,7 +15,7 @@
  * model name is a button" every time both are true.
  */
 
-import type { LocalCatalogModel, LocalModelsStatus } from '@/types/hermes'
+import type { LocalCatalogModel, LocalModelsStatus } from '@/types/rabbit'
 
 /** Retirement/shown-at ledger id. Not a `TipId` — the rotation never walks it. */
 export const LOCAL_SETUP_TIP_ID = 'local-setup'
@@ -30,7 +30,7 @@ export const LOCAL_SETUP_RESHOW_MS = 7 * 24 * 60 * 60_000
  * yet — no runtime or no staged models. A set-up machine never qualifies, so
  * completing setup retires this tip without any bookkeeping.
  *
- * `connectionMode` must be 'local': on a remote backend (cloud resolves to
+ * `connectionMode` must be 'local': on a remote backend (which resolves to
  * remote) the models would run on the far machine, and a bubble promising
  * "stays on your computer" would be promising someone else's computer.
  */

@@ -3,17 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fmtDayTime } from '@/lib/time'
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
-import type { CronJob, SessionInfo } from '@/types/hermes'
+import type { CronJob, SessionInfo } from '@/types/rabbit'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 
 // The peek's run list comes off the backend; the liveness flags below are the
-// endpoint's own (`hermes_cli/web_routers/cron.py`: `is_active` is
+// endpoint's own (`rabbit_cli/web_routers/cron.py`: `is_active` is
 // `ended_at IS NULL` + a 300s activity window, `scheduler_owned` is a live
 // in-flight execution).
 const getCronJobRuns = vi.fn<() => Promise<SessionInfo[]>>()
 
-vi.mock('@/hermes', async importOriginal => {
+vi.mock('@/rabbit', async importOriginal => {
   const actual = (await importOriginal()) as Record<string, unknown>
 
   return {

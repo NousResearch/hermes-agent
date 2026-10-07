@@ -6,43 +6,42 @@ sidebar_position: 1
 
 # AI 提供商
 
-本页介绍如何为 Hermes Agent 配置推理提供商——从 OpenRouter、Anthropic 等云端 API，到 Ollama、vLLM 等自托管端点，再到高级路由与故障转移配置。使用 Hermes 至少需要配置一个提供商。
+本页介绍如何为 Rabbit Agent 配置推理提供商——从 OpenRouter、Anthropic 等云端 API，到 Ollama、vLLM 等自托管端点，再到高级路由与故障转移配置。使用 Rabbit 至少需要配置一个提供商。
 
 ## 推理提供商
 
-你需要至少一种方式连接到 LLM。使用 `hermes model` 交互式切换提供商和模型，或直接配置：
+你需要至少一种方式连接到 LLM。使用 `rabbit model` 交互式切换提供商和模型，或直接配置：
 
 | 提供商 | 配置方式 |
 |----------|-------|
-| **Nous Portal** | `hermes model`（OAuth，订阅制） |
-| **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
-| **GitHub Copilot** | `hermes model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
-| **GitHub Copilot ACP** | `hermes model`（在本地生成 `copilot --acp --stdio` 子进程） |
-| **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
-| **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
-| **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
-| **AI Gateway** | `~/.hermes/.env` 中的 `AI_GATEWAY_API_KEY`（provider: `ai-gateway`） |
-| **z.ai / GLM** | `~/.hermes/.env` 中的 `GLM_API_KEY`（provider: `zai`） |
-| **Kimi / Moonshot** | `~/.hermes/.env` 中的 `KIMI_API_KEY`（provider: `kimi-coding`） |
-| **Kimi / Moonshot（中国）** | `~/.hermes/.env` 中的 `KIMI_CN_API_KEY`（provider: `kimi-coding-cn`；别名：`kimi-cn`、`moonshot-cn`） |
-| **Arcee AI** | `~/.hermes/.env` 中的 `ARCEEAI_API_KEY`（provider: `arcee`；别名：`arcee-ai`、`arceeai`） |
-| **GMI Cloud** | `~/.hermes/.env` 中的 `GMI_API_KEY`（provider: `gmi`；别名：`gmi-cloud`、`gmicloud`） |
-| **MiniMax** | `~/.hermes/.env` 中的 `MINIMAX_API_KEY`（provider: `minimax`） |
-| **MiniMax 中国** | `~/.hermes/.env` 中的 `MINIMAX_CN_API_KEY`（provider: `minimax-cn`） |
-| **xAI（Grok）— Responses API** | `~/.hermes/.env` 中的 `XAI_API_KEY`（provider: `xai`） |
-| **xAI Grok OAuth（SuperGrok）** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)"——浏览器登录，无需 API key。参见[指南](../guides/xai-grok-oauth.md) |
-| **Qwen Cloud（阿里 DashScope）** | `~/.hermes/.env` 中的 `DASHSCOPE_API_KEY`（provider: `alibaba`） |
+| **OpenAI Codex** | `rabbit model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
+| **GitHub Copilot** | `rabbit model`（OAuth 设备码流程，`COPILOT_GITHUB_TOKEN`、`GH_TOKEN` 或 `gh auth token`） |
+| **GitHub Copilot ACP** | `rabbit model`（在本地生成 `copilot --acp --stdio` 子进程） |
+| **Anthropic** | `rabbit model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
+| **OpenRouter** | `~/.rabbit/.env` 中的 `OPENROUTER_API_KEY` |
+| **NovitaAI** | `~/.rabbit/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
+| **AI Gateway** | `~/.rabbit/.env` 中的 `AI_GATEWAY_API_KEY`（provider: `ai-gateway`） |
+| **z.ai / GLM** | `~/.rabbit/.env` 中的 `GLM_API_KEY`（provider: `zai`） |
+| **Kimi / Moonshot** | `~/.rabbit/.env` 中的 `KIMI_API_KEY`（provider: `kimi-coding`） |
+| **Kimi / Moonshot（中国）** | `~/.rabbit/.env` 中的 `KIMI_CN_API_KEY`（provider: `kimi-coding-cn`；别名：`kimi-cn`、`moonshot-cn`） |
+| **Arcee AI** | `~/.rabbit/.env` 中的 `ARCEEAI_API_KEY`（provider: `arcee`；别名：`arcee-ai`、`arceeai`） |
+| **GMI Cloud** | `~/.rabbit/.env` 中的 `GMI_API_KEY`（provider: `gmi`；别名：`gmi-cloud`、`gmicloud`） |
+| **MiniMax** | `~/.rabbit/.env` 中的 `MINIMAX_API_KEY`（provider: `minimax`） |
+| **MiniMax 中国** | `~/.rabbit/.env` 中的 `MINIMAX_CN_API_KEY`（provider: `minimax-cn`） |
+| **xAI（Grok）— Responses API** | `~/.rabbit/.env` 中的 `XAI_API_KEY`（provider: `xai`） |
+| **xAI Grok OAuth（SuperGrok）** | `rabbit model` → "xAI Grok OAuth (SuperGrok / Premium+)"——浏览器登录，无需 API key。参见[指南](../guides/xai-grok-oauth.md) |
+| **Qwen Cloud（阿里 DashScope）** | `~/.rabbit/.env` 中的 `DASHSCOPE_API_KEY`（provider: `alibaba`） |
 | **阿里云（Coding Plan）** | `DASHSCOPE_API_KEY`（provider: `alibaba-coding-plan`，别名：`alibaba_coding`）——独立计费 SKU，不同端点 |
-| **Kilo Code** | `~/.hermes/.env` 中的 `KILOCODE_API_KEY`（provider: `kilocode`） |
-| **小米 MiMo** | `~/.hermes/.env` 中的 `XIAOMI_API_KEY`（provider: `xiaomi`，别名：`mimo`、`xiaomi-mimo`） |
-| **腾讯 TokenHub** | `~/.hermes/.env` 中的 `TOKENHUB_API_KEY`（provider: `tencent-tokenhub`，别名：`tencent`、`tokenhub`、`tencentmaas`） |
-| **OpenCode Zen** | `~/.hermes/.env` 中的 `OPENCODE_ZEN_API_KEY`（provider: `opencode-zen`） |
-| **OpenCode Go** | `~/.hermes/.env` 中的 `OPENCODE_GO_API_KEY`（provider: `opencode-go`） |
-| **DeepSeek** | `~/.hermes/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
-| **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
-| **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
-| **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
-| **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
+| **Kilo Code** | `~/.rabbit/.env` 中的 `KILOCODE_API_KEY`（provider: `kilocode`） |
+| **小米 MiMo** | `~/.rabbit/.env` 中的 `XIAOMI_API_KEY`（provider: `xiaomi`，别名：`mimo`、`xiaomi-mimo`） |
+| **腾讯 TokenHub** | `~/.rabbit/.env` 中的 `TOKENHUB_API_KEY`（provider: `tencent-tokenhub`，别名：`tencent`、`tokenhub`、`tencentmaas`） |
+| **OpenCode Zen** | `~/.rabbit/.env` 中的 `OPENCODE_ZEN_API_KEY`（provider: `opencode-zen`） |
+| **OpenCode Go** | `~/.rabbit/.env` 中的 `OPENCODE_GO_API_KEY`（provider: `opencode-go`） |
+| **DeepSeek** | `~/.rabbit/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
+| **Hugging Face** | `~/.rabbit/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
+| **Google / Gemini** | `~/.rabbit/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
+| **LM Studio** | `rabbit model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
+| **自定义端点** | `rabbit model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
 官方 API key 路径请参见专属的 [Google Gemini 指南](../guides/google-gemini.md)。
 
@@ -51,27 +50,12 @@ sidebar_position: 1
 :::
 
 
-### Nous Portal
-
-[Nous Portal](https://portal.nousresearch.com) 是 Nous Research 的统一订阅网关，也是**运行 Hermes Agent 的推荐方式**。一次 OAuth 登录即可访问 300+ 前沿智能体模型（Claude、GPT、Gemini、DeepSeek、Qwen、Kimi、GLM、MiniMax、Grok 等）以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网页搜索、图像生成、TTS、浏览器自动化）——费用从你的 Nous 订阅中扣除，无需单独管理各提供商账户。
-
-```bash
-hermes setup --portal     # 全新安装——一条命令完成 OAuth + 提供商 + 网关配置
-hermes model              # 已有安装——从列表中选择"Nous Portal"
-hermes portal info        # 随时查看登录状态和路由信息
-```
-
-还没有订阅？前往 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 购买。
-
-**完整详情：** 参见专属的 [Nous Portal 集成页面](./nous-portal.md)（订阅内容、模型目录、故障排查）以及分步指南[使用 Nous Portal 运行 Hermes Agent](../guides/run-hermes-with-nous-portal.md)。
-
-
 :::info Codex 说明
-OpenAI Codex 提供商通过设备码（device code）认证——打开一个 URL 并输入验证码。Hermes 将生成的凭据存储在 `~/.hermes/auth.json` 的自有认证存储中，并在存在 `~/.codex/auth.json` 时可导入现有的 Codex CLI 凭据。无需安装 Codex CLI。
+OpenAI Codex 提供商通过设备码（device code）认证——打开一个 URL 并输入验证码。Rabbit 将生成的凭据存储在 `~/.rabbit/auth.json` 的自有认证存储中，并在存在 `~/.codex/auth.json` 时可导入现有的 Codex CLI 凭据。无需安装 Codex CLI。
 
-如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Hermes 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `hermes auth add openai-codex`（或 `hermes model` → **ChatGPT or Codex Subscription**）开始新的设备码登录；成功交换后隔离状态自动解除。
+如果 token 刷新因终端错误（HTTP 4xx、`invalid_grant`、授权被撤销等）失败，Rabbit 会将该刷新 token 标记为失效并停止重试，避免出现大量重复的认证失败。下一次请求会显示类型化的重新认证提示。运行 `rabbit auth add openai-codex`（或 `rabbit model` → **ChatGPT or Codex Subscription**）开始新的设备码登录；成功交换后隔离状态自动解除。
 
-在 Python/OpenSSL 3.5+ 上，如果网络中间设备拒绝 X25519MLKEM768 等后量子密钥交换组，设备码登录可能报 `[SSL: UNEXPECTED_EOF_WHILE_READING]` 或 TLS 握手超时（此时 curl 仍可能正常）。Hermes 不会修改默认 TLS 策略。请在运行 `hermes model` 前将 `OPENSSL_CONF` 指向一个把 `Groups` 限制为经典曲线的配置文件，或用 TLS 1.2 进行诊断：
+在 Python/OpenSSL 3.5+ 上，如果网络中间设备拒绝 X25519MLKEM768 等后量子密钥交换组，设备码登录可能报 `[SSL: UNEXPECTED_EOF_WHILE_READING]` 或 TLS 握手超时（此时 curl 仍可能正常）。Rabbit 不会修改默认 TLS 策略。请在运行 `rabbit model` 前将 `OPENSSL_CONF` 指向一个把 `Groups` 限制为经典曲线的配置文件，或用 TLS 1.2 进行诊断：
 
 ```ini
 openssl_conf = openssl_init
@@ -88,23 +72,19 @@ Groups = x25519:secp256r1:secp384r1:x448
 :::
 
 :::warning
-即使使用 Nous Portal、Codex 或自定义端点，某些工具（视觉、网页摘要、MoA）仍会使用单独的"辅助"模型。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将这些任务路由到你的**主聊天模型**——即你在 `hermes model` 中选择的同一模型。你可以单独覆盖每个任务，将其路由到更便宜/更快的模型（例如 OpenRouter 上的 Gemini Flash）——参见[辅助模型](../user-guide/configuration.md#auxiliary-models)。
-:::
-
-:::tip Nous Tool Gateway
-付费 Nous Portal 订阅者还可访问 **[Tool Gateway](../user-guide/features/tool-gateway.md)**——网页搜索、图像生成、TTS 和浏览器自动化，均通过你的订阅路由。无需额外 API key。全新安装时，`hermes setup --portal` 一条命令即可完成登录、设置 Nous 为提供商并开启网关。现有用户可通过 `hermes model` 或 `hermes tools` 按工具启用。随时使用 `hermes portal info` 查看路由状态。
+即使使用订阅登录（Codex）或自定义端点，某些工具（视觉、网页摘要、MoA）仍会使用单独的"辅助"模型。默认情况下（`auxiliary.*.provider: "auto"`），Rabbit 将这些任务路由到你的**主聊天模型**——即你在 `rabbit model` 中选择的同一模型。你可以单独覆盖每个任务，将其路由到更便宜/更快的模型（例如 OpenRouter 上的 Gemini Flash）——参见[辅助模型](../user-guide/configuration.md#auxiliary-models)。
 :::
 
 ### 模型管理的两个命令
 
-Hermes 有**两个**模型命令，用途不同：
+Rabbit 有**两个**模型命令，用途不同：
 
 | 命令 | 运行位置 | 功能 |
 |---------|-------------|--------------|
-| **`hermes model`** | 终端（任何会话之外） | 完整配置向导——添加提供商、运行 OAuth、输入 API key、配置端点 |
-| **`/model`** | Hermes 聊天会话内部 | 在**已配置的**提供商和模型之间快速切换 |
+| **`rabbit model`** | 终端（任何会话之外） | 完整配置向导——添加提供商、运行 OAuth、输入 API key、配置端点 |
+| **`/model`** | Rabbit 聊天会话内部 | 在**已配置的**提供商和模型之间快速切换 |
 
-如果你想切换到尚未配置的提供商（例如你只配置了 OpenRouter，想使用 Anthropic），需要使用 `hermes model`，而不是 `/model`。先退出会话（`Ctrl+C` 或 `/quit`），运行 `hermes model`，完成提供商配置，然后开启新会话。
+如果你想切换到尚未配置的提供商（例如你只配置了 OpenRouter，想使用 Anthropic），需要使用 `rabbit model`，而不是 `/model`。先退出会话（`Ctrl+C` 或 `/quit`），运行 `rabbit model`，完成提供商配置，然后开启新会话。
 
 
 ### Anthropic（原生）
@@ -112,7 +92,7 @@ Hermes 有**两个**模型命令，用途不同：
 通过 Anthropic API 直接使用 Claude 模型——无需 OpenRouter 代理。支持三种认证方式：
 
 :::caution 需要 Claude Max"额外用量"积分
-通过 `hermes model` → Anthropic OAuth（或 `hermes auth add anthropic --type oauth`）认证时，Hermes 以 Claude Code 身份路由到你的 Anthropic 账户。**仅当你订阅了 Claude Max 计划且购买了额外用量积分时才有效。** Claude Max 基础计划的配额（Claude Code 默认包含的用量）不会被 Hermes 消耗——只有你额外购买的超额积分才会被使用。Claude Pro 订阅者无法使用此路径。
+通过 `rabbit model` → Anthropic OAuth（或 `rabbit auth add anthropic --type oauth`）认证时，Rabbit 以 Claude Code 身份路由到你的 Anthropic 账户。**仅当你订阅了 Claude Max 计划且购买了额外用量积分时才有效。** Claude Max 基础计划的配额（Claude Code 默认包含的用量）不会被 Rabbit 消耗——只有你额外购买的超额积分才会被使用。Claude Pro 订阅者无法使用此路径。
 
 如果你没有 Max + 额外积分，请改用 `ANTHROPIC_API_KEY`——请求将按 token 计费，从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关）。
 :::
@@ -120,21 +100,21 @@ Hermes 有**两个**模型命令，用途不同：
 ```bash
 # 使用 API key（按 token 计费）
 export ANTHROPIC_API_KEY=***
-hermes chat --provider anthropic --model claude-sonnet-4-6
+rabbit chat --provider anthropic --model claude-sonnet-4-6
 
-# 推荐：通过 `hermes model` 认证
-# 如果已使用 Claude Code，Hermes 会直接使用其凭据存储
-hermes model
+# 推荐：通过 `rabbit model` 认证
+# 如果已使用 Claude Code，Rabbit 会直接使用其凭据存储
+rabbit model
 
 # 使用 setup-token 手动覆盖（备用/旧版）
 export ANTHROPIC_TOKEN=***  # setup-token 或手动 OAuth token
-hermes chat --provider anthropic
+rabbit chat --provider anthropic
 
 # 自动检测 Claude Code 凭据（如果你已使用 Claude Code）
-hermes chat --provider anthropic  # 自动读取 Claude Code 凭据文件
+rabbit chat --provider anthropic  # 自动读取 Claude Code 凭据文件
 ```
 
-通过 `hermes model` 选择 Anthropic OAuth 时，Hermes 优先使用 Claude Code 自身的凭据存储，而不是将 token 复制到 `~/.hermes/.env`。这样可以保持 Claude 凭据的可刷新性。
+通过 `rabbit model` 选择 Anthropic OAuth 时，Rabbit 优先使用 Claude Code 自身的凭据存储，而不是将 token 复制到 `~/.rabbit/.env`。这样可以保持 Claude 凭据的可刷新性。
 
 或永久设置：
 ```yaml
@@ -149,12 +129,12 @@ model:
 
 ### GitHub Copilot
 
-Hermes 以一等提供商身份支持 GitHub Copilot，提供两种模式：
+Rabbit 以一等提供商身份支持 GitHub Copilot，提供两种模式：
 
 **`copilot` — 直连 Copilot API**（推荐）。使用你的 GitHub Copilot 订阅，通过 Copilot API 访问 GPT-5.x、Claude、Gemini 等模型。
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+rabbit chat --provider copilot --model gpt-5.4
 ```
 
 **认证选项**（按以下顺序检查）：
@@ -164,30 +144,30 @@ hermes chat --provider copilot --model gpt-5.4
 3. `GITHUB_TOKEN` 环境变量
 4. `gh auth token` CLI 回退
 
-如果未找到 token，`hermes model` 会提供 **OAuth 设备码登录**——与 Copilot CLI 和 opencode 使用的流程相同。
+如果未找到 token，`rabbit model` 会提供 **OAuth 设备码登录**——与 Copilot CLI 和 opencode 使用的流程相同。
 
 :::warning Token 类型
 Copilot API **不**支持经典个人访问 token（`ghp_*`）。支持的 token 类型：
 
 | 类型 | 前缀 | 获取方式 |
 |------|--------|------------|
-| OAuth token | `gho_` | `hermes model` → GitHub Copilot → 使用 GitHub 登录 |
+| OAuth token | `gho_` | `rabbit model` → GitHub Copilot → 使用 GitHub 登录 |
 | 细粒度 PAT | `github_pat_` | GitHub 设置 → 开发者设置 → 细粒度 token（需要 **Copilot Requests** 权限） |
 | GitHub App token | `ghu_` | 通过 GitHub App 安装获取 |
 
-如果你的 `gh auth token` 返回 `ghp_*` token，请使用 `hermes model` 通过 OAuth 认证。
+如果你的 `gh auth token` 返回 `ghp_*` token，请使用 `rabbit model` 通过 OAuth 认证。
 :::
 
-:::info Hermes 中的 Copilot 认证行为
-Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`）。
+:::info Rabbit 中的 Copilot 认证行为
+Rabbit 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接发送到 `api.githubcopilot.com`，并附带 Copilot 专用请求头（`Editor-Version`、`Copilot-Integration-Id`、`Openai-Intent`、`x-initiator`）。
 
-收到 HTTP 401 时，Hermes 在回退前会执行一次性凭据恢复：
+收到 HTTP 401 时，Rabbit 在回退前会执行一次性凭据恢复：
 
 1. 通过正常优先级链重新解析 token（`COPILOT_GITHUB_TOKEN` → `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`）
 2. 使用刷新后的请求头重建共享 OpenAI 客户端
 3. 重试请求一次
 
-部分旧版社区代理使用 `api.github.com/copilot_internal/v2/token` 交换流程。该端点对某些账户类型可能不可用（返回 404）。因此 Hermes 以直接 token 认证为主路径，依靠运行时凭据刷新 + 重试保证健壮性。
+部分旧版社区代理使用 `api.github.com/copilot_internal/v2/token` 交换流程。该端点对某些账户类型可能不可用（返回 404）。因此 Rabbit 以直接 token 认证为主路径，依靠运行时凭据刷新 + 重试保证健壮性。
 :::
 
 **API 路由**：GPT-5+ 模型（`gpt-5-mini` 除外）自动使用 Responses API。其他所有模型（GPT-4o、Claude、Gemini 等）使用 Chat Completions。模型从 Copilot 实时目录自动检测。
@@ -195,7 +175,7 @@ Hermes 将支持的 GitHub token（`gho_*`、`github_pat_*` 或 `ghu_*`）直接
 **`copilot-acp` — Copilot ACP 智能体后端**。将本地 Copilot CLI 作为子进程启动：
 
 ```bash
-hermes chat --provider copilot-acp --model copilot-acp
+rabbit chat --provider copilot-acp --model copilot-acp
 # 需要 PATH 中存在 GitHub Copilot CLI 且已完成 `copilot login`
 ```
 
@@ -209,8 +189,8 @@ model:
 | 环境变量 | 说明 |
 |---------------------|-------------|
 | `COPILOT_GITHUB_TOKEN` | Copilot API 的 GitHub token（最高优先级） |
-| `HERMES_COPILOT_ACP_COMMAND` | 覆盖 Copilot CLI 二进制路径（默认：`copilot`） |
-| `HERMES_COPILOT_ACP_ARGS` | 覆盖 ACP 参数（默认：`--acp --stdio`） |
+| `RABBIT_COPILOT_ACP_COMMAND` | 覆盖 Copilot CLI 二进制路径（默认：`copilot`） |
+| `RABBIT_COPILOT_ACP_ARGS` | 覆盖 ACP 参数（默认：`--acp --stdio`） |
 
 ### 一等 API Key 提供商
 
@@ -218,49 +198,49 @@ model:
 
 ```bash
 # NovitaAI Model API
-hermes chat --provider novita --model moonshotai/kimi-k2.5
-# 需要：~/.hermes/.env 中的 NOVITA_API_KEY
+rabbit chat --provider novita --model moonshotai/kimi-k2.5
+# 需要：~/.rabbit/.env 中的 NOVITA_API_KEY
 
 # z.ai / ZhipuAI GLM
-hermes chat --provider zai --model glm-5
-# 需要：~/.hermes/.env 中的 GLM_API_KEY
+rabbit chat --provider zai --model glm-5
+# 需要：~/.rabbit/.env 中的 GLM_API_KEY
 
 # Kimi / Moonshot AI（国际版：api.moonshot.ai）
-hermes chat --provider kimi-coding --model kimi-for-coding
-# 需要：~/.hermes/.env 中的 KIMI_API_KEY
+rabbit chat --provider kimi-coding --model kimi-for-coding
+# 需要：~/.rabbit/.env 中的 KIMI_API_KEY
 
 # Kimi / Moonshot AI（中国版：api.moonshot.cn）
-hermes chat --provider kimi-coding-cn --model kimi-k2.5
-# 需要：~/.hermes/.env 中的 KIMI_CN_API_KEY
+rabbit chat --provider kimi-coding-cn --model kimi-k2.5
+# 需要：~/.rabbit/.env 中的 KIMI_CN_API_KEY
 
 # MiniMax（全球端点）
-hermes chat --provider minimax --model MiniMax-M2.7
-# 需要：~/.hermes/.env 中的 MINIMAX_API_KEY
+rabbit chat --provider minimax --model MiniMax-M2.7
+# 需要：~/.rabbit/.env 中的 MINIMAX_API_KEY
 
 # MiniMax（中国端点）
-hermes chat --provider minimax-cn --model MiniMax-M2.7
-# 需要：~/.hermes/.env 中的 MINIMAX_CN_API_KEY
+rabbit chat --provider minimax-cn --model MiniMax-M2.7
+# 需要：~/.rabbit/.env 中的 MINIMAX_CN_API_KEY
 
 # Qwen Cloud / DashScope（Qwen 模型）
-hermes chat --provider alibaba --model qwen3.5-plus
-# 需要：~/.hermes/.env 中的 DASHSCOPE_API_KEY
+rabbit chat --provider alibaba --model qwen3.5-plus
+# 需要：~/.rabbit/.env 中的 DASHSCOPE_API_KEY
 
 # 小米 MiMo
-hermes chat --provider xiaomi --model mimo-v2-pro
-# 需要：~/.hermes/.env 中的 XIAOMI_API_KEY
+rabbit chat --provider xiaomi --model mimo-v2-pro
+# 需要：~/.rabbit/.env 中的 XIAOMI_API_KEY
 
 # 腾讯 TokenHub（Hy3 Preview）
-hermes chat --provider tencent-tokenhub --model hy3-preview
-# 需要：~/.hermes/.env 中的 TOKENHUB_API_KEY
+rabbit chat --provider tencent-tokenhub --model hy3-preview
+# 需要：~/.rabbit/.env 中的 TOKENHUB_API_KEY
 
 # Arcee AI（Trinity 模型）
-hermes chat --provider arcee --model trinity-large-thinking
-# 需要：~/.hermes/.env 中的 ARCEEAI_API_KEY
+rabbit chat --provider arcee --model trinity-large-thinking
+# 需要：~/.rabbit/.env 中的 ARCEEAI_API_KEY
 
 # GMI Cloud
 # 使用 GMI /v1/models 端点返回的精确模型 ID。
-hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
-# 需要：~/.hermes/.env 中的 GMI_API_KEY
+rabbit chat --provider gmi --model zai-org/GLM-5.1-FP8
+# 需要：~/.rabbit/.env 中的 GMI_API_KEY
 ```
 
 或在 `config.yaml` 中永久设置提供商：
@@ -273,20 +253,20 @@ model:
 基础 URL 可通过 `NOVITA_BASE_URL`、`GLM_BASE_URL`、`KIMI_BASE_URL`、`MINIMAX_BASE_URL`、`MINIMAX_CN_BASE_URL`、`DASHSCOPE_BASE_URL`、`XIAOMI_BASE_URL`、`GMI_BASE_URL` 或 `TOKENHUB_BASE_URL` 环境变量覆盖。
 
 :::note Z.AI 端点自动检测
-使用 Z.AI / GLM 提供商时，Hermes 会自动探测多个端点（全球版、中国版、编程版）以找到接受你 API key 的端点。无需手动设置 `GLM_BASE_URL`——可用端点会被自动检测并缓存。
+使用 Z.AI / GLM 提供商时，Rabbit 会自动探测多个端点（全球版、中国版、编程版）以找到接受你 API key 的端点。无需手动设置 `GLM_BASE_URL`——可用端点会被自动检测并缓存。
 :::
 
 ### xAI（Grok）— Responses API + Prompt 缓存
 
-xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.hermes/.env` 中设置 `XAI_API_KEY` 并在 `hermes model` 中选择 xAI，或直接用 `grok` 作为快捷方式输入 `/model grok-4-1-fast-reasoning`。
+xAI 通过 Responses API（`codex_responses` 传输）接入，自动支持 Grok 4 模型的推理——无需 `reasoning_effort` 参数，服务端默认进行推理。在 `~/.rabbit/.env` 中设置 `XAI_API_KEY` 并在 `rabbit model` 中选择 xAI，或直接用 `grok` 作为快捷方式输入 `/model grok-4-1-fast-reasoning`。
 
-SuperGrok 和 X Premium+ 订阅者可以用浏览器 OAuth 登录，无需 API key——在 `hermes model` 中选择 **xAI Grok OAuth (SuperGrok / Premium+)**，或运行 `hermes auth add xai-oauth`。同一 OAuth bearer token 会被 xAI 直连工具（TTS、图像生成、视频生成、转录）自动复用。完整流程参见 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)——如果 Hermes 运行在远程主机上，还需参见 [SSH / 远程主机上的 OAuth](../guides/oauth-over-ssh.md) 了解所需的 `ssh -L` 隧道配置。
+SuperGrok 和 X Premium+ 订阅者可以用浏览器 OAuth 登录，无需 API key——在 `rabbit model` 中选择 **xAI Grok OAuth (SuperGrok / Premium+)**，或运行 `rabbit auth add xai-oauth`。同一 OAuth bearer token 会被 xAI 直连工具（TTS、图像生成、视频生成、转录）自动复用。完整流程参见 [xAI Grok OAuth 指南](../guides/xai-grok-oauth.md)——如果 Rabbit 运行在远程主机上，还需参见 [SSH / 远程主机上的 OAuth](../guides/oauth-over-ssh.md) 了解所需的 `ssh -L` 隧道配置。
 
-使用 xAI 作为提供商时（任何包含 `x.ai` 的基础 URL），Hermes 会在每次 API 请求中自动发送 `x-grok-conv-id` 请求头以启用 prompt（提示词）缓存。这会将同一会话的请求路由到同一服务器，使 xAI 基础设施能够复用已缓存的系统 prompt 和对话历史。
+使用 xAI 作为提供商时（任何包含 `x.ai` 的基础 URL），Rabbit 会在每次 API 请求中自动发送 `x-grok-conv-id` 请求头以启用 prompt（提示词）缓存。这会将同一会话的请求路由到同一服务器，使 xAI 基础设施能够复用已缓存的系统 prompt 和对话历史。
 
 无需任何配置——检测到 xAI 端点且存在会话 ID 时，缓存自动激活。这可降低多轮对话的延迟和成本。
 
-xAI 还提供专属 TTS 端点（`/v1/tts`）。在 `hermes tools` → 语音与 TTS 中选择 **xAI TTS**，或参见[语音与 TTS](../user-guide/features/tts.md#text-to-speech) 页面了解配置。
+xAI 还提供专属 TTS 端点（`/v1/tts`）。在 `rabbit tools` → 语音与 TTS 中选择 **xAI TTS**，或参见[语音与 TTS](../user-guide/features/tts.md#text-to-speech) 页面了解配置。
 
 ### NovitaAI
 
@@ -294,11 +274,11 @@ xAI 还提供专属 TTS 端点（`/v1/tts`）。在 `hermes tools` → 语音与
 
 ```bash
 # 使用任意可用模型
-hermes chat --provider novita --model moonshotai/kimi-k2.5
-# 需要：~/.hermes/.env 中的 NOVITA_API_KEY
+rabbit chat --provider novita --model moonshotai/kimi-k2.5
+# 需要：~/.rabbit/.env 中的 NOVITA_API_KEY
 
 # 短别名
-hermes chat --provider novita-ai --model deepseek/deepseek-v3-0324
+rabbit chat --provider novita-ai --model deepseek/deepseek-v3-0324
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -313,10 +293,10 @@ model:
 
 ### Ollama Cloud — 托管 Ollama 模型，OAuth + API Key
 
-[Ollama Cloud](https://ollama.com/cloud) 托管与本地 Ollama 相同的开源模型目录，无需 GPU。在 `hermes model` 中选择 **Ollama Cloud**，粘贴来自 [ollama.com/settings/keys](https://ollama.com/settings/keys) 的 API key，Hermes 会自动发现可用模型。
+[Ollama Cloud](https://ollama.com/cloud) 托管与本地 Ollama 相同的开源模型目录，无需 GPU。在 `rabbit model` 中选择 **Ollama Cloud**，粘贴来自 [ollama.com/settings/keys](https://ollama.com/settings/keys) 的 API key，Rabbit 会自动发现可用模型。
 
 ```bash
-hermes model
+rabbit model
 # → 选择"Ollama Cloud"
 # → 粘贴你的 OLLAMA_API_KEY
 # → 从已发现的模型中选择（gpt-oss:120b、glm-4.6:cloud、qwen3-coder:480b-cloud 等）
@@ -341,10 +321,10 @@ model:
 
 ```bash
 # 最简方式——~/.aws/credentials 中的命名 profile
-hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
+rabbit chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
 
 # 或使用显式环境变量
-AWS_PROFILE=myprofile AWS_REGION=us-east-1 hermes chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
+AWS_PROFILE=myprofile AWS_REGION=us-east-1 rabbit chat --provider bedrock --model us.anthropic.claude-sonnet-4-6
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -369,15 +349,15 @@ Bedrock 底层使用 **Converse API**——请求被转换为 Bedrock 的模型�
 
 ### Qwen Portal（OAuth）
 
-阿里巴巴 Qwen Portal，支持基于浏览器的 OAuth 登录。在 `hermes model` 中选择 **Qwen OAuth (Portal)**，通过浏览器登录，Hermes 会持久化刷新 token。
+阿里巴巴 Qwen Portal，支持基于浏览器的 OAuth 登录。在 `rabbit model` 中选择 **Qwen OAuth (Portal)**，通过浏览器登录，Rabbit 会持久化刷新 token。
 
 ```bash
-hermes model
+rabbit model
 # → 选择"Qwen OAuth (Portal)"
 # → 浏览器打开；使用阿里巴巴账户登录
-# → 确认——凭据保存到 ~/.hermes/auth.json
+# → 确认——凭据保存到 ~/.rabbit/auth.json
 
-hermes chat   # 使用 portal.qwen.ai/v1 端点
+rabbit chat   # 使用 portal.qwen.ai/v1 端点
 ```
 
 或配置 `config.yaml`：
@@ -387,7 +367,7 @@ model:
   default: "qwen3-coder-plus"
 ```
 
-仅在 portal 端点迁移时才需设置 `HERMES_QWEN_BASE_URL`（默认：`https://portal.qwen.ai/v1`）。
+仅在 portal 端点迁移时才需设置 `RABBIT_QWEN_BASE_URL`（默认：`https://portal.qwen.ai/v1`）。
 
 :::tip Qwen OAuth 与 Qwen Cloud（阿里 DashScope）
 `qwen-oauth` 使用面向消费者的 Qwen Portal，通过 OAuth 登录——适合个人用户。`alibaba` 提供商使用 Qwen Cloud（阿里 DashScope），需要 `DASHSCOPE_API_KEY`——适合程序化/生产工作负载。两者都路由到 Qwen 系列模型，但端点不同。
@@ -395,7 +375,7 @@ model:
 
 ### 阿里云（Coding Plan）
 
-如果你订阅了阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU），Hermes 将其作为独立的一等提供商暴露：`alibaba-coding-plan`。端点：`https://coding-intl.dashscope.aliyuncs.com/v1`。与常规 `alibaba` 提供商一样兼容 OpenAI，但基础 URL 和计费面不同。
+如果你订阅了阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU），Rabbit 将其作为独立的一等提供商暴露：`alibaba-coding-plan`。端点：`https://coding-intl.dashscope.aliyuncs.com/v1`。与常规 `alibaba` 提供商一样兼容 OpenAI，但基础 URL 和计费面不同。
 
 ```yaml
 model:
@@ -406,22 +386,22 @@ model:
 或通过 CLI：
 
 ```bash
-hermes chat --provider alibaba_coding --model qwen3-coder-plus
+rabbit chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
 `alibaba_coding` 使用与 `alibaba` 条目相同的 `DASHSCOPE_API_KEY`——无需单独的 key，只是路由目标不同。在此提供商注册之前，在 `config.yaml` 中设置 `provider: alibaba_coding` 的用户会静默回退到 OpenRouter 路由。
 
 ### MiniMax（OAuth）
 
-通过浏览器 OAuth 登录使用 MiniMax-M2.7——无需 API key。在 `hermes model` 中选择 **MiniMax (OAuth)**，通过浏览器登录，Hermes 会持久化访问 token 和刷新 token。底层使用 Anthropic Messages 兼容端点（`/anthropic`）。
+通过浏览器 OAuth 登录使用 MiniMax-M2.7——无需 API key。在 `rabbit model` 中选择 **MiniMax (OAuth)**，通过浏览器登录，Rabbit 会持久化访问 token 和刷新 token。底层使用 Anthropic Messages 兼容端点（`/anthropic`）。
 
 ```bash
-hermes model
+rabbit model
 # → 选择"MiniMax (OAuth)"
 # → 浏览器打开；使用 MiniMax 账户登录（全球或中国区）
-# → 确认——凭据保存到 ~/.hermes/auth.json
+# → 确认——凭据保存到 ~/.rabbit/auth.json
 
-hermes chat   # 使用 api.minimax.io/anthropic 端点
+rabbit chat   # 使用 api.minimax.io/anthropic 端点
 ```
 
 或配置 `config.yaml`：
@@ -443,11 +423,11 @@ model:
 
 ```bash
 # 云端（build.nvidia.com）
-hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
-# 需要：~/.hermes/.env 中的 NVIDIA_API_KEY
+rabbit chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+# 需要：~/.rabbit/.env 中的 NVIDIA_API_KEY
 
 # 本地 NIM 端点——覆盖基础 URL
-NVIDIA_BASE_URL=http://localhost:8000/v1 hermes chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
+NVIDIA_BASE_URL=http://localhost:8000/v1 rabbit chat --provider nvidia --model nvidia/nemotron-3-super-120b-a12b
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -461,7 +441,7 @@ model:
 对于本地部署（DGX Spark、本地 GPU），设置 `NVIDIA_BASE_URL=http://localhost:8000/v1`。NIM 暴露与 build.nvidia.com 相同的 OpenAI 兼容 chat completions API，因此在云端和本地之间切换只需修改一行环境变量。
 :::
 
-Hermes 会在每次向 `build.nvidia.com` 发送请求时自动附加 NIM 计费来源请求头——无需任何配置。这会在 NVIDIA 计费仪表板中将消耗路由到正确的来源。
+Rabbit 会在每次向 `build.nvidia.com` 发送请求时自动附加 NIM 计费来源请求头——无需任何配置。这会在 NVIDIA 计费仪表板中将消耗路由到正确的来源。
 
 ### GMI Cloud
 
@@ -469,8 +449,8 @@ Hermes 会在每次向 `build.nvidia.com` 发送请求时自动附加 NIM 计费
 
 ```bash
 # GMI Cloud
-hermes chat --provider gmi --model deepseek-ai/DeepSeek-R1
-# 需要：~/.hermes/.env 中的 GMI_API_KEY
+rabbit chat --provider gmi --model deepseek-ai/DeepSeek-R1
+# 需要：~/.rabbit/.env 中的 GMI_API_KEY
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -488,8 +468,8 @@ model:
 
 ```bash
 # StepFun
-hermes chat --provider stepfun --model step-3.5-flash
-# 需要：~/.hermes/.env 中的 STEPFUN_API_KEY
+rabbit chat --provider stepfun --model step-3.5-flash
+# 需要：~/.rabbit/.env 中的 STEPFUN_API_KEY
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -507,11 +487,11 @@ model:
 
 ```bash
 # 使用任意可用模型
-hermes chat --provider huggingface --model Qwen/Qwen3-235B-A22B-Thinking-2507
-# 需要：~/.hermes/.env 中的 HF_TOKEN
+rabbit chat --provider huggingface --model Qwen/Qwen3-235B-A22B-Thinking-2507
+# 需要：~/.rabbit/.env 中的 HF_TOKEN
 
 # 短别名
-hermes chat --provider hf --model deepseek-ai/DeepSeek-V3.2
+rabbit chat --provider hf --model deepseek-ai/DeepSeek-V3.2
 ```
 
 或在 `config.yaml` 中永久设置：
@@ -529,7 +509,7 @@ model:
 
 ## 自定义与自托管 LLM 提供商
 
-Hermes Agent 可与**任何 OpenAI 兼容 API 端点**配合使用。只要服务器实现了 `/v1/chat/completions`，就可以将 Hermes 指向它。这意味着你可以使用本地模型、GPU 推理服务器、多提供商路由器或任何第三方 API。
+Rabbit Agent 可与**任何 OpenAI 兼容 API 端点**配合使用。只要服务器实现了 `/v1/chat/completions`，就可以将 Rabbit 指向它。这意味着你可以使用本地模型、GPU 推理服务器、多提供商路由器或任何第三方 API。
 
 ### 通用配置
 
@@ -537,14 +517,14 @@ Hermes Agent 可与**任何 OpenAI 兼容 API 端点**配合使用。只要服�
 
 **交互式配置（推荐）：**
 ```bash
-hermes model
+rabbit model
 # 选择"Custom endpoint (self-hosted / VLLM / etc.)"
 # 输入：API 基础 URL、API key、模型名称
 ```
 
 **手动配置（`config.yaml`）：**
 ```yaml
-# 在 ~/.hermes/config.yaml 中
+# 在 ~/.rabbit/config.yaml 中
 model:
   default: your-model-name
   provider: custom
@@ -553,19 +533,19 @@ model:
 ```
 
 :::warning 旧版环境变量
-`.env` 中的 `OPENAI_BASE_URL` 和 `LLM_MODEL` 已**移除**。Hermes 的任何部分都不再读取这两个变量——`config.yaml` 是模型和端点配置的唯一来源。如果你的 `.env` 中有过时条目，下次运行 `hermes setup` 或配置迁移时会自动清除。请使用 `hermes model` 或直接编辑 `config.yaml`。
+`.env` 中的 `OPENAI_BASE_URL` 和 `LLM_MODEL` 已**移除**。Rabbit 的任何部分都不再读取这两个变量——`config.yaml` 是模型和端点配置的唯一来源。如果你的 `.env` 中有过时条目，下次运行 `rabbit setup` 或配置迁移时会自动清除。请使用 `rabbit model` 或直接编辑 `config.yaml`。
 :::
 
 两种方式都会持久化到 `config.yaml`，该文件是模型、提供商和基础 URL 的唯一来源。
 
 ### 使用 `/model` 切换模型
 
-:::warning hermes model 与 /model
-**`hermes model`**（在终端中运行，任何聊天会话之外）是**完整的提供商配置向导**。用于添加新提供商、运行 OAuth 流程、输入 API key 和配置自定义端点。
+:::warning rabbit model 与 /model
+**`rabbit model`**（在终端中运行，任何聊天会话之外）是**完整的提供商配置向导**。用于添加新提供商、运行 OAuth 流程、输入 API key 和配置自定义端点。
 
-**`/model`**（在活跃的 Hermes 聊天会话中输入）只能在**已配置的**提供商和模型之间**切换**。它无法添加新提供商、运行 OAuth 或提示输入 API key。如果你只配置了一个提供商（如 OpenRouter），`/model` 只会显示该提供商的模型。
+**`/model`**（在活跃的 Rabbit 聊天会话中输入）只能在**已配置的**提供商和模型之间**切换**。它无法添加新提供商、运行 OAuth 或提示输入 API key。如果你只配置了一个提供商（如 OpenRouter），`/model` 只会显示该提供商的模型。
 
-**添加新提供商：** 退出会话（`Ctrl+C` 或 `/quit`），运行 `hermes model`，配置新提供商，然后开启新会话。
+**添加新提供商：** 退出会话（`Ctrl+C` 或 `/quit`），运行 `rabbit model`，配置新提供商，然后开启新会话。
 :::
 
 配置好至少一个自定义端点后，可以在会话中途切换模型：
@@ -583,7 +563,7 @@ model:
 /model custom:work:llama3       # 使用"work"自定义提供商和 llama3
 ```
 
-切换提供商时，Hermes 会将基础 URL 和提供商持久化到配置中，使更改在重启后保留。从自定义端点切换到内置提供商时，过时的基础 URL 会自动清除。
+切换提供商时，Rabbit 会将基础 URL 和提供商持久化到配置中，使更改在重启后保留。从自定义端点切换到内置提供商时，过时的基础 URL 会自动清除。
 
 :::tip
 `/model custom`（不带模型名称）会查询端点的 `/models` API，如果只加载了一个模型则自动选择。适用于运行单个模型的本地服务器。
@@ -603,10 +583,10 @@ ollama pull qwen2.5-coder:32b
 ollama serve   # 在端口 11434 启动
 ```
 
-然后配置 Hermes：
+然后配置 Rabbit：
 
 ```bash
-hermes model
+rabbit model
 # 选择"Custom endpoint (self-hosted / VLLM / etc.)"
 # 输入 URL：http://localhost:11434/v1
 # 跳过 API key（Ollama 不需要）
@@ -650,7 +630,7 @@ echo -e "FROM qwen2.5-coder:32b\nPARAMETER num_ctx 32768" > Modelfile
 ollama create qwen2.5-coder-32k -f Modelfile
 ```
 
-**无法通过 OpenAI 兼容 API**（`/v1/chat/completions`）设置上下文长度。必须在服务端或通过 Modelfile 配置。这是将 Ollama 与 Hermes 等工具集成时最常见的困惑来源。
+**无法通过 OpenAI 兼容 API**（`/v1/chat/completions`）设置上下文长度。必须在服务端或通过 Modelfile 配置。这是将 Ollama 与 Rabbit 等工具集成时最常见的困惑来源。
 :::
 
 **验证上下文设置是否正确：**
@@ -677,13 +657,13 @@ vllm serve meta-llama/Llama-3.1-70B-Instruct \
   --max-model-len 65536 \
   --tensor-parallel-size 2 \
   --enable-auto-tool-choice \
-  --tool-call-parser hermes
+  --tool-call-parser rabbit
 ```
 
-然后配置 Hermes：
+然后配置 Rabbit：
 
 ```bash
-hermes model
+rabbit model
 # 选择"Custom endpoint (self-hosted / VLLM / etc.)"
 # 输入 URL：http://localhost:8000/v1
 # 跳过 API key（或输入你配置 vLLM 时设置的 --api-key）
@@ -696,7 +676,7 @@ hermes model
 
 | 标志 | 用途 |
 |------|---------|
-| `--enable-auto-tool-choice` | `tool_choice: "auto"` 所必需（Hermes 的默认值） |
+| `--enable-auto-tool-choice` | `tool_choice: "auto"` 所必需（Rabbit 的默认值） |
 | `--tool-call-parser <name>` | 模型工具调用格式的解析器 |
 
 支持的解析器：`hermes`（Qwen 2.5、Hermes 2/3）、`llama3_json`（Llama 3.x）、`mistral`、`deepseek_v3`、`deepseek_v31`、`xlam`、`pythonic`。没有这些标志，工具调用将无法工作——模型会将工具调用以文本形式输出。
@@ -721,10 +701,10 @@ python -m sglang.launch_server \
   --tool-call-parser qwen
 ```
 
-然后配置 Hermes：
+然后配置 Rabbit：
 
 ```bash
-hermes model
+rabbit model
 # 选择"Custom endpoint (self-hosted / VLLM / etc.)"
 # 输入 URL：http://localhost:30000/v1
 # 输入模型名称：meta-llama/Llama-3.1-70B-Instruct
@@ -757,10 +737,10 @@ cmake -B build && cmake --build build --config Release
 
 **上下文长度（`-c`）：** 近期版本默认为 `0`，从 GGUF 元数据读取模型的训练上下文。对于训练上下文超过 128k 的模型，这可能因尝试分配完整 KV 缓存而导致 OOM。请显式设置 `-c` 为你需要的值（32k–64k 是智能体使用的合理范围）。如果使用并行槽（`-np`），总上下文在槽之间分配——`-c 32768 -np 4` 时每个槽只有 8k。
 
-然后配置 Hermes 指向它：
+然后配置 Rabbit 指向它：
 
 ```bash
-hermes model
+rabbit model
 # 选择"Custom endpoint (self-hosted / VLLM / etc.)"
 # 输入 URL：http://localhost:8080/v1
 # 跳过 API key（本地服务器不需要）
@@ -770,7 +750,7 @@ hermes model
 这会将端点保存到 `config.yaml`，在会话间持久保留。
 
 :::caution `--jinja` 是工具调用的必要条件
-没有 `--jinja`，llama-server 会完全忽略 `tools` 参数。模型会尝试在响应文本中写入 JSON 来调用工具，但 Hermes 不会将其识别为工具调用——你会看到原始 JSON（如 `{"name": "web_search", ...}`）作为消息打印出来，而不是实际执行搜索。
+没有 `--jinja`，llama-server 会完全忽略 `tools` 参数。模型会尝试在响应文本中写入 JSON 来调用工具，但 Rabbit 不会将其识别为工具调用——你会看到原始 JSON（如 `{"name": "web_search", ...}`）作为消息打印出来，而不是实际执行搜索。
 
 原生工具调用支持（最佳性能）：Llama 3.x、Qwen 2.5（包括 Coder）、Hermes 2/3、Mistral、DeepSeek、Functionary。其他所有模型使用通用处理器，可以工作但效率可能较低。完整列表参见 [llama.cpp 函数调用文档](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md)。
 
@@ -794,17 +774,17 @@ lms server start                        # 在端口 1234 启动
 lms load qwen2.5-coder --context-length 32768
 ```
 
-然后配置 Hermes：
+然后配置 Rabbit：
 
 ```bash
-hermes model
+rabbit model
 # 选择"LM Studio"
 # 按 Enter 使用 http://localhost:1234/v1
 # 从已发现的模型中选择
 # 如果启用了 LM Studio 服务器认证，在提示时输入 LM_API_KEY
 ```
 
-Hermes 会自动以 64K 上下文长度加载 LM Studio 模型。
+Rabbit 会自动以 64K 上下文长度加载 LM Studio 模型。
 
 在 LM Studio 中更改上下文长度：
 
@@ -820,13 +800,13 @@ Hermes 会自动以 64K 上下文长度加载 LM Studio 模型。
 设置每个模型的持久默认值：我的模型标签页 → 模型上的齿轮图标 → 设置上下文大小。
 :::
 
-**工具调用：** 自 LM Studio 0.3.6 起支持。具有原生工具调用训练的模型（Qwen 2.5、Llama 3.x、Mistral、Hermes）会被自动检测并显示工具徽章。其他模型使用通用回退，可靠性可能较低。
+**工具调用：** 自 LM Studio 0.3.6 起支持。具有原生工具调用训练的模型（Qwen 2.5、Llama 3.x、Mistral、Rabbit）会被自动检测并显示工具徽章。其他模型使用通用回退，可靠性可能较低。
 
 ---
 
 ### WSL2 网络（Windows 用户） {#wsl2-networking-windows-users}
 
-由于 Hermes Agent 需要 Unix 环境，Windows 用户在 WSL2 内运行它。如果你的模型服务器（Ollama、LM Studio 等）运行在 **Windows 主机**上，需要桥接网络——WSL2 使用具有独立子网的虚拟网络适配器，因此 WSL2 内的 `localhost` 指向 Linux 虚拟机，**而非** Windows 主机。
+由于 Rabbit Agent 需要 Unix 环境，Windows 用户在 WSL2 内运行它。如果你的模型服务器（Ollama、LM Studio 等）运行在 **Windows 主机**上，需要桥接网络——WSL2 使用具有独立子网的虚拟网络适配器，因此 WSL2 内的 `localhost` 指向 Linux 虚拟机，**而非** Windows 主机。
 
 :::tip 都在 WSL2 内？没问题。
 如果你的模型服务器也在 WSL2 内运行（vLLM、SGLang 和 llama-server 的常见情况），`localhost` 可以正常工作——它们共享同一网络命名空间。跳过本节。
@@ -869,7 +849,7 @@ ip route show | grep -i default | awk '{ print $3 }'
 # 示例输出：172.29.192.1
 ```
 
-在 Hermes 配置中使用该 IP：
+在 Rabbit 配置中使用该 IP：
 
 ```yaml
 model:
@@ -931,17 +911,17 @@ curl http://localhost:11434/v1/models          # 镜像模式
 curl http://172.29.192.1:11434/v1/models       # NAT 模式（使用你的实际主机 IP）
 ```
 
-如果收到列出模型的 JSON 响应，说明配置正确。在 Hermes 配置中使用相同的 URL 作为 `base_url`。
+如果收到列出模型的 JSON 响应，说明配置正确。在 Rabbit 配置中使用相同的 URL 作为 `base_url`。
 
 ---
 
 ### 本地模型故障排查
 
-以下问题影响与 Hermes 配合使用的**所有**本地推理服务器。
+以下问题影响与 Rabbit 配合使用的**所有**本地推理服务器。
 
 #### 从 WSL2 连接 Windows 托管模型服务器时"连接被拒绝"
 
-如果你在 WSL2 内运行 Hermes 而模型服务器在 Windows 主机上，在 WSL2 默认 NAT 网络模式下 `http://localhost:<port>` 无法工作。参见上方的 [WSL2 网络](#wsl2-networking-windows-users) 了解解决方案。
+如果你在 WSL2 内运行 Rabbit 而模型服务器在 Windows 主机上，在 WSL2 默认 NAT 网络模式下 `http://localhost:<port>` 无法工作。参见上方的 [WSL2 网络](#wsl2-networking-windows-users) 了解解决方案。
 
 #### 工具调用以文本形式出现而非执行
 
@@ -952,19 +932,19 @@ curl http://172.29.192.1:11434/v1/models       # NAT 模式（使用你的实际
 | 服务器 | 修复方式 |
 |--------|-----|
 | **llama.cpp** | 在启动命令中添加 `--jinja` |
-| **vLLM** | 添加 `--enable-auto-tool-choice --tool-call-parser hermes` |
+| **vLLM** | 添加 `--enable-auto-tool-choice --tool-call-parser rabbit` |
 | **SGLang** | 添加 `--tool-call-parser qwen`（或适当的解析器） |
 | **Ollama** | 工具调用默认启用——确保你的模型支持（使用 `ollama show model-name` 检查） |
 | **LM Studio** | 更新到 0.3.6+ 并使用具有原生工具支持的模型 |
 
 #### 模型似乎忘记上下文或给出不连贯的响应
 
-**原因：** 上下文窗口太小。当对话超过上下文限制时，大多数服务器会静默丢弃较早的消息。Hermes 的系统 prompt 加工具 schema 单独就可能占用 4k–8k tokens。
+**原因：** 上下文窗口太小。当对话超过上下文限制时，大多数服务器会静默丢弃较早的消息。Rabbit 的系统 prompt 加工具 schema 单独就可能占用 4k–8k tokens。
 
 **诊断：**
 
 ```bash
-# 检查 Hermes 认为的上下文大小
+# 检查 Rabbit 认为的上下文大小
 # 查看启动行："Context limit: X tokens"
 
 # 检查服务器的实际上下文
@@ -977,7 +957,7 @@ curl http://172.29.192.1:11434/v1/models       # NAT 模式（使用你的实际
 
 #### 启动时显示"Context limit: 2048 tokens"
 
-Hermes 从服务器的 `/v1/models` 端点自动检测上下文长度。如果服务器报告的值较低（或根本不报告），Hermes 使用模型声明的限制，该值可能不正确。
+Rabbit 从服务器的 `/v1/models` 端点自动检测上下文长度。如果服务器报告的值较低（或根本不报告），Rabbit 使用模型声明的限制，该值可能不正确。
 
 **修复：** 在 `config.yaml` 中显式设置：
 
@@ -992,8 +972,8 @@ model:
 #### 响应在句子中间被截断
 
 **可能原因：**
-1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`；Hermes 不再提供用户输出上限设置。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
-2. **上下文耗尽** — 模型填满了上下文窗口。增加 `model.context_length` 或在 Hermes 中启用[上下文压缩](../user-guide/configuration.md#context-compression)。
+1. **服务器上的输出上限（`max_tokens`）过低** — SGLang 默认每次响应 128 tokens。在服务器上设置 `--default-max-tokens`；Rabbit 不再提供用户输出上限设置。注意：`max_tokens` 只控制响应长度——与对话历史可以有多长无关（那是 `context_length`）。
+2. **上下文耗尽** — 模型填满了上下文窗口。增加 `model.context_length` 或在 Rabbit 中启用[上下文压缩](../user-guide/configuration.md#context-compression)。
 
 ---
 
@@ -1010,7 +990,7 @@ litellm --model anthropic/claude-sonnet-4 --port 4000
 litellm --config litellm_config.yaml --port 4000
 ```
 
-然后通过 `hermes model` → 自定义端点 → `http://localhost:4000/v1` 配置 Hermes。
+然后通过 `rabbit model` → 自定义端点 → `http://localhost:4000/v1` 配置 Rabbit。
 
 带故障转移的 `litellm_config.yaml` 示例：
 ```yaml
@@ -1038,7 +1018,7 @@ router_settings:
 npx @blockrun/clawrouter    # 在端口 8402 启动
 ```
 
-然后通过 `hermes model` → 自定义端点 → `http://localhost:8402/v1` → 模型名称 `blockrun/auto` 配置 Hermes。
+然后通过 `rabbit model` → 自定义端点 → `http://localhost:8402/v1` → 模型名称 `blockrun/auto` 配置 Rabbit。
 
 路由配置文件：
 | 配置文件 | 策略 | 节省 |
@@ -1073,7 +1053,7 @@ ClawRouter 需要在 Base 或 Solana 上有 USDC 充值的钱包用于支付。�
 | [LocalAI](https://localai.io) | `http://localhost:8080/v1` | 自托管，多模型 |
 | [Jan](https://jan.ai) | `http://localhost:1337/v1` | 带本地模型的桌面应用 |
 
-通过 `hermes model` → 自定义端点，或在 `config.yaml` 中配置任意上述服务：
+通过 `rabbit model` → 自定义端点，或在 `config.yaml` 中配置任意上述服务：
 
 ```yaml
 model:
@@ -1088,15 +1068,15 @@ model:
 ### 上下文长度检测
 
 :::note 两个设置，容易混淆
-**`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Hermes 用它来决定何时压缩历史记录以及验证 API 请求。
+**`context_length`** 是**总上下文窗口**——输入和输出 token 的合计预算（例如 Claude Opus 4.6 为 200,000）。Rabbit 用它来决定何时压缩历史记录以及验证 API 请求。
 
-**输出上限**限制单次响应，而非对话历史。Hermes 不再读取 `model.max_tokens`、`HERMES_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。回复在流式输出中陷入重复循环时仍会被停止：循环（可见内容或推理内容）开始后约 130,000 个字符以内，Hermes 会关闭该流并以“Repetition Detected”提示结束本轮，因此没有输出上限的端点也不会让循环中的模型一直运行下去。原生 Anthropic Messages 仍要求 `max_tokens`，Hermes 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
+**输出上限**限制单次响应，而非对话历史。Rabbit 不再读取 `model.max_tokens`、`RABBIT_MAX_TOKENS` 或提供商及模型的输出上限设置。兼容端点使用服务器默认值；该值不一定是模型最大值。回复在流式输出中陷入重复循环时仍会被停止：循环（可见内容或推理内容）开始后约 130,000 个字符以内，Rabbit 会关闭该流并以“Repetition Detected”提示结束本轮，因此没有输出上限的端点也不会让循环中的模型一直运行下去。原生 Anthropic Messages 仍要求 `max_tokens`，Rabbit 会提供内部值。Bedrock Converse 的可选输出限制默认省略。
 
 当自动检测获取的窗口大小不正确时，设置 `context_length`。
 请删除旧的用户输出上限配置；内部任务预算与 MCP 采样安全预算保持不变。
 :::
 
-Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口：
+Rabbit 使用多源解析链来检测模型和提供商的正确上下文窗口：
 
 1. **配置覆盖** — config.yaml 中的 `model.context_length`（最高优先级）
 2. **自定义提供商按模型** — `custom_providers[].models.<id>.context_length`
@@ -1104,9 +1084,8 @@ Hermes 使用多源解析链来检测模型和提供商的正确上下文窗口�
 4. **端点 `/models`** — 查询服务器 API（本地/自定义端点）
 5. **Anthropic `/v1/models`** — 查询 Anthropic API 获取 `max_input_tokens`（仅 API key 用户）
 6. **OpenRouter API** — 来自 OpenRouter 的实时模型元数据
-7. **Nous Portal** — 将 Nous 模型 ID 后缀匹配到 OpenRouter 元数据
-8. **[models.dev](https://models.dev)** — 社区维护的注册表，包含 100+ 提供商 3800+ 模型的提供商特定上下文长度
-9. **回退默认值** — 广泛的模型系列模式（默认 128K）
+7. **[models.dev](https://models.dev)** — 社区维护的注册表，包含 100+ 提供商 3800+ 模型的提供商特定上下文长度
+8. **回退默认值** — 广泛的模型系列模式（默认 128K）
 
 大多数配置开箱即用。该系统具有提供商感知能力——同一模型在不同服务商处可能有不同的上下文限制（例如 `claude-opus-4.6` 在 Anthropic 直连时为 1M，在 GitHub Copilot 上为 128K）。
 
@@ -1132,7 +1111,7 @@ custom_providers:
         context_length: 65536
 ```
 
-`hermes model` 在配置自定义端点时会提示输入上下文长度。留空则自动检测。
+`rabbit model` 在配置自定义端点时会提示输入上下文长度。留空则自动检测。
 
 :::tip 何时手动设置
 - 你使用的 Ollama 自定义 `num_ctx` 低于模型最大值
@@ -1150,18 +1129,18 @@ custom_providers:
 custom_providers:
   - name: local
     base_url: http://localhost:8080/v1
-    # api_key 省略——Hermes 对无 key 的本地服务器使用"no-key-required"
+    # api_key 省略——Rabbit 对无 key 的本地服务器使用"no-key-required"
   - name: work
     base_url: https://gpu-server.internal.corp/v1
     key_env: CORP_API_KEY
-    api_mode: chat_completions   # 由 `hermes model` → 自定义端点向导显式设置；自动检测仍作为回退
+    api_mode: chat_completions   # 由 `rabbit model` → 自定义端点向导显式设置；自动检测仍作为回退
   - name: anthropic-proxy
     base_url: https://proxy.example.com/anthropic
     key_env: ANTHROPIC_PROXY_KEY
     api_mode: anthropic_messages  # 用于 Anthropic 兼容代理
 ```
 
-某些 OpenAI 兼容端点需要特定于提供商的请求体字段。在对应的自定义提供商中添加 `extra_body` 映射，Hermes 会将其合并到该端点的每个 chat-completions 请求中：
+某些 OpenAI 兼容端点需要特定于提供商的请求体字段。在对应的自定义提供商中添加 `extra_body` 映射，Rabbit 会将其合并到该端点的每个 chat-completions 请求中：
 
 ```yaml
 custom_providers:
@@ -1181,7 +1160,7 @@ extra_body:
     enable_thinking: true
 ```
 
-`hermes model` → 自定义端点向导现在会显式提示 `api_mode` 并将你的答案持久化到 `config.yaml`。当字段留空时，基于 URL 的自动检测（例如 `/anthropic` 路径 → `anthropic_messages`）仍作为回退。
+`rabbit model` → 自定义端点向导现在会显式提示 `api_mode` 并将你的答案持久化到 `config.yaml`。当字段留空时，基于 URL 的自动检测（例如 `/anthropic` 路径 → `anthropic_messages`）仍作为回退。
 
 使用三段式语法在会话中途切换：
 
@@ -1191,20 +1170,20 @@ extra_body:
 /model custom:anthropic-proxy:claude-sonnet-4  # 使用代理
 ```
 
-也可以从交互式 `hermes model` 菜单中选择命名自定义提供商。
+也可以从交互式 `rabbit model` 菜单中选择命名自定义提供商。
 
 ---
 
 ### 实战配置：Together AI、Groq、Perplexity
 
-[其他兼容提供商](#other-compatible-providers) 中列出的云提供商都使用 OpenAI 的 REST 方言，因此在 `custom_providers:` 下的接入方式相同。以下是三个可直接使用的配置示例。每个示例放入 `~/.hermes/config.yaml`，对应的 API key 放入 `~/.hermes/.env`。
+[其他兼容提供商](#other-compatible-providers) 中列出的云提供商都使用 OpenAI 的 REST 方言，因此在 `custom_providers:` 下的接入方式相同。以下是三个可直接使用的配置示例。每个示例放入 `~/.rabbit/config.yaml`，对应的 API key 放入 `~/.rabbit/.env`。
 
 #### Together AI
 
 托管开源模型（Llama、MiniMax、Gemma、DeepSeek、Qwen），价格显著低于一方 API。适合多模型场景的默认选择。
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 custom_providers:
   - name: together
     base_url: https://api.together.xyz/v1
@@ -1217,7 +1196,7 @@ model:
 ```
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 TOGETHER_API_KEY=your-together-key
 ```
 
@@ -1229,14 +1208,14 @@ TOGETHER_API_KEY=your-together-key
 /model custom:together:deepseek-ai/DeepSeek-V3
 ```
 
-Together 的 `/v1/models` 端点可用，因此 `hermes model` 可以自动发现可用模型。
+Together 的 `/v1/models` 端点可用，因此 `rabbit model` 可以自动发现可用模型。
 
 #### Groq
 
 超快推理（Llama-3.3-70B 约 500 tok/s）。模型目录较小，但对延迟敏感的交互式使用效果出色。
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 custom_providers:
   - name: groq
     base_url: https://api.groq.com/openai/v1
@@ -1248,7 +1227,7 @@ model:
 ```
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 GROQ_API_KEY=your-groq-key
 ```
 
@@ -1257,7 +1236,7 @@ GROQ_API_KEY=your-groq-key
 当你需要自动进行实时网页搜索和引用的模型时很有用。对可用模型有严格限制——查看 [perplexity.ai/settings/api](https://www.perplexity.ai/settings/api) 获取当前列表。
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 custom_providers:
   - name: perplexity
     base_url: https://api.perplexity.ai
@@ -1269,7 +1248,7 @@ model:
 ```
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 PERPLEXITY_API_KEY=your-perplexity-key
 ```
 
@@ -1295,8 +1274,8 @@ model:
 ```
 
 :::tip 故障排查
-- `hermes doctor` 对于上述任何名称都不应打印 `Unknown provider` 警告（在 #15083 的 CLI 验证器修复之后）。
-- 如果某个提供商的 `/v1/models` 端点不可达（Perplexity 是常见情况），`hermes model` 会在警告后持久化模型而不是硬性拒绝——参见 #15136。
+- `rabbit doctor` 对于上述任何名称都不应打印 `Unknown provider` 警告（在 #15083 的 CLI 验证器修复之后）。
+- 如果某个提供商的 `/v1/models` 端点不可达（Perplexity 是常见情况），`rabbit model` 会在警告后持久化模型而不是硬性拒绝——参见 #15136。
 - 要完全跳过 `custom_providers:` 并使用带 `CUSTOM_BASE_URL` 环境变量的裸 `provider: custom`，参见 #15103。
 :::
 
@@ -1306,7 +1285,7 @@ model:
 
 | 使用场景 | 推荐方案 |
 |----------|-------------|
-| **只想让它工作** | OpenRouter（默认）或 Nous Portal |
+| **只想让它工作** | OpenRouter（默认） |
 | **本地模型，简单配置** | Ollama |
 | **生产 GPU 服务** | vLLM 或 SGLang |
 | **Mac / 无 GPU** | Ollama 或 llama.cpp |
@@ -1317,7 +1296,7 @@ model:
 | **中国 AI 模型** | z.ai（GLM）、Kimi/Moonshot（`kimi-coding` 或 `kimi-coding-cn`）、MiniMax、小米 MiMo 或腾讯 TokenHub（一等提供商） |
 
 :::tip
-可以随时使用 `hermes model` 切换提供商——无需重启。无论使用哪个提供商，你的对话历史、记忆和技能都会保留。
+可以随时使用 `rabbit model` 切换提供商——无需重启。无论使用哪个提供商，你的对话历史、记忆和技能都会保留。
 :::
 
 ## 可选 API Key
@@ -1335,7 +1314,7 @@ model:
 
 ### 自托管 Firecrawl
 
-默认情况下，Hermes 使用 [Firecrawl 云 API](https://firecrawl.dev/) 进行网页搜索和抓取。如果你希望在本地运行 Firecrawl，可以将 Hermes 指向自托管实例。完整配置说明参见 Firecrawl 的 [SELF_HOST.md](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md)。
+默认情况下，Rabbit 使用 [Firecrawl 云 API](https://firecrawl.dev/) 进行网页搜索和抓取。如果你希望在本地运行 Firecrawl，可以将 Rabbit 指向自托管实例。完整配置说明参见 Firecrawl 的 [SELF_HOST.md](https://github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md)。
 
 **优势：** 无需 API key，无速率限制，无按页计费，完全数据主权。
 
@@ -1351,16 +1330,16 @@ model:
    docker compose up -d
    ```
 
-2. 将 Hermes 指向你的实例（无需 API key）：
+2. 将 Rabbit 指向你的实例（无需 API key）：
    ```bash
-   hermes config set FIRECRAWL_API_URL http://localhost:3002
+   rabbit config set FIRECRAWL_API_URL http://localhost:3002
    ```
 
 如果你的自托管实例启用了认证，也可以同时设置 `FIRECRAWL_API_KEY` 和 `FIRECRAWL_API_URL`。
 
 ## OpenRouter 提供商路由
 
-使用 OpenRouter 时，可以控制请求如何在提供商之间路由。在 `~/.hermes/config.yaml` 中添加 `provider_routing` 节：
+使用 OpenRouter 时，可以控制请求如何在提供商之间路由。在 `~/.rabbit/config.yaml` 中添加 `provider_routing` 节：
 
 ```yaml
 provider_routing:
@@ -1376,7 +1355,7 @@ provider_routing:
 
 ## OpenRouter Pareto Code 路由器
 
-OpenRouter 提供一个实验性编程模型路由器 `openrouter/pareto-code`，自动将请求路由到满足编程质量标准的最便宜模型（按 [Artificial Analysis](https://artificialanalysis.ai/) 排名）。选择此模型并在 `~/.hermes/config.yaml` 中调整 `min_coding_score` 参数：
+OpenRouter 提供一个实验性编程模型路由器 `openrouter/pareto-code`，自动将请求路由到满足编程质量标准的最便宜模型（按 [Artificial Analysis](https://artificialanalysis.ai/) 排名）。选择此模型并在 `~/.rabbit/config.yaml` 中调整 `min_coding_score` 参数：
 
 ```yaml
 model:
@@ -1397,7 +1376,7 @@ openrouter:
 
 ## 故障转移提供商
 
-配置一个备用提供商链，当主模型失败时（速率限制、服务器错误、认证失败）Hermes 按顺序尝试。规范格式是顶级 `fallback_providers:` 列表：
+配置一个备用提供商链，当主模型失败时（速率限制、服务器错误、认证失败）Rabbit 按顺序尝试。规范格式是顶级 `fallback_providers:` 列表：
 
 ```yaml
 fallback_providers:
@@ -1419,10 +1398,10 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
-故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。
+故障转移仅通过 `config.yaml` 配置——或通过 `rabbit fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](../user-guide/features/fallback-providers.md)。
 :::
 
 ---

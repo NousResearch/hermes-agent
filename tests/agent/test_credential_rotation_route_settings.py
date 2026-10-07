@@ -42,7 +42,7 @@ def test_credential_rotation_replaces_route_scoped_tls_settings():
         ]
     }
 
-    with patch("hermes_cli.config.load_config_readonly", return_value=config):
+    with patch("rabbit_cli.config.load_config_readonly", return_value=config):
         AIAgent._swap_credential(agent, entry)
 
     assert agent._client_kwargs["ssl_verify"] is True
@@ -98,9 +98,9 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
     }
 
     with (
-        patch("hermes_cli.config.load_config_readonly", return_value=config),
+        patch("rabbit_cli.config.load_config_readonly", return_value=config),
         patch(
-            "hermes_cli.config.get_compatible_custom_providers",
+            "rabbit_cli.config.get_compatible_custom_providers",
             return_value=config["custom_providers"],
         ),
     ):
@@ -113,10 +113,10 @@ def test_credential_rotation_does_not_carry_global_headers_across_routes():
 
 def test_codex_rotation_keeps_proxy_override(monkeypatch):
     """#40913: a 401/429 rotation adopts the pool row, whose stored URL is the canonical ChatGPT
-    endpoint; with HERMES_CODEX_BASE_URL set the rotated client must keep targeting the proxy."""
+    endpoint; with RABBIT_CODEX_BASE_URL set the rotated client must keep targeting the proxy."""
     from agent.credential_pool import PooledCredential
 
-    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/backend-api/codex/")
+    monkeypatch.setenv("RABBIT_CODEX_BASE_URL", "http://127.0.0.1:8787/backend-api/codex/")
     entry = PooledCredential(provider="openai-codex", id="second", label="second", auth_type="oauth",
                              priority=1, source="manual:device_code", access_token="tok-second",
                              base_url="https://chatgpt.com/backend-api/codex")

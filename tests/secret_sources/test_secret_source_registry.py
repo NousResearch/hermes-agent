@@ -96,9 +96,9 @@ class TestRegistration:
         assert reg.register_source(object()) is False
 
     def test_same_name_is_isolated_by_profile(self, tmp_path):
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
 
         home_a = str((tmp_path / "secrets-a").resolve())
@@ -108,7 +108,7 @@ class TestRegistration:
         assert reg.register_source(source_a, scope=home_a)
         assert reg.register_source(source_b, scope=home_b)
 
-        token = set_hermes_home_override(home_a)
+        token = set_rabbit_home_override(home_a)
         try:
             assert reg.get_source("profile_secret") is source_a
             explicit_b_env = {}
@@ -120,12 +120,12 @@ class TestRegistration:
             assert report.sources[0].result.secrets == {"B": "b"}
             assert explicit_b_env == {"B": "b"}
         finally:
-            reset_hermes_home_override(token)
-        token = set_hermes_home_override(home_b)
+            reset_rabbit_home_override(token)
+        token = set_rabbit_home_override(home_b)
         try:
             assert reg.get_source("profile_secret") is source_b
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
 
 

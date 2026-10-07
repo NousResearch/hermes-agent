@@ -1,4 +1,4 @@
-"""Profile identity purge for `hermes profile delete`: the delete-only path, and what an unserve
+"""Profile identity purge for `rabbit profile delete`: the delete-only path, and what an unserve
 must leave alone.
 
 `_unserve_profile()` runs for every name that leaves the served set — a rename's old name leaves it
@@ -43,9 +43,9 @@ def _entry(session_key, chat_id, profile):
 
 
 def _state_db():
-    from hermes_constants import get_hermes_home
-    from hermes_state import SessionDB
-    return SessionDB(Path(get_hermes_home()) / "state.db")
+    from rabbit_constants import get_rabbit_home
+    from rabbit_state import SessionDB
+    return SessionDB(Path(get_rabbit_home()) / "state.db")
 
 
 def _runner_stub(store):

@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_compressor import _estimate_msg_budget_tokens
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 _REARM_KEY = "_proactive_prune_rearm_tokens"
 

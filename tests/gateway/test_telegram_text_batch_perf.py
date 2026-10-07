@@ -24,16 +24,16 @@ class TestEnvFloatClamped:
 
 
     def test_rejects_nan(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "nan")
-        result = TelegramAdapter._env_float_clamped("HERMES_TEST_VAR", 0.5)
+        monkeypatch.setenv("RABBIT_TEST_VAR", "nan")
+        result = TelegramAdapter._env_float_clamped("RABBIT_TEST_VAR", 0.5)
         assert math.isfinite(result)
         assert result == 0.5
 
 
     def test_clamps_below_min(self, monkeypatch):
-        monkeypatch.setenv("HERMES_TEST_VAR", "0.01")
+        monkeypatch.setenv("RABBIT_TEST_VAR", "0.01")
         assert TelegramAdapter._env_float_clamped(
-            "HERMES_TEST_VAR", 0.5, min_value=0.1,
+            "RABBIT_TEST_VAR", 0.5, min_value=0.1,
         ) == 0.1
 
 

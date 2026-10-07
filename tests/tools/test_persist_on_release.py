@@ -127,12 +127,12 @@ def test_spawn_local_stamps_persist_on_release(registry, monkeypatch, tmp_path):
 
     from tools import terminal_tool_sudo
 
-    # Stay off the real hermes home: the spawn-path env sanitizer resolves the
-    # real console-script install (_resolve_hermes_bin_dir), which the test
+    # Stay off the real rabbit home: the spawn-path env sanitizer resolves the
+    # real console-script install (_resolve_rabbit_bin_dir), which the test
     # suite's HomeIOGuard forbids. None == "no managed install found".
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from tools.environments import local as local_env
-    monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
+    monkeypatch.setattr(local_env, "_resolve_rabbit_bin_dir", lambda: None)
     monkeypatch.setattr(registry, "_track_started", lambda *a, **k: None)
     monkeypatch.setattr(terminal_tool_sudo, "_rewrite_compound_background", lambda c: c)
     monkeypatch.setattr(ProcessRegistry, "_scope_argv", lambda *a, **k: None)

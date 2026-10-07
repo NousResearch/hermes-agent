@@ -7,7 +7,7 @@ a size note) is sent as `state`, two `noul` questions per candidate call ask
 whether the call and whether its verbatim result must stay, and the transcript
 is rebuilt with nothing rewritten. Text messages are never touched.
 
-Differences from the TypeScript original are format-only: Hermes transcripts
+Differences from the TypeScript original are format-only: Rabbit transcripts
 carry `tool_calls` on assistant rows and one `role: tool` row per result, so a
 "message" here is one chat row and `preserve_recent_messages` counts rows.
 
@@ -383,7 +383,7 @@ def _truncated_result(text: str, is_error: bool, head: int) -> str:
 
 
 def apply_decisions(messages, decisions: List[Decision], calls: List[ToolCall], head: int):
-    """Rebuild the Hermes transcript: dropped calls vanish with their result row,
+    """Rebuild the Rabbit transcript: dropped calls vanish with their result row,
     dropped results keep a bounded head + note, untouched rows are the same objects."""
     by_id = {c.id: c for c in calls}
     actions: Dict[str, str] = {}
@@ -434,7 +434,7 @@ def openrouter_asker(api_key: Optional[str] = None, model: str = OPENROUTER_JEV_
         body = json.dumps({"model": model, "state": state, "questions": questions}).encode()
         req = urllib.request.Request(url, data=body, headers={
             "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/NousResearch/hermes-agent", "X-Title": "hermes compaction eval",
+            "HTTP-Referer": "https://github.com/seven0070/Rabbit-", "X-Title": "rabbit compaction eval",
         })
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:

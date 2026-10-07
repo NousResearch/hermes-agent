@@ -14,10 +14,10 @@ description: "在 Excel 中构建增厚/摊薄（并购）模型 — 备考损�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/finance/merger-model` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/finance/merger-model` 安装 |
 | 路径 | `optional-skills/finance/merger-model` |
 | 版本 | `1.0.0` |
-| 作者 | Anthropic（由 Nous Research 改编） |
+| 作者 | Anthropic |
 | 许可证 | Apache-2.0 |
 | 平台 | linux, macos, windows |
 | 标签 | `finance`, `m-and-a`, `merger`, `accretion-dilution`, `excel`, `openpyxl`, `modeling`, `investment-banking` |
@@ -26,7 +26,7 @@ description: "在 Excel 中构建增厚/摊薄（并购）模型 — 备考损�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 ## 环境
@@ -147,9 +147,9 @@ description: "在 Excel 中构建增厚/摊薄（并购）模型 — 备考损�
 
 ## 数据来源 — 优先使用 MCP，其次使用网络
 
-以下部分内容提及"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原 Cowork 插件场景中的商业金融数据 MCP。在 Hermes 中：
+以下部分内容提及"使用 S&P Kensho MCP / Daloopa MCP / FactSet MCP"。这些是原 Cowork 插件场景中的商业金融数据 MCP。在 Rabbit 中：
 
-- **如已配置任何结构化金融数据 MCP**（Hermes 支持 MCP — 参见 `native-mcp` skill），优先用于时点可比数据、前例交易及文件。
+- **如已配置任何结构化金融数据 MCP**（Rabbit 支持 MCP — 参见 `native-mcp` skill），优先用于时点可比数据、前例交易及文件。
 - **否则**，回退至：
   - 针对 SEC EDGAR（`https://www.sec.gov/cgi-bin/browse-edgar`）使用 `web_search` / `web_extract` 获取美国文件
   - 公司投资者关系页面获取新闻稿、财报材料

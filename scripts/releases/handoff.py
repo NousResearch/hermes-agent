@@ -99,7 +99,7 @@ def _receipt_file_rows(selected: dict[str, Path]) -> list[dict]:
 
 def channel_prefix(request: dict) -> str:
     """A channel build is an allocation, never a source SHA alias."""
-    from hermes_cli.release_channels import build_prefix, validate_request
+    from rabbit_cli.release_channels import build_prefix, validate_request
     return build_prefix(validate_request(request)["buildId"])
 
 
@@ -277,8 +277,8 @@ def _fetch_receipts(receipts: list[dict], root: Path,
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["stage", "fetch"])
-    parser.add_argument("--tag", default=os.environ.get("HERMES_PAYLOAD_TAG") or os.environ.get("RELEASE_TAG"), required=False)
-    parser.add_argument("--commit-build", default=os.environ.get("HERMES_BUILD_COMMIT"),
+    parser.add_argument("--tag", default=os.environ.get("RABBIT_PAYLOAD_TAG") or os.environ.get("RELEASE_TAG"), required=False)
+    parser.add_argument("--commit-build", default=os.environ.get("RABBIT_BUILD_COMMIT"),
                         help="Commit-only mode: stage/fetch under releases/commit/<sha>/ "
                              "with schema-2 receipts (no tag; exact full SHA required)")
     parser.add_argument("--channel-request", type=Path, help="Pinned admitted channel request JSON")
@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> None:
         parser.error('--public-base is only supported for fetch')
     if args.channel_request:
         request = json.loads(args.channel_request.read_text(encoding="utf-8-sig"))
-        # One-dispatch runs export HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT to
+        # One-dispatch runs export RABBIT_PAYLOAD_TAG/RABBIT_BUILD_COMMIT to
         # every leg, and argparse defaults pick them up even when the leg's
         # explicit args name only --channel-request. A commit equal to the
         # request's own is provenance, not selection; only a genuinely

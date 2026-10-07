@@ -3,25 +3,25 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 @pytest.mark.parametrize("explicit_profile", [None, "default"])
 def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explicit_profile):
     from tui_gateway import server
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     config = {"platform_toolsets": {"cli": ["terminal", "web"]}}
     for path in (home, profile):
         (path / "config.yaml").write_text(yaml.safe_dump(config))
     launch_before = (home / "config.yaml").read_bytes()
     seen = []
-    monkeypatch.setattr(server, "_reset_session_agent", lambda *_: seen.append(get_hermes_home()) or {})
+    monkeypatch.setattr(server, "_reset_session_agent", lambda *_: seen.append(get_rabbit_home()) or {})
     monkeypatch.setitem(server._sessions, "profile-tools", {"profile_home": str(profile)})
     params = {"session_id": "profile-tools", "action": "disable", "names": ["terminal"]}
     if explicit_profile is not None:
@@ -31,7 +31,7 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     assert (home / "config.yaml").read_bytes() == launch_before
     assert "terminal" not in yaml.safe_load((profile / "config.yaml").read_text())["platform_toolsets"]["cli"]
     assert seen == [profile]
-    assert get_hermes_home() == home
+    assert get_rabbit_home() == home
     worker_before = (profile / "config.yaml").read_bytes()
     monkeypatch.delitem(server._sessions, "profile-tools")
     response = server._methods["tools.configure"](2, params)
@@ -48,13 +48,13 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
 @pytest.mark.parametrize("has_agent_db", [True, False])
 def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch, path, has_agent_db):
     from tui_gateway import server
-    from hermes_state import SessionDB
-    from hermes_constants import get_hermes_home
+    from rabbit_state import SessionDB
+    from rabbit_constants import get_rabbit_home
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     db = SessionDB(db_path=profile / "state.db")
     old = SimpleNamespace(_session_db=db if has_agent_db else None,
@@ -81,7 +81,7 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         assert session["agent"] is old
         assert old._owns_session_db is has_agent_db
         assert not built, "prepare config before allocating a replacement"
-        assert get_hermes_home() == home
+        assert get_rabbit_home() == home
         db.create_session("still-owned", "tui")
     finally:
         db.close()

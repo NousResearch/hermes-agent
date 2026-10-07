@@ -294,7 +294,7 @@ import {
 }
 
 {
-  const cacheDir = mkdtempSync(path.join(tmpdir(), 'hermes-wa-doc-'));
+  const cacheDir = mkdtempSync(path.join(tmpdir(), 'rabbit-wa-doc-'));
   const event = await extractBridgeEvent({
     msg: {
       key: { id: 'doc-2', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },

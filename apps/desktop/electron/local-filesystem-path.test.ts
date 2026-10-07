@@ -20,7 +20,7 @@ test('recognizes every bare local filesystem path shape', () => {
 test('does not claim URLs, relative names, or scheme-ful input', () => {
   for (const value of [
     '',
-    'hermes-support-slack.png',
+    'rabbit-support-slack.png',
     'https://example.com',
     'file:///tmp/report.pdf',
     'mailto:a@b.c',

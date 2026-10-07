@@ -15,10 +15,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _BOUNDARY_END_REASONS
-from hermes_time import safe_strftime
+from rabbit_state_common import _BOUNDARY_END_REASONS
+from rabbit_time import safe_strftime
 
-# Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
+# Hidden from browsing/searching — integrations (RABBIT_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
 _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 # Searchable but DEMOTED below interactive sessions: cron vocabulary dominates bare
@@ -256,7 +256,7 @@ def _session_link(session_id: str, profile: str = None) -> str:
     emits, so it renders as a titled link. The profile segment is omitted when it
     can't be named confidently (a bare id still resolves, just not across profiles)."""
     def _active():
-        from hermes_cli.profiles import get_active_profile_name
+        from rabbit_cli.profiles import get_active_profile_name
         resolved = get_active_profile_name()
         return "" if resolved == "custom" else resolved
     name = (profile or "").strip() or _quiet(_active, "", "get_active_profile_name failed for session link")
@@ -435,8 +435,8 @@ def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
         return None
-    from hermes_cli import profiles as profiles_mod
-    from hermes_state import SessionDB
+    from rabbit_cli import profiles as profiles_mod
+    from rabbit_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)
     if not profiles_mod.profile_exists(canon):
@@ -622,8 +622,8 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
                    after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
-    from hermes_state import format_session_db_unavailable
-    from hermes_state_registry import acquire, release_or_close
+    from rabbit_state import format_session_db_unavailable
+    from rabbit_state_registry import acquire, release_or_close
     owned_dbs: List[Any] = []
     if db is None:
         db = _quiet(acquire, None, "SessionDB unavailable for session_search")
@@ -642,7 +642,7 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
 def check_session_search_requirements() -> bool:
     """Requires the SQLite state database."""
     try:
-        from hermes_state import _default_db_path
+        from rabbit_state import _default_db_path
         return _default_db_path().parent.exists()
     except ImportError:
         return False
@@ -651,7 +651,7 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Recall past conversations: search or read old Hermes sessions (FTS5), or "
+        "Recall past conversations: search or read old Rabbit sessions (FTS5), or "
         "scroll inside one. Four shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "
         "`around_message_id` = scroll (window of messages around an anchor); "
@@ -769,7 +769,7 @@ SESSION_SEARCH_SCHEMA = {
             "profile": {
                 "type": "string",
                 "description": (
-                    "Optional. Read sessions from another Hermes profile's database "
+                    "Optional. Read sessions from another Rabbit profile's database "
                     "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
                     "pass the profile segment here with session_id as the id segment. "
                     "Omit to use the current profile."

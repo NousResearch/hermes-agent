@@ -89,7 +89,7 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
     end can never precede the slow platform's end. Only parallel execution
     puts ``fast_end`` before ``slow_end``.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _OrderRecorder.reset()
 
     config = GatewayConfig(
@@ -155,7 +155,7 @@ async def test_startup_one_failing_platform_does_not_block_others(monkeypatch, t
         async def get_chat_info(self, chat_id):
             return {"id": chat_id}
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _OrderRecorder.reset()
 
     config = GatewayConfig(
@@ -199,7 +199,7 @@ class TestTelegramColdStartCap:
         return GatewayRunner(config)
 
     def test_initial_telegram_budget_is_capped(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        monkeypatch.delenv("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
         runner = self._runner(tmp_path)
         initial = runner._platform_connect_timeout_secs(
             Platform.TELEGRAM, initial=True
@@ -212,14 +212,14 @@ class TestTelegramColdStartCap:
         assert initial <= 60.0  # gateway reaches `running` within a minute
 
     def test_other_platforms_unchanged(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        monkeypatch.delenv("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
         runner = self._runner(tmp_path)
         assert runner._platform_connect_timeout_secs(
             Platform.DISCORD, initial=True
         ) == runner._platform_connect_timeout_secs(Platform.DISCORD)
 
     def test_env_override_applies_to_initial(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "12")
+        monkeypatch.setenv("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "12")
         runner = self._runner(tmp_path)
         assert runner._platform_connect_timeout_secs(
             Platform.TELEGRAM, initial=True
@@ -231,8 +231,8 @@ class TestTelegramColdStartCap:
     ):
         """A wedged Telegram connect is abandoned at the capped budget and the
         platform lands in the reconnect queue instead of blocking startup."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+        monkeypatch.delenv("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
 
         class _WedgedAdapter(BasePlatformAdapter):
             def __init__(self):

@@ -85,9 +85,9 @@ def exercise_surfaces(agent, captures, url, home, config):
 
     master, slave = pty.openpty()
     env = {k: v for k, v in os.environ.items() if not any(s in k for s in ("API_KEY", "TOKEN", "SECRET"))}
-    env.update(HOME=str(home), HERMES_HOME=str(home), HERMES_MAX_TOKENS="13", TERM="xterm", NO_COLOR="1")
+    env.update(HOME=str(home), RABBIT_HOME=str(home), RABBIT_MAX_TOKENS="13", TERM="xterm", NO_COLOR="1")
     start = len(captures)
-    proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "chat", "--provider", "fixture-local", "-m", "fixture", "-q", "Return fixture"], stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env)
+    proc = subprocess.Popen([sys.executable, "-m", "rabbit_cli.main", "chat", "--provider", "fixture-local", "-m", "fixture", "-q", "Return fixture"], stdin=slave, stdout=slave, stderr=slave, cwd=os.getcwd(), env=env)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 60

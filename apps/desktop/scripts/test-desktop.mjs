@@ -17,10 +17,10 @@ const PLATFORM = process.platform
 // shell and the PM payload under resources/agent-payload.
 const APP = (() => {
   if (PLATFORM === 'darwin') {
-    const appPath = path.join(RELEASE_ROOT, `mac-${ARCH}`, 'Hermes.app')
+    const appPath = path.join(RELEASE_ROOT, `mac-${ARCH}`, 'Rabbit.app')
     return {
       appPath,
-      binary: path.join(appPath, 'Contents', 'MacOS', 'Hermes'),
+      binary: path.join(appPath, 'Contents', 'MacOS', 'Rabbit'),
       resourcesPath: path.join(appPath, 'Contents', 'Resources'),
       asarPath: path.join(appPath, 'Contents', 'Resources', 'app.asar'),
       unpackedDistIndex: path.join(appPath, 'Contents', 'Resources', 'app.asar.unpacked', 'dist', 'index.html')
@@ -35,7 +35,7 @@ const APP = (() => {
       .find(exists)
     return {
       appPath: unpacked,
-      binary: unpacked ? path.join(unpacked, 'Hermes.exe') : path.join(RELEASE_ROOT, 'win-unpacked', 'Hermes.exe'),
+      binary: unpacked ? path.join(unpacked, 'Rabbit.exe') : path.join(RELEASE_ROOT, 'win-unpacked', 'Rabbit.exe'),
       resourcesPath: unpacked ? path.join(unpacked, 'resources') : path.join(RELEASE_ROOT, 'win-unpacked', 'resources'),
       asarPath: unpacked ? path.join(unpacked, 'resources', 'app.asar') : path.join(RELEASE_ROOT, 'win-unpacked', 'resources', 'app.asar'),
       unpackedDistIndex: unpacked
@@ -47,14 +47,14 @@ const APP = (() => {
   const unpacked = path.join(RELEASE_ROOT, 'linux-unpacked')
   return {
     appPath: unpacked,
-    binary: path.join(unpacked, 'Hermes'),
+    binary: path.join(unpacked, 'Rabbit'),
     resourcesPath: path.join(unpacked, 'resources'),
     asarPath: path.join(unpacked, 'resources', 'app.asar'),
     unpackedDistIndex: path.join(unpacked, 'resources', 'app.asar.unpacked', 'dist', 'index.html')
   }
 })()
 
-const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'hermes-desktop-fresh-install')
+const FRESH_SANDBOX_ROOT = path.join(os.tmpdir(), 'rabbit-desktop-fresh-install')
 
 function die(message) {
   console.error(`\n${message}`)
@@ -109,7 +109,7 @@ function ensurePlatformBuilds() {
 }
 
 function ensurePackagedApp() {
-  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && exists(APP.binary)) {
+  if (process.env.RABBIT_DESKTOP_SKIP_BUILD === '1' && exists(APP.binary)) {
     return
   }
 
@@ -118,10 +118,10 @@ function ensurePackagedApp() {
 
 function resolveDmgPath() {
   if (!exists(RELEASE_ROOT)) {
-    return path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-${ARCH}.dmg`)
+    return path.join(RELEASE_ROOT, `Rabbit-${PACKAGE_JSON.version}-${ARCH}.dmg`)
   }
 
-  const prefix = `Hermes-${PACKAGE_JSON.version}`
+  const prefix = `Rabbit-${PACKAGE_JSON.version}`
   const candidates = fs
     .readdirSync(RELEASE_ROOT)
     .filter(name => name.endsWith('.dmg'))
@@ -135,7 +135,7 @@ function resolveDmgPath() {
 
   return candidates.length > 0
     ? path.join(RELEASE_ROOT, candidates[0])
-    : path.join(RELEASE_ROOT, `Hermes-${PACKAGE_JSON.version}-${ARCH}.dmg`)
+    : path.join(RELEASE_ROOT, `Rabbit-${PACKAGE_JSON.version}-${ARCH}.dmg`)
 }
 
 function resolveMsixPath() {
@@ -155,7 +155,7 @@ function ensureDmg() {
   if (PLATFORM !== 'darwin') {
     die('DMG mode is macOS-only; on Windows use the `msix` mode instead.')
   }
-  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && exists(resolveDmgPath())) {
+  if (process.env.RABBIT_DESKTOP_SKIP_BUILD === '1' && exists(resolveDmgPath())) {
     return
   }
   run('npm', ['run', 'dist:mac:dmg'])
@@ -165,7 +165,7 @@ function ensureMsix() {
   if (PLATFORM !== 'win32') {
     die('MSIX mode is win32-only; on macOS use the `dmg` mode instead.')
   }
-  if (process.env.HERMES_DESKTOP_SKIP_BUILD === '1' && resolveMsixPath()) {
+  if (process.env.RABBIT_DESKTOP_SKIP_BUILD === '1' && resolveMsixPath()) {
     return
   }
   run('npm', ['run', 'dist:win:msix'])
@@ -235,11 +235,11 @@ function launchFresh() {
 
   const sandbox = fs.mkdtempSync(`${FRESH_SANDBOX_ROOT}-`)
   const userDataDir = path.join(sandbox, 'electron-user-data')
-  const hermesHome = path.join(sandbox, 'hermes-home')
+  const rabbitHome = path.join(sandbox, 'rabbit-home')
   const cwd = path.join(sandbox, 'workspace')
 
   fs.mkdirSync(userDataDir, { recursive: true })
-  fs.mkdirSync(hermesHome, { recursive: true })
+  fs.mkdirSync(rabbitHome, { recursive: true })
   fs.mkdirSync(cwd, { recursive: true })
 
   // Strip every credential-shaped env var so the sandbox is actually fresh.
@@ -249,13 +249,13 @@ function launchFresh() {
     env[key] = value
   }
 
-  env.HERMES_DESKTOP_CWD = cwd
-  env.HERMES_DESKTOP_IGNORE_EXISTING = '1'
-  env.HERMES_DESKTOP_TEST_MODE = 'fresh-install'
-  env.HERMES_DESKTOP_USER_DATA_DIR = userDataDir
-  env.HERMES_HOME = hermesHome
-  delete env.HERMES_DESKTOP_HERMES
-  delete env.HERMES_DESKTOP_HERMES_ROOT
+  env.RABBIT_DESKTOP_CWD = cwd
+  env.RABBIT_DESKTOP_IGNORE_EXISTING = '1'
+  env.RABBIT_DESKTOP_TEST_MODE = 'fresh-install'
+  env.RABBIT_DESKTOP_USER_DATA_DIR = userDataDir
+  env.RABBIT_HOME = rabbitHome
+  delete env.RABBIT_DESKTOP_RABBIT
+  delete env.RABBIT_DESKTOP_RABBIT_ROOT
 
   const child = spawn(APP.binary, [], {
     cwd: os.homedir(),
@@ -268,7 +268,7 @@ function launchFresh() {
   console.log('\nFresh install sandbox:')
   console.log(`  root: ${sandbox}`)
   console.log(`  electron userData: ${userDataDir}`)
-  console.log(`  HERMES_HOME: ${hermesHome}`)
+  console.log(`  RABBIT_HOME: ${rabbitHome}`)
   console.log(`  cwd: ${cwd}`)
 
 }
@@ -277,54 +277,54 @@ function launchFresh() {
 // (launch / firstWindow / app.close() — the app's own exact quit path, backend
 // teardown included), so the harness never kills a process itself. Isolation
 // and identity come from the flags main.ts already honors: sandboxed Electron
-// userData (own single-instance lock) + sandboxed HERMES_HOME + an explicit
+// userData (own single-instance lock) + sandboxed RABBIT_HOME + an explicit
 // backend root (main.ts backend-resolution rung 1). Readiness is the serve
 // protocol — a python backend child LISTENING on 127.0.0.1 answering
 // GET /api/health — never gateway.pid (that file is the messaging gateway's
 // record, a different surface) and never a mock.
-const LIFECYCLE_BACKEND_ROOT = process.env.HERMES_DESKTOP_LIFECYCLE_BACKEND_ROOT
-const LIFECYCLE_TIMEOUT_MS = Number(process.env.HERMES_DESKTOP_LIFECYCLE_TIMEOUT_MS) || 150_000
-const LIFECYCLE_KEEP = process.env.HERMES_DESKTOP_LIFECYCLE_KEEP === '1'
+const LIFECYCLE_BACKEND_ROOT = process.env.RABBIT_DESKTOP_LIFECYCLE_BACKEND_ROOT
+const LIFECYCLE_TIMEOUT_MS = Number(process.env.RABBIT_DESKTOP_LIFECYCLE_TIMEOUT_MS) || 150_000
+const LIFECYCLE_KEEP = process.env.RABBIT_DESKTOP_LIFECYCLE_KEEP === '1'
 
 function lifecycleEnv(sandbox) {
   const userDataDir = path.join(sandbox, 'electron-user-data')
-  const hermesHome = path.join(sandbox, 'hermes-home')
+  const rabbitHome = path.join(sandbox, 'rabbit-home')
   const cwd = path.join(sandbox, 'workspace')
-  for (const dir of [userDataDir, hermesHome, cwd]) fs.mkdirSync(dir, { recursive: true })
+  for (const dir of [userDataDir, rabbitHome, cwd]) fs.mkdirSync(dir, { recursive: true })
 
   const env = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (isCredentialEnvVar(key)) continue
     env[key] = value
   }
-  env.HERMES_DESKTOP_CWD = cwd
-  env.HERMES_DESKTOP_USER_DATA_DIR = userDataDir
-  env.HERMES_HOME = hermesHome
-  env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM = '1'
+  env.RABBIT_DESKTOP_CWD = cwd
+  env.RABBIT_DESKTOP_USER_DATA_DIR = userDataDir
+  env.RABBIT_HOME = rabbitHome
+  env.RABBIT_DESKTOP_SKIP_QUIT_CONFIRM = '1'
   // Window-title label only — NOT package identity; package identity is build-
   // time. Identity isolation here is the sandboxed userData (single-instance
-  // lock is scoped to it), so a live Hermes instance can never be contacted.
-  env.HERMES_DESKTOP_APP_NAME = 'HermesLifecycleProbe'
+  // lock is scoped to it), so a live Rabbit instance can never be contacted.
+  env.RABBIT_DESKTOP_APP_NAME = 'RabbitLifecycleProbe'
   // REQUIRED: with a thin (external-payload) build there is no sealed runtime,
   // and an unresolved backend would fall through to first-run bootstrap —
   // install.ps1, which writes User PATH, Start-Menu shortcuts and ACLs on a
   // real host. This harness must never let that happen.
   if (LIFECYCLE_BACKEND_ROOT) {
-    env.HERMES_DESKTOP_HERMES_ROOT = path.resolve(LIFECYCLE_BACKEND_ROOT)
+    env.RABBIT_DESKTOP_RABBIT_ROOT = path.resolve(LIFECYCLE_BACKEND_ROOT)
   }
-  delete env.HERMES_DESKTOP_HERMES
-  delete env.HERMES_DESKTOP_TEST_MODE
-  return { env, userDataDir, hermesHome, cwd }
+  delete env.RABBIT_DESKTOP_RABBIT
+  delete env.RABBIT_DESKTOP_TEST_MODE
+  return { env, userDataDir, rabbitHome, cwd }
 }
 
 // Readiness, the app's own way: the Electron main logs
-// `HERMES_BACKEND_READY port=<N>` (backend-ready.ts's announcement contract)
-// into <HERMES_HOME>/logs/desktop.log once uvicorn has bound the serve socket.
+// `RABBIT_BACKEND_READY port=<N>` (backend-ready.ts's announcement contract)
+// into <RABBIT_HOME>/logs/desktop.log once uvicorn has bound the serve socket.
 // Parse that, then confirm externally that the announced port answers
 // GET /api/health with 200 — the same anonymous health route the app probes.
 // No process enumeration, no kills.
-async function serveBackendReady(hermesHome, label, offset) {
-  const logPath = path.join(hermesHome, 'logs', 'desktop.log')
+async function serveBackendReady(rabbitHome, label, offset) {
+  const logPath = path.join(rabbitHome, 'logs', 'desktop.log')
   const deadline = Date.now() + LIFECYCLE_TIMEOUT_MS
   const tried = new Map()
   let announced = new Set()
@@ -333,7 +333,7 @@ async function serveBackendReady(hermesHome, label, offset) {
     try {
       text = fs.readFileSync(logPath, 'utf8').slice(offset)
     } catch { /* log not created yet */ }
-    for (const m of text.matchAll(/HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/g)) {
+    for (const m of text.matchAll(/RABBIT_(?:BACKEND|DASHBOARD)_READY port=(\d+)/g)) {
       announced.add(Number(m[1]))
     }
     for (const port of announced) {
@@ -378,13 +378,13 @@ function snapshotHome(root) {
 async function runLifecycle() {
   const { _electron } = await import('@playwright/test')
   const sandbox = fs.mkdtempSync(`${FRESH_SANDBOX_ROOT}-lifecycle-`)
-  const { env, userDataDir, hermesHome } = lifecycleEnv(sandbox)
+  const { env, userDataDir, rabbitHome } = lifecycleEnv(sandbox)
   const sessions = []
   let preservedBefore = null
 
   try {
     for (const label of ['session-1', 'session-2']) {
-      const log = path.join(hermesHome, 'logs', 'desktop.log')
+      const log = path.join(rabbitHome, 'logs', 'desktop.log')
       const offset = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').length : 0
       const app = await _electron.launch({
         executablePath: APP.binary,
@@ -397,10 +397,10 @@ async function runLifecycle() {
       try {
         const window = await app.firstWindow({ timeout: LIFECYCLE_TIMEOUT_MS })
         console.log(`[${label}] first window: ${window.url()}`)
-        const ready = await serveBackendReady(hermesHome, label, offset)
+        const ready = await serveBackendReady(rabbitHome, label, offset)
         console.log(`[${label}] READY: serve backend announced port ${ready.port}, /api/health → 200`)
         sessions.push({ label, appPid: proc.pid, ...ready, windowUrl: window.url() })
-        if (label === 'session-1') preservedBefore = snapshotHome(hermesHome)
+        if (label === 'session-1') preservedBefore = snapshotHome(rabbitHome)
       } finally {
         // app.close() is the app's own quit path (before-quit teardown, backend
         // shutdown included) — not a kill.
@@ -414,7 +414,7 @@ async function runLifecycle() {
       }
     }
 
-    const preservedAfter = snapshotHome(hermesHome)
+    const preservedAfter = snapshotHome(rabbitHome)
     const lost = preservedBefore.filter(entry => !preservedAfter.includes(entry))
     console.log('\nLifecycle summary:')
     console.log(`  sessions: ${sessions.length}`)
@@ -423,13 +423,13 @@ async function runLifecycle() {
       throw new Error(`preserved-state check FAILED — entries missing after relaunch:\n  ${lost.join('\n  ')}`)
     }
     console.log('  preservation: all pre-relaunch home entries survived the quit + relaunch cycle')
-    console.log(JSON.stringify({ sandbox, userDataDir, hermesHome, backendRoot: env.HERMES_DESKTOP_HERMES_ROOT || null, sessions, preserved: { before: preservedBefore.length, after: preservedAfter.length, lost: 0 } }, null, 2))
+    console.log(JSON.stringify({ sandbox, userDataDir, rabbitHome, backendRoot: env.RABBIT_DESKTOP_RABBIT_ROOT || null, sessions, preserved: { before: preservedBefore.length, after: preservedAfter.length, lost: 0 } }, null, 2))
   } finally {
     if (!LIFECYCLE_KEEP) {
       fs.rmSync(sandbox, { recursive: true, force: true })
       console.log(`  sandbox removed: ${sandbox}`)
     } else {
-      console.log(`  sandbox kept (HERMES_DESKTOP_LIFECYCLE_KEEP=1): ${sandbox}`)
+      console.log(`  sandbox kept (RABBIT_DESKTOP_LIFECYCLE_KEEP=1): ${sandbox}`)
     }
   }
 }
@@ -440,7 +440,7 @@ function validateBundle() {
   }
 
   // The payload may be the real pm bundle (staged by scripts/bundles/desktop.py /
-  // `hermes pm bundle --out build/agent-payload`) or the external stub
+  // `rabbit pm bundle --out build/agent-payload`) or the external stub
   // (plain `npm run pack` in the PR/JS lane — the app fetches the runtime at
   // first launch via the stage protocol). Validate the payload only when a
   // real one is present; the stub is the thin-installer contract.
@@ -470,7 +470,7 @@ function validateBundle() {
       die(`Missing bundled payload Python: ${payloadPython}`)
     }
     if (PLATFORM === 'win32') {
-      const payloadShim = path.join(payloadRoot, payloadManifest.venv, 'Scripts', 'hermes.exe')
+      const payloadShim = path.join(payloadRoot, payloadManifest.venv, 'Scripts', 'rabbit.exe')
       if (!exists(payloadShim)) {
         die(`Missing bundled payload shim: ${payloadShim}`)
       }
@@ -551,23 +551,23 @@ function printArtifacts(options = {}) {
 
 function help() {
   console.log(`Usage:
-  npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
-  npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
+  npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Rabbit
+  npm run test:desktop:fresh     # build packaged app, launch with temp userData + RABBIT_HOME
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
   npm run test:desktop:msix      # (win32 only) build MSIX package
   npm run test:desktop:all       # build the platform package and validate the payload
 
 Fast rerun (skip rebuild if the packaged app already exists):
-  HERMES_DESKTOP_SKIP_BUILD=1 npm run test:desktop:fresh
+  RABBIT_DESKTOP_SKIP_BUILD=1 npm run test:desktop:fresh
 
-Automated packaged lifecycle (no host side effects; isolated userData + HERMES_HOME):
+Automated packaged lifecycle (no host side effects; isolated userData + RABBIT_HOME):
   npm run test:desktop:lifecycle
   # start packaged app → real serve backend ready (/api/health 200) → graceful
   # quit → relaunch → preserved-home check → full teardown of our own processes.
   # Requires a backend root the packaged app may use (backend-resolution rung 1):
-  #   HERMES_DESKTOP_LIFECYCLE_BACKEND_ROOT=<hermes checkout with .venv|venv>
-  # Knobs: HERMES_DESKTOP_LIFECYCLE_TIMEOUT_MS and
-  # HERMES_DESKTOP_LIFECYCLE_KEEP=1 to keep the sandbox for inspection.
+  #   RABBIT_DESKTOP_LIFECYCLE_BACKEND_ROOT=<rabbit checkout with .venv|venv>
+  # Knobs: RABBIT_DESKTOP_LIFECYCLE_TIMEOUT_MS and
+  # RABBIT_DESKTOP_LIFECYCLE_KEEP=1 to keep the sandbox for inspection.
 `)
 }
 

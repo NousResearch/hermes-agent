@@ -2,7 +2,7 @@
 
 Invariant under test
 --------------------
-When a non-default profile is active (``HERMES_HOME`` points at
+When a non-default profile is active (``RABBIT_HOME`` points at
 ``<root>/profiles/testprof``), NO subsystem write may land anywhere under the
 default profile's tree — ``<root>/state.db``, ``<root>/config.yaml``,
 ``<root>/memories/``, ``<root>/cron/``, or any other path directly under
@@ -40,10 +40,10 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-from hermes_constants import (
-    reset_hermes_home_override,
-    set_hermes_home_override,
+import rabbit_state
+from rabbit_constants import (
+    reset_rabbit_home_override,
+    set_rabbit_home_override,
 )
 
 
@@ -56,7 +56,7 @@ class ProfileTripwire:
     any created / modified / deleted entry.
 
     Attributes:
-        root:     the default profile's home (``<tmp>/hermes``).
+        root:     the default profile's home (``<tmp>/rabbit``).
         profile:  the active profile home (``<root>/profiles/testprof``).
     """
 
@@ -115,23 +115,23 @@ def profile_tripwire(tmp_path, monkeypatch):
 
     Sets up:
 
-    1. A temp hermes root acting as the *default* profile, seeded with the
+    1. A temp rabbit root acting as the *default* profile, seeded with the
        files a real install has (config.yaml, memories/, cron/jobs.json) so
        both "new file created" and "existing file modified" leaks are
        detectable.
-    2. ``HERMES_HOME`` (env var AND the context-local override) pointed at
+    2. ``RABBIT_HOME`` (env var AND the context-local override) pointed at
        the testprof home — the exact activation shape ``--profile`` uses.
-    3. ``hermes_state.DEFAULT_DB_PATH`` restored to its import-time snapshot.
+    3. ``rabbit_state.DEFAULT_DB_PATH`` restored to its import-time snapshot.
        The suite conftest deliberately re-points that constant at its own
        fake home, which trips the escape hatch in ``_default_db_path()``
        (a re-pointed constant wins over everything).  Closing the hatch
-       makes resolution flow through ``get_hermes_home()`` — the production
+       makes resolution flow through ``get_rabbit_home()`` — the production
        path, and the one #88532 regressed.
 
     Yields a :class:`ProfileTripwire`; teardown re-asserts the invariant so
     a surface test that forgets the explicit check still trips the wire.
     """
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "testprof"
     profile.mkdir(parents=True)
 
@@ -143,12 +143,12 @@ def profile_tripwire(tmp_path, monkeypatch):
     (root / "cron" / "jobs.json").write_text("[]\n")
     (root / ".env").write_text("")
 
-    monkeypatch.setenv("HERMES_HOME", str(profile))
-    token = set_hermes_home_override(str(profile))
+    monkeypatch.setenv("RABBIT_HOME", str(profile))
+    token = set_rabbit_home_override(str(profile))
 
     # Close the conftest's DEFAULT_DB_PATH escape hatch (see docstring).
     monkeypatch.setattr(
-        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+        rabbit_state, "DEFAULT_DB_PATH", rabbit_state._IMPORT_DEFAULT_DB_PATH
     )
 
     tripwire = ProfileTripwire(root, profile)
@@ -157,7 +157,7 @@ def profile_tripwire(tmp_path, monkeypatch):
         # Safety net: re-check even if the test body forgot to.
         tripwire.assert_default_untouched()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +167,7 @@ def profile_tripwire(tmp_path, monkeypatch):
 
 def _exercise_session_db(tripwire: ProfileTripwire) -> None:
     """SessionDB() argless construction + session + message (#88532)."""
-    db = hermes_state.SessionDB()
+    db = rabbit_state.SessionDB()
     try:
         db.create_session("20260823_000000_tripwire", "cli")
         db.append_message("20260823_000000_tripwire", "user", "hello")
@@ -182,7 +182,7 @@ def _exercise_session_db(tripwire: ProfileTripwire) -> None:
 
 def _exercise_config_save(tripwire: ProfileTripwire) -> None:
     """save_config()/load_config() while a profile is active (#92662, #89190)."""
-    from hermes_cli.config import load_config, save_config
+    from rabbit_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg["model"] = "testprof-model"  # bare-string alias form is canonical

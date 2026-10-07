@@ -175,7 +175,7 @@ export function ImageLightbox({
         // --shadow-md — fine for opaque dialogs, but this shell is meant to be
         // an invisible frame around the image: when a zoomed/panned image moves
         // inside it, that paint shows as a stray box of shell area the image
-        // no longer covers. tailwind-merge cannot drop the base `shadow-nous`
+        // no longer covers. tailwind-merge cannot drop the base `shadow-rabbit`
         // (unknown class group, so it survives next to `shadow-none`), and the
         // attribute selector out-specifies the plain utilities — hence the
         // important utilities and the data-variant opt-out in styles.css.

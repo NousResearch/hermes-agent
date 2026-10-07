@@ -49,7 +49,7 @@ def validate_environment(python: Path, *, env: dict, cwd: Path) -> None:
 
 def repair_dependencies(project_root: Path) -> None:
     """Restore this installation's recorded set; never repair a foreign tree."""
-    from hermes_cli.venv_sync import collect_superseded_generations
+    from rabbit_cli.venv_sync import collect_superseded_generations
     from pm.client import sync_venv
     from pm.paths import repo_root
 
@@ -68,7 +68,7 @@ def refresh_dependencies(project_root: Path) -> str:
     recorded extras and plugins, or on failure boots the image's own environment while keeping
     them recorded, so the next boot or install rebuilds them. Returns what happened.
     """
-    from hermes_cli.runtime_state import runtime_lock
+    from rabbit_cli.runtime_state import runtime_lock
     from pm.client import sync_venv
     from pm.environments import runtime_facts_path
     from pm.install import venv_is_current

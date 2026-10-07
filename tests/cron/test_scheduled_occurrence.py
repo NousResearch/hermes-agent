@@ -29,7 +29,7 @@ else:
         if claim is None:
             continue
         mark_execution_handoff_pending(claim['execution_id'])
-        home = Path(os.environ['HERMES_HOME'])
+        home = Path(os.environ['RABBIT_HOME'])
         payload = home / (claim['execution_id'] + '.json')
         ack = home / (claim['execution_id'] + '.ready')
         payload.write_text(json.dumps({'job': claim, 'profile_home': str(home),
@@ -43,9 +43,9 @@ else:
 
 def _fire(home, mode):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(('HERMES_', '_HERMES_'))
+           if not k.startswith(('RABBIT_', '_RABBIT_'))
            and not k.endswith(('_API_KEY', '_TOKEN'))}
-    env['HERMES_HOME'] = str(home)
+    env['RABBIT_HOME'] = str(home)
     env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
     result = subprocess.run([sys.executable, '-c', _FIRE, mode], env=env,
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
@@ -55,7 +55,7 @@ def _fire(home, mode):
 @pytest.mark.parametrize('mode', ['builtin', 'provider', 'worker'])
 def test_completed_occurrence_survives_restart_and_prestamp_rollback(tmp_path, mode):
     from datetime import timedelta
-    from hermes_time import now
+    from rabbit_time import now
 
     home = tmp_path / mode
     cron = home / 'cron'
@@ -148,7 +148,7 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
 
         # A runnable legacy wall-clock value cannot establish an exact UTC identity.
         from datetime import timedelta
-        from hermes_time import now
+        from rabbit_time import now
         naive = jobs.create_job(prompt='legacy', schedule='every 4h')
         rows = jobs.load_jobs()
         for item in rows:
@@ -167,13 +167,13 @@ def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, mo
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
     slot = '2026-01-05T00:00:00+00:00'
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_rabbit_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
     poisoned = executions.create_execution('job', source='control', scheduled_instant=slot)
     executions.finish_execution(poisoned['id'], success=True)
 
     assert not completed_occurrence({'id': 'job'}, slot)
 
-    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
+    monkeypatch.setattr(executions, '_rabbit_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
     legitimate = executions.create_execution('job', source='builtin', scheduled_instant=slot)
     executions.finish_execution(legitimate['id'], success=True)
 
@@ -188,7 +188,7 @@ def test_completed_occurrence_skip_names_job_slot_and_row(tmp_path, monkeypatch,
     from datetime import timedelta
 
     from cron import executions, jobs
-    from hermes_time import now
+    from rabbit_time import now
 
     monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
     slot = (now() - timedelta(minutes=2)).isoformat()

@@ -40,7 +40,7 @@ def test_development_setup_keeps_test_groups_out_of_the_runtime(tmp_path, monkey
     )
     lock_project(core, python=Path(sys.executable), offline=True, explicit=True)
     home = tmp_path / "ci-home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr("pm.paths.repo_root", lambda: core)
     files = {name: tmp_path / name for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH")}
     for name, file in files.items():
@@ -105,12 +105,12 @@ def test_stdlib_bootstrap_exports_the_pm_lock(toolchain, names, tmp_path):
         expected = lock.version(name)
         assert values[f"{name}-version"] == (expected.partition("+")[0] if name == "python" else expected)
     exported = dict(line.split("=", 1) for line in envfile.read_text(encoding="utf-8-sig").splitlines())
-    assert Path(exported["HERMES_HOME"]) == home
-    assert Path(exported["HERMES_RUNTIME_DIR"]).is_relative_to(home)
-    assert not Path(exported["HERMES_RUNTIME_DIR"]).exists(), "prepare must not provision before cache restore"
+    assert Path(exported["RABBIT_HOME"]) == home
+    assert Path(exported["RABBIT_RUNTIME_DIR"]).is_relative_to(home)
+    assert not Path(exported["RABBIT_RUNTIME_DIR"]).exists(), "prepare must not provision before cache restore"
 
 
-@pytest.mark.parametrize("extras", ['"dev"', '{}', '[1]', '["dev\\nHERMES_HOME=bad"]', '["--all"]'])
+@pytest.mark.parametrize("extras", ['"dev"', '{}', '[1]', '["dev\\nRABBIT_HOME=bad"]', '["--all"]'])
 def test_invalid_extras_do_not_export_or_install(extras, tmp_path):
     root = Path(__file__).resolve().parents[2]
     output = tmp_path / "output"

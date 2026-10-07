@@ -267,7 +267,7 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
     """#114909: a Desktop reconnect / resume remints the UI session id (new sid, new session record) and
     compression rotates the durable key. The read-only roster must keep showing the conversation's still-
     running children; a foreign conversation on the same transport sees nothing and control stays exact."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from tools.delegate_tool_child_run import _register_child
     from tools.delegate_tool_registry import _unregister_subagent
 

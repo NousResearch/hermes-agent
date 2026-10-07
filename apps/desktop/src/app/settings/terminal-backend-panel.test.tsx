@@ -3,13 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileScope } from '@/api/client'
 import { deferred } from '@/test/deferred'
-import type { TerminalBackendsResponse } from '@/types/hermes'
+import type { TerminalBackendsResponse } from '@/types/rabbit'
 
 const getTerminalBackends = vi.fn()
 const selectTerminalBackend = vi.fn()
 const confirmMock = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getTerminalBackends: (profile?: ProfileScope) => getTerminalBackends(profile),
   selectTerminalBackend: (backend: string, profile?: ProfileScope) => selectTerminalBackend(backend, profile)
 }))
@@ -53,7 +53,7 @@ function backends(overrides: Partial<TerminalBackendsResponse> = {}): TerminalBa
         description: 'Run commands on a remote host over SSH.',
         active: false,
         status: 'ready',
-        detail: 'hermes@devbox'
+        detail: 'rabbit@devbox'
       }
     ],
     ...overrides

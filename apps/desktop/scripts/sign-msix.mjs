@@ -1,7 +1,7 @@
 // electron-builder custom win.sign hook: Azure Trusted Signing for the MSIX
 // package only. Windows install validation checks the package signature
 // (AppxSignature.p7x over AppxBlockMap.xml); inner files are covered by the
-// block-map hashes, NOT per-file Authenticode, so Hermes.exe and every
+// block-map hashes, NOT per-file Authenticode, so Rabbit.exe and every
 // payload binary stay unsigned and this hook signs exactly one artifact per
 // build.
 //
@@ -89,7 +89,7 @@ async function loadAzureManagerClass() {
 }
 
 // The packager owns both admission and the manager, including concurrent hooks.
-const signingOperation = Symbol('hermes.azureSigningOperation')
+const signingOperation = Symbol('rabbit.azureSigningOperation')
 /** @typedef {{ ensureTools?: typeof ensureWindowsBundleTools, loadManager?: typeof loadAzureManagerClass }} SigningDependencies */
 
 /**
@@ -102,7 +102,7 @@ function azureManager(packager, { ensureTools = ensureWindowsBundleTools, loadMa
   const existing = Object.getOwnPropertyDescriptor(packager, signingOperation)
   if (existing?.value) return existing.value
   const operation = (async () => {
-    if (process.env.HERMES_PREPARED_PACKAGING) {
+    if (process.env.RABBIT_PREPARED_PACKAGING) {
       const tools = await ensureTools({ signing: true, config: packager.config, resourcesDir: packager.buildResourcesDir })
       const selection = packager.config.toolsets?.winCodeSign
       const local = { url: `file://${path.join(packager.buildResourcesDir, 'prepared-packaging-tools/winCodeSign')}` }

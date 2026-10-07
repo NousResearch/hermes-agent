@@ -8,7 +8,7 @@ credential routing + ``/models`` parse). See ``_helpers.py`` for the matrix.
 Spend: cheap models only, three scripted turns (plus at most one cache warm-up
 retry on cache-capable routes), bounded max_tokens/iterations and a hard
 per-test token + dollar guard. Usage and estimated cost are printed per test
-(``LIVE-USAGE {...}``) and appended to ``$HERMES_LIVE_USAGE_FILE`` when set.
+(``LIVE-USAGE {...}``) and appended to ``$RABBIT_LIVE_USAGE_FILE`` when set.
 """
 
 from __future__ import annotations
@@ -61,18 +61,18 @@ def _lookup_tool():
 @pytest.fixture()
 def live_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # HOME too (a sibling, not the parent: state.db's live-system guard treats
-    # $HOME/.hermes as production), so nothing can resolve the developer's real home.
+    # $HOME/.rabbit as production), so nothing can resolve the developer's real home.
     home = tmp_path / "home"
-    hermes_home = tmp_path / "hermes_home"
+    rabbit_home = tmp_path / "rabbit_home"
     home.mkdir()
-    hermes_home.mkdir()
+    rabbit_home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    return hermes_home
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+    return rabbit_home
 
 
 def _resolve(provider: str, model: str | None) -> dict:
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from rabbit_cli.runtime_provider import resolve_runtime_provider
 
     return resolve_runtime_provider(requested=provider, target_model=model)
 
@@ -82,11 +82,11 @@ def _live_listing(provider: str, runtime: dict) -> list[str]:
     (a silent fallback is exactly what hides a broken listing)."""
     api_key, base_url = runtime.get("api_key") or "", runtime.get("base_url") or ""
     if provider == "openai":
-        from hermes_cli.models import fetch_api_models
+        from rabbit_cli.models import fetch_api_models
 
         return list(fetch_api_models(api_key, base_url, timeout=20.0) or [])
     if provider == "nous":
-        from hermes_cli.auth import fetch_nous_models
+        from rabbit_cli.auth import fetch_nous_models
 
         return list(fetch_nous_models(inference_base_url=base_url, api_key=api_key) or [])
     from providers import get_provider_profile
@@ -199,8 +199,8 @@ def test_three_turn_tool_conversation(case: LiveCase, live_home: Path, monkeypat
     runtime = _resolve(case.provider, model)
     assert runtime.get("api_key") == secret, f"{case.id}: resolver did not pick the {case.key_env} credential"
 
-    from hermes_constants import parse_reasoning_effort
-    from hermes_state import SessionDB
+    from rabbit_constants import parse_reasoning_effort
+    from rabbit_state import SessionDB
     from run_agent import AIAgent
 
     db = SessionDB(live_home / "state.db")

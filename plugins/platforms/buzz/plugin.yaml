@@ -3,15 +3,15 @@ label: Buzz
 kind: platform
 version: 1.0.0
 description: >
-  Buzz gateway adapter for Hermes Agent.
+  Buzz gateway adapter for Rabbit Agent.
   Connects to a Buzz community relay (Block's open-source human+agent
   collaboration platform built on Nostr) and relays messages between
-  channels/DMs and the Hermes agent. Relay operations shell out to the
-  buzz CLI binary (JSON in/out); verified inbound media uses Hermes' bundled
+  channels/DMs and the Rabbit agent. Relay operations shell out to the
+  buzz CLI binary (JSON in/out); verified inbound media uses Rabbit' bundled
   HTTP client.
-author: Nous Research
-# ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
+author: Sanath Patil
+# ``requires_env`` entries are surfaced in ``rabbit config`` UI via the
+# platform-plugin env var injector in ``rabbit_cli/config.py``.
 requires_env:
   - name: BUZZ_RELAY_URL
     description: "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)"

@@ -32,7 +32,7 @@ def test_oauth_stops_at_pm_restart_boundary(command, monkeypatch, tmp_path, caps
         path.write_text(json.dumps({"state": "pending-state", "code_verifier": "verifier"}))
         monkeypatch.setattr(module, name, path)
     before = {path: path.read_bytes() for path in tmp_path.glob("*.json")}
-    ensure = Mock(side_effect=pm.InstallError("venv", "google installed; restart Hermes to activate"))
+    ensure = Mock(side_effect=pm.InstallError("venv", "google installed; restart Rabbit to activate"))
     monkeypatch.setattr(pm, "ensure_import", ensure)
     monkeypatch.setattr("subprocess.check_call", Mock(side_effect=AssertionError("ambient install")))
     monkeypatch.setattr(sys, "argv", [str(SETUP_PATH), command] + (["code"] if command == "--auth-code" else []))
@@ -42,24 +42,24 @@ def test_oauth_stops_at_pm_restart_boundary(command, monkeypatch, tmp_path, caps
 
     assert failure.value.code == 1
     ensure.assert_called_once_with("google")
-    assert "restart Hermes" in capsys.readouterr().out
+    assert "restart Rabbit" in capsys.readouterr().out
     assert {path: path.read_bytes() for path in tmp_path.glob("*.json")} == before
 
 
 @pytest.mark.parametrize("command", ["--install-deps", "--auth-url"])
-def test_standalone_without_hermes_reports_setup_not_ambient_installs(command, tmp_path):
+def test_standalone_without_rabbit_reports_setup_not_ambient_installs(command, tmp_path):
     # -I -S excludes both the checkout and installed site packages, just as a
-    # copied skill run with an unrelated interpreter has no Hermes PM module.
+    # copied skill run with an unrelated interpreter has no Rabbit PM module.
     (tmp_path / "google_client_secret.json").write_text("{}")
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SETUP_PATH), command],
-        env={**os.environ, "HERMES_HOME": str(tmp_path), "PATH": ""},
+        env={**os.environ, "RABBIT_HOME": str(tmp_path), "PATH": ""},
         capture_output=True,
         text=True,
         timeout=15,
     )
     assert result.returncode == 1
-    assert "Hermes environment" in result.stdout
-    assert "hermes setup" in result.stdout
+    assert "Rabbit environment" in result.stdout
+    assert "rabbit setup" in result.stdout
     assert "pip" not in result.stdout + result.stderr
     assert "Traceback" not in result.stderr

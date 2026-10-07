@@ -44,7 +44,7 @@ class CustomProfile(ProviderProfile):
         return OPENAI_COMPAT_WIRE_EFFORTS
 
     def default_reasoning_config(self, model: str | None = None) -> dict | None:
-        """Unset ``agent.reasoning_effort`` → ``medium``, as on the Nous / OpenRouter profiles.
+        """Unset ``agent.reasoning_effort`` → ``medium``, as on the OpenRouter profile.
 
         Leaving the field off lets the endpoint's own default apply, and for a hosted reasoning
         model that default can be its ceiling: kimi-k3 behind an OpenAI-compatible relay defaults

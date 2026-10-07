@@ -82,7 +82,7 @@ test('onboarding (custom endpoint) then first chat renders exactly once', async 
     })
 
     await test.step('the persisted assignment is what the user entered', async () => {
-      const config = fs.readFileSync(path.join(sandbox.hermesHome, 'config.yaml'), 'utf8')
+      const config = fs.readFileSync(path.join(sandbox.rabbitHome, 'config.yaml'), 'utf8')
       expect(config).toMatch(/provider:\s*['"]?custom/)
       expect(config).toContain(`127.0.0.1:${new URL(provider.url).port}`)
     })

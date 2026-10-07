@@ -4,7 +4,7 @@ Aux lanes that want speed over thought (title generation: ``max_tokens=64``, JSO
 provider's thinking-off encoding — top-level ``reasoning_effort: "none"`` on the custom profile,
 ``extra_body.reasoning: {"enabled": false}`` on OpenRouter-shaped relays, ``_reasoning_config`` on the
 Anthropic Messages adapters. Some endpoints understand the field but refuse the disable ("Reasoning is
-mandatory for this endpoint and cannot be disabled" — the Nous Portal on gpt-6-astra); before this
+mandatory for this endpoint and cannot be disabled"); before this
 module every title call there 400'd and the session stayed untitled.
 
 The recovery is a *step up*, not a strip: the same request goes out again at the lowest effort every
@@ -79,22 +79,19 @@ def remember_reasoning_floor(
     _FLOORED_ROUTES.add((_route_key(provider, base_url), str(rejected_kwargs.get("model") or "")))
 
 
-_NOUS_PROVIDERS = {"nous", "nous-portal", "nousresearch"}
 
 
 def _catalog_marks_mandatory(provider: Optional[str], base_url: Optional[str], model: Optional[str]) -> bool:
-    """True when the route's ``/v1/models`` catalog (OpenRouter, Nous Portal) flags *model*
+    """True when the route's ``/v1/models`` catalog (OpenRouter-style) flags *model*
     ``reasoning.mandatory``. Cache-only — memory, then the disk mirror — so it never blocks; a cold
     catalog is warmed in the background, and the mirror it writes answers every later call and process.
     Without this an aux-only OpenRouter route (nothing else warms that catalog) paid the 400 in every
     process."""
     provider_norm = str(provider or "").strip().lower()
     host = (urlparse(base_url or "").hostname or "").lower()
-    from hermes_cli import models_reasoning_caps as caps_mod
+    from rabbit_cli import models_reasoning_caps as caps_mod
     if provider_norm == "openrouter" or host == "openrouter.ai" or host.endswith(".openrouter.ai"):
         lookup, warm = caps_mod.openrouter_model_reasoning_capabilities, caps_mod.warm_openrouter_reasoning_caps_async
-    elif provider_norm in _NOUS_PROVIDERS:
-        lookup, warm = caps_mod.nous_model_reasoning_capabilities, caps_mod.warm_nous_reasoning_caps_async
     else:
         return False
     try:

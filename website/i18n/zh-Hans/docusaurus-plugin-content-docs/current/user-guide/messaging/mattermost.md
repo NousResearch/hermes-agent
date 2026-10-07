@@ -1,28 +1,28 @@
 ---
 sidebar_position: 8
 title: "Mattermost"
-description: "将 Hermes Agent 配置为 Mattermost 机器人"
+description: "将 Rabbit Agent 配置为 Mattermost 机器人"
 ---
 
 # Mattermost 配置
 
-Hermes Agent 以机器人身份集成到 Mattermost，让你可以通过私信或团队频道与 AI 助手对话。Mattermost 是一个自托管的开源 Slack 替代品——运行在你自己的基础设施上，完全掌控数据。机器人通过 Mattermost 的 REST API（v4）和 WebSocket 连接以接收实时事件，将消息通过 Hermes Agent 管道（包括工具调用、记忆和推理）处理后实时响应。支持文本、文件附件、图片和斜杠命令。
+Rabbit Agent 以机器人身份集成到 Mattermost，让你可以通过私信或团队频道与 AI 助手对话。Mattermost 是一个自托管的开源 Slack 替代品——运行在你自己的基础设施上，完全掌控数据。机器人通过 Mattermost 的 REST API（v4）和 WebSocket 连接以接收实时事件，将消息通过 Rabbit Agent 管道（包括工具调用、记忆和推理）处理后实时响应。支持文本、文件附件、图片和斜杠命令。
 
-无需额外的 Mattermost 库——适配器使用 `aiohttp`，该库已作为 Hermes 的依赖项包含在内。
+无需额外的 Mattermost 库——适配器使用 `aiohttp`，该库已作为 Rabbit 的依赖项包含在内。
 
-在开始配置之前，先了解大多数人最关心的部分：Hermes 进入你的 Mattermost 实例后的行为方式。
+在开始配置之前，先了解大多数人最关心的部分：Rabbit 进入你的 Mattermost 实例后的行为方式。
 
-## Hermes 的行为方式
+## Rabbit 的行为方式
 
 | 场景 | 行为 |
 |---------|----------|
-| **私信（DM）** | Hermes 响应每一条消息，无需 `@提及`。每个私信有独立的会话。 |
-| **公开/私有频道** | Hermes 仅在被 `@提及` 时响应。未被提及时，Hermes 忽略消息。 |
-| **线程（Thread）** | 若设置 `MATTERMOST_REPLY_MODE=thread`，Hermes 在你的消息下方以线程形式回复。线程上下文与父频道隔离。 |
-| **多用户共享频道** | 默认情况下，Hermes 在频道内按用户隔离会话历史。同一频道中的两个人不会共享同一份对话记录，除非你明确禁用该设置。 |
+| **私信（DM）** | Rabbit 响应每一条消息，无需 `@提及`。每个私信有独立的会话。 |
+| **公开/私有频道** | Rabbit 仅在被 `@提及` 时响应。未被提及时，Rabbit 忽略消息。 |
+| **线程（Thread）** | 若设置 `MATTERMOST_REPLY_MODE=thread`，Rabbit 在你的消息下方以线程形式回复。线程上下文与父频道隔离。 |
+| **多用户共享频道** | 默认情况下，Rabbit 在频道内按用户隔离会话历史。同一频道中的两个人不会共享同一份对话记录，除非你明确禁用该设置。 |
 
 :::tip
-如果你希望 Hermes 以线程对话方式回复（嵌套在原始消息下方），请设置 `MATTERMOST_REPLY_MODE=thread`。默认值为 `off`，即在频道中发送普通消息。
+如果你希望 Rabbit 以线程对话方式回复（嵌套在原始消息下方），请设置 `MATTERMOST_REPLY_MODE=thread`。默认值为 `off`，即在频道中发送普通消息。
 :::
 
 ### Mattermost 中的会话模型
@@ -71,8 +71,8 @@ group_sessions_per_user: false
 1. 在 Mattermost 中，点击左上角的 **☰** 菜单 → **集成** → **机器人账户**。
 2. 点击**添加机器人账户**。
 3. 填写详细信息：
-   - **用户名**：例如 `hermes`
-   - **显示名称**：例如 `Hermes Agent`
+   - **用户名**：例如 `rabbit`
+   - **显示名称**：例如 `Rabbit Agent`
    - **描述**：可选
    - **角色**：`Member` 即可
 4. 点击**创建机器人账户**。
@@ -85,7 +85,7 @@ group_sessions_per_user: false
 将 token 保存在安全的地方（例如密码管理器）。第五步中会用到它。
 
 :::tip
-你也可以使用**个人访问 token** 代替机器人账户。前往**个人资料** → **安全** → **个人访问 Token** → **创建 Token**。如果你希望 Hermes 以你自己的用户身份发帖而非独立的机器人用户，这种方式很有用。
+你也可以使用**个人访问 token** 代替机器人账户。前往**个人资料** → **安全** → **个人访问 Token** → **创建 Token**。如果你希望 Rabbit 以你自己的用户身份发帖而非独立的机器人用户，这种方式很有用。
 :::
 
 ## 第三步：将机器人添加到频道
@@ -94,13 +94,13 @@ group_sessions_per_user: false
 
 1. 打开你希望添加机器人的频道。
 2. 点击频道名称 → **添加成员**。
-3. 搜索你的机器人用户名（例如 `hermes`）并添加。
+3. 搜索你的机器人用户名（例如 `rabbit`）并添加。
 
 对于私信，直接与机器人开启私信即可——它将立即能够响应。
 
 ## 第四步：查找你的 Mattermost 用户 ID
 
-Hermes Agent 使用你的 Mattermost 用户 ID 来控制谁可以与机器人交互。查找方式：
+Rabbit Agent 使用你的 Mattermost 用户 ID 来控制谁可以与机器人交互。查找方式：
 
 1. 点击左上角的**头像** → **个人资料**。
 2. 用户 ID 显示在个人资料对话框中——点击即可复制。
@@ -122,21 +122,21 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 要获取**频道 ID**：点击频道名称 → **查看信息**。频道 ID 显示在信息面板中。如果你想手动设置主频道，需要用到它。
 :::
 
-## 第五步：配置 Hermes Agent
+## 第五步：配置 Rabbit Agent
 
 ### 方式 A：交互式配置（推荐）
 
 运行引导式配置命令：
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 在提示时选择 **Mattermost**，然后按提示粘贴你的服务器 URL、机器人 token 和用户 ID。
 
 ### 方式 B：手动配置
 
-在你的 `~/.hermes/.env` 文件中添加以下内容：
+在你的 `~/.rabbit/.env` 文件中添加以下内容：
 
 ```bash
 # 必填
@@ -157,7 +157,7 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
 ```
 
-`~/.hermes/config.yaml` 中的可选行为设置：
+`~/.rabbit/config.yaml` 中的可选行为设置：
 
 ```yaml
 group_sessions_per_user: true
@@ -170,13 +170,13 @@ group_sessions_per_user: true
 配置完成后，启动 Mattermost gateway：
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 机器人应在几秒内连接到你的 Mattermost 服务器。发送一条消息——私信或在已添加机器人的频道中——进行测试。
 
 :::tip
-你可以在后台运行 `hermes gateway`，或将其配置为 systemd 服务以持续运行。详情参见部署文档。
+你可以在后台运行 `rabbit gateway`，或将其配置为 systemd 服务以持续运行。详情参见部署文档。
 :::
 
 ## 主频道
@@ -189,7 +189,7 @@ hermes gateway
 
 ### 手动配置
 
-在你的 `~/.hermes/.env` 中添加：
+在你的 `~/.rabbit/.env` 中添加：
 
 ```bash
 MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
@@ -199,14 +199,14 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 
 ## 回复模式
 
-`MATTERMOST_REPLY_MODE` 设置控制 Hermes 发布响应的方式：
+`MATTERMOST_REPLY_MODE` 设置控制 Rabbit 发布响应的方式：
 
 | 模式 | 行为 |
 |------|----------|
-| `off`（默认） | Hermes 在频道中发送普通消息，与普通用户一样。 |
-| `thread` | Hermes 在你的原始消息下方以线程形式回复。在大量来回交流时保持频道整洁。 |
+| `off`（默认） | Rabbit 在频道中发送普通消息，与普通用户一样。 |
+| `thread` | Rabbit 在你的原始消息下方以线程形式回复。在大量来回交流时保持频道整洁。 |
 
-在你的 `~/.hermes/.env` 中设置：
+在你的 `~/.rabbit/.env` 中设置：
 
 ```bash
 MATTERMOST_REPLY_MODE=thread
@@ -298,15 +298,15 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 ### 机器人离线
 
-**原因**：Hermes gateway 未运行，或连接失败。
+**原因**：Rabbit gateway 未运行，或连接失败。
 
-**解决方法**：检查 `hermes gateway` 是否正在运行。查看终端输出中的错误信息。常见问题：URL 错误、token 过期、Mattermost 服务器无法访问。
+**解决方法**：检查 `rabbit gateway` 是否正在运行。查看终端输出中的错误信息。常见问题：URL 错误、token 过期、Mattermost 服务器无法访问。
 
 ### "User not allowed"/机器人忽略你
 
 **原因**：你的用户 ID 不在 `MATTERMOST_ALLOWED_USERS` 中。
 
-**解决方法**：将你的用户 ID 添加到 `~/.hermes/.env` 中的 `MATTERMOST_ALLOWED_USERS`，然后重启 gateway。注意：用户 ID 是 26 位字母数字字符串，不是你的 `@用户名`。
+**解决方法**：将你的用户 ID 添加到 `~/.rabbit/.env` 中的 `MATTERMOST_ALLOWED_USERS`，然后重启 gateway。注意：用户 ID 是 26 位字母数字字符串，不是你的 `@用户名`。
 
 ## 按频道设置 Prompt
 
@@ -331,10 +331,10 @@ mattermost:
 务必设置 `MATTERMOST_ALLOWED_USERS` 以限制谁可以与机器人交互。若未设置，gateway 默认拒绝所有用户作为安全措施。仅添加你信任的人的用户 ID——授权用户对 agent 的所有功能拥有完整访问权限，包括工具调用和系统访问。
 :::
 
-有关保护 Hermes Agent 部署的更多信息，请参阅[安全指南](../security.md)。
+有关保护 Rabbit Agent 部署的更多信息，请参阅[安全指南](../security.md)。
 
 ## 说明
 
 - **自托管友好**：适用于任何自托管的 Mattermost 实例。无需 Mattermost Cloud 账户或订阅。
-- **无额外依赖**：适配器使用 `aiohttp` 处理 HTTP 和 WebSocket，该库已包含在 Hermes Agent 中。
+- **无额外依赖**：适配器使用 `aiohttp` 处理 HTTP 和 WebSocket，该库已包含在 Rabbit Agent 中。
 - **兼容团队版**：同时支持 Mattermost 团队版（免费）和企业版。

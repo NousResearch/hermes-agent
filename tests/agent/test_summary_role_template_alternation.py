@@ -6,7 +6,7 @@ enforce user/assistant alternation at render time but exempt the tool flow
 from the check: ``tool`` results and assistant messages carrying
 ``tool_calls`` are skipped. The summary-role selection previously keyed off
 the LITERAL last head message (``compressed[-1]``), producing this captured
-failure (Hermes Desktop v0.19.0 against llama.cpp-served Devstral):
+failure (Rabbit Desktop v0.19.0 against llama.cpp-served Devstral):
 
     [0] system
     [1] user            <- original first user turn, protected

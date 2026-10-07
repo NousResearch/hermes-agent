@@ -17,7 +17,6 @@ Create, read, edit .pptx decks with python-pptx.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/powerpoint` |
 | Version | `1.1.0` |
-| Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `pptx`, `powerpoint`, `presentations`, `slides`, `office`, `python-pptx` |
@@ -26,7 +25,7 @@ Create, read, edit .pptx decks with python-pptx.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Powerpoint Skill

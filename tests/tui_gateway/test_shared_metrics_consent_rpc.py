@@ -1,13 +1,11 @@
 """shared_metrics.status / shared_metrics.set: the Desktop consent path keeps the CLI wizard's
-invariants (sending needs collection, every change reconciles the consent windows) and lands in the
-profile the request names, never the launch profile."""
+collection-only shape and lands in the profile the request names, never the launch profile."""
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import tui_gateway.server as server
 
@@ -17,8 +15,8 @@ def _bind_homes(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     for home in (launch, worker):
         home.mkdir(parents=True)
         (home / "config.yaml").write_text(yaml.safe_dump({"model": {"provider": "nous"}}), encoding="utf-8")
-    monkeypatch.setattr(server, "_hermes_home", launch)
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", launch)
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setattr(server, "_profile_home", lambda name: worker if (name or "").strip() == "code" else None)
     server._cfg_cache = server._cfg_sig = server._cfg_path = None
     return launch, worker
@@ -33,26 +31,16 @@ def _shared_metrics(home: Path) -> dict:
     return (cfg.get("telemetry") or {}).get("shared_metrics") or {}
 
 
-def _windows(home: Path) -> list[tuple]:
-    db = home / "telemetry" / "shared_metrics" / "metrics.sqlite3"
-    with sqlite3.connect(db) as conn:
-        return conn.execute("SELECT opened_at, closed_at FROM send_consent_windows ORDER BY rowid").fetchall()
-
-
-def test_send_without_collection_is_normalized_off_and_closes_the_consent_window(tmp_path, monkeypatch):
+def test_set_lands_in_the_named_profile(tmp_path, monkeypatch):
     launch, worker = _bind_homes(monkeypatch, tmp_path)
 
-    assert _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True}) == {
-        "enabled": True, "send": True, "decided": True}
-    [(opened, closed)] = _windows(worker)
-    assert opened and closed is None
+    assert _call("shared_metrics.set", {"profile": "code", "enabled": True}) == {
+        "enabled": True, "decided": True}
+    assert _shared_metrics(worker) == {"enabled": True}
 
-    # send=true alone is refused: collection off withdraws send consent, in config AND in the store.
-    assert _call("shared_metrics.set", {"profile": "code", "enabled": False, "send": True}) == {
-        "enabled": False, "send": False, "decided": True}
-    assert _shared_metrics(worker) == {"enabled": False, "send": False}
-    [(_, closed)] = _windows(worker)
-    assert closed is not None
+    assert _call("shared_metrics.set", {"profile": "code", "enabled": False}) == {
+        "enabled": False, "decided": True}
+    assert _shared_metrics(worker) == {"enabled": False}
 
     assert _shared_metrics(launch) == {}
     assert not (launch / "telemetry").exists()
@@ -61,22 +49,22 @@ def test_send_without_collection_is_normalized_off_and_closes_the_consent_window
 def test_status_is_undecided_until_a_key_is_written(tmp_path, monkeypatch):
     _launch, worker = _bind_homes(monkeypatch, tmp_path)
 
-    assert _call("shared_metrics.status", {"profile": "code"}) == {"enabled": False, "send": False, "decided": False}
+    assert _call("shared_metrics.status", {"profile": "code"}) == {"enabled": False, "decided": False}
 
-    # An answer given in `hermes setup` (only `enabled: false` written) counts as decided.
+    # An answer given in `rabbit setup` (only `enabled: false` written) counts as decided.
     (worker / "config.yaml").write_text(
         yaml.safe_dump({"telemetry": {"shared_metrics": {"enabled": False}}}), encoding="utf-8")
-    assert _call("shared_metrics.status", {"profile": "code"}) == {"enabled": False, "send": False, "decided": True}
+    assert _call("shared_metrics.status", {"profile": "code"}) == {"enabled": False, "decided": True}
 
 
 def test_only_the_first_run_answer_records_desktop_setup_completed(tmp_path, monkeypatch):
     _launch, _worker = _bind_homes(monkeypatch, tmp_path)
-    import hermes_cli.observability.shared_metrics_events as events
+    import rabbit_cli.observability.shared_metrics_events as events
 
     calls: list[dict] = []
     monkeypatch.setattr(events, "record_setup_completed", lambda **kw: calls.append(kw))
 
-    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": False, "first_run": True})
-    _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True})
+    _call("shared_metrics.set", {"profile": "code", "enabled": True, "first_run": True})
+    _call("shared_metrics.set", {"profile": "code", "enabled": False})
 
     assert calls == [{"surface": "desktop", "provider": "nous"}]

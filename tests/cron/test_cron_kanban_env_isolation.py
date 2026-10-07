@@ -1,15 +1,15 @@
 """Cron sessions must not inherit a kanban worker's dispatcher identity.
 
 A cron job can be fired *in-process* from a kanban worker: the worker is a
-normal ``hermes chat -q`` CLI agent (its default toolset includes ``cronjob``)
-running with ``HERMES_KANBAN_TASK`` legitimately set in its own environment,
+normal ``rabbit chat -q`` CLI agent (its default toolset includes ``cronjob``)
+running with ``RABBIT_KANBAN_TASK`` legitimately set in its own environment,
 and ``cronjob(action="run")`` calls ``run_one_job()`` -> ``run_job()`` in that
 same process.
 
 Without isolation the cron ``AIAgent`` is misidentified as that worker: the
 kanban toolset is force-added, the kanban-worker protocol is injected into its
 system prompt, and ``kanban_complete`` defaults ``task_id`` to
-``$HERMES_KANBAN_TASK`` — letting an unrelated cron job close the worker's task
+``$RABBIT_KANBAN_TASK`` — letting an unrelated cron job close the worker's task
 and overwrite real results.
 
 The isolation is a **ContextVar**, deliberately not an ``os.environ`` clear:
@@ -47,11 +47,11 @@ def _clear_kanban_detect_cache():
 @pytest.fixture()
 def worker_env(monkeypatch):
     """Simulate running inside a dispatcher-spawned kanban worker."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker_real_task")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/ws")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "42")
-    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock-abc")
-    monkeypatch.setenv("HERMES_KANBAN_BOARD", "team-alpha")
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_worker_real_task")
+    monkeypatch.setenv("RABBIT_KANBAN_WORKSPACE", "/tmp/ws")
+    monkeypatch.setenv("RABBIT_KANBAN_RUN_ID", "42")
+    monkeypatch.setenv("RABBIT_KANBAN_CLAIM_LOCK", "lock-abc")
+    monkeypatch.setenv("RABBIT_KANBAN_BOARD", "team-alpha")
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class TestRunJobKanbanIsolation:
                 )
                 observed["kanban_env_during_init"] = {
                     k: v for k, v in os.environ.items()
-                    if k.startswith("HERMES_KANBAN_")
+                    if k.startswith("RABBIT_KANBAN_")
                 }
 
             def run_conversation(self, *_a, **_kw):
@@ -228,7 +228,7 @@ class TestRunJobKanbanIsolation:
         fake_mod.AIAgent = agent_cls or FakeAgent
         monkeypatch.setitem(sys.modules, "run_agent", fake_mod)
 
-        from hermes_cli import runtime_provider as _rtp
+        from rabbit_cli import runtime_provider as _rtp
 
         monkeypatch.setattr(
             _rtp, "resolve_runtime_provider",
@@ -246,7 +246,7 @@ class TestRunJobKanbanIsolation:
         monkeypatch.setattr(
             sched, "_resolve_cron_enabled_toolsets", lambda job, cfg: None
         )
-        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        monkeypatch.setenv("RABBIT_CRON_TIMEOUT", "0")
 
         import dotenv
 
@@ -276,7 +276,7 @@ class TestRunJobKanbanIsolation:
         import cron.scheduler as sched
 
         before = {
-            k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
+            k: v for k, v in os.environ.items() if k.startswith("RABBIT_KANBAN_")
         }
         assert before, "fixture should have populated kanban env"
 
@@ -290,7 +290,7 @@ class TestRunJobKanbanIsolation:
         assert observed["kanban_env_during_init"] == before
         # ...and after.
         after = {
-            k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
+            k: v for k, v in os.environ.items() if k.startswith("RABBIT_KANBAN_")
         }
         assert after == before
 
@@ -316,7 +316,7 @@ class TestRunJobKanbanIsolation:
         assert success is False
         assert is_dispatcher_owned_worker_context() is True
         # And the env survived the failure too.
-        assert os.environ.get("HERMES_KANBAN_BOARD") == "team-alpha"
+        assert os.environ.get("RABBIT_KANBAN_BOARD") == "team-alpha"
 
     def test_concurrent_jobs_do_not_corrupt_worker_identity(
         self, monkeypatch, worker_env
@@ -328,7 +328,7 @@ class TestRunJobKanbanIsolation:
         import cron.scheduler as sched
 
         before = {
-            k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
+            k: v for k, v in os.environ.items() if k.startswith("RABBIT_KANBAN_")
         }
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -347,7 +347,7 @@ class TestRunJobKanbanIsolation:
 
         assert results == {"a": True, "b": True}
         after = {
-            k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
+            k: v for k, v in os.environ.items() if k.startswith("RABBIT_KANBAN_")
         }
         assert after == before, "worker identity must survive concurrent cron jobs"
 
@@ -357,13 +357,13 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     import json
     from pathlib import Path
     import sys
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
-    from hermes_cli.kanban_db_dispatch import _default_spawn
+    from rabbit_cli import kanban_db as kb
+    from rabbit_cli.kanban_db_connect import connect
+    from rabbit_cli.kanban_db_dispatch import _default_spawn
 
     monkeypatch.setenv("HOME", str(tmp_path))
     db = tmp_path / "board.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(db))
     conn = connect(db)
     tid = kb.create_task(conn, title="assigned child", assignee="default")
     kb.claim_task(conn, tid)
@@ -379,17 +379,17 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
         f"open({str(output)!r}, 'w').write(json.dumps(result))\n"
     )
     worker.chmod(0o700)
-    monkeypatch.setenv("HERMES_BIN", str(worker))
+    monkeypatch.setenv("RABBIT_BIN", str(worker))
     # Building a new worker under an existing task must replace, not inherit, its scope.
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", "prior-task")
     # A dispatcher launched from an agent's shell carries the descendant fence itself; the worker it
     # grants a task to must not (an inherited marker fences the worker's own heartbeat + handoff).
-    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path))
+    monkeypatch.setenv("RABBIT_DELEGATED_CHILD_CONTEXT", str(tmp_path))
     pid = _default_spawn(task, str(tmp_path), board="default")
     assert pid is not None
     os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
     result = json.loads(output.read_text())
     assert result["ok"] and result["beat"] is True, result
     assert kb.get_task(conn, tid).status == "done"
-    assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
+    assert os.environ["RABBIT_KANBAN_TASK"] == "prior-task"
     conn.close()

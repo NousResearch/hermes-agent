@@ -39,7 +39,7 @@ if _repo not in sys.path:
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
-from hermes_cli.plugins import (  # noqa: E402
+from rabbit_cli.plugins import (  # noqa: E402
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -64,7 +64,7 @@ def _adapter(extra=None) -> TelegramAdapter:
 @pytest.fixture(autouse=True)
 def _observer_available(monkeypatch):
     """Most fire-site tests exercise the subscribed path explicitly."""
-    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+    monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda _name: True)
 
 
 def _reaction(*, emoji=None, custom_emoji_id=None):
@@ -128,7 +128,7 @@ class TestRunnerDispatch:
             "payload": {"chat_id": "123", "message_id": "456", "emojis": ["x"]},
         }
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("rabbit_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(event, source))
 
         invoke.assert_called_once_with("gateway_platform_event", **event)
@@ -141,7 +141,7 @@ class TestRunnerDispatch:
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("rabbit_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
@@ -158,7 +158,7 @@ class TestRunnerDispatch:
             _auth_reaction_update(user_id=777)
         )
 
-        with patch("hermes_cli.lifecycle.invoke_hook", invoke):
+        with patch("rabbit_cli.lifecycle.invoke_hook", invoke):
             asyncio.run(runner._handle_gateway_platform_event(
                 {"platform": "telegram", "event_type": "reaction", "payload": {}},
                 source,
@@ -550,7 +550,7 @@ class TestProfileScopedPlatformEventHandler:
 
         runner._handle_gateway_platform_event = dispatch
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_profile_dir", lambda name: None,
+            "rabbit_cli.profiles.get_profile_dir", lambda name: None,
         )
         handler = runner._make_profile_platform_event_handler("work")
         source = _adapter()._source_from_reaction_for_auth(
@@ -579,7 +579,7 @@ class TestFixturePluginObservationPath:
         adapter = _adapter()
         adapter.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        with patch("rabbit_cli.plugins.get_plugin_manager", return_value=manager):
             asyncio.run(adapter._on_platform_update(
                 _auth_reaction_update(user_id=777), context=MagicMock(),
             ))

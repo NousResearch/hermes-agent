@@ -43,7 +43,7 @@ export function stripGlyph(text: string): string {
   return text.replace(LEADING_GLYPH, '')
 }
 
-/** A `$12.34` money token, as the Nous notice policy formats amounts. */
+/** A `$12.34` money token, as the notice policy formats amounts. */
 const MONEY = /\$(\d+(?:\.\d{2})?)/g
 
 /**
@@ -174,7 +174,7 @@ export function clearAgentNotice(key: string | undefined): void {
 }
 
 // Only these two credit notices are urgent enough to break through as a native
-// OS notification (when Hermes is backgrounded). The escalating usage line
+// OS notification (when Rabbit is backgrounded). The escalating usage line
 // (`credits.usage`) and the grant-spent notice stay in-app toasts only — they
 // aren't worth interrupting the user's OS for.
 const NATIVE_NOTICE_KEYS = new Set(['credits.depleted', 'credits.restored'])

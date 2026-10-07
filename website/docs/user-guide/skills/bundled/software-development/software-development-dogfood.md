@@ -17,7 +17,6 @@ Exploratory QA of web apps: find bugs, evidence, reports.
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/dogfood` |
 | Version | `1.0.0` |
-| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `qa`, `testing`, `browser`, `web`, `dogfood` |
@@ -25,7 +24,7 @@ Exploratory QA of web apps: find bugs, evidence, reports.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Dogfood: Systematic Web Application QA Testing

@@ -1,6 +1,6 @@
 """Feishu document comment access-control rules: exact doc > wildcard "*" > top-level > code defaults, each field
-(enabled/policy/allow_from) falling back independently. Config ~/.hermes/feishu_comment_rules.json (mtime-cached,
-hot-reload); pairing store ~/.hermes/feishu_comment_pairing.json."""
+(enabled/policy/allow_from) falling back independently. Config ~/.rabbit/feishu_comment_rules.json (mtime-cached,
+hot-reload); pairing store ~/.rabbit/feishu_comment_pairing.json."""
 
 from __future__ import annotations
 
@@ -12,24 +12,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
-RULES_FILE = get_hermes_home() / "feishu_comment_rules.json"
-PAIRING_FILE = get_hermes_home() / "feishu_comment_pairing.json"
+RULES_FILE = get_rabbit_home() / "feishu_comment_rules.json"
+PAIRING_FILE = get_rabbit_home() / "feishu_comment_pairing.json"
 _RULES_FILE_AT_IMPORT, _PAIRING_FILE_AT_IMPORT = RULES_FILE, PAIRING_FILE
 
 
 def _rules_file() -> Path:
     """Active profile's rules file at call time: the patched ``RULES_FILE`` when a test changed
-    it, else live profile-scoped HERMES_HOME — the multiplexed gateway serves every profile from
+    it, else live profile-scoped RABBIT_HOME — the multiplexed gateway serves every profile from
     one process, so the import-time constant would apply the launch profile's rules everywhere."""
-    return RULES_FILE if RULES_FILE != _RULES_FILE_AT_IMPORT else get_hermes_home() / "feishu_comment_rules.json"
+    return RULES_FILE if RULES_FILE != _RULES_FILE_AT_IMPORT else get_rabbit_home() / "feishu_comment_rules.json"
 
 
 def _pairing_file() -> Path:
-    return PAIRING_FILE if PAIRING_FILE != _PAIRING_FILE_AT_IMPORT else get_hermes_home() / "feishu_comment_pairing.json"
+    return PAIRING_FILE if PAIRING_FILE != _PAIRING_FILE_AT_IMPORT else get_rabbit_home() / "feishu_comment_pairing.json"
 
 _VALID_POLICIES = ("allowlist", "pairing")
 
@@ -251,7 +251,7 @@ def _pairing_cmd(args: list) -> int:
 
 def _main() -> int:
     try:
-        __import__("hermes_cli.env_loader", fromlist=["load_hermes_dotenv"]).load_hermes_dotenv()
+        __import__("rabbit_cli.env_loader", fromlist=["load_rabbit_dotenv"]).load_rabbit_dotenv()
     except Exception:
         pass
     usage = f"""Usage: python -m gateway.platforms.feishu_comment_rules <command> [args]

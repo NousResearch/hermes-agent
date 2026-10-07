@@ -1,4 +1,4 @@
-"""A ``blocked_config`` credential verdict names the profile + HERMES_HOME the scheduler actually
+"""A ``blocked_config`` credential verdict names the profile + RABBIT_HOME the scheduler actually
 read (#116213): "No Codex credentials stored" from a gateway whose home differs from the shell that
 works is otherwise indistinguishable from a genuine login gap."""
 
@@ -21,14 +21,14 @@ def two_homes(tmp_path, monkeypatch):
     for home in (root, alpha):
         (home / "config.yaml").write_text("model:\n  default: gpt-5.6-sol\n  provider: openai-codex\n")
     (root / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("RABBIT_PROFILE", raising=False)
     return root, alpha
 
 
 def _scope(reason: str) -> tuple:
-    match = re.search(r"\[profile '([^']+)', HERMES_HOME (.+?)\]", reason)
+    match = re.search(r"\[profile '([^']+)', RABBIT_HOME (.+?)\]", reason)
     assert match, reason
     return match.group(1), match.group(2)
 

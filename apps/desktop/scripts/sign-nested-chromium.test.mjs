@@ -14,7 +14,7 @@ import {
 } from './sign-nested-chromium.mjs'
 
 function tempRoot() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sign-chrome-'))
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sign-chrome-'))
 }
 
 function machoBuf() {

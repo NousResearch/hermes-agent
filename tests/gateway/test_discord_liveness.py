@@ -96,8 +96,8 @@ def _make_adapter(
     max_latency=1.0,
     max_event_silence: float | None = None,
 ) -> DiscordAdapter:
-    monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
-    monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
+    monkeypatch.setenv("RABBIT_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
+    monkeypatch.setenv("RABBIT_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
     extra = {
         "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
         "websocket_max_latency_seconds": max_latency,
@@ -185,8 +185,8 @@ def test_explicit_zero_liveness_knob_disables_without_warning(caplog):
 
 def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
     for key in (
-        "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
-        "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
+        "RABBIT_DISCORD_LIVENESS_INTERVAL_SECONDS",
+        "RABBIT_DISCORD_LIVENESS_FAILURE_THRESHOLD",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -199,8 +199,8 @@ def test_default_liveness_bounds_trigger_timed_recovery(monkeypatch):
 
 
 def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
-    monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
-    monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
+    monkeypatch.setenv("RABBIT_DISCORD_LIVENESS_INTERVAL_SECONDS", "99")
+    monkeypatch.setenv("RABBIT_DISCORD_LIVENESS_FAILURE_THRESHOLD", "9")
 
     adapter = DiscordAdapter(
         PlatformConfig(

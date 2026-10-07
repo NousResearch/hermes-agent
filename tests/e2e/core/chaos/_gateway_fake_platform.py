@@ -1,6 +1,6 @@
 """In-memory messaging platform for the gateway chaos suite, loaded as a REAL user plugin.
 
-The chaos test writes ``$HERMES_HOME/plugins/chaos-fake/`` (``kind: platform``) whose
+The chaos test writes ``$RABBIT_HOME/plugins/chaos-fake/`` (``kind: platform``) whose
 ``register`` is this module's, enables it in config.yaml, and runs the real
 ``python -m gateway.run`` entry point. The gateway then discovers the plugin, builds this
 adapter through the platform registry, connects it and installs its own message handler

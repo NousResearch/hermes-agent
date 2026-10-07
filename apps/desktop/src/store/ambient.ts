@@ -4,7 +4,7 @@
 // or when the bridge/claim fails — every window emits, preserving the
 // single-window behavior rather than going silent.
 export async function ownsAmbientCue(key: string): Promise<boolean> {
-  const claim = window.hermesDesktop?.claimAmbientCue
+  const claim = window.rabbitDesktop?.claimAmbientCue
 
   if (!claim) {
     return true

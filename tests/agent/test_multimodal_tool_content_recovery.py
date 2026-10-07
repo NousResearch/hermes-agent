@@ -20,7 +20,7 @@ the classifier signal + helper-mutation tests; the integration only adds
 a trivial flag-and-continue around the existing pattern used for
 ``image_too_large`` recovery.
 
-See: https://github.com/NousResearch/hermes-agent/issues/27344
+See: https://github.com/seven0070/Rabbit-/issues/27344
 """
 
 from __future__ import annotations

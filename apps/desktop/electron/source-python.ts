@@ -2,7 +2,7 @@ import { statSync } from 'node:fs'
 import path from 'node:path'
 
 export interface SourcePythonOptions {
-  /** Explicit developer interpreter (`HERMES_DESKTOP_PYTHON`), honoured as-is. */
+  /** Explicit developer interpreter (`RABBIT_DESKTOP_PYTHON`), honoured as-is. */
   override?: string
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean

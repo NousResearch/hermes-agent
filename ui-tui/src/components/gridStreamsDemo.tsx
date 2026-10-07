@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@rabbit/ink'
 import { memo, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { sparkRows } from '../lib/charts.js'
@@ -59,7 +59,7 @@ const useHistory = (tick: number, sample: () => number, cap = 240) => {
 // ── stream panels ───────────────────────────────────────────────────────────
 
 const TOKEN_WORDS = (
-  `Hermes streams tokens into the promoted cell while the grid reshapes around it. ` +
+  `Rabbit streams tokens into the promoted cell while the grid reshapes around it. ` +
   `Cells are keyed by id, so promotion never resets a panel — history, cursors and ` +
   `tickers all survive the relayout. Row and column tracks re-solve to integer ` +
   `terminal cells on every change, spans bridge the gaps they cross, and dense ` +
@@ -326,7 +326,7 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
           width={cell.width}
         >
           <Text bold color={t.color.primary}>
-            hermes mission control
+            rabbit mission control
           </Text>
           <Text color={t.color.muted}>{`main: ${main.title}`}</Text>
         </Box>

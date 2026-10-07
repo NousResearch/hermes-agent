@@ -16,9 +16,9 @@ const gatewayMocks = vi.hoisted(() => ({
   setConnection: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   setApiRequestConnection: vi.fn(),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     wsUrl = ''
     connect = async (wsUrl: string): Promise<void> => {
@@ -53,10 +53,10 @@ const {
   SECONDARY_MIN_LIFETIME_MS
 } = await import('./gateway')
 
-const { setApiRequestConnection } = await import('@/hermes')
+const { setApiRequestConnection } = await import('@/rabbit')
 
 function installDesktop(): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
     getConnection: vi.fn(async () => ({
       authMode: 'token',
       profile: 'default',
@@ -88,7 +88,7 @@ beforeEach(() => {
 afterEach(() => {
   closeSecondaryGateways()
   vi.clearAllMocks()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('primary gateway registry scope', () => {

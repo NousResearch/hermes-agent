@@ -4,7 +4,7 @@
  * The #74805 first-attempt race, pinned as a contract on the extracted gate:
  * the desktop must not hand off to the updater while PIDs it signalled are
  * still in the process table, even when the venv shim probe reads unlocked
- * (the backend `python.exe -m hermes_cli.main serve` need not hold the shim
+ * (the backend `python.exe -m rabbit_cli.main serve` need not hold the shim
  * at all). On merge-base main.ts the gate was shim-only and passed on its
  * first iteration with zero dwell — the sabotage A/B run proves these tests
  * bite on that behavior.

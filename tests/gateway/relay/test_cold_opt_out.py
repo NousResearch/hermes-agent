@@ -7,7 +7,7 @@ import sys
 import textwrap
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 @pytest.mark.parametrize("case", ["native", "url-only", "disabled", "managed", "managed-only", "scoped"])
@@ -30,10 +30,10 @@ def test_cold_fronted_platforms_is_read_only(tmp_path, case):
     for root in (home, scoped):
         (root / ".env").write_text("GATEWAY_RELAY_SECRET=dotenv-only-test-secret\n")
     # Allowlist only: never inherit live credentials, profile selectors, or
-    # pytest's imported modules. HOME and cwd are temporary as well as HERMES_HOME.
+    # pytest's imported modules. HOME and cwd are temporary as well as RABBIT_HOME.
     env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "WINDIR") if k in os.environ}
     env.update({"HOME": str(tmp_path), "USERPROFILE": str(tmp_path),
-                "HERMES_HOME": str(home), "HERMES_MANAGED_DIR": str(managed),
+                "RABBIT_HOME": str(home), "RABBIT_MANAGED_DIR": str(managed),
                 "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
                 "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUTF8": "1"})
     if case != "native":
@@ -42,9 +42,9 @@ def test_cold_fronted_platforms_is_read_only(tmp_path, case):
                     "GATEWAY_RELAY_SECRET": "inherited-test-secret"})
     code = textwrap.dedent("""
         import json, os, sys
-        from hermes_constants import set_hermes_home_override
+        from rabbit_constants import set_rabbit_home_override
         if sys.argv[1] == "scoped":
-            set_hermes_home_override(sys.argv[2])
+            set_rabbit_home_override(sys.argv[2])
         before = dict(os.environ)
         assert "gateway.run" not in sys.modules
         from gateway.relay import relay_fronted_platforms

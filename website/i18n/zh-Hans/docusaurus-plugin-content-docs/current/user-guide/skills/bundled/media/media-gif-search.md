@@ -17,7 +17,6 @@ description: "通过 curl + jq 搜索/下载 Tenor GIF"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/media/gif-search` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `GIF`, `Media`, `Search`, `Tenor`, `API` |
@@ -25,7 +24,7 @@ description: "通过 curl + jq 搜索/下载 Tenor GIF"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # GIF Search（Tenor API）
@@ -38,7 +37,7 @@ description: "通过 curl + jq 搜索/下载 Tenor GIF"
 
 ## 配置
 
-在环境中设置 Tenor API 密钥（添加到 `~/.hermes/.env`）：
+在环境中设置 Tenor API 密钥（添加到 `~/.rabbit/.env`）：
 
 ```bash
 TENOR_API_KEY=your_key_here
@@ -103,4 +102,4 @@ curl -s "https://tenor.googleapis.com/v2/search?q=cat&limit=3&key=${TENOR_API_KE
 
 - 对查询进行 URL 编码：空格用 `+`，特殊字符用 `%XX`
 - 在聊天中发送时，`tinygif` URL 更轻量
-- GIF URL 可直接用于 markdown：`![alt](https://github.com/NousResearch/hermes-agent/blob/main/skills/media/gif-search/url)`
+- GIF URL 可直接用于 markdown：`![alt](https://github.com/seven0070/Rabbit-/blob/main/skills/media/gif-search/url)`

@@ -93,7 +93,7 @@ class TestPerPlatformCapability:
     class _Transport:
         def __init__(self, by_platform):
             self._by_platform = by_platform
-            self._identities = [(p, "hermes") for p in by_platform]
+            self._identities = [(p, "rabbit") for p in by_platform]
 
         def descriptor_for_platform(self, platform):
             return self._by_platform.get(platform)

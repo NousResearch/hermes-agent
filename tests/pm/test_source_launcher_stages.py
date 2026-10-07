@@ -7,10 +7,10 @@ import subprocess
 
 import pytest
 
-from hermes_platform.host.facts import native_arch
+from rabbit_platform.host.facts import native_arch
 from pm.environments import install_state_dir, site_packages
 from pm.lock import Lockfile
-from tests.hermes_cli.test_source_launcher_publication import fixture_tree
+from tests.rabbit_cli.test_source_launcher_publication import fixture_tree
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -38,7 +38,7 @@ def test_powershell_stage_publishes_without_a_checkout_venv(tmp_path, monkeypatc
         json.dumps({'packages': {'venv': {'environment': str(selected)}}}), encoding='utf-8')
     wrapper = tmp_path / 'stage.ps1'
     wrapper.write_text('''$ErrorActionPreference = 'Stop'
-. $env:PROBE_INSTALLER -InstallDir $env:PROBE_REPO -HermesHome $env:PROBE_HOME
+. $env:PROBE_INSTALLER -InstallDir $env:PROBE_REPO -RabbitHome $env:PROBE_HOME
 Initialize-ResolvedPaths
 # Replace acquisition only; Get-BootstrapPython and Publish-UserCommand stay real.
 function Get-Uv { return 'Invoke-FixtureUv' }
@@ -71,7 +71,7 @@ exit 0
                   if shell == 'powershell' else Path(shutil.which('pwsh') or pytest.fail('native lane requires PowerShell 7')))
     env = dict(os.environ, PROBE_INSTALLER=str(ROOT / 'scripts/install.ps1'),
                PROBE_REPO=str(repo), PROBE_HOME=str(home), PROBE_PYTHON=str(interpreter),
-               HERMES_HOME=str(tmp_path / 'other-home'),
+               RABBIT_HOME=str(tmp_path / 'other-home'),
                PROBE_PY_REQUEST=py_request, PROBE_UV_CALLS=str(calls),
                UV_OFFLINE='1', UV_PYTHON_DOWNLOADS='never')
     env['PATH'] = os.pathsep.join([str(powershell.parent), str(Path(os.environ['SystemRoot']) / 'System32')])
@@ -84,10 +84,10 @@ exit 0
     assert calls.read_text(encoding='utf-8-sig').splitlines() == [
         f'python find --managed-python --no-project {py_request}',
     ]
-    for name in ('hermes', 'hermes-acp'):
+    for name in ('rabbit', 'rabbit-acp'):
         command = home / 'bin' / (name + ('.exe' if (home / 'bin' / (name + '.exe')).is_file() else '.cmd'))
         child_env = dict(env)
-        child_env.pop('HERMES_HOME', None)
+        child_env.pop('RABBIT_HOME', None)
         child = subprocess.run([str(command), 'from-powershell'], cwd=tmp_path, env=child_env,
                                capture_output=True, text=True, encoding='utf-8', timeout=30)
         assert child.returncode == 7, child.stdout + child.stderr

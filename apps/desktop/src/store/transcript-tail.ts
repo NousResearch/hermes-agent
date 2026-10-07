@@ -15,7 +15,7 @@
 
 import { atom } from 'nanostores'
 
-import type { SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessagesResponse } from '@/types/rabbit'
 
 export interface TranscriptTailState {
   /** Offset (back from the newest row) where the next older page starts. */

@@ -2,9 +2,9 @@
  * Runtime plugin loader — plugins as CODE, not registry edits, loaded after
  * build time. The pipeline every non-bundled plugin takes:
  *
- *   source (plain ESM js) -> import allowlist (`@hermes/plugin-sdk` / `react*`
+ *   source (plain ESM js) -> import allowlist (`@rabbit/plugin-sdk` / `react*`
  *   only) -> bare-specifier rewrite to live shim blobs (see sdk/runtime.ts)
- *   -> blob `import()` -> validate default HermesPlugin -> register(ctx)
+ *   -> blob `import()` -> validate default RabbitPlugin -> register(ctx)
  *
  * Loading the same plugin id again disposes the previous registrations first
  * (agent rewrites a plugin file -> clean reload) — everything taken out
@@ -14,8 +14,8 @@
  * down, and a module whose evaluation never settles times out on its own row.
  *
  * Sources today: the in-repo runtime example (`?raw`, proves the pipeline)
- * and the two on-disk doors — `<hermes home>/desktop-plugins/<name>/plugin.js`
- * and the unified agent-plugin half `<hermes home>/plugins/<name>/desktop/
+ * and the two on-disk doors — `<rabbit home>/desktop-plugins/<name>/plugin.js`
+ * and the unified agent-plugin half `<rabbit home>/plugins/<name>/desktop/
  * plugin.js` — the doors the agent writes through.
  *
  * SECURITY — this is NOT a capability boundary. A loaded plugin is evaluated
@@ -25,7 +25,7 @@
  * listeners) — a plugin can't crash the app, but it can do anything the app
  * can. That's acceptable for local sources (disk files can already run code),
  * and for catalog installs the trust comes from admission (human review of
- * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
+ * an exact pinned SHA + the static lint in rabbit_cli/plugin_validate_desktop.py),
  * not from this loader. The import allowlist below is the one runtime tripwire:
  * a plugin cannot pull a second stage from a URL. A remote source (https +
  * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
@@ -39,13 +39,13 @@ import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
 import { trackGatewayEventDisposers } from './events'
-import { createPluginContext, type HermesPlugin } from './plugin'
+import { createPluginContext, type RabbitPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
   /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
    *  row, off until the user toggles) even if the plugin says otherwise. The
-   *  unified agent-plugin root sets this so `~/.hermes/plugins` keeps its
+   *  unified agent-plugin root sets this so `~/.rabbit/plugins` keeps its
    *  installed-but-inert posture (GHSA-mcfc-hp25-cjv7) on the desktop side too. */
   defaultEnabled?: boolean
   /** Absolute plugin.js path (disk plugins) — recorded for reveal/inventory. */
@@ -318,7 +318,7 @@ function inCode(ranges: Array<[number, number]>, at: number): boolean {
   return false
 }
 
-/** Rewrite ONLY mapped import specifiers (@hermes/plugin-sdk, react*) to their
+/** Rewrite ONLY mapped import specifiers (@rabbit/plugin-sdk, react*) to their
  *  live shim blob URLs — never occurrences inside strings/comments. */
 function rewriteSpecifiers(source: string): string {
   const map = sdkImportMap()
@@ -330,7 +330,7 @@ function rewriteSpecifiers(source: string): string {
 }
 
 /** Import specifiers outside the SDK map. Everything that is not
- *  `@hermes/plugin-sdk` / `react*` is refused up-front: a bare package would
+ *  `@rabbit/plugin-sdk` / `react*` is refused up-front: a bare package would
  *  only fail later as a cryptic native "Failed to resolve module specifier",
  *  a relative path cannot resolve against the blob: base the module is
  *  evaluated from, and a URL scheme (`import 'https://…'`) is a second stage
@@ -391,18 +391,18 @@ export async function loadRuntimePlugin(
     if (unsupported.length > 0) {
       throw new Error(
         `unsupported import${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')} — ` +
-          `runtime plugins may only import @hermes/plugin-sdk and react`
+          `runtime plugins may only import @rabbit/plugin-sdk and react`
       )
     }
 
     const url = URL.createObjectURL(new Blob([rewriteSpecifiers(source)], { type: 'text/javascript' }))
 
-    let mod: { default?: HermesPlugin }
+    let mod: { default?: RabbitPlugin }
     let deadline: ReturnType<typeof setTimeout> | undefined
 
     try {
       mod = await Promise.race([
-        import(/* @vite-ignore */ url) as Promise<{ default?: HermesPlugin }>,
+        import(/* @vite-ignore */ url) as Promise<{ default?: RabbitPlugin }>,
         new Promise<never>((_, reject) => {
           deadline = setTimeout(
             () =>
@@ -421,11 +421,11 @@ export async function loadRuntimePlugin(
     const plugin = mod.default
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
-      throw new Error(`${origin} has no valid default HermesPlugin export`)
+      throw new Error(`${origin} has no valid default RabbitPlugin export`)
     }
 
     // A disk/runtime copy of a plugin that now ships BUNDLED (e.g. a
-    // standalone install of hermes-bots predating its adoption in-tree) must
+    // standalone install of rabbit-bots predating its adoption in-tree) must
     // not register a second time: contributions would double up and the two
     // copies would fight over storage. The bundled copy wins; the disk copy
     // is skipped — but VISIBLY: a silent skip left the stale folder
@@ -544,9 +544,9 @@ export async function loadRuntimePlugin(
 }
 
 // ---------------------------------------------------------------------------
-// The on-disk plugin door — ONE app-level root, `<hermes home>/desktop-plugins/`:
+// The on-disk plugin door — ONE app-level root, `<rabbit home>/desktop-plugins/`:
 //  - `<id>/plugin.js` — a standalone desktop plugin (agent- or user-written);
-//  - `<package>/plugin.js` + `.hermes-package.json` — the desktop HALF of a
+//  - `<package>/plugin.js` + `.rabbit-package.json` — the desktop HALF of a
 //    unified agent+desktop package, COPIED here by Electron from the package's
 //    `plugins/<package>/desktop/` folder (electron/desktop-plugins-root.ts).
 //    The agent half stays in its profile; the desktop half lives with the app,
@@ -571,10 +571,10 @@ interface DiskRoot {
 }
 
 /** The app-level root, resolved fresh each pass (Electron-local, never the
- *  backend's hermes_home — #66899). Resolving it also runs Electron's
+ *  backend's rabbit_home — #66899). Resolving it also runs Electron's
  *  reconcile, so unified packages' desktop halves are current before we scan. */
 async function diskRoots(): Promise<DiskRoot[]> {
-  const root = await window.hermesDesktop?.desktopPluginsRoot?.()
+  const root = await window.rabbitDesktop?.desktopPluginsRoot?.()
 
   return root ? [{ dir: root, entrySegments: ['plugin.js'] }] : []
 }
@@ -584,14 +584,14 @@ async function diskRoots(): Promise<DiskRoot[]> {
  *  until allowlisted — GHSA-mcfc-hp25-cjv7 — so the desktop half matches), and
  *  the record carries the package name so the Plugins page pairs it with the
  *  agent row. */
-const PACKAGE_MARKER = '.hermes-package.json'
+const PACKAGE_MARKER = '.rabbit-package.json'
 
 interface PackageMarker {
   origin?: { catalogName?: string; repo?: string; sha?: string }
   package: string
 }
 
-async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
+async function readPackageMarker(desktop: Window['rabbitDesktop'], folder: string): Promise<null | PackageMarker> {
   try {
     const { entries } = await desktop.readDir(folder)
     const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
@@ -668,7 +668,7 @@ class PluginSourceOversizeError extends Error {}
  *  the preview read, which silently truncates at 512 KiB — there the read
  *  fails loudly instead of handing a partial file to the evaluator. */
 async function readPluginSourceText(file: string): Promise<string> {
-  const desktop = window.hermesDesktop!
+  const desktop = window.rabbitDesktop!
 
   if (desktop.readPluginSource) {
     return (await desktop.readPluginSource(file)).text
@@ -682,7 +682,7 @@ async function readPluginSourceText(file: string): Promise<string> {
 
   if (result.truncated) {
     throw new PluginSourceOversizeError(
-      "plugin.js exceeds this shell's 512 KiB read limit — update Hermes Desktop to load larger plugins"
+      "plugin.js exceeds this shell's 512 KiB read limit — update Rabbit Desktop to load larger plugins"
     )
   }
 
@@ -751,7 +751,7 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
 }
 
 async function resolveDiskPluginEntry(
-  desktop: Window['hermesDesktop'],
+  desktop: Window['rabbitDesktop'],
   folderPath: string,
   segments: readonly string[]
 ): Promise<string | null> {
@@ -784,7 +784,7 @@ async function resolveDiskPluginEntry(
 /** Bind (or, on a manual reload, re-bind) the hot-reload watch for one entry.
  *  An atomic directory replacement leaves the old watch attached to the
  *  unlinked inode, so a forced reload must drop it and watch the current file. */
-async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>, record: DiskPlugin): Promise<void> {
+async function watchDiskPluginFile(desktop: NonNullable<Window['rabbitDesktop']>, record: DiskPlugin): Promise<void> {
   if (record.watchId) {
     void desktop.stopPreviewFileWatch(record.watchId)
     record.watchId = null
@@ -808,7 +808,7 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
  *  same path, so the fs watch on the old inode never fires and the stale
  *  module would otherwise stay live until restart (#91503). */
 async function scanDiskPlugins(reloadKnown = false): Promise<void> {
-  const desktop = window.hermesDesktop
+  const desktop = window.rabbitDesktop
 
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
   // (reads/loads can exceed the interval).
@@ -916,7 +916,7 @@ function retireDiskPlugin(file: string, record: DiskPlugin): void {
   dropOriginRecord(record.origin, record)
 
   if (record.watchId) {
-    void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+    void window.rabbitDesktop?.stopPreviewFileWatch(record.watchId)
   }
 
   disk.delete(file)
@@ -935,10 +935,10 @@ export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boole
   }
 
   const [file, record] = found
-  const remove = window.hermesDesktop?.removeDesktopPlugin
+  const remove = window.rabbitDesktop?.removeDesktopPlugin
 
   if (!remove) {
-    return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }
+    return { ok: false, error: 'this Rabbit Desktop build cannot remove desktop plugins — delete the folder by hand' }
   }
 
   const result = await remove({ name: record.origin })
@@ -964,7 +964,7 @@ export const $diskPluginsScanPending = atom(false)
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */
 export function watchRuntimePlugins(): void {
-  const desktop = window.hermesDesktop
+  const desktop = window.rabbitDesktop
 
   if (watching || !desktop) {
     return

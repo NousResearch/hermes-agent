@@ -38,7 +38,7 @@ import {
  * from a POSIX run.
  */
 function withTempDir(run: (dir: string) => void) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-secret-file-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-secret-file-'))
 
   try {
     run(dir)
@@ -89,7 +89,7 @@ test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () 
 })
 
 test('attachment data URL helper reads bytes above the preview default without changing that limit', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-large-attachment-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-large-attachment-'))
   const source = path.join(tempDir, 'large.bin')
   const previewLimit = dataUrlReadMaxBytesFromMb(DATA_URL_READ_DEFAULT_MAX_MB)
   const content = Buffer.alloc(previewLimit + 1024, 0x5a)
@@ -789,7 +789,7 @@ test('path helpers reject blank non-string NUL and Windows device syntax', async
 })
 
 test('resolveRequestedPathForIpc resolves relative paths from the trimmed base directory', () => {
-  const baseDir = path.join(os.tmpdir(), 'hermes-desktop-base')
+  const baseDir = path.join(os.tmpdir(), 'rabbit-desktop-base')
 
   assert.equal(
     resolveRequestedPathForIpc('notes.txt', {
@@ -814,7 +814,7 @@ test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
 })
 
 test('resolveReadableFileForIpc validates existence type size and sensitivity', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-hardening-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-hardening-'))
 
   try {
     const textPath = path.join(tempDir, 'notes.txt')
@@ -894,7 +894,7 @@ test('resolveReadableFileForIpc validates existence type size and sensitivity', 
 })
 
 test('resolveReadableFileForIpc blocks common sensitive files', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-sensitive-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-sensitive-'))
 
   try {
     const sshDir = path.join(tempDir, '.ssh')
@@ -923,7 +923,7 @@ test('resolveReadableFileForIpc blocks common sensitive files', async () => {
 })
 
 test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-realpath-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-realpath-'))
 
   try {
     const envPath = path.join(tempDir, '.env')
@@ -948,7 +948,7 @@ test('resolveReadableFileForIpc blocks symlinks whose realpath is sensitive', as
 })
 
 test('resolveDirectoryForIpc accepts directories and rejects invalid directory targets', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-dir-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-dir-'))
 
   try {
     const directory = path.join(tempDir, 'project')
@@ -969,7 +969,7 @@ test('resolveDirectoryForIpc accepts directories and rejects invalid directory t
 })
 
 test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-dir-link-'))
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-dir-link-'))
 
   try {
     const directory = path.join(tempDir, 'actual-project')
@@ -999,56 +999,56 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
 // homeRelativeAttachmentCandidates (#115609)
 // ---------------------------------------------------------------------------
 
-test('homeRelativeAttachmentCandidates tries the home dir and the HERMES_HOME attachments dir', () => {
+test('homeRelativeAttachmentCandidates tries the home dir and the RABBIT_HOME attachments dir', () => {
   const candidates = homeRelativeAttachmentCandidates(
-    'AppData/Local/hermes/attachments/foo.xlsx',
+    'AppData/Local/rabbit/attachments/foo.xlsx',
     '/Users/alice',
-    '/Users/alice/AppData/Local/hermes'
+    '/Users/alice/AppData/Local/rabbit'
   )
 
   assert.deepEqual(candidates, [
-    path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'),
-    path.join('/Users/alice/AppData/Local/hermes', 'attachments', 'foo.xlsx')
+    path.join('/Users/alice', 'AppData/Local/rabbit/attachments/foo.xlsx'),
+    path.join('/Users/alice/AppData/Local/rabbit', 'attachments', 'foo.xlsx')
   ])
 })
 
 test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joining', () => {
   const candidates = homeRelativeAttachmentCandidates(
-    'AppData\\Local\\hermes\\attachments\\foo.xlsx',
+    'AppData\\Local\\rabbit\\attachments\\foo.xlsx',
     '/Users/alice',
-    '/Users/alice/.hermes'
+    '/Users/alice/.rabbit'
   )
 
-  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'))
+  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/rabbit/attachments/foo.xlsx'))
 })
 
 test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
   assert.deepEqual(
-    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.rabbit'),
     []
   )
 })
 
 test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {
   assert.deepEqual(
-    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.rabbit'),
     []
   )
 })
 
 test('homeRelativeAttachmentCandidates returns nothing for empty input', () => {
-  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.hermes'), [])
-  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.rabbit'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.rabbit'), [])
 })
 
 test('homeRelativeAttachmentCandidates second candidate falls back to basename only', () => {
   // A ref that lost its directory prefix entirely still has a shot via the
   // well-known attachments dir + basename, matching the reported repro shape.
-  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.hermes')
+  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.rabbit')
 
   assert.deepEqual(candidates, [
     path.join('/Users/alice', 'foo.xlsx'),
-    path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
+    path.join('/Users/alice/.rabbit', 'attachments', 'foo.xlsx')
   ])
 })
 

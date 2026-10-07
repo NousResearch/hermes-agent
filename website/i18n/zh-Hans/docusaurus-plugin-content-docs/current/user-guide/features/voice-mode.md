@@ -1,29 +1,25 @@
 ---
 sidebar_position: 10
 title: "语音模式"
-description: "与 Hermes Agent 进行实时语音对话 — CLI、Telegram、Discord（私信、文字频道和语音频道）"
+description: "与 Rabbit Agent 进行实时语音对话 — CLI、Telegram、Discord（私信、文字频道和语音频道）"
 ---
 
 # 语音模式
 
-Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通过麦克风与 Agent 对话，听取语音回复，并在 Discord 语音频道中进行实时语音对话。
+Rabbit Agent 支持在 CLI 和消息平台上进行完整的语音交互。通过麦克风与 Agent 对话，听取语音回复，并在 Discord 语音频道中进行实时语音对话。
 
-如需包含推荐配置和实际使用模式的实践指南，请参阅 [使用 Hermes 的语音模式](../../guides/use-voice-mode-with-hermes.md)。
+如需包含推荐配置和实际使用模式的实践指南，请参阅 [使用 Rabbit 的语音模式](../../guides/use-voice-mode-with-rabbit.md)。
 
 ## 前提条件
 
 使用语音功能前，请确保已完成以下准备：
 
-1. **已安装 Hermes Agent** — 通过安装脚本（参见 [安装](../../getting-started/installation.md)）
-2. **已配置 LLM 提供商** — 运行 `hermes model` 或在 `~/.hermes/.env` 中设置首选提供商的凭据
-3. **基础设置正常** — 运行 `hermes` 验证 Agent 能够响应文字消息，再启用语音功能
+1. **已安装 Rabbit Agent** — 通过安装脚本（参见 [安装](../../getting-started/installation.md)）
+2. **已配置 LLM 提供商** — 运行 `rabbit model` 或在 `~/.rabbit/.env` 中设置首选提供商的凭据
+3. **基础设置正常** — 运行 `rabbit` 验证 Agent 能够响应文字消息，再启用语音功能
 
 :::tip
-`~/.hermes/` 目录和默认的 `config.yaml` 会在首次运行 `hermes` 时自动创建。只需手动创建 `~/.hermes/.env` 来存放 API 密钥。
-:::
-
-:::tip Nous Portal 同时覆盖两项
-付费的 [Nous Portal](./tool-gateway.md) 订阅通过 Tool Gateway 同时提供 LLM（第 2 步）**和** OpenAI TTS — 无需单独的 OpenAI 密钥。全新安装时，`hermes setup --portal` 可一次性完成两项配置。
+`~/.rabbit/` 目录和默认的 `config.yaml` 会在首次运行 `rabbit` 时自动创建。只需手动创建 `~/.rabbit/.env` 来存放 API 密钥。
 :::
 
 ## 概览
@@ -38,8 +34,8 @@ Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通�
 
 ### Python 包
 
-通过 `hermes tools` 配置语音提供商。缺失的内置功能依赖由 PM 按策略和目标平台支持准备。
-如果选择的环境改变，请按提示重启 Hermes。
+通过 `rabbit tools` 配置语音提供商。缺失的内置功能依赖由 PM 按策略和目标平台支持准备。
+如果选择的环境改变，请按提示重启 Rabbit。
 桌面包预装其支持的引擎；Docker 使用较小集合并关闭按需安装。
 不要修改签名载荷或系统 Python。手动开发环境参见[开发配置](../../developer-guide/contributing.md)。
 
@@ -78,7 +74,7 @@ sudo apt install espeak-ng   # for NeuTTS
 
 ### API 密钥
 
-添加到 `~/.hermes/.env`：
+添加到 `~/.rabbit/.env`：
 
 ```bash
 # 语音转文字（STT）— 本地提供商完全不需要密钥
@@ -99,14 +95,14 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — 高级音质
 
 ## CLI 语音模式
 
-语音模式在**经典 CLI**（`hermes chat`）和 **TUI**（`hermes --tui`）中均可使用。两者行为完全一致 — 相同的斜杠命令、相同的 VAD（语音活动检测）静音检测、相同的流式 TTS、相同的幻觉过滤器。TUI 额外将崩溃诊断日志转发至 `~/.hermes/logs/`，以便在异常音频后端出现按键录音失败时提供完整堆栈跟踪，而非静默消失。
+语音模式在**经典 CLI**（`rabbit chat`）和 **TUI**（`rabbit --tui`）中均可使用。两者行为完全一致 — 相同的斜杠命令、相同的 VAD（语音活动检测）静音检测、相同的流式 TTS、相同的幻觉过滤器。TUI 额外将崩溃诊断日志转发至 `~/.rabbit/logs/`，以便在异常音频后端出现按键录音失败时提供完整堆栈跟踪，而非静默消失。
 
 ### 快速开始
 
 启动 CLI 并启用语音模式：
 
 ```bash
-hermes                # 启动交互式 CLI
+rabbit                # 启动交互式 CLI
 ```
 
 然后在 CLI 中使用以下命令：
@@ -121,7 +117,7 @@ hermes                # 启动交互式 CLI
 
 ### 工作原理
 
-1. 使用 `hermes` 启动 CLI，并通过 `/voice on` 启用语音模式
+1. 使用 `rabbit` 启动 CLI，并通过 `/voice on` 启用语音模式
 2. **按下 Ctrl+B** — 播放提示音（880Hz），开始录音
 3. **开始说话** — 实时音频电平条显示输入状态：`● [▁▂▃▅▇▇▅▂] ❯`
 4. **停止说话** — 静音 3 秒后自动停止录音
@@ -133,7 +129,7 @@ hermes                # 启动交互式 CLI
 此循环持续进行，直到在录音过程中按下 **Ctrl+B**（退出连续模式），或连续 3 次录音均未检测到语音为止。
 
 :::tip
-录音键可通过 `~/.hermes/config.yaml` 中的 `voice.record_key` 配置（默认：`ctrl+b`）。
+录音键可通过 `~/.rabbit/config.yaml` 中的 `voice.record_key` 配置（默认：`ctrl+b`）。
 :::
 
 ### 静音检测
@@ -170,8 +166,8 @@ Whisper 有时会从静音或背景噪音中生成幻觉文字（如"Thank you f
 启动 gateway 以连接到消息平台：
 
 ```bash
-hermes gateway        # 启动 gateway（连接到已配置的平台）
-hermes gateway setup  # 首次配置的交互式设置向导
+rabbit gateway        # 启动 gateway（连接到已配置的平台）
+rabbit gateway setup  # 首次配置的交互式设置向导
 ```
 
 ### Discord：频道与私信
@@ -185,10 +181,10 @@ Bot 在 Discord 上支持两种交互模式：
 
 **私信（个人使用推荐）：** 直接与 Bot 开启私信并发送消息 — 无需 @提及。语音回复和所有命令与在频道中使用完全相同。
 
-**服务器频道：** Bot 仅在被 @提及时响应（例如 `@hermesbyt4 你好`）。请确保从提及弹窗中选择 **Bot 用户**，而非同名角色。
+**服务器频道：** Bot 仅在被 @提及时响应（例如 `@rabbitbyt4 你好`）。请确保从提及弹窗中选择 **Bot 用户**，而非同名角色。
 
 :::tip
-如需在服务器频道中禁用提及要求，在 `~/.hermes/.env` 中添加：
+如需在服务器频道中禁用提及要求，在 `~/.rabbit/.env` 中添加：
 ```bash
 DISCORD_REQUIRE_MENTION=false
 ```
@@ -299,7 +295,7 @@ Bot 会从以下路径自动加载编解码器：
 #### 4. 环境变量
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 
 # Discord bot（已为文字功能配置）
 DISCORD_BOT_TOKEN=your-bot-token
@@ -316,7 +312,7 @@ DISCORD_ALLOWED_USERS=your-user-id
 ### 启动 Gateway
 
 ```bash
-hermes gateway        # 使用现有配置启动
+rabbit gateway        # 使用现有配置启动
 ```
 
 Bot 应在几秒内在 Discord 中上线。
@@ -363,7 +359,7 @@ Bot 在播放 TTS 回复时会自动暂停音频监听，防止听到并重复�
 只有 `DISCORD_ALLOWED_USERS` 中列出的用户才能通过语音进行交互。其他用户的音频会被静默忽略。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 DISCORD_ALLOWED_USERS=284102345871466496
 ```
 
@@ -482,7 +478,7 @@ Bot 在服务器频道中默认需要 @提及。请确认：
 
 1. 输入 `@` 后选择 **Bot 用户**（带有 #discriminator），而非同名**角色**
 2. 或改用私信 — 无需提及
-3. 或在 `~/.hermes/.env` 中设置 `DISCORD_REQUIRE_MENTION=false`
+3. 或在 `~/.rabbit/.env` 中设置 `DISCORD_REQUIRE_MENTION=false`
 
 ### Bot 加入语音频道但听不到我说话
 
@@ -494,7 +490,7 @@ Bot 在服务器频道中默认需要 @提及。请确认：
 
 - 验证 STT 是否可用：安装 `faster-whisper`（无需密钥）或设置 `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`
 - 检查 LLM 模型是否已配置且可访问
-- 查看 gateway 日志：`tail -f ~/.hermes/logs/gateway.log`
+- 查看 gateway 日志：`tail -f ~/.rabbit/logs/gateway.log`
 
 ### Bot 有文字回复但语音频道中没有声音
 

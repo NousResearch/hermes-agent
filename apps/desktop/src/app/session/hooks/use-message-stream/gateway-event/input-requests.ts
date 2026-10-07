@@ -1,6 +1,5 @@
-import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
+import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@rabbit/shared'
 
-import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
 import { abortPreviewTyping } from '@/app/chat/right-rail/preview-typing-abort'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
@@ -82,8 +81,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
   if (isConnectionUpdateEvent(event)) {
     if (event.payload.owner.type === 'account') {
-      applyAccountConnectionUpdate(event.payload)
-
+      // Account-scoped connection operations were part of the hosted connectors
+      // flow; nothing consumes them locally anymore.
       return true
     }
 

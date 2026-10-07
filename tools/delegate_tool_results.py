@@ -170,9 +170,9 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
     ``credential_files._CACHE_DIRS``, so the parent's terminal/``read_file`` can page it on any backend). Absolute
     path, or None on failure — the trimmed head+tail is still returned regardless."""
     try:
-        from hermes_constants import get_hermes_dir
+        from rabbit_constants import get_rabbit_dir
         import datetime as _dt
-        cache_dir = get_hermes_dir("cache/delegation", "delegation_cache")
+        cache_dir = get_rabbit_dir("cache/delegation", "delegation_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"subagent-summary-{task_index}-{_dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
         from tools.spill_safety import write_text_exclusive
@@ -346,7 +346,7 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
     """Pop the model-hidden ``_child_role`` / ``_child_cost_usd`` fields from every
     entry, fire ``subagent_stop`` per child, and return the summed child cost."""
     try:
-        from hermes_cli.plugins import invoke_hook as invoke_hook
+        from rabbit_cli.plugins import invoke_hook as invoke_hook
     except Exception:
         invoke_hook = None
     children_cost_total = 0.0

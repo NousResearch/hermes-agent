@@ -1,4 +1,4 @@
-// window-below.ts — which OS window sits directly underneath a Hermes window.
+// window-below.ts — which OS window sits directly underneath a Rabbit window.
 //
 // Backs the desktop-gated `read_window_below` tool: the renderer receives
 // `window.read.request` from the gateway, asks main over IPC, and answers
@@ -77,7 +77,7 @@ export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv,
   if (env.HYPRLAND_INSTANCE_SIGNATURE) {
     return (
       'Could not enumerate windows: Hyprland did not answer on its IPC socket. ' +
-      'Check that `hyprctl clients` works from the same session Hermes is ' +
+      'Check that `hyprctl clients` works from the same session Rabbit is ' +
       'running in.'
     )
   }
@@ -88,7 +88,7 @@ export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv,
     return (
       'Could not enumerate windows: this is a Wayland session, and Wayland does ' +
       'not let an application see other applications\u2019 windows. Log in to an ' +
-      'X11/Xorg session, or run Hermes under XWayland with DISPLAY set.'
+      'X11/Xorg session, or run Rabbit under XWayland with DISPLAY set.'
     )
   }
 
@@ -104,7 +104,7 @@ const overlaps = (a: EnumeratedWindow['bounds'], b: EnumeratedWindow['bounds']):
 /**
  * Pick the window directly underneath ours from a front-to-back window list.
  *
- * Walks past every window owned by our own process (all Hermes windows share
+ * Walks past every window owned by our own process (all Rabbit windows share
  * the main process pid), then takes the first other-process window whose
  * bounds overlap ours — "underneath" means visually behind, not merely next
  * in z-order on some other display. `frontmost` is the first other-process
@@ -329,7 +329,7 @@ export async function readWindowBelow(
   if (process.platform === 'darwin' && !titlesAvailable) {
     result.note =
       'Window titles are hidden: macOS reveals other apps\u2019 titles only with the ' +
-      'Screen Recording permission, which Hermes does not request for this.'
+      'Screen Recording permission, which Rabbit does not request for this.'
   }
 
   return result

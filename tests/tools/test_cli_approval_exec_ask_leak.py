@@ -1,6 +1,6 @@
 """Regression: interactive CLI must not lose the Dangerous Command panel.
 
-When ``HERMES_EXEC_ASK`` leaks into a classic CLI process (historically via
+When ``RABBIT_EXEC_ASK`` leaks into a classic CLI process (historically via
 ``import gateway.run`` setting the flag at module import), the ask/gateway
 branch used to return ``pending_approval`` immediately with no notify
 listener and skip the CLI approval callback. Users saw tools "auto-block"
@@ -31,14 +31,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture(autouse=True)
 def _clean_approval_env(monkeypatch):
     for key in (
-        "HERMES_EXEC_ASK",
-        "HERMES_GATEWAY_SESSION",
-        "HERMES_SESSION_PLATFORM",
-        "HERMES_CRON_SESSION",
-        "HERMES_YOLO_MODE",
+        "RABBIT_EXEC_ASK",
+        "RABBIT_GATEWAY_SESSION",
+        "RABBIT_SESSION_PLATFORM",
+        "RABBIT_CRON_SESSION",
+        "RABBIT_YOLO_MODE",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
     monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(
         approval_context, "_get_approval_mode",
@@ -63,7 +63,7 @@ def _clean_approval_env(monkeypatch):
 class TestCliApprovalSurvivesExecAskLeak:
     def test_cli_callback_used_when_exec_ask_set_without_notifier(self, monkeypatch):
         """Ask-mode with a CLI callback must prompt locally, not pending_approval."""
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         calls = []
 
         def _cb(command, description, **kwargs):
@@ -81,8 +81,8 @@ class TestCliApprovalSurvivesExecAskLeak:
 
     def test_pending_approval_still_used_without_cli_callback(self, monkeypatch):
         """Headless ask-mode without a CLI callback keeps the pending fallback."""
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
+        monkeypatch.delenv("RABBIT_INTERACTIVE", raising=False)
         set_approval_callback(None)
 
         result = check_all_command_guards("rm -rf /tmp/testdir", "local")
@@ -98,7 +98,7 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
     check_all_command_guards, same leak, same missing CLI fall-through."""
 
     def test_cli_callback_used_when_exec_ask_set_without_notifier(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         calls = []
 
         def _cb(command, description, **kwargs):
@@ -115,7 +115,7 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         assert result.get("user_approved") is True
 
     def test_cli_callback_deny_blocks_execution(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         set_approval_callback(lambda command, description, **kwargs: "deny")
 
         result = check_execute_code_guard("print('hi')", "local")
@@ -125,7 +125,7 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         assert result.get("status") != "pending_approval"
 
     def test_cli_callback_timeout_blocks_execution(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         set_approval_callback(lambda command, description, **kwargs: "timeout")
 
         result = check_execute_code_guard("print('hi')", "local")
@@ -134,7 +134,7 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         assert result.get("outcome") == "timeout"
 
     def test_cli_callback_session_choice_persists_approval(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         set_approval_callback(lambda command, description, **kwargs: "session")
 
         first = check_execute_code_guard("print('hi')", "local")
@@ -149,8 +149,8 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
 
     def test_pending_approval_still_used_without_cli_callback(self, monkeypatch):
         """Headless ask-mode without a CLI callback keeps the pending fallback."""
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
+        monkeypatch.delenv("RABBIT_INTERACTIVE", raising=False)
         set_approval_callback(None)
 
         result = check_execute_code_guard("print('hi')", "local")
@@ -165,12 +165,12 @@ class TestExecuteCodeGuardCliApprovalSurvivesExecAskLeak:
         """The other half of the leak: a session platform marker, no ask-mode.
 
         ``_is_gateway_approval_context()`` is true whenever
-        ``HERMES_SESSION_PLATFORM`` is set, so the whole-script gate is
-        reached with ``HERMES_EXEC_ASK`` entirely absent. That path must
+        ``RABBIT_SESSION_PLATFORM`` is set, so the whole-script gate is
+        reached with ``RABBIT_EXEC_ASK`` entirely absent. That path must
         show the CLI panel too, not a silent pending approval.
         """
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.delenv("RABBIT_EXEC_ASK", raising=False)
+        monkeypatch.setenv("RABBIT_SESSION_PLATFORM", "telegram")
         calls = []
 
         def _cb(command, description, **kwargs):
@@ -197,7 +197,7 @@ class TestExecuteCodeGuardCliDenialBreakerParity:
     """
 
     def test_human_deny_does_not_advance_the_guardian_breaker(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         set_approval_callback(lambda command, description, **kwargs: "deny")
 
         for _ in range(3):
@@ -212,7 +212,7 @@ class TestExecuteCodeGuardCliDenialBreakerParity:
     def test_timeout_message_carries_breaker_addendum_once_tripped(
         self, monkeypatch
     ):
-        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("RABBIT_EXEC_ASK", "1")
         session_key = approval_module.get_current_session_key()
         threshold = approval_module._get_denial_breaker_threshold()
         for _ in range(threshold):
@@ -232,14 +232,14 @@ class TestGatewayRunImportDoesNotSetExecAsk:
         """Incidental imports must not poison CLI ask-mode process-wide."""
         script = r"""
 import os, sys
-os.environ.pop("HERMES_EXEC_ASK", None)
+os.environ.pop("RABBIT_EXEC_ASK", None)
 sys.path.insert(0, %r)
 # Avoid starting the gateway; only import the module for _gateway_runner_ref
 # style side imports.
 import gateway.run  # noqa: F401
-print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
+print("EXEC_ASK=" + repr(os.environ.get("RABBIT_EXEC_ASK")))
 """ % (str(REPO_ROOT),)
-        hermes_home = tmp_path / "import-test-home"
+        rabbit_home = tmp_path / "import-test-home"
         proc = subprocess.run(
             [sys.executable, "-c", script],
             cwd=str(REPO_ROOT),
@@ -247,7 +247,7 @@ print("EXEC_ASK=" + repr(os.environ.get("HERMES_EXEC_ASK")))
             text=True,
             env={
                 **os.environ,
-                "HERMES_HOME": str(hermes_home),
+                "RABBIT_HOME": str(rabbit_home),
             },
             timeout=60,
         )

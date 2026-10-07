@@ -125,10 +125,10 @@ async def connected(monkeypatch, *, extra=None, bot_id=111, is_reconnect=False):
 async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, kind, mode, concurrent):
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    import hermes_cli.lifecycle
+    from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
+    import rabbit_cli.lifecycle
 
-    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(rabbit_cli.lifecycle, "has_hook", lambda name: True)
     # Transport-only photo stand-in: no file or Telegram network operation.
     download = AsyncMock(return_value=SimpleNamespace(
         file_path="offline.png", download_as_bytearray=AsyncMock(return_value=bytearray(b"offline"))))
@@ -195,7 +195,7 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
             assert len(delivered) == 2
         if mode == "owners":
             for profile, bot_id, fresh in (("alpha", 222, 1), ("beta", 333, 1), ("alpha", 222, 0)):
-                token = set_hermes_home_override(tmp_path / profile)
+                token = set_rabbit_home_override(tmp_path / profile)
                 try:
                     async with connected(monkeypatch, bot_id=bot_id) as (other, other_app, other_delivered):
                         await other_app.process_update(update(other_app.bot))
@@ -203,7 +203,7 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
                         # A rebuilt adapter for the same bot and home reads that home's receipt.
                         assert len(other_delivered) == fresh
                 finally:
-                    reset_hermes_home_override(token)
+                    reset_rabbit_home_override(token)
             await app.process_update(update(app.bot))
             assert len(delivered) == 1
             # Same owner can reconnect with a different bot; its update-ID space is independent.
@@ -456,7 +456,7 @@ async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure
             native.add_error_handler(native_error, block=block)
 
     manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-error")])
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("rabbit_cli.plugins.get_plugin_manager", lambda: manager)
     adapter._wire_plugin_handlers(app)
     assert native_error in app.error_handlers
     monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
@@ -499,9 +499,9 @@ async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure
       for failure in ("error", "cancel")],
 ])
 async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path, caplog, stage, failure):
-    import hermes_cli.lifecycle
+    import rabbit_cli.lifecycle
 
-    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(rabbit_cli.lifecycle, "has_hook", lambda name: True)
     async with connected(monkeypatch) as (adapter, app, delivered):
         if stage == "ingress":
             monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
@@ -617,7 +617,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
                 native.add_handler(conversation, group=-1)
 
             manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-conversation")])
-            monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+            monkeypatch.setattr("rabbit_cli.plugins.get_plugin_manager", lambda: manager)
             adapter._wire_plugin_handlers(app)
             assert -1 in app.handlers  # Factory errors are logged/swallowed, not connection failures.
             assert app.handlers[-1][0] is conversation
@@ -749,10 +749,10 @@ async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
     """The reconnect watcher and a gateway restart both build a new adapter, and a new PTB
     Updater polls from offset 0: Telegram resends every update whose acknowledgement never
     landed. The receipt must outlive the adapter that completed the update."""
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
     from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
 
-    receipts = get_hermes_home() / "telegram_update_receipts_111.json"
+    receipts = get_rabbit_home() / "telegram_update_receipts_111.json"
     async with connected(monkeypatch) as (adapter, app, delivered):
         await app.process_update(update(app.bot, 10))
         with monkeypatch.context() as broken:

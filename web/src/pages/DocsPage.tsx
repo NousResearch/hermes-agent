@@ -5,7 +5,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 
-export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
+export const RABBIT_DOCS_URL = "https://github.com/seven0070/Rabbit-/tree/main/website/docs/";
 
 const DS_BUTTON_OUTLINED_LINK_CN = cn(
   "group relative inline-grid grid-cols-[auto_1fr_auto] items-center",
@@ -22,7 +22,7 @@ export default function DocsPage() {
   useLayoutEffect(() => {
     setEnd(
       <a
-        href={HERMES_DOCS_URL}
+        href={RABBIT_DOCS_URL}
         target="_blank"
         rel="noopener noreferrer"
         className={DS_BUTTON_OUTLINED_LINK_CN}
@@ -46,7 +46,7 @@ export default function DocsPage() {
       <PluginSlot name="docs:top" />
       <iframe
         title={t.app.nav.documentation}
-        src={HERMES_DOCS_URL}
+        src={RABBIT_DOCS_URL}
         className={cn(
           "min-h-0 w-full min-w-0 flex-1",
           "rounded-sm border border-current/20",

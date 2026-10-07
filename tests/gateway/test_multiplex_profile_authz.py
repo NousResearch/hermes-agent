@@ -78,7 +78,7 @@ def test_scoped_secondary_profile_still_uses_profile_adapters(monkeypatch):
     """Runtime scope must not redirect secondary authz to primary adapters.
 
     ``_make_profile_message_handler`` wraps ``_handle_message`` in
-    ``_profile_runtime_scope``, which overrides HERMES_HOME so
+    ``_profile_runtime_scope``, which overrides RABBIT_HOME so
     ``get_active_profile_name()`` equals the secondary profile for that turn.
     Authorization must still read ``_profile_adapters[profile]``, not the
     empty primary ``self.adapters`` map — otherwise upstream-auth platforms

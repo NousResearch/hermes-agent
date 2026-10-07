@@ -218,7 +218,7 @@ def hatch_pet(
     provider: SpriteProvider | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> HatchResult:
-    """Turn an approved base image into a full, installed Hermes pet.
+    """Turn an approved base image into a full, installed Rabbit pet.
 
     Idle falls back to the base look so the pet always renders. Raises
     :class:`GenerationError` on failure. Once *is_cancelled* trips, aborts before

@@ -53,14 +53,14 @@ describe('/wake slash command', () => {
 
   it('/wake on calls wake.start with surface tui and reports listening', async () => {
     const { rpc, run, sys } = buildCtx({
-      'wake.start': { phrase: 'hey hermes', provider: 'openwakeword', started: true }
+      'wake.start': { phrase: 'hey rabbit', provider: 'openwakeword', started: true }
     })
 
     await run('on')
 
     expect(rpc).toHaveBeenCalledWith('wake.start', { persist: true, surface: 'tui' })
     expect(printed(sys)).toContain('listening')
-    expect(printed(sys)).toContain('hey hermes')
+    expect(printed(sys)).toContain('hey rabbit')
     expect(printed(sys)).toContain('openwakeword')
   })
 
@@ -139,7 +139,7 @@ describe('/wake slash command', () => {
         listening: true,
         owned_by_caller: true,
         owner_surface: 'tui',
-        phrase: 'hey hermes',
+        phrase: 'hey rabbit',
         provider: 'openwakeword'
       }
     })
@@ -150,7 +150,7 @@ describe('/wake slash command', () => {
 
     const out = printed(sys)
     expect(out).toContain('listening')
-    expect(out).toContain('hey hermes')
+    expect(out).toContain('hey rabbit')
     expect(out).toContain('openwakeword')
   })
 
@@ -169,7 +169,7 @@ describe('/wake slash command', () => {
         listening: false,
         owned_by_caller: false,
         owner_surface: 'gui',
-        phrase: 'hey hermes'
+        phrase: 'hey rabbit'
       }
     })
 

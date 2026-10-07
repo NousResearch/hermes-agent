@@ -149,8 +149,8 @@ _STUB = {"pkg/b.py": "def legacy(x):\n    return x\n"}
           + _PROC.format("    return await wait_for(proc.communicate(), 1)")}, True),
     ({}, {"pkg/c.py": "def f(client):\n    return client.communicate()\n"}, False),
     ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(proc.wait(), float('inf'))")}, True),
-    # writes introduce a HERMES_* name too; bool() of a raw env string is HX010
-    ({}, {"pkg/c.py": _ENV.format("os.environ['HERMES_BRAND_NEW'] = '1'")}, True),
+    # writes introduce a RABBIT_* name too; bool() of a raw env string is HX010
+    ({}, {"pkg/c.py": _ENV.format("os.environ['RABBIT_BRAND_NEW'] = '1'")}, True),
     ({}, {"pkg/c.py": _ENV.format("FLAG = bool(os.environ['PATH'])")}, True),
     # an inline allow covers its own line only; removing an allow keeps the debt existing
     ({}, {"pkg/p.py": _TWO_RUNS.format("  # health: allow HX006 -- x", "")}, True),

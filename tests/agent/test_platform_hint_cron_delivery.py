@@ -23,9 +23,9 @@ def _agent(platform, overrides=None):
 
 @pytest.fixture
 def deliver_to(monkeypatch):
-    var = _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"]
+    var = _VAR_MAP["RABBIT_CRON_AUTO_DELIVER_PLATFORM"]
     token = var.set("slack")
-    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+    monkeypatch.delenv("RABBIT_DESKTOP_TERMINAL", raising=False)
     yield
     var.reset(token)
 
@@ -41,5 +41,5 @@ def test_cron_agent_gets_delivery_channel_hint_with_its_override(deliver_to):
 
 def test_delivery_target_only_applies_to_cron_agents(deliver_to):
     assert platform_hint(_agent("telegram")) == PLATFORM_HINTS["telegram"]
-    _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set("")
+    _VAR_MAP["RABBIT_CRON_AUTO_DELIVER_PLATFORM"].set("")
     assert platform_hint(_agent("cron")) == PLATFORM_HINTS["cron"]

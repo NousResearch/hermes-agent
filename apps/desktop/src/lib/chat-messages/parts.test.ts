@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
 
-const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
+const SPACED = '/home/rabbit/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
 
 describe('renderMediaTags with interior spaces', () => {

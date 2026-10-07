@@ -1,8 +1,8 @@
-"""GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Hermes.
+"""GPT-Live voice chat mode: the full-duplex voice frontend that delegates to Rabbit.
 
 ``voice.voice_chat_mode: gpt-live`` replaces the chained STT → turn → TTS loop with ONE
 full-duplex voice model (OpenAI ``gpt-live-1``) that owns the microphone and the speaker and
-delegates every real request to Hermes as its *client-delegation* backend. Hermes stays the
+delegates every real request to Rabbit as its *client-delegation* backend. Rabbit stays the
 agent: whatever model/provider the session has selected answers, with the full toolset.
 
 Division of labour (the Live API has no tools of its own in client mode):
@@ -13,11 +13,11 @@ Division of labour (the Live API has no tools of its own in client mode):
   (``POST /v1/live/sessions``), so the key never reaches the client;
 * the renderer turns each ``session.delegation.created`` into a normal ``prompt.submit`` on the
   active session (surface ``voice-live``) and streams the reply back as
-  ``session.commentary.append`` — Hermes' answer is what the voice speaks.
+  ``session.commentary.append`` — Rabbit' answer is what the voice speaks.
 
 Vendor contract: https://developers.openai.com/api/docs/guides/live (+ live-delegation,
 voice-webrtc). Billing is $0.05/min of session time on the OpenAI key, separate from the
-Hermes turn.
+Rabbit turn.
 """
 
 from __future__ import annotations
@@ -44,9 +44,9 @@ GPT_LIVE_VOICES = (
 
 # Persona for the voice layer. Short on purpose: the live model has a small context window and
 # the vendor guide asks for role + style + a labelled delegation policy, nothing more. The
-# backend (Hermes) carries the real instructions, tools and memory.
+# backend (Rabbit) carries the real instructions, tools and memory.
 LIVE_PERSONA = (
-    "You are Hermes, a calm and friendly voice assistant. Speak naturally at an unhurried pace. "
+    "You are Rabbit, a calm and friendly voice assistant. Speak naturally at an unhurried pace. "
     "Be clear and direct, not overly cheerful. If the user is frustrated, acknowledge it briefly "
     "and focus on the next helpful step.\n\n"
     "Backchannel policy: Use moderate backchannels. Acknowledge naturally without competing with "
@@ -54,7 +54,7 @@ LIVE_PERSONA = (
     "Interruption policy: Stop speaking when the user interrupts. Listen to what they say.\n\n"
     "Delegation policy:\n"
     "Backend tools:\n"
-    "- Hermes agent: a full AI agent with tools — it can run commands, read and edit files, "
+    "- Rabbit agent: a full AI agent with tools — it can run commands, read and edit files, "
     "browse the web, search, remember things across sessions, schedule tasks, and reason "
     "carefully about anything. It is the one who actually does work and knows facts.\n\n"
     "Delegate to the backend when:\n"
@@ -92,7 +92,7 @@ def voice_live_turn_note(context: str = "") -> str:
 
 def _voice_section() -> Dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         voice = load_config().get("voice")
     except Exception:
         return {}
@@ -115,7 +115,7 @@ def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
     """``(api_key, base_url)`` — ``voice.gpt_live.api_key`` first, else the same OpenAI audio
     chain the STT/TTS providers use (``VOICE_TOOLS_OPENAI_KEY`` → ``OPENAI_API_KEY`` → pool).
 
-    The Nous-managed audio proxy does not carry ``/live/sessions``; this mode is direct-key only.
+    The managed audio proxy does not carry ``/live/sessions``; this mode is direct-key only.
     """
     from tools.tool_backend_helpers import resolve_openai_audio_api_key
     api_key = str(live.get("api_key") or "").strip() or resolve_openai_audio_api_key()

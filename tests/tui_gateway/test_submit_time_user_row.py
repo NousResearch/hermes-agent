@@ -4,7 +4,7 @@ writing a second one (#111868: a Desktop freeze during a slow first agent build 
 from types import SimpleNamespace
 
 from agent.turn_context import _stage_turn_user_message
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 from tui_gateway import server
 

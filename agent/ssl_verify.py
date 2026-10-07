@@ -1,4 +1,4 @@
-"""TLS trust for Hermes. One authority, one trust source.
+"""TLS trust for Rabbit. One authority, one trust source.
 
 Trust comes from the platform verifier via ``truststore``: CryptoAPI on
 Windows, Security.framework on macOS, and OpenSSL's own store (with a

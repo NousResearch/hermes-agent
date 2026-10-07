@@ -14,9 +14,9 @@ DeepSeek's compatibility matrix lists ``thinking`` as supported but
 ``redacted_thinking`` and ``cache_control`` on thinking blocks as not
 supported.  Handling is the same as Kimi's ``/coding`` endpoint: strip
 Anthropic-signed blocks (DeepSeek can't validate them) but preserve unsigned
-blocks that Hermes synthesises from ``reasoning_content``.
+blocks that Rabbit synthesises from ``reasoning_content``.
 
-See hermes-agent#16748.
+See rabbit-agent#16748.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class TestDeepSeekAnthropicPreservesThinking:
 
         DeepSeek's compatibility matrix lists cache_control on thinking blocks
         as ignored — cache markers interfere with signature validation on
-        upstreams that do check them, so Hermes strips them everywhere.
+        upstreams that do check them, so Rabbit strips them everywhere.
         """
         from agent.anthropic_message_convert import convert_messages_to_anthropic
 
@@ -105,7 +105,7 @@ class TestDeepSeekAnthropicPreservesThinking:
                     assert "cache_control" not in b
 
 
-@pytest.mark.parametrize("url", [None, "https://api.anthropic.com", "https://inference-api.nousresearch.com/anthropic"])
+@pytest.mark.parametrize("url", [None, "https://api.anthropic.com"])
 def test_deepseek_model_name_does_not_override_native_signature_contract(url):
     from agent.anthropic_message_convert import _manage_thinking_signatures
     block = {"type": "thinking", "thinking": "signed native reasoning", "signature": "sig"}

@@ -20,7 +20,7 @@ import {
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
+import { Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
@@ -28,7 +28,6 @@ import { notify, notifyError } from '@/store/notifications'
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
-  cloud: Cloud,
   local: Monitor,
   remote: Globe,
   ssh: Terminal
@@ -41,7 +40,7 @@ interface EditorState {
   label: string
   host: string
   keyPath: string
-  remoteHermesPath: string
+  remoteRabbitPath: string
   // ssh remote profile, hydrated on edit so the duplicate key matches the
   // main-process one (user@host:port + profile); the editor doesn't expose it.
   remoteProfile: string
@@ -65,7 +64,7 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     // would silently resurrect the old values.
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
-    remoteHermesPath: conn.remoteHermesPath || '',
+    remoteRabbitPath: conn.remoteRabbitPath || '',
     remoteProfile: conn.remoteProfile || '',
     headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
   }
@@ -78,13 +77,13 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     label: '',
     host: '',
     keyPath: '',
-    remoteHermesPath: '',
+    remoteRabbitPath: '',
     remoteProfile: '',
     headers: []
   }
 }
 
-/** Dedupe key for a remote/cloud gateway URL: trim, drop trailing slashes, lowercase. */
+/** Dedupe key for a remote gateway URL: trim, drop trailing slashes, lowercase. */
 export function normalizeGatewayUrl(url: string): string {
   return url.trim().replace(/\/+$/, '').toLowerCase()
 }
@@ -119,7 +118,7 @@ export function sshCompositeKey(composite: string): string {
  * The renderer-side duplicate rule, mirrored by the main process
  * (normalizeConnectionInput enforces the same keys in the save path):
  *  - at most ONE local entry, ever;
- *  - remote/cloud entries are duplicates when their normalized URLs match;
+ *  - remote entries are duplicates when their normalized URLs match;
  *  - ssh entries are duplicates on user@host:port + remote profile.
  * Returns the existing entry the candidate collides with, or null.
  */
@@ -131,7 +130,7 @@ export function findDuplicateConnection(
     return connections.find(c => c.kind === 'local' && c.id !== editor.id) ?? null
   }
 
-  if (editor.kind === 'remote' || editor.kind === 'cloud') {
+  if (editor.kind === 'remote') {
     const key = normalizeGatewayUrl(editor.url)
 
     if (!key) {
@@ -141,7 +140,7 @@ export function findDuplicateConnection(
     return (
       connections.find(
         c =>
-          (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
+          c.kind === 'remote' && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
       ) ?? null
     )
   }
@@ -212,7 +211,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
 
 /**
  * The connections registry section of Settings → Gateways: manage the named
- * agent sources (local runtime + any number of remote gateways / Hermes Cloud
+ * agent sources (local runtime + any number of remote gateways
  * instances / SSH hosts). Storage-level management — the active/primary
  * switchover UX is the connection-mode controls above this section.
  */
@@ -245,20 +244,20 @@ export function ConnectionsRegistrySection() {
 
   const remote = useRemoteSetup({
     host: 'registry',
-    enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
+    enabled: editor?.kind === 'remote',
     onNotice: notify,
     // The registry draft can sign in BEFORE it is saved: the login carries
     // the draft's identity so the main process settles the id the save will
     // reuse and writes the session into the jar the saved connection reads.
     // The kind/authMode gate in oauth-partition.ts decides WHICH jar that is:
-    // a cookie-auth remote draft gets its own; cloud and token drafts share
-    // the legacy jar, exactly what they resolve to after the save. Pin the
-    // settled id into the draft so Save reuses it.
+    // a cookie-auth remote draft gets its own; token drafts share the legacy
+    // jar, exactly what they resolve to after the save. Pin the settled id
+    // into the draft so Save reuses it.
     oauthLoginIdentity: () => ({
       connectionId: editor?.id ?? null,
       label: editor?.label ?? '',
       kind: editor?.kind,
-      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
+      authMode: remoteAuthModeRef.current
     }),
     onOAuthLoginSettled: settledId => {
       setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
@@ -267,7 +266,7 @@ export function ConnectionsRegistrySection() {
 
   remoteAuthModeRef.current = remote.credentials.authMode
 
-  const bridge = window.hermesDesktop?.connections
+  const bridge = window.rabbitDesktop?.connections
 
   const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
 
@@ -302,7 +301,7 @@ export function ConnectionsRegistrySection() {
     setDupeError(null)
     remote.reset({
       url: saved?.url || '',
-      authMode: next?.kind === 'cloud' ? 'oauth' : saved?.authMode || 'token',
+      authMode: saved?.authMode || 'token',
       tokenSet: saved?.tokenSet ?? false,
       tokenPreview: saved?.tokenPreview ?? null
     })
@@ -345,9 +344,9 @@ export function ConnectionsRegistrySection() {
           payload.id = editor.id
         }
 
-        if (editor.kind === 'remote' || editor.kind === 'cloud') {
+        if (editor.kind === 'remote') {
           payload.url = remote.payload.remoteUrl
-          payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
+          payload.authMode = remote.credentials.authMode
 
           if (editor.kind === 'remote' && remote.payload.remoteToken) {
             payload.token = remote.payload.remoteToken
@@ -374,7 +373,7 @@ export function ConnectionsRegistrySection() {
           // of truth — never send separate user/port (see editorFromConnection).
           payload.host = editor.host
           payload.keyPath = editor.keyPath || undefined
-          payload.remoteHermesPath = editor.remoteHermesPath.trim()
+          payload.remoteRabbitPath = editor.remoteRabbitPath.trim()
         }
 
         const result = await bridge.save(payload)
@@ -501,7 +500,7 @@ export function ConnectionsRegistrySection() {
     [bridge, s.testFailed, s.testOk]
   )
 
-  // Fan out `hermes update` to every eligible source; per-connection results
+  // Fan out `rabbit update` to every eligible source; per-connection results
   // land as individual toasts so one dead box doesn't hide the others.
   const updateAll = useCallback(async () => {
     if (!bridge?.updateAll) {
@@ -516,8 +515,6 @@ export function ConnectionsRegistrySection() {
       for (const row of results) {
         if (row.ok) {
           notify({ title: row.label, message: row.detail || s.updateAllDone })
-        } else if (row.skipped && row.reason === 'cloud-managed') {
-          notify({ title: row.label, message: s.updateSkippedCloud })
         } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
           // A deliberate per-row skip (e.g. a macOS SSH remote whose running
           // serve Desktop cannot safely stop) — informational, not a failure.
@@ -531,10 +528,9 @@ export function ConnectionsRegistrySection() {
     } finally {
       setUpdatingAll(false)
     }
-  }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
+  }, [bridge, s.updateAllDone, s.updateAllFailed])
 
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
-    cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
     local: { desc: s.kindLocalDesc, label: s.kindLocal },
     remote: { desc: s.kindRemoteDesc, label: s.kindRemote },
     ssh: { desc: s.kindSshDesc, label: s.kindSsh }
@@ -698,18 +694,12 @@ export function ConnectionsRegistrySection() {
             {/* Kind is fixed once created (buttons disable on edit). On create
                 every kind is offered; Local is disabled while the managed
                 local entry exists (the registry holds at most one). */}
-            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
+            {(editor.id ? ([editor.kind] as const) : (['local', 'remote', 'ssh'] as const)).map(kind => (
               <Button
                 disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
                 key={kind}
                 onClick={() => {
                   setDupeError(null)
-
-                  // Cloud uses browser sign-in even after a token-auth remote edit.
-                  if (kind === 'cloud') {
-                    remote.setAuthMode('oauth')
-                  }
-
                   setEditor({ ...editor, kind })
                 }}
                 size="sm"
@@ -721,9 +711,6 @@ export function ConnectionsRegistrySection() {
           </div>
           <p className="text-xs text-muted-foreground">{kindMeta[editor.kind].desc}</p>
           {!editor.id && hasLocal ? <p className="text-xs text-muted-foreground">{s.localAddHint}</p> : null}
-          {!editor.id && editor.kind === 'cloud' ? (
-            <p className="text-xs text-muted-foreground">{s.cloudAddHint}</p>
-          ) : null}
 
           <ListRow
             action={
@@ -737,47 +724,11 @@ export function ConnectionsRegistrySection() {
             title={s.labelTitle}
           />
 
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <RemoteSetupFields
-              disabled={saving}
-              onUrlChange={() => setDupeError(null)}
-              setup={remote}
-              urlOnly={editor.kind === 'cloud'}
-            />
+          {editor.kind === 'remote' && (
+            <RemoteSetupFields disabled={saving} onUrlChange={() => setDupeError(null)} setup={remote} />
           )}
 
-          {editor.kind === 'cloud' && (
-            <ListRow
-              action={
-                remote.credentials.oauthConnected ? (
-                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
-                ) : (
-                  <Button
-                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
-                    onClick={() => void remote.signIn()}
-                    size="sm"
-                  >
-                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
-                    {remote.isPassword
-                      ? t.settings.gateway.signIn
-                      : t.settings.gateway.signInWith(remote.providerLabel)}
-                  </Button>
-                )
-              }
-              description={
-                remote.credentials.oauthConnected
-                  ? remote.isPassword
-                    ? t.settings.gateway.authSignedInPassword
-                    : t.settings.gateway.authSignedInOauth
-                  : remote.isPassword
-                    ? t.settings.gateway.authNeedsPassword
-                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
-              }
-              title={t.settings.gateway.authTitle}
-            />
-          )}
-
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
+          {editor.kind === 'remote' && (
             <div className="grid gap-2">
               <div>
                 <div className="text-sm font-medium">{s.headersTitle}</div>
@@ -849,13 +800,13 @@ export function ConnectionsRegistrySection() {
               <ListRow
                 action={
                   <Input
-                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
-                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
-                    value={editor.remoteHermesPath}
+                    onChange={e => setEditor({ ...editor, remoteRabbitPath: e.target.value })}
+                    placeholder={t.settings.gateway.sshRabbitPathPlaceholder}
+                    value={editor.remoteRabbitPath}
                   />
                 }
-                description={t.settings.gateway.sshHermesPathDesc}
-                title={t.settings.gateway.sshHermesPathTitle}
+                description={t.settings.gateway.sshRabbitPathDesc}
+                title={t.settings.gateway.sshRabbitPathTitle}
               />
             </>
           )}

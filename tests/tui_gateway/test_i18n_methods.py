@@ -3,7 +3,7 @@ surface and nothing bundled; both answer for the requested profile's home."""
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 from agent import i18n, i18n_layers
@@ -24,17 +24,17 @@ def _call(server, method, params):
 
 def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypatch, clean_layers):
     import tui_gateway.server as server
-    from hermes_cli.plugins import PluginContext, PluginManager
-    from hermes_cli.plugins_manifest import PluginManifest
+    from rabbit_cli.plugins import PluginContext, PluginManager
+    from rabbit_cli.plugins_manifest import PluginManifest
 
     home = tmp_path / "home"
     (home / "locales").mkdir(parents=True)
     (home / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Overlay-DE"}}), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(server, "_rabbit_home", home)
     i18n.reset_language_cache()
 
-    ctx = PluginContext(PluginManifest(name="hermes-lang-pl", source="user", path=str(home)), PluginManager())
+    ctx = PluginContext(PluginManifest(name="rabbit-lang-pl", source="user", path=str(home)), PluginManager())
     ctx.register_locale("pl", {"approval": {"denied": "Odrzucono"}}, endonym="Polski")
     ctx.register_locale("pl", {"status": {"ready": "Gotowy"}}, surface="tui")
     ctx.register_locale("pl", {"settings": {"title": "Ustawienia"}}, surface="desktop", rtl=False)
@@ -42,7 +42,7 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
     languages = _call(server, "i18n.languages", {})["result"]["languages"]
     ids = [row["id"] for row in languages]
     assert ids == ["en", *sorted(ids[1:])]
-    assert {"id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:hermes-lang-pl"} in languages
+    assert {"id": "pl", "endonym": "Polski", "rtl": False, "source": "plugin:rabbit-lang-pl"} in languages
     assert {"id": "ar", "endonym": "العربية", "rtl": True, "source": "bundled"} in languages
 
     core = _call(server, "i18n.catalog", {"lang": "pl"})["result"]
@@ -68,8 +68,8 @@ def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, c
     (launch / "locales").mkdir(parents=True)
     (named / "locales").mkdir(parents=True)
     (named / "locales" / "de.yaml").write_text(yaml.safe_dump({"approval": {"denied": "Nur named"}}), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
-    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", launch)
     monkeypatch.setattr(server, "_profile_home", lambda name: str(named) if name == "named" else None)
     i18n.reset_language_cache()
 

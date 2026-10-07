@@ -26,7 +26,7 @@ from typing import Callable
 
 import psutil
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from tools.environments.base import _file_mtime_key
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ _sleep = time.sleep
 _monotonic = time.monotonic
 
 _SYNC_INTERVAL_SECONDS = 5.0
-_FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
+_FORCE_SYNC_ENV = "RABBIT_FORCE_FILE_SYNC"
 
 # Transport callbacks provided by each backend
 UploadFn = Callable[[str, str], None]  # (host_path, remote_path) -> raises on failure
@@ -52,7 +52,7 @@ _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
 _SYNC_BACK_MAX_BYTES_KEY = "sync_back_max_bytes"  # config.yaml terminal.<key>
-_SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
+_SYNC_BACK_TEMP_PREFIX = "rabbit-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
 # a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs). Entry names embed the
 # owning PID, so a dead owner's entry is reclaimed at once; the age cutoff covers the rest
@@ -65,7 +65,7 @@ _SYNC_BACK_STALE_SECONDS = 30 * 60
 def _sync_back_max_bytes() -> int:
     """Extraction cap; config.yaml ``terminal.sync_back_max_bytes`` overrides it for trees that
     legitimately exceed 2 GiB (a skipped extraction silently discards the whole download)."""
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
 
     raw = ((load_config() or {}).get("terminal") or {}).get(_SYNC_BACK_MAX_BYTES_KEY)
     if raw is not None:
@@ -125,14 +125,14 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
     return removed
 
 
-def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
+def iter_sync_files(container_base: str = "/root/.rabbit") -> list[tuple[str, str]]:
     """Enumerate all (host_path, remote_path) pairs to sync to a remote. Credential paths are
-    remapped from the hardcoded /root/.hermes to *container_base* (remote home may differ)."""
+    remapped from the hardcoded /root/.rabbit to *container_base* (remote home may differ)."""
     # Late import: credential_files pulls in agent modules (circular at module level).
     from tools.credential_files import get_credential_file_mounts, iter_cache_files, iter_skills_files
 
     files = [
-        (entry["host_path"], entry["container_path"].replace("/root/.hermes", container_base, 1))
+        (entry["host_path"], entry["container_path"].replace("/root/.rabbit", container_base, 1))
         for entry in get_credential_file_mounts()]
     files += [
         (entry["host_path"], entry["container_path"])
@@ -212,7 +212,7 @@ class FileSyncManager:
 
     def sync(self, *, force: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files. Rate-limited to once
-        per ``sync_interval`` unless *force* or ``HERMES_FORCE_FILE_SYNC=1``. Transactional:
+        per ``sync_interval`` unless *force* or ``RABBIT_FORCE_FILE_SYNC=1``. Transactional:
         state is committed only if ALL operations succeed; on failure it rolls back so the
         next cycle retries everything."""
         with self._transaction_lock:
@@ -239,7 +239,7 @@ class FileSyncManager:
         try:
             # Hash and upload the same bytes: the original may be saved while
             # the transport is reading it or waiting for remote acknowledgement.
-            with tempfile.TemporaryDirectory(prefix="hermes-sync-push-") as staging:
+            with tempfile.TemporaryDirectory(prefix="rabbit-sync-push-") as staging:
                 staged_files = []
                 pushed_hashes = {}
                 for index, (host_path, remote_path) in enumerate(to_upload):
@@ -296,25 +296,25 @@ class FileSyncManager:
             logger.debug("file_sync: deleted %s", to_delete)
 
     # --- Sync-back: pull remote changes to host on teardown ---
-    def sync_back(self, hermes_home: Path | None = None) -> None:
-        """Pull remote changes back to the host: download the remote ``.hermes/`` as a tar and
+    def sync_back(self, rabbit_home: Path | None = None) -> None:
+        """Pull remote changes back to the host: download the remote ``.rabbit/`` as a tar and
         apply only files whose SHA-256 differs from what was pushed. SIGINT is deferred until
         complete; concurrent gateway sandboxes are serialized via a file lock."""
         with self._transaction_lock:
-            self._sync_back_transaction(hermes_home=hermes_home)
+            self._sync_back_transaction(rabbit_home=rabbit_home)
 
-    def _sync_back_transaction(self, hermes_home: Path | None = None) -> None:
+    def _sync_back_transaction(self, rabbit_home: Path | None = None) -> None:
         """Execute sync-back (with retries) against a stable snapshot of manager state."""
         if self._bulk_download_fn is None:
             return
 
         # Nothing was ever committed (initial push failed or never ran): skip
-        # to avoid retry storms against an uninitialized remote .hermes/.
+        # to avoid retry storms against an uninitialized remote .rabbit/.
         if not self._pushed_hashes and not self._synced_files:
             logger.debug("sync_back: no prior push state — skipping")
             return
 
-        lock_path = (hermes_home or get_hermes_home()) / ".sync.lock"
+        lock_path = (rabbit_home or get_rabbit_home()) / ".sync.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
         last_exc: Exception | None = None
@@ -471,7 +471,7 @@ class FileSyncManager:
                          upload_only_host_paths: set[str] | None = None) -> str | None:
         """Infer a host path for a new remote file by matching path prefixes: an existing
         remote->host pair whose parent directory prefixes *remote_path* gets the same
-        substitution (``/root/.hermes/skills/b.md`` -> ``~/.hermes/skills/b.md``)."""
+        substitution (``/root/.rabbit/skills/b.md`` -> ``~/.rabbit/skills/b.md``)."""
         upload_only_host_paths = upload_only_host_paths or set()
         for host, remote in file_mapping or []:
             if self._is_upload_only_host_path(host, upload_only_host_paths):

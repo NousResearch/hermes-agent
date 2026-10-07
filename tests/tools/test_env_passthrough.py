@@ -2,7 +2,7 @@
 
 import os
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import secret_scope as ss
 import tools.env_passthrough as _ep_mod
@@ -41,7 +41,7 @@ class TestConfigPassthrough:
         config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 
         assert is_env_passthrough("MY_CUSTOM_KEY")
@@ -53,7 +53,7 @@ class TestConfigPassthrough:
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 
         register_env_passthrough(["SKILL_KEY"])
@@ -282,10 +282,10 @@ class TestTerminalIntegration:
 
     def test_blocklisted_var_blocked_by_default(self):
         from tools.environments.local import _sanitize_subprocess_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local_env_policy import _RABBIT_PROVIDER_ENV_BLOCKLIST
 
         # Pick a var we know is in the blocklist
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        blocked_var = next(iter(_RABBIT_PROVIDER_ENV_BLOCKLIST))
         env = {blocked_var: "secret_value", "PATH": "/usr/bin"}
         result = _sanitize_subprocess_env(env)
         assert blocked_var not in result
@@ -293,13 +293,13 @@ class TestTerminalIntegration:
 
     def test_passthrough_cannot_override_provider_blocklist(self):
         """GHSA-rhgp-j443-p4rf: register_env_passthrough must NOT accept
-        Hermes provider credentials — that was the bypass where a skill
+        Rabbit provider credentials — that was the bypass where a skill
         could declare ANTHROPIC_TOKEN / OPENAI_API_KEY as passthrough and
         defeat the execute_code sandbox scrubbing."""
         from tools.environments.local import _sanitize_subprocess_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local_env_policy import _RABBIT_PROVIDER_ENV_BLOCKLIST
 
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        blocked_var = next(iter(_RABBIT_PROVIDER_ENV_BLOCKLIST))
         # Attempt to register — must be silently refused (logged warning).
         register_env_passthrough([blocked_var])
 
@@ -330,7 +330,7 @@ class TestTerminalIntegration:
         config = {"terminal": {"env_passthrough": ["openai_api_key", "MY_OWN_KEY"]}}
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 
         assert not is_env_passthrough("openai_api_key")
@@ -373,7 +373,7 @@ class TestTerminalIntegration:
         assert child_env["PATH"] == "/usr/bin"
 
     def test_passthrough_cannot_override_internal_dynamic_secret(self):
-        """A skill must NOT be able to register dynamically-named Hermes
+        """A skill must NOT be able to register dynamically-named Rabbit
         secrets (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_* auth) as
         passthrough — they aren't in the static blocklist, so this is the
         defense-in-depth layer that keeps env_passthrough consistent with the
@@ -439,9 +439,9 @@ class TestTerminalIntegration:
         """_make_run_env must NOT expose a blocklisted var to subprocess env
         even after a skill attempts to register it via passthrough."""
         from tools.environments.local import _make_run_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from tools.environments.local_env_policy import _RABBIT_PROVIDER_ENV_BLOCKLIST
 
-        blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+        blocked_var = next(iter(_RABBIT_PROVIDER_ENV_BLOCKLIST))
         os.environ[blocked_var] = "secret_value"
         try:
             # Without passthrough — blocked
@@ -455,9 +455,9 @@ class TestTerminalIntegration:
         finally:
             os.environ.pop(blocked_var, None)
 
-    def test_non_hermes_api_key_still_registerable(self):
+    def test_non_rabbit_api_key_still_registerable(self):
         """Third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
-        Hermes provider credentials and must still pass through — skills
+        Rabbit provider credentials and must still pass through — skills
         that legitimately wrap third-party APIs must keep working."""
         # TENOR_API_KEY is a real example — used by the gif-search skill
         register_env_passthrough(["TENOR_API_KEY"])
@@ -470,12 +470,12 @@ class TestTerminalIntegration:
     def test_provider_blocklist_import_failure_fails_closed(self, monkeypatch):
         """If the dynamic provider blocklist can't be imported, provider
         credentials must be treated as protected and refused passthrough —
-        otherwise a skill could tunnel a Hermes credential into the
+        otherwise a skill could tunnel a Rabbit credential into the
         execute_code child (regression for #37950 / GHSA-rhgp-j443-p4rf).
 
-        Verifies the full path: _is_hermes_provider_credential returns True,
+        Verifies the full path: _is_rabbit_provider_credential returns True,
         register_env_passthrough refuses the var, and _scrub_child_env keeps
-        it out of the child env. A non-Hermes key is also rejected here (the
+        it out of the child env. A non-Rabbit key is also rejected here (the
         fallback is conservative: when we can't tell, we fail closed), which
         is the safe direction.
         """
@@ -493,9 +493,9 @@ class TestTerminalIntegration:
         monkeypatch.setattr(builtins, "__import__", fail_local_import)
 
         # Every name is now treated as a protected provider credential.
-        assert _ep_mod._is_hermes_provider_credential("OPENAI_API_KEY")
-        assert _ep_mod._is_hermes_provider_credential("ANTHROPIC_API_KEY")
-        assert _ep_mod._is_hermes_provider_credential("GH_TOKEN")
+        assert _ep_mod._is_rabbit_provider_credential("OPENAI_API_KEY")
+        assert _ep_mod._is_rabbit_provider_credential("ANTHROPIC_API_KEY")
+        assert _ep_mod._is_rabbit_provider_credential("GH_TOKEN")
 
         # Registration is refused while the blocklist is unavailable.
         register_env_passthrough(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])

@@ -9,7 +9,7 @@ from gateway.readiness import collect_runtime_readiness
 
 
 def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         "model:\n  provider: openrouter\n  model: test/model\n",
@@ -17,7 +17,7 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
     )
     with sqlite3.connect(home / "state.db") as conn:
         conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     result = collect_runtime_readiness(
         configured_model="test/model",
@@ -42,10 +42,10 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
 def test_collect_runtime_readiness_degrades_on_invalid_config_and_stopped_gateway(
     tmp_path, monkeypatch
 ):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text("model: [unterminated", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     result = collect_runtime_readiness(
         configured_model="",
@@ -63,11 +63,11 @@ def test_collect_runtime_readiness_degrades_on_invalid_config_and_stopped_gatewa
 def test_readiness_uses_running_session_store_state_over_independent_probe(
     tmp_path, monkeypatch
 ):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     with sqlite3.connect(home / "state.db") as conn:
         conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     unavailable = collect_runtime_readiness(
         configured_model="test/model",

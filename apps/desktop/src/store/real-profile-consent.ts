@@ -8,7 +8,7 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 // mutes for this app run only, so the offer comes back next launch rather
 // than nagging within one.
 export const $realProfilePromptDismissed = persistentAtom<boolean>(
-  'hermes.desktop.real-profile-prompt-dismissed',
+  'rabbit.desktop.real-profile-prompt-dismissed',
   false,
   Codecs.bool
 )

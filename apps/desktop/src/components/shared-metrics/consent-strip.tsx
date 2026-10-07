@@ -8,13 +8,13 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { $sharedMetricsDetailsOpen, answerSharedMetricsOffer, type SharedMetricsChoice } from '@/store/shared-metrics'
 
-const CHOICES: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICES: readonly SharedMetricsChoice[] = ['local', 'off']
 
 /**
  * The first-run shared-metrics offer, in the composer status stack beside the
  * free-tier strip: it never blocks the composer or takes focus, and it stays
- * until one of the three equal answers is saved (the backend's `decided` is
- * the only latch). "Details" opens the full explainer the host paints.
+ * until an answer is saved (the backend's `decided` is the only latch).
+ * "Details" opens the full explainer the host paints.
  */
 export function SharedMetricsConsentStrip() {
   const { requestGateway } = useGatewayRequest()

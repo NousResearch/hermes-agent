@@ -34,7 +34,7 @@ const page = (rowId: number) => ({
 
 beforeEach(() => {
   $transcriptTailBySessionId.set({})
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api: vi.fn() } })
+  Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { api: vi.fn() } })
 })
 
 function mount(storedId = 'stored') {
@@ -82,7 +82,7 @@ function mount(storedId = 'stored') {
 
 describe('bounded direct history runtime', () => {
   it('reads one around page and selects it without replacing the live store', async () => {
-    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    const api = vi.spyOn(window.rabbitDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
     const live = mounted.view.$messages.get()
     let id: string | null = null
@@ -108,7 +108,7 @@ describe('bounded direct history runtime', () => {
   })
 
   it('keeps history static during streaming and restores the newest live tail and capabilities', async () => {
-    vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    vi.spyOn(window.rabbitDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
     await act(async () => {
       await mounted.window.revealRow(40, new AbortController().signal)
@@ -143,7 +143,7 @@ describe('bounded direct history runtime', () => {
   })
 
   it('keeps the edit composer available after a rail jump selects a history page', async () => {
-    vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    vi.spyOn(window.rabbitDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
     await act(async () => {
       await mounted.window.revealRow(40, new AbortController().signal)
@@ -177,7 +177,7 @@ describe('bounded direct history runtime', () => {
 
   it('latest request wins even when the bridge ignores cancellation', async () => {
     const resolves: ((value: ReturnType<typeof page>) => void)[] = []
-    vi.spyOn(window.hermesDesktop, 'api').mockImplementation(() => new Promise(resolve => resolves.push(resolve)))
+    vi.spyOn(window.rabbitDesktop, 'api').mockImplementation(() => new Promise(resolve => resolves.push(resolve)))
     const mounted = mount()
     let first!: Promise<string | null>
     let second!: Promise<string | null>
@@ -201,7 +201,7 @@ describe('bounded direct history runtime', () => {
 
   it.each(['abort', 'latest', 'session', 'unmount'] as const)('discards pending reads on %s', async action => {
     let resolve!: (value: ReturnType<typeof page>) => void
-    vi.spyOn(window.hermesDesktop, 'api').mockImplementation(
+    vi.spyOn(window.rabbitDesktop, 'api').mockImplementation(
       () =>
         new Promise(done => {
           resolve = done
@@ -242,7 +242,7 @@ describe('bounded direct history runtime', () => {
   })
 
   it('rejects oversized, missing-target and failed responses without losing the selected page', async () => {
-    const api = vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    const api = vi.spyOn(window.rabbitDesktop, 'api').mockResolvedValue(page(40))
     const mounted = mount()
     await act(async () => {
       await mounted.window.revealRow(40, new AbortController().signal)
@@ -277,7 +277,7 @@ const index = (rowIds: number[]) => ({
 describe('paging earlier from an open history window', () => {
   it('keeps earlier messages reachable after a jump to an older mark', async () => {
     const api = vi
-      .spyOn(window.hermesDesktop, 'api')
+      .spyOn(window.rabbitDesktop, 'api')
       .mockResolvedValueOnce(page(4000))
       .mockResolvedValueOnce(index([3880, 4000]))
       .mockResolvedValueOnce({ ...page(3880), pagination: { ...page(3880).pagination, has_older: false } })
@@ -315,7 +315,7 @@ describe('paging earlier from an open history window', () => {
   })
 
   it('shows the older page on its own when a turn longer than the page limit separates it from the anchor', async () => {
-    vi.spyOn(window.hermesDesktop, 'api')
+    vi.spyOn(window.rabbitDesktop, 'api')
       // 300 display rows precede the anchor; the previous prompt's forward
       // page (offset 40, 120 rows) ends 140 rows short of it.
       .mockResolvedValueOnce({ ...page(4000), pagination: { ...page(4000).pagination, offset: 300 } })
@@ -341,7 +341,7 @@ describe('paging earlier from an open history window', () => {
 
   it('retires the entry point when the complete index lists no prompt before the window', async () => {
     const api = vi
-      .spyOn(window.hermesDesktop, 'api')
+      .spyOn(window.rabbitDesktop, 'api')
       // The backend counts rows before this page, but none of them is a prompt mark.
       .mockResolvedValueOnce(page(4000))
       .mockResolvedValueOnce(index([4000]))

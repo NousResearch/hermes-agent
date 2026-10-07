@@ -1,9 +1,9 @@
-"""OpenRouter-compatible image generation backend (OpenRouter + Nous Portal).
+"""OpenRouter-compatible image generation backend.
 
 Both speak the OpenAI-style ``/chat/completions`` image protocol (``modalities:
 ["image","text"]``, references as ``image_url`` parts, output in
 ``choices[0].message.images[].image_url.url``); only ``(base_url, api_key)`` differs,
-via :func:`hermes_cli.runtime_provider.resolve_runtime_provider`. OpenRouter alone also
+via :func:`rabbit_cli.runtime_provider.resolve_runtime_provider`. OpenRouter alone also
 has the Dedicated Image API (``POST /images/generations``, own catalog, exact ratios,
 up to 16 references) — see :func:`_select_surface`.
 """
@@ -171,9 +171,9 @@ _IMAGE_API_INTS = (
 
 _ATTRIBUTION_HEADERS = {
     "Content-Type": "application/json",
-    # OpenRouter attribution headers (harmless against Nous Portal).
-    "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
-    "X-Title": "Hermes Agent",
+    # OpenRouter attribution headers.
+    "HTTP-Referer": "https://github.com/seven0070/Rabbit-",
+    "X-Title": "Rabbit Agent",
 }
 
 
@@ -500,7 +500,7 @@ def _image_api_extra(
 
 
 class OpenRouterCompatImageProvider(ImageGenProvider):
-    """One instance per backend (OpenRouter, Nous Portal); they differ only in the runtime
+    """One instance per backend; they differ only in the runtime
     provider supplying ``(base_url, api_key)``, the config namespace, and Image API support."""
 
     def __init__(
@@ -527,7 +527,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _credentials(self) -> Tuple[str, str]:
         """``(api_key, base_url)`` — either may be ``""``; raises on resolution failure."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested=self._runtime_name)
         return (
@@ -552,7 +552,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def list_models(self) -> List[Dict[str, Any]]:
         """Live catalog: OpenRouter = ``GET /images/models`` ∪ chat-completions image models (new
-        releases selectable); Nous Portal = chat-completions only. Offline: default chain + snapshot."""
+        releases selectable). Offline: default chain + snapshot."""
         merged: Dict[str, Dict[str, Any]] = {}
         if self._supports_image_api:
             merged = {entry["id"]: entry for entry in self._image_api_live_models()}
@@ -761,7 +761,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         if not api_key or not base_url:
             return fail(
                 f"No {self._display} credentials found. "
-                f"Configure {self._display} in `hermes tools` → Image Generation.",
+                f"Configure {self._display} in `rabbit tools` → Image Generation.",
                 "missing_api_key")
 
         model_chain = self._resolve_model_chain(kwargs.get("model"))
@@ -819,16 +819,10 @@ def _build_providers() -> List[OpenRouterCompatImageProvider]:
                     "key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/keys",
                 }],
             }),
-        # No picker row: Portal models are offered inside the single managed "Nous Subscription" row
-        # (tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
-        # read "active" alongside the managed FAL row while the runtime routed its pick to FAL.
-        OpenRouterCompatImageProvider(
-            provider_name="nous", display_name="Nous Portal", runtime_name="nous", config_key="nous",
-            model_env_var="NOUS_IMAGE_MODEL", setup_schema=None),
     ]
 
 
 def register(ctx: Any) -> None:
-    """Register the OpenRouter + Nous Portal image gen providers."""
+    """Register the OpenRouter image gen providers."""
     for provider in _build_providers():
         ctx.register_image_gen_provider(provider)

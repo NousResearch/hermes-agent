@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry, DesktopProfileRoute, HermesConnection } from '@/global'
+import type { DesktopConnectionsRegistry, DesktopProfileRoute, RabbitConnection } from '@/global'
 import { deferred } from '@/test/deferred'
 
 import { _resetConnectionsForTests, initializeConnectionsRegistry } from './connections'
@@ -27,7 +27,7 @@ const registry: DesktopConnectionsRegistry = {
   version: 2
 }
 
-function descriptor(connectionId: string, profile: string): HermesConnection {
+function descriptor(connectionId: string, profile: string): RabbitConnection {
   return {
     baseUrl: 'http://localhost:7070',
     connectionId,
@@ -49,7 +49,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/')
   $activeGatewayProfile.set('personal')
   setConnection(descriptor('local', 'personal'))
-  window.hermesDesktop = {
+  window.rabbitDesktop = {
     connections: {
       list: async () => registry,
       setLastUsed: async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } })
@@ -74,7 +74,7 @@ afterEach(() => {
 
 describe('startup default route', () => {
   it('does not replace the main-process route after a transient preference read failure', async () => {
-    window.hermesDesktop.profile.getDefault = async () => {
+    window.rabbitDesktop.profile.getDefault = async () => {
       throw new Error('IPC interrupted')
     }
 
@@ -85,7 +85,7 @@ describe('startup default route', () => {
 
   it('does not override a profile picked while the preference read was pending', async () => {
     const reading = deferred<DesktopProfileRoute>()
-    window.hermesDesktop.profile.getDefault = () => reading.promise
+    window.rabbitDesktop.profile.getDefault = () => reading.promise
     const initializing = initializeConnectionsRegistry()
     pinNewChatProfile('chosen')
     requestFreshSession()
@@ -97,14 +97,14 @@ describe('startup default route', () => {
 
   it('does not re-home an already selected session when the preference loads', async () => {
     setActiveSessionId('session-already-open')
-    window.hermesDesktop.profile.getDefault = async () => ({ connectionId: 'lab', profile: 'research' })
+    window.rabbitDesktop.profile.getDefault = async () => ({ connectionId: 'lab', profile: 'research' })
     await initializeConnectionsRegistry()
     expect(openGatewayForAgent).not.toHaveBeenCalled()
   })
 
   it('keeps the native legacy default and its per-profile remote override out of registry restoration', async () => {
     setConnection({ ...descriptor('lab', 'personal'), registryScoped: false })
-    window.hermesDesktop.profile.getDefault = async () => ({ connectionId: null, profile: 'personal' })
+    window.rabbitDesktop.profile.getDefault = async () => ({ connectionId: null, profile: 'personal' })
     await initializeConnectionsRegistry()
     expect($connection.get()).toMatchObject({ connectionId: 'lab', profile: 'personal', registryScoped: false })
     expect(openGatewayForAgent).not.toHaveBeenCalled()
@@ -118,7 +118,7 @@ describe('startup default route', () => {
       { connectionId: 'local', profile: 'personal' }
     ]) {
       _resetConnectionsForTests()
-      window.hermesDesktop.profile.getDefault = async () => route
+      window.rabbitDesktop.profile.getDefault = async () => route
       await initializeConnectionsRegistry()
       expect($connection.get()).toMatchObject({ connectionId: route.connectionId ?? 'local', profile: route.profile })
       expect($activeGatewayProfile.get()).toBe(route.profile)
@@ -130,7 +130,7 @@ describe('startup default route', () => {
 
   it('leaves profile peer windows on their requested source rather than restoring the application default', async () => {
     window.history.replaceState(null, '', '/?peer=1&profile=personal&connectionId=local')
-    window.hermesDesktop.profile.getDefault = async () => ({ connectionId: 'lab', profile: 'research' })
+    window.rabbitDesktop.profile.getDefault = async () => ({ connectionId: 'lab', profile: 'research' })
     await initializeConnectionsRegistry()
     expect($connection.get()).toMatchObject({ connectionId: 'local', profile: 'personal' })
     expect(openGatewayForAgent).not.toHaveBeenCalled()

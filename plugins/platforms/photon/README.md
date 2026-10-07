@@ -1,6 +1,6 @@
 # Photon iMessage platform plugin
 
-This plugin connects Hermes Agent to iMessage (and other Spectrum
+This plugin connects Rabbit Agent to iMessage (and other Spectrum
 interfaces) through [Photon][photon] — a managed service that handles
 iMessage line allocation, delivery, and abuse-prevention so users don't
 have to run their own Mac relay.
@@ -13,7 +13,7 @@ recommend for everyone who doesn't already pay for a dedicated number.
 Like Discord and Slack, Photon is a **persistent-connection** channel — no
 public URL, no webhook, no signing secret. The `spectrum-ts` SDK holds a
 long-lived **gRPC stream** to Photon for both directions. Because the SDK is
-TypeScript-only, Hermes runs it inside a small supervised Node sidecar and
+TypeScript-only, Rabbit runs it inside a small supervised Node sidecar and
 talks to it over loopback.
 
 ```
@@ -39,25 +39,25 @@ talks to it over loopback.
 - **Outbound**: `send` / `send_typing` / reaction tapbacks are loopback POSTs
   to the sidecar (`/send`, `/send-richlink`, `/send-attachment`, `/typing`,
   `/react`, `/unreact`), authenticated with a shared
-  `X-Hermes-Sidecar-Token`.
+  `X-Rabbit-Sidecar-Token`.
 
 ## First-time setup
 
 ```bash
 # One-shot setup: device login (opens browser) + project + user + sidecar deps
-hermes photon setup --phone +15551234567
+rabbit photon setup --phone +15551234567
 
 # Start the gateway
-hermes gateway start
+rabbit gateway start
 ```
 
-`hermes photon setup` does, in order:
+`rabbit photon setup` does, in order:
 
 1. **Device login** (RFC 8628, `client_id=photon-cli`) — opens
    `https://app.photon.codes/` for approval and stores the bearer token.
-2. **Find or create** the `Hermes Agent` project on the Photon dashboard.
+2. **Find or create** the `Rabbit Agent` project on the Photon dashboard.
 3. **Provision the project secret** — mint a fresh project secret (the
-   dashboard reveals it only once) and persist it to `~/.hermes/.env` so the
+   dashboard reveals it only once) and persist it to `~/.rabbit/.env` so the
    sidecar can authenticate `spectrum-ts`. Spectrum is always on, so there's no
    separate enable step.
 4. **Register your phone number** as a Spectrum user (idempotent — skipped if
@@ -68,14 +68,14 @@ hermes gateway start
    verbatim, so every setup runs the exact `spectrum-ts` version this plugin
    was written against).
 
-There is no separate `login` command; like every other Hermes channel,
+There is no separate `login` command; like every other Rabbit channel,
 onboarding goes through one setup surface. Re-running `setup` reuses an
 existing token/project, so it's safe to run again to finish a partial setup.
-Run `hermes photon status` to see what's configured.
+Run `rabbit photon status` to see what's configured.
 
 ## Credentials
 
-Runtime SDK credentials live in `~/.hermes/.env` (the same place every other
+Runtime SDK credentials live in `~/.rabbit/.env` (the same place every other
 channel keeps its token), and the adapter reads them from the environment:
 
 ```bash
@@ -83,7 +83,7 @@ PHOTON_PROJECT_ID=<projectId>   # the SDK's projectId (same as the dashboard pro
 PHOTON_PROJECT_SECRET=<projectSecret>
 ```
 
-Management metadata lives in `~/.hermes/auth.json` under `credential_pool`:
+Management metadata lives in `~/.rabbit/auth.json` under `credential_pool`:
 
 ```jsonc
 {
@@ -96,7 +96,7 @@ Management metadata lives in `~/.hermes/auth.json` under `credential_pool`:
         "dashboard_project_id": "<project id>",
         "spectrum_project_id": "<project id>",
         "project_secret": "<projectSecret>",
-        "name": "Hermes Agent"
+        "name": "Rabbit Agent"
       }
     ]
   }
@@ -123,7 +123,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_ALLOWED_USERS`    | your number (set by setup) | Comma-separated E.164 allowlist      |
 | `PHOTON_REQUIRE_MENTION`  | false                      | Gate group chats on a wake word      |
 | `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
-| `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
+| `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `rabbit photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
@@ -139,11 +139,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` (default 20 MB), or
   any byte read that fails, falls back to a text marker (`[Photon attachment
   received: …]` or `[Photon voice received: …]`) so the agent still knows
-  something arrived. If Spectrum emits a `richlink` content object, Hermes
+  something arrived. If Spectrum emits a `richlink` content object, Rabbit
   preserves its URL plus any title/summary metadata Spectrum already exposed;
   current Spectrum versions may still deliver ordinary inbound links as plain
   `text`. iMessage may also emit rich-link preview artwork as
-  `.pluginPayloadAttachment` images immediately after the URL; Hermes coalesces
+  `.pluginPayloadAttachment` images immediately after the URL; Rabbit coalesces
   those artifacts so the agent receives one link message instead of a follow-up
   `(attachment)` prompt.
 - **Outbound attachments are supported.** Images, voice notes, video, and
@@ -164,23 +164,23 @@ All env vars are documented in `plugin.yaml`. The most important:
   tapback heals when the next reaction replaces it. Group spaces stay
   reachable across restarts via spectrum-ts' `space.get` rehydration.
 - **Read receipts are supported.** The sidecar marks an inbound iMessage read
-  after forwarding it to Hermes, so the sender sees `Read` without waiting for
-  a model/tool turn. Inbound receipts for Hermes-sent messages are consumed as
+  after forwarding it to Rabbit, so the sender sees `Read` without waiting for
+  a model/tool turn. Inbound receipts for Rabbit-sent messages are consumed as
   presence telemetry and never create an agent turn. Set
   `PHOTON_READ_RECEIPTS=false` to keep messages at `Delivered`.
-- **Native polls are supported.** Hermes posts poll content through
+- **Native polls are supported.** Rabbit posts poll content through
   `spectrum-ts`' `poll(...)` builder via the sidecar's `/send-poll` endpoint.
 - **Message effects are supported.** Text can be sent with native iMessage
   bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
   via the sidecar's `/send-effect` endpoint.
 - **Cron/standalone sends require a running gateway.** Processes outside
-  the gateway (cron subprocesses, `hermes send`) cannot spawn the sidecar;
+  the gateway (cron subprocesses, `rabbit send`) cannot spawn the sidecar;
   they authenticate to the gateway's live sidecar via the runtime record at
-  `<hermes-home>/runtime/photon-sidecar.json` (written after the sidecar's
+  `<rabbit-home>/runtime/photon-sidecar.json` (written after the sidecar's
   `/healthz` readiness check, `0600`, removed on stop/failed start). Also
   note that shared/free-tier Photon lines cannot INITIATE conversations
   with numbers that never texted the line — that's Photon-side policy, not
-  a Hermes limitation.
+  a Rabbit limitation.
 
 ## Upgrading spectrum-ts
 
@@ -209,7 +209,7 @@ deliberate:
    fails loudly if the anchors no longer match — update them to the new output
    (`test_spectrum_patch.py` covers the patch).
 5. Run `pytest tests/plugins/platforms/photon/`.
-6. Verify end-to-end: `hermes photon status`, a DM and a group roundtrip,
+6. Verify end-to-end: `rabbit photon status`, a DM and a group roundtrip,
    and an agent reply into a group right after a gateway restart (exercises
    `space.get` rehydration).
 

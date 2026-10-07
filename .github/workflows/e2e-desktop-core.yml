@@ -1,7 +1,7 @@
 name: E2E Desktop core
 
 # The core Desktop suite (apps/desktop/e2e/core): a small, deterministic lane
-# that drives a real Electron build against a real `hermes serve` and a
+# that drives a real Electron build against a real `rabbit serve` and a
 # scripted loopback model. It guards the failures users must never see:
 # duplicated / reordered / lost transcript text, a backend that never becomes
 # ready or leaves orphans, and broken clarify/approval round trips.
@@ -71,9 +71,9 @@ jobs:
             npx playwright test -c e2e/core/playwright.config.ts
         env:
           CI: 'true'
-          HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
+          RABBIT_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
           # The pack step above ran: a missing release/linux-unpacked is a failure, not a skip.
-          HERMES_E2E_REQUIRE_PACKAGED: '1'
+          RABBIT_E2E_REQUIRE_PACKAGED: '1'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''

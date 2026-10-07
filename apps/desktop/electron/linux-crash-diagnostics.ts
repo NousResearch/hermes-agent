@@ -5,7 +5,7 @@ import path from 'node:path'
 // core dump alone says "something fatal happened" and nothing about what
 // (#100573: ten Linux reports, one shared trap address, zero fatal messages).
 // The message itself goes to stderr a moment before the trap, and every Linux
-// launcher (.desktop entry, Omarchy's hermes-desktop wrapper) discards stderr.
+// launcher (.desktop entry, Omarchy's rabbit-desktop wrapper) discards stderr.
 // Route Chromium's own log to a file next to desktop.log and let Crashpad keep
 // local minidumps, so the next crash carries its FATAL line with it.
 
@@ -42,7 +42,7 @@ export function linuxCrashDiagnostics(
 
 /** The side effects the plan needs, injected so the failure paths are provable. */
 export interface CrashDiagnosticsHost {
-  /** Create the logs directory. May throw (read-only or invalid HERMES_HOME). */
+  /** Create the logs directory. May throw (read-only or invalid RABBIT_HOME). */
   ensureLogsDir(dir: string): void
   /** Bound the Chromium log before Chromium appends to it (APPEND_TO_OLD_LOG_FILE). */
   reclaimChromiumLog(file: string): void
@@ -51,7 +51,7 @@ export interface CrashDiagnosticsHost {
 }
 
 // Diagnostics are optional; startup is not. Every step is best-effort, because
-// a read-only or invalid HERMES_HOME/logs must degrade to "no crash log", never
+// a read-only or invalid RABBIT_HOME/logs must degrade to "no crash log", never
 // to a desktop that dies before app readiness. The existing desktop log path
 // swallows the same failures for the same reason.
 export function enableLinuxCrashDiagnostics(

@@ -1,6 +1,6 @@
 """Explicit ``provider: ollama`` (and the sibling local-server aliases ``vllm`` / ``llamacpp``)
 must route through the ``custom`` branch in the auxiliary client, as it already does in
-``hermes_cli.auth``: a lane pointing at a local server with an empty ``api_key`` builds a
+``rabbit_cli.auth``: a lane pointing at a local server with an empty ``api_key`` builds a
 client with the ``no-key-required`` placeholder instead of raising
 ``Provider 'ollama' is set in config.yaml but no API key was found`` (issue #106010).
 

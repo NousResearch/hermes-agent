@@ -426,7 +426,7 @@ it('keeps a rowId-less preserved run trailing (#118002 behavior unchanged)', () 
 it('preserveLocalSystemNotices re-grafts trailing client-local system notices', () => {
   const notice: ChatMessage = {
     id: 'fallback-switch-1234',
-    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    parts: [textPart('Model fallback: using xiaomi/mimo via openrouter.')],
     role: 'system',
     timestamp: 1234
   }
@@ -441,7 +441,7 @@ it('preserveLocalSystemNotices re-grafts trailing client-local system notices', 
 it('preserveLocalSystemNotices does not duplicate a notice the page already carries', () => {
   const notice: ChatMessage = {
     id: 'fallback-switch-1234',
-    parts: [textPart('Model fallback: using xiaomi/mimo via nous.')],
+    parts: [textPart('Model fallback: using xiaomi/mimo via openrouter.')],
     role: 'system',
     timestamp: 1234
   }

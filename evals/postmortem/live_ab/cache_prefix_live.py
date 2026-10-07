@@ -1,10 +1,10 @@
 """Live A/B for the thinking-strip cache miss (F0). Runs a short real tool loop through AIAgent on
-Fable 5.1 via Nous and prints per-call cache hit ratios from agent.log. ~10 calls, well under $1.
-Arm A = current code. Arm B = HERMES_KEEP_ALL_THINKING=1 monkeypatch of _manage_thinking_signatures
-that passes thinking blocks back unchanged for the Nous/Anthropic route."""
+Fable 5.1 via Anthropic and prints per-call cache hit ratios from agent.log. ~10 calls, well under $1.
+Arm A = current code. Arm B = RABBIT_KEEP_ALL_THINKING=1 monkeypatch of _manage_thinking_signatures
+that passes thinking blocks back unchanged for the Anthropic route."""
 import os, sys, re, tempfile, time, subprocess, json
 # LIVE: real provider calls (cents). Usage: python cache_prefix_live.py <repo_root> <A|B>
-os.environ.setdefault("HERMES_HOME", os.path.expanduser("~/.hermes"))
+os.environ.setdefault("RABBIT_HOME", os.path.expanduser("~/.rabbit"))
 sys.path.insert(0, sys.argv[1])
 arm = sys.argv[2] if len(sys.argv) > 2 else "A"
 import agent.anthropic_message_convert as amc
@@ -24,10 +24,10 @@ if arm == "B":
     if hasattr(ad, "_manage_thinking_signatures"):
         ad._manage_thinking_signatures = _keep_all
 from run_agent import AIAgent
-from hermes_cli.runtime_provider import resolve_runtime_provider
-rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
+from rabbit_cli.runtime_provider import resolve_runtime_provider
+rt = resolve_runtime_provider(requested="anthropic", target_model="anthropic/claude-fable-5.1")
 sid = f"f0ab_{arm}_{int(time.time())}"
-ag = AIAgent(model="anthropic/claude-fable-5.1", provider="nous", base_url=rt.get("base_url"), api_key=rt.get("api_key"),
+ag = AIAgent(model="anthropic/claude-fable-5.1", provider="anthropic", base_url=rt.get("base_url"), api_key=rt.get("api_key"),
              api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True,
              enabled_toolsets=["file", "terminal"], platform="cli", max_iterations=12,
              skip_context_files=True, skip_memory=True, reasoning_config={"enabled": True, "effort": "medium"})
@@ -40,7 +40,7 @@ t0 = time.time()
 r = ag.run_conversation(task)
 print("final:", (r.get("final_response") or "")[:80], "| wall", round(time.time() - t0, 1), "s")
 time.sleep(1)
-log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.hermes/logs/agent.log | grep 'API call #'", shell=True, capture_output=True).stdout.decode("utf-8", "replace")
+log = subprocess.run(f"grep -h '\\[{sid}\\]' ~/.rabbit/logs/agent.log | grep 'API call #'", shell=True, capture_output=True).stdout.decode("utf-8", "replace")
 rows = re.findall(r"API call #(\d+): .*in=(\d+) out=(\d+) .*cache=(\d+)/(\d+) \((\d+)%\)", log)
 tot_in = tot_c = 0
 for n, i, o, c, ct, p in rows:

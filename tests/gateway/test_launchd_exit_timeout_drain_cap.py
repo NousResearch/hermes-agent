@@ -48,15 +48,15 @@ def _direct(label):
 def _grandchild(label):
     """Under the generated plist the gateway is a grandchild of the stderr-timestamp wrapper: launchd
     stamps XPC_SERVICE_NAME only on the wrapper, the grandchild reads "0" and finds the job label only
-    in the wrapper's HERMES_LAUNCHD_LABEL re-export."""
+    in the wrapper's RABBIT_LAUNCHD_LABEL re-export."""
     return {"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: label}
 
 
 @pytest.mark.parametrize(
     "platform, environ, expected",
     [
-        ("darwin", _direct("ai.hermes.gateway"), _CAPPED),
-        ("darwin", _grandchild("ai.hermes.gateway"), _CAPPED),
+        ("darwin", _direct("ai.rabbit.gateway"), _CAPPED),
+        ("darwin", _grandchild("ai.rabbit.gateway"), _CAPPED),
         # App-coalition label (IDE integrated terminal) is not our job: no budget, drain unchanged —
         # whichever variable carries it.
         ("darwin", _direct("application.com.example.ide.123"), 180.0),
@@ -64,15 +64,15 @@ def _grandchild(label):
         # No label at all (foreground start, or a wrapper older than the forward) is not launchd-owned.
         ("darwin", {"XPC_SERVICE_NAME": "0"}, 180.0),
         # launchd is darwin-only (same predicate as control_socket): a leaked label elsewhere is ignored.
-        ("linux", _direct("ai.hermes.gateway"), 180.0),
-        ("linux", _grandchild("ai.hermes.gateway"), 180.0),
+        ("linux", _direct("ai.rabbit.gateway"), 180.0),
+        ("linux", _grandchild("ai.rabbit.gateway"), 180.0),
     ],
     ids=["darwin-direct", "darwin-grandchild", "darwin-direct-app", "darwin-grandchild-app",
          "darwin-unlabelled", "linux-direct", "linux-grandchild"],
 )
-def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(platform, environ, expected):
+def test_launchd_reader_yields_a_budget_only_for_rabbit_jobs(platform, environ, expected):
     """End to end from the process environment to the stop drain: the reader sizes the drain to the
-    live ExitTimeOut only for an ``ai.hermes`` job on darwin, seen directly or through the wrapper's
+    live ExitTimeOut only for an ``ai.rabbit`` job on darwin, seen directly or through the wrapper's
     re-export. Platform is data, not the host (the launchctl call is faked)."""
     fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
     budget = read_launchd_exit_timeout_s(environ=environ, uid=501, run=fake_run, platform=platform)
@@ -82,8 +82,8 @@ def test_launchd_reader_yields_a_budget_only_for_hermes_jobs(platform, environ, 
 def test_forwarded_label_marks_grandchild_supervised_for_every_reader():
     """One seam: the restart route and the control-socket declaration see the same launchd identity
     the drain cap does, so a grandchild is not 'manual' to one reader and 'launchd' to another."""
-    grandchild_env = _grandchild("ai.hermes.gateway")
-    assert launchd_service_label(grandchild_env, platform="darwin") == "ai.hermes.gateway"
+    grandchild_env = _grandchild("ai.rabbit.gateway")
+    assert launchd_service_label(grandchild_env, platform="darwin") == "ai.rabbit.gateway"
     assert is_gateway_supervisor_process(grandchild_env) is True
     assert is_gateway_supervisor_process({"XPC_SERVICE_NAME": "0"}) is False
     assert is_gateway_supervisor_process(_grandchild("application.com.x.1")) is False

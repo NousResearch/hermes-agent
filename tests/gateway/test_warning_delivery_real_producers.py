@@ -10,7 +10,7 @@ from gateway.platforms.base import SendResult
 
 @pytest.fixture(params=[None, False, True, "override"])
 def policy(request, monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     value = request.param
     config: dict = {} if value is None else {"display": {"suppress_warning_notifications": value is True}}
     if value == "override":
@@ -76,11 +76,11 @@ async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, 
     from pathlib import Path
     from gateway.config import Platform
     from plugins.platforms.discord.adapter import DiscordAdapter
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     root.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     (root / "config.yaml").write_text("display: {suppress_warning_notifications: false}")
     for name, muted in [("a", setting), ("b", not bool(setting))]:
         home = root / "profiles" / name
@@ -93,7 +93,7 @@ async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, 
         (home / "config.yaml").write_text(json.dumps(config))
     wire = []
     async def send(chat_id, text):
-        wire.append((chat_id, text, get_hermes_home()))
+        wire.append((chat_id, text, get_rabbit_home()))
         return SendResult(success=True)
     maps = {n: {Platform.TELEGRAM: SimpleNamespace(send=send),
                 Platform.SLACK: SimpleNamespace(send=AsyncMock())} for n in ("a", "b")}
@@ -110,4 +110,4 @@ async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, 
             assert wire[-1][0] == "admin-" + name
             assert wire[-1][2] == root / "profiles" / name
         maps[name][Platform.SLACK].send.assert_not_awaited()
-        assert get_hermes_home() == root
+        assert get_rabbit_home() == root

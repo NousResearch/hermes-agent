@@ -97,7 +97,7 @@ it('retires both tutorial features after 30 days across launches, then keeps a m
 
 it('uses existing tip history on upgrade without treating invalid dates as experience', async () => {
   localStorage.setItem(
-    'hermes.desktop.tips.shownAt.v1',
+    'rabbit.desktop.tips.shownAt.v1',
     JSON.stringify({
       old: START - 31 * DAY_MS,
       recent: START - DAY_MS,
@@ -118,10 +118,10 @@ it('uses existing tip history on upgrade without treating invalid dates as exper
 
   localStorage.clear()
   localStorage.setItem(
-    'hermes.desktop.tips.shownAt.v1',
+    'rabbit.desktop.tips.shownAt.v1',
     JSON.stringify({ invalid: 'not a timestamp', future: START + DAY_MS, zero: 0, negative: -1 })
   )
-  localStorage.setItem('hermes.desktop.tips.rotation.v1', 'false')
+  localStorage.setItem('rabbit.desktop.tips.rotation.v1', 'false')
   vi.resetModules()
   const fresh = await import('./use-tip-rotation')
   tips = await import('@/store/tips')

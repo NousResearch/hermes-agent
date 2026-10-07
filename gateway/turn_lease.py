@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # distinct sessions may transiently exceed the cap rather than break serialization.
 DEFAULT_MAX_LEASES = 512
 # Fallback wait (seconds) when the caller passes no positive timeout (bridged via
-# HERMES_TURN_LEASE_TIMEOUT — lease contention is not agent inactivity). Fail-closed but short:
+# RABBIT_TURN_LEASE_TIMEOUT — lease contention is not agent inactivity). Fail-closed but short:
 # never pin a sequential platform updater for minutes.
 DEFAULT_LEASE_WAIT = 5.0
 

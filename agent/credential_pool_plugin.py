@@ -14,7 +14,7 @@ Contract (documented in website/docs/developer-guide/model-provider-plugin.md):
   natural token-endpoint shape) lands in ``entry.extra``; ``None``/empty = could not
   rotate and the pool benches the row like a failed refresh POST;
 * raising ``AuthError(..., relogin_required=True)`` (or a grant-dead OAuth code)
-  is terminal: the row goes DEAD with a WARNING naming ``hermes auth add``;
+  is terminal: the row goes DEAD with a WARNING naming ``rabbit auth add``;
   any other exception is transient and only benches the row.
 """
 
@@ -24,8 +24,8 @@ import logging
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
 
-from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
-from hermes_cli.auth_constants import AuthError
+from rabbit_cli.auth import _OAUTH_GRANT_DEAD_CODES
+from rabbit_cli.auth_constants import AuthError
 
 if TYPE_CHECKING:  # pragma: no cover
     from agent.credential_pool import CredentialPool, PooledCredential
@@ -85,7 +85,7 @@ def recover_failed_plugin_refresh(
         # the dead token every cooldown at DEBUG with no trace for the user.
         logger.warning(
             "%s refresh token for %s is terminally invalid (%s); the credential leaves rotation. "
-            "Re-run 'hermes auth add %s' to sign in again.",
+            "Re-run 'rabbit auth add %s' to sign in again.",
             pool.provider, entry.label or entry.id[:8], exc, pool.provider,
         )
         pool._mark_dead_refresh_grant(entry, exc)

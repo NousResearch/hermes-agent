@@ -14,10 +14,10 @@ Read-only EVM client: wallets, tokens, gas across 8 chains.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/blockchain/evm` |
+| Source | Optional — install with `rabbit skills install official/blockchain/evm` |
 | Path | `optional-skills/blockchain/evm` |
 | Version | `1.0.0` |
-| Author | Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent |
+| Author | Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `EVM`, `Ethereum`, `BNB`, `BSC`, `Base`, `Arbitrum`, `Polygon`, `Optimism`, `Avalanche`, `zkSync`, `Blockchain`, `Crypto`, `Web3`, `DeFi`, `NFT`, `ENS`, `Whale`, `Security` |
@@ -26,7 +26,7 @@ Read-only EVM client: wallets, tokens, gas across 8 chains.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # EVM Blockchain Skill
@@ -72,14 +72,14 @@ Tx decoding: 4byte.directory public API.
 
 Override RPC endpoint: `export EVM_RPC_URL=https://your-rpc.com`
 
-Helper script path: `~/.hermes/skills/blockchain/evm/scripts/evm_client.py`
+Helper script path: `~/.rabbit/skills/blockchain/evm/scripts/evm_client.py`
 
 ---
 
 ## Quick Reference
 
 ```
-SCRIPT=~/.hermes/skills/blockchain/evm/scripts/evm_client.py
+SCRIPT=~/.rabbit/skills/blockchain/evm/scripts/evm_client.py
 
 # Network & prices
 python $SCRIPT stats                            # Ethereum stats
@@ -125,7 +125,7 @@ python $SCRIPT whale --blocks 50 --min-usd 100000 --chain arbitrum
 ### 0. Setup Check
 ```bash
 python --version   # 3.8+ required
-python ~/.hermes/skills/blockchain/evm/scripts/evm_client.py stats
+python ~/.rabbit/skills/blockchain/evm/scripts/evm_client.py stats
 ```
 
 ### 1. Wallet Portfolio
@@ -220,8 +220,8 @@ Shows gwei price + USD cost for: transfer, ERC-20 transfer, approve, swap, NFT m
 ## Verification
 ```bash
 # Should print current block, gas price, ETH price
-python ~/.hermes/skills/blockchain/evm/scripts/evm_client.py stats
+python ~/.rabbit/skills/blockchain/evm/scripts/evm_client.py stats
 
 # Should resolve vitalik.eth to 0xd8dA...
-python ~/.hermes/skills/blockchain/evm/scripts/evm_client.py ens vitalik.eth
+python ~/.rabbit/skills/blockchain/evm/scripts/evm_client.py ens vitalik.eth
 ```

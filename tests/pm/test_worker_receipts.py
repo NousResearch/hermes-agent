@@ -7,7 +7,7 @@ from pm import receipt
 
 
 def test_worker_receipt_is_attributed_only_to_its_invoking_update(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     def worker():
         with receipt.worker_context("update-a"):

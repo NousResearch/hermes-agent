@@ -1,24 +1,24 @@
 ---
 sidebar_position: 23
 title: "Microsoft Graph Webhook 监听器"
-description: "在 Hermes 中接收 Microsoft Graph 变更通知（会议、日历、聊天等）"
+description: "在 Rabbit 中接收 Microsoft Graph 变更通知（会议、日历、聊天等）"
 ---
 
 # Microsoft Graph Webhook 监听器
 
-`msgraph_webhook` gateway 平台是一个入站事件监听器。它是 Hermes 接收来自 Microsoft Graph 的**变更通知**的方式——"一个 Teams 会议已结束"、"此聊天中收到了一条新消息"、"此日历事件已更新"。与 `teams` 平台（用户向其发送消息的聊天机器人）不同——此平台是 M365 告知 Hermes 某事已发生，而非来自用户的消息。
+`msgraph_webhook` gateway 平台是一个入站事件监听器。它是 Rabbit 接收来自 Microsoft Graph 的**变更通知**的方式——"一个 Teams 会议已结束"、"此聊天中收到了一条新消息"、"此日历事件已更新"。与 `teams` 平台（用户向其发送消息的聊天机器人）不同——此平台是 M365 告知 Rabbit 某事已发生，而非来自用户的消息。
 
-目前主要的消费者是 Teams 会议摘要流水线：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Hermes 将摘要发回 Teams。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
+目前主要的消费者是 Teams 会议摘要流水线：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Rabbit 将摘要发回 Teams。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
 
 ## 前提条件
 
 - Microsoft Graph 应用凭据——[注册 Microsoft Graph 应用程序](../../guides/microsoft-graph-app-registration.md)
 - 一个 Microsoft Graph 可访问的**公开 HTTPS URL**（Graph 不会调用私有端点）。测试时可使用 dev tunnel；生产环境需要具有有效证书的真实域名。
-- 一个强共享密钥，用作 `clientState` 的值。使用 `openssl rand -hex 32` 生成，并以 `MSGRAPH_WEBHOOK_CLIENT_STATE` 写入 `~/.hermes/.env`。
+- 一个强共享密钥，用作 `clientState` 的值。使用 `openssl rand -hex 32` 生成，并以 `MSGRAPH_WEBHOOK_CLIENT_STATE` 写入 `~/.rabbit/.env`。
 
 ## 快速开始
 
-最小化 `~/.hermes/config.yaml`：
+最小化 `~/.rabbit/config.yaml`：
 
 ```yaml
 platforms:
@@ -31,7 +31,7 @@ platforms:
         - "communications/onlineMeetings"
 ```
 
-或通过 `~/.hermes/.env` 中的环境变量（启动时自动合并）：
+或通过 `~/.rabbit/.env` 中的环境变量（启动时自动合并）：
 
 ```bash
 MSGRAPH_WEBHOOK_ENABLED=true
@@ -40,7 +40,7 @@ MSGRAPH_WEBHOOK_CLIENT_STATE=<generate-with-openssl-rand-hex-32>
 MSGRAPH_WEBHOOK_ACCEPTED_RESOURCES=communications/onlineMeetings
 ```
 
-启动 gateway：`hermes gateway run`。监听器暴露以下端点：
+启动 gateway：`rabbit gateway run`。监听器暴露以下端点：
 
 - `POST /msgraph/webhook` — 来自 Graph 的变更通知
 - `GET /msgraph/webhook?validationToken=...` — Graph 订阅验证握手
@@ -126,7 +126,7 @@ MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS="52.96.0.0/14,52.104.0.0/14"
 |------|--------|
 | Graph 订阅验证失败 | 公开 URL 可访问，`/msgraph/webhook` 路径匹配，带 `validationToken` 的 GET 在 10 秒内以 `text/plain` 原样回传 token。 |
 | 通知 POST 成功但无内容被摄取 | `client_state` 与订阅时注册的值一致。如值已漂移，重新运行 `openssl rand -hex 32` 并创建新订阅。检查 `accepted_resources` 是否包含 Graph 发送的资源路径。 |
-| 每条通知均返回 403 | `clientState` 不匹配（伪造，或订阅时使用了不同的值）。使用 `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` 重新创建订阅（随流水线运行时 PR 一同发布）。 |
+| 每条通知均返回 403 | `clientState` 不匹配（伪造，或订阅时使用了不同的值）。使用 `rabbit teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` 重新创建订阅（随流水线运行时 PR 一同发布）。 |
 | 监听器已启动，但 `curl http://localhost:8646/health` 挂起 | 端口绑定冲突。检查 `ss -tlnp \| grep 8646`，如有需要更改 `port:`。 |
 | 来自 Microsoft 的真实 Graph 请求返回 403 | 源 IP 白名单范围过窄。临时移除 `allowed_source_cidrs`，确认流量正常后，将列表扩展至包含当前 Microsoft 出口范围。 |
 
@@ -134,4 +134,4 @@ MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS="52.96.0.0/14,52.104.0.0/14"
 
 - [注册 Microsoft Graph 应用程序](../../guides/microsoft-graph-app-registration.md) — Azure 应用注册前提条件
 - [环境变量 → Microsoft Graph](../../reference/environment-variables.md#microsoft-graph-teams-meetings) — 完整环境变量列表
-- [Microsoft Teams 机器人设置](./teams.md) — 允许用户在 Teams 中与 Hermes 聊天的另一平台
+- [Microsoft Teams 机器人设置](./teams.md) — 允许用户在 Teams 中与 Rabbit 聊天的另一平台

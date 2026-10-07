@@ -1,8 +1,8 @@
 """A user-installed ``external_process`` provider must survive shared picker discovery and native selection.
 
-Drives a fake process profile (registered like a ``$HERMES_HOME/plugins/<name>`` model-provider plugin
+Drives a fake process profile (registered like a ``$RABBIT_HOME/plugins/<name>`` model-provider plugin
 would) through ``list_available_providers``, ``provider_model_ids``, the TUI/Desktop ``model.options``
-RPC, the ``hermes model`` setup picker and a session-scoped ``config.set model`` switch.
+RPC, the ``rabbit model`` setup picker and a session-scoped ``config.set model`` switch.
 """
 import shutil
 import sys
@@ -31,9 +31,9 @@ class _FakeProcessProfile(ProviderProfile):
 def picker_env(monkeypatch, tmp_path):
     # Real registries/config/runtime resolution, isolated from the user's home.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     profile = _FakeProcessProfile(
         name="fake-process-provider", display_name="Fake Process Provider", auth_type="external_process",
         api_mode="chat_completions", base_url="process://fake-process-provider", process_command="fake-process-cli",
@@ -45,16 +45,16 @@ def picker_env(monkeypatch, tmp_path):
                         lambda cmd, *a, **kw: sys.executable if cmd == profile.process_command else real_which(cmd, *a, **kw))
     import agent.models_dev as models_dev
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **kw: {})
-    import hermes_cli.inventory as inventory
+    import rabbit_cli.inventory as inventory
     monkeypatch.setattr(inventory, "_prewarm_pricing_async", lambda *a, **kw: None)
     return home, profile
 
 
 def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
     home, profile = picker_env
-    from hermes_cli.config import save_config
-    from hermes_cli.main_provider_setup import _build_provider_picker_rows
-    from hermes_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
+    from rabbit_cli.config import save_config
+    from rabbit_cli.main_provider_setup import _build_provider_picker_rows
+    from rabbit_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
     from tui_gateway import server
 
     assert any(row["id"] == profile.name for row in list_available_providers())
@@ -88,8 +88,8 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
         assert row["authenticated"]
 
     # The setup picker dispatches the process row through the generic plugin flow and persists it.
-    from hermes_cli import main, model_setup_flows
-    from hermes_cli.config import load_config
+    from rabbit_cli import main, model_setup_flows
+    from rabbit_cli.config import load_config
     selected = "fake-credit[1m]"
     seen = {}
     monkeypatch.setattr(main, "_pick_provider", lambda *a: profile.name)
@@ -116,8 +116,8 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
 
 def test_native_picker_selection_preserves_process_runtime(picker_env, monkeypatch):
     home, profile = picker_env
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import provider_model_ids
+    from rabbit_cli.config import load_config, save_config
+    from rabbit_cli.models import provider_model_ids
     from tui_gateway import server
 
     save_config(load_config())  # materialize defaults before checking session-only writes

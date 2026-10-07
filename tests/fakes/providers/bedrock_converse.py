@@ -1,6 +1,6 @@
 """Loopback fake of the AWS Bedrock Runtime Converse / ConverseStream API.
 
-The real ``boto3`` ``bedrock-runtime`` client inside Hermes is pointed here through botocore's
+The real ``boto3`` ``bedrock-runtime`` client inside Rabbit is pointed here through botocore's
 documented endpoint override (``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``), so the SDK serializes, signs
 (SigV4) and parses exactly as against AWS; only the service is fake.
 
@@ -319,7 +319,7 @@ class FakeBedrock:
         return f"http://127.0.0.1:{self._httpd.server_address[1]}"
 
     def client_env(self) -> dict[str, str]:
-        """Env for a Hermes child: botocore endpoint override + fake static credentials."""
+        """Env for a Rabbit child: botocore endpoint override + fake static credentials."""
         return {"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": self.endpoint, "AWS_ACCESS_KEY_ID": ACCESS_KEY,
                 "AWS_SECRET_ACCESS_KEY": SECRET_KEY, "AWS_REGION": REGION}
 

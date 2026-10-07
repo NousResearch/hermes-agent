@@ -288,7 +288,7 @@ def _legacy_group_fence_error(rid, session, params):
         hosted = probe_hosted_room(default_db_path(), room_id=room_id)
         peer = False
         if not hosted:
-            from hermes_constants import profile_name_for_home
+            from rabbit_constants import profile_name_for_home
             peer = probe_peer_room_reservation(
                 default_db_path(), room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
@@ -304,7 +304,7 @@ def _legacy_group_fence_error(rid, session, params):
     if hosted or peer:
         owner = "its gateway" if hosted else "its home host"
         return _err(
-            rid, 4122, f"This room is managed by {owner}. Update Hermes Desktop to continue it.")
+            rid, 4122, f"This room is managed by {owner}. Update Rabbit Desktop to continue it.")
     return None
 
 
@@ -334,7 +334,7 @@ def _parse_truncation_params(rid, sid, session, params, history):
         rid, 4029,
         "truncation parameters require confirm_truncate=true; "
         "an ordinary prompt.submit must not drop session history "
-        "(update your Hermes client if a rewind was intended)")
+        "(update your Rabbit client if a rewind was intended)")
 
 
 def _resolve_truncation_ordinal(rid, sid, session, params, history):
@@ -532,7 +532,7 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
 
 def _storage_error_data(failure, raw) -> dict:
     """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
-    from hermes_state_user_copy import storage_failure_details
+    from rabbit_state_user_copy import storage_failure_details
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
@@ -559,7 +559,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
-    from hermes_state_user_copy import describe_storage_failure
+    from rabbit_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
             failure = describe_storage_failure(_db_error)
@@ -680,7 +680,7 @@ _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    from rabbit_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
@@ -837,7 +837,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
+        from rabbit_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
     session["image_counter"] = session.get("image_counter", 0) + 1
@@ -941,7 +941,7 @@ def _(rid, params: dict) -> dict:
         argv = [
             "pdftoppm", "-png", "-r", "150", "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(td_path / "page")]
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from rabbit_cli._subprocess_compat import windows_hide_flags
         try:
             # UTF-8 + lossy decode: non-UTF-8 child output must not crash the gateway
             # thread on locale-mismatched Windows.
@@ -1327,14 +1327,14 @@ def _side_agent_args(rid, params, prefix):
 
 
 _PREVIEW_RESTART_RULES = (
-    "Restart exactly the app intended for the Preview URL, not Hermes Desktop itself.",
+    "Restart exactly the app intended for the Preview URL, not Rabbit Desktop itself.",
     "The Preview URL and port are the target. Preserve that target unless you conclude it is impossible.",
     "If the prior conversation shows a specific command that bound this URL/port, prefer re-running THAT exact command (in the same cwd) over guessing a new one.",
-    "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Hermes/Desktop process cwd.",
+    "First inspect what process, if any, owns the Preview URL port. If a stale server exists, inspect its cwd and prefer that cwd over the Rabbit/Desktop process cwd.",
     "The Current working directory is only a hint. Do not assume it is the preview app root when the port owner or files indicate another root.",
     "If the console shows a module-script MIME error for src/main.tsx or similar, a static server is serving source files. Do not restart python -m http.server or any dumb static server for that app.",
     "For module-script MIME failures, inspect package.json/vite config in the candidate app root and start the real dev server/bundler (for example npm/pnpm/yarn dev) so module transforms happen.",
-    "Before declaring success, verify the Preview URL responds with the intended app, not Hermes Desktop. If it serves Hermes/Desktop UI or another unrelated app, stop that process and report failure.",
+    "Before declaring success, verify the Preview URL responds with the intended app, not Rabbit Desktop. If it serves Rabbit/Desktop UI or another unrelated app, stop that process and report failure.",
     "Do not modify files. Do not ask the user unless blocked.",
     "Prefer existing project scripts or commands when they are clear.",
     "If a stale process owns the needed port, handle it safely.",

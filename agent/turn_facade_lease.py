@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from hermes_state_pidns import holder_namespace_token
+from rabbit_state_pidns import holder_namespace_token
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -54,7 +54,7 @@ class DurableTurnLease:
         """Create (not schedule) the liveness watchdog when configured: lease renewal is NOT
         evidence of progress; a silently stalled turn would renew forever."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from rabbit_cli.config import load_config_readonly
 
             liveness_config = load_config_readonly() or {}
         except Exception:
@@ -77,7 +77,7 @@ class DurableTurnLease:
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")
-        from hermes_cli.observability.shared_metrics_process import arm_turn
+        from rabbit_cli.observability.shared_metrics_process import arm_turn
         arm_turn(self.agent)
         from agent.periodic_scheduler import schedule
 
@@ -256,10 +256,10 @@ def admit_durable_turn_lease(
     ):
         return admission
     # A session id without a row still takes the lease: client-addressed ids (API server
-    # X-Hermes-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
+    # X-Rabbit-Session-Id, /v1/runs session_id, fingerprint-derived chat ids) are not
     # process-unique, and the first turn creates the row mid-turn, so a second writer would
     # otherwise find the row, take an unheld lease and interleave its turn into this one.
-    # pidns stamp: see hermes_state_pidns.
+    # pidns stamp: see rabbit_state_pidns.
     holder = (
         f"pid={os.getpid()}{holder_namespace_token()}:turn={relay_turn_id}"
         f":platform={task_context['platform'] or 'unknown'}"
@@ -277,10 +277,10 @@ def admit_durable_turn_lease(
         nonlocal reload_needed, announced
         reload_needed = announced = True
         agent._emit_status(
-            "⏳ Another Hermes process is using this session; "
+            "⏳ Another Rabbit process is using this session; "
             "waiting for it to finish before starting your turn..."
             if elapsed < 1.0 else
-            f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
+            f"⏳ Still waiting for the other Rabbit process on this session ({int(elapsed)}s)..."
         )
 
     if not db.acquire_session_turn_lease(
@@ -386,7 +386,7 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
         )
         result = {
             "final_response": (
-                "Stopped waiting for another Hermes process on this session. "
+                "Stopped waiting for another Rabbit process on this session. "
                 "Your message was not processed."
             ),
             **base,
@@ -406,7 +406,7 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
         return result
     # Fail closed like gateway TurnLeaseTimeoutError: surface a resend notice, not a bare TimeoutError.
     timeout_msg = (
-        "⏳ Another Hermes process kept this session busy too long. Your message was not "
+        "⏳ Another Rabbit process kept this session busy too long. Your message was not "
         "processed - wait for the other process to finish, then send it again."
     )
     logger.error("session turn lease wait timed out for %s", session_id)

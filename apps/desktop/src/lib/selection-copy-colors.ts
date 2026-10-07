@@ -8,7 +8,7 @@
 // inside the handler, `clipboardData` reads back empty — so the guard cannot
 // inspect or patch Chromium's payload. Instead it decides from the LIVE DOM:
 // it scores the ink that paints the current selection against the theme
-// Hermes is rendering, and when the two are opposite schemes it takes over
+// Rabbit is rendering, and when the two are opposite schemes it takes over
 // the clipboard write entirely, emitting `text/plain` plus a tag-structured
 // `text/html` with no paint declarations. Structure — headings, lists,
 // tables, links, bold/italic, code layout — survives; colors come from the
@@ -125,7 +125,7 @@ function isOppositeScheme(textLuma: number, mode: RenderedMode): boolean {
 }
 
 function renderedMode(doc: Document): RenderedMode {
-  const attr = doc.documentElement.dataset.hermesMode
+  const attr = doc.documentElement.dataset.rabbitMode
 
   if (attr === 'light' || attr === 'dark') {
     return attr
@@ -214,7 +214,7 @@ export function selectionInkLuma(sel: Selection, doc: Document): number | null {
  * Serialize the selection as tag-structured HTML with no paint and no
  * app-internal attributes: semantic elements (p, strong, em, a, ul, pre,
  * table, …) survive with their content and hrefs; style/class attributes —
- * the only carriers of Hermes' palette — are dropped so the paste target's
+ * the only carriers of Rabbit' palette — are dropped so the paste target's
  * own color defaults apply.
  *
  * One exception to the strip-everything rule: the result carries a GENERIC

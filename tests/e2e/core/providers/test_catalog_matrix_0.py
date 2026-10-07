@@ -1,7 +1,7 @@
 """Provider-catalog matrix, shard 0/3: one real oneshot turn per discovered provider.
 
 Rows are the providers whose name hashes to this shard (``_catalog_helpers.shard_of``), so a new
-plugin joins some shard automatically. Each row runs ``hermes -z`` against its own loopback fake
+plugin joins some shard automatically. Each row runs ``rabbit -z`` against its own loopback fake
 (redirected via ``model.base_url``; the fake answers only the exact configured path) with every
 other provider's key present as a decoy, and checks: the turn completes with a tool round trip
 through the provider's dialect; only the provider's own key reaches the wire, in the dialect's auth

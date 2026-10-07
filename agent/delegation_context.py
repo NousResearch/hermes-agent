@@ -1,6 +1,6 @@
 """Context-local state for delegate_task child execution.
 
-A Hermes process may itself be a Kanban dispatcher worker with HERMES_KANBAN_* in
+A Rabbit process may itself be a Kanban dispatcher worker with RABBIT_KANBAN_* in
 os.environ. In-process delegate_task children and cron jobs fired via
 ``cronjob(action="run")`` are NOT dispatcher-owned, so identity gates must fail
 closed for them without mutating the process-global environment.
@@ -12,16 +12,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
 
-_DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
+_DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("rabbit_delegated_child_context", default=False)
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
-_NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
+_NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("rabbit_non_dispatcher_owned_context", default=False)
 
-DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
+DELEGATED_CHILD_ENV_MARKER = "RABBIT_DELEGATED_CHILD_CONTEXT"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
-    "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
-    "HERMES_KANBAN_GOAL_MODE", "HERMES_KANBAN_GOAL_MAX_TURNS",
+    "RABBIT_KANBAN_TASK", "RABBIT_KANBAN_RUN_ID", "RABBIT_KANBAN_CLAIM_LOCK",
+    "RABBIT_KANBAN_GOAL_MODE", "RABBIT_KANBAN_GOAL_MAX_TURNS",
 )
 
 
@@ -69,18 +69,18 @@ def non_dispatcher_owned_context() -> Iterator[None]:
 
 
 def is_dispatcher_owned_worker_context() -> bool:
-    """The single predicate every ``HERMES_KANBAN_*`` identity gate should use."""
+    """The single predicate every ``RABBIT_KANBAN_*`` identity gate should use."""
     return not (is_delegated_child_process_context() or _NON_DISPATCHER_OWNED_CONTEXT.get())
 
 
 def explicit_board_intent_is_pinned() -> bool:
     """Whether an explicit kanban ``board=`` argument must still resolve through
-    the dispatcher-injected env pins (``HERMES_KANBAN_DB`` & friends) rather than
+    the dispatcher-injected env pins (``RABBIT_KANBAN_DB`` & friends) rather than
     its own board directory.
 
     True for in-process delegate children, descendants carrying
     :data:`DELEGATED_CHILD_ENV_MARKER`, and dispatched workers
-    (``HERMES_KANBAN_TASK`` set). The pins are the "workers physically cannot
+    (``RABBIT_KANBAN_TASK`` set). The pins are the "workers physically cannot
     see other boards" isolation, and :func:`kanban_path_is_fenced` checks the
     pinned path / fenced root — an explicit board that resolved elsewhere would
     also escape that fence. Outside these fences an explicit board is the
@@ -90,18 +90,18 @@ def explicit_board_intent_is_pinned() -> bool:
         return True
     if os.environ.get(DELEGATED_CHILD_ENV_MARKER):
         return True
-    return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+    return bool((os.environ.get("RABBIT_KANBAN_TASK") or "").strip())
 
 
 def owned_kanban_task() -> str:
-    """The board task this execution OWNS: ``HERMES_KANBAN_TASK`` for the dispatcher-owned
+    """The board task this execution OWNS: ``RABBIT_KANBAN_TASK`` for the dispatcher-owned
     worker, ``""`` otherwise. Tool access is not worker identity — a profile can expose the
     kanban toolset interactively, and children/cron runs inherit the env var — so every
     reader that turns the task id into worker behaviour (guidance, stop nudge, terminal
     outcomes) goes through this one helper."""
     if not is_dispatcher_owned_worker_context():
         return ""
-    return (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    return (os.environ.get("RABBIT_KANBAN_TASK") or "").strip()
 
 
 def is_delegated_child_process_context() -> bool:
@@ -113,7 +113,7 @@ def _fenced_kanban_root() -> str:
     """The board root this process's Kanban lineage lives under (``kanban_home()``); ``"1"`` when it
     cannot be resolved, which readers treat as "fence every board" (the pre-path marker)."""
     try:
-        from hermes_cli.kanban_db import kanban_home
+        from rabbit_cli.kanban_db import kanban_home
         return str(kanban_home())
     except Exception:
         return "1"
@@ -128,8 +128,8 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
 
     The marker's value is the fenced board ROOT, so the fence applies to the lineage's
     board and not to every Kanban DB the descendant touches: a child running a repro
-    against a temp ``HERMES_HOME`` got a silently read-only board there. An inherited
-    path-valued marker is kept (a grandchild that moved HERMES_HOME must not re-fence
+    against a temp ``RABBIT_HOME`` got a silently read-only board there. An inherited
+    path-valued marker is kept (a grandchild that moved RABBIT_HOME must not re-fence
     onto its scratch root and unfence the real one).
     """
     cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
@@ -141,7 +141,7 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
 def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
     """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
     process: always for an in-process delegate child (the parent's own board); for a spawned
-    descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the
+    descendant only when *path* is the dispatcher-pinned ``RABBIT_KANBAN_DB`` or lies under the
     fenced root the marker carries. A legacy ``"1"`` marker fences everything."""
     if _DELEGATED_CHILD_CONTEXT.get():
         return True
@@ -152,7 +152,7 @@ def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
         return True
     from pathlib import Path
     target = Path(path).expanduser().resolve()
-    pinned = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    pinned = os.environ.get("RABBIT_KANBAN_DB", "").strip()
     if pinned and target == Path(pinned).expanduser().resolve():
         return True
     try:
@@ -178,7 +178,7 @@ def delegated_child_subprocess_env(
     Location and credentials are untouched; callers retain their existing secret policy.
     Dispatcher workers and supervised tool transports grant their own explicit scope.
     """
-    if not (is_delegated_child_process_context() or os.environ.get("HERMES_KANBAN_TASK")
-            or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))):
+    if not (is_delegated_child_process_context() or os.environ.get("RABBIT_KANBAN_TASK")
+            or (env and (env.get("RABBIT_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))):
         return None if env is None else dict(env)
     return scrub_kanban_env(os.environ if env is None else env)

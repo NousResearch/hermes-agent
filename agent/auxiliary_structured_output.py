@@ -14,8 +14,8 @@ round-trip per call (#83390, #105191, #113064). Dropping — not downgrading to 
 same end state the rejection retry already produces: ``json_object`` needs the prompt to mention JSON
 and some relays return empty content under it, so callers already tolerate prompt compliance.
 
-The memo carries the model because capability is per model on aggregators (openrouter.ai, the Nous
-Portal, api.openai.com host dozens of models with different structured-output support), and it is
+The memo carries the model because capability is per model on aggregators (openrouter.ai and
+api.openai.com host dozens of models with different structured-output support), and it is
 fed only by rejections that name the *capability* — not by schema-validation 400s from providers that
 do implement ``json_schema`` ("Invalid schema for response_format 'json_schema': additionalProperties
 must be false"), which the ladder still retries once but which say nothing about the next schema.

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { CheckCircle2, Download, Loader2, Pause, StopFilled, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { localModelsKey, runningRuntimeInstall, startLocalRuntimeInstall } from '@/store/local-runtime-jobs'
-import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
 import { LocalModelDownloadActions, LocalModelDownloadProgress } from './local-model-download-progress'
 import { type LocalModelsActionScope, setServerRunning, useLocalModelsActionScope } from './local-models-actions'

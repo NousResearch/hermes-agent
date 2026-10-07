@@ -4,7 +4,7 @@ Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
 ``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
 (``_SafeWriter``), env-only HTTP proxy resolution, and the httpcore backend that
 runs sync httpx connects through the process-wide Happy Eyeballs racer
-(``hermes_bootstrap``).
+(``rabbit_bootstrap``).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sys
 import threading
 from typing import Any, Optional
 
-from hermes_bootstrap import _happy_eyeballs_create_connection
+from rabbit_bootstrap import _happy_eyeballs_create_connection
 from utils import base_url_hostname, normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 
@@ -32,7 +32,7 @@ _SHARED_TRANSPORTS_MAX = 32
 # ``request.extensions`` key stamped by ``_SharedTransport.handle_request``;
 # the socket-abort walker in agent_runtime_helpers uses it to find only the
 # owning client's in-flight connections on a shared pool.
-HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
+RABBIT_TRANSPORT_OWNER_EXT = "rabbit_transport_owner"
 
 
 class _HappyEyeballsSyncBackend:
@@ -215,7 +215,7 @@ def _shared_transport_cls():
         def handle_request(self, request: Any) -> Any:
             if self._closed:
                 raise RuntimeError("Cannot send a request, as the client has been closed.")
-            request.extensions[HERMES_TRANSPORT_OWNER_EXT] = id(self)
+            request.extensions[RABBIT_TRANSPORT_OWNER_EXT] = id(self)
             return self._inner.handle_request(request)
 
         def close(self) -> None:

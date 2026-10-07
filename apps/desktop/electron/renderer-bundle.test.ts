@@ -129,7 +129,7 @@ test('missingRendererAssets: an unreadable index is not treated as torn', () => 
 // deprecated fs.Stats and prints DEP0180 on every packaged launch. Choosing a renderer copy must
 // answer from reads and existence checks alone, for the in-archive copy as much as the unpacked one.
 test('renderer index probes never stat, so app.asar paths never construct fs.Stats', () => {
-  const resources = path.join('/opt', 'Hermes', 'resources')
+  const resources = path.join('/opt', 'Rabbit', 'resources')
   const copies = ['app.asar.unpacked', 'app.asar'].map(root => path.join(resources, root, 'dist'))
   const files = new Map<string, string>()
 

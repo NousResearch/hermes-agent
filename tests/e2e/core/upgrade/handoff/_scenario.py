@@ -1,4 +1,4 @@
-"""One user's machine across one real ``hermes update``, observed once per column.
+"""One user's machine across one real ``rabbit update``, observed once per column.
 
 A manual gateway (with its cron ticker and embedded kanban dispatcher) and a manual dashboard run
 in one shared-PID-namespace sandbox. A kanban worker is in flight and a one-shot cron job comes due
@@ -53,7 +53,7 @@ CRON_GATES = {
            "gated on #113293: a cron job due during an update fires into the swap window, fails, and loses its slot"),
 }
 
-# ``hermes update``'s own line for each systemd unit it restarted (or tried to) after stopping a dashboard.
+# ``rabbit update``'s own line for each systemd unit it restarted (or tried to) after stopping a dashboard.
 _UNIT_RESTART = re.compile(r"✓ restarted systemd service (\S+\.service)|⚠ (\S+\.service): systemctl restart returned")
 
 
@@ -141,16 +141,16 @@ def listener_pid(inst: X.Install, port: int) -> int | None:
 
 
 def dashboards(inst: X.Install) -> list[dict]:
-    """Top-level ``hermes dashboard`` processes (a dashboard's own helpers are not a second one)."""
+    """Top-level ``rabbit dashboard`` processes (a dashboard's own helpers are not a second one)."""
     out = [p for p in inst.host.procs()
            if p["state"] not in ("Z", "X") and "dashboard" in p["cmdline"] and "update" not in p["cmdline"]
-           and any("hermes" in a for a in p["cmdline"])]
+           and any("rabbit" in a for a in p["cmdline"])]
     pids = {p["pid"] for p in out}
     return [p for p in out if p["ppid"] not in pids]
 
 
 def _kanban(inst: X.Install, sql: str, args: tuple = ()) -> list[dict]:
-    db = inst.hermes_home / "kanban.db"
+    db = inst.rabbit_home / "kanban.db"
     if not db.exists():
         return []
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
@@ -173,19 +173,19 @@ def create_card(inst: X.Install, title: str) -> str:
 
 
 def cron_jobs(inst: X.Install) -> list[dict]:
-    data = X.read_json(inst.hermes_home / "cron" / "jobs.json")
+    data = X.read_json(inst.rabbit_home / "cron" / "jobs.json")
     jobs = data.get("jobs", data) if isinstance(data, dict) else data
     return [j for j in (jobs or []) if isinstance(j, dict)]
 
 
 def cron_outputs(inst: X.Install, job_id: str) -> list[str]:
-    d = inst.hermes_home / "cron" / "output" / job_id
+    d = inst.rabbit_home / "cron" / "output" / job_id
     return sorted(p.name for p in d.iterdir()) if d.is_dir() else []
 
 
 def worker_logs(inst: X.Install) -> str:
-    return "\n".join(f"--- {p.relative_to(inst.hermes_home)} ---\n{p.read_text(errors='replace')[-2500:]}"
-                     for p in sorted(inst.hermes_home.rglob("t_*.log")))
+    return "\n".join(f"--- {p.relative_to(inst.rabbit_home)} ---\n{p.read_text(errors='replace')[-2500:]}"
+                     for p in sorted(inst.rabbit_home.rglob("t_*.log")))
 
 
 def cron_failure(inst: X.Install, name: str, job: dict | None) -> str:
@@ -193,8 +193,8 @@ def cron_failure(inst: X.Install, name: str, job: dict | None) -> str:
     if job and job.get("last_error"):
         return str(job["last_error"])
     pat = re.compile(rf"Job '{re.escape(name)}' failed: (.+)")
-    for log in (inst.root / "gateway.log", inst.hermes_home / "logs" / "gateway.log",
-                inst.hermes_home / "logs" / "errors.log"):
+    for log in (inst.root / "gateway.log", inst.rabbit_home / "logs" / "gateway.log",
+                inst.rabbit_home / "logs" / "errors.log"):
         m = pat.search(log.read_text(errors="replace")) if log.exists() else None
         if m:
             return m.group(1).strip()
@@ -219,7 +219,7 @@ def _overlap(runs: list[dict]) -> list[tuple[int, int]]:
 
 class WorkerSampler:
     """Samples the sandbox process table once a second while the block runs and records, per card,
-    the most kanban workers (``hermes ... chat -q "work kanban task <id>"``) alive at the same moment:
+    the most kanban workers (``rabbit ... chat -q "work kanban task <id>"``) alive at the same moment:
     two at once is a duplicate spawn, whatever the board says afterwards."""
 
     def __init__(self, inst: X.Install, interval: float = 1.0) -> None:
@@ -278,14 +278,14 @@ def run(column: str, root: Path) -> SimpleNamespace:
             column, root, srv.base_url, extra={"kanban": {"dispatch_interval_seconds": 3}}) as inst:
         before = X.start_gateway(inst)
         o.old_pid = before["pid"]
-        with X.FileWatch(inst.hermes_home / "gateway.pid") as watch:
+        with X.FileWatch(inst.rabbit_home / "gateway.pid") as watch:
             assert X.pid_file_pid(inst) == o.old_pid, f"premise: gateway.pid names the gateway: {watch.render()}"
             status, body = X.chat(inst.port, "hello before the update")
             assert status == 200 and X.reply_text(body) == REPLY, f"premise: a turn works before: {body}"
 
             o.dash_port = X.free_port()
             inst.spawn("dashboard", "dashboard", "--no-open", "--host", "127.0.0.1", "--port", str(o.dash_port))
-            try:  # the first ``hermes dashboard`` builds the web UI, as it does for the user
+            try:  # the first ``rabbit dashboard`` builds the web UI, as it does for the user
                 X.wait_for(lambda: _dashboard_health(o.dash_port), timeout=600, what="the dashboard /api/health")
             except AssertionError as exc:
                 raise AssertionError(f"premise: the dashboard never came up: {exc}\n{inst.diagnostics()}") from None
@@ -353,7 +353,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
         o.pid_file = X.pid_file_verdict(inst, o.ident["pid"], watch.history) if o.ident else "no gateway"
         o.dash_listener = listener_pid(inst, o.dash_port)
         o.dash_roots = dashboards(inst)
-        restart_log = inst.hermes_home / "logs" / "dashboard-restart.log"
+        restart_log = inst.rabbit_home / "logs" / "dashboard-restart.log"
         o.dash_restarts = restart_log.read_text(errors="replace") if restart_log.exists() else ""
         o.cron_calls = list(model.cron_calls)
         o.cron_outputs = cron_outputs(inst, o.job_id)
@@ -364,7 +364,7 @@ def run(column: str, root: Path) -> SimpleNamespace:
         o.runs = {t: _kanban(inst, "SELECT id, outcome, started_at, ended_at FROM task_runs WHERE task_id = ? "
                                    "ORDER BY id", (t,)) for t in (o.card1, o.card2)}
         o.worker_logs = worker_logs(inst)
-        card_log = {t: next((p.read_text(errors="replace") for p in inst.hermes_home.rglob(f"{t}.log")), "")
+        card_log = {t: next((p.read_text(errors="replace") for p in inst.rabbit_home.rglob(f"{t}.log")), "")
                     for t in (o.card1, o.card2)}
         # Workers spawned after the update: every run of the new card, and every re-run of the in-flight one.
         o.post_update_worker_logs = "\n".join(_run_segments(card_log[o.card2]) + _run_segments(card_log[o.card1])[1:])
@@ -394,7 +394,7 @@ class HandoffProperties:
         if self.column == "n1" and not X.refs().base:
             pytest.skip("no release tag reachable (shallow checkout)")
         base = os.environ.get("TMPDIR") or tempfile.gettempdir()
-        root = Path(tempfile.mkdtemp(prefix="ho", dir=base))  # short: AF_UNIX paths under $HERMES_HOME
+        root = Path(tempfile.mkdtemp(prefix="ho", dir=base))  # short: AF_UNIX paths under $RABBIT_HOME
         try:
             yield run(self.column, root)
         finally:
@@ -431,7 +431,7 @@ class HandoffProperties:
         self._relaunched(o)
         assert not o.pid_file, f"{o.pid_file}\n{o.diag}"
         assert f"Gateway is running (PID: {o.ident['pid']})" in o.status.stdout, (
-            f"`hermes gateway status` cannot find the relaunched gateway:\n{H.describe(o.status)}\n{o.diag}")
+            f"`rabbit gateway status` cannot find the relaunched gateway:\n{H.describe(o.status)}\n{o.diag}")
 
     def test_dashboard_is_back_on_its_port(self, fleet):
         o = fleet
@@ -479,7 +479,7 @@ def dashboard_verdict(o) -> str:
     if re.search(r"^SyntaxError", o.dash_restarts, re.M) and "restarted:" in o.up.stdout:
         return (f"the respawned dashboard died parsing its launcher: the update replayed the pre-update argv and "
                 f"Python read a shell script (SyntaxError in logs/dashboard-restart.log); port {o.dash_port} is dark")
-    # The sandbox runs no Hermes unit, so any unit the dashboard stop restarts is the one the test runner
+    # The sandbox runs no Rabbit unit, so any unit the dashboard stop restarts is the one the test runner
     # (and so the hand-started dashboard) happens to live in.
     unit = next((a or b for a, b in _UNIT_RESTART.findall(o.up.stdout)), None)
     if unit and not o.dash_restarts:

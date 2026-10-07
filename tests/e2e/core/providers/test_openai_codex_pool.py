@@ -1,20 +1,20 @@
 """Codex credential pool: a dead refresh grant retires only the rows tied to that grant.
 
-Tier (stated honestly): REAL ``hermes -z`` processes with ``model.provider: openai-codex``
+Tier (stated honestly): REAL ``rabbit -z`` processes with ``model.provider: openai-codex``
 and a seeded two-login pool in ``auth.json``. Two vendor boundaries are faked:
 
-* the ChatGPT Codex Responses backend — ``HERMES_CODEX_BASE_URL`` points at
+* the ChatGPT Codex Responses backend — ``RABBIT_CODEX_BASE_URL`` points at
   ``FakeResponsesServer``, which accepts ONLY login A's bearer, so a reply proves which login
   served the turn;
 * the OpenAI OAuth token endpoint. Its URL is a hard-coded ``https://`` constant with no
   override, and the proxy-impersonation route cannot carry https, so a ``sitecustomize`` shim
   on the child's ``PYTHONPATH`` redirects exactly that URL, at the ``httpx.Client.send``
-  layer, to a loopback token fake. No Hermes function is patched; everything from the pool
+  layer, to a loopback token fake. No Rabbit function is patched; everything from the pool
   through the refresh POST, the terminal classification and the auth.json write-back runs as
   shipped.
 
 The pool is the #120741 layout: login A is the singleton plus its seeded ``device_code`` row
-(fresh), login B is an independently authorized ``manual:device_code`` row (``hermes auth
+(fresh), login B is an independently authorized ``manual:device_code`` row (``rabbit auth
 add``) whose access token is about to expire, so every selection defers a refresh of B.
 """
 
@@ -58,7 +58,7 @@ _SHIM = '''\
 """E2E vendor-boundary shim: route the hard-coded OAuth token URL to a loopback fake."""
 import os
 
-_pairs = [p.split("=", 1) for p in os.environ.get("HERMES_E2E_URL_REDIRECT", "").split(";") if "=" in p]
+_pairs = [p.split("=", 1) for p in os.environ.get("RABBIT_E2E_URL_REDIRECT", "").split(";") if "=" in p]
 if _pairs:
     import httpx
 
@@ -174,14 +174,14 @@ def _home(tmp_path: Path, store: dict[str, Any]) -> Home:
 def _env(tmp_path: Path, codex_url: str, token: FakeTokenServer, dead_port: int) -> dict[str, str]:
     """Child env: the shim, the Codex fake, and every other egress pinned to a refusing proxy."""
     proxy = f"http://127.0.0.1:{dead_port}"
-    return {"HERMES_CODEX_BASE_URL": codex_url, "PYTHONPATH": f"{tmp_path / 'shim'}:{REPO_ROOT}",
-            "HERMES_E2E_URL_REDIRECT": f"{TOKEN_URL}={token.url}",
+    return {"RABBIT_CODEX_BASE_URL": codex_url, "PYTHONPATH": f"{tmp_path / 'shim'}:{REPO_ROOT}",
+            "RABBIT_E2E_URL_REDIRECT": f"{TOKEN_URL}={token.url}",
             **{k: proxy for k in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")},
             "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
 
 
 def _auth(h: Home) -> dict[str, Any]:
-    return json.loads((h.hermes_home / "auth.json").read_text(encoding="utf-8"))
+    return json.loads((h.rabbit_home / "auth.json").read_text(encoding="utf-8"))
 
 
 def _answer(run) -> str:
@@ -194,7 +194,7 @@ def _pair(account: str, rt: str, ttl: float) -> dict[str, str]:
 
 def _two_logins(tmp_path: Path, a: dict[str, str], b: dict[str, str], token: FakeTokenServer,
                 replies: list[str], bearer: str) -> tuple[list, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Two sequential real ``hermes -z`` turns against the seeded pool; auth.json after each."""
+    """Two sequential real ``rabbit -z`` turns against the seeded pool; auth.json after each."""
     runs, stores = [], []
     with FakeResponsesServer([Turn([Message(r)]) for r in replies], api_key=bearer) as codex, \
             socket.socket() as dead:
@@ -271,7 +271,7 @@ def test_dead_shared_grant_retires_every_row_of_it(tmp_path) -> None:
     assert posted and set(posted) == {"rt-S"}, posted
     for run, store, rows in zip(runs, stores, pools):
         assert run.proc.returncode != 0 and "NEVER" not in run.stdout, run.describe()
-        assert "hermes auth add openai-codex" in run.stdout, run.describe()
+        assert "rabbit auth add openai-codex" in run.stdout, run.describe()
         singleton = store["providers"]["openai-codex"]
         assert not singleton.get("tokens", {}).get("refresh_token"), singleton
         assert (singleton.get("last_auth_error") or {}).get("relogin_required") is True, singleton

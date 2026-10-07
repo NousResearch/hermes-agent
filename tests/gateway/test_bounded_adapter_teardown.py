@@ -10,7 +10,7 @@ atexit PID-file cleanup, so the next start dies with "PID file race lost"
 
 The fix routes both teardown loops through `_bounded_adapter_teardown`,
 which wraps each await in the existing per-adapter timeout budget
-(HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT) and always returns.
+(RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT) and always returns.
 """
 
 import asyncio
@@ -32,7 +32,7 @@ def bare_runner():
 @pytest.mark.asyncio
 async def test_teardown_bounds_hanging_cancel(bare_runner, monkeypatch, caplog):
     """A wedged cancel_background_tasks() must time out, then disconnect runs."""
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
     adapter = MagicMock()
 
     async def hang():
@@ -61,7 +61,7 @@ async def test_teardown_continues_after_cancellation_swallowing_background_cance
     unwinding.  The teardown deadline must release runner ownership promptly,
     then proceed to disconnect instead of waiting for that old task forever.
     """
-    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
+    monkeypatch.setenv("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.01")
     adapter = MagicMock()
     started = asyncio.Event()
     release = asyncio.Event()

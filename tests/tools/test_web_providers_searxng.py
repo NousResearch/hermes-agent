@@ -145,13 +145,12 @@ class TestGetBackendSearXNG:
         monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
         monkeypatch.setenv("EXA_API_KEY", "exa_test_key")
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "exa"
 
-    def test_auto_detect_picks_searxng_when_url_only_in_hermes_config(self, monkeypatch):
+    def test_auto_detect_picks_searxng_when_url_only_in_rabbit_config(self, monkeypatch):
         """#34290 follow-up: a config-only SEARXNG_URL (absent from process env)
         must still drive auto-detect via the now config-aware ``_has_env``."""
-        from hermes_cli import config as hermes_config
+        from rabbit_cli import config as rabbit_config
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
@@ -161,11 +160,10 @@ class TestGetBackendSearXNG:
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(
-            hermes_config,
+            rabbit_config,
             "get_env_value",
             lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
         )
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "searxng"
 
 
@@ -183,12 +181,12 @@ class TestCheckWebApiKey:
 
     def test_searxng_config_only_satisfies_check_web_api_key(self, monkeypatch):
         """#34290 follow-up: config-only SEARXNG_URL satisfies the credential check."""
-        from hermes_cli import config as hermes_config
+        from rabbit_cli import config as rabbit_config
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(
-            hermes_config,
+            rabbit_config,
             "get_env_value",
             lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
         )
@@ -204,7 +202,6 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("SEARXNG_URL", raising=False)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         # Disable the keyless free tier — with it on, zero credentials still
@@ -236,7 +233,6 @@ class TestSearXNGOnlyExtractCrawlErrors:
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:
             return True
 

@@ -14,7 +14,7 @@ OpenAI 连接视觉与语言的模型。支持零样本图像分类、图文匹�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/clip` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/clip` 安装 |
 | 路径 | `optional-skills/mlops/clip` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ OpenAI 连接视觉与语言的模型。支持零样本图像分类、图文匹�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # CLIP - 对比语言图像预训练（Contrastive Language-Image Pre-Training）

@@ -17,7 +17,7 @@ from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     "adapter_cls", [WhatsAppAdapter, WeixinAdapter], ids=["whatsapp", "weixin"],
 )
 def test_text_batch_delays_clamped_to_shared_ceilings(adapter_cls, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     adapter = adapter_cls(PlatformConfig(
         enabled=True, extra={"text_batch_delay_seconds": "2.5", "text_batch_split_delay_seconds": 7}))
 

@@ -1,7 +1,7 @@
 """DeepInfra profile puts the reasoning switch on the wire (#111872).
 
 DeepInfra's OpenAI-compatible endpoint reads one top-level ``reasoning_effort`` field validated
-against a gateway-wide enum (``none``..``max``; Hermes-internal ``ultra`` is rejected). The
+against a gateway-wide enum (``none``..``max``; Rabbit-internal ``ultra`` is rejected). The
 profile is the ONLY source of that field on the transport's profile path, and the core
 ``_supports_reasoning_extra_body`` allowlist passes ``supports_reasoning=False`` for this host,
 so the profile must emit without gating on it.
@@ -27,7 +27,7 @@ def deepinfra_profile():
     [
         ({"enabled": True, "effort": "high"}, {"reasoning_effort": "high"}),
         ({"enabled": True, "effort": "xhigh"}, {"reasoning_effort": "xhigh"}),  # native, never folded into max
-        ({"enabled": True, "effort": "ultra"}, {"reasoning_effort": "max"}),  # Hermes-internal tier clamps
+        ({"enabled": True, "effort": "ultra"}, {"reasoning_effort": "max"}),  # Rabbit-internal tier clamps
         ({"enabled": False}, {"reasoning_effort": "none"}),  # the only off switch for default-on models
         ({"enabled": True, "effort": "none"}, {"reasoning_effort": "none"}),
         (None, {}),  # nothing requested → keep DeepInfra's per-model default

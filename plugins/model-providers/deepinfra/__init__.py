@@ -15,7 +15,7 @@ class _DeepInfraProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Map Hermes reasoning controls to DeepInfra's top-level ``reasoning_effort``.
+        """Map Rabbit reasoning controls to DeepInfra's top-level ``reasoning_effort``.
 
         DeepInfra applies a per-model default when the field is absent (DeepSeek-V4.x off,
         GLM/Qwen-Thinking on), so ``none`` is the only working off switch and an unset effort
@@ -38,7 +38,7 @@ class _DeepInfraProfile(ProviderProfile):
         if not (get_secret("DEEPINFRA_API_KEY") or "").strip():
             return None
         try:
-            from hermes_cli.models import _fetch_deepinfra_models_by_tag
+            from rabbit_cli.models import _fetch_deepinfra_models_by_tag
             items = _fetch_deepinfra_models_by_tag("chat")
         except Exception:
             return None

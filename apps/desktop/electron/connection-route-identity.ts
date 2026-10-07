@@ -14,7 +14,7 @@ interface SshRouteConfig {
   keyPath?: string
   mode: 'ssh'
   port?: number
-  remoteHermesPath?: string
+  remoteRabbitPath?: string
   remoteProfile?: string
   user?: string
 }
@@ -23,7 +23,7 @@ export type StoredRoute =
   | {
       authMode?: unknown
       headers?: Record<string, unknown>
-      kind: 'cloud' | 'remote'
+      kind: 'remote'
       org?: unknown
       token?: unknown
       url?: unknown
@@ -66,7 +66,7 @@ function routeIdentity(route: StoredRoute): null | string {
       keyPath: ssh.keyPath || '',
       kind: 'ssh',
       port: ssh.port || 22,
-      remoteHermesPath: ssh.remoteHermesPath || '',
+      remoteRabbitPath: ssh.remoteRabbitPath || '',
       remoteProfile: ssh.remoteProfile || '',
       user: (ssh.user || '').trim().toLowerCase()
     })
@@ -79,7 +79,6 @@ function routeIdentity(route: StoredRoute): null | string {
       authMode,
       headers: canonicalHeaders(route.headers),
       kind: route.kind,
-      org: route.kind === 'cloud' ? String(route.org || '').trim() : '',
       token: authMode === 'token' ? (route.token ?? null) : null,
       url: normalizeRemoteBaseUrl(route.url)
     })

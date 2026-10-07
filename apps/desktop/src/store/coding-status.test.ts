@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesRepoStatus } from '@/global'
+import type { RabbitRepoStatus } from '@/global'
 
 import {
   $repoStatus,
@@ -15,7 +15,7 @@ import {
 } from './coding-status'
 import { $currentCwd, $selectedStoredSessionId } from './session'
 
-const sampleStatus: HermesRepoStatus = {
+const sampleStatus: RabbitRepoStatus = {
   branch: 'feature/login',
   defaultBranch: 'main',
   detached: false,
@@ -31,7 +31,7 @@ const sampleStatus: HermesRepoStatus = {
   files: []
 }
 
-const otherStatus: HermesRepoStatus = {
+const otherStatus: RabbitRepoStatus = {
   ...sampleStatus,
   branch: 'bb/other-worktree',
   added: 3,
@@ -41,8 +41,8 @@ const otherStatus: HermesRepoStatus = {
   unstaged: 1
 }
 
-function stubProbe(impl: (cwd: string) => Promise<HermesRepoStatus | null>) {
-  ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = { git: { repoStatus: impl } }
+function stubProbe(impl: (cwd: string) => Promise<RabbitRepoStatus | null>) {
+  ;(window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop = { git: { repoStatus: impl } }
 }
 
 describe('refreshRepoStatus', () => {
@@ -53,7 +53,7 @@ describe('refreshRepoStatus', () => {
     $selectedStoredSessionId.set(null)
     // Drain the cwd/session subscribe side-effects the sets above kick off.
     vi.advanceTimersByTime(200)
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     _resetCodingStatusForTests()
   })
 
@@ -61,7 +61,7 @@ describe('refreshRepoStatus', () => {
     _resetCodingStatusForTests()
     vi.clearAllTimers()
     vi.useRealTimers()
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
   })
 
   it('populates the per-cwd cache and the primary computed for that cwd', async () => {
@@ -119,7 +119,7 @@ describe('refreshRepoStatus', () => {
   })
 
   it('never publishes an old worktree status onto the primary after the active cwd moves', async () => {
-    let resolveOld!: (status: HermesRepoStatus | null) => void
+    let resolveOld!: (status: RabbitRepoStatus | null) => void
     stubProbe(
       () =>
         new Promise(resolve => {
@@ -161,7 +161,7 @@ describe('refreshRepoStatus', () => {
   })
 
   it('runs one probe at a time and coalesces overlap into one trailing refresh per drain', async () => {
-    const resolvers: Array<(status: HermesRepoStatus | null) => void> = []
+    const resolvers: Array<(status: RabbitRepoStatus | null) => void> = []
     const calls: string[] = []
     let active = 0
     let maxActive = 0
@@ -268,7 +268,7 @@ describe('repoChangeKindForPath', () => {
     $repoStatusByCwd.set({
       '/repo': {
         ...sampleStatus,
-        files: [{ path: 'b.ts', untracked: true } as HermesRepoStatus['files'][number]]
+        files: [{ path: 'b.ts', untracked: true } as RabbitRepoStatus['files'][number]]
       }
     })
     expect(listener).toHaveBeenCalledTimes(1)
@@ -276,7 +276,7 @@ describe('repoChangeKindForPath', () => {
     $repoStatusByCwd.set({
       '/repo': {
         ...sampleStatus,
-        files: [{ path: 'a.ts', untracked: true } as HermesRepoStatus['files'][number]]
+        files: [{ path: 'a.ts', untracked: true } as RabbitRepoStatus['files'][number]]
       }
     })
     expect(listener).toHaveBeenCalledTimes(2)
@@ -289,11 +289,11 @@ describe('repoChangeKindForPath', () => {
     $repoStatusByCwd.set({
       '/repo-a': {
         ...sampleStatus,
-        files: [{ path: 'src/file1.ts', untracked: false, conflicted: false } as HermesRepoStatus['files'][number]]
+        files: [{ path: 'src/file1.ts', untracked: false, conflicted: false } as RabbitRepoStatus['files'][number]]
       },
       '/repo-b': {
         ...otherStatus,
-        files: [{ path: 'src/file2.ts', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+        files: [{ path: 'src/file2.ts', untracked: true, conflicted: false } as RabbitRepoStatus['files'][number]]
       }
     })
 
@@ -306,7 +306,7 @@ describe('repoChangeKindForPath', () => {
     $repoStatusByCwd.set({
       '/repo': {
         ...sampleStatus,
-        files: [{ path: 'brand_new_dir', untracked: true, conflicted: false } as HermesRepoStatus['files'][number]]
+        files: [{ path: 'brand_new_dir', untracked: true, conflicted: false } as RabbitRepoStatus['files'][number]]
       }
     })
 

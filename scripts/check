@@ -41,7 +41,7 @@ sys.path.insert(0, str(REPO))
 from scripts.code_health import gitio  # noqa: E402
 from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
 
-_HOOK_MARK = "# hermes-agent scripts/check hook"
+_HOOK_MARK = "# rabbit-agent scripts/check hook"
 # Hooks are shared by every worktree of the clone, so the checked-out branch decides nothing:
 # each candidate (the index being committed, the tip of each pushed branch) is materialized and
 # judged by its own scripts/check, and a candidate that predates scripts/check is not judged.
@@ -65,7 +65,7 @@ judge() {  # judge TREE-ISH ARGS...: check out TREE-ISH alone and run its own sc
   shift
   tmp="$(mktemp -d)" || return 1
   # Git for Windows: native git and python get this path verbatim when MSYS path conversion
-  # is off (MSYS_NO_PATHCONV=1, as Hermes' terminal sets it), so hand them C:/... spelling.
+  # is off (MSYS_NO_PATHCONV=1, as Rabbit' terminal sets it), so hand them C:/... spelling.
   dir="$tmp"
   if command -v cygpath >/dev/null 2>&1; then dir="$(cygpath -m "$tmp")" || dir="$tmp"; fi
   GIT_INDEX_FILE="$dir/index" git read-tree "$tree" &&
@@ -147,7 +147,7 @@ def _tree_snapshot(tree: str) -> Iterator[tuple[Path, dict[str, str]]]:
     the guards that walk the disk.
     """
     git_dir = gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip()
-    with tempfile.TemporaryDirectory(prefix="hermes-check-tree-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="rabbit-check-tree-") as tmp:
         root = Path(tmp) / "tree"
         root.mkdir()
         env = {**os.environ, "GIT_DIR": git_dir, "GIT_WORK_TREE": str(root),

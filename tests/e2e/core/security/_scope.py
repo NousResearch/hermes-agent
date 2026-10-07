@@ -1,8 +1,8 @@
-"""Private harness for ``test_profile_secret_scope.py``: one real ``hermes serve`` hosting two
+"""Private harness for ``test_profile_secret_scope.py``: one real ``rabbit serve`` hosting two
 profiles, a user dashboard plugin whose API route reads a credential through ``get_secret``, and a
 stdio MCP server per profile that dumps the environment it was spawned with.
 
-Everything here writes plain files into the fake home; no Hermes code is imported or patched.
+Everything here writes plain files into the fake home; no Rabbit code is imported or patched.
 """
 
 from __future__ import annotations
@@ -59,11 +59,11 @@ server.run(transport="stdio")
 '''
 
 
-def install_plugin(hermes_home: Path) -> None:
+def install_plugin(rabbit_home: Path) -> None:
     """A user plugin with a backend API under the launch home's plugins dir."""
-    dash = hermes_home / "plugins" / PLUGIN_ID / "dashboard"
+    dash = rabbit_home / "plugins" / PLUGIN_ID / "dashboard"
     dash.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "plugins" / PLUGIN_ID / "plugin.yaml").write_text(
+    (rabbit_home / "plugins" / PLUGIN_ID / "plugin.yaml").write_text(
         f"name: {PLUGIN_ID}\nversion: 0.0.1\ndescription: secret-scope canary\n", encoding="utf-8")
     (dash / "manifest.json").write_text(json.dumps({
         "name": PLUGIN_ID, "label": "Scope canary", "version": "0.0.1",

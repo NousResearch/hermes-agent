@@ -185,7 +185,7 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 
 
 def _detect_python(root: Optional[str]) -> Optional[str]:
-    # Pyright needs the project's dependencies, not Hermes's runtime packages.  ``VIRTUAL_ENV`` is the
+    # Pyright needs the project's dependencies, not Rabbit's runtime packages.  ``VIRTUAL_ENV`` is the
     # operator's own environment; ``root`` (the project's .venv/venv) is None for an untrusted workspace.
     project = (os.path.join(root, ".venv"), os.path.join(root, "venv")) if root else ()
     venvs = [v for v in (os.environ.get("VIRTUAL_ENV"), *project) if v]
@@ -222,12 +222,12 @@ def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 
 
 _VUE_REINSTALL = (
-    "delete <HERMES_HOME>/lsp/node_modules/@vue and <HERMES_HOME>/lsp/bin/vue-language-server*, "
-    "then run: hermes lsp install vue-language-server"
+    "delete <RABBIT_HOME>/lsp/node_modules/@vue and <RABBIT_HOME>/lsp/bin/vue-language-server*, "
+    "then run: rabbit lsp install vue-language-server"
 )
 _VUE_TUNNEL_MSG = (
     "vue-language-server: the installed @vue/language-server is 3.x, which only works behind a client-hosted "
-    f"tsserver tunnel Hermes does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: {_VUE_REINSTALL}"
+    f"tsserver tunnel Rabbit does not run — no diagnostics will arrive. Reinstall the self-hosting 2.x line: {_VUE_REINSTALL}"
 )
 _VUE_TSDK_MSG = (
     "vue-language-server: no JavaScript TypeScript SDK (typescript/lib/typescript.js) next to the server or under "
@@ -237,10 +237,10 @@ _VUE_TSDK_MSG = (
 
 def _node_modules_trees(bin_path: str, root: Optional[str]) -> List[str]:
     """``node_modules`` trees that may hold a server and its TypeScript SDK: the launcher's own tree
-    (symlinks resolved), Hermes staging, then the project's (``root`` None: Hermes's trees only, for
+    (symlinks resolved), Rabbit staging, then the project's (``root`` None: Rabbit's trees only, for
     TypeScript's SDK pin in an untrusted workspace, whose own JavaScript must not load)."""
-    from agent.lsp.install import hermes_lsp_bin_dir
-    trees = [str(hermes_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
+    from agent.lsp.install import rabbit_lsp_bin_dir
+    trees = [str(rabbit_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
     real = os.path.realpath(bin_path)
     marker = f"{os.sep}node_modules{os.sep}"
     if (idx := real.rfind(marker)) >= 0:
@@ -285,14 +285,14 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 
 _TS_UNTRUSTED_MSG = (
     "typescript-language-server: no TypeScript SDK next to the server, and this workspace is untrusted so its "
-    "own node_modules/typescript is not loaded — diagnostics are skipped. Reinstall: hermes lsp install "
+    "own node_modules/typescript is not loaded — diagnostics are skipped. Reinstall: rabbit lsp install "
     "typescript-language-server, or list the workspace under lsp.trusted_workspaces."
 )
 
 
 def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     """typescript-language-server loads the workspace's own ``node_modules/typescript`` unless
-    ``tsserver.path`` names another, so an untrusted workspace is pinned to Hermes's copy."""
+    ``tsserver.path`` names another, so an untrusted workspace is pinned to Rabbit's copy."""
     bin_path = _find_binary(ctx, "typescript", ("typescript-language-server",), "typescript-language-server")
     if bin_path is None:
         return None
@@ -309,15 +309,15 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     """Locate the PowerShellEditorServices bundle dir (release zip, manual install).  Resolution order:
     ``lsp.servers.powershell.command[0]`` when a directory, ``init_overrides["powershell"]["bundlePath"]``,
-    ``PSES_BUNDLE_PATH`` env, then ``<HERMES_HOME>/lsp/PowerShellEditorServices``."""
-    from hermes_constants import get_hermes_home
+    ``PSES_BUNDLE_PATH`` env, then ``<RABBIT_HOME>/lsp/PowerShellEditorServices``."""
+    from rabbit_constants import get_rabbit_home
     override = ctx.binary_overrides.get("powershell")
     init = ctx.init_overrides.get("powershell", {})
     candidates = [
         override[0] if override else None,
         str(init["bundlePath"]) if isinstance(init, dict) and init.get("bundlePath") else None,
         os.environ.get("PSES_BUNDLE_PATH"),
-        os.path.join(str(get_hermes_home()), "lsp", "PowerShellEditorServices"),
+        os.path.join(str(get_rabbit_home()), "lsp", "PowerShellEditorServices"),
     ]
     for cand in filter(None, candidates):
         # Accept either the bundle root or the inner module dir.
@@ -331,7 +331,7 @@ def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
 _PSES_MISSING_MSG = (
     "powershell: pwsh found but the PowerShellEditorServices bundle is missing. Download the release zip from "
     "https://github.com/PowerShell/PowerShellEditorServices/releases, extract it, and either set "
-    "lsp.servers.powershell.command to the bundle path or unzip it to <HERMES_HOME>/lsp/PowerShellEditorServices."
+    "lsp.servers.powershell.command to the bundle path or unzip it to <RABBIT_HOME>/lsp/PowerShellEditorServices."
 )
 
 
@@ -346,13 +346,13 @@ def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         return None
     start_script = os.path.join(bundle, "PowerShellEditorServices", "Start-EditorServices.ps1")
     # PSES writes connection info to the session details file on startup.
-    session_dir = hermes_lsp_session_dir()
+    session_dir = rabbit_lsp_session_dir()
     inner = (
         f"& '{start_script}' -BundledModulesPath '{bundle}' "
         f"-LogPath '{os.path.join(session_dir, 'pses.log')}' "
         f"-SessionDetailsPath '{os.path.join(session_dir, f'pses-session-{os.getpid()}.json')}' "
         f"-FeatureFlags @() -AdditionalModules @() "
-        f"-HostName Hermes -HostProfileId hermes -HostVersion 1.0.0 -Stdio -LogLevel Normal"
+        f"-HostName Rabbit -HostProfileId rabbit -HostVersion 1.0.0 -Stdio -LogLevel Normal"
     )
     return SpawnSpec(
         [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", inner],
@@ -361,10 +361,10 @@ def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
-def hermes_lsp_session_dir() -> str:
+def rabbit_lsp_session_dir() -> str:
     """Return (and create) the dir for PSES session/log scratch files."""
-    from hermes_constants import get_hermes_home
-    d = os.path.join(str(get_hermes_home()), "lsp", "pses")
+    from rabbit_constants import get_rabbit_home
+    d = os.path.join(str(get_rabbit_home()), "lsp", "pses")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -372,14 +372,14 @@ def hermes_lsp_session_dir() -> str:
 # ---- workspace trust ----
 
 # The only servers that start in an untrusted workspace (``workspace.is_trusted_workspace``): with the
-# settings Hermes passes they run nothing the checkout ships.  Everything else waits for trust, because
+# settings Rabbit passes they run nothing the checkout ships.  Everything else waits for trust, because
 # it evaluates project build files on start or on save (cargo check / build.rs / proc-macros, Gradle,
 # mix.exs, build.zig, stack/cabal, Lua ``runtime.plugin``, terraform providers, prisma.config.ts, Vue's
 # tsconfig ``vueCompilerOptions.plugins``, which @vue/language-core require()s from the project, ...),
-# and so do user-declared ``lsp.servers`` entries, whose behaviour Hermes cannot vouch for.
+# and so do user-declared ``lsp.servers`` entries, whose behaviour Rabbit cannot vouch for.
 UNTRUSTED_SAFE_SERVERS = frozenset({
     "pyright",                  # interpreter pinned to the operator's own (_spawn_pyright)
-    "typescript",               # tsserver pinned to Hermes's SDK; plugins then resolve beside it (_spawn_typescript)
+    "typescript",               # tsserver pinned to Rabbit's SDK; plugins then resolve beside it (_spawn_typescript)
     "svelte-language-server",   # isTrusted: false — no svelte.config.js, no project svelte/prettier
     "bash-language-server",     # parses scripts; diagnostics from shellcheck on PATH
     "yaml-language-server",     # validates against JSON schemas (may fetch them); no project code

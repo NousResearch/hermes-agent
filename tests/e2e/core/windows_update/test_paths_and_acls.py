@@ -3,9 +3,9 @@
 Failure class: paths and ACLs.
 
 * ``C:\\Users\\Jörg Ñúñez`` is an ordinary Windows account. ``install.ps1`` must get
-  through the uv ``python-deps`` stage there (#124526), and ``hermes`` must then work and
+  through the uv ``python-deps`` stage there (#124526), and ``rabbit`` must then work and
   update from that profile.
-* After ``hermes update`` the managed toolchain under ``%LOCALAPPDATA%\\hermes\\tools``
+* After ``rabbit update`` the managed toolchain under ``%LOCALAPPDATA%\\rabbit\\tools``
   must still be executable by a non-elevated process: a logon Scheduled Task or Startup
   entry runs with a standard-user token even when the updating session was elevated
   (#122935). The runner session is elevated, so each tool's DACL is checked (kernel
@@ -32,7 +32,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
-PERSON = "Jörg Ñúñez"  # the profile is "Jörg Ñúñez hermes-e2e-<id>"
+PERSON = "Jörg Ñúñez"  # the profile is "Jörg Ñúñez rabbit-e2e-<id>"
 _TOOL_NAMES = {"python.exe", "node.exe", "git.exe", "uv.exe", "rg.exe"}
 
 
@@ -122,16 +122,16 @@ def _standard_user_token_is_really_restricted(scratch: Path) -> str:
     return "ok"
 
 
-def _managed_tools(hermes_home: Path) -> list[Path]:
-    tools = hermes_home / "tools"
+def _managed_tools(rabbit_home: Path) -> list[Path]:
+    tools = rabbit_home / "tools"
     found = []
     for pattern in ("*/*.exe", "*/*/*.exe", "*/*/*/*.exe"):
         found += [p for p in tools.glob(pattern) if p.name.lower() in _TOOL_NAMES]
     return sorted(set(found))
 
 
-def _tool_access(hermes_home: Path) -> dict[Path, str]:
-    return standard_user_access(_managed_tools(hermes_home))
+def _tool_access(rabbit_home: Path) -> dict[Path, str]:
+    return standard_user_access(_managed_tools(rabbit_home))
 
 
 @pytest.fixture(scope="module")
@@ -143,12 +143,12 @@ def journey(tmp_path_factory):
         try:
             install = j.step("install", machine.install)
             if j.ok("install") and install.returncode == 0:
-                j.step("version", lambda: machine.hermes("--version"))
+                j.step("version", lambda: machine.rabbit("--version"))
                 j.step("turn", lambda: one_shot_turn(machine, srv, "turn-unicode-profile"))
                 machine.advance()
                 j.step("update", machine.update)
                 j.step("control", lambda: _standard_user_token_is_really_restricted(machine.root))
-                j.step("tool_access", lambda: _tool_access(machine.hermes_home))
+                j.step("tool_access", lambda: _tool_access(machine.rabbit_home))
             yield j
         finally:
             machine.teardown()
@@ -161,16 +161,16 @@ def test_install_from_non_ascii_profile_with_spaces(journey: Journey) -> None:
         m, f"install.ps1 failed for a profile path with non-ASCII characters and spaces: {first_error}", run)
 
 
-def test_hermes_works_and_updates_from_that_profile(journey: Journey) -> None:
+def test_rabbit_works_and_updates_from_that_profile(journey: Journey) -> None:
     m = journey.machine
     version, turn, update = journey["version"], journey["turn"], journey["update"]
-    assert version.returncode == 0 and "Hermes Agent v" in version.stdout, fail_with(
-        m, "hermes --version fails from a non-ASCII profile", version)
+    assert version.returncode == 0 and "Rabbit Agent v" in version.stdout, fail_with(
+        m, "rabbit --version fails from a non-ASCII profile", version)
     assert turn.ok, fail_with(
         m, f"a turn fails from a non-ASCII profile (reply printed={turn.reply_id in turn.run.stdout}, "
            f"prompt reached provider={turn.reached_wire})", turn.run)
     assert update.returncode == 0 and m.installed_head() == m.next, fail_with(
-        m, f"hermes update from a non-ASCII profile exited {update.returncode}, checkout at {m.installed_head()}",
+        m, f"rabbit update from a non-ASCII profile exited {update.returncode}, checkout at {m.installed_head()}",
         update)
 
 
@@ -179,7 +179,7 @@ def test_managed_tools_stay_executable_for_standard_user(journey: Journey) -> No
     journey["control"]
     journey["update"]
     assert any(exe.name.lower() == "python.exe" for exe in verdicts), fail_with(
-        m, f"no managed python.exe under {m.hermes_home / 'tools'}: {[str(e) for e in verdicts]}")
-    broken = [f"{exe.relative_to(m.hermes_home)}: {why}" for exe, why in verdicts.items() if why]
+        m, f"no managed python.exe under {m.rabbit_home / 'tools'}: {[str(e) for e in verdicts]}")
+    broken = [f"{exe.relative_to(m.rabbit_home)}: {why}" for exe, why in verdicts.items() if why]
     assert not broken, fail_with(
         m, f"managed tools are not executable by a non-elevated process after update: {'; '.join(broken)}")

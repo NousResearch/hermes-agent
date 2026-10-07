@@ -1,7 +1,7 @@
 """#115325: the peer-DM transport (``POST /api/sessions/{id}/chat``) retries a transiently failed
 turn once, resuming the DM row the failed attempt already persisted.
 
-``hermes peer dm`` is the third Bot-DM transport. The local (``tools.bot_mode_dm``) and relayed
+``rabbit peer dm`` is the third Bot-DM transport. The local (``tools.bot_mode_dm``) and relayed
 (``tui_gateway.methods_bot_relay``) lanes both re-run a transiently failed turn once and resume the
 row the failed attempt left as the transcript's unanswered tail (``tools/bot_failure_reasons``
 ``retry_action`` / ``RESUME_UNANSWERED_TURN``); the peer lane ran the turn once and handed whatever
@@ -21,7 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 SESSION_ID = "peer_dm_retry"
 DM = "disk status?"

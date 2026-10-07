@@ -14,7 +14,7 @@ description: "药物发现工作流的制药研究助手"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/research/drug-discovery` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/research/drug-discovery` 安装 |
 | 路径 | `optional-skills/research/drug-discovery` |
 | 版本 | `1.0.0` |
 | 作者 | bennytimz |
@@ -25,7 +25,7 @@ description: "药物发现工作流的制药研究助手"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Drug Discovery & Pharmaceutical Research

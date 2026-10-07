@@ -1,6 +1,6 @@
 """Sliding-window budget for bot-authored inbound messages.
 
-``{PLATFORM}_ALLOW_BOTS`` only decides admission, so two Hermes profiles replying to each other never stop.
+``{PLATFORM}_ALLOW_BOTS`` only decides admission, so two Rabbit profiles replying to each other never stop.
 The guard counts admitted bot messages per conversation and drops further ones for ``cooldown_seconds``
 once ``max_events`` land inside ``window_seconds``. Settings: config.yaml ``gateway.bot_loop_guard``.
 """
@@ -55,7 +55,7 @@ def _as_positive_int(raw, default: int) -> int:
 
 def settings_from_config(cfg) -> BotLoopGuardSettings:
     """Read ``gateway.bot_loop_guard`` from a loaded config dict. Unusable values keep the default."""
-    from hermes_cli.config import cfg_get
+    from rabbit_cli.config import cfg_get
 
     block = cfg_get(cfg, "gateway", "bot_loop_guard", default=None)
     if not isinstance(block, dict):
@@ -72,7 +72,7 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
 def load_settings() -> BotLoopGuardSettings:
     """Settings from the live config.yaml. Defaults when the config cannot be read."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
 
         return settings_from_config(load_config_readonly())
     except Exception:

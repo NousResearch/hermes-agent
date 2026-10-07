@@ -11,7 +11,7 @@ import tui_gateway.server as srv
 
 
 def test_spawn_tree_list_survives_non_dict_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     d = srv._spawn_tree_session_dir("sess-x")
     (d / "bad.json").write_text('"not a snapshot"', encoding="utf-8")
     good = d / "good.json"
@@ -25,7 +25,7 @@ def test_spawn_tree_list_survives_non_dict_snapshot(tmp_path, monkeypatch):
 
 
 def test_spawn_tree_load_rejects_non_dict_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     d = srv._spawn_tree_session_dir("sess-y")
     bad = d / "bad.json"
     bad.write_text("[1, 2]", encoding="utf-8")

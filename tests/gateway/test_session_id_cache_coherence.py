@@ -30,7 +30,7 @@ import threading
 
 import pytest
 
-from hermes_state import AsyncSessionDB
+from rabbit_state import AsyncSessionDB
 
 
 def _make_runner():
@@ -106,7 +106,7 @@ class TestSessionIdCacheCoherence:
         (the message_count comparison is meaningless across different
         session_ids), not rebuild and bust the prompt cache.
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
         db.create_session("sA", source="telegram")
@@ -138,7 +138,7 @@ class TestSessionIdCacheCoherence:
     async def test_same_session_id_turns_still_reuse(self, tmp_path):
         """#46237 / #45966 invariant: consecutive same-session turns must
         REUSE the cached agent (prompt cache preserved)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
         db.create_session("s1", source="telegram")
@@ -169,7 +169,7 @@ class TestSessionIdCacheCoherence:
         """The original #45966 invariant must hold: a DIFFERENT process
         appending to the same session in the shared DB invalidates the
         cache (genuine cross-process write)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
         db.create_session("s1", source="telegram")
@@ -207,7 +207,7 @@ class TestSessionIdCacheCoherence:
         live count != snapshot count, the guard fires and the agent
         rebuilds (same behavior as before the fix for legacy entries).
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "sessions.db")
         db.create_session("s1", source="telegram")

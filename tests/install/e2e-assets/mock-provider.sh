@@ -10,10 +10,10 @@
 # dev:mock flow writes) with a real, chat-capable backend.
 #
 # Usage (sourced from a driver):
-#   mock_start <workroot>      start, write config into $HERMES_HOME
+#   mock_start <workroot>      start, write config into $RABBIT_HOME
 #   mock_stop                  kill the background server
 #
-# Requires: ASSETS (e2e-assets dir), LOG_DIR, HERMES_HOME, ok/fail helpers.
+# Requires: ASSETS (e2e-assets dir), LOG_DIR, RABBIT_HOME, ok/fail helpers.
 
 MOCK_PIDFILE=""
 MOCK_URLFILE=""
@@ -32,7 +32,7 @@ mock_start() {
       && kill -0 "$(cat "$MOCK_PIDFILE" 2>/dev/null)" 2>/dev/null; then
     local live_url
     live_url="$(cat "$MOCK_URLFILE")"
-    export HERMES_E2E_MOCK_URL="$live_url"
+    export RABBIT_E2E_MOCK_URL="$live_url"
     ok "mock inference server already live: $live_url"
     # The config write is NOT optional: this is what re-points the app at a live
     # endpoint, and callers that only want that (the app-update flow, whose app
@@ -60,15 +60,15 @@ mock_start() {
   fi
   local url
   url="$(cat "$MOCK_URLFILE")"
-  export HERMES_E2E_MOCK_URL="$url"
+  export RABBIT_E2E_MOCK_URL="$url"
   ok "mock inference server: $url"
   mock_configure_provider "$url"
 }
 
 mock_configure_provider() {
   local url="${1:?mock_configure_provider needs a url}"
-  node "$ASSETS/../../../tests-js/scripts/mock-provider-config.ts" "$HERMES_HOME" "$url" || fail "mock provider config failed"
-  ok "configured in $HERMES_HOME as an OpenAI-compatible endpoint (api $url/v1)"
+  node "$ASSETS/../../../tests-js/scripts/mock-provider-config.ts" "$RABBIT_HOME" "$url" || fail "mock provider config failed"
+  ok "configured in $RABBIT_HOME as an OpenAI-compatible endpoint (api $url/v1)"
 }
 
 mock_stop() {

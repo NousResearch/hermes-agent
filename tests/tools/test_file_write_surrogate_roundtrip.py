@@ -53,7 +53,7 @@ class TestPipeStdinSurrogates:
                 proc.kill()
         assert proc.returncode == 0
         assert out.read_bytes() == b"\xff\x00\xfe"
-        assert proc._hermes_stdin_errors == []
+        assert proc._rabbit_stdin_errors == []
 
     def test_unencodable_surrogate_captures_error_and_closes_stdin(self, tmp_path):
         out = tmp_path / "out.bin"
@@ -65,8 +65,8 @@ class TestPipeStdinSurrogates:
             if proc.poll() is None:
                 proc.kill()
         assert proc.returncode == 0  # child saw EOF and exited cleanly
-        assert proc._hermes_stdin_errors  # the encode failure was captured
-        assert isinstance(proc._hermes_stdin_errors[0], UnicodeEncodeError)
+        assert proc._rabbit_stdin_errors  # the encode failure was captured
+        assert isinstance(proc._rabbit_stdin_errors[0], UnicodeEncodeError)
 
     def test_normal_content_unchanged(self, tmp_path):
         out = tmp_path / "out.bin"
@@ -79,7 +79,7 @@ class TestPipeStdinSurrogates:
                 proc.kill()
         assert proc.returncode == 0
         assert out.read_bytes() == b"hello\nworld\n"
-        assert proc._hermes_stdin_errors == []
+        assert proc._rabbit_stdin_errors == []
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ class TestWriteFileSurrogates:
         assert res.bytes_written == 3
         assert res.verified is True
         assert p.read_bytes() == b"\xff\x00\xfe"
-        assert not list(tmp_path.glob(".hermes-tmp*"))
+        assert not list(tmp_path.glob(".rabbit-tmp*"))
 
     def test_roundtrip_mixed_normal_and_surrogate(self, ops, tmp_path):
         content = "head\n" + b"\xff".decode("utf-8", "surrogateescape") + "\ntail\n"
@@ -204,7 +204,7 @@ class TestPipeStdinRemainingBranches:
                 proc.kill()
         assert proc.returncode == 0
         assert out.read_bytes() == b"\x00\x01\xfe"
-        assert proc._hermes_stdin_errors == []
+        assert proc._rabbit_stdin_errors == []
 
     def test_stdin_none_records_runtime_error(self, tmp_path):
         proc = subprocess.Popen(
@@ -216,5 +216,5 @@ class TestPipeStdinRemainingBranches:
         _pipe_stdin(proc, "data")
         _wait_or_kill(proc)
         assert proc.returncode == 0
-        assert proc._hermes_stdin_errors
-        assert isinstance(proc._hermes_stdin_errors[0], RuntimeError)
+        assert proc._rabbit_stdin_errors
+        assert isinstance(proc._rabbit_stdin_errors[0], RuntimeError)

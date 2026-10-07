@@ -15,7 +15,7 @@ def _chatgpt_oauth_token() -> str:
 
 def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_path):
     """A fresh profile resolves metadata and routes the official endpoint without live I/O."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *args, **kwargs: {})
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: SimpleNamespace())
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda *args, **kwargs: [])
@@ -67,7 +67,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
     from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
     from agent.transports.codex import ResponsesApiTransport
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})
     monkeypatch.setattr(metadata.model_metadata_http, "get", lambda *args, **kwargs: SimpleNamespace(
         status_code=200,
@@ -94,11 +94,11 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
     ("openai-codex", "gpt-6-astra"), ("openai-codex", "gpt-6-astra-900k"), ("openai-api", "gpt-6-astra"),
 ])
 def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(monkeypatch, tmp_path, provider, model):
-    from hermes_cli import models
-    from hermes_cli.inventory import ConfigContext, _append_unconfigured_rows
-    from hermes_cli.model_switch_providers import _finalize_picker_rows
+    from rabbit_cli import models
+    from rabbit_cli.inventory import ConfigContext, _append_unconfigured_rows
+    from rabbit_cli.model_switch_providers import _finalize_picker_rows
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(models, "_credential_fingerprint", lambda _: "synthetic-account")
     models.update_provider_cache_entry(provider, ["gpt-5.6-sol", model])
     live = []

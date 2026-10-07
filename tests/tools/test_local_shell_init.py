@@ -132,12 +132,12 @@ class TestSnapshotEndToEnd:
         env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
         try:
             first = env.execute(
-                'export HERMES_STICKY_ENV_PROBE="sticky"; '
-                'export PATH="/tmp/hermes-session-bin:$PATH"; '
-                'echo "first=$HERMES_STICKY_ENV_PROBE"'
+                'export RABBIT_STICKY_ENV_PROBE="sticky"; '
+                'export PATH="/tmp/rabbit-session-bin:$PATH"; '
+                'echo "first=$RABBIT_STICKY_ENV_PROBE"'
             )
             second = env.execute(
-                'echo "second=$HERMES_STICKY_ENV_PROBE"; echo "PATH=$PATH"'
+                'echo "second=$RABBIT_STICKY_ENV_PROBE"; echo "PATH=$PATH"'
             )
         finally:
             env.cleanup()
@@ -147,13 +147,13 @@ class TestSnapshotEndToEnd:
         assert "first=sticky" in first.get("output", "")
         output = second.get("output", "")
         assert "second=sticky" in output
-        assert "/tmp/hermes-session-bin" in output
+        assert "/tmp/rabbit-session-bin" in output
 
 
     def test_snapshot_picks_up_init_file_exports(self, tmp_path, monkeypatch):
         init_file = tmp_path / "custom-init.sh"
         init_file.write_text(
-            'export HERMES_SHELL_INIT_PROBE="probe-ok"\n'
+            'export RABBIT_SHELL_INIT_PROBE="probe-ok"\n'
             'export PATH="/opt/shell-init-probe/bin:$PATH"\n'
         )
 
@@ -164,7 +164,7 @@ class TestSnapshotEndToEnd:
             env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
             try:
                 result = env.execute(
-                    'echo "PROBE=$HERMES_SHELL_INIT_PROBE"; echo "PATH=$PATH"'
+                    'echo "PROBE=$RABBIT_SHELL_INIT_PROBE"; echo "PATH=$PATH"'
                 )
             finally:
                 env.cleanup()

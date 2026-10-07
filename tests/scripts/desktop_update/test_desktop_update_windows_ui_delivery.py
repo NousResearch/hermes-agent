@@ -24,10 +24,10 @@ def _server(tmp_path: Path, *, failed: bool = False):
     powershell = shutil.which("powershell.exe")
     assert powershell, "Windows updater tests require Windows PowerShell."
     env = os.environ.copy()
-    env.update(TEMP=str(tmp_path), TMP=str(tmp_path), HERMES_SELFTEST_HOLD_SECONDS="0")
-    env.pop("HERMES_SELFTEST_FAIL", None)
+    env.update(TEMP=str(tmp_path), TMP=str(tmp_path), RABBIT_SELFTEST_HOLD_SECONDS="0")
+    env.pop("RABBIT_SELFTEST_FAIL", None)
     if failed:
-        env["HERMES_SELFTEST_FAIL"] = "1"
+        env["RABBIT_SELFTEST_FAIL"] = "1"
     output_path = tmp_path / "ui-delivery.log"
     with output_path.open("wb") as output:
         process = subprocess.Popen(

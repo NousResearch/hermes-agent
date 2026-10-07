@@ -208,7 +208,7 @@ class GatewayAuthorizationMixin:
     def _adapters_for_profile(self, profile: Optional[str]) -> dict:
         """The live adapter map *profile* may deliver through: ``_profile_adapters[p]`` for a
         secondary, ``self.adapters`` only for the primary/default. ``_profile_adapters`` is consulted
-        BEFORE the active profile name: multiplex turns override ``HERMES_HOME`` so
+        BEFORE the active profile name: multiplex turns override ``RABBIT_HOME`` so
         ``_active_profile_name()`` reports the secondary profile mid-turn, and treating it as primary
         would hand it the default bot. A named profile with no map gets ``{}`` — fail closed: a
         secondary whose adapter failed to connect must NOT fall back to the default profile's adapter
@@ -222,7 +222,7 @@ class GatewayAuthorizationMixin:
             if adapters or not self._is_shared_bot_satellite(profile_name):
                 return adapters
             return self._primary_adapters()
-        # Identity captured at construction, not the per-turn HERMES_HOME-derived name.
+        # Identity captured at construction, not the per-turn RABBIT_HOME-derived name.
         primary_profile = getattr(self, "_primary_profile_name", None)
         if not primary_profile:
             with contextlib.suppress(Exception):
@@ -337,7 +337,7 @@ class GatewayAuthorizationMixin:
         return (adapter, profile) if registered else None
 
     def _authorization_home_for_source(self, source: SessionSource):
-        """HERMES_HOME whose allowlist admits *source*: the identity's transport home (or the
+        """RABBIT_HOME whose allowlist admits *source*: the identity's transport home (or the
         ingress-stamped one), else the home of the profile owning the adapter that delivers it.
         ``None`` = authorize in the ambient scope (multiplex off, or no live adapter — the check then
         fails closed on its own).
@@ -361,9 +361,9 @@ class GatewayAuthorizationMixin:
             return None
         _registered, profile = self._owning_profile(adapter, getattr(source, "platform", None))
         if profile is None:
-            from hermes_constants import get_process_hermes_home
-            return get_process_hermes_home()  # the primary bot's home, never the per-turn override
-        from hermes_cli.profiles import get_profile_dir
+            from rabbit_constants import get_process_rabbit_home
+            return get_process_rabbit_home()  # the primary bot's home, never the per-turn override
+        from rabbit_cli.profiles import get_profile_dir
         return get_profile_dir(profile)
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:

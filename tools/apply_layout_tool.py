@@ -1,4 +1,4 @@
-"""Apply a layout preset in the Hermes desktop GUI (``layout.apply`` via ``desktop_ui``).
+"""Apply a layout preset in the Rabbit desktop GUI (``layout.apply`` via ``desktop_ui``).
 
 The renderer resolves the id against its layouts registry (core, plugin and user
 presets are one list); only the active window's session acts, so a background turn
@@ -18,14 +18,14 @@ def apply_layout_tool(preset: str) -> str:
         return tool_error("preset is required — a layout preset id, e.g. 'default' or 'focus'.")
     return desktop_ui.emit_or_error(
         "layout.apply", {"preset": name}, f"Failed to apply layout '{name}': ",
-        "Layout apply is only available in the Hermes desktop app.", {"success": True, "preset": name},
+        "Layout apply is only available in the Rabbit desktop app.", {"success": True, "preset": name},
     )
 
 
 APPLY_LAYOUT_SCHEMA = {
     "name": "apply_layout",
     "description": (
-        "Apply a saved layout preset to the Hermes desktop app when the user "
+        "Apply a saved layout preset to the Rabbit desktop app when the user "
         "asks to rearrange the workspace. Built-ins: default (chat + "
         "sidebars), focus (chat only), terminal-deck, quad; plugin/user "
         "presets by id. To reveal ONE pane, use focus_pane instead."

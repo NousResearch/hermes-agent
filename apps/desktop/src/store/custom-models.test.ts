@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared'
+import type { ModelOptionProvider } from '@rabbit/shared'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
@@ -33,17 +33,17 @@ describe('custom models', () => {
   })
 
   it('appends each remembered id under its own provider and keeps the input when nothing applies', () => {
-    const providers = [provider('openrouter', ['openai/gpt-5']), provider('nous', ['hermes-4'])]
+    const providers = [provider('openrouter', ['openai/gpt-5']), provider('acme', ['model-4'])]
 
     const customs = [
       { model: 'acme/model-x', provider: 'openrouter' },
-      { model: 'hermes-4', provider: 'nous' },
+      { model: 'model-4', provider: 'acme' },
       { model: 'ghost', provider: 'missing' }
     ]
 
     const merged = withCustomModels(providers, customs)
 
-    expect(merged.map(row => row.models)).toEqual([['openai/gpt-5', 'acme/model-x'], ['hermes-4']])
+    expect(merged.map(row => row.models)).toEqual([['openai/gpt-5', 'acme/model-x'], ['model-4']])
     expect(merged[1]).toBe(providers[1])
     expect(withCustomModels(providers, [])).toBe(providers)
   })
@@ -83,7 +83,7 @@ describe('resetModelVisibilityKeepingCustoms', () => {
     const visible = effectiveVisibleKeys($visibleModels.get(), catalog)
 
     expect($customModels.get()).toEqual([{ model: 'acme/model-x', provider: 'openrouter' }])
-    expect(window.localStorage.getItem('hermes.desktop.custom-models')).toContain('acme/model-x')
+    expect(window.localStorage.getItem('rabbit.desktop.custom-models')).toContain('acme/model-x')
     expect(visible.has(modelVisibilityKey('openrouter', 'acme/model-x'))).toBe(true)
 
     for (const key of defaultVisibleKeys(catalog)) {

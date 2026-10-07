@@ -1,7 +1,7 @@
 /**
  * after-extract.mjs — electron-builder afterExtract hook.
  *
- * Stamps the Hermes icon + identity onto the unpacked Windows Electron binary
+ * Stamps the Rabbit icon + identity onto the unpacked Windows Electron binary
  * before electron-builder renames it and injects the ASAR integrity resource.
  *
  * WHY afterExtract and not afterPack (#105629): with ASAR integrity on (the

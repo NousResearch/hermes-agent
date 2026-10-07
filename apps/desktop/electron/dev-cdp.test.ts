@@ -20,7 +20,7 @@ test('a dev-server run opens the default port with no opt-in', () => {
 })
 
 test('a packaged build never opens the port, however loudly the env asks', () => {
-  const decision = resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: '9222' }, isPackaged: true })
+  const decision = resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: '9222' }, isPackaged: true })
 
   assert.deepEqual(decision, { port: null, reason: 'packaged' })
 })
@@ -29,7 +29,7 @@ test('packaged is checked before every other gate', () => {
   // Belt-and-suspenders: dev server present, valid port requested, still shut.
   for (const value of ['9222', '', 'off', 'garbage']) {
     const decision = resolveDevCdpPort({
-      env: { HERMES_DESKTOP_CDP_PORT: value },
+      env: { RABBIT_DESKTOP_CDP_PORT: value },
       isPackaged: true,
       devServer: DEV_SERVER
     })
@@ -46,16 +46,16 @@ test('an unpackaged dist run (no dev server) does not qualify', () => {
 })
 
 test('the port is overridable', () => {
-  assert.equal(resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: '9333' } }).port, 9333)
+  assert.equal(resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: '9333' } }).port, 9333)
 })
 
 test('tolerates surrounding whitespace on the override', () => {
-  assert.equal(resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: ' 9333 ' } }).port, 9333)
+  assert.equal(resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: ' 9333 ' } }).port, 9333)
 })
 
 test('can be switched off on a dev run', () => {
   for (const value of ['0', 'off', 'OFF', 'false', 'no']) {
-    const decision = resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: value } })
+    const decision = resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: value } })
 
     assert.equal(decision.port, null, `expected ${JSON.stringify(value)} to close the port`)
     assert.equal(decision.reason, 'opted-out')
@@ -64,7 +64,7 @@ test('can be switched off on a dev run', () => {
 
 test('refuses ports that are not usable integers', () => {
   for (const value of ['80', '-1', '70000', 'yes', '9222.5', '92 22']) {
-    const decision = resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: value } })
+    const decision = resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: value } })
 
     assert.equal(decision.port, null, `expected ${JSON.stringify(value)} to be refused`)
     assert.equal(decision.reason, 'invalid-port')
@@ -75,7 +75,7 @@ test('explains itself when an explicit setting was not honoured', () => {
   // A typo'd port or a deliberate opt-out should say so — silently doing
   // something other than what the env asked for is the bad failure mode.
   for (const value of ['garbage', 'off']) {
-    const decision = resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: value } })
+    const decision = resolveDevCdpPort({ ...devRun, env: { RABBIT_DESKTOP_CDP_PORT: value } })
 
     assert.ok(describeDevCdpDecision(decision), `expected an explanation for ${JSON.stringify(value)}`)
   }

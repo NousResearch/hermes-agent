@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput } from '@rabbit/ink'
 import type {
   ConnectionOperationTarget,
   ConnectionRespondParams,
@@ -7,7 +7,7 @@ import type {
   ConnectionTargetEnvField,
   ConnectionTargetState,
   ConnectorsConnectResult
-} from '@hermes/shared/gateway-events'
+} from '@rabbit/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 

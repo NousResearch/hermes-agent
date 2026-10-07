@@ -22,7 +22,7 @@ const URL_RE =
 const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
-const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
+const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|rabbit):/i
 const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
@@ -161,7 +161,7 @@ export function fetchLinkTitle(url: string): Promise<string> {
     return pending
   }
 
-  const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop?.fetchLinkTitle
+  const bridge = typeof window === 'undefined' ? undefined : window.rabbitDesktop?.fetchLinkTitle
 
   if (!bridge) {
     titleCache.set(key, '')
@@ -218,7 +218,7 @@ export function useLinkTitle(url?: null | string): string {
 
 export function openExternalLink(href: string): void {
   if (href) {
-    void window.hermesDesktop?.openExternal?.(href)
+    void window.rabbitDesktop?.openExternal?.(href)
   }
 }
 
@@ -248,7 +248,7 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
  * Where a link the user clicked should open.
  *
  * A web page opens in the in-app browser — that pane exists so reading a doc
- * doesn't cost a context switch out of Hermes, and it is the surface the agent
+ * doesn't cost a context switch out of Rabbit, and it is the surface the agent
  * can see. ⌘/Ctrl-click (or middle-click) escapes to the real browser, which is
  * where you go for anything needing your logged-in session or a password.
  *
@@ -289,7 +289,7 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
   href: string
   children?: ReactNode
   /** Skip the in-app pane. For links whose whole point is the session you are
-   *  signed into over there — a cloud console, an account page. */
+   *  signed into over there — a console, an account page. */
   native?: boolean
   showExternalIcon?: boolean
 }

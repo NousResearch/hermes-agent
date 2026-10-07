@@ -60,17 +60,17 @@ def main():
     threading.Thread(target=model.serve_forever, daemon=True).start()
     config = {'model': {'default': 'persistence-fixture', 'provider': 'custom', 'base_url': f'http://127.0.0.1:{args.port+1}/v1'}, 'agent': {'max_turns': 1}, 'compression': {'enabled': False}, 'toolsets': [], 'platform_toolsets': {'gui': [], 'cli': []}, 'memory': {'memory_enabled': False, 'user_profile_enabled': False}}
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
     for p in (home, profile):
         (p / 'config.yaml').write_text(yaml.safe_dump(config))
         (p / '.env').write_text('OPENAI_API_KEY=local-fixture\n')
         (p / 'SOUL.md').write_text('You are a deterministic test assistant.\n')
         (p / '.no-bundled-skills').touch()
-    (profile / 'profile.yaml').write_text('name: worker\nui_meta:\n  hermes-bots:\n    title: Worker\n')
-    env = {k: v for k, v in os.environ.items() if not (k.startswith('HERMES_') or 'API_KEY' in k or 'TOKEN' in k or k in ('PYTHONPATH', 'PYTEST_PLUGINS'))}
-    env.update(HERMES_HOME=str(home), HOME=str(home / 'os-home'), HERMES_DASHBOARD_SESSION_TOKEN='persistence-fixture-token', HERMES_IGNORE_RULES='1', PYTHONPATH=str(args.repo), OPENAI_API_KEY='local-fixture')
+    (profile / 'profile.yaml').write_text('name: worker\nui_meta:\n  rabbit-bots:\n    title: Worker\n')
+    env = {k: v for k, v in os.environ.items() if not (k.startswith('RABBIT_') or 'API_KEY' in k or 'TOKEN' in k or k in ('PYTHONPATH', 'PYTEST_PLUGINS'))}
+    env.update(RABBIT_HOME=str(home), HOME=str(home / 'os-home'), RABBIT_DASHBOARD_SESSION_TOKEN='persistence-fixture-token', RABBIT_IGNORE_RULES='1', PYTHONPATH=str(args.repo), OPENAI_API_KEY='local-fixture')
     log = (args.out / 'serve.log').open('w')
-    cmd = [sys.executable, '-m', 'hermes_cli.main', 'serve', '--isolated', '--port', str(args.port)]
+    cmd = [sys.executable, '-m', 'rabbit_cli.main', 'serve', '--isolated', '--port', str(args.port)]
     if observe:
         cmd = [sys.executable, str(Path(__file__).with_name('rebuild_observer.py')),
                'serve', '--isolated', '--port', str(args.port)]
@@ -142,7 +142,7 @@ def main():
                     result['expected_failure'] = str(exc)
                 result['launch_config_unchanged'] = (home / 'config.yaml').read_bytes() == launch_before
                 sys.path.insert(0, str(args.repo))
-                from hermes_cli.config import read_user_config_raw
+                from rabbit_cli.config import read_user_config_raw
                 result['worker_tools'] = read_user_config_raw(profile / 'config.yaml')['platform_toolsets']['cli']
             else:
                 (profile / 'SOUL.md').write_text('Capabilities changed for the worker.\n')

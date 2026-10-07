@@ -1,9 +1,9 @@
 # disk-cleanup
 
-Auto-tracks and cleans up ephemeral files created during Hermes Agent
+Auto-tracks and cleans up ephemeral files created during Rabbit Agent
 sessions — test scripts, temp outputs, cron logs, stale chrome profiles.
 <!-- no-tmp: ok — documents the legacy scratch scope this plugin cleans up -->
-Scoped strictly to `$HERMES_HOME` and `/tmp/hermes-*`.
+Scoped strictly to `$RABBIT_HOME` and `/tmp/rabbit-*`.
 
 Originally contributed by [@LVT382009](https://github.com/LVT382009) as a
 skill in PR #12212.  Ported to the plugin system so the behaviour runs
@@ -15,7 +15,7 @@ never needs to remember to call a tool.
 | Hook | Behaviour |
 |---|---|
 | `pre_tool_call` | Snapshot which paths named in the call's arguments do not exist yet, keyed by the owning task/session plus `tool_call_id` (the id alone is not unique: llama.cpp reuses one constant id). |
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` — a path named in the call that did not exist before it — track it silently as `test` / `temp` / `cron-output`. Existing files the call edits, runs or lists are never tracked, and neither is any path the call's own snapshot did not cover (e.g. one another plugin's `modify` hook swapped in). Calls without a `tool_call_id` (execute_code RPC) are not tracked. |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `RABBIT_HOME` — a path named in the call that did not exist before it — track it silently as `test` / `temp` / `cron-output`. Existing files the call edits, runs or lists are never tracked, and neither is any path the call's own snapshot did not cover (e.g. one another plugin's `modify` hook swapped in). Calls without a `tool_call_id` (execute_code RPC) are not tracked. |
 | `on_session_end` | If any test files were auto-tracked during this turn, run `quick` cleanup (no prompts). |
 
 Deletion rules (same as the original PR):
@@ -25,7 +25,7 @@ Deletion rules (same as the original PR):
 | `test` | every session end | Never |
 | `temp` | >7 days since tracked | Never |
 | `cron-output` | >14 days since tracked | Never |
-| empty dirs under HERMES_HOME | always | Never |
+| empty dirs under RABBIT_HOME | always | Never |
 | `research` | >30 days, beyond 10 newest | Always (deep only) |
 | `chrome-profile` | >14 days since tracked | Always (deep only) |
 | files >500 MB | never auto | Always (deep only) |
@@ -44,10 +44,10 @@ Deletion rules (same as the original PR):
 ## Safety
 
 <!-- no-tmp: ok — documents the legacy scratch scope this plugin cleans up -->
-- `is_safe_path()` rejects anything outside `HERMES_HOME` or `/tmp/hermes-*`
+- `is_safe_path()` rejects anything outside `RABBIT_HOME` or `/tmp/rabbit-*`
 - Windows mounts (`/mnt/c` etc.) are rejected
-- The state directory `$HERMES_HOME/disk-cleanup/` is itself excluded
-- `$HERMES_HOME/logs/`, `memories/`, `sessions/`, `skills/`, `plugins/`,
+- The state directory `$RABBIT_HOME/disk-cleanup/` is itself excluded
+- `$RABBIT_HOME/logs/`, `memories/`, `sessions/`, `skills/`, `plugins/`,
   and config files are never tracked
 - User project trees (`workspace/`, `projects/`, `plans/`, `home/`, `patches/`,
   `skins/`, `themes/`, `contributors/`, `profiles/`, `backups/`) and `kanban/`

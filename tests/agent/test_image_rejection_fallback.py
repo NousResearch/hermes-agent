@@ -436,7 +436,7 @@ def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypat
     from agent.vision_message_prep import _provider_model_key
     from run_agent import AIAgent
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     agent = AIAgent(api_key="k", base_url="https://api.groq.com/openai/v1", provider="custom", model="m",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)
     agent._cached_system_prompt = "SYS"

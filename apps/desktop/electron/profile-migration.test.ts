@@ -10,7 +10,7 @@
  *   2. stale PID rejection — recycled PID must not pass as a running gateway
  *   3. fallback behavior — single-profile installs and missing files are no-ops
  *   4. remote-boot path — verified by code review (the migration is moved to the
- *      top of startHermes() in main.ts, before primaryProfileKey() is read); the
+ *      top of startRabbit() in main.ts, before primaryProfileKey() is read); the
  *      pure decision logic that the function relies on is covered below.
  */
 
@@ -139,14 +139,14 @@ function baseDeps(overrides: Record<string, unknown> = {}) {
   const fs = makeFs({})
 
   return {
-    legacyActivePath: '/home/u/.hermes/active_profile',
-    hermesHome: '/home/u/.hermes',
-    profilesRoot: '/home/u/.hermes/profiles',
+    legacyActivePath: '/home/u/.rabbit/active_profile',
+    rabbitHome: '/home/u/.rabbit',
+    profilesRoot: '/home/u/.rabbit/profiles',
     existsSync: fs.existsSync,
     readFileSync: fs.readFileSync,
     statSync: fs.statSync,
     readdirSync: fs.readdirSync,
-    isHermesProcess: () => true,
+    isRabbitProcess: () => true,
     now: () => NOW,
     writeJson: () => {},
     isValidProfileName,
@@ -206,41 +206,41 @@ test('readLegacyActiveProfile returns null for empty/whitespace content', () => 
 // ---------------------------------------------------------------------------
 
 test('findRunningGatewayProfiles returns [] when no pid files exist', () => {
-  const fs = makeFs({ '/home/u/.hermes/profiles/coder': { dir: true } })
+  const fs = makeFs({ '/home/u/.rabbit/profiles/coder': { dir: true } })
   assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder'], {
+    findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['coder'], {
       ...fs,
-      isHermesProcess: () => true
+      isRabbitProcess: () => true
     }),
     []
   )
 })
 
-test('findRunningGatewayProfiles drops stale (non-hermes) recycled PIDs', () => {
-  // Two profiles have pid files, but only coder's pid is a live hermes process.
+test('findRunningGatewayProfiles drops stale (non-rabbit) recycled PIDs', () => {
+  // Two profiles have pid files, but only coder's pid is a live rabbit process.
   // The recycled PID at 5678 belongs to an unrelated process (e.g. Chrome).
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":1234}' },
-    '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":5678}' }
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{"pid":1234}' },
+    '/home/u/.rabbit/profiles/writer/gateway.pid': { content: '{"pid":5678}' }
   })
 
   const deps = {
     ...fs,
-    isHermesProcess: (pid: number) => pid === 1234
+    isRabbitProcess: (pid: number) => pid === 1234
   }
 
-  assert.deepEqual(findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps), ['coder'])
+  assert.deepEqual(findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['coder', 'writer'], deps), ['coder'])
 })
 
 test('findRunningGatewayProfiles tolerates malformed pid files', () => {
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{not json' }
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{not json' }
   })
 
   assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder'], {
+    findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['coder'], {
       ...fs,
-      isHermesProcess: () => true
+      isRabbitProcess: () => true
     }),
     []
   )
@@ -248,15 +248,15 @@ test('findRunningGatewayProfiles tolerates malformed pid files', () => {
 
 test('findRunningGatewayProfiles drops non-integer and non-positive PIDs', () => {
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":-1}' },
-    '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":1.5}' },
-    '/home/u/.hermes/profiles/extra/gateway.pid': { content: '{"pid":0}' }
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{"pid":-1}' },
+    '/home/u/.rabbit/profiles/writer/gateway.pid': { content: '{"pid":1.5}' },
+    '/home/u/.rabbit/profiles/extra/gateway.pid': { content: '{"pid":0}' }
   })
 
   assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer', 'extra'], {
+    findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['coder', 'writer', 'extra'], {
       ...fs,
-      isHermesProcess: () => true
+      isRabbitProcess: () => true
     }),
     []
   )
@@ -264,12 +264,12 @@ test('findRunningGatewayProfiles drops non-integer and non-positive PIDs', () =>
 
 test('findRunningGatewayProfiles preserves order of allProfiles', () => {
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":1}' },
-    '/home/u/.hermes/profiles/writer/gateway.pid': { content: '{"pid":2}' }
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{"pid":1}' },
+    '/home/u/.rabbit/profiles/writer/gateway.pid': { content: '{"pid":2}' }
   })
 
-  const deps = { ...fs, isHermesProcess: () => true }
-  assert.deepEqual(findRunningGatewayProfiles('/home/u/.hermes/profiles', ['coder', 'writer'], deps), [
+  const deps = { ...fs, isRabbitProcess: () => true }
+  assert.deepEqual(findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['coder', 'writer'], deps), [
     'coder',
     'writer'
   ])
@@ -323,9 +323,9 @@ test('listProfileDirs returns [] for missing profiles root', () => {
 
 test('listProfileDirs includes default and any name passing the regex', () => {
   const fs = makeFs({
-    '/home/u/.hermes/profiles/default': { dir: true },
-    '/home/u/.hermes/profiles/coder': { dir: true },
-    '/home/u/.hermes/profiles/writer': { dir: true }
+    '/home/u/.rabbit/profiles/default': { dir: true },
+    '/home/u/.rabbit/profiles/coder': { dir: true },
+    '/home/u/.rabbit/profiles/writer': { dir: true }
   })
 
   assert.deepEqual(listProfileDirs(baseDeps({ ...fs })), ['default', 'coder', 'writer'])
@@ -333,9 +333,9 @@ test('listProfileDirs includes default and any name passing the regex', () => {
 
 test('listProfileDirs skips files (not directories) and invalid names', () => {
   const fs = makeFs({
-    '/home/u/.hermes/profiles/default': { dir: true },
-    '/home/u/.hermes/profiles/some-file.txt': { dir: false },
-    '/home/u/.hermes/profiles/UPPERCASE': { dir: true } // regex rejects
+    '/home/u/.rabbit/profiles/default': { dir: true },
+    '/home/u/.rabbit/profiles/some-file.txt': { dir: false },
+    '/home/u/.rabbit/profiles/UPPERCASE': { dir: true } // regex rejects
   })
 
   assert.deepEqual(listProfileDirs(baseDeps({ ...fs })), ['default'])
@@ -382,11 +382,11 @@ test('decideMigration returns null when no candidate scores and legacy is invali
 test('decideMigration suppresses write when best is default (single-profile fallback)', () => {
   // The whole point of the migration is to migrate AWAY from default when a
   // better candidate exists. If 'default' wins the score, the install is
-  // default-primary and we leave it alone. Default's DB is $HERMES_HOME/state.db,
+  // default-primary and we leave it alone. Default's DB is $RABBIT_HOME/state.db,
   // not profiles/default/state.db.
   const deps = baseDeps()
 
-  const d = decideMigration(null, [], ['default', 'coder'], deps, p => (p.endsWith('/.hermes/state.db') ? 99 : 50))
+  const d = decideMigration(null, [], ['default', 'coder'], deps, p => (p.endsWith('/.rabbit/state.db') ? 99 : 50))
 
   assert.equal(d, null)
 })
@@ -410,9 +410,9 @@ test('migrateActiveProfileIfMissing is a no-op when a user-selected preference f
 
   const fs = makeFs({
     '/cfg/active-profile.json': { content: '{"profile":"coder"}' },
-    '/home/u/.hermes/profiles/coder': { dir: true },
-    '/home/u/.hermes/profiles/writer': { dir: true },
-    '/home/u/.hermes/profiles/writer/state.db': { size: 400 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/profiles/coder': { dir: true },
+    '/home/u/.rabbit/profiles/writer': { dir: true },
+    '/home/u/.rabbit/profiles/writer/state.db': { size: 400 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
@@ -430,9 +430,9 @@ test('migrateActiveProfileIfMissing writes legacy choice with no _migrated flag'
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/active_profile': { content: 'coder' },
-    '/home/u/.hermes/profiles/coder': { dir: true },
-    '/home/u/.hermes/profiles/writer': { dir: true }
+    '/home/u/.rabbit/active_profile': { content: 'coder' },
+    '/home/u/.rabbit/profiles/coder': { dir: true },
+    '/home/u/.rabbit/profiles/writer': { dir: true }
   })
 
   const deps = baseDeps({
@@ -450,8 +450,8 @@ test('migrateActiveProfileIfMissing writes heuristic choice with _migrated=true'
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/state.db': { size: 50 * 1024 * 1024, mtime: NOW - 86_400_000 },
-    '/home/u/.hermes/profiles/writer/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/profiles/coder/state.db': { size: 50 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.rabbit/profiles/writer/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
@@ -468,11 +468,11 @@ test('migrateActiveProfileIfMissing writes heuristic choice with _migrated=true'
 test('migrateActiveProfileIfMissing is a no-op for single-profile (default-only) installs', () => {
   // No heuristic candidate can beat 'default', so the orchestrator must NOT
   // write a file — preserves legacy launch behavior for the 99% case.
-  // Production default DB is ~/.hermes/state.db, not profiles/default/state.db.
+  // Production default DB is ~/.rabbit/state.db, not profiles/default/state.db.
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
@@ -507,13 +507,13 @@ test('migrateActiveProfileIfMissing prefers a single running gateway over heuris
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":42}' },
-    '/home/u/.hermes/profiles/writer/state.db': { size: 500 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{"pid":42}' },
+    '/home/u/.rabbit/profiles/writer/state.db': { size: 500 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
     ...fs,
-    isHermesProcess: (pid: number) => pid === 42,
+    isRabbitProcess: (pid: number) => pid === 42,
     writeJson: (_p: string, payload: unknown) => {
       written = payload
     }
@@ -524,25 +524,25 @@ test('migrateActiveProfileIfMissing prefers a single running gateway over heuris
 })
 
 // ---------------------------------------------------------------------------
-// Production layout: default is ~/.hermes, not ~/.hermes/profiles/default
+// Production layout: default is ~/.rabbit, not ~/.rabbit/profiles/default
 // ---------------------------------------------------------------------------
 
-test('profileStateDbPath puts default at hermesHome, named under profilesRoot', () => {
-  assert.equal(profileStateDbPath('default', '/home/u/.hermes', '/home/u/.hermes/profiles'), '/home/u/.hermes/state.db')
+test('profileStateDbPath puts default at rabbitHome, named under profilesRoot', () => {
+  assert.equal(profileStateDbPath('default', '/home/u/.rabbit', '/home/u/.rabbit/profiles'), '/home/u/.rabbit/state.db')
   assert.equal(
-    profileStateDbPath('conduit', '/home/u/.hermes', '/home/u/.hermes/profiles'),
-    '/home/u/.hermes/profiles/conduit/state.db'
+    profileStateDbPath('conduit', '/home/u/.rabbit', '/home/u/.rabbit/profiles'),
+    '/home/u/.rabbit/profiles/conduit/state.db'
   )
 })
 
-test('profileGatewayPidPath puts default at hermesHome', () => {
+test('profileGatewayPidPath puts default at rabbitHome', () => {
   assert.equal(
-    profileGatewayPidPath('default', '/home/u/.hermes', '/home/u/.hermes/profiles'),
-    '/home/u/.hermes/gateway.pid'
+    profileGatewayPidPath('default', '/home/u/.rabbit', '/home/u/.rabbit/profiles'),
+    '/home/u/.rabbit/gateway.pid'
   )
   assert.equal(
-    profileGatewayPidPath('coder', '/home/u/.hermes', '/home/u/.hermes/profiles'),
-    '/home/u/.hermes/profiles/coder/gateway.pid'
+    profileGatewayPidPath('coder', '/home/u/.rabbit', '/home/u/.rabbit/profiles'),
+    '/home/u/.rabbit/profiles/coder/gateway.pid'
   )
 })
 
@@ -552,17 +552,17 @@ test('withDefaultCandidate always leads with default and dedupes', () => {
   assert.deepEqual(withDefaultCandidate(['default', 'conduit']), ['default', 'conduit'])
 })
 
-test('findRunningGatewayProfiles sees default gateway.pid at hermesHome', () => {
+test('findRunningGatewayProfiles sees default gateway.pid at rabbitHome', () => {
   const fs = makeFs({
-    '/home/u/.hermes/gateway.pid': { content: '{"pid":99}' },
-    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":11}' }
+    '/home/u/.rabbit/gateway.pid': { content: '{"pid":99}' },
+    '/home/u/.rabbit/profiles/coder/gateway.pid': { content: '{"pid":11}' }
   })
 
   assert.deepEqual(
-    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['default', 'coder'], {
+    findRunningGatewayProfiles('/home/u/.rabbit/profiles', ['default', 'coder'], {
       ...fs,
-      hermesHome: '/home/u/.hermes',
-      isHermesProcess: pid => pid === 99
+      rabbitHome: '/home/u/.rabbit',
+      isRabbitProcess: pid => pid === 99
     }),
     ['default']
   )
@@ -570,14 +570,14 @@ test('findRunningGatewayProfiles sees default gateway.pid at hermesHome', () => 
 
 test('migrateActiveProfileIfMissing does not pin a tiny named profile over a large default DB', () => {
   // Regression for #100576: first-boot after update listed only
-  // ~/.hermes/profiles/<name>, never scored ~/.hermes/state.db, and wrote
+  // ~/.rabbit/profiles/<name>, never scored ~/.rabbit/state.db, and wrote
   // { profile: named, _migrated: true }.
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/profiles/conduit': { dir: true },
-    '/home/u/.hermes/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
-    '/home/u/.hermes/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
+    '/home/u/.rabbit/profiles/conduit': { dir: true },
+    '/home/u/.rabbit/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.rabbit/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
   })
 
   const deps = baseDeps({
@@ -595,9 +595,9 @@ test('migrateActiveProfileIfMissing still pins a named profile that actually bea
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/profiles/work': { dir: true },
-    '/home/u/.hermes/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
-    '/home/u/.hermes/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/profiles/work': { dir: true },
+    '/home/u/.rabbit/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.rabbit/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
@@ -615,13 +615,13 @@ test('migrateActiveProfileIfMissing does not pin default when only default gatew
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/gateway.pid': { content: '{"pid":7}' },
-    '/home/u/.hermes/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/gateway.pid': { content: '{"pid":7}' },
+    '/home/u/.rabbit/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
     ...fs,
-    isHermesProcess: (pid: number) => pid === 7,
+    isRabbitProcess: (pid: number) => pid === 7,
     writeJson: (_p: string, payload: unknown) => {
       written = payload
     }
@@ -649,9 +649,9 @@ test('migrateActiveProfileIfMissing repairs a pre-existing heuristic pin when de
 
   const fs = makeFs({
     '/cfg/active-profile.json': { content: '{"profile":"conduit","_migrated":true}' },
-    '/home/u/.hermes/profiles/conduit': { dir: true },
-    '/home/u/.hermes/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
-    '/home/u/.hermes/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
+    '/home/u/.rabbit/profiles/conduit': { dir: true },
+    '/home/u/.rabbit/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.rabbit/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
   })
 
   const deps = baseDeps({
@@ -670,9 +670,9 @@ test('migrateActiveProfileIfMissing leaves a still-correct heuristic pin alone',
 
   const fs = makeFs({
     '/cfg/active-profile.json': { content: '{"profile":"work","_migrated":true}' },
-    '/home/u/.hermes/profiles/work': { dir: true },
-    '/home/u/.hermes/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
-    '/home/u/.hermes/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.rabbit/profiles/work': { dir: true },
+    '/home/u/.rabbit/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.rabbit/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({

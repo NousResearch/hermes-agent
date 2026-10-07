@@ -1,5 +1,5 @@
 // Stand-ins for the two window-visibility signals the renderer reacts to:
-// Electron's `hermesDesktop.onWindowStateChanged` bridge and the DOM's own
+// Electron's `rabbitDesktop.onWindowStateChanged` bridge and the DOM's own
 // `document.hidden`. Both are read-only under jsdom, and anything that pauses
 // work while the window is hidden — the pet, the terminal pane, budgeted loops,
 // pulse animations — needs to drive them.
@@ -18,7 +18,7 @@ export interface WindowStateBridge {
   off: ReturnType<typeof vi.fn>
 }
 
-/** Install a fake `window.hermesDesktop` window-state channel. */
+/** Install a fake `window.rabbitDesktop` window-state channel. */
 export function installWindowStateBridge(): WindowStateBridge {
   let callback: ((payload: WindowStatePayload) => void) | null = null
 
@@ -26,7 +26,7 @@ export function installWindowStateBridge(): WindowStateBridge {
     callback = null
   })
 
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'rabbitDesktop', {
     configurable: true,
     value: {
       onWindowStateChanged: vi.fn((next: (payload: WindowStatePayload) => void) => {

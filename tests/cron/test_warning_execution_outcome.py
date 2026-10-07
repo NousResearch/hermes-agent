@@ -9,7 +9,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 @pytest.mark.parametrize("suppress", [False, True])
 @pytest.mark.parametrize("external_worker", [False, True])
 def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkeypatch, mode, suppress, external_worker):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         f"display: {{suppress_warning_notifications: {str(suppress).lower()}}}\n"
     )
@@ -35,7 +35,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         from cron import delivery_queue
         execution = executions.create_execution(job["id"], source="fixture")
         job["execution_id"] = execution["id"]
-        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setenv("_RABBIT_CRON_EXTERNAL_WORKER", execution["id"])
         original_wait = delivery_queue.enqueue_and_wait
 
         def drain_before_wait(execution_id, job, content, *, for_failure=False):

@@ -1,7 +1,7 @@
 name: tokenwatch
 repo: https://github.com/0xBernard/tokenwatch
 sha: b06c293e254d7af6d889fdfa07934a9fc5ca38a7
-description: Monitor Hermes token usage, notify at thresholds, and freeze tool/gateway activity at configured
+description: Monitor Rabbit token usage, notify at thresholds, and freeze tool/gateway activity at configured
   limits.
 maintainer: 0xBernard
 tier: community

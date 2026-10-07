@@ -1,6 +1,5 @@
-import { compactNumber } from '@hermes/shared/format'
+import { compactNumber } from '@rabbit/shared/format'
 
-import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -704,7 +703,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage + Nous credits',
+    help: 'session usage',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -720,60 +719,8 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
-        // Nous balance block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Prefer the shared
-        // dollar usage model (two-bar view, dollars-only); fall back to the
-        // legacy text lines only when the model is unavailable.
-        const usageModel = r?.usage
-        const barLines = usageBarsText(usageModel)
-        let showedBalance = false
-
-        if (usageModel?.available && (barLines.length || usageModel.status === 'free')) {
-          const sections: PanelSection[] = []
-
-          const plan =
-            usageModel.plan_name ?? (usageModel.status === 'free' ? t('slashCmd.session.usage.freePlan') : null)
-
-          if (plan) {
-            sections.push({
-              text: usageModel.renews_display
-                ? t('slashCmd.session.usage.planRenews', plan, usageModel.renews_display)
-                : t('slashCmd.session.usage.plan', plan)
-            })
-          }
-
-          if (barLines.length) {
-            sections.push({ text: barLines.join('\n') })
-          }
-
-          if (usageModel.status === 'free') {
-            sections.push({ text: t('slashCmd.session.usage.freeNote') })
-          } else if (usageModel.status === 'low') {
-            sections.push({
-              text: t(
-                'slashCmd.session.usage.lowNote',
-                usageModel.total_spendable_display ?? t('slashCmd.session.usage.lowBalanceFallback')
-              )
-            })
-          }
-
-          ctx.transcript.panel(t('slashCmd.session.usage.balanceTitle'), sections)
-          showedBalance = true
-        } else {
-          const creditsLines = r?.credits_lines ?? []
-
-          if (creditsLines.length) {
-            ctx.transcript.panel(t('slashCmd.session.usage.nousBalanceTitle'), [{ text: creditsLines.join('\n') }])
-            showedBalance = true
-          }
-        }
-
         if (!r?.calls) {
-          if (!showedBalance) {
-            sys(t('slashCmd.session.usage.noCalls'))
-          }
-
-          sys(t('slashCmd.session.usage.cta'))
+          sys(t('slashCmd.session.usage.noCalls'))
 
           return
         }
@@ -807,8 +754,6 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), sections)
-
-        sys(t('slashCmd.session.usage.cta'))
       })
     }
   }

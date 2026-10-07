@@ -91,7 +91,7 @@ def test_switch_model_resets_stale_streak():
 
     agent._create_openai_client = MagicMock(return_value=MagicMock(name="NewClient"))
 
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+    with patch("rabbit_cli.timeouts.get_provider_request_timeout", return_value=None):
         agent.switch_model(
             new_model="openai/gpt-5",
             new_provider="openrouter",
@@ -114,7 +114,7 @@ def test_switch_model_failure_does_not_reset_streak():
 
     agent._create_openai_client = boom
 
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
+    with patch("rabbit_cli.timeouts.get_provider_request_timeout", return_value=None):
         try:
             agent.switch_model(
                 new_model="openai/gpt-5",
@@ -163,7 +163,7 @@ class TestNonStreamingSibling:
     """interruptible_api_call carries the same breaker (#58962)."""
 
     def test_non_streaming_short_circuits_at_threshold(self, monkeypatch):
-        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+        monkeypatch.setenv("RABBIT_STREAM_STALE_GIVEUP", "3")
         agent = _make_fallback_agent(fallback_model=[])
         agent._consecutive_stale_streams = 3
 
@@ -175,7 +175,7 @@ class TestNonStreamingSibling:
         assert agent._consecutive_stale_streams == 3
 
     def test_non_streaming_success_resets_streak(self, monkeypatch):
-        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "3")
+        monkeypatch.setenv("RABBIT_STREAM_STALE_GIVEUP", "3")
         agent = _make_fallback_agent(fallback_model=[])
         agent._consecutive_stale_streams = 2  # below threshold
         agent.client.chat.completions.create.return_value = MagicMock(

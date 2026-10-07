@@ -29,7 +29,7 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
         from agent import auxiliary_client as ac
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             lambda: {"auxiliary": {"openrouter_model": "google/gemini-3.6-flash"}},
         )
         free_only, model = ac._aux_openrouter_settings()
@@ -38,9 +38,9 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
 
 class TestEnvIngestionWarning:
     def _fresh_home(self, tmp_path, monkeypatch, token="sk-or-FAKEINGEST123"):
-        home = tmp_path / "hermes"
+        home = tmp_path / "rabbit"
         home.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         monkeypatch.setenv("OPENROUTER_API_KEY", token)
         return home
 

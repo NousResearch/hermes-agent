@@ -23,20 +23,20 @@ from cron.scheduler import _resolve_delivery_targets
 
 @pytest.fixture
 def cron_env(tmp_path, monkeypatch):
-    """Isolated cron environment with temp HERMES_HOME."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "cron").mkdir()
-    (hermes_home / "cron" / "output").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    """Isolated cron environment with temp RABBIT_HOME."""
+    rabbit_home = tmp_path / ".rabbit"
+    rabbit_home.mkdir()
+    (rabbit_home / "cron").mkdir()
+    (rabbit_home / "cron" / "output").mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
     import cron.jobs as jobs_mod
-    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
-    monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
-    monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
-    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")
+    monkeypatch.setattr(jobs_mod, "RABBIT_DIR", rabbit_home)
+    monkeypatch.setattr(jobs_mod, "CRON_DIR", rabbit_home / "cron")
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", rabbit_home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", rabbit_home / "cron" / "output")
 
-    return hermes_home
+    return rabbit_home
 
 
 @pytest.fixture
@@ -48,12 +48,12 @@ def run_env(monkeypatch, tmp_path):
     leave the process is captured at the platform-registry sender seam,
     exactly where a real slack delivery exits.
     """
-    home = tmp_path / "hermes-home"
+    home = tmp_path / "rabbit-home"
     home.mkdir()
     (home / "config.yaml").write_text(
         "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
     )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     send_calls = []
 
@@ -63,7 +63,7 @@ def run_env(monkeypatch, tmp_path):
         return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
 
     import gateway.platform_registry as reg
-    import hermes_cli.plugins as hp
+    import rabbit_cli.plugins as hp
 
     entry = reg.platform_registry.get("slack")
     if entry is None:
@@ -451,7 +451,7 @@ class TestPreflightAndDashboardLanes:
         """The dashboard update lane normalizes failure_deliver like
         deliver: text stripped, empty clears (None) instead of
         coalescing to a target."""
-        from hermes_cli.web_routers.cron import _normalize_dashboard_cron_updates
+        from rabbit_cli.web_routers.cron import _normalize_dashboard_cron_updates
 
         out = _normalize_dashboard_cron_updates(
             {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path

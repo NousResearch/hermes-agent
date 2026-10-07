@@ -46,7 +46,7 @@ def register(ctx):
 class FakeEntryPoint:
     """Mirrors the importlib.metadata EntryPoint surface discovery uses."""
 
-    group = "hermes_agent.memory_providers"
+    group = "rabbit_agent.memory_providers"
 
     def __init__(self, name, value):
         self.name = name
@@ -87,18 +87,18 @@ def _write_provider_dir(root: Path, name: str) -> Path:
 
 def test_project_dir_is_ignored_without_opt_in(tmp_path, monkeypatch):
     """A repo you merely cd into must not be able to offer a memory backend."""
-    _write_provider_dir(tmp_path / ".hermes" / "plugins", "projectmem")
+    _write_provider_dir(tmp_path / ".rabbit" / "plugins", "projectmem")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    monkeypatch.delenv("RABBIT_ENABLE_PROJECT_PLUGINS", raising=False)
 
     assert "projectmem" not in memory_plugins.list_memory_provider_names()
     assert memory_plugins.find_provider_dir("projectmem") is None
 
 
 def test_project_dir_is_discovered_when_opted_in(tmp_path, monkeypatch):
-    provider = _write_provider_dir(tmp_path / ".hermes" / "plugins", "projectmem")
+    provider = _write_provider_dir(tmp_path / ".rabbit" / "plugins", "projectmem")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+    monkeypatch.setenv("RABBIT_ENABLE_PROJECT_PLUGINS", "1")
 
     assert "projectmem" in memory_plugins.list_memory_provider_names()
     assert memory_plugins.find_provider_dir("projectmem") == provider
@@ -109,9 +109,9 @@ def test_bundled_still_wins_over_project(tmp_path, monkeypatch):
     PluginManager's later-wins order. A provider is activated by name, so a
     directory dropped into the working tree must not be able to shadow a
     shipped one and silently redirect the agent's memory."""
-    _write_provider_dir(tmp_path / ".hermes" / "plugins", "holographic")
+    _write_provider_dir(tmp_path / ".rabbit" / "plugins", "holographic")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+    monkeypatch.setenv("RABBIT_ENABLE_PROJECT_PLUGINS", "1")
 
     resolved = memory_plugins.find_provider_dir("holographic")
     assert resolved == Path(memory_plugins.__file__).parent / "holographic"
@@ -132,7 +132,7 @@ def test_entry_point_provider_is_listed(entry_points, tmp_path, monkeypatch):
 
 def test_find_provider_dir_resolves_a_package_entry_point(entry_points, tmp_path, monkeypatch):
     """Without a directory, a pip-installed provider silently loses its
-    dashboard config panel and its `hermes <provider>` subcommands — both are
+    dashboard config panel and its `rabbit <provider>` subcommands — both are
     read from disk rather than imported."""
     package = tmp_path / "pipmem_pkg"
     package.mkdir()
@@ -201,7 +201,7 @@ def test_a_secondary_registration_cannot_cost_the_provider(tmp_path, monkeypatch
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     loaded = memory_plugins.load_memory_provider("auxmem")
     assert loaded is not None
@@ -216,20 +216,20 @@ def test_activation_is_not_gated_on_plugins_enabled(tmp_path, monkeypatch):
     requiring the plugin in plugins.enabled — that would break every existing
     user-installed provider."""
     _write_provider_dir(tmp_path / "plugins", "gatedmem")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     assert memory_plugins.load_memory_provider("gatedmem") is not None
 
 
 def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkeypatch):
-    """One mode-000 / ACL-denied ``$HERMES_HOME/plugins/<x>`` must not hide the bundled
-    providers or its readable siblings from the dashboard / ``hermes memory`` pickers (#111804)."""
+    """One mode-000 / ACL-denied ``$RABBIT_HOME/plugins/<x>`` must not hide the bundled
+    providers or its readable siblings from the dashboard / ``rabbit memory`` pickers (#111804)."""
     plugins_root = tmp_path / "plugins"
     _write_provider_dir(plugins_root, "goodmem")
     denied = plugins_root / "denied"
     denied.mkdir()
     (denied / "__init__.py").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     real_stat = Path.stat  # chmod 000 does not bite as root; fail the child's stat instead
 
     def stat(self, *args, **kwargs):

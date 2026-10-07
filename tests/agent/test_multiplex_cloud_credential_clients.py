@@ -11,15 +11,15 @@ from pathlib import Path
 import pytest
 
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
-    a = tmp_path / ".hermes"
+    a = tmp_path / ".rabbit"
     b = a / "profiles" / "b"
     b.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.setenv("RABBIT_HOME", str(a))
     for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
                 "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
         monkeypatch.delenv(var, raising=False)
@@ -32,13 +32,13 @@ def two_profiles(tmp_path, monkeypatch):
 
 
 def _under(home: Path, fn):
-    home_token = set_hermes_home_override(str(home))
+    home_token = set_rabbit_home_override(str(home))
     scope_token = set_secret_scope(build_profile_secret_scope(home))
     try:
         return fn()
     finally:
         reset_secret_scope(scope_token)
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
 
 
 def test_bedrock_clients_sign_with_the_routed_profiles_aws_keys(two_profiles):

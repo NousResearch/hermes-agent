@@ -426,13 +426,13 @@ class TestAgentInitConfig:
     ):
         from run_agent import AIAgent
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir()
         lines = ["compression:", "  codex_responses_native: true"]
         if threshold_yaml is not None:
             lines.append(f"  codex_responses_compact_threshold: {threshold_yaml}")
         (home / "config.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
 
         agent = AIAgent(
             api_key="test-key",

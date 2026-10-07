@@ -32,18 +32,18 @@ beforeEach((): void => {
 })
 
 afterEach((): void => {
-  delete process.env.HERMES_DESKTOP_VARIANT
-  delete process.env.HERMES_PAYLOAD_TAG
-  delete process.env.HERMES_BUILD_COMMIT
-  delete process.env.HERMES_PAYLOAD_VERSION
+  delete process.env.RABBIT_DESKTOP_VARIANT
+  delete process.env.RABBIT_PAYLOAD_TAG
+  delete process.env.RABBIT_BUILD_COMMIT
+  delete process.env.RABBIT_PAYLOAD_VERSION
   vi.resetModules()
 })
 
 async function identityForVariant(variant: string | undefined): Promise<ProductIdentity> {
   if (variant === undefined) {
-    delete process.env.HERMES_DESKTOP_VARIANT
+    delete process.env.RABBIT_DESKTOP_VARIANT
   } else {
-    process.env.HERMES_DESKTOP_VARIANT = variant
+    process.env.RABBIT_DESKTOP_VARIANT = variant
   }
 
   delete require.cache[require.resolve('../product-identity.cjs')]
@@ -67,7 +67,7 @@ test('baked runtime identity never evaluates ambient build selectors', async ():
       platform: 'node',
       format: 'esm',
       write: false,
-      define: { __HERMES_PRODUCT_IDENTITY__: JSON.stringify(identity) }
+      define: { __RABBIT_PRODUCT_IDENTITY__: JSON.stringify(identity) }
     })
 
     const file: string = path.join(dir, 'identity.mjs')
@@ -76,7 +76,7 @@ test('baked runtime identity never evaluates ambient build selectors', async ():
     const actual: unknown = JSON.parse(
       execFileSync(process.execPath, [file], {
         encoding: 'utf8',
-        env: { ...process.env, HERMES_DESKTOP_VARIANT: 'store', HERMES_BUILD_COMMIT: 'a'.repeat(40) }
+        env: { ...process.env, RABBIT_DESKTOP_VARIANT: 'store', RABBIT_BUILD_COMMIT: 'a'.repeat(40) }
       })
     )
 
@@ -88,12 +88,12 @@ test('baked runtime identity never evaluates ambient build selectors', async ():
 
 test('nonstable runtime pins userData before the app name can change', async (): Promise<void> => {
   const stable: ProductIdentity = await identityForVariant('bundled')
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
+  process.env.RABBIT_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
   const canary: ProductIdentity = await identityForVariant('bundled')
   const runtime: { applyDesktopIdentity: typeof applyDesktopIdentity } = await import('./product-identity')
   const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-userdata-'))
-  const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Hermes') }
-  let name: string = 'Hermes'
+  const paths: Record<string, string> = { appData: root, userData: path.join(root, 'Rabbit') }
+  let name: string = 'Rabbit'
 
   const app: Parameters<typeof applyDesktopIdentity>[0] = {
     getPath: (key: string): string => paths[key],
@@ -108,7 +108,7 @@ test('nonstable runtime pins userData before the app name can change', async ():
 
   try {
     assert.equal(runtime.applyDesktopIdentity(app, stable), null)
-    assert.equal(paths.userData, path.join(root, 'Hermes'))
+    assert.equal(paths.userData, path.join(root, 'Rabbit'))
     assert.equal(runtime.applyDesktopIdentity(app, canary), canary.displayName)
     assert.equal(paths.userData, path.join(paths.appData, canary.appNamePascal))
     assert.equal(name, canary.displayName)
@@ -118,9 +118,9 @@ test('nonstable runtime pins userData before the app name can change', async ():
 })
 
 test.each([
-  [undefined, 'Hermes', 'hermes', 'latest', 'canary'],
-  ['bundled', 'Hermes Agent', 'hermes', 'latest', 'canary'],
-  ['light', 'Hermes Light', 'hermes-light', 'light', 'light-canary']
+  [undefined, 'Rabbit', 'rabbit', 'latest', 'canary'],
+  ['bundled', 'Rabbit Agent', 'rabbit', 'latest', 'canary'],
+  ['light', 'Rabbit Light', 'rabbit-light', 'light', 'light-canary']
 ] as const)(
   '%s separates stable, canary and independent commits',
   async (
@@ -142,8 +142,8 @@ test.each([
       ['', 'abcdef1234567890abcdef1234567890abcdef12', `${cli}-abcdef1`, null],
       ['', '1234567890abcdef1234567890abcdef12345678', `${cli}-1234567`, null]
     ] as const) {
-      process.env.HERMES_PAYLOAD_TAG = tag
-      process.env.HERMES_BUILD_COMMIT = commit
+      process.env.RABBIT_PAYLOAD_TAG = tag
+      process.env.RABBIT_BUILD_COMMIT = commit
       const current: ProductIdentity = await identityForVariant(variant)
       assert.equal(current.channel, expectedChannel)
       assert.equal(current.cliName, expectedCli)
@@ -175,8 +175,8 @@ test.each([
       identities.push(current)
     }
 
-    process.env.HERMES_BUILD_COMMIT = 'not-a-sha'
-    process.env.HERMES_PAYLOAD_TAG = 'v1.2.3'
+    process.env.RABBIT_BUILD_COMMIT = 'not-a-sha'
+    process.env.RABBIT_PAYLOAD_TAG = 'v1.2.3'
     assert.deepEqual(await identityForVariant(variant), stable)
   }
 )
@@ -211,13 +211,13 @@ test('packaging isolates boot metadata and executable names without renaming rel
   const stable: PackagingConfiguration = load()
   assert.equal(stable.extraMetadata.productName || pkg.productName, pkg.productName)
 
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0'
-  process.env.HERMES_BUILD_COMMIT = ''
+  process.env.RABBIT_PAYLOAD_TAG = 'v0.28.0'
+  process.env.RABBIT_BUILD_COMMIT = ''
   assert.equal(load().msix.customManifestPath, 'build/msix-manifest.xml')
 
   for (const build of ['canary', 'abcdef1234567890abcdef1234567890abcdef12']) {
-    process.env.HERMES_PAYLOAD_TAG = build === 'canary' ? 'v0.28.0+canary.20260818T000000Z' : ''
-    process.env.HERMES_BUILD_COMMIT = build === 'canary' ? '' : build
+    process.env.RABBIT_PAYLOAD_TAG = build === 'canary' ? 'v0.28.0+canary.20260818T000000Z' : ''
+    process.env.RABBIT_BUILD_COMMIT = build === 'canary' ? '' : build
     const identity: ProductIdentity = await identityForVariant('bundled')
     const config: PackagingConfiguration = load()
     // Electron bootstrap gives productName precedence over name. appId alone
@@ -250,11 +250,11 @@ test('packaging isolates boot metadata and executable names without renaming rel
       appIdentity: (desktopDir: string) => { name: string; identity: ProductIdentity }
     } = require('../../../scripts/msix-shared.mjs')
 
-    process.env.HERMES_PAYLOAD_VERSION = '0.28.0'
+    process.env.RABBIT_PAYLOAD_VERSION = '0.28.0'
     const artifact: ReturnType<typeof appIdentity> = appIdentity(fileURLToPath(new URL('../', import.meta.url)))
     assert.equal(artifact.name, identity.artifactNamePascal)
     assert.equal(artifact.identity.msixAppIdWithOrg, config.msix.identityName)
-    assert.deepEqual(config.protocols[0].schemes, ['hermes'])
+    assert.deepEqual(config.protocols[0].schemes, ['rabbit'])
 
     if (build !== 'canary') {
       assert.equal(config.publish, null)
@@ -280,19 +280,19 @@ test('store inherits the bundled app identity (shared userData) but swaps the MS
 })
 
 test('nonstable builds cannot claim the official Store package', async (): Promise<void> => {
-  process.env.HERMES_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
+  process.env.RABBIT_PAYLOAD_TAG = 'v0.28.0+canary.20260818T000000Z'
   await assert.rejects(identityForVariant('store'), /Store.*stable/)
-  delete process.env.HERMES_PAYLOAD_TAG
-  process.env.HERMES_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
+  delete process.env.RABBIT_PAYLOAD_TAG
+  process.env.RABBIT_BUILD_COMMIT = 'abcdef1234567890abcdef1234567890abcdef12'
   await assert.rejects(identityForVariant('store'), /Store.*stable/)
 })
 
 test('store carries the Partner Center MSIX identity and no other variant does', async (): Promise<void> => {
   const store: ProductIdentity = await identityForVariant('store')
   assert.deepEqual(store.storeMsix, {
-    identityName: 'NousResearchInc.HermesAgent',
+    identityName: 'Seven0070.RabbitAgent',
     publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519',
-    publisherDisplayName: 'Nous Research Inc.'
+    publisherDisplayName: 'Sanath Patil'
   })
 
   for (const v of [undefined, 'bundled', 'light'] as const) {

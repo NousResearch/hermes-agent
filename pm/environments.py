@@ -1,7 +1,7 @@
 """Dependency-environment layout: where a project's venv generations live, which one
 is selected, and the interpreter inside any venv. Shared by PM and pre-import launchers.
 
-Only stdlib and hermes_constants: environment selection must work before
+Only stdlib and rabbit_constants: environment selection must work before
 any dependency from that environment has been imported.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import re
 import shlex
 from pathlib import Path
 
-from hermes_constants import get_default_hermes_root, project_venv_dir
+from rabbit_constants import get_default_rabbit_root, project_venv_dir
 
 
 def install_key(project_root: Path) -> str:
@@ -24,10 +24,10 @@ def install_key(project_root: Path) -> str:
 
 def dependency_home_root() -> Path:
     """Scope dependency state like a process launched in the active home."""
-    from hermes_constants import get_default_hermes_root, get_hermes_home_override
+    from rabbit_constants import get_default_rabbit_root, get_rabbit_home_override
 
-    override = get_hermes_home_override()
-    return get_default_hermes_root(home=override) if override else get_default_hermes_root()
+    override = get_rabbit_home_override()
+    return get_default_rabbit_root(home=override) if override else get_default_rabbit_root()
 
 
 def installs_root() -> Path:
@@ -43,23 +43,23 @@ def owning_home_root(project_root: Path) -> Path | None:
 
     Dependency state is scoped per data root (``<root>/installs/<install_key>``), but a source
     checkout -- its launchers, product builds and install stamp -- exists once. A launch under
-    another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
+    another root (a test's temporary ``RABBIT_HOME``, a per-task home, a CI service home) borrows
     it: the root that installed it already holds committed state for it, under the root the
-    checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
+    checkout sits in (``<root>/rabbit-agent``) or else the platform default root. ``None`` when
     the active root's state is that state (the owner itself, or one of its profiles), and when no
     such root has state for this checkout -- a fresh install, or a custom root that owns its own
     tree -- so those keep today's behaviour (#123238).
 
     A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
-    cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
+    cannot name the owner. The checkout's ``rabbit`` launcher can: only the owner publishes it,
     and it execs the owner's store Python. With no live launcher to ask, the root the checkout
     sits in outranks the platform default.
     """
-    from hermes_constants import _get_platform_default_hermes_home
+    from rabbit_constants import _get_platform_default_rabbit_home
 
     root = Path(project_root).resolve()
     key = install_key(root)
-    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_rabbit_home()))
                   if (candidate / "installs" / key / "facts.json").is_file()]
     if not candidates:
         return None
@@ -74,10 +74,10 @@ def owning_home_root(project_root: Path) -> Path | None:
 
 def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:
     """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
-    from hermes_cli._launchers import _launcher_python
+    from rabbit_cli._launchers import _launcher_python
 
-    local = project_root / ".hermes" / "bin"
-    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+    local = project_root / ".rabbit" / "bin"
+    for name in (("rabbit.exe", "rabbit.cmd") if os.name == "nt" else ("rabbit",)):
         python = _launcher_python(local / name)
         if python is None or not python.is_file():
             continue
@@ -106,13 +106,13 @@ def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
-# The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
+# The files that decide the dependency set. `scripts/run-in-rabbit-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
-    """Beside facts.json, so the runner finds it from ``$__HERMES_ACTIVATED``."""
+    """Beside facts.json, so the runner finds it from ``$__RABBIT_ACTIVATED``."""
     return install_state_dir(project_root) / "inputs"
 
 
@@ -168,14 +168,14 @@ def base_venv(project_root: Path) -> Path:
 def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
     """Resolve a payload-relative or stamped store before PM imports.
 
-    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    ``RABBIT_RUNTIME_DIR`` exists so a running process can point PM at a
     non-default runtime location. Publication paths must pass
     ``honor_runtime_override=False``: a persisted artifact (an installed
     launcher) has to bind the store of the tree it serves, never a runtime
     directory inherited through the environment.
     """
     if honor_runtime_override:
-        override = os.environ.get("HERMES_RUNTIME_DIR")
+        override = os.environ.get("RABBIT_RUNTIME_DIR")
         if override:
             return Path(override).resolve()
     root = Path(project_root).resolve()
@@ -198,7 +198,7 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
                 return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
             return Path(value).resolve() if value else _unstamped_store(root)
-    return get_default_hermes_root() / "tools"
+    return get_default_rabbit_root() / "tools"
 
 
 def _unstamped_store(project_root: Path) -> Path:
@@ -209,7 +209,7 @@ def _unstamped_store(project_root: Path) -> Path:
     with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
     launch resolves the same one (#123238).
     """
-    return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
+    return (owning_home_root(project_root) or get_default_rabbit_root()) / "tools"
 
 
 def flush_before_selecting() -> None:
@@ -387,7 +387,7 @@ def activate_dependencies(project_root: Path) -> None:
 
     state = install_state_dir(project_root)
     if state.is_dir():
-        from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
+        from rabbit_cli.runtime_state import runtime_lock, recover_publication, lease_generation
         # The lock's holder may be another profile's backend running a full dependency rebuild;
         # this process only reads the committed selection, so it proceeds without waiting rather
         # than leaving the backend unbound (see runtime_lock).
@@ -429,10 +429,10 @@ def activate_dependencies(project_root: Path) -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
-    # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
+    # The venv's own `rabbit`/`rabbit-acp` console scripts are editable installs bound to
     # the build-time source snapshot, not this checkout (#124627): a child that resolves
-    # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
-    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
+    # `rabbit` off PATH must hit the checkout's own launcher first, never the venv's copy.
+    prefix = [str(path) for path in (project_root.resolve() / ".rabbit" / "bin", executable_dir)
               if path.is_dir()]
     if prefix:
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
@@ -447,7 +447,7 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     environment = committed_venv(project_root)
     env.pop("PYTHONHOME", None)
     env.pop("VIRTUAL_ENV", None)
-    # Nothing committed: the child's own hermes_bootstrap decides (a bare store Python refuses),
+    # Nothing committed: the child's own rabbit_bootstrap decides (a bare store Python refuses),
     # rather than inheriting the pre-PM in-tree venv from here.
     env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()),
                                          *([str(site_packages(environment))] if environment else [])])
@@ -456,14 +456,14 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     # an activated shell and which checkout/profile that shell came from. Its
     # directory also holds activation_inputs_dir, the input-mtime stamps
     # `scripts/_activation.sh` compares against to decide staleness.
-    env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
+    env["__RABBIT_ACTIVATED"] = str(runtime_facts_path(project_root))
     # The suite's interpreter (pm.testenv): an isolated side environment, so it
     # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
     from pm.testenv import testenv_python
 
     test_python = testenv_python(project_root)
     if test_python is not None:
-        env["__HERMES_TEST_PYTHON"] = str(test_python)
+        env["__RABBIT_TEST_PYTHON"] = str(test_python)
     return env
 
 

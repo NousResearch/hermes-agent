@@ -10,7 +10,7 @@ Threat model (be honest): this protects against casual disk inspection, accident
 `git add`/commits, screen-shares, and backup/cloud-sync leakage. The identity key
 defaults to living beside the data at `$PDD_DATA_DIR/age-identity.txt` (0600); set
 `PDD_AGE_IDENTITY` to a separate volume/token for true key separation. It does NOT
-protect against an attacker who can already read your whole HERMES_HOME (they get
+protect against an attacker who can already read your whole RABBIT_HOME (they get
 key + data together).
 """
 from __future__ import annotations

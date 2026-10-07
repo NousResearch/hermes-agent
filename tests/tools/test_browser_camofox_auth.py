@@ -1,6 +1,6 @@
 """Tests that Camofox browser sends Authorization header when CAMOFOX_API_KEY is set.
 
-Regression test for https://github.com/NousResearch/hermes-agent/issues/20476
+Regression test for https://github.com/seven0070/Rabbit-/issues/20476
 """
 
 import json

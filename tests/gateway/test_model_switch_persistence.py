@@ -128,8 +128,7 @@ class TestApplySessionModelOverride:
 
 class TestIsIntentionalModelSwitch:
     """The fallback-eviction check must not evict a session whose model differs from the config
-    default for a reason the system produced: a /model override, or the Nous gateway moving the
-    session off the ``nous/welcome`` alias the config still carries."""
+    default for a reason the system produced: a /model override."""
 
     def test_matches_override(self):
         runner = _make_runner()
@@ -146,17 +145,7 @@ class TestIsIntentionalModelSwitch:
         agent = SimpleNamespace(model="gpt-5.4")
         assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is True
 
-    def test_server_model_switch_off_the_welcome_alias_is_intentional(self):
-        runner = _make_runner()
-        sk = build_session_key(_make_source())
-        # apply_model_switch moved the session and recorded the move (alias -> backing).
-        agent = SimpleNamespace(model="z-ai/glm-5.3-flash", _nous_model_switch=("nous/welcome", "z-ai/glm-5.3-flash"))
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is True
-        # A config that names something else is real drift, not the server's move.
-        assert runner._is_intentional_model_switch(sk, agent, "openai/gpt-5") is False
-        # A later fallback onto a third model is drift too, even with the config still on the alias.
-        agent.model = "fallback/model"
-        assert runner._is_intentional_model_switch(sk, agent, "nous/welcome") is False
+
 
     def test_plain_drift_is_not_intentional(self):
         runner = _make_runner()
@@ -203,24 +192,24 @@ class TestOneTurnNeverPersisted:
 
     @staticmethod
     def _runner_with_store(tmp_path, monkeypatch):
-        import hermes_yaml as _yaml
+        import rabbit_yaml as _yaml
 
         import gateway.run as gateway_run
         from gateway.run import GatewayRunner
-        from hermes_cli.model_switch import ModelSwitchResult
+        from rabbit_cli.model_switch import ModelSwitchResult
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        (rabbit_home / "config.yaml").write_text(
             _yaml.safe_dump(
                 {"model": {"default": "old-model", "provider": "openrouter"}}
             ),
             encoding="utf-8",
         )
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch.switch_model",
+            "rabbit_cli.model_switch.switch_model",
             lambda **kw: ModelSwitchResult(
                 success=True,
                 new_model="gpt-5.5",
@@ -233,8 +222,8 @@ class TestOneTurnNeverPersisted:
                 provider_label="OpenRouter",
             ),
         )
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("rabbit_constants.get_rabbit_home", lambda: rabbit_home)
+        monkeypatch.setattr("rabbit_cli.config.get_rabbit_home", lambda: rabbit_home)
 
         runner = object.__new__(GatewayRunner)
         runner.adapters = {}

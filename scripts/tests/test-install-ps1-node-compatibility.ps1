@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $installScript = Join-Path $repoRoot 'scripts\install.ps1'
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ("hermes-pm-delegation-" + [Guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path ([IO.Path]::GetTempPath()) ("rabbit-pm-delegation-" + [Guid]::NewGuid().ToString('N'))
 $testHome = Join-Path $testRoot 'home'
 $checkout = Join-Path $testRoot 'checkout'
 $script:Failures = 0
@@ -19,7 +19,7 @@ function node { throw 'unexpected node command' }
 function npm { throw 'unexpected npm command' }
 
 try {
-    . $installScript -HermesHome $testHome -InstallDir $checkout
+    . $installScript -RabbitHome $testHome -InstallDir $checkout
     Assert-True (-not (Test-Path $testRoot)) 'dot-source loads definitions without filesystem writes'
 
     $fakeUv = Join-Path $testRoot 'uv.cmd'

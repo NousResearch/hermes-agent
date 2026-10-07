@@ -88,7 +88,7 @@ def test_direct_branch_deep_copies_nested_extra_body():
     assert source == {"extra_body": {"provider": {"sort": "throughput"}}}
 
 
-@patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+@patch("rabbit_cli.runtime_provider.resolve_runtime_provider")
 def test_explicit_merges_over_runtime_on_provider_alongside_base_url(mock_resolve):
     """Precedence on the provider-alongside-base_url path (#98237 interplay):
     explicit delegation.request_overrides merges OVER the named provider's
@@ -129,7 +129,7 @@ def test_explicit_merges_over_runtime_on_provider_alongside_base_url(mock_resolv
 # ── Branch 2: named provider (no base_url) ─────────────────────────────────
 
 
-@patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+@patch("rabbit_cli.runtime_provider.resolve_runtime_provider")
 def test_named_provider_branch_honors_explicit_key(mock_resolve):
     """The named-provider branch merges the explicit key over the provider's
     runtime overrides — the config key never silently no-ops."""
@@ -155,7 +155,7 @@ def test_named_provider_branch_honors_explicit_key(mock_resolve):
     }
 
 
-@patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+@patch("rabbit_cli.runtime_provider.resolve_runtime_provider")
 def test_named_provider_branch_without_explicit_key_unchanged(mock_resolve):
     """Without the config key the named-provider branch behaves as before."""
     mock_resolve.return_value = {

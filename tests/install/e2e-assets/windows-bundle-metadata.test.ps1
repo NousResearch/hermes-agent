@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('bundle-metadata-' + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $temp | Out-Null
-$expected = [pscustomobject]@{ msixIdentity='Fixture.Hermes'; publisher='CN=Fixture'; applicationId='Hermes' }
+$expected = [pscustomobject]@{ msixIdentity='Fixture.Rabbit'; publisher='CN=Fixture'; applicationId='Rabbit' }
 function Archive([string]$Name, [string]$Entry, [string]$Xml, [string[]]$Extra = @()) {
     $file = Join-Path $temp $Name
     $zip = [IO.Compression.ZipFile]::Open($file, [IO.Compression.ZipArchiveMode]::Create)
@@ -22,16 +22,16 @@ function Reject([scriptblock]$Action) {
     if (-not $rejected) { throw 'Admission unexpectedly accepted invalid metadata' }
 }
 try {
-    $xml = '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Fixture.Hermes" Publisher="CN=Fixture" Version="1.2.3.0" ProcessorArchitecture="arm64"/><Applications><Application Id="Hermes" Executable="app\Hermes.exe"/></Applications></Package>'
+    $xml = '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Fixture.Rabbit" Publisher="CN=Fixture" Version="1.2.3.0" ProcessorArchitecture="arm64"/><Applications><Application Id="Rabbit" Executable="app\Rabbit.exe"/></Applications></Package>'
     $file = Archive 'native.msix' 'AppxManifest.xml' $xml
     $got = Read-BundleSmokeMetadata $file 'arm64' $expected
-    if ($got.Version -cne '1.2.3.0' -or $got.Executable -cne 'app\Hermes.exe') { throw 'MSIX metadata lost' }
+    if ($got.Version -cne '1.2.3.0' -or $got.Executable -cne 'app\Rabbit.exe') { throw 'MSIX metadata lost' }
     Reject { Read-BundleSmokeMetadata $file 'x64' $expected }
     $wrong = Archive 'wrong.msix' 'AppxManifest.xml' ($xml.Replace('CN=Fixture', 'CN=Other'))
     Reject { Read-BundleSmokeMetadata $wrong 'arm64' $expected }
-    $escape = Archive 'escape.msix' 'AppxManifest.xml' ($xml.Replace('app\Hermes.exe', '..\outside.exe'))
+    $escape = Archive 'escape.msix' 'AppxManifest.xml' ($xml.Replace('app\Rabbit.exe', '..\outside.exe'))
     Reject { Read-BundleSmokeMetadata $escape 'arm64' $expected }
-    $bundle = '<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Fixture.Hermes" Publisher="CN=Fixture" Version="1.2.3.0"/><Packages><Package Type="application" Architecture="x64" Version="1.2.3.0" FileName="x64.msix"/><Package Type="application" Architecture="arm64" Version="1.2.3.0" FileName="arm64.msix"/></Packages></Bundle>'
+    $bundle = '<Bundle xmlns="http://schemas.microsoft.com/appx/2013/bundle"><Identity Name="Fixture.Rabbit" Publisher="CN=Fixture" Version="1.2.3.0"/><Packages><Package Type="application" Architecture="x64" Version="1.2.3.0" FileName="x64.msix"/><Package Type="application" Architecture="arm64" Version="1.2.3.0" FileName="arm64.msix"/></Packages></Bundle>'
     $file = Archive 'universal.msixbundle' 'AppxMetadata/AppxBundleManifest.xml' $bundle @('x64.msix','arm64.msix')
     foreach ($arch in @('arm64','x64')) {
         $got = Read-BundleSmokeMetadata $file $arch $expected

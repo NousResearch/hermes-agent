@@ -159,7 +159,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     from tools.mcp_tool import MCPServerTask
     from tools.mcp_tool_handlers import _make_tool_handler
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _mcp_loop._ensure_mcp_loop()
     transport_ready = threading.Event()
     routes = []
@@ -246,7 +246,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     and the circuit breaker eventually reports the server as unreachable. The
     handler must wait for a distinct session object before retrying.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools import mcp_tool_loop as _mcp_loop
@@ -393,7 +393,7 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 ):
     """All four non-``tools/call`` MCP handlers share the recovery
     pattern and must reconnect the same way on session-expired."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
 
@@ -458,7 +458,7 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 
 @pytest.mark.parametrize("read_only", [False, True], ids=["write-capable", "read-only"])
 def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, read_only):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_tool_handlers import _make_tool_handler

@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
-import type { HermesGitWorktree } from '@/global'
-import type { SessionInfo } from '@/hermes'
+import type { RabbitGitWorktree } from '@/global'
+import type { SessionInfo } from '@/rabbit'
 import { desktopGit } from '@/lib/desktop-git'
 import { mapPool } from '@/lib/pool'
 import { $sidebarWorkspaceNodeOpen, toggleWorkspaceNodeCollapsed } from '@/store/layout'
@@ -118,7 +118,7 @@ export function sortProjectsForOverview(
 // This can't just be `orderByIds`: that surfaces every id missing from the saved
 // order at the TOP, which is right for sessions (a new chat should not sink) but
 // wrong here. The overview also lists repos found by the disk scan that have
-// zero Hermes sessions, and those arrive continuously — so once the user dragged
+// zero Rabbit sessions, and those arrive continuously — so once the user dragged
 // anything, every freshly-scanned checkout jumped above the projects they
 // actually work in.
 //
@@ -152,8 +152,8 @@ export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: str
 export function useRepoWorktreeMap(
   repoPaths: string[],
   enabled: boolean
-): [Record<string, HermesGitWorktree[]>, boolean] {
-  const [map, setMap] = useState<Record<string, HermesGitWorktree[]>>({})
+): [Record<string, RabbitGitWorktree[]>, boolean] {
+  const [map, setMap] = useState<Record<string, RabbitGitWorktree[]>>({})
   const [loading, setLoading] = useState(false)
   const key = useMemo(() => pathListKey(repoPaths), [repoPaths])
   // Refetch when a worktree is added/removed so a new lane shows immediately.

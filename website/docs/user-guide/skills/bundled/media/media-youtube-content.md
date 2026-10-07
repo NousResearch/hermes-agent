@@ -17,7 +17,6 @@ YouTube transcripts to summaries, threads, blogs.
 | Source | Bundled (installed by default) |
 | Path | `skills/media/youtube-content` |
 | Version | `1.0.0` |
-| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `YouTube`, `Video`, `Transcripts`, `Media` |
@@ -25,7 +24,7 @@ YouTube transcripts to summaries, threads, blogs.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # YouTube Content Tool
@@ -38,12 +37,12 @@ Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup
 
-Use `terminal` with the Python from a PM-prepared Hermes source checkout. The
+Use `terminal` with the Python from a PM-prepared Rabbit source checkout. The
 `youtube` extra declares the helper's dependency; do not install packages into
-Hermes with raw pip or project-discovering `uv run`.
+Rabbit with raw pip or project-discovering `uv run`.
 
 From that checkout, first follow the isolated development-home setup in
-[Package Management](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow),
+[Package Management](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/package-management#developer-workflow),
 then prepare the extra and reactivate before running the helper:
 
 ```bash

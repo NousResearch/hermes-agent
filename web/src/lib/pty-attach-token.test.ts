@@ -11,7 +11,7 @@ type Tab = {
   storage: Storage;
 };
 
-const KEY = "hermes.pty.token.chat";
+const KEY = "rabbit.pty.token.chat";
 
 function fakeStorage(seed: Record<string, string> = {}): Storage {
   const store: Record<string, string> = { ...seed };

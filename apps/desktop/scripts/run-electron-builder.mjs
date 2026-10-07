@@ -155,8 +155,8 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))
   }
   /** @type {NodeJS.ProcessEnv} */
-  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions(), HERMES_PREPARED_PACKAGING: manifest,
-    HERMES_PREPARED_NATIVE_DEPS: nativeDeps, HERMES_PREPARED_TARGET: inputs.target }
+  const env = { ...process.env, NODE_OPTIONS: builderNodeOptions(), RABBIT_PREPARED_PACKAGING: manifest,
+    RABBIT_PREPARED_NATIVE_DEPS: nativeDeps, RABBIT_PREPARED_TARGET: inputs.target }
   if (inputs.dmgbuild) env.CUSTOM_DMGBUILD_PATH = inputs.dmgbuild
   if (inputs.windows?.dotnetRoot) env.DOTNET_ROOT = inputs.windows.dotnetRoot
   const result = spawn(process.execPath, [...preloads, path.join(builder, bin), ...args,

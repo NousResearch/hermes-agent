@@ -13,15 +13,15 @@ def pytest_configure(config):
 def isolated_machine_home(request, tmp_path, monkeypatch):
     """Machine-scoped PM state (store, caches, profiles root) lands under tmp_path.
 
-    The root conftest already sandboxes HERMES_HOME; PM additionally keys its machine cache
+    The root conftest already sandboxes RABBIT_HOME; PM additionally keys its machine cache
     off the home directory, so that moves too — in this process (Path.home) and in any child
     (HOME / USERPROFILE). Opt out with ``@pytest.mark.real_machine_home``.
     """
     if request.node.get_closest_marker("real_machine_home"):
         return
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir(exist_ok=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))

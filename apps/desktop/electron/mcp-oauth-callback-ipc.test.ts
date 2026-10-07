@@ -34,11 +34,11 @@ const invoke = (channel: string, ...args: unknown[]) => {
 }
 
 test('listen binds a loopback listener and wait resolves with the redirect params', async () => {
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
   assert.match(redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/callback$/)
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+  const waitPromise = invoke('rabbit:mcp-oauth:wait', id, 5000) as Promise<{
     code: null | string
     error: null | string
     state: null | string
@@ -62,9 +62,9 @@ test('wait relays the RFC 9207 iss parameter from the redirect', async () => {
   // mcp 2.x rejects an authorization response omitting `iss` when the server
   // advertised `authorization_response_iss_parameter_supported` (Cloudflare,
   // Resend), so the listener must not drop it.
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+  const waitPromise = invoke('rabbit:mcp-oauth:wait', id, 5000) as Promise<{
     code: null | string
     iss: null | string
     state: null | string
@@ -80,9 +80,9 @@ test('wait relays the RFC 9207 iss parameter from the redirect', async () => {
 
 test('a redirect without iss reports it as null rather than undefined', async () => {
   // Providers that do not advertise RFC 9207 keep working unchanged.
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{ iss: null | string }>
+  const waitPromise = invoke('rabbit:mcp-oauth:wait', id, 5000) as Promise<{ iss: null | string }>
 
   await fetch(`${redirectUri}?code=abc123&state=st-1`)
 
@@ -90,14 +90,14 @@ test('a redirect without iss reports it as null rather than undefined', async ()
 })
 
 test('non-callback noise (favicon) does not settle the listener', async () => {
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
   const origin = redirectUri.replace(/\/callback$/, '')
 
   const res = await fetch(`${origin}/favicon.ico`)
 
   assert.equal(res.status, 200)
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{ code: null | string }>
+  const waitPromise = invoke('rabbit:mcp-oauth:wait', id, 5000) as Promise<{ code: null | string }>
 
   await fetch(`${redirectUri}?code=late-code&state=s`)
 
@@ -107,9 +107,9 @@ test('non-callback noise (favicon) does not settle the listener', async () => {
 })
 
 test('provider error param is forwarded', async () => {
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  const waitPromise = invoke('hermes:mcp-oauth:wait', id, 5000) as Promise<{
+  const waitPromise = invoke('rabbit:mcp-oauth:wait', id, 5000) as Promise<{
     code: null | string
     error: null | string
   }>
@@ -123,21 +123,21 @@ test('provider error param is forwarded', async () => {
 })
 
 test('cancel tears the listener down and wait reports listener not found afterwards', async () => {
-  const { id, redirectUri } = (await invoke('hermes:mcp-oauth:listen')) as { id: string; redirectUri: string }
+  const { id, redirectUri } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string; redirectUri: string }
 
-  assert.equal(await invoke('hermes:mcp-oauth:cancel', id), true)
+  assert.equal(await invoke('rabbit:mcp-oauth:cancel', id), true)
 
   await assert.rejects(fetch(`${redirectUri}?code=x&state=s`))
 
-  const result = (await invoke('hermes:mcp-oauth:wait', id, 100)) as { error: null | string }
+  const result = (await invoke('rabbit:mcp-oauth:wait', id, 100)) as { error: null | string }
 
   assert.equal(result.error, 'listener not found')
 })
 
 test('wait times out when no callback arrives', async () => {
-  const { id } = (await invoke('hermes:mcp-oauth:listen')) as { id: string }
+  const { id } = (await invoke('rabbit:mcp-oauth:listen')) as { id: string }
 
-  const result = (await invoke('hermes:mcp-oauth:wait', id, 1000)) as { code: null | string; error: null | string }
+  const result = (await invoke('rabbit:mcp-oauth:wait', id, 1000)) as { code: null | string; error: null | string }
 
   assert.equal(result.code, null)
   assert.match(String(result.error), /timeout/)

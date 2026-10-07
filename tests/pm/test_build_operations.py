@@ -169,8 +169,8 @@ def build_tools(tmp_path, monkeypatch, build_worker):
            if not key.startswith(("UV_", "PYTHON")) and key != "VIRTUAL_ENV"}
     home = tmp_path / "home"
     home.mkdir()
-    env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(home / ".hermes"))
-    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    env.update(HOME=str(home), USERPROFILE=str(home), RABBIT_HOME=str(home / ".rabbit"))
+    monkeypatch.setenv("RABBIT_HOME", env["RABBIT_HOME"])
     monkeypatch.setattr(Path, "home", lambda: home)
     return env
 
@@ -303,7 +303,7 @@ def test_requirements_build_installs_offline_markers_and_seals_only_build_pth(tm
     assert executable.parent.parent == out
     assert bool(list(out.rglob("_virtualenv.pth"))) is not sealed
     assert not poison.exists()
-    assert not Path(build_tools["HERMES_HOME"]).exists()
+    assert not Path(build_tools["RABBIT_HOME"]).exists()
     assert dict(os.environ) == before
 
 

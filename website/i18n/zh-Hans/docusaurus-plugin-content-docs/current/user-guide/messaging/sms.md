@@ -2,15 +2,15 @@
 sidebar_position: 8
 sidebar_label: "SMS (Twilio)"
 title: "SMS (Twilio)"
-description: "通过 Twilio 将 Hermes Agent 设置为 SMS 聊天机器人"
+description: "通过 Twilio 将 Rabbit Agent 设置为 SMS 聊天机器人"
 ---
 
 # SMS 设置（Twilio）
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
-Hermes 通过 [Twilio](https://www.twilio.com/) API 接入 SMS。用户向你的 Twilio 电话号码发送短信，即可获得 AI 回复——与 Telegram 或 Discord 的对话体验相同，但通过标准短信进行。
+Rabbit 通过 [Twilio](https://www.twilio.com/) API 接入 SMS。用户向你的 Twilio 电话号码发送短信，即可获得 AI 回复——与 Telegram 或 Discord 的对话体验相同，但通过标准短信进行。
 
 :::info 共享凭据
 SMS gateway（网关）与可选的 [telephony skill](../../reference/skills-catalog.md) 共享凭据。如果你已为语音通话或单次 SMS 配置了 Twilio，该 gateway 可直接使用相同的 `TWILIO_ACCOUNT_SID`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PHONE_NUMBER`。
@@ -23,7 +23,7 @@ SMS gateway（网关）与可选的 [telephony skill](../../reference/skills-cat
 - **Twilio 账户** — [在 twilio.com 注册](https://www.twilio.com/try-twilio)（提供免费试用）
 - **具备 SMS 功能的 Twilio 电话号码**
 - **可公开访问的服务器** — Twilio 在收到 SMS 时会向你的服务器发送 webhook
-- **aiohttp** — `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['sms'], explicit=True)"`
+- **aiohttp** — `cd ~/.rabbit/rabbit-agent && python -c "import pm; pm.sync_venv(['sms'], explicit=True)"`
 
 ---
 
@@ -35,19 +35,19 @@ SMS gateway（网关）与可选的 [telephony skill](../../reference/skills-cat
 
 ---
 
-## 第二步：配置 Hermes
+## 第二步：配置 Rabbit
 
 ### 交互式设置（推荐）
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 从平台列表中选择 **SMS (Twilio)**，向导将提示你输入凭据。
 
 ### 手动设置
 
-在 `~/.hermes/.env` 中添加：
+在 `~/.rabbit/.env` 中添加：
 
 ```bash
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -74,7 +74,7 @@ Twilio 需要知道将传入消息发送到哪里。在 [Twilio 控制台](https
    - **HTTP Method**：`POST`
 
 :::tip 暴露你的 Webhook
-如果你在本地运行 Hermes，请使用隧道工具暴露 webhook：
+如果你在本地运行 Rabbit，请使用隧道工具暴露 webhook：
 
 ```bash
 # 使用 cloudflared
@@ -105,7 +105,7 @@ SMS_WEBHOOK_PORT=3000
 ## 第四步：启动 Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 你应该看到：
@@ -116,7 +116,7 @@ hermes gateway
 
 如果看到 `Refusing to start: SMS_WEBHOOK_URL is required`，请将 `SMS_WEBHOOK_URL` 设置为你在 Twilio 控制台中配置的公网 URL（参见第三步）。
 
-向你的 Twilio 号码发送短信——Hermes 将通过 SMS 回复。
+向你的 Twilio 号码发送短信——Rabbit 将通过 SMS 回复。
 
 ---
 
@@ -151,7 +151,7 @@ hermes gateway
 
 ### Webhook 签名验证
 
-Hermes 通过验证 `X-Twilio-Signature` 头（HMAC-SHA1）来确认入站 webhook 确实来自 Twilio，防止攻击者注入伪造消息。
+Rabbit 通过验证 `X-Twilio-Signature` 头（HMAC-SHA1）来确认入站 webhook 确实来自 Twilio，防止攻击者注入伪造消息。
 
 **`SMS_WEBHOOK_URL` 为必填项。** 将其设置为你在 Twilio 控制台中配置的公网 URL，否则适配器将拒绝启动。
 
@@ -193,7 +193,7 @@ SMS 没有内置加密。除非你了解相关安全风险，否则不要通过 
 
 1. 检查 `TWILIO_PHONE_NUMBER` 是否正确设置（E.164 格式，带 `+`）
 2. 验证你的 Twilio 账户是否有支持 SMS 的号码
-3. 查看 Hermes gateway 日志中的 Twilio API 错误
+3. 查看 Rabbit gateway 日志中的 Twilio API 错误
 
 ### Webhook 端口冲突
 

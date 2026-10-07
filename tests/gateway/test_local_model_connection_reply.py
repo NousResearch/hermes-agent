@@ -106,7 +106,7 @@ class TestGatewayConnectionErrorReply:
 
     def test_every_reply_names_a_slash_command_and_no_jargon(self):
         """Each shaped reply must give the chat user something they can run; 'provider' and
-        'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
+        'gateway logs' are operator words (the log pointer is the `rabbit logs` command)."""
         from agent.i18n import t
         from gateway.run import _PROVIDER_ERROR_REPLIES
         replies = [t(reply_key) for _, reply_key in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
@@ -198,8 +198,8 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         from gateway.run_turn_runner import TurnRunner
         from gateway.session import SessionSource
         from gateway.turn_context import TurnContext
-        from hermes_cli.auth import AuthError
-        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        from rabbit_cli.auth import AuthError
+        from rabbit_cli.auth_constants import CODEX_RATE_LIMITED_CODE
 
         def _resolve(**_kwargs):
             try:

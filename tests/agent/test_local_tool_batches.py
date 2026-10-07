@@ -95,7 +95,7 @@ def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_se
         snapshots.append(copy.deepcopy(messages))
         return flush(messages, *args, **kwargs)
 
-    with patch("hermes_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=pre_hook), patch.object(
+    with patch("rabbit_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=pre_hook), patch.object(
         agent, "_flush_messages_to_session_db", side_effect=capture_flush
     ):
         result = agent.run_conversation("Read alpha and beta without changing anything.")

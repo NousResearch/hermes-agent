@@ -4,11 +4,11 @@ import json
 import pytest
 
 from pm.environments import install_state_dir
-from hermes_cli.runtime_state import recover_publication, runtime_lock
+from rabbit_cli.runtime_state import recover_publication, runtime_lock
 
 
 def test_invalid_journal_cannot_write_outside_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     repo = tmp_path / "repo"
     outside = tmp_path / "outside" / "config.yaml"
     outside.parent.mkdir()
@@ -17,7 +17,7 @@ def test_invalid_journal_cannot_write_outside_home(tmp_path, monkeypatch):
     state.mkdir(parents=True)
     journal = state / "publication.json"
     journal.write_text(json.dumps({"config": str(outside), "previous": "eA==", "facts_before": None}))
-    with runtime_lock(repo), pytest.raises(RuntimeError, match="outside Hermes state"):
+    with runtime_lock(repo), pytest.raises(RuntimeError, match="outside Rabbit state"):
         recover_publication(repo)
     assert outside.read_text() == "untouched"
     assert journal.exists()

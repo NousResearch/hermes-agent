@@ -89,7 +89,7 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     assert uv, "recovery integration requires real uv"
     core, plugin = recovery_graph
     monkeypatch.setattr(paths, "repo_root", lambda: core)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(workspace, "enabled_member_dirs", lambda: [plugin])
@@ -161,7 +161,7 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
 
 def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_repair(tmp_path, monkeypatch, recovery_graph, caplog):
     import pm.paths as paths
-    from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
+    from rabbit_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change
     from pm.environments import install_state_dir, selected_venv, site_packages
 
     engine = importlib.import_module("pm.install")
@@ -179,7 +179,7 @@ def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_re
     active_config.write_text("plugins:\n  enabled: []\n", encoding="utf-8")
     sibling_config = sibling / "config.yaml"
     sibling_config.write_text("plugins:\n  enabled: [worker-deps]\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(paths, "repo_root", lambda: core)
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
     monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)

@@ -1,6 +1,6 @@
-"""Session-scoped context variables for the Hermes gateway.
+"""Session-scoped context variables for the Rabbit gateway.
 
-Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local ``ContextVar``s
+Replaces the old ``os.environ``-based ``RABBIT_SESSION_*`` state with task-local ``ContextVar``s
 (inherited by ``run_in_executor`` threads), so concurrently handled messages no longer clobber each
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
@@ -38,28 +38,28 @@ _SESSION_VARS = (
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
-    "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
-    "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
-    "HERMES_SESSION_USER_ID", "HERMES_SESSION_USER_ID_ALT", "HERMES_SESSION_USER_NAME",
-    "HERMES_SESSION_SCOPE_ID", "HERMES_SESSION_KEY", "HERMES_SESSION_ID",
-    "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL", "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY",
-    "HERMES_CRON_SESSION", "HERMES_SESSION_PARENT_CHAT_ID",
+    "RABBIT_SESSION_PLATFORM", "RABBIT_SESSION_SOURCE", "RABBIT_SESSION_CHAT_ID",
+    "RABBIT_SESSION_CHAT_TYPE", "RABBIT_SESSION_CHAT_NAME", "RABBIT_SESSION_THREAD_ID",
+    "RABBIT_SESSION_USER_ID", "RABBIT_SESSION_USER_ID_ALT", "RABBIT_SESSION_USER_NAME",
+    "RABBIT_SESSION_SCOPE_ID", "RABBIT_SESSION_KEY", "RABBIT_SESSION_ID",
+    "RABBIT_UI_SESSION_ID", "RABBIT_SESSION_MESSAGE_ID", "RABBIT_SESSION_PROFILE",
+    "RABBIT_BROWSER_CONTROL_PRINCIPAL", "RABBIT_BROWSER_CONTROL_TRANSPORT_FAMILY",
+    "RABBIT_CRON_SESSION", "RABBIT_SESSION_PARENT_CHAT_ID",
 ))
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
 # ``async_delivery_supported()``).  _UNSET => supported (CLI, contextvar-unaware paths); stateless
 # adapters (API server, Kanban workers) opt OUT via ``supports_async_delivery = False`` at bind.
-_SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_UNSET)
+_SESSION_ASYNC_DELIVERY = ContextVar("RABBIT_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
 # Request-local proof that the client resumes SessionDB history. No env fallback
 # or child-process export: a bound id alone cannot authorize detached delivery.
-_SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
+_SESSION_HISTORY_DELIVERY = ContextVar("RABBIT_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
-_CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
-_CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
-_CRON_AUTO_DELIVER_THREAD_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
+_CRON_AUTO_DELIVER_PLATFORM = ContextVar("RABBIT_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
+_CRON_AUTO_DELIVER_CHAT_ID = ContextVar("RABBIT_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
+_CRON_AUTO_DELIVER_THREAD_ID = ContextVar("RABBIT_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
 # Legacy env-var name -> ContextVar for get_session_env (_SESSION_ASYNC_DELIVERY deliberately
 # absent: it is a bool capability, read via async_delivery_supported).
@@ -79,7 +79,7 @@ def _runtime_cwd(func: str, *args: Any) -> None:
 
 
 def set_current_session_id(session_id: str) -> None:
-    """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ`` (tools read it
+    """Synchronize ``RABBIT_SESSION_ID`` across ContextVar and ``os.environ`` (tools read it
     with an os.environ fallback).  Delegated subagent children (built in the parent process)
     get ONLY the task-local write, or they would clobber the parent's id."""
     _SESSION_ID.set(session_id)
@@ -89,7 +89,7 @@ def set_current_session_id(session_id: str) -> None:
             return
     except Exception:
         pass
-    os.environ["HERMES_SESSION_ID"] = session_id
+    os.environ["RABBIT_SESSION_ID"] = session_id
 
 
 @contextmanager
@@ -171,7 +171,7 @@ def reset_session_vars() -> None:
 
 
 def get_session_env(name: str, default: str = "") -> str:
-    """Read a session var by legacy ``HERMES_SESSION_*`` name; drop-in for os.getenv.  The
+    """Read a session var by legacy ``RABBIT_SESSION_*`` name; drop-in for os.getenv.  The
     ContextVar wins if ever set here (even to ``""``); else ``os.environ``; else *default*."""
     var = _VAR_MAP.get(name)
     if var is not None and (value := var.get()) is not _UNSET:
@@ -179,8 +179,8 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
-# Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/
-# desktop bind HERMES_SESSION_SOURCE, so both are consulted).  Default-deny: an unrecognized
+# Surfaces that are not a human chat channel (gateway binds RABBIT_SESSION_PLATFORM, CLI/TUI/
+# desktop bind RABBIT_SESSION_SOURCE, so both are consulted).  Default-deny: an unrecognized
 # identity counts as messaging.  Mirrors LOCAL_SESSION_SOURCE_IDS in apps/desktop session-source.ts.
 NON_MESSAGING_SESSION_SURFACES = frozenset({
     "", "api_server", "cli", "codex", "desktop", "gateway", "kanban", "local",
@@ -190,9 +190,9 @@ NON_MESSAGING_SESSION_SURFACES = frozenset({
 
 def session_is_messaging_surface() -> bool:
     """Whether this turn is delivered over a human messaging channel (checks
-    ``HERMES_PLATFORM``, then the session platform, then the session source)."""
-    platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
-    idents = (platform, get_session_env("HERMES_SESSION_SOURCE", ""))
+    ``RABBIT_PLATFORM``, then the session platform, then the session source)."""
+    platform = os.getenv("RABBIT_PLATFORM") or get_session_env("RABBIT_SESSION_PLATFORM", "")
+    idents = (platform, get_session_env("RABBIT_SESSION_SOURCE", ""))
     idents = (str(v or "").strip().lower() for v in idents)
     return any(ident and ident not in NON_MESSAGING_SESSION_SURFACES for ident in idents)
 
@@ -202,7 +202,7 @@ def declare_stateless_channel() -> None:
     ``set_session_vars(async_delivery=False)`` this does NOT latch ``_session_context_engaged``
     (flipping the subprocess env bridge), which a one-shot CLI must not do as a side effect.
 
-    See NousResearch/hermes-agent#53027 and #63142.
+    See seven0070/Rabbit-#53027 and #63142.
     """
     _SESSION_ASYNC_DELIVERY.set(False)
 
@@ -210,8 +210,8 @@ def declare_stateless_channel() -> None:
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.  False for
     stateless channels (:func:`declare_stateless_channel`) and Kanban workers
-    (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    (``RABBIT_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn)."""
+    if os.environ.get("RABBIT_KANBAN_TASK"):
         return False
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)

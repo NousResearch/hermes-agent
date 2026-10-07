@@ -10,7 +10,7 @@ import { runBackendStartStep } from './backend-start-cancellation'
  *
  * Four independent signals mean "an update owns the local runtime right now":
  *
- *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
+ *  - the on-disk marker (`RABBIT_HOME/.rabbit-update-in-progress`), written
  *    by the updater — and by the desktop itself just before hand-off — and
  *  - the in-process `updateInFlight` flag, true for the whole
  *    `applyUpdates()` critical section, and
@@ -26,7 +26,7 @@ import { runBackendStartStep } from './backend-start-cancellation'
  * waiter could slip through mid-update.
  *
  * The fourth signal is different in kind: `failedReceipt` names a FINISHED,
- * failed update. A failed `hermes update` releases the marker in its `finally`
+ * failed update. A failed `rabbit update` releases the marker in its `finally`
  * only when the failure happened after the lock was claimed; preparation-stage
  * failures (uv sync network errors) can exit with the marker left pointing at
  * a dead or recycled pid while `readLiveUpdateMarker`'s liveness probe keeps

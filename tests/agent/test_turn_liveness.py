@@ -1,6 +1,6 @@
 """Unit coverage for agent/turn_liveness.py config resolution (#95548/#95663).
 
-AGENTS.md rejects new non-secret ``HERMES_*`` env knobs: the watchdog's
+AGENTS.md rejects new non-secret ``RABBIT_*`` env knobs: the watchdog's
 behavioral settings live in ``agent.turn_liveness`` in config.yaml, and the
 resolver must validate them — a typo must never crash durable-turn startup,
 and NaN/Inf must never silently disable the timeout or freeze the watcher

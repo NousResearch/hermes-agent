@@ -366,13 +366,13 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
 @contextlib.contextmanager
 def _as_home(home):
     """Bind a profile home the way the multiplex gateway binds one per activity."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    token = set_hermes_home_override(str(home))
+    token = set_rabbit_home_override(str(home))
     try:
         yield
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def _profile_home(tmp_path, name):
@@ -389,7 +389,7 @@ def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
     """Close a runner whose operation parked one approved OAuth attempt, the way
     ``_Runner.close`` does at the end of a tool call bound to ``home``."""
     import tools.connectors.mcp as mcp
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     from tools.connectors.operation import ConnectionOperation
 
     attempt = FakeAttempt("https://auth.example/linear")
@@ -401,7 +401,7 @@ def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
     runner.work = {name: mcp._Work(attempt=attempt)}
     with _as_home(home):
         if profile_key == "stamped":
-            operation.profile_key = hermes_home_key()  # what live.open stamps
+            operation.profile_key = rabbit_home_key()  # what live.open stamps
         else:
             operation.profile_key = profile_key  # "" on the detached no-card path
         runner.close()
@@ -432,7 +432,7 @@ def _clear_late_attempts():
 
 def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
     """Two multiplexed profiles can carry the same session key (the api_server's
-    X-Hermes-Session-Key header is client-chosen, and live.py keys _open by
+    X-Rabbit-Session-Key header is client-chosen, and live.py keys _open by
     (profile, session) for exactly this reason). A parked grant must not leak."""
     import tools.connectors.mcp as mcp
 
@@ -459,9 +459,9 @@ def test_late_attempt_keyed_by_detached_path_uses_calling_profile(tmp_path):
     home_b = _profile_home(tmp_path, "home-b")
     _park_attempt(home_a, profile_key="")
 
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     with _as_home(home_a):
-        assert list(mcp._LATE_ATTEMPTS) == [(hermes_home_key(), "s1")]
+        assert list(mcp._LATE_ATTEMPTS) == [(rabbit_home_key(), "s1")]
     adopted, registered, _ = _adopt_as(home_b)
     assert adopted == []
     adopted, registered, _ = _adopt_as(home_a)

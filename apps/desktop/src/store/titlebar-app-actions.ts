@@ -3,7 +3,7 @@ import { DEFAULT_INTERFACE_MODE, type InterfaceMode, shownInMode, type Tiered } 
 
 export type TitlebarAppActionsSide = 'left' | 'right'
 
-const STORAGE_KEY = 'hermes.desktop.titlebarAppActions'
+const STORAGE_KEY = 'rabbit.desktop.titlebarAppActions'
 
 /** Right is the original titlebar: Settings / Layout / HUD stay off the tab strip. */
 export const TITLEBAR_APP_ACTIONS_DEFAULT: TitlebarAppActionsSide = 'right'

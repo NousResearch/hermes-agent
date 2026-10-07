@@ -14,5 +14,5 @@ export function hasRegistryTopology(): boolean {
   // The bridge exists before its asynchronous cache load. Treat that window
   // (and a failed list IPC) as registry topology so owner routing fails closed;
   // only an older Desktop without the registry capability is truly legacy.
-  return $connectionsRegistry.get() !== null || Boolean(window.hermesDesktop?.connections?.list)
+  return $connectionsRegistry.get() !== null || Boolean(window.rabbitDesktop?.connections?.list)
 }

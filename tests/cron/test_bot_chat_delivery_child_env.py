@@ -17,8 +17,8 @@ import cron.scheduler_delivery as delivery
 
 # What a gateway process that loaded the ROOT profile's .env holds in os.environ.
 LAUNCH_ENV = {
-    "HERMES_MODEL": "root-model",
-    "HERMES_LANGUAGE": "en",
+    "RABBIT_MODEL": "root-model",
+    "RABBIT_LANGUAGE": "en",
     "TERMINAL_ENV": "docker",
     "TERMINAL_DOCKER_IMAGE": "root-only-image",
     "DISCORD_ALLOWED_USERS": "root-operator",  # an authorization gate (#113270)
@@ -29,14 +29,14 @@ LAUNCH_ENV = {
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
-    """A root-profile gateway (``hermes gateway run``) and a second profile to deliver into."""
-    root = tmp_path / "hermes"
+    """A root-profile gateway (``rabbit gateway run``) and a second profile to deliver into."""
+    root = tmp_path / "rabbit"
     beta = root / "profiles" / "beta"
     beta.mkdir(parents=True)
     (root / ".env").write_text(
         "\n".join(f"{key}={value}" for key, value in LAUNCH_ENV.items()) + "\n", encoding="utf-8")
-    (beta / ".env").write_text("ANTHROPIC_API_KEY=sk-beta\nHERMES_LANGUAGE=ja\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    (beta / ".env").write_text("ANTHROPIC_API_KEY=sk-beta\nRABBIT_LANGUAGE=ja\n", encoding="utf-8")
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     for key, value in LAUNCH_ENV.items():
         monkeypatch.setenv(key, value)
     return root, beta
@@ -61,9 +61,9 @@ def test_the_turn_for_another_profile_carries_that_profile_s_environment(fleet, 
     assert delivery._deliver_to_bot_chat({"id": "j", "name": "nightly"}, "the brief", "beta") is None
 
     env = captured["env"]
-    assert env["HERMES_HOME"] == str(beta)
+    assert env["RABBIT_HOME"] == str(beta)
     # The launch profile's settings and bridged terminal policy are not beta's.
-    for key in ("HERMES_MODEL", "TERMINAL_ENV", "TERMINAL_DOCKER_IMAGE"):
+    for key in ("RABBIT_MODEL", "TERMINAL_ENV", "TERMINAL_DOCKER_IMAGE"):
         assert key not in env, f"{key} leaked from the launch profile"
     # Authorization gates decide who may talk to the agent — never inherited across profiles.
     for key in ("DISCORD_ALLOWED_USERS", "DISCORD_IGNORED_CHANNELS"):
@@ -71,7 +71,7 @@ def test_the_turn_for_another_profile_carries_that_profile_s_environment(fleet, 
     # Credentials are the target profile's own, not the gateway's.
     assert env["ANTHROPIC_API_KEY"] == "sk-beta"
     # Beta's own .env is loaded by the child itself; what matters here is that root's value is gone.
-    assert env.get("HERMES_LANGUAGE") != "en"
+    assert env.get("RABBIT_LANGUAGE") != "en"
 
 
 def test_a_delivery_into_the_gateway_s_own_bot_chat_keeps_its_environment(fleet, monkeypatch):
@@ -82,8 +82,8 @@ def test_a_delivery_into_the_gateway_s_own_bot_chat_keeps_its_environment(fleet,
     assert delivery._deliver_to_bot_chat({"id": "j", "name": "nightly"}, "the brief", "") is None
 
     env = captured["env"]
-    assert env["HERMES_HOME"] == str(root)
-    assert env["HERMES_MODEL"] == "root-model"
+    assert env["RABBIT_HOME"] == str(root)
+    assert env["RABBIT_MODEL"] == "root-model"
     assert env["TERMINAL_DOCKER_IMAGE"] == "root-only-image"
     assert env["ANTHROPIC_API_KEY"] == "sk-root"
     assert env["DISCORD_ALLOWED_USERS"] == "root-operator"
@@ -122,7 +122,7 @@ def test_an_unbuildable_target_environment_is_refused_and_no_turn_is_spawned(fle
 def test_the_child_env_is_built_for_the_target_even_while_a_sibling_home_override_is_active(fleet, monkeypatch):
     """Under multiplexing the tick runs with the JOB's profile as the home override; the strip must
     still be resolved against the delivery target, not against whichever home is ambient."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     root, beta = fleet
     gamma = root / "profiles" / "gamma"
@@ -131,13 +131,13 @@ def test_the_child_env_is_built_for_the_target_even_while_a_sibling_home_overrid
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "gamma-operator")
     captured = _capture_child_env(monkeypatch)
 
-    token = set_hermes_home_override(str(gamma))
+    token = set_rabbit_home_override(str(gamma))
     try:
         delivery._deliver_to_bot_chat({"id": "j", "name": "nightly"}, "the brief", "beta")
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     env = captured["env"]
-    assert env["HERMES_HOME"] == str(beta)
+    assert env["RABBIT_HOME"] == str(beta)
     assert "DISCORD_ALLOWED_USERS" not in env, "the firing profile's gate reached another profile's turn"
     assert env["ANTHROPIC_API_KEY"] == "sk-beta"

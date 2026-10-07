@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+import rabbit_constants
 from agent.secret_scope import current_secret_scope
 from tools import mcp_tool_agent as _mcp_agent
 from tools import mcp_tool_discovery as _mcp_discovery
@@ -28,9 +28,9 @@ def reload_env(monkeypatch, tmp_path):
     scoped_homes: list[str] = []
 
     def _discover():
-        discovered_homes.append(hermes_constants.hermes_home_key())
+        discovered_homes.append(rabbit_constants.rabbit_home_key())
         if current_secret_scope() is not None:
-            scoped_homes.append(hermes_constants.hermes_home_key())
+            scoped_homes.append(rabbit_constants.rabbit_home_key())
 
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", _discover)
     monkeypatch.setattr(_mcp_agent, "refresh_agent_mcp_tools",
@@ -75,8 +75,8 @@ def test_reload_rediscovers_under_each_live_profile_scope(reload_env):
     regained its overlay, so it loses its MCP tools until its own reload."""
     srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
 
-    assert hermes_constants.hermes_home_key() in reload_env.discovered_homes
-    assert hermes_constants.hermes_home_key(reload_env.profile_b) in reload_env.discovered_homes
+    assert rabbit_constants.rabbit_home_key() in reload_env.discovered_homes
+    assert rabbit_constants.rabbit_home_key(reload_env.profile_b) in reload_env.discovered_homes
 
 
 def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload_env):
@@ -86,7 +86,7 @@ def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload
     srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
 
     assert sorted(set(reload_env.scoped_homes)) == sorted(set(reload_env.discovered_homes))
-    assert hermes_constants.hermes_home_key() in reload_env.scoped_homes
+    assert rabbit_constants.rabbit_home_key() in reload_env.scoped_homes
 
 
 def test_reload_forwards_disabled_toolsets_to_the_refresh(reload_env, monkeypatch):

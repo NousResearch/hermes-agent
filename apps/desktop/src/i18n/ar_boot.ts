@@ -2,19 +2,19 @@ import type { TranslationOverrides } from './define-locale'
 
 export const arBoot = {
   boot: {
-    ready: 'Hermes Desktop جاهز',
+    ready: 'Rabbit Desktop جاهز',
     desktopBootFailedWithMessage: message => `فشل تشغيل سطح المكتب: ${message}`,
     steps: {
       connectingGateway: 'جار الاتصال ببوابة سطح المكتب',
-      loadingSettings: 'جار تحميل إعدادات Hermes',
+      loadingSettings: 'جار تحميل إعدادات Rabbit',
       loadingSessions: 'جار تحميل الجلسات الأخيرة',
-      retryingRemoteBackend: 'جارٍ إعادة الاتصال بخادم Hermes البعيد…',
+      retryingRemoteBackend: 'جارٍ إعادة الاتصال بخادم Rabbit البعيد…',
       startingDesktopConnection: 'جار بدء اتصال سطح المكتب',
-      startingHermesDesktop: 'جار تشغيل Hermes Desktop...'
+      startingRabbitDesktop: 'جار تشغيل Rabbit Desktop...'
     },
     errors: {
-      backgroundExited: 'خرجت عملية Hermes الخلفية.',
-      backgroundExitedDuringStartup: 'خرجت عملية Hermes الخلفية أثناء بدء التشغيل.',
+      backgroundExited: 'خرجت عملية Rabbit الخلفية.',
+      backgroundExitedDuringStartup: 'خرجت عملية Rabbit الخلفية أثناء بدء التشغيل.',
       backendStopped: 'توقف الخلفية',
       desktopBootFailed: 'فشل تشغيل سطح المكتب',
       gatewayConnectionLost: 'انقطع الاتصال بالبوابة',
@@ -24,19 +24,13 @@ export const arBoot = {
       ipcBridgeUnavailable: 'جسر IPC لسطح المكتب غير متاح.'
     },
     failure: {
-      title: 'تعذر تشغيل Hermes',
+      title: 'تعذر تشغيل Rabbit',
       description: 'لم تعمل البوابة الخلفية. جرب إحدى خطوات الاسترداد أدناه. لن يحذف ذلك محادثاتك أو إعداداتك.',
       remoteTitle: 'تسجيل الدخول للبوابة البعيدة مطلوب',
       remoteDescription: 'انتهت جلسة البوابة البعيدة. سجل الدخول مرة أخرى لإعادة الاتصال.',
       retry: 'إعادة المحاولة',
       repairInstall: 'إصلاح التثبيت',
       useLocalGateway: 'استخدام البوابة المحلية',
-      cloudDownTitle: 'عامل Nous Cloud معطّل',
-      cloudDownDescription:
-        'يعيد عامل السحابة المُدار من Nous الذي يتصل به هذا البوابة خطأً من الخادم. لا يمكن إعادة تشغيله من هنا — تحقق من حالته، أو بدّل إلى البوابة المحلية، أو احصل على الدعم.',
-      cloudDownHint: 'تفتح الأزرار أدناه بوابة Nous (حالة المثيل وعناصر التحكم) أو Discord للحصول على الدعم.',
-      cloudDownCheckPortal: 'التحقق من حالة البوابة',
-      cloudDownDiscord: 'الحصول على مساعدة عبر Discord',
       openLogs: 'فتح السجلات',
       repairHint: 'يعيد الإصلاح تشغيل المثبت وقد يستغرق بضع دقائق على جهاز جديد.',
       remoteSignInHint: signInLabel =>
@@ -58,22 +52,22 @@ export const arBoot = {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
   updates: {
-    discontinuedTitle: 'لم يعد إصدار Hermes هذا مدعومًا',
-    discontinuedBody: 'لم يعد إصدار Hermes هذا مدعومًا وقد يتوقف عن العمل — ألغِ تثبيته. ستبقى بياناتك على القرص.',
+    discontinuedTitle: 'لم يعد إصدار Rabbit هذا مدعومًا',
+    discontinuedBody: 'لم يعد إصدار Rabbit هذا مدعومًا وقد يتوقف عن العمل — ألغِ تثبيته. ستبقى بياناتك على القرص.',
     channels: { stable: 'مستقر', canary: 'تجريبي' },
     bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
     bundleSwapPendingDesc:
-      'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',
-    bundleSwapPendingAction: 'إعادة تشغيل Hermes',
+      'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Rabbit لتحميله. لن تتأثر المحادثات أو الإعدادات.',
+    bundleSwapPendingAction: 'إعادة تشغيل Rabbit',
     stages: {
       idle: 'جار التحضير...',
       prepare: 'جار التحضير...',
       fetch: 'جار التنزيل...',
       pull: 'أوشكنا على الانتهاء...',
       pydeps: 'جار الإنهاء...',
-      update: 'جار تحديث Hermes...',
+      update: 'جار تحديث Rabbit...',
       rebuild: 'جار إعادة بناء تطبيق سطح المكتب...',
-      restart: 'جار إعادة تشغيل Hermes...',
+      restart: 'جار إعادة تشغيل Rabbit...',
       done: 'اكتمل التحديث',
       manual: 'التحديث من الطرفية',
       guiSkew: 'تحديث تطبيق سطح المكتب',
@@ -83,13 +77,13 @@ export const arBoot = {
     checkFailedTitle: 'تعذّر التحقق من التحديثات',
     tryAgain: 'إعادة المحاولة',
     notAvailableTitle: 'التحديث غير متاح',
-    unsupportedMessage: 'لا يمكن لهذا الإصدار من Hermes تحديث نفسه من داخل التطبيق.',
-    appName: 'Hermes Desktop',
+    unsupportedMessage: 'لا يمكن لهذا الإصدار من Rabbit تحديث نفسه من داخل التطبيق.',
+    appName: 'Rabbit Desktop',
     version: value => `الإصدار ${value}`,
     versionUnavailable: 'الإصدار غير متاح',
     bundleOutOfSync: 'إصدار التطبيق قديم',
     bundleOutOfSyncDesc:
-      'تم تحديث وقت تشغيل Hermes، لكن تطبيق سطح المكتب نفسه لا يزال إصدارًا قديمًا — لن تظهر ميزات الواجهة الجديدة (مثل Bot Mode) حتى يتم تحديث التطبيق. شغّل التحديث أدناه لإعادة بناء التطبيق. إذا لم يختفِ هذا التحذير، فأعد التثبيت من أحدث مثبّت لسطح المكتب.',
+      'تم تحديث وقت تشغيل Rabbit، لكن تطبيق سطح المكتب نفسه لا يزال إصدارًا قديمًا — لن تظهر ميزات الواجهة الجديدة (مثل Bot Mode) حتى يتم تحديث التطبيق. شغّل التحديث أدناه لإعادة بناء التطبيق. إذا لم يختفِ هذا التحذير، فأعد التثبيت من أحدث مثبّت لسطح المكتب.',
     bundleOutOfSyncAction: 'الحصول على المثبّت',
     checkNow: 'التحقق الآن',
     checkingShort: 'جار التحقق...',
@@ -118,9 +112,9 @@ export const arBoot = {
     versionDetailsDistributionDesktopMsix: 'تطبيق سطح المكتب (MSIX)',
     versionDetailsDistributionDesktopInstaller: 'تطبيق سطح المكتب (المُثبِّت)',
     versionDetailsDistributionSourceInstaller: 'المصدر (سكربت التثبيت)',
-    versionDetailsDistributionSourceInstallerDesktop: 'المصدر (سكربت التثبيت) + hermes desktop',
+    versionDetailsDistributionSourceInstallerDesktop: 'المصدر (سكربت التثبيت) + rabbit desktop',
     versionDetailsDistributionSource: 'المصدر',
-    versionDetailsDistributionSourceDesktop: 'المصدر + hermes desktop',
+    versionDetailsDistributionSourceDesktop: 'المصدر + rabbit desktop',
     versionDetailsDistributionStore: 'Microsoft Store',
     versionDetailsRuntimeEmbedded: 'وقت تشغيل مضمّن',
     versionDetailsRuntimeExternal: 'خارجي (يستخدم وقت تشغيل الجهاز)',
@@ -128,46 +122,46 @@ export const arBoot = {
     versionDetailsInstallId: 'معرّف التثبيت',
     versionDetailsUncommittedChanges: '(+ تغييرات غير ملتزمة)',
     connectionRetry: 'تحقق من اتصالك وأعد المحاولة.',
-    gitUnusable: 'لم يتمكن Hermes من تشغيل Git على هذا الجهاز، لذا لم يتمكن من التحقق من التحديثات.',
+    gitUnusable: 'لم يتمكن Rabbit من تشغيل Git على هذا الجهاز، لذا لم يتمكن من التحقق من التحديثات.',
     latestBody: 'أنت تستخدم أحدث إصدار.',
     latestBodyBackend: 'الواجهة الخلفية تعمل بأحدث إصدار.',
     allSetTitle: 'كل شيء جاهز',
     availableTitle: 'يتوفر تحديث جديد',
-    availableBody: 'إصدار جديد من Hermes جاهز للتثبيت.',
+    availableBody: 'إصدار جديد من Rabbit جاهز للتثبيت.',
     availableTitleBackend: 'يتوفر تحديث للواجهة الخلفية',
-    availableBodyBackend: 'إصدار أحدث من واجهة Hermes الخلفية المتصلة جاهز للتثبيت.',
+    availableBodyBackend: 'إصدار أحدث من واجهة Rabbit الخلفية المتصلة جاهز للتثبيت.',
     availableBodyNoChangelog: 'إصدار أحدث جاهز. ملاحظات الإصدار غير متاحة لنوع التثبيت هذا.',
-    availableBodyRelease: (tag: string) => `Hermes ${tag} جاهز للتثبيت.`,
+    availableBodyRelease: (tag: string) => `Rabbit ${tag} جاهز للتثبيت.`,
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
     copyFullLog: 'نسخ سجل التغييرات الكامل',
     manualTitle: 'التحديث من الطرفية',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
-    manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
-    manualBodyBackend: 'تتم إدارة خادم Hermes خارج هذا التطبيق. نفّذ هذا الأمر على الخادم الذي يستضيفه:',
-    manualPickedUp: 'سيلتقط Hermes الإصدار الجديد في المرة التالية التي تشغّله فيها.',
+    manualBody: 'لقد ثبّتت Rabbit من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
+    manualBodyBackend: 'تتم إدارة خادم Rabbit خارج هذا التطبيق. نفّذ هذا الأمر على الخادم الذي يستضيفه:',
+    manualPickedUp: 'سيلتقط Rabbit الإصدار الجديد في المرة التالية التي تشغّله فيها.',
     manualPickedUpBackend: 'سيحمّل الخادم الإصدار الجديد بعد اكتمال التحديث.',
     guiSkewTitle: 'تحديث تطبيق سطح المكتب',
     guiSkewBody:
-      'تم تحديث الواجهة الخلفية، لكن حزمة تطبيق سطح المكتب هذه لم تتغير. حدّث أو أعد تثبيت تطبيق Hermes لسطح المكتب (ملف AppImage / ‎.deb / ‎.rpm) لمطابقته.',
+      'تم تحديث الواجهة الخلفية، لكن حزمة تطبيق سطح المكتب هذه لم تتغير. حدّث أو أعد تثبيت تطبيق Rabbit لسطح المكتب (ملف AppImage / ‎.deb / ‎.rpm) لمطابقته.',
     copy: 'نسخ',
     copied: 'تم النسخ',
     done: 'تم',
     applyingBody:
-      'يتولّى مُحدِّث Hermes المهمة في نافذته الخاصة ويعيد فتح Hermes تلقائيا عند الانتهاء. الرجاء عدم إعادة فتح Hermes بنفسك أثناء التحديث.',
+      'يتولّى مُحدِّث Rabbit المهمة في نافذته الخاصة ويعيد فتح Rabbit تلقائيا عند الانتهاء. الرجاء عدم إعادة فتح Rabbit بنفسك أثناء التحديث.',
     applyingBodyBackend:
-      'تطبّق الواجهة الخلفية البعيدة التحديث وستعيد التشغيل. يعيد Hermes الاتصال تلقائيا عند عودتها.',
-    applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Hermes فتح نفسه تلقائيا.',
+      'تطبّق الواجهة الخلفية البعيدة التحديث وستعيد التشغيل. يعيد Rabbit الاتصال تلقائيا عند عودتها.',
+    applyingClose: 'ستُغلق هذه النافذة أثناء تشغيل التحديث، ثم يعيد Rabbit فتح نفسه تلقائيا.',
     errorTitle: 'لم يكتمل التحديث',
     errorBody: 'لا داعي للقلق — لم يُفقد شيء. يمكنك إعادة المحاولة الآن.',
-    blockerTitle: 'إغلاق المعاينات المحلية لتحديث Hermes؟',
-    blockerBody: 'يحتاج Hermes إلى إيقاف هذه المعاينات المحلية قبل التحديث. لن يؤدي ذلك إلى تعديل ملفاتك أو حذفها.',
-    foreignBlockerTitle: 'أغلق العمليات الأخرى لتحديث Hermes',
+    blockerTitle: 'إغلاق المعاينات المحلية لتحديث Rabbit؟',
+    blockerBody: 'يحتاج Rabbit إلى إيقاف هذه المعاينات المحلية قبل التحديث. لن يؤدي ذلك إلى تعديل ملفاتك أو حذفها.',
+    foreignBlockerTitle: 'أغلق العمليات الأخرى لتحديث Rabbit',
     foreignBlockerBody:
-      'لا يمكن لـ Hermes إغلاق هذه العمليات تلقائيًا بأمان. أغلق التطبيق أو الطرفية أو الخدمة التي تشغّل كل عملية، ثم حاول التحديث مرة أخرى.',
+      'لا يمكن لـ Rabbit إغلاق هذه العمليات تلقائيًا بأمان. أغلق التطبيق أو الطرفية أو الخدمة التي تشغّل كل عملية، ثم حاول التحديث مرة أخرى.',
     mixedBlockerBody:
-      'يمكن لـ Hermes إغلاق المعاينات المحلية المدرجة أدناه. يجب إغلاق العمليات الأخرى يدويًا قبل متابعة التحديث.',
+      'يمكن لـ Rabbit إغلاق المعاينات المحلية المدرجة أدناه. يجب إغلاق العمليات الأخرى يدويًا قبل متابعة التحديث.',
     closePreviewsAndUpdate: 'إغلاق المعاينات والتحديث',
     closePreviewsAndCheckAgain: 'إغلاق المعاينات والتحقق مجددًا',
     localPreview: 'معاينة محلية',
@@ -200,7 +194,7 @@ export const arBoot = {
     }
   },
   guidedGreeting: {
-    line: 'أهلا، تفضل بالدخول. أنا Hermes. امنحني دقيقتين لأرتب المكان حولك، ثم نبدأ بشيء تريد إنجازه فعلا.\n\nبداية، بماذا أناديك؟',
+    line: 'أهلا، تفضل بالدخول. أنا Rabbit. امنحني دقيقتين لأرتب المكان حولك، ثم نبدأ بشيء تريد إنجازه فعلا.\n\nبداية، بماذا أناديك؟',
     nameSuggestion: (name: string) => `(يمكنني أن أناديك ${name} إن كنت تفضل ذلك.)`
   },
   install: {
@@ -211,7 +205,7 @@ export const arBoot = {
       skipped: 'تم التخطي',
       failed: 'فشل'
     },
-    oneTimeTitle: 'يحتاج Hermes إلى تثبيت لمرة واحدة',
+    oneTimeTitle: 'يحتاج Rabbit إلى تثبيت لمرة واحدة',
     unsupportedDesc: platform =>
       `التثبيت التلقائي عند أول تشغيل غير متاح على ${platform} بعد. افتح الطرفية وشغّل الأمر أدناه، ثم أعد تشغيل هذا التطبيق. ستتخطى عمليات التشغيل اللاحقة هذه الخطوة.`,
     installCommand: 'أمر التثبيت',
@@ -220,12 +214,12 @@ export const arBoot = {
     installTo: 'سيتم التثبيت في',
     retryAfterRun: 'لقد شغّلته -- إعادة المحاولة',
     failedTitle: 'فشل التثبيت',
-    settingUpTitle: 'جار إعداد وكيل Hermes',
+    settingUpTitle: 'جار إعداد وكيل Rabbit',
     finishingTitle: 'جار الإنهاء',
     failedDesc:
-      'فشلت إحدى خطوات التثبيت. على Windows، قد يحدث هذا إذا كان هناك نسخة أخرى من Hermes CLI أو تطبيق سطح المكتب قيد التشغيل. أوقف أي نسخ Hermes قيد التشغيل، ثم أعد المحاولة. تحقق من التفاصيل أدناه أو من سجل سطح المكتب للحصول على النص الكامل.',
+      'فشلت إحدى خطوات التثبيت. على Windows، قد يحدث هذا إذا كان هناك نسخة أخرى من Rabbit CLI أو تطبيق سطح المكتب قيد التشغيل. أوقف أي نسخ Rabbit قيد التشغيل، ثم أعد المحاولة. تحقق من التفاصيل أدناه أو من سجل سطح المكتب للحصول على النص الكامل.',
     activeDesc:
-      'هذا إعداد لمرة واحدة. يقوم مثبّت Hermes بتنزيل التبعيات وتهيئة جهازك. ستتخطى عمليات التشغيل اللاحقة هذه الخطوة.',
+      'هذا إعداد لمرة واحدة. يقوم مثبّت Rabbit بتنزيل التبعيات وتهيئة جهازك. ستتخطى عمليات التشغيل اللاحقة هذه الخطوة.',
     progress: (completed, total) => `اكتملت ${completed} من ${total} خطوة`,
     currentStage: stage => ` -- الآن: ${stage}`,
     fetchingManifest: 'جار جلب بيان المثبّت...',
@@ -242,10 +236,10 @@ export const arBoot = {
     reloadRetry: 'إعادة التحميل وإعادة المحاولة'
   },
   onboarding: {
-    headerTitle: 'لنُعِدّ لك Hermes Agent',
+    headerTitle: 'لنُعِدّ لك Rabbit Agent',
     headerDesc: 'اربط مزوّد نماذج لبدء المحادثة. معظم الخيارات تتطلب نقرة واحدة.',
-    preparingInstall: 'يُكمل Hermes التثبيت. عادة ما يستغرق ذلك أقل من دقيقة في أول تشغيل.',
-    starting: 'جار بدء Hermes...',
+    preparingInstall: 'يُكمل Rabbit التثبيت. عادة ما يستغرق ذلك أقل من دقيقة في أول تشغيل.',
+    starting: 'جار بدء Rabbit...',
     lookingUpProviders: 'جار البحث عن المزوّدين...',
     collapse: 'طي',
     otherProviders: 'مزودون آخرون',
@@ -253,7 +247,7 @@ export const arBoot = {
     chooseLater: 'سأختار مزوّدا لاحقا',
     recommended: 'موصى به',
     connected: 'متصل',
-    featuredPitch: 'اشتراك واحد، أكثر من 300 نموذج متقدم — الطريقة الموصى بها لتشغيل Hermes',
+    featuredPitch: 'اشتراك واحد، أكثر من 300 نموذج متقدم — الطريقة الموصى بها لتشغيل Rabbit',
     fireworksPitch: 'نماذج مفتوحة سريعة مع استضافة Fireworks.',
     openRouterPitch: 'مفتاح واحد لمئات النماذج — خيار افتراضي جيد',
     apiKeyOptions: {
@@ -276,7 +270,7 @@ export const arBoot = {
       local: {
         short: 'مستضاف ذاتيا',
         description:
-          'وجّه Hermes إلى نقطة نهاية محلية أو مستضافة ذاتيا متوافقة مع OpenAI (vLLM، llama.cpp، Ollama، إلخ).'
+          'وجّه Rabbit إلى نقطة نهاية محلية أو مستضافة ذاتيا متوافقة مع OpenAI (vLLM، llama.cpp، Ollama، إلخ).'
       }
     },
     backToSignIn: 'العودة إلى تسجيل الدخول',
@@ -289,7 +283,7 @@ export const arBoot = {
     update: 'تحديث',
     flowSubtitles: {
       pkce: 'يفتح المتصفح لتسجيل الدخول ثم يتابع هنا',
-      device_code: 'يفتح صفحة تحقق في المتصفح — يتصل Hermes تلقائياً',
+      device_code: 'يفتح صفحة تحقق في المتصفح — يتصل Rabbit تلقائياً',
       external: 'سجل الدخول مرة واحدة في الطرفية ثم عد إلى المحادثة'
     },
     startingSignIn: provider => `جار بدء تسجيل الدخول لـ ${provider}...`,
@@ -302,11 +296,11 @@ export const arBoot = {
     pickDifferentProvider: 'اختر مزوداً آخر',
     signInWith: provider => `تسجيل الدخول عبر ${provider}`,
     openedBrowser: provider => `فتحنا ${provider} في المتصفح.`,
-    authorizeThere: 'صرّح لـ Hermes هناك.',
+    authorizeThere: 'صرّح لـ Rabbit هناك.',
     copyAuthCode: 'انسخ رمز التفويض وألصقه أدناه.',
     pasteAuthCode: 'ألصق رمز التفويض',
     reopenAuthPage: 'إعادة فتح صفحة التفويض',
-    autoBrowser: provider => `فتحنا ${provider} في المتصفح. صرّح لـ Hermes هناك وسيتم الاتصال تلقائياً دون نسخ أو لصق.`,
+    autoBrowser: provider => `فتحنا ${provider} في المتصفح. صرّح لـ Rabbit هناك وسيتم الاتصال تلقائياً دون نسخ أو لصق.`,
     reopenSignInPage: 'إعادة فتح صفحة تسجيل الدخول',
     waitingAuthorize: 'بانتظار التفويض...',
     externalPending: provider =>
@@ -316,7 +310,6 @@ export const arBoot = {
     reopenVerification: 'إعادة فتح صفحة التحقق',
     copy: 'نسخ',
     defaultModel: 'النموذج الافتراضي',
-    freeTier: 'الطبقة المجانية',
     pro: 'مدفوع',
     free: 'مجاني',
     price: (input, output) => `${input} إدخال / ${output} إخراج لكل مليون رمز`,

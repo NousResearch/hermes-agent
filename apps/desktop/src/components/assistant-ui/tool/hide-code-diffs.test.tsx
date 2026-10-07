@@ -70,7 +70,7 @@ it('keeps edit counts without code in either display mode and restores disclosur
       expect(row.textContent).not.toContain('beforeEdit')
       expect(row.querySelector('pre, code, button[aria-expanded]')).toBeNull()
       expect($hideCodeDiffs.get()).toBe(true)
-      expect(localStorage.getItem('hermes.desktop.toolView.hideCodeDiffs')).toBe('true')
+      expect(localStorage.getItem('rabbit.desktop.toolView.hideCodeDiffs')).toBe('true')
     }
 
     act(() => setHideCodeDiffs(false))

@@ -52,6 +52,6 @@ def register(ctx) -> None:
     ctx.register_cli_command(
         name="meet", help="Google Meet bot (join, transcribe, follow up)",
         setup_fn=_register_meet_cli, handler_fn=_meet_command,
-        description=("Let the hermes agent join a Google Meet call and scrape live "
-                     "captions into a transcript. See: hermes meet setup"))
+        description=("Let the rabbit agent join a Google Meet call and scrape live "
+                     "captions into a transcript. See: rabbit meet setup"))
     ctx.register_hook("on_session_end", _on_session_end)

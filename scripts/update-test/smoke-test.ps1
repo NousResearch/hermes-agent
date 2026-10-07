@@ -1,17 +1,17 @@
 <#
-  Smoke test for hermes-update-rehearsal.ps1 (this directory).
+  Smoke test for rabbit-update-rehearsal.ps1 (this directory).
   Builds a synthetic install in a temp tree and drives pre/post/status for real.
 #>
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
 
-$Script = Join-Path $PSScriptRoot 'hermes-update-rehearsal.ps1'
+$Script = Join-Path $PSScriptRoot 'rabbit-update-rehearsal.ps1'
 # A python is needed for the sqlite assertions. Prefer an explicit checkout, then
-# a hermes-agent checkout next to this kit (the usual layout while developing).
-$Checkout = $env:HERMES_REHEARSAL_CHECKOUT
+# a rabbit-agent checkout next to this kit (the usual layout while developing).
+$Checkout = $env:RABBIT_REHEARSAL_CHECKOUT
 if (-not $Checkout) {
-  $sibling = Join-Path (Split-Path -Parent $PSScriptRoot) 'hermes-agent'
+  $sibling = Join-Path (Split-Path -Parent $PSScriptRoot) 'rabbit-agent'
   if (Test-Path -LiteralPath $sibling) { $Checkout = $sibling }
 }
 if (-not (Test-Path -LiteralPath $Script)) { throw "missing $Script" }
@@ -30,7 +30,7 @@ $RealUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
 function Find-RealPython {
   $cands = @(
-    (Join-Path $env:USERPROFILE '.hermes\hermes-agent\venv\Scripts\python.exe')
+    (Join-Path $env:USERPROFILE '.rabbit\rabbit-agent\venv\Scripts\python.exe')
   )
   if ($Checkout) {
     $cands += (Join-Path $Checkout '.venv\Scripts\python.exe')
@@ -39,7 +39,7 @@ function Find-RealPython {
   $wa = Join-Path $env:ProgramFiles 'WindowsApps'
   if (Test-Path -LiteralPath $wa) {
     $cands += Get-ChildItem -LiteralPath $wa -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -like 'NousResearch.Hermes*' } |
+      Where-Object { $_.Name -like 'Seven0070.Rabbit*' } |
       ForEach-Object {
         Get-ChildItem -LiteralPath (Join-Path $_.FullName 'app\resources\agent-payload\tools') -Directory -ErrorAction SilentlyContinue |
           Where-Object { $_.Name -like 'python-*' } | ForEach-Object { Join-Path $_.FullName 'python.exe' }
@@ -99,12 +99,12 @@ $env:USERPROFILE = Join-Path $Root 'home'
 New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
 $env:GIT_CONFIG_GLOBAL = Join-Path $Root 'gitconfig-test'
 Set-Content -LiteralPath $env:GIT_CONFIG_GLOBAL -Value @()
-$env:HERMES_HOME = Join-Path $env:USERPROFILE '.hermes'
-$env:HERMES_DESKTOP_USER_DATA_DIR = Join-Path $Root 'electron-user-data'
-Remove-Item Env:\HERMES_DATA_DIR_SUFFIX -ErrorAction SilentlyContinue
+$env:RABBIT_HOME = Join-Path $env:USERPROFILE '.rabbit'
+$env:RABBIT_DESKTOP_USER_DATA_DIR = Join-Path $Root 'electron-user-data'
+Remove-Item Env:\RABBIT_DATA_DIR_SUFFIX -ErrorAction SilentlyContinue
 
-$H = $env:HERMES_HOME
-$Install = Join-Path $H 'hermes-agent'
+$H = $env:RABBIT_HOME
+$Install = Join-Path $H 'rabbit-agent'
 $Backups = Join-Path $Root 'backups'
 Write-Host "fixture under $Root"
 
@@ -163,7 +163,7 @@ function New-Fixture {
   Set-Content -LiteralPath (Join-Path $H 'plugins\mnemosyne-wrapper\mnemosyne-wrapper.json') -Value '{"wrapper":true}'
   Set-Content -LiteralPath (Join-Path $Root 'external-mnemosyne\witness.txt') -Value 'witness'
   Set-Content -LiteralPath (Join-Path $H 'config.yaml') -Value 'timezone: utc'
-  Set-Content -LiteralPath (Join-Path $H '.env') -Value 'NOUS_API_KEY=xxx'
+  Set-Content -LiteralPath (Join-Path $H '.env') -Value 'OPENROUTER_API_KEY=xxx'
   Set-Content -LiteralPath (Join-Path $H 'auth.json') -Value '{"tokens":{}}'
   Set-Content -LiteralPath (Join-Path $H 'memories\note.md') -Value 'recall'
   Set-Content -LiteralPath (Join-Path $H 'cron\jobs.json') -Value 'jobs'
@@ -194,10 +194,10 @@ con.close()
   Set-Content -LiteralPath (Join-Path $Install 'module_name.py') -Value 'print(1)'
   & git -C $Install add -A | Out-Null
   & git -C $Install -c commit.gpgsign=false commit -qm initial | Out-Null
-  & git -C $Install remote add origin https://github.com/NousResearch/hermes-agent.git
-  New-Item -ItemType Directory -Force -Path (Join-Path $Install '.hermes\bin'), (Join-Path $Install '.hermes-runtime\python') | Out-Null
-  Set-Content -LiteralPath (Join-Path $Install '.hermes\bin\hermes.cmd') -Value "@echo off`r`necho hermes 0.0.0"
-  Set-Content -LiteralPath (Join-Path $Install '.hermes-runtime\python\interpreter.bin') -Value 'big'
+  & git -C $Install remote add origin https://github.com/seven0070/Rabbit-.git
+  New-Item -ItemType Directory -Force -Path (Join-Path $Install '.rabbit\bin'), (Join-Path $Install '.rabbit-runtime\python') | Out-Null
+  Set-Content -LiteralPath (Join-Path $Install '.rabbit\bin\rabbit.cmd') -Value "@echo off`r`necho rabbit 0.0.0"
+  Set-Content -LiteralPath (Join-Path $Install '.rabbit-runtime\python\interpreter.bin') -Value 'big'
   New-Item -ItemType Directory -Force -Path (Join-Path $H 'bin') | Out-Null
   # A fake launcher that understands `backup -o <zip>`: pre calls it for the data backup.
   @'
@@ -206,14 +206,14 @@ if /i "%~1"=="backup" if /i "%~2"=="-o" (
   > "%~3" echo fake-zip
   exit /b 0
 )
-echo hermes
-'@ | Set-Content -LiteralPath (Join-Path $H 'bin\hermes.cmd') -Encoding ASCII
+echo rabbit
+'@ | Set-Content -LiteralPath (Join-Path $H 'bin\rabbit.cmd') -Encoding ASCII
 
-  New-Item -ItemType Directory -Force -Path (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Local Storage\leveldb'), (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Cache') | Out-Null
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{}}'
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'connection.json') -Value '{"session":"t"}'
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Local Storage\leveldb\000001.ldb') -Value 'x'
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Cache\data.bin') -Value 'junk'
+  New-Item -ItemType Directory -Force -Path (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Local Storage\leveldb'), (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Cache') | Out-Null
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{}}'
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'connection.json') -Value '{"session":"t"}'
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Local Storage\leveldb\000001.ldb') -Value 'x'
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Cache\data.bin') -Value 'junk'
 }
 
 function Get-ShadowCapC {
@@ -233,11 +233,11 @@ try {
   $statusBefore = (& git -C $Install status --porcelain | Out-String)
   # Both trees as they are right now: post is checked against this for exactness.
   $homeBefore = Get-TreeListing $H
-  $userDataBefore = Get-TreeListing $env:HERMES_DESKTOP_USER_DATA_DIR
+  $userDataBefore = Get-TreeListing $env:RABBIT_DESKTOP_USER_DATA_DIR
   $r = Invoke-Rehearsal -Arguments @('pre', '-Source', $Install, '-BackupRoot', $Backups)
   Check 'pre exits 0' ($r.Code -eq 0)
   $Snap = (Get-ChildItem -LiteralPath $Backups -Directory | Sort-Object Name)[-1].FullName
-  foreach ($f in @('hermes-backup.zip', 'shadows.txt', 'manifest.json', 'hermes-home.txt', 'target-sha')) {
+  foreach ($f in @('rabbit-backup.zip', 'shadows.txt', 'manifest.json', 'rabbit-home.txt', 'target-sha')) {
     Check "backup artifact $f" (Test-Path -LiteralPath (Join-Path $Snap $f))
   }
   $ShadowIds = @(Get-Content -LiteralPath (Join-Path $Snap 'shadows.txt') | Where-Object { $_.Trim() } | ForEach-Object { ($_ -split "`t")[1] })
@@ -252,7 +252,7 @@ try {
   $getUrl = (& git -C $Install remote get-url origin | Out-String).Trim()
   Check 'remote get-url resolves to -Source' ($getUrl -eq $Install)
   $configured = (& git -C $Install config --get remote.origin.url | Out-String).Trim()
-  Check 'config --get remote.origin.url stays official' ($configured -match 'NousResearch')
+  Check 'config --get remote.origin.url stays official' ($configured -match 'seven0070')
 
   Write-Host "`n--- pre changed nothing else ---"
   Check 'checkout untouched by pre' (((& git -C $Install rev-parse HEAD | Out-String).Trim()) -eq $HeadSha)
@@ -270,9 +270,9 @@ try {
   Set-Content -LiteralPath (Join-Path $Install 'added_by_update.py') -Value 'print(2)'
   New-Item -ItemType Directory -Force -Path (Join-Path $H 'photon\sidecar\node_modules\newdep') | Out-Null
   Set-Content -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\newdep\index.js') -Value 'x'
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{"changed":true}}'
-  Set-Content -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'new-after-update.json') -Value '{}'
-  Check 'the simulated update changed HERMES_HOME' ((Get-TreeListing $H) -ne $homeBefore)
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'Preferences') -Value '{"window":{"changed":true}}'
+  Set-Content -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'new-after-update.json') -Value '{}'
+  Check 'the simulated update changed RABBIT_HOME' ((Get-TreeListing $H) -ne $homeBefore)
 
   Write-Host "`n--- post ---"
   $r = Invoke-Rehearsal -Arguments @('post', '-BackupRoot', $Backups, '-Yes')
@@ -282,28 +282,28 @@ try {
   Check 'memories restored' (Test-Path -LiteralPath (Join-Path $H 'memories\note.md'))
   Check 'plugin marker restored' (Test-Path -LiteralPath (Join-Path $H 'plugins\mnemosyne-wrapper\mnemosyne-wrapper.json'))
   Check 'photon sidecar marker restored' (Test-Path -LiteralPath (Join-Path $H 'photon\sidecar\node_modules\.package-lock.json'))
-  Check 'PM store restored' (Test-Path -LiteralPath (Join-Path $Install '.hermes-runtime\python\interpreter.bin'))
+  Check 'PM store restored' (Test-Path -LiteralPath (Join-Path $Install '.rabbit-runtime\python\interpreter.bin'))
   Check 'checkout restored' (Test-Path -LiteralPath (Join-Path $Install '.git'))
   Check 'checkout HEAD restored' (((& git -C $Install rev-parse HEAD | Out-String).Trim()) -eq $HeadSha)
-  Check 'origin remote restored' (((& git -C $Install config --get remote.origin.url | Out-String).Trim()) -eq 'https://github.com/NousResearch/hermes-agent.git')
-  Check 'userData connection.json restored' (Test-Path -LiteralPath (Join-Path $env:HERMES_DESKTOP_USER_DATA_DIR 'connection.json'))
+  Check 'origin remote restored' (((& git -C $Install config --get remote.origin.url | Out-String).Trim()) -eq 'https://github.com/seven0070/Rabbit-.git')
+  Check 'userData connection.json restored' (Test-Path -LiteralPath (Join-Path $env:RABBIT_DESKTOP_USER_DATA_DIR 'connection.json'))
   $cfg2 = (& git -C $Install config --local --get-regexp 'insteadOf' 2>$null | Out-String)
   if (-not $cfg2) { $cfg2 = '' }
   Check 'no stale insteadOf left in the checkout' ((([regex]::Matches($cfg2, 'insteadOf', 'IgnoreCase')).Count) -eq 0)
   Check 'upstream-prompt marker removed' (-not (Test-Path -LiteralPath (Join-Path $H '.skip_upstream_prompt')))
-  Check 'origin resolves officially again' (((& git -C $Install remote get-url origin | Out-String).Trim()) -match 'NousResearch')
-  Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\hermes.cmd'))
+  Check 'origin resolves officially again' (((& git -C $Install remote get-url origin | Out-String).Trim()) -match 'seven0070')
+  Check 'bin shim restored' (Test-Path -LiteralPath (Join-Path $H 'bin\rabbit.cmd'))
   Check 'post deleted the snapshot' (-not (Get-CimInstance Win32_ShadowCopy | Where-Object { $ShadowIds -contains $_.ID }))
   Check 'post removed its mount link' (-not (Test-Path -LiteralPath (Join-Path $Snap 'vss-C')))
   Check 'post put the shadow storage cap back exactly' ((Get-ShadowCapC) -eq $CapBefore)
   Write-Host "`n--- the acceptance criterion: every file identical before/after ---"
   $homeAfter = Get-TreeListing $H
-  Check 'HERMES_HOME identical to before pre' ($homeAfter -eq $homeBefore)
+  Check 'RABBIT_HOME identical to before pre' ($homeAfter -eq $homeBefore)
   if ($homeAfter -ne $homeBefore) {
     Compare-Object ($homeBefore -split "`n") ($homeAfter -split "`n") |
       ForEach-Object { Write-Host "    $($_.SideIndicator) $($_.InputObject)" }
   }
-  $userDataAfter = Get-TreeListing $env:HERMES_DESKTOP_USER_DATA_DIR
+  $userDataAfter = Get-TreeListing $env:RABBIT_DESKTOP_USER_DATA_DIR
   Check 'userData identical to before pre' ($userDataAfter -eq $userDataBefore)
   if ($userDataAfter -ne $userDataBefore) {
     Compare-Object ($userDataBefore -split "`n") ($userDataAfter -split "`n") |

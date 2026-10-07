@@ -11,7 +11,7 @@ import { BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL, checkRootInstall, requiredPa
 // `manifest` is merged into the app's package.json so tests can declare
 // dependencies the guard is expected to read.
 function makeTree({ rootPackages = BUILD_CRITICAL, react = '19.2.7', reactDom = '19.2.7', manifest = {} } = {}) {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-root-'))
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-assert-root-'))
   const appDir = path.join(tempRoot, 'apps', 'desktop')
   fs.mkdirSync(appDir, { recursive: true })
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', ...manifest }), 'utf8')

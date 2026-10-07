@@ -7,7 +7,7 @@ license: MIT
 dependencies: [torch>=2.6.0, torchtitan>=0.2.0, torchao>=0.5.0]
 platforms: [linux, macos]
 metadata:
-  hermes:
+  rabbit:
     tags: [Model Architecture, Distributed Training, TorchTitan, FSDP2, Tensor Parallel, Pipeline Parallel, Context Parallel, Float8, Llama, Pretraining]
 
 ---

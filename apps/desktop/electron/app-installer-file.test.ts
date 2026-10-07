@@ -8,7 +8,7 @@ import { expect, test } from 'vitest'
 import { stageAppInstallerFile } from './app-installer-file'
 
 test('stages an actual HTTP descriptor and leaves a valid file intact on download failure', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'hermes-installer-file-'))
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'rabbit-installer-file-'))
   const descriptor = '<?xml version="1.0"?><AppInstaller Uri="https://updates.example/app.appinstaller" />'
   let base = ''
 

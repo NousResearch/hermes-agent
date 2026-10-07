@@ -17,7 +17,7 @@ Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/architecture-diagram` |
 | Version | `1.0.0` |
-| Author | Cocoon AI (hello@cocoon-ai.com), ported by Hermes Agent |
+| Author | Cocoon AI (hello@cocoon-ai.com), ported by Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `architecture`, `diagrams`, `SVG`, `HTML`, `visualization`, `infrastructure`, `cloud` |
@@ -26,7 +26,7 @@ Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Architecture Diagram Skill

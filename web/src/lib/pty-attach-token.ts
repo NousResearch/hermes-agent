@@ -12,7 +12,7 @@
  * See #115304.
  */
 
-const PTY_ATTACH_TOKEN_KEY = "hermes.pty.token.chat";
+const PTY_ATTACH_TOKEN_KEY = "rabbit.pty.token.chat";
 
 /** The token this document claimed — a reconnect must not re-request the lock
  *  (Web Locks are not reentrant, so asking twice in one document deadlocks). */
@@ -45,7 +45,7 @@ async function claim(token: string): Promise<boolean> {
   const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
   if (!locks) return true;
   return new Promise<boolean>((resolve) => {
-    void locks.request(`hermes.pty.attach.${token}`, { ifAvailable: true }, (lock) => {
+    void locks.request(`rabbit.pty.attach.${token}`, { ifAvailable: true }, (lock) => {
       resolve(lock !== null);
       return lock ? HOLD : Promise.resolve();
     });

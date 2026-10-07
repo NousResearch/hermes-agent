@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Live key_cmd catalog A/B: local authenticated HTTP, real helper, CLI PTY.
 
-Run with the Hermes venv Python and --repo CHECKOUT --output RECEIPT_DIR.
-No user environment/config is inherited by Hermes children. Unix PTY required.
+Run with the Rabbit venv Python and --repo CHECKOUT --output RECEIPT_DIR.
+No user environment/config is inherited by Rabbit children. Unix PTY required.
 """
 import argparse
 import http.server
@@ -24,13 +24,13 @@ TOKEN = "local-eval-token-not-a-secret"
 
 
 def rows_worker():
-    from hermes_cli.config import load_config
-    from hermes_cli.model_switch_providers import (
+    from rabbit_cli.config import load_config
+    from rabbit_cli.model_switch_providers import (
         _PickerBuild, _lap_custom_provider_rows, _lap_user_provider_rows,
     )
     cfg = load_config()
     b = _PickerBuild(current_provider="", current_base_url="", current_model="",
-                     max_models=None, for_picker=True, force_fresh_nous_tier=False,
+                     max_models=None, for_picker=True,
                      probe_custom_providers=True, probe_current_custom_provider=False,
                      refresh=False, excluded=set(), curated={})
     if cfg.get("providers"):
@@ -46,7 +46,7 @@ def cli_pty(repo, env):
     import struct
     import termios
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 45, 140, 0, 0))
-    proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "model"],
+    proc = subprocess.Popen([sys.executable, "-m", "rabbit_cli.main", "model"],
                             cwd=repo, env=env, stdin=slave, stdout=slave, stderr=slave,
                             start_new_session=True)
     os.close(slave)
@@ -124,9 +124,9 @@ def main():
         for schema in ("providers", "custom_providers"):
             for surface in ("cli", "rows"):
                 phase = f"{schema}/{surface}"
-                with tempfile.TemporaryDirectory(prefix="hermes-keycmd-live-") as tmp:
+                with tempfile.TemporaryDirectory(prefix="rabbit-keycmd-live-") as tmp:
                     home = Path(tmp)
-                    state = home / ".hermes"
+                    state = home / ".rabbit"
                     state.mkdir()
                     mint_log = home / "helper-invocations"
                     helper = home / "mint.py"
@@ -142,7 +142,7 @@ def main():
                            schema: {slug: entry} if schema == "providers" else [entry]}
                     # JSON is valid YAML; no third-party harness dependencies.
                     (state / "config.yaml").write_text(json.dumps(cfg))
-                    env = {"HOME": str(home), "HERMES_HOME": str(state),
+                    env = {"HOME": str(home), "RABBIT_HOME": str(state),
                            "PATH": "/usr/bin:/bin", "TERM": "xterm-256color", "LANG": "C.UTF-8",
                            "PYTHONPATH": str(repo), "PYTHONUNBUFFERED": "1"}
                     if surface == "cli":

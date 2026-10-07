@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from cron import executions as _executions
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from rabbit_constants import get_rabbit_home
+from rabbit_time import now as _rabbit_now
 
 # Optional test override (mirrors ``cron.executions.EXECUTIONS_FILE``).
 EXECUTIONS_FILE: Optional[Path] = None
@@ -57,15 +57,15 @@ def _db_path() -> Path:
     for override in (_executions.EXECUTIONS_FILE, EXECUTIONS_FILE):
         if override is not None:
             return Path(override)
-    return get_hermes_home().resolve() / "cron" / "executions.db"
+    return get_rabbit_home().resolve() / "cron" / "executions.db"
 
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``rabbit_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from cron.jobs import _ensure_cron_dir
-    from hermes_cli.sqlite_util import open_db
+    from rabbit_cli.sqlite_util import open_db
 
     path = _db_path()
     _ensure_cron_dir(path.parent)
@@ -73,7 +73,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_cli.sqlite_util import add_column_if_missing
+    from rabbit_cli.sqlite_util import add_column_if_missing
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_incidents (
@@ -105,7 +105,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    from hermes_cli.sqlite_util import transaction
+    from rabbit_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn
@@ -166,7 +166,7 @@ def upsert_incident(
     sig = _error_signature(job_id, error)
     stored_error = _redact_error(error)
     incident_id = _incident_id(job_id, sig)
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     failure_type = failure_type or _classify_failure_type(error)
     output_file = str(output_file) if output_file is not None else None
 
@@ -204,7 +204,7 @@ def set_incident_state(incident_id: str, state: str) -> bool:
     cooldown reminder (see ``cron.scheduler._upsert_incident_for_failure``) restarts its window."""
     if state not in INCIDENT_STATES:
         return False
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     with _transaction() as conn:
         row = conn.execute(
             "SELECT state FROM cron_incidents WHERE id=?", (incident_id,)
@@ -242,12 +242,12 @@ def ack_incident(incident_id: str) -> bool:
 def close_incidents_for_recovered_job(job_id: str) -> int:
     """Mark every open incident for ``job_id`` ``resolved`` after a successful run; returns how many.
     Without this the ledger only ever grows: a one-off failure (a config drift skip, a provider
-    outage) stayed ``detected``/``alerted`` forever after the job recovered, so ``hermes cron
+    outage) stayed ``detected``/``alerted`` forever after the job recovered, so ``rabbit cron
     incidents`` showed dozens of "open" incidents for jobs that had been green for weeks (32 of 32 on
     one install). ``resolved`` is distinct from the operator's ``closed`` on purpose: a repeat of the
     same error re-opens a resolved incident and alerts again (see ``upsert_incident``), whereas
     ``closed`` keeps that signature silent."""
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     with _transaction() as conn:
         cursor = conn.execute(
             """UPDATE cron_incidents SET state='resolved', closed_at=?

@@ -3,7 +3,7 @@
 # (POSIX + macOS). Sourced by tests/install/installer-script-e2e.sh and
 # tests/install/macos-desktop-e2e.sh.
 #
-# The contract under test: a tagged Hermes upgrade must NOT delete or modify
+# The contract under test: a tagged Rabbit upgrade must NOT delete or modify
 # anything in the active home's plugins/** tree or any profile's plugins/**
 # tree — including directory wrapper markers (mnemosyne-wrapper.json),
 # symlinked runtimes, and the externally-owned sidecar witness file that
@@ -18,17 +18,17 @@
 #   preserve_before_upgrade  seed fixtures + snapshot  ->  $PRESERVE_SNAPSHOT
 #   preserve_after_upgrade   verify against snapshot    (exit 1 on violation)
 #
-# Requires: HERMES_HOME set (the leg's isolated home), WORK_ROOT, LOG_DIR,
+# Requires: RABBIT_HOME set (the leg's isolated home), WORK_ROOT, LOG_DIR,
 # REPO_ROOT. Verifier: tests/install/e2e-assets/verify-plugin-preservation.py
-# (stdlib-only; runs under python3 or $HERMES_E2E_PYTHON).
+# (stdlib-only; runs under python3 or $RABBIT_E2E_PYTHON).
 
 PRESERVE_SNAPSHOT="$WORK_ROOT/plugin-preservation-snapshot.json"
 PRESERVE_REPORT="$LOG_DIR/plugin-preservation-report.json"
 PRESERVE_EXTERNAL="$WORK_ROOT/external-mnemosyne-runtime"
 
 _preserve_python() {
-  if [ -n "${HERMES_E2E_PYTHON:-}" ]; then
-    printf '%s' "$HERMES_E2E_PYTHON"
+  if [ -n "${RABBIT_E2E_PYTHON:-}" ]; then
+    printf '%s' "$RABBIT_E2E_PYTHON"
   else
     printf 'python3'
   fi
@@ -42,10 +42,10 @@ seed_plugin_preservation_fixtures() {
 preserve_before_upgrade() {
   step "plugin preservation: seeding fixtures and snapshotting pre-upgrade state"
   [ ! -e "$PRESERVE_SNAPSHOT" ] || fail "refusing to overwrite an existing preservation snapshot"
-  seed_plugin_preservation_fixtures "$HERMES_HOME" "$PRESERVE_EXTERNAL"
+  seed_plugin_preservation_fixtures "$RABBIT_HOME" "$PRESERVE_EXTERNAL"
   local py; py="$(_preserve_python)"
   "$py" "$REPO_ROOT/tests/install/e2e-assets/verify-plugin-preservation.py" \
-    snapshot --home "$HERMES_HOME" --out "$PRESERVE_SNAPSHOT" 2>&1 | ts_prefix \
+    snapshot --home "$RABBIT_HOME" --out "$PRESERVE_SNAPSHOT" 2>&1 | ts_prefix \
     || fail "plugin preservation snapshot failed"
 
   ok "pre-upgrade plugin snapshot at $PRESERVE_SNAPSHOT"
@@ -58,7 +58,7 @@ preserve_after_upgrade() {
   local py; py="$(_preserve_python)"
   local rc=0
   "$py" "$REPO_ROOT/tests/install/e2e-assets/verify-plugin-preservation.py" \
-    verify --home "$HERMES_HOME" --snapshot "$PRESERVE_SNAPSHOT" \
+    verify --home "$RABBIT_HOME" --snapshot "$PRESERVE_SNAPSHOT" \
     --report "$PRESERVE_REPORT" > "$LOG_DIR/plugin-preservation-verify.log" 2>&1 || rc=$?
   log_group "plugin preservation verify transcript" "$LOG_DIR/plugin-preservation-verify.log"
   [ "$rc" -eq 0 ] \

@@ -178,7 +178,7 @@ def bind_prepared_dispatch(dispatch):
         nonlocal claimed
         with lock:
             if claimed:
-                raise RuntimeError("Hermes tool execution callback invoked more than once")
+                raise RuntimeError("Rabbit tool execution callback invoked more than once")
             claimed = True
         return invoke(*args, **kwargs)
 
@@ -290,7 +290,7 @@ def terminal_approval_batch(agent, calls, messages, task_id):
     from gateway.session_context import get_session_env
     from tools import approval
     from agent.tool_executor import _parse_tool_call
-    if (len(calls) < 2 or get_session_env("HERMES_SESSION_SOURCE") != "desktop"
+    if (len(calls) < 2 or get_session_env("RABBIT_SESSION_SOURCE") != "desktop"
             or approval._gateway_notify_cb(approval.get_current_session_key()) is None):
         yield
         return

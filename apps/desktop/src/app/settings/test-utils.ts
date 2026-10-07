@@ -1,4 +1,4 @@
-import type { EnvVarInfo } from '@/types/hermes'
+import type { EnvVarInfo } from '@/types/rabbit'
 
 /** An unset secret in `category`. The Keys tab and the settings search both
  *  bucket by category and branch on `is_set`, so those are what tests vary. */

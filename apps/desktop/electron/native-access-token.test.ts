@@ -8,7 +8,7 @@ const tokenSet = (name: string, expiresAt = 2_000): NativeTokenSet => ({
   accessToken: name,
   refreshToken: `${name}-rt`,
   expiresAt,
-  provider: 'nous',
+  provider: 'acme',
   userId: 'user'
 })
 

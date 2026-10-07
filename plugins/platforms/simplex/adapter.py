@@ -5,7 +5,7 @@ Env: SIMPLEX_WS_URL (required; default ws://127.0.0.1:5225) · SIMPLEX_ALLOWED_U
 contactIds — stable across renames, see ``/contacts``) · SIMPLEX_ALLOW_ALL_USERS ·
 SIMPLEX_AUTO_ACCEPT ('false' disables contact-request auto-accept; default true) ·
 SIMPLEX_GROUP_ALLOWED (group IDs or '*'; omit to ignore groups) · SIMPLEX_HOME_CHANNEL[_NAME] ·
-HERMES_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
+RABBIT_SIMPLEX_TEXT_BATCH_DELAY (quiet seconds, default 0.8, merging rapid-fire inbound text).
 ``websockets`` is imported lazily so the plugin stays discoverable when the package is missing.
 """
 
@@ -29,7 +29,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from gateway.config import Platform, PlatformConfig
-from hermes_constants import hermes_home_key
+from rabbit_constants import rabbit_home_key
 from gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -41,7 +41,7 @@ WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0
 HEALTH_CHECK_STALE_THRESHOLD = 300.0
-_CORR_PREFIX = "hermes-"  # marks requests we sent so our own echoes can be ignored
+_CORR_PREFIX = "rabbit-"  # marks requests we sent so our own echoes can be ignored
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".opus"}
 _VOICE_TAG_EXTS = {".ogg", ".mp3", ".wav", ".m4a", ".opus"}  # MEDIA: tags sent as voice notes
@@ -54,7 +54,7 @@ def _parse_comma_list(value: str) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
-# (hermes home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
+# (rabbit home key, names) already warned about. Module-level: every reconnect builds a FRESH adapter
 # (gateway/run_adapters.py), so an instance flag would re-warn on every retry while the daemon is down.
 _NAME_ALLOWLIST_WARNED: set = set()
 
@@ -69,7 +69,7 @@ def _warn_name_allowlist_entries() -> None:
     names = [u for u in entries if u and u != "*" and not u.isdigit()]
     if not names:
         return
-    key = (hermes_home_key(), frozenset(names))
+    key = (rabbit_home_key(), frozenset(names))
     if key in _NAME_ALLOWLIST_WARNED:
         return
     _NAME_ALLOWLIST_WARNED.add(key)
@@ -144,7 +144,7 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}  # awaited command replies
         self._corr_counter = 0
         # SimpleX has no client-side split, so the split delay equals the plain one.
-        self._text_batch_delay_seconds = float(os.getenv("HERMES_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
+        self._text_batch_delay_seconds = float(os.getenv("RABBIT_SIMPLEX_TEXT_BATCH_DELAY", "0.8"))
         self._text_batch_split_delay_seconds = self._text_batch_delay_seconds
         logger.info(
             "SimpleX adapter initialized: url=%s auto_accept=%s groups=%s",
@@ -644,7 +644,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None, media_files: Optional[List[str]] = None, force_document: bool = False,
 ) -> Dict[str, Any]:
     """Ephemeral WebSocket send for ``tools/send_message_tool`` when the gateway runner is not in
-    this process (``hermes cron``). ``thread_id``/``force_document`` are signature parity only;
+    this process (``rabbit cron``). ``thread_id``/``force_document`` are signature parity only;
     ``media_files`` is accepted but only the text body is delivered — SimpleX file transfers need
     the daemon's filesystem-backed flow, which an ephemeral connection cannot drive safely."""
     try:
@@ -676,10 +676,10 @@ _SETUP_PROMPTS = (
 
 
 def interactive_setup() -> None:
-    """``hermes setup gateway`` → SimpleX wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.cli_output import print_header, print_info, prompt
-    from hermes_cli.setup_platforms import declines_reconfigure
+    """``rabbit setup gateway`` → SimpleX wizard (writes ``~/.rabbit/.env``); CLI helpers are lazy-imported."""
+    from rabbit_cli.config import get_env_value, save_env_value
+    from rabbit_cli.cli_output import print_header, print_info, prompt
+    from rabbit_cli.setup_platforms import declines_reconfigure
     print_header("SimpleX Chat")
     if declines_reconfigure("SimpleX", "Reconfigure SimpleX?", "SIMPLEX_WS_URL"):
         return

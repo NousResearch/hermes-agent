@@ -1,4 +1,4 @@
-import type { BillingBlock } from '@hermes/shared'
+import type { BillingBlock } from '@rabbit/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
@@ -7,7 +7,7 @@ import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
-import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
+import { clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { notify } from '@/store/notifications'
@@ -29,7 +29,7 @@ function firstBillingLine(text: string): string {
  * A turn failed on a billing wall (out of credits / payment required). The
  * gateway forwards the structured descriptor built by `agent/billing_links.py`;
  * we cache it per-session (drives the in-chat banner) AND raise one sticky,
- * billing-specific toast — never the generic "Hermes error" — with a smart CTA
+ * billing-specific toast — never the generic "Rabbit error" — with a smart CTA
  * (Nous → in-app Settings → Billing, other providers → their billing page).
  */
 function surfaceBillingBlock(sessionId: string, raw: unknown): void {
@@ -45,23 +45,19 @@ function surfaceBillingBlock(sessionId: string, raw: unknown): void {
 
   setBillingBlock(sessionId, block)
 
-  const ctaCopy = {
-    addCredits: translateNow('billingBlock.addCredits'),
-    openBilling: translateNow('billingBlock.openBilling')
-  }
 
   notify({
     // Collapse repeat walls from the same provider into one toast.
     id: `billing-block:${block.provider}`,
     kind: 'warning',
     icon: 'credit-card',
-    title: block.is_nous
-      ? translateNow('billingBlock.titleNous')
-      : translateNow('billingBlock.titleProvider', block.provider_label),
+    title: translateNow('billingBlock.titleProvider', block.provider_label),
     message: firstBillingLine(block.message) || translateNow('billingBlock.fallbackMessage'),
     // Sticky: a credit wall blocks every turn until resolved.
     durationMs: 0,
-    action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
+    action: block.billing_url
+      ? { label: translateNow('billingBlock.addCredits'), onClick: () => runBillingRecovery(block) }
+      : undefined
   })
 }
 
@@ -359,7 +355,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     const failure =
       payload?.status === 'error'
         ? {
-            error: coerceGatewayText(payload.error).trim() || finalText || 'Hermes reported an error',
+            error: coerceGatewayText(payload.error).trim() || finalText || 'Rabbit reported an error',
             partial: Boolean(payload.partial),
             surface: parseErrorSurface(payload.error_surface)
           }

@@ -35,7 +35,7 @@ def test_otlp_attrs_redact_strings_and_never_export_profile():
         "exit_reason": "Bearer top-secret-token-0123456789 for user@example.com",
     })
 
-    assert "hermes.profile" not in attrs
+    assert "rabbit.profile" not in attrs
     assert "top-secret-token-0123456789" not in str(attrs)
     assert "user@example.com" not in str(attrs)
 
@@ -44,7 +44,7 @@ def test_resource_attributes_are_allowlisted_and_sanitized():
     from agent.monitoring.otlp_exporter import _safe_resource_attributes
 
     attrs = _safe_resource_attributes({
-        "service.name": "hermes-gateway",
+        "service.name": "rabbit-gateway",
         "service.instance.id": "install-1",
         "deployment.environment.name": "staging",
         "user.email": "user@example.com",
@@ -53,7 +53,7 @@ def test_resource_attributes_are_allowlisted_and_sanitized():
     })
 
     assert attrs == {
-        "service.name": "hermes-gateway",
+        "service.name": "rabbit-gateway",
         "service.instance.id": attrs["service.instance.id"],
         "deployment.environment.name": "staging",
     }
@@ -77,8 +77,8 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
         "custom": "must-not-egress",
     })
 
-    assert "hermes.profile" not in attrs
-    assert "hermes.custom" not in attrs
+    assert "rabbit.profile" not in attrs
+    assert "rabbit.custom" not in attrs
     assert "top-secret-token-0123456789" not in str(attrs)
 
 
@@ -145,7 +145,7 @@ def test_gateway_health_metrics_reach_loopback_collector():
         names = {metric.name for _, request in received
                  for resource in request.resource_metrics
                  for scope in resource.scope_metrics for metric in scope.metrics}
-        assert "hermes.gateway.up" in names
+        assert "rabbit.gateway.up" in names
     finally:
         if runtime is not None:
             runtime.shutdown()
@@ -178,10 +178,10 @@ def test_start_gateway_health_export_reports_otlp_unavailable_when_sdk_missing(m
 
 def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     """A minted install id must survive restarts (service.instance.id continuity)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}\n")
 
-    import hermes_cli.config as cfg_mod
+    import rabbit_cli.config as cfg_mod
     from agent.monitoring.policy import ensure_install_id
 
     first = ensure_install_id(cfg_mod.load_config())

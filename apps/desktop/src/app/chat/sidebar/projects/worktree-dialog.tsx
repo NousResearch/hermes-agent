@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
-import type { HermesGitBranch } from '@/global'
+import type { RabbitGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { gitRef } from '@/lib/sanitize'
@@ -48,7 +48,7 @@ interface BranchActionCopy {
   branchTrackRemote: string
 }
 
-const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
+const branchActionLabel = (branch: RabbitGitBranch, copy: BranchActionCopy) => {
   if (branch.checkedOut) {
     return copy.branchOpenExisting
   }
@@ -83,7 +83,7 @@ export function WorktreeDialog() {
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
   const [convertMode, setConvertMode] = useState(false)
-  const [branches, setBranches] = useState<HermesGitBranch[]>([])
+  const [branches, setBranches] = useState<RabbitGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
   const [selectedBase, setSelectedBase] = useState('')
   // The repo that the dialog targets. It is seeded from the resolved intent.
@@ -189,7 +189,7 @@ export function WorktreeDialog() {
     }
   }
 
-  const convert = async (branch: HermesGitBranch) => {
+  const convert = async (branch: RabbitGitBranch) => {
     if (pending || !repoPath || !branch) {
       return
     }

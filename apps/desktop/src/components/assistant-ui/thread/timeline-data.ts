@@ -23,7 +23,7 @@ export function timelineBarWidth(index: number, activeIndex: number, hoverIndex:
   return 0.5 + 0.5 * Math.max(curve(index - activeIndex), hoverIndex === null ? 0 : curve(index - hoverIndex))
 }
 
-export const TIMELINE_REVEAL_EVENT = 'hermes:timeline-reveal'
+export const TIMELINE_REVEAL_EVENT = 'rabbit:timeline-reveal'
 export const EARLIER_TIMELINE_ID = '__earlier-history__'
 
 export interface TimelineRevealRequest {

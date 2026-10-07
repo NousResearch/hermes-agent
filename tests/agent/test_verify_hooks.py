@@ -1,8 +1,8 @@
 """Unit tests for the verification-loop policy (agent/verify_hooks.py).
 
-The `pre_verify` user-hook aggregation lives in `hermes_cli.plugins`
+The `pre_verify` user-hook aggregation lives in `rabbit_cli.plugins`
 (`get_pre_verify_continue_message`) and is tested in
-`tests/hermes_cli/test_plugins.py`, alongside `get_pre_tool_call_block_message`.
+`tests/rabbit_cli/test_plugins.py`, alongside `get_pre_tool_call_block_message`.
 """
 
 from __future__ import annotations

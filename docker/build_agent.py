@@ -18,7 +18,7 @@ def assemble_image(root: Path) -> None:
         site_packages=site, environment=environment, tools=root / "tools",
         pm_runtime=root / "pm-runtime", bin_dir="libexec",
         resources={name: root / name for name in RESOURCE_ENV},
-        frontends={"tui": root / "ui-tui", "web": root / "hermes_cli/web_dist"},
+        frontends={"tui": root / "ui-tui", "web": root / "rabbit_cli/web_dist"},
     ), root)
     # Preserve the venv command paths used by s6 and the privilege-drop shim.
     for name, command in manifest["runtime"]["commands"].items():
@@ -28,4 +28,4 @@ def assemble_image(root: Path) -> None:
 
 
 if __name__ == "__main__":
-    assemble_image(Path("/opt/hermes"))
+    assemble_image(Path("/opt/rabbit"))

@@ -10,7 +10,6 @@ import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/u
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
-import { FreeTierNoticeStrip, useFreeTierNoticeOwner } from '@/components/free-tier/notice-strip'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SharedMetricsConsentStrip } from '@/components/shared-metrics/consent-strip'
 import { Button } from '@/components/ui/button'
@@ -31,7 +30,6 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
-import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
@@ -66,7 +64,7 @@ const GROUP_ICON: Record<StatusGroup['type'], string> = {
 }
 
 // Goals and todos are the plan the user is following; subagents and background
-// processes are how Hermes is executing it. Simple mode shows the plan only.
+// processes are how Rabbit is executing it. Simple mode shows the plan only.
 const GROUP_TIER: Record<StatusGroup['type'], Tiered> = {
   goal: {},
   todo: {},
@@ -138,15 +136,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   )
 
   const billing = useStore($billingBlock)
-  const freeTierStatus = useStore($freeTierStatus)
-  const freeTierRoute = useStore($freeTierRoute)
-  // One claimed owner across every mounted composer, so a split view shows the
-  // notice once — and a non-owning stack adds no empty row to its card.
-  const ownsFreeTierNotice = useFreeTierNoticeOwner()
-  const freeTierNotice = ownsFreeTierNotice && freeTierStripPending(freeTierStatus, freeTierRoute)
-  // Same single owner, one offer at a time: the metrics question waits for the free-tier notice.
   const sharedMetricsConsent = useStore($sharedMetricsConsent)
-  const sharedMetricsOffer = ownsFreeTierNotice && !freeTierNotice && sharedMetricsOfferPending(sharedMetricsConsent)
+  const sharedMetricsOffer = sharedMetricsOfferPending(sharedMetricsConsent)
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
@@ -227,13 +218,6 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // (not as a composer-disable) so slash commands stay usable.
   if (billing && sessionId && billing.sessionId === sessionId) {
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
-  }
-
-  // Below the billing wall (a blocker outranks an offer), above everything the
-  // session itself is doing. The strip retires itself the moment any of its
-  // actions acks the notice.
-  if (freeTierNotice) {
-    sections.push({ key: 'free-tier', node: <FreeTierNoticeStrip /> })
   }
 
   if (sharedMetricsOffer) {

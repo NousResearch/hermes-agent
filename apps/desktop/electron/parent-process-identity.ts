@@ -1,11 +1,11 @@
 export type ParentWatchdogEnv = {
-  HERMES_PARENT_PID: string
-  HERMES_PARENT_START_MARKER?: string
-  HERMES_PARENT_NONCE?: string
-  /** Spawn tag consumed by hermes_cli.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
+  RABBIT_PARENT_PID: string
+  RABBIT_PARENT_START_MARKER?: string
+  RABBIT_PARENT_NONCE?: string
+  /** Spawn tag consumed by rabbit_cli.process_identity (`v1:<install>:<purpose>:<spawner_pid>:<spawner_create_s>`).
    *  Install is `-` (unknown) from the Desktop — the Python side scopes by
    *  venv membership, so the tag only needs lineage, not install identity. */
-  HERMES_SPAWN?: string
+  RABBIT_SPAWN?: string
 }
 
 export interface ParentStartMarkerResolverOptions {
@@ -72,8 +72,8 @@ export function parentWatchdogEnv(pid: number, startMarker: string | null, nonce
     throw new Error('Parent watchdog requires a positive process ID.')
   }
 
-  const env: ParentWatchdogEnv = { HERMES_PARENT_PID: String(pid) }
-  env.HERMES_SPAWN = spawnTag(pid, startMarker)
+  const env: ParentWatchdogEnv = { RABBIT_PARENT_PID: String(pid) }
+  env.RABBIT_SPAWN = spawnTag(pid, startMarker)
 
   if (startMarker === null) {
     return env
@@ -83,13 +83,13 @@ export function parentWatchdogEnv(pid: number, startMarker: string | null, nonce
     throw new Error('Parent watchdog marker and nonce must be non-empty.')
   }
 
-  env.HERMES_PARENT_START_MARKER = startMarker
-  env.HERMES_PARENT_NONCE = nonce
+  env.RABBIT_PARENT_START_MARKER = startMarker
+  env.RABBIT_PARENT_NONCE = nonce
 
   return env
 }
 
-/** Build the `HERMES_SPAWN` tag mirrored by hermes_cli/process_identity.py.
+/** Build the `RABBIT_SPAWN` tag mirrored by rabbit_cli/process_identity.py.
  *  The Desktop only ever spawns backend servers, so purpose is `serve`; the
  *  spawner create-time is derived from the same `winms:` marker the parent
  *  watchdog uses (seconds, 3 decimals), `-` when the marker probe failed. */

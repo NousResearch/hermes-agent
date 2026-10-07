@@ -24,17 +24,17 @@ import cron.jobs as J
 
 @pytest.fixture
 def cron_store(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    (hermes_home / "cron").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(J, "HERMES_DIR", hermes_home)
-    monkeypatch.setattr(J, "CRON_DIR", hermes_home / "cron")
-    monkeypatch.setattr(J, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
-    monkeypatch.setattr(J, "OUTPUT_DIR", hermes_home / "cron" / "output")
+    rabbit_home = tmp_path / ".rabbit"
+    (rabbit_home / "cron").mkdir(parents=True)
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+    monkeypatch.setattr(J, "RABBIT_DIR", rabbit_home)
+    monkeypatch.setattr(J, "CRON_DIR", rabbit_home / "cron")
+    monkeypatch.setattr(J, "JOBS_FILE", rabbit_home / "cron" / "jobs.json")
+    monkeypatch.setattr(J, "OUTPUT_DIR", rabbit_home / "cron" / "output")
     J._cron_cadence_cache.clear()
     monkeypatch.setattr(J, "_persisted_error_recoveries", 0)
     monkeypatch.setattr(J, "_persisted_error_recoveries_recent", [])
-    return hermes_home
+    return rabbit_home
 
 
 def _wedge(job_id: str, *, next_run_at: datetime, last_run_at: datetime) -> None:
@@ -62,7 +62,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc),
             last_run_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc),
         )
-        with mock.patch.object(J, "_hermes_now", lambda: now):
+        with mock.patch.object(J, "_rabbit_now", lambda: now):
             due = J.get_due_jobs()
         assert due == [], "Saturday must not fire a weekday-only job"
         rearmed = J.get_job(job["id"])
@@ -84,7 +84,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=legal_next,
             last_run_at=now - timedelta(hours=27),
         )
-        with mock.patch.object(J, "_hermes_now", lambda: now):
+        with mock.patch.object(J, "_rabbit_now", lambda: now):
             J.get_due_jobs()
         assert datetime.fromisoformat(J.get_job(job["id"])["next_run_at"]) == legal_next
         assert J.get_persisted_error_recovery_stats()["persisted_error_recoveries"] == 0
@@ -99,7 +99,7 @@ class TestCronRearmRespectsScheduleLegality:
             next_run_at=now + timedelta(minutes=5),
             last_run_at=now - timedelta(minutes=110),
         )
-        with mock.patch.object(J, "_hermes_now", lambda: now):
+        with mock.patch.object(J, "_rabbit_now", lambda: now):
             due = J.get_due_jobs()
         assert any(j["id"] == job["id"] for j in due), (
             "wedged interval job must become due immediately after re-arm"

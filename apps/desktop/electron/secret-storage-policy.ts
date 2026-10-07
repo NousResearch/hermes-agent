@@ -6,7 +6,7 @@
  * OAuth token sets).
  *
  * Why this exists: Electron safeStorage on macOS parks a per-app key
- * ("Hermes Key") in the login keychain. On machines with a locked, missing,
+ * ("Rabbit Key") in the login keychain. On machines with a locked, missing,
  * or corrupted default keychain, ANY safeStorage touch — including
  * isEncryptionAvailable() — makes macOS throw a blocking "Keychain Not
  * Found" / password dialog on every launch. That is an unacceptable default

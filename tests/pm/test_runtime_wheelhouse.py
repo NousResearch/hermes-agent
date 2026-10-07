@@ -43,8 +43,8 @@ def locked_wheelhouse(tmp_path_factory):
 @pytest.fixture
 def isolated_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     monkeypatch.chdir(tmp_path)
     # Neither the caller's config nor a populated uv cache may supply this graph.
     (tmp_path / "uv.toml").write_text('required-version = "<0.1"\n', encoding="utf-8")
@@ -103,9 +103,9 @@ print(json.dumps({canonicalize_name(d.metadata['Name']): d.version
     assert json.loads(result.stdout) == versions
     from pm import paths
     from pm.runtime import runtime_command
-    repo = moved / "hermes-agent"
+    repo = moved / "rabbit-agent"
     repo.mkdir()
-    (moved / "manifest.json").write_text('{"repo":"hermes-agent"}', encoding="utf-8")
+    (moved / "manifest.json").write_text('{"repo":"rabbit-agent"}', encoding="utf-8")
     script = repo / "probe.py"
     script.write_text("import sys,json; print(json.dumps(sys.path))", encoding="utf-8")
     with pytest.MonkeyPatch.context() as patcher:

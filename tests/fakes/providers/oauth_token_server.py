@@ -1,7 +1,7 @@
 """Recording loopback OAuth 2.0 authorization server for end-to-end tests.
 
 One real HTTP server on 127.0.0.1 that plays the vendor side of two OAuth
-flows Hermes drives but does not own:
+flows Rabbit drives but does not own:
 
 * **Refresh grant with single-use rotating refresh tokens.** Every successful
   ``grant_type=refresh_token`` spends the presented token and issues a fresh
@@ -9,14 +9,7 @@ flows Hermes drives but does not own:
   exactly like a vendor that detects refresh-token reuse. Every grant is
   recorded (:attr:`OAuthTokenServer.grants`) so a test can count refreshes and
   prove which token each one spent.
-* **RFC 8628 device authorization grant.** ``POST /api/oauth/device/code``
-  returns a device code with a configurable ``interval``; the token endpoint
-  answers ``authorization_pending`` / ``slow_down`` from a script before
-  approving, recording the arrival time of every poll so a test can assert the
-  client honoured ``interval`` and the ``slow_down`` +5 s back-off (§3.5).
-
-Both the Anthropic (``/v1/oauth/token``) and Nous Portal (``/api/oauth/token``)
-paths are served; request bodies may be form-encoded or JSON.
+The Anthropic (``/v1/oauth/token``) path is served; request bodies may be form-encoded or JSON.
 
 :class:`TLSInterceptProxy` lets a client whose token URL is a hardcoded
 ``https://<vendor host>`` reach this server with no product override: it is an
@@ -44,9 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import parse_qs
 
-DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
-TOKEN_PATHS = frozenset({"/v1/oauth/token", "/api/oauth/token"})
-DEVICE_CODE_PATH = "/api/oauth/device/code"
+TOKEN_PATHS = frozenset({"/v1/oauth/token"})
 
 
 def unsigned_jwt(claims: dict[str, Any]) -> str:
@@ -62,7 +53,7 @@ class Grant:
 
     at: float  # time.monotonic() at arrival
     grant_type: str
-    presented: str  # refresh token or device code
+    presented: str  # refresh token
     status: int
     error: str | None = None
     issued_refresh_token: str | None = None
@@ -70,21 +61,6 @@ class Grant:
     host: str = ""
     path: str = ""
     content_type: str = ""
-
-
-@dataclass
-class DeviceFlow:
-    """Scripted device-code session: one entry per token poll, last one repeats.
-
-    Entries are ``"authorization_pending"``, ``"slow_down"`` or ``"approve"``.
-    """
-
-    interval: int = 5
-    expires_in: int = 600
-    script: list[str] = field(default_factory=lambda: ["approve"])
-    device_code: str = field(default_factory=lambda: f"dc_{secrets.token_hex(8)}")
-    user_code: str = "FAKE-CODE"
-    polls: list[float] = field(default_factory=list)  # monotonic arrival times
 
 
 class OAuthTokenServer:
@@ -107,8 +83,6 @@ class OAuthTokenServer:
         self.live: set[str] = set()  # unspent refresh tokens
         self.spent: set[str] = set()
         self.grants: list[Grant] = []
-        self.device: DeviceFlow | None = None
-        self.device_requests = 0
         # Fault injection: called (outside the lock) after a refresh grant is recorded and the
         # pair rotated, before the response is written -- a slow vendor token endpoint.
         self.before_refresh_response: Callable[[Grant], None] | None = None
@@ -132,10 +106,6 @@ class OAuthTokenServer:
         with self._lock:
             return [g for g in self.grants if g.grant_type == "refresh_token"]
 
-    def start_device_flow(self, **kwargs: Any) -> DeviceFlow:
-        self.device = DeviceFlow(**kwargs)
-        return self.device
-
     def _issue_pair(self) -> tuple[str, str]:
         self._counter += 1
         n = self._counter
@@ -151,7 +121,7 @@ class OAuthTokenServer:
 
     def handle_token(self, form: dict[str, str], meta: dict[str, str]) -> tuple[int, dict[str, Any]]:
         grant_type = form.get("grant_type", "")
-        handler = {"refresh_token": self._refresh, DEVICE_CODE_GRANT: self._device_poll}.get(grant_type)
+        handler = {"refresh_token": self._refresh}.get(grant_type)
         if handler is None:
             return 400, {"error": "unsupported_grant_type"}
         return handler(form, meta)
@@ -172,39 +142,6 @@ class OAuthTokenServer:
         if self.before_refresh_response is not None:
             self.before_refresh_response(grant)
         return 200, self._token_body(access, refresh)
-
-    def _device_poll(self, form: dict[str, str], meta: dict[str, str]) -> tuple[int, dict[str, Any]]:
-        flow = self.device
-        now = time.monotonic()
-        with self._lock:
-            grant = Grant(at=now, grant_type=DEVICE_CODE_GRANT, presented=form.get("device_code", ""),
-                          status=400, **meta)
-            self.grants.append(grant)
-            if flow is None or grant.presented != flow.device_code:
-                grant.error = "invalid_grant"
-                return 400, {"error": "invalid_grant"}
-            flow.polls.append(now)
-            step = flow.script[min(len(flow.polls) - 1, len(flow.script) - 1)]
-            if step != "approve":
-                grant.error = step
-                return 400, {"error": step}
-            access, refresh = self._issue_pair()
-            grant.status = 200
-            grant.issued_access_token, grant.issued_refresh_token = access, refresh
-        return 200, self._token_body(access, refresh)
-
-    def handle_device_code(self, form: dict[str, str]) -> tuple[int, dict[str, Any]]:
-        flow = self.device
-        with self._lock:
-            self.device_requests += 1
-        if flow is None:
-            return 400, {"error": "invalid_request", "error_description": "no device flow armed"}
-        base = f"{self.base_url}/device"
-        return 200, {
-            "device_code": flow.device_code, "user_code": flow.user_code,
-            "verification_uri": base, "verification_uri_complete": f"{base}?user_code={flow.user_code}",
-            "expires_in": flow.expires_in, "interval": flow.interval,
-        }
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -264,8 +201,6 @@ def _make_handler(server: OAuthTokenServer) -> type[BaseHTTPRequestHandler]:
             meta = {"host": self.headers.get("Host", ""), "path": path, "content_type": ctype}
             if path in TOKEN_PATHS:
                 return self._send(*server.handle_token(form, meta))
-            if path == DEVICE_CODE_PATH:
-                return self._send(*server.handle_device_code(form))
             self._send(404, {"error": "not_found"})
 
         def _send(self, status: int, payload: dict[str, Any]) -> None:
@@ -308,7 +243,7 @@ def make_test_ca(directory: Path, hosts: Iterable[str]) -> TestCA:
     directory.mkdir(parents=True, exist_ok=True)
     now = _dt.datetime.now(_dt.timezone.utc)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes e2e test CA")])
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rabbit e2e test CA")])
     ca_cert = (
         x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
         .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())

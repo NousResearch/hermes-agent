@@ -1,13 +1,13 @@
 """Tests for the Discord plugin's interactive_setup wizard.
 
 The interactive_setup wizard lazy-imports its CLI helpers from
-``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value) and
-``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
+``rabbit_cli.config`` (get_env_value / save_env_value / remove_env_value) and
+``rabbit_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
 source modules. Covers the home-channel clear-on-blank behavior added in
 PR #58421 and extended in the follow-up.
 """
-import hermes_cli.config as config_mod
-import hermes_cli.cli_output as cli_output_mod
+import rabbit_cli.config as config_mod
+import rabbit_cli.cli_output as cli_output_mod
 import tools.discord_tool as discord_tool
 from plugins.platforms.discord import onboarding
 from plugins.platforms.discord.onboarding import interactive_setup
@@ -59,7 +59,7 @@ class TestDiscordHomeChannelClear:
     """Blank home-channel answer must clear DISCORD_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         saved, removed = {}, []
         _patch_setup_io(
             monkeypatch,
@@ -78,7 +78,7 @@ class TestDiscordTokenCheckedWithDiscord:
     accepted one yields the invite link and adds the bot's owner to whoever is already allowed."""
 
     def test_rejected_token_never_written_and_owner_added_to_allowlist(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         standin = DiscordStandin().start()
         try:
             monkeypatch.setattr(discord_tool, "DISCORD_API_BASE", standin.api_base)
@@ -103,7 +103,7 @@ class TestDiscordTokenShapeGuard:
     (port of openclaw/openclaw#140531)."""
 
     def test_numeric_app_id_reprompts_then_accepts_real_token(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         saved, removed, errors = {}, [], []
         real_token = "fake-bot-token." + "part2.part3"
         _patch_setup_io(
@@ -119,7 +119,7 @@ class TestDiscordTokenShapeGuard:
         assert any("application ID" in e for e in errors)
 
     def test_non_numeric_token_saves_without_error(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         saved, removed, errors = {}, [], []
         _patch_setup_io(monkeypatch, _PROMPTS_BLANK, saved, removed, existing={})
         monkeypatch.setattr(cli_output_mod, "print_error", lambda *a, **_kw: errors.append(" ".join(map(str, a))))

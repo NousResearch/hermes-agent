@@ -17,7 +17,7 @@ let preload
 // relaunches through process.execPath; the preload (inherited through
 // NODE_OPTIONS) makes that child print its argv instead of starting the app.
 beforeAll(async () => {
-  root = mkdtempSync(join(tmpdir(), 'hermes-electron-entry-'))
+  root = mkdtempSync(join(tmpdir(), 'rabbit-electron-entry-'))
   await bundleElectronMain({ source: repo, out: join(root, 'dist'), dev: true })
   bundle = join(root, 'dist/electron-main.mjs')
   preload = join(root, 'preload.mjs')
@@ -48,9 +48,9 @@ beforeAll(async () => {
     const externals = new Set(['electron', 'node-pty', 'get-windows'])
     registerHooks({
       resolve: (specifier, context, next) => externals.has(specifier)
-        ? { url: 'hermes-stub:' + specifier, shortCircuit: true } : next(specifier, context),
-      load: (url, context, next) => url.startsWith('hermes-stub:')
-        ? { format: 'module', source: stub(url.slice('hermes-stub:'.length)), shortCircuit: true } : next(url, context),
+        ? { url: 'rabbit-stub:' + specifier, shortCircuit: true } : next(specifier, context),
+      load: (url, context, next) => url.startsWith('rabbit-stub:')
+        ? { format: 'module', source: stub(url.slice('rabbit-stub:'.length)), shortCircuit: true } : next(url, context),
     })
     `
   )
@@ -71,7 +71,7 @@ function launch(env, config, extraEnv = {}) {
     encoding: 'utf8',
     env: {
       PATH: process.env.PATH,
-      HERMES_HOME: home,
+      RABBIT_HOME: home,
       NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
       ...env,
       ...extraEnv
@@ -102,26 +102,26 @@ test('the bundled entry lets desktop.electron_flags choose the ozone platform', 
 })
 
 // The bundled entry must read config.yaml from the same home main.ts does
-// (resolveDesktopHermesHome), or desktop.electron_flags set for the real
+// (resolveDesktopRabbitHome), or desktop.electron_flags set for the real
 // profile silently never reaches the relaunch. The two cases below are the
 // ones the inline resolution in configuredElectronFlags() got wrong: the
 // data-dir suffix channel installs rely on, and multiplexed profiles/ homes.
 test('the bundled entry reads desktop.electron_flags through a suffixed home', () => {
   const config = 'desktop:\n  electron_flags:\n    - --ozone-platform=x11\n'
   const home = mkdtempSync(join(root, 'suffixed-home-'))
-  mkdirSync(join(home, '.hermes-canary'), { recursive: true })
-  writeFileSync(join(home, '.hermes-canary', 'config.yaml'), config)
+  mkdirSync(join(home, '.rabbit-canary'), { recursive: true })
+  writeFileSync(join(home, '.rabbit-canary', 'config.yaml'), config)
 
   expect(
     launch({ XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }, undefined, {
-      HERMES_DATA_DIR_SUFFIX: '-canary',
-      HERMES_HOME: '',
+      RABBIT_DATA_DIR_SUFFIX: '-canary',
+      RABBIT_HOME: '',
       HOME: home
     })
   ).toEqual({ relaunched: ['.', '--ozone-platform=x11'] })
 })
 
-test('the bundled entry reads desktop.electron_flags from the parent of a profiles/-rooted HERMES_HOME', () => {
+test('the bundled entry reads desktop.electron_flags from the parent of a profiles/-rooted RABBIT_HOME', () => {
   const config = 'desktop:\n  electron_flags:\n    - --ozone-platform=x11\n'
   const home = mkdtempSync(join(root, 'profiles-home-'))
   mkdirSync(home, { recursive: true })
@@ -129,7 +129,7 @@ test('the bundled entry reads desktop.electron_flags from the parent of a profil
 
   expect(
     launch({ XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }, undefined, {
-      HERMES_HOME: join(home, 'profiles', 'alpha')
+      RABBIT_HOME: join(home, 'profiles', 'alpha')
     })
   ).toEqual({ relaunched: ['.', '--ozone-platform=x11'] })
 })

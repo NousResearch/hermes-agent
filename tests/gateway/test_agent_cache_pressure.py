@@ -104,13 +104,13 @@ class TestPressureSignalScope:
         import gateway.agent_cache_pressure as acp
         import gateway.cgroup_cleanup as cleanup
 
-        monkeypatch.setattr(cleanup, "_own_cgroup_path", lambda: "/hermes.service")
+        monkeypatch.setattr(cleanup, "_own_cgroup_path", lambda: "/rabbit.service")
         real_read_text = acp.Path.read_text
 
         def read_text(self, *args, **kwargs):
-            if str(self) == "/sys/fs/cgroup/hermes.service/memory.high":
+            if str(self) == "/sys/fs/cgroup/rabbit.service/memory.high":
                 return "6979321856\n"
-            if str(self) == "/sys/fs/cgroup/hermes.service/memory.stat":
+            if str(self) == "/sys/fs/cgroup/rabbit.service/memory.stat":
                 if stat_text is None:
                     raise OSError("restricted /sys mount")
                 return stat_text
@@ -121,13 +121,13 @@ class TestPressureSignalScope:
 
     def test_same_cgroup_child_anon_counts_against_the_budget(self, monkeypatch, tmp_path):
         acp = self._cgroup(monkeypatch, tmp_path, "anon 4928307200\nfile 5426061312\nkernel 3629735936\n")
-        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+        monkeypatch.setattr("rabbit_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
 
         assert acp.read_anon_rss_mb() == 4_700
 
     def test_unreadable_cgroup_stat_keeps_the_self_reading(self, monkeypatch, tmp_path):
         acp = self._cgroup(monkeypatch, tmp_path, None)
-        monkeypatch.setattr("hermes_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
+        monkeypatch.setattr("rabbit_cli.mem_trim.collect_memory_snapshot", lambda: {"rss_anon_kib": 1_600 * 1024})
 
         assert acp.read_anon_rss_mb() == 1_600
 
@@ -136,7 +136,7 @@ class TestPersistenceGuard:
     transcript is durable. Exercised against the real AIAgent flush."""
 
     def _agent(self, tmp_path, session_id):
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from run_agent import AIAgent
 
         db = SessionDB(db_path=tmp_path / "sessions.db")

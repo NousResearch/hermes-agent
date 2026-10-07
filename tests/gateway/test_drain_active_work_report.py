@@ -1,6 +1,6 @@
 """A draining gateway names the work it is waiting on, and the updater's wait prints it.
 
-Before: ``hermes update`` printed "draining (up to 1875s)..." and then nothing for up to 30 minutes
+Before: ``rabbit update`` printed "draining (up to 1875s)..." and then nothing for up to 30 minutes
 while the gateway waited on one cron job; neither surface said WHAT was being waited on.
 """
 
@@ -10,7 +10,7 @@ import time
 import cron.scheduler as sched
 from gateway.run import GatewayRunner
 from gateway.session_state import SessionState
-from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+from rabbit_cli.update_cmd_drain_report import drain_progress_reporter
 from gateway.status import flush_runtime_status
 
 
@@ -29,7 +29,7 @@ def _runner():
 
 
 def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     runner = _runner()
     state = SessionState()
     state.turn.agent = _FakeAgent()
@@ -55,7 +55,7 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
 
 
 def test_drain_progress_reporter_prints_holder_and_config_knob(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "cron").mkdir()
     (tmp_path / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "job-a", "name": "nightly-scout"}]}))
     (tmp_path / "gateway_state.json").write_text(json.dumps({

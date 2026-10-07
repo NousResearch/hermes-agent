@@ -1,5 +1,5 @@
 """The gateway's 401 exception reply names the turn's provider and the failing profile's own
-sign-in (93889b770da: a bare ``hermes auth add <provider>`` from a named profile re-signs the
+sign-in (93889b770da: a bare ``rabbit auth add <provider>`` from a named profile re-signs the
 ROOT store — the loop #114012 measured)."""
 
 import asyncio
@@ -30,16 +30,16 @@ def _reply_for_401(provider):
 
 
 def test_gateway_401_reply_names_the_provider_and_the_profile(monkeypatch, tmp_path):
-    profile_home = tmp_path / ".hermes" / "profiles" / "codex"
+    profile_home = tmp_path / ".rabbit" / "profiles" / "codex"
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("RABBIT_HOME", str(profile_home))
 
     known = _reply_for_401("openai-codex")
     assert "/login" in known
-    assert "`hermes -p codex auth add openai-codex --type oauth`" in known, known
+    assert "`rabbit -p codex auth add openai-codex --type oauth`" in known, known
     assert "<provider>" not in known and "{relogin}" not in known
 
     # No agent yet (failure before the turn claimed one): keep the placeholder, still profile-pinned.
     unknown = _reply_for_401(None)
-    assert "`hermes -p codex auth add <provider>`" in unknown, unknown
+    assert "`rabbit -p codex auth add <provider>`" in unknown, unknown

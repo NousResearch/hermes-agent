@@ -16,7 +16,7 @@ export default [
     }
   },
   {
-    // THE PLUGIN FENCE: plugins speak @hermes/plugin-sdk (+ react), never `@/…`
+    // THE PLUGIN FENCE: plugins speak @rabbit/plugin-sdk (+ react), never `@/…`
     // internals — the same isolation a runtime-fetched published plugin gets,
     // enforced on bundled ones so the SDK surface stays honest and sufficient.
     files: ['src/plugins/**/*.{ts,tsx}'],
@@ -26,8 +26,8 @@ export default [
         {
           patterns: [
             {
-              group: ['@/*', '../*', '@hermes/shared'],
-              message: 'Plugins import only @hermes/plugin-sdk (and react). Missing something? Add it to the SDK.'
+              group: ['@/*', '../*', '@rabbit/shared'],
+              message: 'Plugins import only @rabbit/plugin-sdk (and react). Missing something? Add it to the SDK.'
             }
           ]
         }

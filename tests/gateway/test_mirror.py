@@ -134,8 +134,8 @@ class TestMirrorToSession:
 
         with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
              patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("hermes_state_registry.acquire", return_value=broken_db), \
-             patch("hermes_state_registry.release_or_close"):
+             patch("rabbit_state_registry.acquire", return_value=broken_db), \
+             patch("rabbit_state_registry.release_or_close"):
             result = mirror_to_session("telegram", "123", "Hello!")
 
         assert result is False
@@ -149,9 +149,9 @@ class TestAppendToSqlite:
         mock_db = MagicMock()
         released = []
 
-        with patch("hermes_state_registry.acquire", return_value=mock_db), \
+        with patch("rabbit_state_registry.acquire", return_value=mock_db), \
              patch(
-                 "hermes_state_registry.release_or_close",
+                 "rabbit_state_registry.release_or_close",
                  side_effect=lambda db: released.append(db),
              ):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
@@ -189,11 +189,11 @@ class TestSessionsIndexProfileScoping:
         self._write_index(active_home, "sess_active")
 
         # Re-import the module with the launch home live: this is the import-time capture.
-        monkeypatch.setenv("HERMES_HOME", str(launch_home))
+        monkeypatch.setenv("RABBIT_HOME", str(launch_home))
         importlib.reload(mirror_mod)
         try:
             # A request for a different profile is now served by the same process.
-            monkeypatch.setenv("HERMES_HOME", str(active_home))
+            monkeypatch.setenv("RABBIT_HOME", str(active_home))
             assert mirror_mod._find_session_id("telegram", "12345") == "sess_active"
         finally:
             monkeypatch.undo()
@@ -205,6 +205,6 @@ class TestSessionsIndexProfileScoping:
         self._write_index(patched, "sess_patched")
 
         monkeypatch.setattr(mirror_mod, "_SESSIONS_INDEX", patched / "sessions" / "sessions.json")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "elsewhere"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "elsewhere"))
 
         assert mirror_mod._find_session_id("telegram", "12345") == "sess_patched"

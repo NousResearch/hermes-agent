@@ -483,7 +483,7 @@ class SearchMixin:
         return f"\\( {terms} \\) -prune"
 
     def _root_under_hidden_dir(self, path: str) -> bool:
-        """True when the search root or any ancestor is dot-named (``~/.hermes/skills``)."""
+        """True when the search root or any ancestor is dot-named (``~/.rabbit/skills``)."""
         root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
         return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
@@ -1078,7 +1078,7 @@ class SearchMixin:
         protected_paths = self._protected_prune_paths(path)
         # grep applies --exclude-dir='.*' to the command-line root too (GNU grep: to
         # every component of it), so a search rooted under a hidden dir such as
-        # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
+        # ~/.rabbit returns nothing (#18473); find's -prune only sees descendants.
         if protected_paths or self._root_under_hidden_dir(path):
             return self._search_with_grep_pruned(
                 pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)

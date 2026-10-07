@@ -49,7 +49,6 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const searchable = connections.length >= CONNECTION_SEARCH_THRESHOLD
 
   const kindLabels: Record<DesktopRegistryConnection['kind'], string> = {
-    cloud: t.settings.connections.kindCloud,
     local: t.settings.connections.kindLocal,
     remote: t.settings.connections.kindRemote,
     ssh: t.settings.connections.kindSsh

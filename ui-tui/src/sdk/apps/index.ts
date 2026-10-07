@@ -1,6 +1,6 @@
 /** Reference apps. Importing this module registers them (defineWidgetApp
  *  runs at module load) — appLayout imports it once at startup. User widgets
- *  from $HERMES_HOME/tui-widgets ride the same import (async, non-fatal). */
+ *  from $RABBIT_HOME/tui-widgets ride the same import (async, non-fatal). */
 import { loadUserWidgets, watchUserWidgets } from '../userWidgets.js'
 
 void loadUserWidgets()

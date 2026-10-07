@@ -7,8 +7,8 @@ import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 // makes the request) so it never touches the gateway/config.yaml.
 export type EmbedMode = 'always' | 'ask' | 'off'
 
-const MODE_KEY = 'hermes.desktop.embed-mode'
-const ALLOWED_KEY = 'hermes.desktop.embed-allowed'
+const MODE_KEY = 'rabbit.desktop.embed-mode'
+const ALLOWED_KEY = 'rabbit.desktop.embed-allowed'
 
 const modeCodec: Codec<EmbedMode> = {
   decode: raw => (raw === 'always' || raw === 'off' ? raw : 'ask'),

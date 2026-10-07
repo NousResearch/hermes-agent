@@ -71,7 +71,7 @@ def make_async_session_db(sync_mock=None):
     """Wrap a sync mock SessionDB in AsyncSessionDB so gateway code that awaits
     the facade works in tests. Returns (facade, sync_mock); configure return
     values and assert calls on sync_mock."""
-    from hermes_state import AsyncSessionDB
+    from rabbit_state import AsyncSessionDB
     sync_mock = sync_mock if sync_mock is not None else MagicMock()
     return AsyncSessionDB(sync_mock), sync_mock
 

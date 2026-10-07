@@ -1,6 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
+import type { RabbitGitWorktree, RabbitRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
 import { $projectScope, ALL_PROJECTS } from './project-scope'
@@ -29,13 +29,13 @@ const REPO_STATUS_REFRESH_DEBOUNCE_MS = 100
 
 const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
 
-const EMPTY_WORKTREES: HermesGitWorktree[] = []
+const EMPTY_WORKTREES: RabbitGitWorktree[] = []
 
 // Status + worktrees per normalized cwd. Entries outlive their surface (the
 // map stays bounded by the worktrees touched this run) so re-opening a tile
 // paints its last-known status instantly while the fresh probe runs.
-export const $repoStatusByCwd = atom<Record<string, HermesRepoStatus | null>>({})
-export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
+export const $repoStatusByCwd = atom<Record<string, RabbitRepoStatus | null>>({})
+export const $repoWorktreesByCwd = atom<Record<string, RabbitGitWorktree[]>>({})
 
 // The PRIMARY (main pane) view — the active session's slice of the per-cwd
 // truth. Existing consumers (keybind gate, base-branch picker, file tree) keep
@@ -44,7 +44,7 @@ export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
 // can still name the previous conversation's path, so ownership hides only this
 // primary slice; the per-cwd cache stays available to any tile that genuinely
 // owns that worktree (#71254).
-export const $repoStatus: ReadableAtom<HermesRepoStatus | null> = computed(
+export const $repoStatus: ReadableAtom<RabbitRepoStatus | null> = computed(
   [$repoStatusByCwd, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner],
   (byCwd, cwd) => (workspaceCwdBelongsToSelectedSession() ? (byCwd[normalizeCwd(cwd) ?? ''] ?? null) : null)
 )
@@ -53,7 +53,7 @@ export const $repoStatusLoading = atom(false)
 
 // The repo's real worktrees (for the coding rail's "jump to a worktree" menu).
 // Refreshed on the same edges as the status probe; empty off a repo.
-export const $repoWorktrees: ReadableAtom<HermesGitWorktree[]> = computed(
+export const $repoWorktrees: ReadableAtom<RabbitGitWorktree[]> = computed(
   [$repoWorktreesByCwd, $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner],
   (byCwd, cwd) =>
     workspaceCwdBelongsToSelectedSession() ? (byCwd[normalizeCwd(cwd) ?? ''] ?? EMPTY_WORKTREES) : EMPTY_WORKTREES
@@ -61,13 +61,13 @@ export const $repoWorktrees: ReadableAtom<HermesGitWorktree[]> = computed(
 
 // Reference-stable per-cwd slices, so any number of rails can each subscribe
 // to their own worktree's status without re-deriving atoms per render.
-const statusAtomByCwd = new Map<string, ReadableAtom<HermesRepoStatus | null>>()
-const worktreesAtomByCwd = new Map<string, ReadableAtom<HermesGitWorktree[]>>()
-const $noRepoStatus = atom<HermesRepoStatus | null>(null)
-const $noWorktrees = atom<HermesGitWorktree[]>(EMPTY_WORKTREES)
+const statusAtomByCwd = new Map<string, ReadableAtom<RabbitRepoStatus | null>>()
+const worktreesAtomByCwd = new Map<string, ReadableAtom<RabbitGitWorktree[]>>()
+const $noRepoStatus = atom<RabbitRepoStatus | null>(null)
+const $noWorktrees = atom<RabbitGitWorktree[]>(EMPTY_WORKTREES)
 
 /** Reactive status for one repo cwd (a tile's worktree). Stable per cwd. */
-export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoStatus | null> {
+export function repoStatusForCwd(cwd?: null | string): ReadableAtom<RabbitRepoStatus | null> {
   const key = normalizeCwd(cwd)
 
   if (!key) {
@@ -113,7 +113,7 @@ export async function isGitRepoPath(cwd: string): Promise<boolean> {
 }
 
 /** Reactive worktree list for one repo cwd. Stable per cwd. */
-export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGitWorktree[]> {
+export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<RabbitGitWorktree[]> {
   const key = normalizeCwd(cwd)
 
   if (!key) {
@@ -227,7 +227,7 @@ export function registerRepoStatusCwd(cwd?: null | string): (() => void) | undef
   }
 }
 
-function setRepoStatusEntry(target: string, status: HermesRepoStatus | null): void {
+function setRepoStatusEntry(target: string, status: RabbitRepoStatus | null): void {
   const byCwd = $repoStatusByCwd.get()
 
   // Skip the no-op null→null write so a repeated failed probe doesn't churn
@@ -239,7 +239,7 @@ function setRepoStatusEntry(target: string, status: HermesRepoStatus | null): vo
   $repoStatusByCwd.set({ ...byCwd, [target]: status })
 }
 
-function setRepoWorktreesEntry(target: string, worktrees: HermesGitWorktree[]): void {
+function setRepoWorktreesEntry(target: string, worktrees: RabbitGitWorktree[]): void {
   const byCwd = $repoWorktreesByCwd.get()
 
   if (target in byCwd && byCwd[target] === worktrees) {
@@ -250,7 +250,7 @@ function setRepoWorktreesEntry(target: string, worktrees: HermesGitWorktree[]): 
 }
 
 interface RepoStatusRefreshRequest {
-  probe: (cwd: string) => Promise<HermesRepoStatus | null>
+  probe: (cwd: string) => Promise<RabbitRepoStatus | null>
   seq: number
   target: string
 }

@@ -6,7 +6,7 @@
  * `saveCurrentLayoutAs` clones the LIVE tree, which carries
  * `session-tile:<storedSessionId>`, `preview-tile:*` and `route-tile:*` panes.
  * Those ids are not portable: the layout tree and its presets are GLOBAL
- * (`hermes.desktop.layoutTree.v2` / `hermes.desktop.layoutPresets.v2`), while a
+ * (`rabbit.desktop.layoutTree.v2` / `rabbit.desktop.layoutPresets.v2`), while a
  * session tile belongs to the profile that owns the stored session. Re-applying
  * such a preset remounts the baked-in tiles, which fires `session.resume` /
  * agent init across profiles; the tile WebSocket then drops, the gateway

@@ -4,7 +4,7 @@
  *
  * The stamp is local time in the `YYYY-MM-DD HH:MM:SS,mmm` shape of Python's
  * default `asctime` (agent.log, gui.log, errors.log), so every file in `logs/`
- * reads on one clock and `hermes logs desktop --since` can parse these lines.
+ * reads on one clock and `rabbit logs desktop --since` can parse these lines.
  * See #84405 for why lines carry a stamp at all.
  */
 
@@ -25,5 +25,5 @@ export function formatLogStamp(date: Date): string {
  * stdout chunk) pass one shared stamp so the group reads as one event.
  */
 export function formatDesktopLogLine(text: string, stamp = formatLogStamp(new Date())): string {
-  return `${stamp} [hermes] ${text}`
+  return `${stamp} [rabbit] ${text}`
 }

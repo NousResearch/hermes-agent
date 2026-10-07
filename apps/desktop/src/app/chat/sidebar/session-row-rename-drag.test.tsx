@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import { startSessionDrag } from '@/app/chat/session-drag'
 import type * as SessionDrag from '@/app/chat/session-drag'
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as GatewayStore from '@/store/gateway'
 import type * as ProjectsStore from '@/store/projects'
@@ -56,7 +56,7 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => {
     treeTabCloseTargets: vi.fn(() => null)
   }
 })
-vi.mock('@/hermes', async importOriginal => {
+vi.mock('@/rabbit', async importOriginal => {
   const actual = await importOriginal<Record<string, unknown>>()
 
   return { ...actual, renameSession: vi.fn() }

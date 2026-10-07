@@ -4,7 +4,7 @@ import { persistStringArray, storedStringArray } from '@/lib/storage'
 
 import { modelVisibilityKey } from './model-visibility'
 
-const STORAGE_KEY = 'hermes.desktop.favorite-models'
+const STORAGE_KEY = 'rabbit.desktop.favorite-models'
 
 /** Stable `provider::model` key for a favorite. Reuses the visibility-store
  *  format so every model identity in the app is written the same way. */

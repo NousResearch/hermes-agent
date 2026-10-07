@@ -21,7 +21,7 @@ _SPEC.loader.exec_module(rbt)
 
 @pytest.fixture
 def release_body(monkeypatch):
-    state = {'body': '# Notes\n\n<!-- HERMES_BUILDS_TABLE -->\n\n## Changes\n- x\n', 'edits': []}
+    state = {'body': '# Notes\n\n<!-- RABBIT_BUILDS_TABLE -->\n\n## Changes\n- x\n', 'edits': []}
 
     def gh(argv, **kwargs):
         if argv[:3] == ['gh', 'release', 'view']:
@@ -37,18 +37,18 @@ def release_body(monkeypatch):
 
 @pytest.mark.parametrize('tag', ['v1.2.3', 'v1.2.3+canary.20260818T101010Z'])
 def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server, release_body, tag):
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    base = f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases'
     version = tag[1:]
     prefix = f'releases/tag/{tag}/'
-    visible = [f'HermesBundled-{version}-mac-arm64.dmg', f'HermesBundled-{version}-win-x64.msix',
-               f'HermesBundled-{version}-win-arm64.msix', f'HermesBundled-{version}-linux-x64.AppImage',
-               f'HermesLight-{version}-win-x64.msix']
-    hidden = [f'HermesBundled-{version}-mac-arm64.zip', f'HermesBundled-{version}-win.msixbundle',
-              f'HermesBundled-{version}-win-x64.msix.blockmap', 'latest.yml',
-              'HermesBundled-9.9.9-win-x64.msix']
+    visible = [f'RabbitBundled-{version}-mac-arm64.dmg', f'RabbitBundled-{version}-win-x64.msix',
+               f'RabbitBundled-{version}-win-arm64.msix', f'RabbitBundled-{version}-linux-x64.AppImage',
+               f'RabbitLight-{version}-win-x64.msix']
+    hidden = [f'RabbitBundled-{version}-mac-arm64.zip', f'RabbitBundled-{version}-win.msixbundle',
+              f'RabbitBundled-{version}-win-x64.msix.blockmap', 'latest.yml',
+              'RabbitBundled-9.9.9-win-x64.msix']
     for name in visible + hidden:
         r2_server.store[prefix + name] = (name.encode(), '"e"')
-    r2_server.store['releases/tag/v9.9.9/HermesBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
+    r2_server.store['releases/tag/v9.9.9/RabbitBundled-9.9.9-win-x64.msix'] = (b'neighbor', '"e"')
     monkeypatch.setenv('RELEASE_NEEDS', '{"build-win32":{"result":"success"}}')
     args = ['render-builds-table.py', '--tag', tag, '--repo', 'o/r', '--r2-base-url', base + '/']
 
@@ -99,8 +99,8 @@ def test_tag_publication_pending_rerun_stale_and_dry_run(monkeypatch, r2_server,
 @pytest.mark.parametrize('result', ['failure', 'cancelled', 'skipped'])
 def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_server, release_body, asset_present, result):
     tag = 'v1.2.3+canary.20260818T101010Z'
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
-    key = f'releases/tag/{tag}/HermesBundled-{tag[1:]}-win-x64.msix'
+    base = f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases'
+    key = f'releases/tag/{tag}/RabbitBundled-{tag[1:]}-win-x64.msix'
     r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
     if asset_present:
         r2_server.store[key] = (b'transport fixture', '"e"')
@@ -129,20 +129,20 @@ def test_attempt_page_warns_and_canary_page_does_not():
 
 
 @pytest.mark.parametrize('version,name', [
-    ('1.2.3', 'HermesBundled-1.2.3-win-x64.msix'),
-    ('1.2.3+canary.20260818T000000Z', 'HermesBundled-1.2.3+canary.20260818T000000Z-win-x64.msix'),
+    ('1.2.3', 'RabbitBundled-1.2.3-win-x64.msix'),
+    ('1.2.3+canary.20260818T000000Z', 'RabbitBundled-1.2.3+canary.20260818T000000Z-win-x64.msix'),
 ])
 def test_exact_version_and_flat_name_boundaries(version, name):
-    names = [name, 'HermesBundled-1.2.3+canary.20260817T000000Z-win-x64.msix', 'HermesBundled-1.2.4-win-x64.msix', name + '.blockmap']
+    names = [name, 'RabbitBundled-1.2.3+canary.20260817T000000Z-win-x64.msix', 'RabbitBundled-1.2.4-win-x64.msix', name + '.blockmap']
     assert rbt.filter_names_for_version(names, version) == [name]
-    assert rbt.parse_assets([name])['HermesBundled'][('win', 'x64')] == (name, 'msix')
+    assert rbt.parse_assets([name])['RabbitBundled'][('win', 'x64')] == (name, 'msix')
 
 
 def test_attempt_archive_objects_are_listed_by_their_plain_version(monkeypatch):
-    keys = ['releases/tag/rc.2-v1.2.3/HermesBundled-1.2.3-win-x64.msix',
-            'releases/tag/rc.2-v1.2.3/HermesBundled-1.2.3-win-x64.msix.blockmap',
+    keys = ['releases/tag/rc.2-v1.2.3/RabbitBundled-1.2.3-win-x64.msix',
+            'releases/tag/rc.2-v1.2.3/RabbitBundled-1.2.3-win-x64.msix.blockmap',
             'releases/tag/rc.2-v1.2.3/latest.yml',
-            'releases/tag/rc.2-v1.2.3/HermesBundled-1.2.4-win-x64.msix']
+            'releases/tag/rc.2-v1.2.3/RabbitBundled-1.2.4-win-x64.msix']
     monkeypatch.setattr(rbt, 'r2_object_names_under', lambda prefix: keys)
     assert rbt.r2_object_names('rc.2-v1.2.3') == [keys[0]]
 

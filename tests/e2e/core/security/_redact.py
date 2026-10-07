@@ -2,7 +2,7 @@
 
 Secrets are allocated so that every scenario owns disjoint values: the values a scenario leaves raw
 BY DESIGN (a tool argument, the user's own prompt) never coincide with the values another scenario
-asserts are masked, so one Hermes home can serve every scenario and each sink is scanned once.
+asserts are masked, so one Rabbit home can serve every scenario and each sink is scanned once.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any, Callable, Mapping
 import pytest
 
 from tests.e2e.core.delivery._fake_platform import GatewayProcess, read_jsonl, wait_until
-from tests.e2e.core.security._helpers import REPO_ROOT, BoundaryBreach, db_blob, files_containing, run_hermes
+from tests.e2e.core.security._helpers import REPO_ROOT, BoundaryBreach, db_blob, files_containing, run_rabbit
 from tests.fakes.fake_llm_provider import Error, Response, Text, ToolCall
 
 
@@ -30,7 +30,7 @@ def _alnum(n: int) -> str:
 
 @dataclass(frozen=True)
 class Secrets:
-    """Every secret value one Hermes home sees; see the module docstring for the allocation."""
+    """Every secret value one Rabbit home sees; see the module docstring for the allocation."""
 
     provider: str = field(default_factory=lambda: "sk-proj-" + _alnum(40))   # .env OPENAI_API_KEY
     env_opaque: str = field(default_factory=lambda: secrets.token_hex(20))   # .env ACME_SERVICE_TOKEN
@@ -187,7 +187,7 @@ def echo_preconditions(ws: Path, k: Secrets, llm_gets: list[dict], logs: str) ->
 
 @dataclass
 class Sinks:
-    """Raw text of every persisted/egress sink of one Hermes home, keyed by sink name."""
+    """Raw text of every persisted/egress sink of one Rabbit home, keyed by sink name."""
 
     texts: dict[str, dict[str, str]] = field(default_factory=dict)  # sink -> {location: text}
 
@@ -206,7 +206,7 @@ class Sinks:
 
 
 def collect(home: Path, requests: list[dict], platform_journal: Path | None = None) -> Sinks:
-    hh = home / ".hermes"
+    hh = home / ".rabbit"
     logs = {str(p.relative_to(hh / "logs")): p.read_text(encoding="utf-8", errors="replace")
             for p in sorted((hh / "logs").rglob("*")) if p.is_file()}
     store = {"state.db (decoded rows)": db_blob(hh / "state.db")}
@@ -217,7 +217,7 @@ def collect(home: Path, requests: list[dict], platform_journal: Path | None = No
     out.mkdir(exist_ok=True)
     exports = {}
     for flag, name in (([], "plain.jsonl"), (["--redact"], "redacted.jsonl")):
-        r = run_hermes(["sessions", "export", str(out / name), *flag], home, timeout=90)
+        r = run_rabbit(["sessions", "export", str(out / name), *flag], home, timeout=90)
         assert r.returncode == 0 and (out / name).exists(), f"sessions export failed: {r.stdout}\n{r.stderr}"
         exports[name] = (out / name).read_text(encoding="utf-8")
     wire = {f"request #{i} ({r['kind']})": json.dumps(r["body"]) for i, r in enumerate(requests)
@@ -245,7 +245,7 @@ def assert_harness_sane(sinks: Sinks, *, gateway: bool = False) -> None:
 
 @dataclass
 class World:
-    """One Hermes home after every scenario ran: its sinks and each scenario's travel evidence."""
+    """One Rabbit home after every scenario ran: its sinks and each scenario's travel evidence."""
 
     keys: Secrets
     sinks: Sinks
@@ -290,7 +290,7 @@ def check(world: World, scenario: str, sink: str) -> None:
 
 class LoggingGateway(GatewayProcess):
     """The delivery suite's real GatewayRunner child, with the gateway's file logging installed the way
-    ``start_gateway`` does (agent.log / errors.log / gateway.log under the child's HERMES_HOME)."""
+    ``start_gateway`` does (agent.log / errors.log / gateway.log under the child's RABBIT_HOME)."""
 
     def start(self) -> "LoggingGateway":
         assert self.proc is None
@@ -317,7 +317,7 @@ def files_with(root: Path, needles: list[str]) -> list[str]:
 
 if __name__ == "__main__":  # pragma: no cover - gateway child entry
     if len(sys.argv) >= 3 and sys.argv[1] == "serve":
-        from hermes_logging import setup_logging
+        from rabbit_logging import setup_logging
 
         setup_logging(mode="gateway")
         from tests.e2e.core.delivery._fake_platform import _serve

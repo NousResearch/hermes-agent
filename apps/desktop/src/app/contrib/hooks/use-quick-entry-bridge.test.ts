@@ -51,13 +51,13 @@ describe('quickEntrySubmitAck', () => {
 })
 
 describe('useQuickEntryBridge', () => {
-  const originalHermesDesktop = window.hermesDesktop
+  const originalRabbitDesktop = window.rabbitDesktop
   let root: Root | null = null
 
   afterEach(() => {
     root?.unmount()
     root = null
-    window.hermesDesktop = originalHermesDesktop
+    window.rabbitDesktop = originalRabbitDesktop
     vi.clearAllMocks()
   })
 
@@ -90,12 +90,12 @@ describe('useQuickEntryBridge', () => {
   it('acknowledges a current-chat submit with the identity the pipeline accepted', async () => {
     const correlationId = 'current-submit-correlation'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const submitText = vi.fn(async (text: string, options?: Parameters<SubmitTextForBridge>[1]) => {
       options?.onAccepted?.({ runtimeSessionId: 'rt-current-1', storedSessionId: 'st-current-1' })
@@ -129,12 +129,12 @@ describe('useQuickEntryBridge', () => {
       sessionId: 'stored-new'
     }))
 
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const { container, submit } = await renderBridge(
       vi.fn(async () => true),
@@ -159,12 +159,12 @@ describe('useQuickEntryBridge', () => {
   it('acknowledges a current-chat submit with no identity without inventing one', async () => {
     const correlationId = 'current-submit-no-identity'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const { container, submit } = await renderBridge(vi.fn(async () => true))
 
@@ -181,12 +181,12 @@ describe('useQuickEntryBridge', () => {
   it('keeps a rejected current-chat submit retryable', async () => {
     const correlationId = 'current-submit-rejected'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const { container, submit } = await renderBridge(vi.fn(async () => false))
 
@@ -208,12 +208,12 @@ describe('useQuickEntryBridge', () => {
   it('reports a failed current-chat submit as retryable', async () => {
     const correlationId = 'current-submit-failed'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const { container, submit } = await renderBridge(
       vi.fn(async () => {
@@ -242,12 +242,12 @@ describe('useQuickEntryBridge', () => {
     ackSubmit.mockImplementationOnce(() => {
       throw new Error('ack channel failed')
     })
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
 
@@ -288,12 +288,12 @@ describe('useQuickEntryBridge', () => {
   it('reports the recovered runtime id when the delegate rebinds it', async () => {
     const correlationId = 'selected-submit-recovered'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-before-recovery')
 
@@ -326,12 +326,12 @@ describe('useQuickEntryBridge', () => {
   it('refuses to acknowledge success when the accepted stored id differs from the requested target', async () => {
     const correlationId = 'selected-submit-identity-mismatch'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
 
@@ -365,12 +365,12 @@ describe('useQuickEntryBridge', () => {
   it('refuses to acknowledge success when the accepted stored id is unknown', async () => {
     const correlationId = 'selected-submit-unknown-identity'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
 
@@ -404,12 +404,12 @@ describe('useQuickEntryBridge', () => {
   it('keeps a post-dispatch failure non-retryable', async () => {
     const correlationId = 'selected-submit-post-dispatch-failure'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => 'runtime-session-1')
 
@@ -442,12 +442,12 @@ describe('useQuickEntryBridge', () => {
   it('keeps a pre-dispatch failure retryable', async () => {
     const correlationId = 'selected-submit-pre-dispatch-failure'
     const ackSubmit = vi.fn()
-    window.hermesDesktop = {
+    window.rabbitDesktop = {
       quickEntry: {
         ackSubmit,
         pushState: vi.fn()
       }
-    } as unknown as typeof window.hermesDesktop
+    } as unknown as typeof window.rabbitDesktop
 
     const resumeTile = vi.fn(async () => {
       throw new Error('resume failed')

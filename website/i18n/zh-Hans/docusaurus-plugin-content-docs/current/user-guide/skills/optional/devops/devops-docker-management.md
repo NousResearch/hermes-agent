@@ -14,7 +14,7 @@ description: "管理 Docker 容器、镜像、卷、网络和 Compose 栈——�
 
 | | |
 |---|---|
-| 来源 | 可选——使用 `hermes skills install official/devops/docker-management` 安装 |
+| 来源 | 可选——使用 `rabbit skills install official/devops/docker-management` 安装 |
 | 路径 | `optional-skills/devops/docker-management` |
 | 版本 | `1.0.0` |
 | 作者 | sprmn24 |
@@ -25,7 +25,7 @@ description: "管理 Docker 容器、镜像、卷、网络和 Compose 栈——�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Docker 管理

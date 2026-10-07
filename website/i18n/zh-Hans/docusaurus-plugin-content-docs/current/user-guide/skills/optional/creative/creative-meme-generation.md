@@ -14,7 +14,7 @@ description: "使用 Pillow 选取模板并叠加文字，生成真实的表情�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/creative/meme-generation` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/creative/meme-generation` 安装 |
 | 路径 | `optional-skills/creative/meme-generation` |
 | 版本 | `2.0.0` |
 | 作者 | adanaleycio |
@@ -26,7 +26,7 @@ description: "使用 Pillow 选取模板并叠加文字，生成真实的表情�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Meme Generation
@@ -74,7 +74,7 @@ python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
 3. 为每个字段编写简短说明文字（每个字段最多 8-12 个词，越短越好）。
 4. 找到 skill 的脚本目录：
    ```
-   SKILL_DIR=$(dirname "$(find ~/.hermes/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
+   SKILL_DIR=$(dirname "$(find ~/.rabbit/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
    ```
 5. 运行生成器：
    ```bash

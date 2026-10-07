@@ -12,7 +12,7 @@ import pm
 from pm.package import InstallError, Runner, compose_env
 from pm.workspace import install_node_sidecar
 
-_REAL_HERMES_HOME = Path.home() / ".hermes"  # Captured before per-test HOME isolation.
+_REAL_RABBIT_HOME = Path.home() / ".rabbit"  # Captured before per-test HOME isolation.
 
 
 def test_no_package_json_never_acquires_npm(tmp_path, monkeypatch):
@@ -43,9 +43,9 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     npm, node = shutil.which("npm"), shutil.which("node")
     if not npm or not node:
         pytest.skip("npm and node are required")
-    if any(Path(executable).absolute().is_relative_to(_REAL_HERMES_HOME)
+    if any(Path(executable).absolute().is_relative_to(_REAL_RABBIT_HOME)
            for executable in (npm, node)):
-        pytest.skip("requires npm and Node outside the real Hermes home")
+        pytest.skip("requires npm and Node outside the real Rabbit home")
     # npm's real JS entrypoint uses /usr/bin/env node. Its paired Node lives
     # in a different PATH entry, just as the two PM packages do.
     npm_cli = next(iter(Path(npm).resolve().parent.parent.glob("lib/npm*/bin/npm-cli.js")), Path(npm).resolve())
@@ -58,9 +58,9 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
     (node_bin / "node").symlink_to(node)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     context = Runner("npm", compose_env([
         {"PATH": [str(node_bin)]}, {"PATH": [str(npm_bin)]},
     ]))
@@ -100,7 +100,7 @@ def test_real_npm_uses_paired_node_with_empty_ambient_path(tmp_path, monkeypatch
 
 def test_on_demand_sidecar_install_respects_lazy_refusal(tmp_path, monkeypatch):
     (tmp_path / "package.json").write_text('{}')
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     binary = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
     binary.write_text("process boundary fixture")
     binary.chmod(0o755)

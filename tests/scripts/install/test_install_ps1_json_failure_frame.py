@@ -19,8 +19,8 @@ def test_fail_inside_a_stage_emits_one_json_frame_with_the_reason(tmp_path):
     install_dir.mkdir()
     (install_dir / "user-file").write_text("preserve me", encoding="utf-8")
     tools = tmp_path / "empty-tools"
-    env = dict(os.environ, HERMES_HOME=str(tmp_path / "home"),
-               HERMES_RUNTIME_DIR=str(tools))
+    env = dict(os.environ, RABBIT_HOME=str(tmp_path / "home"),
+               RABBIT_RUNTIME_DIR=str(tools))
     result = subprocess.run(
         [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
          "-Stage", "repository", "-Json", "-InstallDir", str(install_dir)],
@@ -29,6 +29,6 @@ def test_fail_inside_a_stage_emits_one_json_frame_with_the_reason(tmp_path):
     assert result.returncode == 1
     assert len(frames) == 1, result.stdout
     assert frames[0]["ok"] is False and frames[0]["stage"] == "repository"
-    assert "exists and is not a Hermes git checkout" in frames[0]["reason"]
+    assert "exists and is not a Rabbit git checkout" in frames[0]["reason"]
     assert (install_dir / "user-file").read_text(encoding="utf-8-sig") == "preserve me"
     assert not tools.exists()

@@ -29,7 +29,7 @@ class TestDetectProviderEntra:
             }
 
         with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "rabbit_cli.runtime_provider.resolve_runtime_provider",
             side_effect=_fake_runtime,
         ):
             assert _acp_auth.detect_provider() == "azure-foundry"

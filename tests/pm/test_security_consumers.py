@@ -22,9 +22,9 @@ from tests.pm._range_server import dl_server as dl_server
 @pytest.fixture
 def consumer_store(tmp_path, monkeypatch, dl_server):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     # Only the already-prepared interpreter is supplied: the worker, downloader,
     # extractor, probes, publication and read-only selector are all real.
@@ -185,8 +185,8 @@ def test_tirith_opt_in_background_and_explicit_override(consumer_store, tmp_path
     assert tirith.check_command_security("echo hello")["summary"] == "external"
     assert not RangeHandler.ranges_seen
     monkeypatch.delenv("TIRITH_BIN")
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS")
-    home = Path(os.environ["HERMES_HOME"])
+    monkeypatch.delenv("RABBIT_DISABLE_LAZY_INSTALLS")
+    home = Path(os.environ["RABBIT_HOME"])
     home.mkdir(exist_ok=True)
     (home / "config.yaml").write_text("security:\n  allow_lazy_installs: true\n")
     # Hold the real worker's HTTP request so returning before completion is
@@ -303,7 +303,7 @@ def test_tirith_failed_cold_scans_make_one_attempt_then_explicit_can_retry(consu
     from tools import tirith_security as tirith
     monkeypatch.setenv("PATH", "")
     monkeypatch.setenv("TIRITH_ENABLED", "true")
-    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS")
+    monkeypatch.delenv("RABBIT_DISABLE_LAZY_INSTALLS")
     monkeypatch.setattr(tirith, "_crash_count", 0)
     monkeypatch.setattr(tirith, "_circuit_open", False)
     pin(consumer_store, "tirith", bad_hash=True)

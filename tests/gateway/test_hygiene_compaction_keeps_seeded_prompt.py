@@ -11,8 +11,8 @@ from unittest.mock import patch
 from agent import conversation_compression as cc
 from gateway.run import _seed_hygiene_system_prompt
 
-STORED = "You are Hermes.\n\n## Skills (mandatory)\n<available_skills>\n- a: b\n</available_skills>"
-DEGRADED = "You are Hermes."
+STORED = "You are Rabbit.\n\n## Skills (mandatory)\n<available_skills>\n- a: b\n</available_skills>"
+DEGRADED = "You are Rabbit."
 
 
 def _agent(**over):

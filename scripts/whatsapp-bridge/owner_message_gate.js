@@ -47,7 +47,7 @@ export function classifyOwnerMessageGate({
   // Allowlist gate: check the *customer* chatId, not the sender. The
   // sender is the owner's own number/LID and won't be on the allowlist
   // by construction. Without this check, any contact the owner happens
-  // to reply to leaks into Hermes and triggers implicit handover in the
+  // to reply to leaks into Rabbit and triggers implicit handover in the
   // gateway-policy plugin.
   if (typeof allowlistMatches === 'function' && !allowlistMatches(chatId)) {
     return { action: 'drop_allowlist' };

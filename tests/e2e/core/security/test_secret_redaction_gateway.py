@@ -47,11 +47,11 @@ def gw_world(tmp_path_factory) -> World:
     root = tmp_path_factory.mktemp("redact-gw")
     ws, keys = root / "ws", Secrets()
     seed_workspace(ws, keys)
-    ctx = Ctx(keys, ws, root / "home" / ".hermes" / ".env")
+    ctx = Ctx(keys, ws, root / "home" / ".rabbit" / ".env")
     with FakeLLMServer(Director(ctx), api_key=keys.provider, record_get=True) as llm:
         ctx.port = llm.port
         gw = LoggingGateway(root, platforms={PLATFORM: "telegram"}, llm_base_url=llm.base_url)
-        write_home(gw.hermes_home, llm.base_url, api_key=keys.provider, env=keys.env(), config=CONFIG)
+        write_home(gw.rabbit_home, llm.base_url, api_key=keys.provider, env=keys.env(), config=CONFIG)
         gw.start()
         try:
             for name, scenario in SCENARIOS.items():
@@ -60,7 +60,7 @@ def gw_world(tmp_path_factory) -> World:
                 if scenario.followup:
                     seen = len(gw.platform_view().visible(PLATFORM, chat))
                     _turn(gw, prompt_for(name, keys, followup=True), f"m-{name}-2", chat, seen)
-            wait_until(lambda: (gw.hermes_home / "logs" / "gateway.log").exists(), "gateway.log written",
+            wait_until(lambda: (gw.rabbit_home / "logs" / "gateway.log").exists(), "gateway.log written",
                        timeout=30, proc=gw.proc, log=gw.log)
         finally:
             gw.stop()

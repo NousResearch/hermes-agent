@@ -103,7 +103,7 @@ cache break — keep it the only one. Full detail:
   `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
   `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
-  against a temp `HERMES_HOME`, not mocks (root rubric).
+  against a temp `RABBIT_HOME`, not mocks (root rubric).
 
 ## i18n (`agent/i18n.py` + `i18n_layers.py` + `i18n_languages.py`)
 

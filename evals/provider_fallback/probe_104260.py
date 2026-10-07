@@ -7,16 +7,16 @@ from pathlib import Path
 
 REPO = sys.argv[1]
 sys.dont_write_bytecode = True
-sandbox = tempfile.TemporaryDirectory(prefix="hermes-104260-")
+sandbox = tempfile.TemporaryDirectory(prefix="rabbit-104260-")
 os.environ.clear()
 os.environ.update(
     HOME=sandbox.name,
-    HERMES_HOME=sandbox.name + "/hermes",
+    RABBIT_HOME=sandbox.name + "/rabbit",
     PATH="/usr/bin:/bin",
     PYTHONDONTWRITEBYTECODE="1",
-    HERMES_DISABLE_MODEL_METADATA_FETCH="1",
+    RABBIT_DISABLE_MODEL_METADATA_FETCH="1",
 )
-Path(os.environ["HERMES_HOME"]).mkdir()
+Path(os.environ["RABBIT_HOME"]).mkdir()
 os.chdir(sandbox.name)
 sys.path.insert(0, REPO)
 import socket
@@ -126,8 +126,8 @@ config = {
         }
     },
 }
-# JSON is valid YAML; only the temporary Hermes home is written.
-Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
+# JSON is valid YAML; only the temporary Rabbit home is written.
+Path(os.environ["RABBIT_HOME"], "config.yaml").write_text(
     json.dumps(config), encoding="utf-8"
 )
 from agent import auxiliary_client as aux

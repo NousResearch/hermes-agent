@@ -62,7 +62,7 @@ def summarize_manual_compression(
         if not isinstance(dropped_count, int) or isinstance(dropped_count, bool):
             dropped_count = max(before_count - after_count, 0)
         note = (
-            "Summary generation failed; Hermes used limited fallback context "
+            "Summary generation failed; Rabbit used limited fallback context "
             f"and removed {dropped_count} message(s)."
         )
     elif noop:

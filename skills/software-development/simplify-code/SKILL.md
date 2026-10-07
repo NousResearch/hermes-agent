@@ -2,11 +2,11 @@
 name: simplify-code
 description: "Parallel 4-agent cleanup of recent code changes."
 version: 1.1.0
-author: Hermes Agent (inspired by Claude Code /simplify)
+author: Rabbit Agent (inspired by Claude Code /simplify)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [code-review, cleanup, refactor, delegation, subagent, parallel, simplify]
     related_skills: [requesting-code-review, test-driven-development]
 ---
@@ -241,7 +241,7 @@ Wait for all four to return (batch mode returns them together).
   note, not folded into cleanup fixes. Correctness review is a different
   pass with different verification standards.
 - **Respect project conventions.** If the repo has AGENTS.md / CLAUDE.md /
-  HERMES.md or a linter config, fold those rules into the reviewer prompts so
+  RABBIT.md or a linter config, fold those rules into the reviewer prompts so
   suggestions match house style instead of fighting it.
 - **Large diffs blow context.** If the diff is huge, scope it down before
   delegating — four subagents each carrying a 5000-line diff is expensive and

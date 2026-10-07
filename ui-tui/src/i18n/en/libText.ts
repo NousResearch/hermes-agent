@@ -64,15 +64,12 @@ export const libTextEn = {
         'Apple Terminal detected · use /paste for image-only clipboard fallback, and try Ctrl+A / Ctrl+E / Ctrl+U if Cmd+←/→/⌫ gets rewritten',
       tmux: 'tmux detected · clipboard copy/paste uses passthrough when available; allow-passthrough improves OSC52 reliability',
       remote:
-        'SSH session detected · text clipboard can bridge via OSC52, but image clipboard and local screenshot paths still depend on the machine running Hermes'
+        'SSH session detected · text clipboard can bridge via OSC52, but image clipboard and local screenshot paths still depend on the machine running Rabbit'
     },
 
     // lib/billingDialog.ts — the out-of-credits confirm dialog.
     billingDialog: {
       dismiss: 'Dismiss',
-      topUp: 'Top up',
-      nousDetail: 'Your Nous credit balance is exhausted — top up to keep going.',
-      nousTitle: 'Out of Nous credits',
       yourProvider: 'your provider',
       openBillingPage: 'Open billing page',
       switchProvider: 'Switch provider',

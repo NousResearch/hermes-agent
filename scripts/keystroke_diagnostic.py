@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Diagnose how prompt_toolkit identifies keystrokes in the current terminal.
 
-Useful when adding a keybinding to Hermes (or any prompt_toolkit app) and you
+Useful when adding a keybinding to Rabbit (or any prompt_toolkit app) and you
 need to know what the terminal actually delivers — particularly on Windows,
 where terminals can collapse, intercept, or silently remap key combinations.
 
@@ -28,7 +28,7 @@ Common questions this answers:
 Example output for Ctrl+Enter on Windows Terminal + PowerShell:
     key=<Keys.ControlJ: 'c-j'> data='\\n'
 
-Then in Hermes, bind the newline behaviour to that key:
+Then in Rabbit, bind the newline behaviour to that key:
     @kb.add('c-j')
     def handle_ctrl_enter(event):
         event.current_buffer.insert_text('\\n')

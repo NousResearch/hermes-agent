@@ -98,7 +98,7 @@ def test_canary_base_comes_from_the_validated_protected_stable_head():
     class Reader:
         def __init__(self, base, repository):
             assert base == "https://assets.example"
-            assert repository == "example/hermes-agent"
+            assert repository == "example/rabbit-agent"
 
         def resolve(self, name):
             assert name == "stable"
@@ -108,7 +108,7 @@ def test_canary_base_comes_from_the_validated_protected_stable_head():
             })()
 
     assert published_stable_version(
-        "example/hermes-agent", base_url="https://assets.example", reader_type=Reader,
+        "example/rabbit-agent", base_url="https://assets.example", reader_type=Reader,
         run=lambda argv: "[[]]",
     ) == "0.21.7"
 
@@ -139,15 +139,15 @@ def test_a_newer_published_release_outranks_the_protected_head():
         if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
             return json.dumps([releases])
         assert argv[:2] == ["gh", "api"] and argv[3:] == ["--jq", ".sha"]
-        return {"repos/example/hermes-agent/commits/v0.21.8": "b" * 40,
-                "repos/example/hermes-agent/commits/v0.21.6": "c" * 40}[argv[2]]
+        return {"repos/example/rabbit-agent/commits/v0.21.8": "b" * 40,
+                "repos/example/rabbit-agent/commits/v0.21.6": "c" * 40}[argv[2]]
 
     assert published_stable_identity(
-        "example/hermes-agent", base_url="https://assets.example", reader_type=Reader, run=run,
+        "example/rabbit-agent", base_url="https://assets.example", reader_type=Reader, run=run,
     ) == ("0.21.8", "b" * 40)
     releases[0]["tag_name"] = "v0.21.6"
     assert published_stable_identity(
-        "example/hermes-agent", base_url="https://assets.example", reader_type=Reader, run=run,
+        "example/rabbit-agent", base_url="https://assets.example", reader_type=Reader, run=run,
     ) == ("0.21.7", "a" * 40)
 
 

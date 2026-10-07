@@ -11,7 +11,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 class RecordingAdapter(BasePlatformAdapter):
@@ -33,15 +33,15 @@ class RecordingAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        self.attempts.append((content, get_hermes_home()))
+        self.attempts.append((content, get_rabbit_home()))
         if self.fail_text_once:
             self.fail_text_once = False
             return SendResult(success=False, error="invalid markup")
-        self.wire.append((content, get_hermes_home(), metadata))
+        self.wire.append((content, get_rabbit_home(), metadata))
         return SendResult(success=True, message_id=f"sent-{len(self.wire)}")
 
     async def send_document(self, chat_id, file_path, **kwargs):
-        self.attempts.append((file_path, get_hermes_home()))
+        self.attempts.append((file_path, get_rabbit_home()))
         if self.fail_media:
             return SendResult(success=False, error="transport rejected attachment")
         return await super().send_document(chat_id, file_path, **kwargs)
@@ -53,12 +53,12 @@ class RecordingAdapter(BasePlatformAdapter):
 @pytest.fixture
 def profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     homes = {name: root / "profiles" / name for name in ("a", "b")}
     root.mkdir()
     # Opposite to the routed opt-in profile; ambient reads must not decide delivery.
     (root / "config.yaml").write_text("display: {suppress_warning_notifications: false}\n")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     for home in homes.values():
         home.mkdir(parents=True)
     return root, homes
@@ -73,7 +73,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
     from gateway.session import SessionSource
 
     root, _ = profiles
-    monkeypatch.setattr(gateway_run, "_hermes_home", root)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", root)
     (root / "config.yaml").write_text(
         "display: {tool_progress: off, streaming: false" +
         ("}" if setting is None else f", suppress_warning_notifications: {str(setting).lower()}}}")
@@ -148,7 +148,7 @@ async def test_recursive_three_turn_chain_then_human(profiles, monkeypatch, diag
         assert authorized[-1] == "denied"
         assert len(calls) == 4 and adapter.wire == before
         assert denied.internal is False and denied.allow_gateway_control is True
-        assert get_hermes_home() == root
+        assert get_rabbit_home() == root
     finally:
         await adapter.cancel_background_tasks()
 

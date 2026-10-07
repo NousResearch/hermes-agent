@@ -2,12 +2,12 @@
 """Terminal tool: run shell commands in the configured backend.
 
 Backends (``TERMINAL_ENV``): local (default), docker, singularity, modal
-(direct or managed gateway), daytona, vercel_sandbox, ssh, plus
+daytona, vercel_sandbox, ssh, plus
 plugin-registered backends. Handles background processes, sandbox lifecycle
 (per-task cache, idle reaper, atexit teardown) and sudo password plumbing.
 Cloud-sandbox persistent filesystems preserve working state across sandbox
 recreation but do NOT guarantee the same live sandbox or long-running
-processes survive cleanup, idle reaping, or Hermes exit.
+processes survive cleanup, idle reaping, or Rabbit exit.
 
 Companion modules (re-exported here, so ``tools.terminal_tool.<name>`` stays the
 import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
@@ -52,8 +52,8 @@ from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
     _record_unavailable_reason, terminal_backend_unavailable_reason,  # noqa: F401 — re-exported
 )
-# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
-from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
+# display_rabbit_home imported lazily at call site (stale-module safety during rabbit update)
+from tools.tool_backend_helpers import coerce_modal_mode
 
 
 def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
@@ -109,15 +109,15 @@ def _current_session_key() -> str:
     the ``get_session_env`` os.environ fallback for CLI/cron/tests)."""
     from gateway.session_context import get_session_env
 
-    return get_session_env("HERMES_SESSION_KEY", "")
+    return get_session_env("RABBIT_SESSION_KEY", "")
 
 
 def _current_session_profile() -> str:
-    """Active session's Hermes profile name, or "" (same lookup discipline as
+    """Active session's Rabbit profile name, or "" (same lookup discipline as
     :func:`_current_session_key`)."""
     from gateway.session_context import get_session_env
 
-    return get_session_env("HERMES_SESSION_PROFILE", "")
+    return get_session_env("RABBIT_SESSION_PROFILE", "")
 
 
 from tools.approval import (
@@ -186,12 +186,12 @@ _docker_orphan_reaper_lock = threading.Lock()
 def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     """Run the docker orphan reaper once per process, if enabled.
 
-    Sweeps Exited containers labeled ``hermes-agent=1`` for the current
-    profile — leftovers of Hermes processes that died without firing
+    Sweeps Exited containers labeled ``rabbit-agent=1`` for the current
+    profile — leftovers of Rabbit processes that died without firing
     ``atexit`` (SIGKILL, OOM, closed terminal). Conservative: only containers
     older than ``2 × lifetime_seconds``, profile-scoped. Gates:
     ``terminal.docker_orphan_reaper: false`` (operator opt-out, e.g. several
-    Hermes processes sharing a profile) and the once-per-interpreter flag so
+    Rabbit processes sharing a profile) and the once-per-interpreter flag so
     parallel subagent / RL-rollout calls don't re-sweep.
     """
     global _docker_orphan_reaper_ran
@@ -287,7 +287,7 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     are already rejected on the creation paths. This write classifies the
     directory mounted at ``/workspace`` as unusable before that prefix
     heuristic, then remaps the match (or a child of it) to its container mount
-    instead of storing the host path. SSH maps the Hermes subprocess home onto
+    instead of storing the host path. SSH maps the Rabbit subprocess home onto
     the peer's home, as environment creation already does. Other backends apply
     the override verbatim (ACP project-root switching must keep working).
     """
@@ -452,10 +452,10 @@ def _routed_home_task_key(profile_scoped: bool) -> Optional[str]:
     Persistent Docker keys the profile name exactly like B's session-bound work, so B keeps ONE
     container instead of a second one per home path.
     """
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    from rabbit_constants import get_rabbit_home_override, profile_name_for_home
     from tools.environments.local import _is_routed_home
 
-    override = get_hermes_home_override()
+    override = get_rabbit_home_override()
     if not override or not _is_routed_home(override):
         return None
     profile = profile_name_for_home(override) if profile_scoped else None
@@ -621,18 +621,18 @@ def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
 
     CLI, gateway and TUI/dashboard PTY launches bridge ``terminal.*`` into env vars
-    at startup; processes that skip those paths (``hermes serve``, Desktop
+    at startup; processes that skip those paths (``rabbit serve``, Desktop
     in-process agents, desktop cron ticker, ACP) would otherwise fall back to the
     local backend even when config selects docker — running on the host the user
     meant to sandbox. Explicit keys in the ``terminal`` section override matching
-    env values (possibly stale from ``hermes setup``); env values for omitted keys
+    env values (possibly stale from ``rabbit setup``); env values for omitted keys
     are preserved. Without a terminal section an existing TERMINAL_ENV is kept and
     defaults are backfilled only when none is set. A per-turn terminal scope
     suppresses the bridge entirely: writing scope values into the process-global
     env would re-create the first-writer-wins cross-profile leak the scope fixes.
 
     Ambient ``os.environ`` is the *launch* profile's authority only. Under a
-    context-local ``HERMES_HOME`` override (multiplexed dashboard / gateway
+    context-local ``RABBIT_HOME`` override (multiplexed dashboard / gateway
     secondary profile), this bridge is a no-op — otherwise the first unscoped
     call under that override would latch the secondary profile's ``terminal.*``
     into process-global env and poison later unscoped launch-profile turns
@@ -646,9 +646,9 @@ def _ensure_terminal_env_bridged() -> None:
     if get_terminal_scope() is not None:
         return
     # Never write a secondary profile's terminal.* into process-global env.
-    from hermes_constants import get_hermes_home_override
+    from rabbit_constants import get_rabbit_home_override
 
-    if get_hermes_home_override() is not None:
+    if get_rabbit_home_override() is not None:
         return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
@@ -656,7 +656,7 @@ def _ensure_terminal_env_bridged() -> None:
     _terminal_config_bridge_attempted = True
     # Never let a config problem take the terminal tool down.
     with _quiet("terminal config → env fallback bridge failed"):
-        from hermes_cli.config import apply_terminal_config_to_env, read_raw_config
+        from rabbit_cli.config import apply_terminal_config_to_env, read_raw_config
 
         raw_config = read_raw_config()
         if isinstance(raw_config.get("terminal"), dict):
@@ -678,7 +678,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     """
     default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
     cwd = _tenv("TERMINAL_CWD", default_cwd)
-    from hermes_cli.config import _is_ssh_remote_tilde_cwd
+    from rabbit_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
@@ -715,7 +715,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
 
 def _get_env_config() -> Dict[str, Any]:
     """Resolve the terminal configuration dict from TERMINAL_* env vars."""
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
+    from rabbit_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_image
     _ensure_terminal_env_bridged()
     env_type = _tenv("TERMINAL_ENV", "local")
     mount_docker_cwd = _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
@@ -1244,8 +1244,8 @@ def _run_foreground(
     metered: bool = True,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
-    is False for Hermes' own control-plane commands (``_host_local``)."""
-    from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
+    is False for Rabbit' own control-plane commands (``_host_local``)."""
+    from rabbit_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
@@ -1276,7 +1276,7 @@ def _run_foreground(
             break
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
-            # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
+            # is not a terminal outcome; Rabbit' own deadline arrives as ``rabbit_timed_out``.
             if "timeout" in str(e).lower():
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
@@ -1400,10 +1400,10 @@ def terminal_tool(
     process_manage kill (#41225).
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
-    ``_host_local`` forces the local backend for Hermes-owned control-plane
+    ``_host_local`` forces the local backend for Rabbit-owned control-plane
     children (kept in a separate env cache from the configured backend).
     """
-    from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
+    from rabbit_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
     plan = None
     try:
         plan = _plan_execution(

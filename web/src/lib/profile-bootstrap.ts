@@ -1,18 +1,18 @@
 declare global {
   interface Window {
-    __HERMES_DASHBOARD_PROFILE__?: string;
-    __HERMES_INITIAL_PROFILE__?: string;
+    __RABBIT_DASHBOARD_PROFILE__?: string;
+    __RABBIT_INITIAL_PROFILE__?: string;
   }
 }
 
 export function dashboardInitialProfile(): string {
   if (typeof window === "undefined") return "";
-  return window.__HERMES_INITIAL_PROFILE__ ?? "";
+  return window.__RABBIT_INITIAL_PROFILE__ ?? "";
 }
 
 /**
  * The profile this backend process itself serves, injected by the server and
- * empty when it cannot be named unambiguously (custom HERMES_HOME).
+ * empty when it cannot be named unambiguously (custom RABBIT_HOME).
  *
  * It is the LAST fallback for the management scope: without it the dashboard
  * sends no `?profile=` at all, which a multi-profile host now refuses (400) on
@@ -22,7 +22,7 @@ export function dashboardInitialProfile(): string {
  */
 export function dashboardServingProfile(): string {
   if (typeof window === "undefined") return "";
-  return window.__HERMES_DASHBOARD_PROFILE__ ?? "";
+  return window.__RABBIT_DASHBOARD_PROFILE__ ?? "";
 }
 
 export function initialProfileScope(
@@ -42,7 +42,7 @@ export function shouldAdoptActiveProfile(
   activeProfile: string,
 ): boolean {
   // Only the machine (default-hosted) dashboard aligns to the sticky active
-  // profile. A dashboard hosted by a named profile (`hermes -p demo serve`)
+  // profile. A dashboard hosted by a named profile (`rabbit -p demo serve`)
   // serves THAT agent: adopting the machine-global active_profile would
   // silently retarget its banner, chat TUI env and model to another profile.
   return (

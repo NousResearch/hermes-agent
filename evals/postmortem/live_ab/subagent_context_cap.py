@@ -1,11 +1,11 @@
-"""Live: build a real child through delegate_tool's spawn path (real imports, temp HERMES_HOME) and read the
+"""Live: build a real child through delegate_tool's spawn path (real imports, temp RABBIT_HOME) and read the
 trigger it resolves on a 1M-window model. Run against main and the branch."""
 import os, sys, tempfile, shutil
 root = sys.argv[1]
 sys.path.insert(0, root)
 home = tempfile.mkdtemp(prefix="hh-")
-os.environ["HERMES_HOME"] = home
-os.environ["HERMES_STREAM_RETRIES"] = "0"
+os.environ["RABBIT_HOME"] = home
+os.environ["RABBIT_STREAM_RETRIES"] = "0"
 try:
     from run_agent import AIAgent
     import tools.delegate_tool as dt

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """X Search tool backed by xAI's built-in ``x_search`` Responses API tool.
 
-Registers when either xAI credential path is available (``XAI_API_KEY`` or ``hermes auth add
+Registers when either xAI credential path is available (``XAI_API_KEY`` or ``rabbit auth add
 xai-oauth``). At call time an explicit ``XAI_API_KEY`` wins (``prefer_api_key=True``): x_search
 is API-metered and the subscription OAuth bearer answers ``/v1/responses`` without citations.
 Date filters are validated client-side so malformed windows fail fast instead of burning a
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from tools.registry import registry, tool_error
-from tools.xai_http import DEFAULT_XAI_BASE_URL, hermes_xai_user_agent, resolve_xai_http_credentials
+from tools.xai_http import DEFAULT_XAI_BASE_URL, rabbit_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ MAX_HANDLES = 10
 
 def _load_x_search_config() -> Dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         return load_config().get("x_search", {}) or {}
     except Exception:
         return {}
@@ -69,7 +69,7 @@ def _resolve_xai_bearer() -> Tuple[str, str, str]:
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         raise RuntimeError(
-            "No xAI credentials available. Run `hermes auth add xai-oauth` "
+            "No xAI credentials available. Run `rabbit auth add xai-oauth` "
             "to sign in with your SuperGrok subscription, or set XAI_API_KEY."
         )
     base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
@@ -246,7 +246,7 @@ def x_search_tool(
             payload["reasoning"] = {"effort": reasoning_effort}
         headers = {
             "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-            "User-Agent": hermes_xai_user_agent(),
+            "User-Agent": rabbit_xai_user_agent(),
         }
         data = _post_with_retries(f"{base_url}/responses", headers, payload).json()
         citations = list(data.get("citations") or [])

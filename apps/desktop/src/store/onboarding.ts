@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared'
+import type { ModelOptionProvider } from '@rabbit/shared'
 import { atom } from 'nanostores'
 
 import {
@@ -12,17 +12,16 @@ import {
   startOAuthLogin,
   submitOAuthCode,
   validateProviderCredential
-} from '@/hermes'
+} from '@/rabbit'
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $gatewayBootGeneration } from '@/store/live-sync'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
-import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
+import type { OAuthProvider, OAuthStartResponse } from '@/types/rabbit'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
@@ -81,12 +80,6 @@ export interface DesktopOnboardingState {
    *  custom endpoint"). Forces the API-key form with the local option
    *  preselected instead of the OAuth picker. */
   localEndpoint: boolean
-  /** True when the backend still owes this user the one-time free-tier
-   *  introduction AND the free tier is what carries inference. It makes the
-   *  overlay show its "Hermes is ready" screen once even though the app is
-   *  configured. The backend's `notice_pending` flag is the only source of
-   *  truth — there is no renderer latch — so an ack clears it everywhere. */
-  freeTierReady: boolean
 }
 
 export interface OnboardingContext {
@@ -96,8 +89,8 @@ export interface OnboardingContext {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
-const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
+const CONFIGURED_CACHE_KEY = 'rabbit-desktop-onboarded-v1'
+const SKIP_CACHE_KEY = 'rabbit-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
@@ -169,7 +162,6 @@ const INITIAL: DesktopOnboardingState = {
   firstRunSkipped: readCachedSkipped(),
   manual: false,
   localEndpoint: false,
-  freeTierReady: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -300,37 +292,7 @@ function shouldPreserveConfiguredOnBootRace(runtime: RuntimeReadinessResult, sta
 }
 
 function notifyReady(provider: string) {
-  notify({ kind: 'success', title: 'Hermes is ready', message: `${provider} connected.` })
-}
-
-// Human-friendly labels for tools auto-routed through the Nous Tool Gateway,
-// mirroring hermes_cli/nous_subscription._GATEWAY_TOOL_LABELS so the GUI and
-// CLI describe the same thing.
-const GATEWAY_TOOL_LABELS: Record<string, string> = {
-  browser: 'browser automation',
-  image_gen: 'image generation',
-  tts: 'text-to-speech',
-  video_gen: 'video generation',
-  web: 'web search & extract'
-}
-
-// When switching to Nous auto-routes unconfigured tools through the Tool
-// Gateway, tell the user which ones — same information the CLI prints. Silent
-// when nothing changed (subscriber already configured, has own keys, etc.).
-function notifyGatewayTools(tools: string[] | undefined) {
-  if (!tools || tools.length === 0) {
-    return
-  }
-
-  const labels = tools.map(t => GATEWAY_TOOL_LABELS[t] ?? t)
-  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
-
-  notify({
-    durationMs: 8000,
-    kind: 'info',
-    message: `${list} now run through your Nous subscription — no separate API keys needed.`,
-    title: 'Tool Gateway enabled'
-  })
+  notify({ kind: 'success', title: 'Rabbit is ready', message: `${provider} connected.` })
 }
 
 // After credentials are persisted, ask the backend which provider+models
@@ -388,9 +350,8 @@ async function fetchProviderDefaultModel(
   }
 
   // Prefer the backend's recommended default — it mirrors the curation
-  // `hermes model` does (for Nous it honors the user's free/paid tier, so a
-  // free user gets a free model rather than a paid default like opus). Fall
-  // back to the first curated model if the endpoint can't resolve one.
+  // `rabbit model` does. Fall back to the first curated model if the
+  // endpoint can't resolve one.
   let defaultModel = String(models[0])
 
   try {
@@ -399,8 +360,7 @@ async function fetchProviderDefaultModel(
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
     } else if (recommended.model) {
-      // Recommended model isn't in the curated options list (e.g. a Portal
-      // free-recommendation the picker list didn't include); trust it anyway.
+      // Recommended model isn't in the curated options list; trust it anyway.
       defaultModel = recommended.model
     }
   } catch {
@@ -454,7 +414,7 @@ async function completeWithModelConfirm(
     // config provider (e.g. anthropic from a prior failed setup) cannot make
     // setup.runtime_check validate the wrong backend after a fresh OAuth login.
     try {
-      const res = await setMainModelAssignment(
+      await setMainModelAssignment(
         {
           provider: defaults.providerSlug,
           model: defaults.defaultModel
@@ -469,13 +429,12 @@ async function completeWithModelConfirm(
         return
       }
 
-      notifyGatewayTools(res.gateway_tools)
     } catch (error) {
       if (generation !== flowGeneration) {
         return
       }
 
-      onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
+      onFail(error instanceof Error ? error.message : 'Rabbit could not save the selected model.')
 
       return
     }
@@ -515,14 +474,14 @@ function providerResolutionFailure(reason: null | string) {
   const detail = reason?.trim()
 
   return detail
-    ? `Connected, but Hermes still cannot resolve a usable provider. ${detail}`
-    : 'Connected, but Hermes still cannot resolve a usable provider.'
+    ? `Connected, but Rabbit still cannot resolve a usable provider. ${detail}`
+    : 'Connected, but Rabbit still cannot resolve a usable provider.'
 }
 
 /** Re-read the OAuth provider list into the onboarding cache. Exported so a
- *  flow that changes a provider's auth state outside onboarding (a free-tier
- *  sign-in) can keep the cached rows honest instead of leaving the picker
- *  describing the previous identity. */
+ *  flow that changes a provider's auth state outside onboarding can keep the
+ *  cached rows honest instead of leaving the picker describing the previous
+ *  identity. */
 export async function refreshOnboardingProviders() {
   await refreshProviders()
 }
@@ -561,11 +520,10 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
-  // Not during the guided first launch. The free tier carries inference
-  // there, and a credential probe that fires anyway (a free-tier token mid
-  // refresh, a setup-profile session before its runtime settles) would drop
-  // the provider picker over the guide the user is in the middle of. Sign-in
-  // is offered where the guide chooses to, on its own ready screen.
+  // Not during the guided first launch: a credential probe that fires while
+  // the guide is up (a setup-profile session before its runtime settles)
+  // would drop the provider picker over the conversation the user is in the
+  // middle of.
   if (guidedOnboardingActive()) {
     return
   }
@@ -624,8 +582,6 @@ export function startManualOnboarding(
     providers: null,
     requested: true,
     localEndpoint: false,
-    // The picker replaces the free-tier ready screen when the user asked for it.
-    freeTierReady: false,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
@@ -693,7 +649,6 @@ export function closeManualOnboarding() {
     manual: false,
     requested: false,
     localEndpoint: false,
-    freeTierReady: false,
     flow: { status: 'idle' }
   })
 }
@@ -723,7 +678,6 @@ export function completeDesktopOnboarding(connected = false) {
     firstRunSkipped: connected ? false : readCachedSkipped(),
     manual: false,
     localEndpoint: false,
-    freeTierReady: false
   })
 }
 
@@ -741,7 +695,6 @@ export function dismissFirstRunOnboarding() {
     requested: false,
     manual: false,
     localEndpoint: false,
-    freeTierReady: false,
     flow: { status: 'idle' }
   })
 }
@@ -778,7 +731,6 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
 
   if (runtime.ready) {
     completeDesktopOnboarding()
-    await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()
 
     return true
@@ -800,7 +752,7 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
         kind: 'info',
         title: 'Runtime not ready',
         message:
-          'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+          'Rabbit Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
       })
     }
 
@@ -829,57 +781,15 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
   return false
 }
 
-/**
- * Ask the backend whether the one-time free-tier introduction is still owed,
- * and if so which shape it takes. Pull-based on purpose: the flag lives on the
- * identity, so a second window (or a reinstall against the same home) shows the
- * intro exactly once between them.
- *
- * The runtime check's route flag picks the shape. When the free tier is the
- * route inference runs on, the overlay stays up on a ready screen — this is
- * their first launch and they have nothing else. When a provider of their own
- * carries inference, the overlay is not warranted: the composer strip (keyed on
- * the same notice flag) offers the free models without interrupting.
- */
-async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
-  setFreeTierRoute(runtime.freeTier)
-  const status = await refreshFreeTierStatus(ctx.requestGateway)
-
-  // The guided first launch IS the introduction. Raising the ready screen on
-  // top of it (a readiness round fires when the layout pick assembles the
-  // window) covered the guide mid-conversation, and dismissing it remounted
-  // the card the user had just answered. The guide acks the notice itself
-  // when it hands off.
-  if (guidedOnboardingActive()) {
-    return
-  }
-
-  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
-    patch({ freeTierReady: true })
-  }
-}
-
-/** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
- *  user has seen it. Returns whether the backend recorded it: on a failed write
- *  the ready screen stays up, because the flag it is keyed on is still pending. */
-export async function ackFreeTierIntro(ctx: OnboardingContext): Promise<boolean> {
-  return ackFreeTierNotice(ctx.requestGateway)
-}
-
-/** Take the ready screen down. Separate from the ack because the overlay plays
- *  its exit BEFORE unmounting — clearing the flag up front would cut the fade. */
-export function clearFreeTierIntro() {
-  patch({ freeTierReady: false })
-}
 
 // Open a sign-in URL via the desktop bridge, falling back to window.open
 // when the bridge isn't present (e.g. the web dashboard / dev preview) so
 // the flow never silently stalls in a waiting state. Mirrors the pattern in
 // apps/desktop/src/app/artifacts/index.tsx.
 async function openSignInUrl(url: string) {
-  if (window.hermesDesktop?.openExternal) {
+  if (window.rabbitDesktop?.openExternal) {
     try {
-      await window.hermesDesktop.openExternal(url)
+      await window.rabbitDesktop.openExternal(url)
 
       return
     } catch {
@@ -1105,7 +1015,7 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
       provider,
       message:
         reason?.trim() ||
-        `Hermes still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
+        `Rabbit still cannot reach ${provider.name}. Run \`${provider.cli_command}\` in a terminal first.`
     })
   )
 }
@@ -1290,7 +1200,7 @@ export async function saveOnboardingLocalEndpoint(
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${resolvedUrl}.` }
+      return { ok: false, message: detail || `Saved, but Rabbit still cannot reach ${resolvedUrl}.` }
     }
 
     notifyReady('Local / custom endpoint')

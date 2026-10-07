@@ -174,7 +174,7 @@ def _install_fakes(
     cleanup_platform: Platform = Platform.TELEGRAM,
 ):
     """Wire up the module stubs every _run_agent test needs."""
-    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    monkeypatch.setenv("RABBIT_TOOL_PROGRESS_MODE", "all")
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *a, **k: None
@@ -221,7 +221,7 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
     gateway_run = _install_fakes(
         monkeypatch, CheckpointCaptureAgent, cleanup_on=False,
     )
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
@@ -259,7 +259,7 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
     session_key = "agent:main:telegram:group:-1001"

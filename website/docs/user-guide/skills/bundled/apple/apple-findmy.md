@@ -17,7 +17,6 @@ Track Apple devices/AirTags via FindMy.app on macOS.
 | Source | Bundled (installed by default) |
 | Path | `skills/apple/findmy` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
 | License | MIT |
 | Platforms | macos |
 | Tags | `FindMy`, `AirTag`, `location`, `tracking`, `macOS`, `Apple` |
@@ -25,7 +24,7 @@ Track Apple devices/AirTags via FindMy.app on macOS.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Find My (Apple)
@@ -61,12 +60,12 @@ osascript -e 'tell application "FindMy" to activate'
 sleep 3
 
 # Take a screenshot of the Find My window
-screencapture -w -o ~/.hermes/cache/scratch/findmy.png
+screencapture -w -o ~/.rabbit/cache/scratch/findmy.png
 ```
 
 Then use `vision_analyze` to read the screenshot:
 ```
-vision_analyze(image_url="~/.hermes/cache/scratch/findmy.png", question="What devices/items are shown and what are their locations?")
+vision_analyze(image_url="~/.rabbit/cache/scratch/findmy.png", question="What devices/items are shown and what are their locations?")
 ```
 
 ### Switch Between Tabs
@@ -99,18 +98,18 @@ osascript -e 'tell application "FindMy" to activate'
 sleep 3
 
 # Capture and annotate the UI
-peekaboo see --app "FindMy" --annotate --path ~/.hermes/cache/scratch/findmy-ui.png
+peekaboo see --app "FindMy" --annotate --path ~/.rabbit/cache/scratch/findmy-ui.png
 
 # Click on a specific device/item by element ID
 peekaboo click --on B3 --app "FindMy"
 
 # Capture the detail view
-peekaboo image --app "FindMy" --path ~/.hermes/cache/scratch/findmy-detail.png
+peekaboo image --app "FindMy" --path ~/.rabbit/cache/scratch/findmy-detail.png
 ```
 
 Then analyze with vision:
 ```
-vision_analyze(image_url="~/.hermes/cache/scratch/findmy-detail.png", question="What is the location shown for this device/item? Include address and coordinates if visible.")
+vision_analyze(image_url="~/.rabbit/cache/scratch/findmy-detail.png", question="What is the location shown for this device/item? Include address and coordinates if visible.")
 ```
 
 ## Workflow: Track AirTag Location Over Time
@@ -126,7 +125,7 @@ sleep 3
 
 # 3. Periodically capture location
 while true; do
-    screencapture -w -o ~/.hermes/cache/scratch/findmy-$(date +%H%M%S).png
+    screencapture -w -o ~/.rabbit/cache/scratch/findmy-$(date +%H%M%S).png
     sleep 300  # Every 5 minutes
 done
 ```

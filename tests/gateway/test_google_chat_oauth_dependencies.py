@@ -59,7 +59,7 @@ def test_ensure_deps_surfaces_install_reason(monkeypatch):
 
 
 def test_ensure_deps_requests_every_extra_before_reporting_a_restart(monkeypatch):
-    """A successful install of the FIRST extra raises InstallError("restart Hermes…"); stopping
+    """A successful install of the FIRST extra raises InstallError("restart Rabbit…"); stopping
     there left the second extra uninstalled, so the restart landed right back here. Both are
     requested in one pass and the first failure is what the registry sees."""
     from plugins.platforms.google_chat import adapter
@@ -69,7 +69,7 @@ def test_ensure_deps_requests_every_extra_before_reporting_a_restart(monkeypatch
 
     def installs_then_needs_restart(extra):
         requested.append(extra)
-        raise pm.InstallError("venv", f"{extra} installed; restart Hermes to activate the new dependency environment")
+        raise pm.InstallError("venv", f"{extra} installed; restart Rabbit to activate the new dependency environment")
 
     monkeypatch.setattr(pm, "ensure_import", installs_then_needs_restart)
     with pytest.raises(pm.InstallError, match="google installed"):

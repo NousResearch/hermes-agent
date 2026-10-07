@@ -22,8 +22,8 @@ def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypa
     home = tmp_path / "custom-home"
     sibling = home / "profiles" / "work"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(sibling))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("RABBIT_HOME", str(sibling))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "runtime"))
     core = tmp_path / "core"
     core.mkdir()
     wheels = tmp_path / "wheels"
@@ -48,7 +48,7 @@ def test_declaration_policy_survives_cross_profile_resolution(tmp_path, monkeypa
         '[project]\nname="sidecar"\nversion="1"\ndependencies=["impossible==99"]\n',
         encoding="utf-8",
     )
-    specs = ['fixturedep>=1,<2', 'hermes-agent>=0.1,<1',
+    specs = ['fixturedep>=1,<2', 'rabbit-agent>=0.1,<1',
              'remote @ https://example.invalid/unreviewed.whl',
              'missing-other-python; python_version < "3.0"']
     (plugin / "plugin.yaml").write_text(

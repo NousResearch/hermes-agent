@@ -1,13 +1,13 @@
 """A rate-limited implementer run must stay a neutral, once-billed requeue — and must not strand the
 card's later review handoff (#119070).
 
-Real processes end to end: every tick is a real ``hermes kanban dispatch`` process, every worker a
-real ``hermes chat -q`` process spawned by it, talking to the recording fake provider (the only
+Real processes end to end: every tick is a real ``rabbit kanban dispatch`` process, every worker a
+real ``rabbit chat -q`` process spawned by it, talking to the recording fake provider (the only
 fake — it stands in for the vendor HTTP API). The fake plays two roles, told apart structurally:
 the scratch home carries its own ``sdlc-review`` skill whose body holds a unique marker, and the
 review lane preloads that skill into the worker it spawns, so only a reviewer's prompt carries it.
 
-Flow under test (``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS=0``, ``agent.api_max_retries: 1``):
+Flow under test (``RABBIT_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS=0``, ``agent.api_max_retries: 1``):
 
 1. tick: implementer spawned; the provider answers HTTP 429; the worker exits 75.
 2. tick: the dead worker is reaped as ``rate_limited`` (no failure tick) and respawned; the retry
@@ -64,7 +64,7 @@ class ReviewerNeverSpawned(AssertionError):
 
 
 def _seed_review_skill(board: Board) -> None:
-    skill = board.hermes_home / "skills" / "devops" / REVIEW_SKILL
+    skill = board.rabbit_home / "skills" / "devops" / REVIEW_SKILL
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text(
         f"---\nname: {REVIEW_SKILL}\ndescription: Review Kanban handoffs (e2e stand-in).\n---\n\n"

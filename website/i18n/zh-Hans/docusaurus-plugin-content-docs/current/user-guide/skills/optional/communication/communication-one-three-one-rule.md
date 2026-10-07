@@ -14,7 +14,7 @@ description: "技术提案与权衡分析的结构化决策框架"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/communication/one-three-one-rule` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/communication/one-three-one-rule` 安装 |
 | 路径 | `optional-skills/communication/one-three-one-rule` |
 | 版本 | `1.0.0` |
 | 作者 | Willard Moore |
@@ -25,7 +25,7 @@ description: "技术提案与权衡分析的结构化决策框架"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发本 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发本 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # 1-3-1 沟通规则

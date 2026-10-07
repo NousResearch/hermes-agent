@@ -29,7 +29,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         {"name": name, "content": payloads[name]}, tmp_path / name, name,
     ))
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {})
+    monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: {})
     source = SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="user", user_name="Example")
     event = MessageEvent(text=question, source=source, auto_skill=skills,
                          channel_context="[Discord channel context: synthetic metadata]")
@@ -59,7 +59,7 @@ async def test_gateway_titles_original_request_without_changing_model_input(tmp_
         raise exc
     runner._hmwa_agent_error_reply = propagate_error
 
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     db = SessionDB(tmp_path / "state.db")
     agent = AIAgent(session_db=db, model="test-model", api_key="test-key", base_url="http://127.0.0.1:1/v1",
                     platform="discord", session_id=entry.session_id, enabled_toolsets=[],

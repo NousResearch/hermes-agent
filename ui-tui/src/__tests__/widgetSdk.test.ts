@@ -53,7 +53,7 @@ describe('widget SDK host', () => {
   it('a widget that throws in render shows an error chip, not a dead TUI', async () => {
     const { defineWidgetApp } = await import('../sdk/registry.js')
     const { AmbientDock } = await import('../sdk/host.js')
-    const { renderToScreen } = await import('../../packages/hermes-ink/src/ink/render-to-screen.js')
+    const { renderToScreen } = await import('../../packages/rabbit-ink/src/ink/render-to-screen.js')
     const { createElement } = await import('react')
 
     defineWidgetApp({
@@ -92,7 +92,7 @@ describe('widget SDK host', () => {
 
   it('ambient zones route by the app contract (docks + floats)', async () => {
     const { defineWidgetApp } = await import('../sdk/registry.js')
-    const { Text } = await import('@hermes/ink')
+    const { Text } = await import('@rabbit/ink')
     const { createElement } = await import('react')
 
     defineWidgetApp({
@@ -119,7 +119,7 @@ describe('widget SDK host', () => {
   it('rails reserve the widest railed app; docks reserve nothing sideways', async () => {
     const { ambientRailWidth } = await import('../sdk/host.js')
     const { defineWidgetApp } = await import('../sdk/registry.js')
-    const { Text } = await import('@hermes/ink')
+    const { Text } = await import('@rabbit/ink')
     const { createElement } = await import('react')
 
     defineWidgetApp({

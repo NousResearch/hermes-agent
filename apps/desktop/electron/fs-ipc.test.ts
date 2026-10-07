@@ -1,5 +1,5 @@
 /**
- * `hermes:fs:reveal` answers what it did (#115167). `shell.showItemInFolder`
+ * `rabbit:fs:reveal` answers what it did (#115167). `shell.showItemInFolder`
  * selects an existing item and silently no-ops on a missing one, and a remote
  * backend's paths are missing on this computer by construction — a `true` for
  * them left the renderer nothing to say.
@@ -35,10 +35,10 @@ vi.mock('./desktop-plugins-root', () => ({
 
 import { registerFsIpc } from './fs-ipc'
 
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-ipc-'))
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-fs-ipc-'))
 
 registerFsIpc({
-  hermesHome: scratch,
+  rabbitHome: scratch,
   readActiveDesktopProfile: () => 'launch-profile',
   // `~/` resolves under the scratch dir so tilde paths can be exercised.
   expandUserPath: value => (value.startsWith('~/') ? path.join(scratch, value.slice(2)) : value),
@@ -47,13 +47,13 @@ registerFsIpc({
   resolveGitBinary: () => 'git'
 })
 
-const reveal = (target: string) => electron.handlers.get('hermes:fs:reveal')!({}, target)
+const reveal = (target: string) => electron.handlers.get('rabbit:fs:reveal')!({}, target)
 
 afterEach(() => {
   electron.showItemInFolder.mockClear()
 })
 
-describe('hermes:fs:reveal', () => {
+describe('rabbit:fs:reveal', () => {
   it('reveals a path that exists on this computer', async () => {
     const file = path.join(scratch, 'workspace')
     fs.mkdirSync(file)
@@ -84,8 +84,8 @@ describe('hermes:fs:reveal', () => {
 // A pooled backend serves several profile homes; the active Desktop profile
 // is the LAUNCH one, so the error card names the profile owning the failing
 // session and the root resolves under THAT home (#119080).
-describe('hermes:fs:logsRoot', () => {
-  const logsRoot = (profile?: string) => electron.handlers.get('hermes:fs:logsRoot')!({}, profile)
+describe('rabbit:fs:logsRoot', () => {
+  const logsRoot = (profile?: string) => electron.handlers.get('rabbit:fs:logsRoot')!({}, profile)
 
   it('resolves the logs dir of the profile that owns the session', async () => {
     await expect(logsRoot('finex')).resolves.toBe(path.join(scratch, 'profiles', 'finex', 'logs'))
@@ -97,9 +97,9 @@ describe('hermes:fs:logsRoot', () => {
   })
 
   // The owner is renderer data (from a remote backend in remote mode): a
-  // traversal or absolute value must never leave hermesHome, let alone be
+  // traversal or absolute value must never leave rabbitHome, let alone be
   // created and revealed. Bad names route like an unnamed owner.
-  it('never leaves hermesHome for an owner that is not a profile name', async () => {
+  it('never leaves rabbitHome for an owner that is not a profile name', async () => {
     for (const bad of ['../../x', '/etc', 'a/b', 'Upper', '.hidden']) {
       const root = (await logsRoot(bad)) as string
 

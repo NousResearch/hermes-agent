@@ -1,12 +1,12 @@
 """Anthropic route plumbing: model discovery endpoint and OAuth wire tool-name aliases.
 
 * Discovery: with a custom Anthropic-protocol endpoint configured (``ANTHROPIC_BASE_URL``
-  or ``model.base_url``), the picker catalog (``provider_model_ids``, behind ``hermes model``,
+  or ``model.base_url``), the picker catalog (``provider_model_ids``, behind ``rabbit model``,
   ``/model``, the dashboard and Desktop pickers) must come from THAT endpoint's
   ``/v1/models`` — asserted by the fake seeing the GET and its relay-only id in the result.
-* OAuth wire aliases: on the Claude subscription route Hermes renames tools on the wire
+* OAuth wire aliases: on the Claude subscription route Rabbit renames tools on the wire
   (``mcp__`` prefix, ``memory`` -> ``context_notes``, ``session_search`` ->
-  ``chat_history_lookup``). A real ``hermes -z`` turn must map every wire name the model
+  ``chat_history_lookup``). A real ``rabbit -z`` turn must map every wire name the model
   may use back to the real tool, including names passed as tool-search arguments.
 """
 
@@ -62,10 +62,10 @@ def rig(tmp_path: Path):
         r.stop()
 
 
-# The CLI's own startup sequence (load ~/.hermes/.env), then the picker entry point.
+# The CLI's own startup sequence (load ~/.rabbit/.env), then the picker entry point.
 _DISCOVERY_PROBE = (
-    "import json; from hermes_cli.env_loader import load_hermes_dotenv; load_hermes_dotenv(); "
-    "from hermes_cli.models import provider_model_ids; "
+    "import json; from rabbit_cli.env_loader import load_rabbit_dotenv; load_rabbit_dotenv(); "
+    "from rabbit_cli.models import provider_model_ids; "
     "print('IDS=' + json.dumps(list(provider_model_ids('anthropic', force_refresh=True))))"
 )
 
@@ -113,7 +113,7 @@ def test_model_discovery_probes_the_configured_anthropic_endpoint(rig, via: str)
 
 def _oauth_rig(rig, script) -> Rig:
     r = rig(script)
-    (r.hermes_home / ".env").write_text(f"ANTHROPIC_TOKEN={OAUTH_TOKEN}\n", encoding="utf-8")
+    (r.rabbit_home / ".env").write_text(f"ANTHROPIC_TOKEN={OAUTH_TOKEN}\n", encoding="utf-8")
     return r
 
 
@@ -146,7 +146,7 @@ def test_oauth_wire_names_map_back_to_real_tools(rig) -> None:
     assert not {"memory", "session_search", "read_file"} & wire_names, "real names leaked onto the OAuth wire"
     results = _tool_results(mains[1]["body"])
     assert any("WIRE-FILE-CONTENT-93" in res for res in results), results
-    memory_md = r.hermes_home / "memories" / "MEMORY.md"
+    memory_md = r.rabbit_home / "memories" / "MEMORY.md"
     assert memory_md.exists() and note in memory_md.read_text(encoding="utf-8"), (
         f"aliased context_notes call did not reach the memory tool: {results}")
     assert not r.srv.schema_errors(), r.srv.schema_errors()

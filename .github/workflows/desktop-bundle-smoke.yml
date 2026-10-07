@@ -115,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$SMOKE_ROOT/out"
-          product=HermesBundled
+          product=RabbitBundled
           if [ -n "${CHANNEL_BUILD:-}" ]; then
             test "$COMMIT_BUILD" = false
             test -z "$RELEASE_TAG"

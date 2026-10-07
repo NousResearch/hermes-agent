@@ -5,7 +5,7 @@ provider registry, model catalog, and runtime resolution pipeline.
 These tests do NOT require AWS credentials or boto3 — all AWS calls
 are mocked.
 
-Note: Tests that import ``hermes_cli.auth`` or ``hermes_cli.runtime_provider``
+Note: Tests that import ``rabbit_cli.auth`` or ``rabbit_cli.runtime_provider``
 require Python 3.10+ due to ``str | None`` type syntax in the import chain.
 """
 
@@ -55,7 +55,7 @@ class TestModelCatalog:
     """Verify Bedrock has a static model fallback list."""
 
     def test_bedrock_has_curated_models(self):
-        from hermes_cli.models import _PROVIDER_MODELS
+        from rabbit_cli.models import _PROVIDER_MODELS
         models = _PROVIDER_MODELS.get("bedrock", [])
         assert len(models) > 0
 
@@ -68,12 +68,12 @@ class TestResolveProvider:
     def test_explicit_bedrock_resolves(self, monkeypatch):
         """When user explicitly requests 'bedrock', it should resolve."""
         # bedrock is in the registry, so resolve_provider should return it
-        from hermes_cli.auth import resolve_provider
+        from rabbit_cli.auth import resolve_provider
         result = resolve_provider("bedrock")
         assert result == "bedrock"
 
     def test_aws_alias_resolves_to_bedrock(self):
-        from hermes_cli.auth import resolve_provider
+        from rabbit_cli.auth import resolve_provider
         result = resolve_provider("aws")
         assert result == "bedrock"
 
@@ -81,7 +81,7 @@ class TestResolveProvider:
     def test_auto_detect_with_aws_credentials(self, monkeypatch):
         """When AWS credentials are present and no other provider is configured,
         auto-detect should find bedrock."""
-        from hermes_cli.auth import resolve_provider
+        from rabbit_cli.auth import resolve_provider
 
         # Clear all other provider env vars
         for var in ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY",
@@ -92,11 +92,8 @@ class TestResolveProvider:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 
-        # The Nous free tier counts as a configured provider and sits above the Bedrock chain
-        # (NS-829); this test's contract is the chain itself, so switch the free tier off.
-        monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: False)
         # Mock the auth store to have no active provider
-        with patch("hermes_cli.auth._load_auth_store", return_value={}):
+        with patch("rabbit_cli.auth._load_auth_store", return_value={}):
             result = resolve_provider("auto")
         assert result == "bedrock"
 
@@ -109,8 +106,8 @@ class TestRuntimeProvider:
     def test_bedrock_runtime_no_credentials_raises_on_auto_detect(self, monkeypatch):
         """When bedrock is auto-detected (not explicitly requested) and no
         credentials are found, runtime resolution should raise AuthError."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import AuthError
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.auth import AuthError
 
         # Clear all AWS env vars
         for var in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE",
@@ -121,9 +118,9 @@ class TestRuntimeProvider:
         # Mock both the provider resolution and boto3's credential chain
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
-        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
-             patch("hermes_cli.runtime_provider._get_model_config", return_value={"provider": "bedrock"}), \
-             patch("hermes_cli.runtime_provider.resolve_requested_provider", return_value="auto"), \
+        with patch("rabbit_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("rabbit_cli.runtime_provider._get_model_config", return_value={"provider": "bedrock"}), \
+             patch("rabbit_cli.runtime_provider.resolve_requested_provider", return_value="auto"), \
              patch.dict("sys.modules", {"botocore": MagicMock(), "botocore.session": MagicMock()}):
             import botocore.session as _bs
             _bs.get_session = MagicMock(return_value=mock_session)
@@ -133,15 +130,15 @@ class TestRuntimeProvider:
     def test_bedrock_runtime_explicit_skips_credential_check(self, monkeypatch):
         """When user explicitly requests bedrock, trust boto3's credential chain
         even if env-var detection finds nothing (covers IMDS, SSO, etc.)."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
 
         # No AWS env vars set — but explicit bedrock request should not raise
         for var in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE",
                      "AWS_BEARER_TOKEN_BEDROCK"]:
             monkeypatch.delenv(var, raising=False)
 
-        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
-             patch("hermes_cli.runtime_provider._get_model_config", return_value={"provider": "bedrock"}):
+        with patch("rabbit_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("rabbit_cli.runtime_provider._get_model_config", return_value={"provider": "bedrock"}):
             result = resolve_runtime_provider(requested="bedrock")
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
@@ -151,7 +148,7 @@ class TestRuntimeProvider:
         models — they only answer on the Mantle /openai/v1 Responses surface.
         Every allowlisted ID must route there, with the aws-sdk IAM sentinel."""
         from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
 
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
@@ -160,8 +157,8 @@ class TestRuntimeProvider:
         assert BEDROCK_OPENAI_RESPONSES_MODEL_IDS
 
         for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
-            with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
-                 patch("hermes_cli.runtime_provider._get_model_config", return_value={
+            with patch("rabbit_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                 patch("rabbit_cli.runtime_provider._get_model_config", return_value={
                      "provider": "bedrock",
                      "default": model_id,
                  }):
@@ -190,12 +187,12 @@ class TestRuntimeProvider:
 # ---------------------------------------------------------------------------
 
 class TestProvidersModule:
-    """Verify bedrock is wired into hermes_cli/providers.py."""
+    """Verify bedrock is wired into rabbit_cli/providers.py."""
 
 
 
     def test_determine_api_mode_from_bedrock_url(self):
-        from hermes_cli.providers import determine_api_mode
+        from rabbit_cli.providers import determine_api_mode
         assert determine_api_mode(
             "unknown", "https://bedrock-runtime.us-east-1.amazonaws.com"
         ) == "bedrock_converse"
@@ -248,7 +245,7 @@ class TestPackaging:
 
     def test_bedrock_is_not_eager_installed_by_all_extra(self):
         extras = self._optional_dependencies()
-        assert "hermes-agent[bedrock]" not in extras["all"]
+        assert "rabbit-agent[bedrock]" not in extras["all"]
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +474,7 @@ class TestAuxiliaryClientBedrockResolution:
             def close(self):
                 pass
 
-        with patch("hermes_cli.config.load_config_readonly",
+        with patch("rabbit_cli.config.load_config_readonly",
                    return_value={"bedrock": {"region": "us-west-2"}}), \
              patch("agent.auxiliary_client.OpenAI", _FakeOpenAI):
             from agent.auxiliary_client import resolve_provider_client

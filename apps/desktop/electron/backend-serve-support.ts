@@ -15,19 +15,19 @@ interface ServeCandidate {
 }
 
 // Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`, so
+// spawns `rabbit serve`; runtimes older than serve only have `dashboard`, so
 // main.ts routes those through the legacy `dashboard --no-open` form instead
 // of crashing on an unknown subcommand.
 //
 // Fast path: read the runtime's own dashboard.py (instant, covers managed
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `hermes` resolved from PATH with no known source root). Result
+// (covers a bare `rabbit` resolved from PATH with no known source root). Result
 // is cached per resolved runtime so we probe at most once per backend — except
 // a probe that failed by timeout, which is evicted so the next start re-probes
 // rather than pinning a cold-AV false negative for the process lifetime.
 //
 // One cache per desktop runtime context; source inspection precedes a CLI probe.
-export function createBackendServeSupportResolver(hermesHome: string, rememberLog: (message: string) => void) {
+export function createBackendServeSupportResolver(rabbitHome: string, rememberLog: (message: string) => void) {
   const cache = new Map<string, Promise<boolean>>()
 
   return async function backendSupportsServe(backend: ServeCandidate): Promise<boolean> {
@@ -47,7 +47,7 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
       if (backend.root) {
         try {
           const src = await fs.promises.readFile(
-            path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
+            path.join(backend.root, 'rabbit_cli', 'subcommands', 'dashboard.py'),
             'utf8'
           )
 
@@ -62,7 +62,7 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
           const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
           // Same cold-Windows Python-startup class as the runtime probes
           // (#61764/#72632/#72707): `serve --help` imports at least as much as
-          // `hermes --version` (~10.5s measured cold), and a false negative here
+          // `rabbit --version` (~10.5s measured cold), and a false negative here
           // is cached for the process lifetime, silently routing a modern
           // runtime through the legacy `dashboard` form. Share the probe budget
           // and its timeout-only retry instead of a thinner local bound.
@@ -71,11 +71,11 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
             [...prefix, 'serve', '--help'],
             {
               cwd: backend.root || undefined,
-              env: { ...process.env, HERMES_HOME: hermesHome, ...(backend.env || {}) },
+              env: { ...process.env, RABBIT_HOME: rabbitHome, ...(backend.env || {}) },
               timeout: PROBE_TIMEOUT_MS,
               stdio: 'ignore',
               // `.cmd`/`.bat` shim backends carry shell: true in their descriptor
-              // (see resolveHermesBackend step 4); execFileSync of a .cmd without
+              // (see resolveRabbitBackend step 4); execFileSync of a .cmd without
               // shell throws EINVAL on modern Node, which the catch below would
               // mis-cache as "serve unsupported" for the process lifetime.
               shell: Boolean(backend.shell),

@@ -3,7 +3,7 @@
 // this tells you the cause.
 //
 // Drives the same synthetic pipeline as `multitab` — publishSessionState per
-// session per flush via `__HERMES_SESSION_TILES__`, no backend, no credits —
+// session per flush via `__RABBIT_SESSION_TILES__`, no backend, no credits —
 // then reads the dev-only counters installed by `src/debug/`:
 //
 //   window.__RENDER_COUNTS__  — per-component renders, attributed to
@@ -38,7 +38,7 @@ const SIDEBAR_COMPONENTS = [
  *  Mirrors `multitab.mjs` so the two scenarios measure the same workload. */
 const setup = (tiles, seedTurns) => `
   (() => {
-    const hook = window.__HERMES_SESSION_TILES__
+    const hook = window.__RABBIT_SESSION_TILES__
     if (!hook) return 'no-hook'
     if (!window.__RENDER_COUNTS__) return 'no-render-counter'
     if (!window.__ATOM_CHURN__) return 'no-atom-churn'
@@ -77,13 +77,13 @@ const setup = (tiles, seedTurns) => `
   })()
 `
 
-const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
+const reveal = sid => `window.__RABBIT_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Grow every tile's streaming tail by `chunk` each `intervalMs`, through the
  *  same publish path the gateway's delta flush uses. */
 const drive = (chunk, intervalMs, totalTokens) => `
   (() => {
-    const hook = window.__HERMES_SESSION_TILES__
+    const hook = window.__RABBIT_SESSION_TILES__
     let pushed = 0
     const tick = () => {
       const states = hook.states()
@@ -169,9 +169,9 @@ const CLEANUP = `
     if (window.__RC__) {
       clearTimeout(window.__RC__.timer)
       for (const { sid, rid } of window.__RC__.ids) {
-        const states = window.__HERMES_SESSION_TILES__.states()
-        window.__HERMES_SESSION_TILES__.publish(rid, { ...states[rid], busy: false, streamId: null })
-        window.__HERMES_SESSION_TILES__.close(sid)
+        const states = window.__RABBIT_SESSION_TILES__.states()
+        window.__RABBIT_SESSION_TILES__.publish(rid, { ...states[rid], busy: false, streamId: null })
+        window.__RABBIT_SESSION_TILES__.close(sid)
       }
       window.__RC__ = null
     }

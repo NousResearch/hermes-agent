@@ -19,7 +19,7 @@ from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
 from typing import Any, Callable
 
-from hermes_cli.active_sessions import _FileLock
+from rabbit_cli.active_sessions import _FileLock
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
 def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     """Return the exact Bot Chat tip's lease, including unsupported CLI owners."""
-    from hermes_cli.active_sessions import active_session_registry_snapshot
-    from hermes_state import SessionDB
+    from rabbit_cli.active_sessions import active_session_registry_snapshot
+    from rabbit_state import SessionDB
 
     home = Path(profile_home).resolve()
     if not (home / "state.db").is_file():
@@ -231,7 +231,7 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
         return False
     if pinned["session_id"] == owner["session_id"]:
         return True
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=Path(home) / "state.db", read_only=True)
     try:
@@ -333,7 +333,7 @@ def await_delivery(
     """Poll a receipt until the owner settles it, ``timeout`` lapses, or ``should_stop`` says so.
 
     Every transport that hands a turn to a live Bot Chat owner (local ``message_agent``, the
-    Desktop relay, ``hermes peer dm`` and ``hermes peer run``) waits on the same receipt; keeping
+    Desktop relay, ``rabbit peer dm`` and ``rabbit peer run``) waits on the same receipt; keeping
     the loop here is what stops the lanes drifting (one lane returned a receipt sentence instead
     of the reply, two never waited at all). Returns the last record read — still pending when the
     budget lapsed, None when the receipt was never readable.

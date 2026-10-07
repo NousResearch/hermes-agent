@@ -22,7 +22,7 @@ import {
   setSessions
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { handleSessionInfoEvent } from '../use-message-stream/gateway-event/session-info'
 import { useSessionStateCache } from '../use-session-state-cache'
@@ -472,7 +472,7 @@ it.each(rebuiltRuntimeCases)(
           finalizeInterimAssistantMessage: vi.fn(),
           hydrateFromStoredSession: vi.fn(async () => undefined),
           queryClient: new QueryClient(),
-          refreshHermesConfig: vi.fn(async () => undefined),
+          refreshRabbitConfig: vi.fn(async () => undefined),
           scheduleSessionsRefresh: vi.fn(),
           sessionInterrupted: () => false,
           upsertToolCall: vi.fn()

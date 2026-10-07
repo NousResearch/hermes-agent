@@ -9,9 +9,9 @@ import { AGENT_MESSAGE_RE } from './user-message'
 // all match; human prose that merely mentions the phrase does not.
 describe('agent message detection', () => {
   it('matches the Bot Mode delivery prefix with sender and body', () => {
-    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 Hermes: hello there')
+    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 Rabbit: hello there')
 
-    expect(m?.[1]?.trim()).toBe('Hermes')
+    expect(m?.[1]?.trim()).toBe('Rabbit')
     expect(m?.[4]).toBe('hello there')
   })
 
@@ -24,12 +24,12 @@ describe('agent message detection', () => {
   })
 
   it('recognizes a relayed sender re-stamped @handle@connection, keeping the bare handle for the avatar', () => {
-    // The receiving gateway re-stamps a relayed "@hermes" as "@hermes@<connection>"
+    // The receiving gateway re-stamps a relayed "@rabbit" as "@rabbit@<connection>"
     // (#103731) — still an agent notice, and the avatar resolves by profile handle.
-    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 hermes (@hermes@Cloud-1): status?')
+    const m = AGENT_MESSAGE_RE.exec('Message from 🤖 rabbit (@rabbit@Cloud-1): status?')
 
-    expect(m?.[1]?.trim()).toBe('hermes')
-    expect(m?.[2]).toBe('hermes')
+    expect(m?.[1]?.trim()).toBe('rabbit')
+    expect(m?.[2]).toBe('rabbit')
     expect(m?.[4]).toBe('status?')
   })
 
@@ -54,7 +54,7 @@ describe('agent message detection', () => {
   })
 
   it('does not match prose that merely contains the phrase', () => {
-    expect(AGENT_MESSAGE_RE.test('I got a Message from 🤖 Hermes: earlier')).toBe(false)
+    expect(AGENT_MESSAGE_RE.test('I got a Message from 🤖 Rabbit: earlier')).toBe(false)
     expect(AGENT_MESSAGE_RE.test('can you explain what Message from means?')).toBe(false)
   })
 })

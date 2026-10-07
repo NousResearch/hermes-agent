@@ -1,6 +1,6 @@
 """Anthropic OAuth access token expires mid-turn: one refresh, the turn completes, the rotation persists.
 
-Real ``hermes -z`` process, native ``anthropic`` provider on the OAuth route
+Real ``rabbit -z`` process, native ``anthropic`` provider on the OAuth route
 (``sk-ant-oat…`` pool credential), inference against the SDK-oracle loopback
 Messages endpoint (accepted base-URL override ``http://127.0.0.1:<port>/anthropic``),
 and the vendor token endpoint (hardcoded ``https://platform.claude.com``)
@@ -33,7 +33,7 @@ from tests.e2e.core.providers._oauth_helpers import (
     OLD_ACCESS,
     Hold,
     credential,
-    run_hermes,
+    run_rabbit,
     start_anthropic_rig,
     text,
     tool,
@@ -112,7 +112,7 @@ def _run_turn(tmp_path, *, aux_401: bool, clock_expired: bool):
         rig.tokens.before_refresh_response = slow_token_endpoint
         threading.Thread(target=settle, daemon=True).start()
     try:
-        proc = run_hermes(rig.fh, ["-z", "Read the note file and report."], extra_env=rig.child_env, timeout=150)
+        proc = run_rabbit(rig.fh, ["-z", "Read the note file and report."], extra_env=rig.child_env, timeout=150)
     finally:
         for ev in (aux_sent, refresh_in_flight, aux_answered, aux_settled):
             ev.set()

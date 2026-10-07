@@ -6,14 +6,14 @@ description: "在关键生命周期节点运行自定义代码——记录活动
 
 # Event Hooks
 
-Hermes 有四套 hook 系统，可在关键生命周期节点运行自定义代码：
+Rabbit 有四套 hook 系统，可在关键生命周期节点运行自定义代码：
 
 | 系统 | 注册方式 | 运行环境 | 使用场景 |
 |------|---------|---------|---------|
-| **[Gateway hooks](#gateway-event-hooks)** | `~/.hermes/hooks/` 下的 `HOOK.yaml` + `handler.py` | 仅 Gateway | 日志、告警、webhook |
+| **[Gateway hooks](#gateway-event-hooks)** | `~/.rabbit/hooks/` 下的 `HOOK.yaml` + `handler.py` | 仅 Gateway | 日志、告警、webhook |
 | **[Plugin hooks](#plugin-hooks)** | [插件](./plugins.md)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
-| **[Shell hooks](#shell-hooks)** | `~/.hermes/config.yaml` 中 `hooks:` 块指向的 shell 脚本 | CLI + Gateway | 用于阻断、自动格式化、上下文注入的即插即用脚本 |
-| **[Outbound webhooks](#outbound-webhooks)** | `~/.hermes/config.yaml` 中的 `hooks.outbound:` 列表 | CLI + Gateway | 将签名后的生命周期事件推送到外部 HTTP endpoint |
+| **[Shell hooks](#shell-hooks)** | `~/.rabbit/config.yaml` 中 `hooks:` 块指向的 shell 脚本 | CLI + Gateway | 用于阻断、自动格式化、上下文注入的即插即用脚本 |
+| **[Outbound webhooks](#outbound-webhooks)** | `~/.rabbit/config.yaml` 中的 `hooks.outbound:` 列表 | CLI + Gateway | 将签名后的生命周期事件推送到外部 HTTP endpoint |
 
 Hook 回调错误会被隔离并记录，不会导致 agent 崩溃。但 hook 并非全是被动观察者：指令/控制类 hook 可改变流程，transform 可替换内容，shell `pre_tool_call` 还能阻断或在失败时关闭执行。
 
@@ -23,10 +23,10 @@ Gateway hooks 在 gateway 运行期间（Telegram、Discord、Slack、WhatsApp�
 
 ### 创建 Hook
 
-每个 hook 是 `~/.hermes/hooks/` 下的一个目录，包含两个文件：
+每个 hook 是 `~/.rabbit/hooks/` 下的一个目录，包含两个文件：
 
 ```text
-~/.hermes/hooks/
+~/.rabbit/hooks/
 └── my-hook/
     ├── HOOK.yaml      # 声明要监听的事件
     └── handler.py     # Python 处理函数
@@ -52,7 +52,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-LOG_FILE = Path.home() / ".hermes" / "hooks" / "my-hook" / "activity.log"
+LOG_FILE = Path.home() / ".rabbit" / "hooks" / "my-hook" / "activity.log"
 
 async def handle(event_type: str, context: dict):
     """Called for each subscribed event. Must be named 'handle'."""
@@ -95,7 +95,7 @@ async def handle(event_type: str, context: dict):
 当 agent 执行超过 10 步时向自己发送消息：
 
 ```yaml
-# ~/.hermes/hooks/long-task-alert/HOOK.yaml
+# ~/.rabbit/hooks/long-task-alert/HOOK.yaml
 name: long-task-alert
 description: Alert when agent is taking many steps
 events:
@@ -103,7 +103,7 @@ events:
 ```
 
 ```python
-# ~/.hermes/hooks/long-task-alert/handler.py
+# ~/.rabbit/hooks/long-task-alert/handler.py
 import os
 import httpx
 
@@ -128,7 +128,7 @@ async def handle(event_type: str, context: dict):
 追踪哪些斜杠命令被使用：
 
 ```yaml
-# ~/.hermes/hooks/command-logger/HOOK.yaml
+# ~/.rabbit/hooks/command-logger/HOOK.yaml
 name: command-logger
 description: Log slash command usage
 events:
@@ -136,12 +136,12 @@ events:
 ```
 
 ```python
-# ~/.hermes/hooks/command-logger/handler.py
+# ~/.rabbit/hooks/command-logger/handler.py
 import json
 from datetime import datetime
 from pathlib import Path
 
-LOG = Path.home() / ".hermes" / "logs" / "command_usage.jsonl"
+LOG = Path.home() / ".rabbit" / "logs" / "command_usage.jsonl"
 
 def handle(event_type: str, context: dict):
     LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +161,7 @@ def handle(event_type: str, context: dict):
 新会话时 POST 到外部服务：
 
 ```yaml
-# ~/.hermes/hooks/session-webhook/HOOK.yaml
+# ~/.rabbit/hooks/session-webhook/HOOK.yaml
 name: session-webhook
 description: Notify external service on new sessions
 events:
@@ -170,10 +170,10 @@ events:
 ```
 
 ```python
-# ~/.hermes/hooks/session-webhook/handler.py
+# ~/.rabbit/hooks/session-webhook/handler.py
 import httpx
 
-WEBHOOK_URL = "https://your-service.example.com/hermes-events"
+WEBHOOK_URL = "https://your-service.example.com/rabbit-events"
 
 async def handle(event_type: str, context: dict):
     async with httpx.AsyncClient() as client:
@@ -185,24 +185,24 @@ async def handle(event_type: str, context: dict):
 
 ### 教程：BOOT.md——每次 Gateway 启动时运行启动检查清单
 
-这是社区中流行的一种模式：在 `~/.hermes/BOOT.md` 放置一个 Markdown 检查清单，让 agent 在每次 gateway 启动时执行一次。适用于"每次启动时检查隔夜 cron 失败情况，若有失败则在 Discord 上通知我"，或"汇总过去 24 小时的 deploy.log 并发布到 Slack #ops"等场景。
+这是社区中流行的一种模式：在 `~/.rabbit/BOOT.md` 放置一个 Markdown 检查清单，让 agent 在每次 gateway 启动时执行一次。适用于"每次启动时检查隔夜 cron 失败情况，若有失败则在 Discord 上通知我"，或"汇总过去 24 小时的 deploy.log 并发布到 Slack #ops"等场景。
 
-本教程展示如何以用户自定义 hook 的方式自行构建。Hermes 不内置 BOOT.md hook——你可以精确配置自己想要的行为。
+本教程展示如何以用户自定义 hook 的方式自行构建。Rabbit 不内置 BOOT.md hook——你可以精确配置自己想要的行为。
 
 #### 我们要构建什么
 
-1. 在 `~/.hermes/BOOT.md` 放置一个包含自然语言启动指令的文件。
+1. 在 `~/.rabbit/BOOT.md` 放置一个包含自然语言启动指令的文件。
 2. 一个监听 `gateway:startup` 的 gateway hook，它会生成一个一次性 agent，使用 gateway 已解析的模型和凭据，执行 BOOT.md 中的指令。
 3. 一个 `[SILENT]` 约定，让 agent 在没有内容需要汇报时选择不发送消息。
 
 #### 第一步：编写检查清单
 
-创建 `~/.hermes/BOOT.md`。像给人类助手下达指令一样编写：
+创建 `~/.rabbit/BOOT.md`。像给人类助手下达指令一样编写：
 
 ```markdown
 # Startup Checklist
 
-1. Run `hermes cron list` and check if any scheduled jobs failed overnight.
+1. Run `rabbit cron list` and check if any scheduled jobs failed overnight.
 2. If any failed, send a summary to Discord #ops using the `send_message` tool.
 3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same Discord message.
 4. If nothing went wrong, reply with only `[SILENT]` so no message is sent.
@@ -213,24 +213,24 @@ Agent 将此内容作为 prompt（提示词）的一部分，因此任何可以�
 #### 第二步：创建 hook
 
 ```text
-~/.hermes/hooks/boot-md/
+~/.rabbit/hooks/boot-md/
 ├── HOOK.yaml
 └── handler.py
 ```
 
-**`~/.hermes/hooks/boot-md/HOOK.yaml`**
+**`~/.rabbit/hooks/boot-md/HOOK.yaml`**
 
 ```yaml
 name: boot-md
-description: Run ~/.hermes/BOOT.md on gateway startup
+description: Run ~/.rabbit/BOOT.md on gateway startup
 events:
   - gateway:startup
 ```
 
-**`~/.hermes/hooks/boot-md/handler.py`**
+**`~/.rabbit/hooks/boot-md/handler.py`**
 
 ```python
-"""Run ~/.hermes/BOOT.md on every gateway startup."""
+"""Run ~/.rabbit/BOOT.md on every gateway startup."""
 
 import logging
 import threading
@@ -238,7 +238,7 @@ from pathlib import Path
 
 logger = logging.getLogger("hooks.boot-md")
 
-BOOT_FILE = Path.home() / ".hermes" / "BOOT.md"
+BOOT_FILE = Path.home() / ".rabbit" / "BOOT.md"
 
 
 def _build_prompt(content: str) -> str:
@@ -315,18 +315,18 @@ async def handle(event_type: str, context: dict) -> None:
 重启 gateway：
 
 ```bash
-hermes gateway restart
+rabbit gateway restart
 ```
 
 查看日志：
 
 ```bash
-hermes logs --follow --level INFO | grep boot-md
+rabbit logs --follow --level INFO | grep boot-md
 ```
 
 你应该看到 `Running BOOT.md (N chars)`，随后是 `boot-md completed: ...`（agent 执行内容的摘要）或 `boot-md completed (nothing to report)`（agent 回复了 `[SILENT]`）。
 
-删除 `~/.hermes/BOOT.md` 即可禁用检查清单——hook 保持加载状态，但在文件不存在时会静默跳过。
+删除 `~/.rabbit/BOOT.md` 即可禁用检查清单——hook 保持加载状态，但在文件不存在时会静默跳过。
 
 #### 扩展此模式
 
@@ -336,11 +336,11 @@ hermes logs --follow --level INFO | grep boot-md
 
 #### 为什么这不是内置功能
 
-Hermes 早期版本将此作为内置 hook 发布，每次 gateway 启动时都会静默生成一个使用裸默认值的 agent。这让使用自定义端点的用户感到意外，也让不知道它在运行的用户无从察觉。将其作为文档化模式保留——由你在 hooks 目录中构建——意味着你能清楚地看到它的行为，并通过编写文件来选择启用。
+Rabbit 早期版本将此作为内置 hook 发布，每次 gateway 启动时都会静默生成一个使用裸默认值的 agent。这让使用自定义端点的用户感到意外，也让不知道它在运行的用户无从察觉。将其作为文档化模式保留——由你在 hooks 目录中构建——意味着你能清楚地看到它的行为，并通过编写文件来选择启用。
 
 ### 工作原理
 
-1. Gateway 启动时，`HookRegistry.discover_and_load()` 扫描 `~/.hermes/hooks/`
+1. Gateway 启动时，`HookRegistry.discover_and_load()` 扫描 `~/.rabbit/hooks/`
 2. 每个包含 `HOOK.yaml` + `handler.py` 的子目录都会被动态加载
 3. 处理器按其声明的事件注册
 4. 在每个生命周期节点，`hooks.emit()` 触发所有匹配的处理器
@@ -370,11 +370,11 @@ def register(ctx):
 - 回调异常会被记录并跳过，后续回调仍会继续。
 - 下表分类仅描述当前行为：**观察者**忽略返回值，**Transform** 接受第一个有效字符串替换，**指令/控制**消费已说明的返回结构。Plugin middleware 是独立的 registry/surface，不属于另一类 hook。
 - `turn_id`、`api_request_id`、`task_id`、`session_id`、`api_call_count` 等关联字段因 hook 而异，可能不存在；应将这些 ID 视为 opaque 值。
-- 运行时事件名以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 只列出已配置的 shell/outbound hook，并非可用事件目录；只有 `hermes hooks test <event>` 收到无效事件时才会打印有效集合。
+- 运行时事件名以 `rabbit_cli.plugins.VALID_HOOKS` 为准。`rabbit hooks list` 只列出已配置的 shell/outbound hook，并非可用事件目录；只有 `rabbit hooks test <event>` 收到无效事件时才会打印有效集合。
 
 ### 已发布的 plugin-hook 目录
 
-下表列出每个 call site 实际传入的事件专属字段。为保持向后兼容，`PluginManager` 还会向每个 plugin-hook 回调加入 `telemetry_schema_version="hermes.observer.v1"`。这个旧版 envelope 标记并不表示所有 hook payload 共用同一套语义 schema；新的版本化 contract 应归属于具体事件或 capability family。
+下表列出每个 call site 实际传入的事件专属字段。为保持向后兼容，`PluginManager` 还会向每个 plugin-hook 回调加入 `telemetry_schema_version="rabbit.observer.v1"`。这个旧版 envelope 标记并不表示所有 hook payload 共用同一套语义 schema；新的版本化 contract 应归属于具体事件或 capability family。
 
 | Hook | 类别 | 精确时机与返回行为 | 显式 payload 字段 | 隐私/敏感性 |
 |---|---|---|---|---|
@@ -543,7 +543,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 
 ```python
 # 注入上下文
-return {"context": "Recalled memories:\n- User likes Python\n- Working on hermes-agent"}
+return {"context": "Recalled memories:\n- User likes Python\n- Working on rabbit-agent"}
 
 # 普通字符串（等效）
 return "Recalled memories:\n- User likes Python"
@@ -552,9 +552,9 @@ return "Recalled memories:\n- User likes Python"
 return None
 ```
 
-**上下文注入位置：** 始终注入到**用户消息**，而非系统 prompt。这保留了 prompt 缓存——系统 prompt 在各轮次间保持不变，已缓存的 token 得以复用。系统 prompt 是 Hermes 的领域（模型指导、工具执行、个性、技能）。插件在用户输入旁边贡献上下文。
+**上下文注入位置：** 始终注入到**用户消息**，而非系统 prompt。这保留了 prompt 缓存——系统 prompt 在各轮次间保持不变，已缓存的 token 得以复用。系统 prompt 是 Rabbit 的领域（模型指导、工具执行、个性、技能）。插件在用户输入旁边贡献上下文。
 
-干净的用户消息 `content` 保持不变。为保证 replay 和 prompt cache 稳定，Hermes 可能把实际发送给 API 的消息（包括插件注入上下文）持久化到该行的 `api_content` sidecar。
+干净的用户消息 `content` 保持不变。为保证 replay 和 prompt cache 稳定，Rabbit 可能把实际发送给 API 的消息（包括插件注入上下文）持久化到该行的 `api_content` sidecar。
 
 当**多个插件**返回上下文时，其输出按插件发现顺序（按目录名字母顺序）以双换行符连接。
 
@@ -973,7 +973,7 @@ def my_callback(
 import subprocess
 
 def notify_approval(command, description, session_key, **kwargs):
-    title = "Hermes needs approval"
+    title = "Rabbit needs approval"
     body = f"{description}: {command[:80]}"
     subprocess.Popen([
         "osascript", "-e",
@@ -1181,7 +1181,7 @@ Completion 和 cleanup 后触发，通常位于 worker 进程；`summary` 可能
 
 ## Shell Hooks
 
-在 `cli-config.yaml` 中声明 shell 脚本 hook，Hermes 会在对应的插件 hook 事件触发时将其作为子进程运行——在 CLI 和 gateway 会话中均适用。无需编写 Python 插件。
+在 `cli-config.yaml` 中声明 shell 脚本 hook，Rabbit 会在对应的插件 hook 事件触发时将其作为子进程运行——在 CLI 和 gateway 会话中均适用。无需编写 Python 插件。
 
 当你希望用一个即插即用的单文件脚本（Bash、Python 或任何带 shebang 的脚本）来实现以下功能时，使用 shell hooks：
 
@@ -1190,14 +1190,14 @@ Completion 和 cleanup 后触发，通常位于 worker 进程；`summary` 可能
 - **向下一个 LLM 轮次注入上下文** — 在用户消息前追加 `git status` 输出、当前星期几或检索到的文档（参见 [`pre_llm_call`](#pre_llm_call)）。
 - **观察生命周期事件** — 在子 agent 完成（`subagent_stop`）或会话开始（`on_session_start`）时写入日志行。
 
-Shell hooks 通过在 CLI 启动（`hermes_cli/main.py`）和 gateway 启动（`gateway/run.py`）时调用 `agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
+Shell hooks 通过在 CLI 启动（`rabbit_cli/main.py`）和 gateway 启动（`gateway/run.py`）时调用 `agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
 
 ### 对比一览
 
 | 维度 | Shell hooks | [Plugin hooks](#plugin-hooks) | [Gateway hooks](#gateway-event-hooks) |
 |------|-------------|-------------------------------|---------------------------------------|
-| 声明位置 | `~/.hermes/config.yaml` 中的 `hooks:` 块 | 插件 `plugin.yaml` 中的 `register()` | `HOOK.yaml` + `handler.py` 目录 |
-| 存放位置 | `~/.hermes/agent-hooks/`（约定） | `~/.hermes/plugins/<name>/` | `~/.hermes/hooks/<name>/` |
+| 声明位置 | `~/.rabbit/config.yaml` 中的 `hooks:` 块 | 插件 `plugin.yaml` 中的 `register()` | `HOOK.yaml` + `handler.py` 目录 |
+| 存放位置 | `~/.rabbit/agent-hooks/`（约定） | `~/.rabbit/plugins/<name>/` | `~/.rabbit/hooks/<name>/` |
 | 语言 | 任意（Bash、Python、Go 二进制等） | 仅 Python | 仅 Python |
 | 运行环境 | CLI + Gateway | CLI + Gateway | 仅 Gateway |
 | 事件 | `VALID_HOOKS`（含 `subagent_stop`） | `VALID_HOOKS` | Gateway 生命周期（`gateway:startup`、`agent:*`、`command:*`） |
@@ -1222,7 +1222,7 @@ hooks_auto_accept: false         # See "Consent model" below
 
 ### JSON 通信协议
 
-每次事件触发时，Hermes 为每个匹配的 hook（在 matcher 允许的情况下）生成一个子进程，将 JSON 载荷通过 **stdin** 传入，并从 **stdout** 读取 JSON 响应。
+每次事件触发时，Rabbit 为每个匹配的 hook（在 matcher 允许的情况下）生成一个子进程，将 JSON 载荷通过 **stdin** 传入，并从 **stdout** 读取 JSON 响应。
 
 **stdin——脚本接收的载荷：**
 
@@ -1244,7 +1244,7 @@ hooks_auto_accept: false         # See "Consent model" below
 ```jsonc
 // Block a pre_tool_call (both shapes accepted; normalised internally):
 {"decision": "block", "reason":  "Forbidden: rm -rf"}   // Claude-Code style
-{"action":   "block", "message": "Forbidden: rm -rf"}   // Hermes-canonical
+{"action":   "block", "message": "Forbidden: rm -rf"}   // Rabbit-canonical
 
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
@@ -1259,16 +1259,16 @@ hooks_auto_accept: false         # See "Consent model" below
 #### 1. 每次写入后自动格式化 Python 文件
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 hooks:
   post_tool_call:
     - matcher: "write_file|patch"
-      command: "~/.hermes/agent-hooks/auto-format.sh"
+      command: "~/.rabbit/agent-hooks/auto-format.sh"
 ```
 
 ```bash
 #!/usr/bin/env bash
-# ~/.hermes/agent-hooks/auto-format.sh
+# ~/.rabbit/agent-hooks/auto-format.sh
 payload="$(cat -)"
 path=$(echo "$payload" | jq -r '.tool_input.path // empty')
 [[ "$path" == *.py ]] && command -v black >/dev/null && black "$path" 2>/dev/null
@@ -1283,13 +1283,13 @@ Agent 的上下文内文件视图**不会**自动重新读取——重新格式�
 hooks:
   pre_tool_call:
     - matcher: "terminal"
-      command: "~/.hermes/agent-hooks/block-rm-rf.sh"
+      command: "~/.rabbit/agent-hooks/block-rm-rf.sh"
       timeout: 5
 ```
 
 ```bash
 #!/usr/bin/env bash
-# ~/.hermes/agent-hooks/block-rm-rf.sh
+# ~/.rabbit/agent-hooks/block-rm-rf.sh
 payload="$(cat -)"
 cmd=$(echo "$payload" | jq -r '.tool_input.command // empty')
 if echo "$cmd" | grep -qE 'rm[[:space:]]+-rf?[[:space:]]+/'; then
@@ -1304,12 +1304,12 @@ fi
 ```yaml
 hooks:
   pre_llm_call:
-    - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
+    - command: "~/.rabbit/agent-hooks/inject-cwd-context.sh"
 ```
 
 ```bash
 #!/usr/bin/env bash
-# ~/.hermes/agent-hooks/inject-cwd-context.sh
+# ~/.rabbit/agent-hooks/inject-cwd-context.sh
 cat - >/dev/null   # discard stdin payload
 if status=$(git status --porcelain 2>/dev/null) && [[ -n "$status" ]]; then
   jq --null-input --arg s "$status" \
@@ -1319,54 +1319,54 @@ else
 fi
 ```
 
-Claude Code 的 `UserPromptSubmit` 事件在 Hermes 中没有对应的独立事件——`pre_llm_call` 在相同位置触发，且已支持上下文注入。在此使用即可。
+Claude Code 的 `UserPromptSubmit` 事件在 Rabbit 中没有对应的独立事件——`pre_llm_call` 在相同位置触发，且已支持上下文注入。在此使用即可。
 
 #### 4. 记录每次子 agent 完成
 
 ```yaml
 hooks:
   subagent_stop:
-    - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+    - command: "~/.rabbit/agent-hooks/log-orchestration.sh"
 ```
 
 ```bash
 #!/usr/bin/env bash
-# ~/.hermes/agent-hooks/log-orchestration.sh
-log=~/.hermes/logs/orchestration.log
+# ~/.rabbit/agent-hooks/log-orchestration.sh
+log=~/.rabbit/logs/orchestration.log
 jq -c '{ts: now, parent: .session_id, extra: .extra}' < /dev/stdin >> "$log"
 printf '{}\n'
 ```
 
 ### 授权模型
 
-每个唯一的 `(event, command)` 对在 Hermes 首次遇到时会提示用户审批，然后将决定持久化到 `~/.hermes/shell-hooks-allowlist.json`。后续运行（CLI 或 gateway）跳过提示。
+每个唯一的 `(event, command)` 对在 Rabbit 首次遇到时会提示用户审批，然后将决定持久化到 `~/.rabbit/shell-hooks-allowlist.json`。后续运行（CLI 或 gateway）跳过提示。
 
 三种方式可绕过交互式提示——满足其一即可：
 
-1. CLI 上的 `--accept-hooks` 标志（如 `hermes --accept-hooks chat`）
-2. `HERMES_ACCEPT_HOOKS=1` 环境变量
+1. CLI 上的 `--accept-hooks` 标志（如 `rabbit --accept-hooks chat`）
+2. `RABBIT_ACCEPT_HOOKS=1` 环境变量
 3. `cli-config.yaml` 中的 `hooks_auto_accept: true`
 
 非 TTY 运行（gateway、cron、CI）需要这三种方式之一——否则任何新添加的 hook 会静默保持未注册状态并记录警告。
 
-**脚本编辑被静默信任。** 允许列表以精确的命令字符串为键，而非脚本的哈希值，因此编辑磁盘上的脚本不会使授权失效。`hermes hooks doctor` 会标记 mtime 漂移，以便你发现编辑并决定是否重新审批。
+**脚本编辑被静默信任。** 允许列表以精确的命令字符串为键，而非脚本的哈希值，因此编辑磁盘上的脚本不会使授权失效。`rabbit hooks doctor` 会标记 mtime 漂移，以便你发现编辑并决定是否重新审批。
 
-### `hermes hooks` CLI
+### `rabbit hooks` CLI
 
 | 命令 | 功能 |
 |------|------|
-| `hermes hooks list` | 列出已配置的 hook，包含 matcher、超时和授权状态 |
-| `hermes hooks test <event> [--for-tool X] [--payload-file F]` | 对合成载荷触发所有匹配的 hook 并打印解析后的响应 |
-| `hermes hooks revoke <command>` | 删除所有匹配 `<command>` 的允许列表条目（下次重启后生效） |
-| `hermes hooks doctor` | 对每个已配置的 hook 检查：执行位、允许列表状态、mtime 漂移、JSON 输出有效性和大致执行时间 |
+| `rabbit hooks list` | 列出已配置的 hook，包含 matcher、超时和授权状态 |
+| `rabbit hooks test <event> [--for-tool X] [--payload-file F]` | 对合成载荷触发所有匹配的 hook 并打印解析后的响应 |
+| `rabbit hooks revoke <command>` | 删除所有匹配 `<command>` 的允许列表条目（下次重启后生效） |
+| `rabbit hooks doctor` | 对每个已配置的 hook 检查：执行位、允许列表状态、mtime 漂移、JSON 输出有效性和大致执行时间 |
 
 ### 安全性
 
 Shell hooks 以**你的完整用户凭据**运行——与 cron 条目或 shell 别名的信任边界相同。将 `config.yaml` 中的 `hooks:` 块视为特权配置：
 
 - 只引用你自己编写或完整审查过的脚本。
-- 将脚本保存在 `~/.hermes/agent-hooks/` 内，便于审计路径。
-- 拉取共享配置后重新运行 `hermes hooks doctor`，在新添加的 hook 注册前发现它们。
+- 将脚本保存在 `~/.rabbit/agent-hooks/` 内，便于审计路径。
+- 拉取共享配置后重新运行 `rabbit hooks doctor`，在新添加的 hook 注册前发现它们。
 - 如果你的 config.yaml 在团队中进行版本控制，审查修改 `hooks:` 部分的 PR 时应与审查 CI 配置一样严格。
 
 ### 顺序与优先级
@@ -1380,9 +1380,9 @@ Python 插件 hook 和 shell hook 都流经同一个 `invoke_hook()` 分发器�
 ```yaml
 hooks:
   outbound:
-    - url: "https://example.com/hermes-events"
+    - url: "https://example.com/rabbit-events"
       events: [post_tool_call, on_session_end]
-      secret_env: HERMES_WEBHOOK_SECRET
+      secret_env: RABBIT_WEBHOOK_SECRET
 ```
 
-配置中的事件名同样以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 会列出这些已配置 target，但不会输出完整的可用事件目录。
+配置中的事件名同样以 `rabbit_cli.plugins.VALID_HOOKS` 为准。`rabbit hooks list` 会列出这些已配置 target，但不会输出完整的可用事件目录。

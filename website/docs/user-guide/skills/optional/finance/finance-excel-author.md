@@ -14,10 +14,10 @@ Build auditable financial workbooks headless via openpyxl.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/finance/excel-author` |
+| Source | Optional — install with `rabbit skills install official/finance/excel-author` |
 | Path | `optional-skills/finance/excel-author` |
 | Version | `1.0.0` |
-| Author | Anthropic (adapted by Nous Research) |
+| Author | Anthropic |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `excel`, `openpyxl`, `finance`, `spreadsheet`, `modeling` |
@@ -26,7 +26,7 @@ Build auditable financial workbooks headless via openpyxl.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # excel-author

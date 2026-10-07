@@ -1,6 +1,6 @@
 """Bitwarden Secrets Manager (`bws` CLI) integration.
 
-Pulls API keys from BSM at startup so they need not live in ``~/.hermes/.env``.
+Pulls API keys from BSM at startup so they need not live in ``~/.rabbit/.env``.
 ``bws`` is auto-installed into the PM tool store (one pinned version,
 SHA-256-verified against the published checksum). The one bootstrap secret is
 the access token in ``.env``; every other key can live in BSM. One
@@ -34,13 +34,13 @@ logger = logging.getLogger(__name__)
 
 _BWS_RUN_TIMEOUT = 30
 
-# <hermes_home>/cache/bws_cache.json holds only secret VALUES (never the access
+# <rabbit_home>/cache/bws_cache.json holds only secret VALUES (never the access
 # token); kept out of .env so users editing .env don't commit BSM-sourced secrets.
 _CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
 _DISK_CACHE_BASENAME = "bws_cache.json"
 _ENCRYPTED_CACHE_BASENAME = "bws_cache.enc.json"
 _ENCRYPTED_CACHE_VERSION = 1
-_ENCRYPTED_CACHE_INFO = b"hermes-bws-encrypted-cache-v1"
+_ENCRYPTED_CACHE_INFO = b"rabbit-bws-encrypted-cache-v1"
 
 
 def _cache_key_str(cache_key: _CacheKey) -> str:
@@ -217,7 +217,7 @@ def fetch_bitwarden_secrets(
         raise RuntimeError("bws binary not available — auto-install failed and `bws` is "
                            "not on PATH.  Install manually from "
                            "https://github.com/bitwarden/sdk-sm/releases or re-run "
-                           "`hermes secrets bitwarden setup`.")
+                           "`rabbit secrets bitwarden setup`.")
 
     try:
         secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
@@ -322,10 +322,10 @@ class BitwardenSource(SecretSource):
     # — a stale .env line must not have the final say.
     override_existing_default = True
     _AUTH_HINT = (
-        "Run `hermes secrets bitwarden token` to paste a fresh access "
+        "Run `rabbit secrets bitwarden token` to paste a fresh access "
         "token (create one in the Bitwarden web app: Secrets Manager → "
         "Machine accounts → Access tokens).  Wrong region?  Re-run "
-        "`hermes secrets bitwarden setup` and pick EU/self-hosted."
+        "`rabbit secrets bitwarden setup` and pick EU/self-hosted."
     )
     remediation_hints = {ErrorKind.AUTH_FAILED: _AUTH_HINT, ErrorKind.AUTH_EXPIRED: _AUTH_HINT}
 
@@ -352,16 +352,16 @@ class BitwardenSource(SecretSource):
         access_token = get_source_environment().get(access_token_env, "").strip()
         if not access_token:
             return result.fail(f"secrets.bitwarden.enabled is true but {access_token_env} is "
-                               "not set.  Run `hermes secrets bitwarden setup`.", ErrorKind.NOT_CONFIGURED)
+                               "not set.  Run `rabbit secrets bitwarden setup`.", ErrorKind.NOT_CONFIGURED)
         project_id = str(cfg.get("project_id") or "")
         if not project_id:
-            return result.fail("secrets.bitwarden.project_id is empty.  Run `hermes secrets bitwarden setup`.",
+            return result.fail("secrets.bitwarden.project_id is empty.  Run `rabbit secrets bitwarden setup`.",
                                ErrorKind.NOT_CONFIGURED)
         binary = find_bws(install_if_missing=bool(cfg.get("auto_install", True)))
         result.binary_path = binary
         if binary is None:
             return result.fail("bws binary not available and auto-install is disabled.  "
-                               "Run `hermes secrets bitwarden setup` to install.", ErrorKind.BINARY_MISSING)
+                               "Run `rabbit secrets bitwarden setup` to install.", ErrorKind.BINARY_MISSING)
 
         encrypted_cfg = cfg.get("encrypted_cache")
         encrypted_cfg = encrypted_cfg if isinstance(encrypted_cfg, dict) else {}

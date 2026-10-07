@@ -16,7 +16,7 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
   closeTreeTabsToRight: vi.fn(),
   treeTabCloseTargets: vi.fn(() => null)
 }))
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   renameSession: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionUnreadRemote: vi.fn(() => Promise.resolve({ ok: true }))
@@ -167,7 +167,7 @@ describe('SessionActionsMenu', () => {
   })
 
   it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
-    const { renameSession } = await import('@/hermes')
+    const { renameSession } = await import('@/rabbit')
     vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })
 
     render(

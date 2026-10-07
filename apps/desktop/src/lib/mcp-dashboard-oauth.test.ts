@@ -43,7 +43,7 @@ function harness() {
     callback.resolve({ code: 'code-1', state: 'expected', error: null })
   })
 
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { mcpOauth: bridge, api, openExternal } })
+  Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { mcpOauth: bridge, api, openExternal } })
   let relayed = false
   const rpc = vi.mocked(requestGatewayForAgent)
   rpc.mockImplementation(async (_connection, _profile, method) => {
@@ -131,7 +131,7 @@ describe('Desktop MCP client callback lifecycle', () => {
     if (outcome === 'cancel') {
       await expect(action).rejects.toBeInstanceOf(McpOAuthCancelled)
     } else {
-      await expect(action).rejects.toThrow('Update the Hermes backend')
+      await expect(action).rejects.toThrow('Update the Rabbit backend')
     }
 
     expect(openExternal).not.toHaveBeenCalled()

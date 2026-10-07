@@ -8,7 +8,7 @@ description: Find, create, and update Linear issues, projects, and comments.
 source: https://linear.app/docs/mcp
 
 # Linear ships a remote MCP server with native OAuth 2.1 + Dynamic Client
-# Registration over Streamable HTTP. Hermes's MCP client + mcp_oauth_manager
+# Registration over Streamable HTTP. Rabbit's MCP client + mcp_oauth_manager
 # handle discovery, PKCE, token exchange, and refresh — nothing to install
 # locally.
 transport:
@@ -39,8 +39,8 @@ suggest:
     - linear.app
 
 post_install: |
-  On first connection, Hermes will open a browser to authenticate with Linear.
-  After auth, restart your Hermes session so the Linear tools are loaded.
+  On first connection, Rabbit will open a browser to authenticate with Linear.
+  After auth, restart your Rabbit session so the Linear tools are loaded.
 
   You can re-run the tool checklist any time with:
-    hermes mcp configure linear
+    rabbit mcp configure linear

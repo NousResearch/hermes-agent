@@ -135,7 +135,7 @@ class TestMistralSttPythonpathFallback:
             "mistralai": mock_mistralai,
             "mistralai.client": mock_mistralai,
         }), patch("pm.extras.ensure_import", side_effect=RuntimeError("provisioning failed")), \
-             patch("hermes_cli.config.get_env_value",
+             patch("rabbit_cli.config.get_env_value",
                    return_value="test-key"):
             result = _transcribe_mistral(str(audio_file), "mistral-large-latest")
 

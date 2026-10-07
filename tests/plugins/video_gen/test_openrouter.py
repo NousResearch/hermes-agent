@@ -139,12 +139,12 @@ def _generate_capturing(monkeypatch, tmp_path, provider):
 
 
 def _add_pooled_key(key, label):
-    from hermes_cli.auth_commands import auth_add_command
+    from rabbit_cli.auth_commands import auth_add_command
     auth_add_command(SimpleNamespace(provider="openrouter", auth_type="api-key", api_key=key, label=label))
 
 
 def test_pooled_credential_enables_the_backend(monkeypatch, tmp_path):
-    """A key added only with ``hermes auth add openrouter`` serves chat and image_gen; video must use it too."""
+    """A key added only with ``rabbit auth add openrouter`` serves chat and image_gen; video must use it too."""
     _add_pooled_key("sk-or-pool", "pool")
     provider = _provider(monkeypatch, [_VEO])
     assert provider.is_available() is True
@@ -156,8 +156,8 @@ def test_pooled_credential_enables_the_backend(monkeypatch, tmp_path):
 def test_one_job_keeps_one_credential_while_the_pool_rotates(monkeypatch, tmp_path):
     """A job created under one account is only visible to that account: poll and download must reuse the
     submit key even when a round-robin pool would hand out the other one next."""
-    from hermes_constants import get_hermes_home
-    (get_hermes_home() / "config.yaml").write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
+    from rabbit_constants import get_rabbit_home
+    (get_rabbit_home() / "config.yaml").write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
     _add_pooled_key("sk-or-one", "one")
     _add_pooled_key("sk-or-two", "two")
     result, _, bearers = _generate_capturing(monkeypatch, tmp_path, _provider(monkeypatch, [_VEO]))
@@ -169,7 +169,7 @@ def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypa
     """On a multiplexed gateway os.environ is the launch profile's .env; a routed turn must sign every request
     with its own profile's key and send it only to its own profile's base URL."""
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://launch.example/api/v1")
@@ -180,13 +180,13 @@ def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypa
     provider = _provider(monkeypatch, [_VEO])
 
     set_multiplex_active(True)
-    home_token = set_hermes_home_override(str(profile_home))
+    home_token = set_rabbit_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
         result, session, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
     finally:
         reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
         set_multiplex_active(False)
 
     assert result["success"], result
@@ -198,7 +198,7 @@ def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_k
     """Absence on the routed side: a profile with no OpenRouter credential of its own must fail closed, never
     spend the launch profile's ``os.environ`` key."""
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
     profile_home = tmp_path / "profile-nokey"
@@ -207,14 +207,14 @@ def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_k
     provider = _provider(monkeypatch, [_VEO])
 
     set_multiplex_active(True)
-    home_token = set_hermes_home_override(str(profile_home))
+    home_token = set_rabbit_home_override(str(profile_home))
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
         available = provider.is_available()
         result, session, bearers = _generate_capturing(monkeypatch, tmp_path, provider)
     finally:
         reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
         set_multiplex_active(False)
 
     assert available is False
@@ -231,7 +231,7 @@ def test_generate_rejects_local_image_paths_before_spending(monkeypatch):
 
 
 def test_register_exposes_openrouter_in_the_video_gen_picker(monkeypatch):
-    from hermes_cli import plugins as plugin_loader, tools_config
+    from rabbit_cli import plugins as plugin_loader, tools_config
     from plugins.video_gen.openrouter import register
 
     class _Context:

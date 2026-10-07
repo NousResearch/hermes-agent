@@ -258,13 +258,13 @@ class TestRunSingleChildSchemaValidation:
 
     def test_retry_turn_runs_in_delegated_child_context(self, monkeypatch):
         """The retry is a second run_conversation on the child, issued from the parent's
-        thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
+        thread where RABBIT_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
         so the kanban stop guard nudges the child toward a board tool it does not have
         (#109735 / #87671)."""
         from agent.delegation_context import is_delegated_child_context
         from tools.delegate_tool_child_run import _validate_child_output_schema
 
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_parent")
         seen: list = []
 
         class _Child(_StubChild):

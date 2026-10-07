@@ -1,11 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import type { MemoryProviderConfig, MemoryProviderField } from '@/types/rabbit'
 
 const saveMemoryProviderConfig = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
 
@@ -44,7 +44,7 @@ function schema(): MemoryProviderConfig {
   return {
     name: 'honcho',
     label: 'Honcho',
-    docs_url: 'https://docs.honcho.dev/v3/guides/integrations/hermes',
+    docs_url: 'https://docs.honcho.dev/v3/guides/integrations/rabbit',
     fields: [
       field({ key: 'workspace', kind: 'text', label: 'Workspace', value: 'myws', inline: true, group: 'Connection' }),
       field({ key: 'saveMessages', kind: 'bool', label: 'Save messages', value: 'true', group: 'Message writing' }),

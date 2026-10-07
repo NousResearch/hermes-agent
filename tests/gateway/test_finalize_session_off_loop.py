@@ -11,7 +11,7 @@ run inline on the event loop from three call sites:
 On a wedged/slow hook the whole loop froze — adapter heartbeats stopped and
 systemd SIGKILLed the process mid-shutdown. All three sites now dispatch
 through ``GatewayRunner._finalize_session_off_loop``, which runs
-``hermes_cli.lifecycle.finalize_session`` in the gateway executor under a
+``rabbit_cli.lifecycle.finalize_session`` in the gateway executor under a
 bounded ``asyncio.wait_for``.
 """
 
@@ -38,7 +38,7 @@ def test_finalize_off_loop_keeps_loop_alive_and_bounds_wedged_hook(monkeypatch):
         # Simulates a multi-minute trace export.
         release.wait(timeout=30)
 
-    import hermes_cli.lifecycle as lifecycle
+    import rabbit_cli.lifecycle as lifecycle
 
     monkeypatch.setattr(lifecycle, "finalize_session", _wedged_finalize)
 
@@ -78,7 +78,7 @@ def test_finalize_off_loop_swallows_hook_exceptions(monkeypatch):
     def _raising_finalize(**kwargs):
         raise RuntimeError("exporter blew up")
 
-    import hermes_cli.lifecycle as lifecycle
+    import rabbit_cli.lifecycle as lifecycle
 
     monkeypatch.setattr(lifecycle, "finalize_session", _raising_finalize)
 

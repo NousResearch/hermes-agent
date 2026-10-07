@@ -20,15 +20,15 @@ from unittest.mock import patch
 def main():
     checkout = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
     for key in list(os.environ):
-        if key.startswith(("HERMES_", "OPENAI_", "OPENROUTER_", "ANTHROPIC_")) or any(
+        if key.startswith(("RABBIT_", "OPENAI_", "OPENROUTER_", "ANTHROPIC_")) or any(
             part in key for part in ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
         ):
             os.environ.pop(key, None)
     with tempfile.TemporaryDirectory(prefix="cron-diagnostics-") as home:
-        os.environ.update(HOME=home, HERMES_HOME=home)
+        os.environ.update(HOME=home, RABBIT_HOME=home)
         sys.path.insert(0, str(checkout))
         from cron import jobs, scheduler
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        from rabbit_cli.cli_commands_mixin import CLICommandsMixin
         from openai import OpenAI
         from tools.cronjob_job_args import _format_job
 

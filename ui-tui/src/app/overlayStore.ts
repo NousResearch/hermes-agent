@@ -7,7 +7,6 @@ const buildOverlayState = (): OverlayState => ({
   agents: false,
   agentsInitialHistoryIndex: 0,
   approval: null,
-  billing: null,
   clarify: null,
   confirm: null,
   connection: null,
@@ -24,7 +23,6 @@ const buildOverlayState = (): OverlayState => ({
   vaultUnlock: null,
   sessions: false,
   skillsHub: false,
-  subscription: null,
   sudo: null
 })
 
@@ -35,7 +33,6 @@ export const $isBlocked = computed(
   ({
     agents,
     approval,
-    billing,
     clarify,
     confirm,
     connection,
@@ -47,7 +44,6 @@ export const $isBlocked = computed(
     secret,
     sessions,
     skillsHub,
-    subscription,
     sudo,
     vaultCode,
     vaultSaveLogin,
@@ -57,7 +53,6 @@ export const $isBlocked = computed(
     Boolean(
       agents ||
       approval ||
-      billing ||
       clarify ||
       confirm ||
       connection ||
@@ -69,7 +64,6 @@ export const $isBlocked = computed(
       secret ||
       sessions ||
       skillsHub ||
-      subscription ||
       sudo ||
       vaultCode ||
       vaultSaveLogin ||
@@ -101,8 +95,8 @@ export const $isBlocked = computed(
  *
  * NOT occluding (deliberately excluded):
  *
- * - The PromptZone flow states — `approval`, `billing`, `subscription`,
- *   `confirm`, `clarify`, `sudo`, `secret` (`appOverlays.tsx:58-162`).  They
+ * - The PromptZone flow states — `approval`, `confirm`, `clarify`, `sudo`,
+ *   `secret` (`appOverlays.tsx:58-162`).  They
  *   render in NORMAL FLOW above ComposerPane (`appLayout.tsx:553-568`): they
  *   push content down, they do not cover it.  The rule stays on screen and
  *   its clock must keep running.

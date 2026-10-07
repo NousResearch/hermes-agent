@@ -16,8 +16,8 @@ from tests.gateway.test_slack_native_streaming import _make_adapter, _open_strea
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_warning_and_media_failure_do_not_seal_requested_final(tmp_path, monkeypatch, setting):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     cfg = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
     (tmp_path / "config.yaml").write_text(json.dumps(cfg))
     adapter, client = _make_adapter()

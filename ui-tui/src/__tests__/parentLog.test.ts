@@ -5,13 +5,13 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // parentLog gates itself off under VITEST so unit tests can't pollute a real
-// ~/.hermes. To exercise the real persistence path we clear that gate, point
-// HERMES_HOME at a temp dir, and re-import the module fresh (path + enabled
+// ~/.rabbit. To exercise the real persistence path we clear that gate, point
+// RABBIT_HOME at a temp dir, and re-import the module fresh (path + enabled
 // flag are captured at module load).
 const loadFresh = async (home: string) => {
   vi.resetModules()
   vi.stubEnv('VITEST', '')
-  vi.stubEnv('HERMES_HOME', home)
+  vi.stubEnv('RABBIT_HOME', home)
 
   return import('../lib/parentLog.js')
 }
@@ -20,7 +20,7 @@ describe('recordParentLifecycle', () => {
   let home: string
 
   beforeEach(() => {
-    home = mkdtempSync(join(tmpdir(), 'hermes-parentlog-'))
+    home = mkdtempSync(join(tmpdir(), 'rabbit-parentlog-'))
   })
 
   afterEach(() => {
@@ -67,7 +67,7 @@ describe('recordParentLifecycle', () => {
   it('is a no-op under VITEST so tests stay hermetic', async () => {
     vi.resetModules()
     vi.stubEnv('VITEST', 'true')
-    vi.stubEnv('HERMES_HOME', home)
+    vi.stubEnv('RABBIT_HOME', home)
 
     const { recordParentLifecycle } = await import('../lib/parentLog.js')
 

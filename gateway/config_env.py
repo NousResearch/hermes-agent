@@ -173,8 +173,8 @@ def _loading_secondary_under_multiplexer() -> bool:
     """True while a multiplexer loads a NON-default profile's config (``_profile_runtime_scope`` sets the
     home override; the runner sets the multiplex flag). Same signal ``gateway.config`` uses for scoped reads."""
     from agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home_override, profile_name_for_home
-    override = get_hermes_home_override()
+    from rabbit_constants import get_rabbit_home_override, profile_name_for_home
+    override = get_rabbit_home_override()
     return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
 
 
@@ -445,7 +445,7 @@ def _enable_plugin_platforms_from_env(config: GatewayConfig) -> None:
     installable later by ``create_adapter()`` — never here: installing in this sweep boot-looped the app.
     """
     try:
-        from hermes_cli.plugins import discover_plugins
+        from rabbit_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():

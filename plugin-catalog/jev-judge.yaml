@@ -1,5 +1,5 @@
 name: jev-judge
-repo: https://github.com/DoGMaTiiC/hermes-jev
+repo: https://github.com/DoGMaTiiC/rabbit-jev
 sha: 5dddbeaac5be08281e6c3b372eeaba3639971f0a
 subdir: plugins/jev-judge
 description: TypeSafe Jev as a judgment layer — a pre-tool gate (shadow by default, enforce
@@ -17,7 +17,7 @@ description: TypeSafe Jev as a judgment layer — a pre-tool gate (shadow by def
 maintainer: DoGMaTiiC
 tier: community
 category: tools
-docs_url: https://github.com/DoGMaTiiC/hermes-jev/blob/main/plugins/jev-judge/README.md
+docs_url: https://github.com/DoGMaTiiC/rabbit-jev/blob/main/plugins/jev-judge/README.md
 version: "0.1.0"
 platforms: []
 capabilities:

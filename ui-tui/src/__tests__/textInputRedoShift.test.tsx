@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync } from '@rabbit/ink'
 import React, { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -103,7 +103,7 @@ describe('TextInput redo chord under extended-key terminals', () => {
     await settle()
     expect(changes.at(-1)).toBe('a')
 
-    // Redo: super+shift+z (modifier 10). hermes-ink restores the shifted
+    // Redo: super+shift+z (modifier 10). rabbit-ink restores the shifted
     // letter's case, so the composer sees inp 'Z' with key.shift set.
     streams.stdin.send('\u001b[122;10u')
     await settle()

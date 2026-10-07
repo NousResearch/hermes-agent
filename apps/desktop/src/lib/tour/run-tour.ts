@@ -4,7 +4,7 @@
  * `runTour` is the generic entry (one normalized action in, a result out) and
  * the named verbs below are the ergonomic API — used by the agent tool through
  * the gateway, and by any curated in-app tour. surface='app' drives driver.js
- * against the Hermes DOM; surface='preview' runs the same engine source inside
+ * against the Rabbit DOM; surface='preview' runs the same engine source inside
  * the preview pane's guest page.
  *
  * Dynamic-imported by gateway-event.ts, so driver.js (and the preview's raw

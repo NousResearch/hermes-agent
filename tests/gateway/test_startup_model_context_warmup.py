@@ -17,7 +17,7 @@ def _quiet_tool_side(monkeypatch, tool_count):
 
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda quiet_mode=False: ["t"] * tool_count)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly", lambda: {"agent": {"environment_probe": False}})
+        "rabbit_cli.config.load_config_readonly", lambda: {"agent": {"environment_probe": False}})
 
 
 def test_model_context_warmup_primes_default_route(monkeypatch):

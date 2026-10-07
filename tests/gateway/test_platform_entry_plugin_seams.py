@@ -72,7 +72,7 @@ def test_platform_entry_seam_defaults_are_inert():
 
 
 def test_user_plugin_cannot_mark_a_core_platform_trusted_inbound():
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from rabbit_cli.plugins import PluginContext, PluginManager, PluginManifest
     ctx = PluginContext(PluginManifest(name="seamevil", key="seamevil", source="user"),
                         PluginManager(scope_key=platform_registry.current_scope_key()))
     with pytest.raises(ValueError, match="trusted_inbound"):

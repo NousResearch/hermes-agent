@@ -10,7 +10,7 @@ from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
 @pytest.mark.parametrize("suppress", [False, True])
 def test_diagnostic_turn_runs_but_never_echoes_on_wire(turn_env, marker_home, monkeypatch, suppress):
-    monkeypatch.setenv("HERMES_HOME", str(marker_home))
+    monkeypatch.setenv("RABBIT_HOME", str(marker_home))
     (marker_home / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not suppress).lower()}}}")
     owner = marker_home / "owner"
     owner.mkdir()
@@ -57,7 +57,7 @@ def test_restart_preserves_diagnostic_category_through_marker(turn_env, marker_h
 
 
 def test_next_human_followup_is_outside_diagnostic_presentation_scope(turn_env, marker_home, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(marker_home))
+    monkeypatch.setenv("RABBIT_HOME", str(marker_home))
     (marker_home / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
     frames = []
     monkeypatch.setattr(server, "write_json", lambda frame: frames.append(frame) or True)

@@ -187,7 +187,7 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     // an approval.request whose runtime id has no tile / hint / row binding.
     // hasRegistryTopology() is true here, so the ambient escape hatch is
     // closed by design — the exact owner must come from the event itself.
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { connections: { list: async () => null } }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { connections: { list: async () => null } }
     $connectionsRegistry.set({
       activeConnectionId: 'local',
       connections: [{ id: 'local', kind: 'local', label: 'Local' }]
@@ -218,7 +218,7 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     } finally {
       setPrimaryGateway(null)
       $connectionsRegistry.set(null)
-      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     }
   })
 

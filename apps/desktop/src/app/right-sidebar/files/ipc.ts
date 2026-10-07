@@ -1,13 +1,13 @@
 import ignore from 'ignore'
 
-import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
+import type { RabbitReadDirEntry, RabbitReadDirResult } from '@/global'
 import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { ALWAYS_EXCLUDED, SHOW_IGNORED_EXCLUDED } from '@/lib/excluded-paths'
 import { cleanPath, comparisonPath, isUnderPath } from '@/lib/path-compare'
 
 import { showsIgnoredFiles } from './prefs'
 
-export type ProjectTreeEntry = HermesReadDirEntry
+export type ProjectTreeEntry = RabbitReadDirEntry
 
 interface GitignoreRule {
   base: string
@@ -119,7 +119,7 @@ async function gitignoreFor(dir: string) {
  * any directory, ignored or not: a nested repo resolves to itself, an ordinary ignored
  * directory resolves to the parent's root.
  */
-async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
+async function isNestedRepoRoot(entry: RabbitReadDirEntry): Promise<boolean> {
   if (!entry.isDirectory) {
     return false
   }
@@ -143,7 +143,7 @@ async function isNestedRepoRoot(entry: HermesReadDirEntry): Promise<boolean> {
   return cached
 }
 
-function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
+function ignoredBy(rules: GitignoreRule[], entry: RabbitReadDirEntry) {
   return rules.some(rule => {
     const rel = relativeTo(rule.base, entry.path)
 
@@ -155,7 +155,7 @@ function ignoredBy(rules: GitignoreRule[], entry: HermesReadDirEntry) {
   })
 }
 
-async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, dirPath: string) {
+async function filterIgnored(entries: RabbitReadDirEntry[], rootPath: string, dirPath: string) {
   // Opting a project into its ignored files skips the gitignore pass entirely —
   // no git-root probe, no .gitignore reads. ALWAYS_EXCLUDED still applies: `.git`
   // internals and dependency/build dirs are never worth browsing, in any repo.
@@ -195,11 +195,11 @@ async function filterIgnored(entries: HermesReadDirEntry[], rootPath: string, di
     })
   )
 
-  return visible.filter((entry): entry is HermesReadDirEntry => entry !== null)
+  return visible.filter((entry): entry is RabbitReadDirEntry => entry !== null)
 }
 
-export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<HermesReadDirResult> {
-  if (!window.hermesDesktop) {
+export async function readProjectDir(dirPath: string, rootPath = dirPath): Promise<RabbitReadDirResult> {
+  if (!window.rabbitDesktop) {
     return { entries: [], error: 'no-bridge' }
   }
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Derive a Debian package version (or channel) from a hermes-agent release tag.
+"""Derive a Debian package version (or channel) from a rabbit-agent release tag.
 
 Pure function; imported by scripts/termux/build_deb.sh and unit-tested by
-tests/scripts/test_termux_deb_version.py (Task 4 of .hermes/plans/2026-08-31_termux-deb.md).
+tests/scripts/test_termux_deb_version.py (Task 4 of .rabbit/plans/2026-08-31_termux-deb.md).
 
 Mapping:
     v1.2.3                              -> 1.2.3-1

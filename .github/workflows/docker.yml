@@ -58,7 +58,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  IMAGE_NAME: seven0070/Rabbit-
 
 jobs:
   # Resolve the release phase. Release modes run only via workflow_call from
@@ -137,7 +137,7 @@ jobs:
     needs: [mode, detect]
     if: >-
       !cancelled() && needs.mode.result == 'success' &&
-      ((needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && needs.detect.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
+      ((needs.mode.outputs.release != 'true' && github.repository == 'seven0070/Rabbit-' && needs.detect.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
     strategy:
       fail-fast: false
       matrix:
@@ -216,7 +216,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
-            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            RABBIT_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           # Slim owns the scope; desktop adds the gated apt layer, so it reads
           # and writes nothing — a mode=max scope could exceed the cache cap.
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
@@ -225,7 +225,7 @@ jobs:
 
       # Run the docker-integration test suite against the freshly-built image
       # already loaded into the local daemon (`:test`). The fixture's
-      # HERMES_TEST_IMAGE branch short-circuits the rebuild. Release tests
+      # RABBIT_TEST_IMAGE branch short-circuits the rebuild. Release tests
       # archive these exact bytes rather than rebuilding at publish time.
       # Park the stamp while PM provisions the runner, then restore it so
       # tests/docker can compare the image's provenance with the checkout.
@@ -247,7 +247,7 @@ jobs:
         if: inputs.skip-tests != true
         env:
           # Skip rebuild; use the image already loaded by the build step.
-          HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
+          RABBIT_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
           # Match the policy in tests.yml :: test job — no accidental
           # real-API calls from inside the harness.
           OPENROUTER_API_KEY: ""
@@ -257,7 +257,7 @@ jobs:
           # Each of these tests drives a container, so the docker daemon sets
           # the limit and not the processor. This pins the runner's worker
           # count to the core count.
-          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
+          RABBIT_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/
 
       - name: Verify release image identity
         if: needs.mode.outputs.phase == 'test'
@@ -265,7 +265,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
           actual="$(docker run --rm --entrypoint python "${IMAGE_NAME}:test" -c \
-            'import json; print(json.load(open("/opt/hermes/install-stamp.json"))["baseVersion"])')"
+            'import json; print(json.load(open("/opt/rabbit/install-stamp.json"))["baseVersion"])')"
           test "$actual" = "$RELEASE_VERSION"
 
       # ---------------------------------------------------------------------
@@ -323,7 +323,7 @@ jobs:
   publish:
     if: >-
       needs.mode.outputs.release != 'true' &&
-      github.repository == 'NousResearch/hermes-agent' &&
+      github.repository == 'seven0070/Rabbit-' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [mode, build]
     environment: container-publish
@@ -390,7 +390,7 @@ jobs:
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           build-args: |
-            HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            RABBIT_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -422,7 +422,7 @@ jobs:
   merge:
     # `needs` is the whole 4-leg matrix: only publish both :main variants
     # after every arch and variant publisher succeeds.
-    if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'seven0070/Rabbit-' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     needs: [mode, publish]
     timeout-minutes: 10
@@ -712,7 +712,7 @@ jobs:
           import json, sys
           manifest = json.load(open("/tmp/manifest/manifest.json"))
           manifest["list-digest"] = sys.argv[2]
-          manifest["image"] = "nousresearch/hermes-agent"
+          manifest["image"] = "seven0070/Rabbit-"
           manifest["tags"] = [sys.argv[1]]
           json.dump(manifest, open("/tmp/manifest/manifest.json", "w"), indent=2)
           EOF

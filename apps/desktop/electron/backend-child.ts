@@ -4,7 +4,7 @@
  * Windows-aware teardown for the desktop's managed backend child process.
  *
  * Node's `child.kill()` only signals the direct child. On Windows a backend
- * that spawned its own grandchildren (a `hermes` REPL, a pty terminal
+ * that spawned its own grandchildren (a `rabbit` REPL, a pty terminal
  * session, the gateway) survives a plain SIGTERM and keeps files (e.g. the
  * venv shim) locked. So on Windows we tree-kill via `forceKillProcessTree`.
  *

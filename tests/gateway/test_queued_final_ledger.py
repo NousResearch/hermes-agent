@@ -41,7 +41,7 @@ TEXT = "**Yes.** I would make room for one island trip and one Balkan trip."
 
 @pytest.fixture(autouse=True)
 def _fresh_db(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
     monkeypatch.setattr(dl, "_owner_stamp", lambda: (os.getpid(), 202))
@@ -319,7 +319,7 @@ async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path
     must still go to the transport that produced ``result.message_id``."""
     from gateway.platforms.event import MessageEvent
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     sender = _telegram_adapter()
     replacement = _telegram_adapter()
     sender._schedule_ephemeral_delete = MagicMock()

@@ -69,7 +69,7 @@ class GatewayKanbanWatchersMixin:
         one tick's failure never stops the next.
         """
         try:
-            from hermes_cli.config import load_config as _load_config
+            from rabbit_cli.config import load_config as _load_config
 
             cfg = _load_config()
             kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
@@ -82,7 +82,7 @@ class GatewayKanbanWatchersMixin:
 
         from gateway.config import Platform as _Platform
         try:
-            from hermes_cli import kanban_db as _kb
+            from rabbit_cli import kanban_db as _kb
         except Exception:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
@@ -122,9 +122,9 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
-        from hermes_cli import kanban_db_notify as _kbn
+        from rabbit_cli import kanban_db as _kb
+        from rabbit_cli import kanban_db_connect as _kbc
+        from rabbit_cli import kanban_db_notify as _kbn
         # Cursor writes are machine flow: the sub's board slug must resolve
         # through the env pin on a dispatcher-pinned box (same as the notifier
         # tick), or advance/rewind land on a per-slug DB the notifier never
@@ -214,13 +214,13 @@ class GatewayKanbanWatchersMixin:
         disable without editing YAML.
         """
         try:
-            from hermes_cli.config import load_config as _load_config
+            from rabbit_cli.config import load_config as _load_config
         except Exception:
             logger.warning("kanban dispatcher: config loader unavailable; disabled")
             return None
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+        env_override = os.environ.get("RABBIT_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
         if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban dispatcher: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
+            logger.info("kanban dispatcher: disabled via RABBIT_KANBAN_DISPATCH_IN_GATEWAY env")
             return None
         try:
             cfg = _load_config()
@@ -232,7 +232,7 @@ class GatewayKanbanWatchersMixin:
             logger.info("kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false")
             return None
         try:
-            from hermes_cli import kanban_db as _kb
+            from rabbit_cli import kanban_db as _kb
         except Exception:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return None
@@ -258,7 +258,7 @@ class GatewayKanbanWatchersMixin:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
         Gated by `kanban.dispatch_in_gateway` (default True); when false the
-        loop exits and an external `hermes kanban daemon` is expected. Each
+        loop exits and an external `rabbit kanban daemon` is expected. Each
         tick runs :func:`kanban_db_dispatch.dispatch_once` in a thread; one tick's
         failure never stops the next. Shutdown: ``self._running`` is checked
         between ticks and the in-flight ``to_thread`` returns on its own.
@@ -286,7 +286,7 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.
-                from hermes_cli import kanban_db_dispatch as _kbd
+                from rabbit_cli import kanban_db_dispatch as _kbd
                 pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
                 if pids:
                     logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
@@ -294,7 +294,7 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
-                # Emergency stop (`hermes pause`): no auto-decompose or
+                # Emergency stop (`rabbit pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
@@ -316,7 +316,7 @@ class GatewayKanbanWatchersMixin:
                         "kanban dispatcher stuck: ready queue non-empty for "
                         "%d consecutive ticks but 0 workers spawned.%s Check "
                         "profile health (venv, PATH, credentials) and "
-                        "`hermes kanban list --status ready`.",
+                        "`rabbit kanban list --status ready`.",
                         bad_ticks, f" Last tick held back: {held}." if held else "",
                     )
                     last_warn_at = now

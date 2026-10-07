@@ -54,7 +54,7 @@ export function requestPoolLimitsSettings(): void {
  *  bridge (web/older builds just keep the defaults for the UI). */
 export async function loadPoolLimits(): Promise<void> {
   try {
-    const limits = await window.hermesDesktop?.getPoolLimits?.()
+    const limits = await window.rabbitDesktop?.getPoolLimits?.()
 
     if (limits) {
       $poolLimits.set(limits)
@@ -77,7 +77,7 @@ export async function savePoolLimits(next: { maxBackends?: number; idleMs?: numb
   $poolLimits.set(optimistic)
 
   try {
-    const result = await window.hermesDesktop?.setPoolLimits?.(next)
+    const result = await window.rabbitDesktop?.setPoolLimits?.(next)
 
     if (result?.limits) {
       $poolLimits.set(result.limits)

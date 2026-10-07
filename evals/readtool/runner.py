@@ -1,13 +1,13 @@
-"""Run the read-tool eval through the REAL Hermes AIAgent.
+"""Run the read-tool eval through the REAL Rabbit AIAgent.
 
-For each task: fresh temp HERMES_HOME, fresh fixture workspace, real
+For each task: fresh temp RABBIT_HOME, fresh fixture workspace, real
 AIAgent with the file+terminal+search toolsets, real provider API. Collects
 accuracy plus efficiency metrics (API turns, tool calls, read_file calls,
 prompt/completion tokens, wall time).
 
 Usage:
   python3 evals/readtool/runner.py --model anthropic/claude-opus-4.8 \\
-      --provider nous --reps 3 --label baseline
+      --provider openrouter --reps 3 --label baseline
   python3 evals/readtool/runner.py --model qwen/qwen3.8-max \\
       --provider openrouter --reps 3 --label baseline --tasks fifo_hang
 
@@ -74,12 +74,12 @@ def _count_metrics(messages: list) -> dict:
 def run_task(task, model: str, provider: str, timeout_mult: float,
              toolsets: list[str]) -> dict:
     ws = Path(tempfile.mkdtemp(prefix=f"readtool-{task.task_id}-"))
-    hermes_home = Path(tempfile.mkdtemp(prefix="readtool-home-")) / ".hermes"
-    hermes_home.mkdir(parents=True)
+    rabbit_home = Path(tempfile.mkdtemp(prefix="readtool-home-")) / ".rabbit"
+    rabbit_home.mkdir(parents=True)
     build_workspace(ws)
 
     old_env = dict(os.environ)
-    os.environ["HERMES_HOME"] = str(hermes_home)
+    os.environ["RABBIT_HOME"] = str(rabbit_home)
     os.environ["TERMINAL_CWD"] = str(ws)
     # Keep only the API key the run needs; hide the rest so provider
     # auto-detection can't wander (mirrors run_tests.sh hermeticity).
@@ -136,7 +136,7 @@ def run_task(task, model: str, provider: str, timeout_mult: float,
         os.environ.clear()
         os.environ.update(old_env)
         shutil.rmtree(ws, ignore_errors=True)
-        shutil.rmtree(hermes_home.parent, ignore_errors=True)
+        shutil.rmtree(rabbit_home.parent, ignore_errors=True)
     return result
 
 
@@ -162,7 +162,7 @@ def main() -> int:
     if not os.environ.get("OPENROUTER_API_KEY"):
         raise SystemExit(
             "OPENROUTER_API_KEY not in environment. Run: set -a; "
-            "source ~/.hermes/.env; set +a  — then relaunch."
+            "source ~/.rabbit/.env; set +a  — then relaunch."
         )
 
     slate = (

@@ -6,7 +6,7 @@ proactor event loop with the DEFAULT verb handlers, then drives the real
 sync client and the real fleet consumers against it — no mocks anywhere.
 
 Proves, on windows-latest:
-  1. `GatewayControlServer` binds ``\\\\.\\pipe\\hermes-gateway-<hash>`` via
+  1. `GatewayControlServer` binds ``\\\\.\\pipe\\rabbit-gateway-<hash>`` via
      ``loop.start_serving_pipe`` and answers ``identify``/``status``.
   2. The sync client's pipe transport (open/write/read/busy-retry) works
      against a live server and returns the child's true pid + code identity.
@@ -68,7 +68,7 @@ def _argv_visible(pid: int, marker: str) -> bool:
 _CHILD_CODE = r"""
 import asyncio, os, sys
 sys.path.insert(0, sys.argv[1])
-os.environ["HERMES_HOME"] = sys.argv[2]
+os.environ["RABBIT_HOME"] = sys.argv[2]
 from gateway.control_socket import GatewayControlServer
 
 async def main():
@@ -89,7 +89,7 @@ asyncio.run(main())
 
 @pytest.fixture()
 def live_server(tmp_path: Path):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     proc = subprocess.Popen(
         [sys.executable, "-c", _CHILD_CODE, str(PROJECT_ROOT), str(home)],
@@ -128,7 +128,7 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     # Windows trampoline makes the spawner's view wrong (see _CHILD_CODE).
     assert ident["pid"] == server_pid
     assert ident["protocol"] == 1
-    assert ident["kind"] == "hermes-gateway"
+    assert ident["kind"] == "rabbit-gateway"
     assert ident["supervisor"] in {"systemd", "launchd", "desktop", "external", "manual"}
 
     status = query_gateway_control(home, "status", timeout=5.0)
@@ -136,15 +136,15 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     assert status["answering_pid"] == server_pid
 
     # Real fleet consumer prefers the pipe
-    import hermes_cli.update_receipt as ur
+    import rabbit_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "rabbit_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": ident.get("code_sha") or "X", "version": "t"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("rabbit_cli.profiles._get_default_rabbit_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
+        "rabbit_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
     )
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
@@ -169,15 +169,15 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     # verifies the PID as this home's gateway via its live command line
     # (#110420). A real process wearing a `gateway run` argv stands in for
     # a gateway that lost its pipe.
-    import hermes_cli.update_receipt as ur
+    import rabbit_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "rabbit_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("rabbit_cli.profiles._get_default_rabbit_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
+        "rabbit_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
     )
 
     def _write_state(pid: int) -> None:
@@ -185,7 +185,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
             json.dumps(
                 {
                     "pid": pid, "gateway_state": "running",
-                    "code_sha": "OLD", "kind": "hermes-gateway",
+                    "code_sha": "OLD", "kind": "rabbit-gateway",
                 }
             ),
             encoding="utf-8",
@@ -196,7 +196,7 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
         # whose PID differs from the process running the command line. The
         # stand-in runs a SCRIPT, not `-c`: gateway identity is no longer
         # inferred from inline `-c` source (#107002).
-        [getattr(sys, "_base_executable"), sleeper_script_path(), "hermes", "gateway", "run"],
+        [getattr(sys, "_base_executable"), sleeper_script_path(), "rabbit", "gateway", "run"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

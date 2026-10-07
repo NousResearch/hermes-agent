@@ -14,13 +14,13 @@ import pytest
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
+def rabbit_home(tmp_path, monkeypatch):
     """Give the persisted control managers an isolated database for every test."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import goals
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    from rabbit_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -28,16 +28,16 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def server(hermes_home, monkeypatch):
+def server(rabbit_home, monkeypatch):
     with patch.dict(
         "sys.modules",
         {
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "rabbit_cli.env_loader": MagicMock(),
+            "rabbit_cli.banner": MagicMock(),
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
-    monkeypatch.setattr(mod, "_hermes_home", hermes_home)
+    monkeypatch.setattr(mod, "_rabbit_home", rabbit_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
     monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
@@ -63,9 +63,9 @@ def session(server):
     }
     server._sessions[sid] = entry
     yield sid, key, entry
-    from hermes_cli.goals import GoalManager
-    from hermes_cli.heartbeat import HeartbeatManager
-    from hermes_cli.loops import LoopManager
+    from rabbit_cli.goals import GoalManager
+    from rabbit_cli.heartbeat import HeartbeatManager
+    from rabbit_cli.loops import LoopManager
 
     GoalManager(key).clear()
     LoopManager(key).clear()
@@ -105,7 +105,7 @@ def _forbid_dispatch(server, monkeypatch):
 
 
 def _save_goal(key, **overrides):
-    from hermes_cli.goals import GoalState, save_goal
+    from rabbit_cli.goals import GoalState, save_goal
 
     fields = {
         "goal": "Finish the desktop control card",
@@ -122,7 +122,7 @@ def _save_goal(key, **overrides):
 
 
 def _save_loop(key, **overrides):
-    from hermes_cli.loops import LoopState, save_loop
+    from rabbit_cli.loops import LoopState, save_loop
 
     fields = {
         "prompt": "Check the deployment",
@@ -140,7 +140,7 @@ def _save_loop(key, **overrides):
 
 
 def _save_heartbeat(key, **overrides):
-    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+    from rabbit_cli.heartbeat import HeartbeatState, save_heartbeat
 
     fields = {
         "prompt": "Check the deployment",
@@ -171,7 +171,7 @@ class TestStructuredRead:
         }
 
     def test_goal_contract_subgoals_and_gates_are_structured_and_sanitized(self, server, session):
-        from hermes_cli.goals import GoalContract, GoalGate
+        from rabbit_cli.goals import GoalContract, GoalGate
 
         sid, key, _ = session
         contract = GoalContract(outcome="Card is correct", verification="Run focused tests")
@@ -265,7 +265,7 @@ class TestDispatcherBackedMutations:
 
 class TestManagerOnlyMutations:
     def test_subgoal_add_remove_clear_are_real_one_based_mutations_without_dispatch(self, server, session, monkeypatch):
-        from hermes_cli.goals import load_goal
+        from rabbit_cli.goals import load_goal
 
         sid, key, _ = session
         _save_goal(key, subgoals=["First criterion"])
@@ -301,7 +301,7 @@ class TestManagerOnlyMutations:
             assert _error(_call(server, "session.control", session_id=sid, action=action, args=args))["code"] == 4004
 
     def test_goal_unwait_clears_the_real_barrier_through_shared_command(self, server, session):
-        from hermes_cli.goals import GoalManager
+        from rabbit_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
@@ -360,7 +360,7 @@ class TestErrorsAndEvents:
         assert emitted == []
 
     def test_adapter_error_becomes_4004_and_emits_no_update(self, server, session, monkeypatch):
-        from hermes_cli.goals import GoalManager
+        from rabbit_cli.goals import GoalManager
 
         sid, key, _ = session
         _save_goal(key)
@@ -398,7 +398,7 @@ class TestUpdatePublication:
         if name == "goal":
             _save_goal(key)
         else:
-            from hermes_cli.loops import LoopManager
+            from rabbit_cli.loops import LoopManager
 
             LoopManager(key).set("poll CI", interval_seconds=300)
         emitted = self._capture(server, monkeypatch)
@@ -439,15 +439,15 @@ class TestUpdatePublication:
             "_wire_callbacks": lambda sid_: None, "_sync_agent_model_with_config": lambda sid_, s: None,
             "_session_cwd": lambda s: str(tmp_path), "_register_session_cwd": lambda s: None,
             "_tts_stream_begin": lambda: None, "_sync_session_key_after_compress": lambda *a, **k: None,
-            "_get_usage": lambda agent: {}, "_hermes_home": tmp_path,
+            "_get_usage": lambda agent: {}, "_rabbit_home": tmp_path,
         }.items():
             monkeypatch.setattr(server, name, value)
         monkeypatch.setattr(server.threading, "Thread", _InlineThread)
         # Deterministic judge: the model-graded verdict is not under test, the ordering is.
-        from hermes_cli.goals import GoalManager
+        from rabbit_cli.goals import GoalManager
 
         def judge(self, raw, **kwargs):
-            from hermes_cli.goals import save_goal
+            from rabbit_cli.goals import save_goal
 
             self.state.turns_used += 1
             save_goal(self.session_id, self.state)

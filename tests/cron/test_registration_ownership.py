@@ -14,7 +14,7 @@ from tools import cronjob_tools as tools
 
 
 def test_live_direct_run_survives_stale_sweep(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     started, release = tmp_path / "started", tmp_path / "release"

@@ -7,7 +7,7 @@ finalizing, the executor refused work, SIGKILL — the restarted scan used to se
 ``next_run_at`` and the occurrence vanished: no execution row, no log line. The store now carries a
 ``pending_slot`` stamp across that window and a later scan restores it as the due instant.
 
-Drives the REAL ``tick()`` against a throwaway HERMES_HOME with a ``no_agent`` script job that
+Drives the REAL ``tick()`` against a throwaway RABBIT_HOME with a ``no_agent`` script job that
 appends one line per fire. Process 1 is a real subprocess that dies inside the window, so the
 restarted scan sees a provably dead owner exactly as a gateway restart does.
 """
@@ -34,22 +34,22 @@ S.tick(verbose=False, sync=True)
 
 @pytest.fixture
 def slot_env(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     (home / "cron" / "output").mkdir(parents=True)
     (home / "scripts").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.delenv("HERMES_MACHINE_ID", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.delenv("RABBIT_MACHINE_ID", raising=False)
 
     import cron.executions as E
     import cron.jobs as J
     import cron.scheduler as S
 
-    monkeypatch.setattr(J, "HERMES_DIR", home)
+    monkeypatch.setattr(J, "RABBIT_DIR", home)
     monkeypatch.setattr(J, "CRON_DIR", home / "cron")
     monkeypatch.setattr(J, "JOBS_FILE", home / "cron" / "jobs.json")
     monkeypatch.setattr(J, "OUTPUT_DIR", home / "cron" / "output")
     monkeypatch.setattr(E, "EXECUTIONS_FILE", home / "cron" / "executions.db")
-    monkeypatch.setattr(S, "_hermes_home", home)
+    monkeypatch.setattr(S, "_rabbit_home", home)
     S._running_job_ids.clear()
     S._running_since.clear()
     S._running_futures.clear()
@@ -60,7 +60,7 @@ def slot_env(tmp_path, monkeypatch):
     (home / "scripts" / "fire.sh").chmod(0o755)
     job = J.create_job(prompt=None, schedule="every 1h", name="slot", script="fire.sh",
                        no_agent=True, deliver="local")
-    slot = (J._hermes_now() - timedelta(minutes=1)).replace(microsecond=0).isoformat()
+    slot = (J._rabbit_now() - timedelta(minutes=1)).replace(microsecond=0).isoformat()
     stored = J.load_jobs()
     next(r for r in stored if r["id"] == job["id"])["next_run_at"] = slot
     J.save_jobs(stored)
@@ -70,7 +70,7 @@ def slot_env(tmp_path, monkeypatch):
 
     def crash_before_dispatch() -> None:
         """Process 1: its tick advances the schedule, then it dies before any fire claim."""
-        env = dict(os.environ, HERMES_HOME=str(home))
+        env = dict(os.environ, RABBIT_HOME=str(home))
         proc = subprocess.run([sys.executable, "-c", _CRASH_BEFORE_DISPATCH, str(REPO)],
                               env=env, cwd=str(REPO), capture_output=True, text=True, timeout=120)
         assert proc.returncode == 137, proc.stderr[-2000:]
@@ -87,7 +87,7 @@ class TestMissedWindowCatchUp:
 
         slot_env["crash"]()
         after_crash = J.get_job(job_id)
-        assert J._ensure_aware(J.datetime.fromisoformat(after_crash["next_run_at"])) > J._hermes_now()
+        assert J._ensure_aware(J.datetime.fromisoformat(after_crash["next_run_at"])) > J._rabbit_now()
         assert slot_env["fires"]() == 0
 
         # Restarted scheduler: the occurrence must come back and run exactly once.
@@ -102,7 +102,7 @@ class TestMissedWindowCatchUp:
         assert slot_env["fires"]() == 1
         rec = J.get_job(job_id)
         assert "pending_slot" not in rec
-        assert J._ensure_aware(J.datetime.fromisoformat(rec["next_run_at"])) > J._hermes_now()
+        assert J._ensure_aware(J.datetime.fromisoformat(rec["next_run_at"])) > J._rabbit_now()
 
     def test_fired_slot_is_not_replayed_after_restart(self, slot_env):
         """Contract half two: a slot that DID run before the restart stays run."""

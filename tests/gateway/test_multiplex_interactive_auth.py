@@ -1,7 +1,7 @@
 """Multiplex interactive-auth regressions (#86296, #92840, #72657, #87240 egress).
 
 Real ``GatewayRunner`` methods on an ``object.__new__`` runner, real
-``PairingStore`` files under a temp HERMES_HOME, multiplex active.
+``PairingStore`` files under a temp RABBIT_HOME, multiplex active.
 """
 
 from pathlib import Path
@@ -22,7 +22,7 @@ def mux_home(tmp_path, monkeypatch):
     (home / "profiles" / "secondary").mkdir(parents=True)
     (home / ".env").write_text("", encoding="utf-8")
     (home / "profiles" / "secondary" / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     for key in (
         "TELEGRAM_ALLOWED_USERS",
         "TELEGRAM_ALLOW_BOTS",
@@ -117,7 +117,7 @@ def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home, monkeypa
     any profile runtime scope, straight off the adapter's event loop. The
     default profile's allowlist never leaks in, and the sync check never
     hydrates external secret sources on that loop (#99519 class)."""
-    import hermes_cli.env_loader as env_loader
+    import rabbit_cli.env_loader as env_loader
 
     hydrated = []
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)
@@ -126,7 +126,7 @@ def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home, monkeypa
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")  # the default profile's live os.environ
     (mux_home / "profiles" / "secondary" / ".env").write_text("TELEGRAM_ALLOWED_USERS=555\n", encoding="utf-8")
     tg = _telegram(runner)
-    tg._hermes_profile_name = "secondary"
+    tg._rabbit_profile_name = "secondary"
     runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
     tg.set_authorization_check(
         runner._make_adapter_auth_check(Platform.TELEGRAM, profile_name="secondary")
@@ -148,7 +148,7 @@ def test_secondary_callback_allowlist_follows_env_edits(mux_home):
     env_path = mux_home / "profiles" / "secondary" / ".env"
     env_path.write_text("TELEGRAM_ALLOWED_USERS=555\n", encoding="utf-8")
     tg = _telegram(runner)
-    tg._hermes_profile_name = "secondary"
+    tg._rabbit_profile_name = "secondary"
     runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
     tg.set_authorization_check(
         runner._make_adapter_auth_check(Platform.TELEGRAM, profile_name="secondary")

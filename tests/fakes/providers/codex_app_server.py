@@ -8,11 +8,11 @@ Protocol truth is the schema bundle emitted by ``codex app-server generate-json-
 0.147): request params are checked field by field with the real server's serde error strings
 (``-32600 "Invalid request: missing field `threadId`"``). The real server IGNORES unknown fields, so
 the fake answers them normally but records each one as ``ignored`` — a field codex silently drops is
-Hermes intent that never reaches the model, and the suite asserts none are sent. Responses Hermes
+Rabbit intent that never reaches the model, and the suite asserts none are sent. Responses Rabbit
 gives to server-initiated requests (approvals, elicitation) are validated the same way.
 
 State lives in ``DIR``: ``scenario.json`` (scripted turns, consumed one per ``turn/start`` across
-processes), ``threads.json`` (the "rollout store" that ``thread/resume`` reads, so a NEW Hermes process
+processes), ``threads.json`` (the "rollout store" that ``thread/resume`` reads, so a NEW Rabbit process
 can resume a thread) and ``transcript.jsonl`` (every message in both directions, plus spawn/exit
 events with PIDs). Only stdlib: the wrapper runs it with the test interpreter.
 """
@@ -38,7 +38,7 @@ GRANDCHILD_RELEASE = "release-grandchildren"
 
 
 # ---------------------------------------------------------------------------------------------------
-# Protocol schema (subset of the codex app-server v2 bundle Hermes can reach) + serde-style validator
+# Protocol schema (subset of the codex app-server v2 bundle Rabbit can reach) + serde-style validator
 # ---------------------------------------------------------------------------------------------------
 
 class Invalid(Exception):
@@ -333,7 +333,7 @@ class FakeAppServer:
                 self._pending_cv.notify_all()
 
     def server_request(self, method: str, params: dict, timeout: float = 60.0) -> dict:
-        """Issue a server-initiated request and block for Hermes' reply."""
+        """Issue a server-initiated request and block for Rabbit' reply."""
         with self._pending_cv:
             self._next_server_id += 1
             rid = self._next_server_id
@@ -654,7 +654,7 @@ class FakeCodex:
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     def requests(self, method: Optional[str] = None) -> list[dict]:
-        """Client requests Hermes sent (full transcript entries), optionally one method."""
+        """Client requests Rabbit sent (full transcript entries), optionally one method."""
         return [e for e in self.entries() if e.get("dir") == "in" and "method" in e.get("msg", {})
                 and "id" in e["msg"] and (method is None or e["msg"]["method"] == method)]
 
@@ -678,14 +678,14 @@ class FakeCodex:
         return _Store(self.state_dir / "threads.json").load()["threads"]
 
     def assert_wire_clean(self) -> None:
-        """Every request/response Hermes sent is valid AND carries no field codex would silently drop."""
+        """Every request/response Rabbit sent is valid AND carries no field codex would silently drop."""
         assert not self.violations(), f"protocol violations: {self.violations()}"
         assert not self.ignored_fields(), f"fields codex ignores (intent silently lost): {self.ignored_fields()}"
 
 
 @dataclass
 class CodexRun:
-    """Outcome of :func:`run_codex_scenario`: the fake, the Hermes home and one ChatResult per CLI run."""
+    """Outcome of :func:`run_codex_scenario`: the fake, the Rabbit home and one ChatResult per CLI run."""
     fake: FakeCodex
     home: Any
     results: list
@@ -721,7 +721,7 @@ class CodexRun:
 
 def run_codex_scenario(root: Path, turns: list[dict], runs: list[dict], *, config: Optional[dict] = None,
                        **scenario: Any) -> CodexRun:
-    """Real ``hermes chat -q`` runs (``--resume`` after the first) against a fresh fake codex install.
+    """Real ``rabbit chat -q`` runs (``--resume`` after the first) against a fresh fake codex install.
 
     ``runs``: ``{"prompt", "args": [...], "then": {scenario changes applied after this run}}``."""
     from tests.e2e.core.providers._native_helpers import latest_session, make_home, run_chat
@@ -729,7 +729,7 @@ def run_codex_scenario(root: Path, turns: list[dict], runs: list[dict], *, confi
     fake = FakeCodex(root, turns, **scenario)
     model = {"provider": "openai", "default": "gpt-5.5", "openai_runtime": "codex_app_server",
              "codex_bin": str(fake.bin)}
-    # The app-server owns auth; the key only satisfies Hermes' provider resolution and never leaves.
+    # The app-server owns auth; the key only satisfies Rabbit' provider resolution and never leaves.
     home = make_home(root, model, env_file={"OPENAI_API_KEY": "sk-fake-codex-e2e"}, extra_config=config)
     results, session_id = [], None
     for run in runs:

@@ -1,7 +1,7 @@
 // The ladder between the curl tier and the hidden-Chromium tier of link-title
 // resolution: curl (tier 1) → hidden BrowserWindow (tier 2).
 //
-// The title partition is cookieless (`session.fromPartition('hermes:link-titles',
+// The title partition is cookieless (`session.fromPartition('rabbit:link-titles',
 // { cache: false })`), so a Google Workspace link answers tier 1 with Google's
 // sign-in page — and tier 2 used to be reached *exactly* when tier 1 produced no
 // usable title, i.e. for every sign-in wall. Loading that wall in the real

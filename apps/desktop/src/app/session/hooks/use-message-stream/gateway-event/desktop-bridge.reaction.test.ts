@@ -10,7 +10,7 @@ vi.mock('@/app/right-sidebar/terminal/agent-terminal-stream', () => ({ writeAgen
 vi.mock('@/app/right-sidebar/terminal/terminals', () => ({ closeAgentTerminalByProc: vi.fn() }))
 vi.mock('@/store/pane-focus', () => ({ applyDesktopLayoutPreset: vi.fn(), revealDesktopPane: vi.fn() }))
 vi.mock('@/store/reactions-local', async () => {
-  const { registryBackendScopeKey } = await import('@hermes/shared')
+  const { registryBackendScopeKey } = await import('@rabbit/shared')
 
   return {
     recordAgentReaction: vi.fn(),

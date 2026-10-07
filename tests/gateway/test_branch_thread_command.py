@@ -11,7 +11,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource, SessionStore
-from hermes_state import AsyncSessionDB
+from rabbit_state import AsyncSessionDB
 
 
 class _ThreadAdapter:
@@ -27,9 +27,9 @@ class _ThreadAdapter:
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
-    import hermes_state
+    import rabbit_state
 
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
 
 

@@ -2,8 +2,8 @@
 
 Regression guard for the multi-profile ``/handoff`` bug: ``/handoff`` writes
 ``handoff_state='pending'`` into the store of the profile the CLI ran under
-(``hermes -p medicina``), while the gateway's watcher resolves ``_session_db``
-from whatever HERMES_HOME is active on its task. Unscoped that is always the
+(``rabbit -p medicina``), while the gateway's watcher resolves ``_session_db``
+from whatever RABBIT_HOME is active on its task. Unscoped that is always the
 ROOT store, so the pending row was never seen and the CLI timed out with the
 gateway plainly alive and connected.
 
@@ -111,7 +111,7 @@ async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
     ]
     monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: scopes)
 
-    from hermes_cli import goals
+    from rabbit_cli import goals
 
     entered = []
 

@@ -8,7 +8,7 @@ Contract:
     onto the job as an ordinary per-job pin; ``pinned=False`` releases both.
 
 These tests exercise the full run_job path (real imports, mocked AIAgent +
-resolve_runtime_provider against a temp HERMES_HOME) and the job-store pin helpers.
+resolve_runtime_provider against a temp RABBIT_HOME) and the job-store pin helpers.
 """
 
 import sys
@@ -68,13 +68,13 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
         }
 
     fake_db = MagicMock()
-    with patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
+    with patch("cron.scheduler._rabbit_home", tmp_path), \
+         patch("cron.scheduler._get_rabbit_home", return_value=tmp_path), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=fake_db), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
+         patch("rabbit_cli.env_loader.load_rabbit_dotenv"), \
+         patch("rabbit_cli.env_loader.reset_secret_source_cache"), \
+         patch("rabbit_state_registry.acquire", return_value=fake_db), \
+         patch("rabbit_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -113,7 +113,7 @@ class TestUnpinnedJobsFollowTheMainModel:
 
     def test_missing_model_guides_to_user_owned_cli(self, tmp_path, monkeypatch):
         """A missing-model failure cannot advertise agent-owned pinning."""
-        monkeypatch.delenv("HERMES_MODEL", raising=False)
+        monkeypatch.delenv("RABBIT_MODEL", raising=False)
         success, error, agent_kwargs, _ = _run(
             _base_job(), tmp_path, current_provider="openrouter", current_model=None)
 
@@ -129,14 +129,14 @@ class TestPinnedLocksTheMainModel:
     def _store(monkeypatch, tmp_path, main_model="main-model", main_provider="openrouter"):
         import cron.jobs as jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
-        monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
+        monkeypatch.setattr(jobs, "get_rabbit_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}
         monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)
         monkeypatch.setattr(jobs, "save_jobs", lambda j: state.__setitem__("jobs", list(j)), raising=True)
         monkeypatch.setattr(jobs, "resolve_job_ref", lambda ref: next(
             (j for j in state["jobs"] if j["id"] == ref), None), raising=True)
         resolver = MagicMock(return_value={"provider": main_provider})
-        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolver)
+        monkeypatch.setattr("rabbit_cli.runtime_provider.resolve_runtime_provider", resolver)
         return jobs, resolver
 
     def test_pinned_true_locks_then_pinned_false_releases(self, monkeypatch, tmp_path):

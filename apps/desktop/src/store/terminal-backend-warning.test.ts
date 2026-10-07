@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 const getTerminalBackends = vi.fn()
 const selectTerminalBackend = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getTerminalBackends: (...args: unknown[]) => getTerminalBackends(...args),
   selectTerminalBackend: (...args: unknown[]) => selectTerminalBackend(...args)
 }))

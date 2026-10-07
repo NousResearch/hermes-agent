@@ -1,4 +1,4 @@
-"""Bedrock Converse / ConverseStream fault semantics through the real ``hermes chat -q`` CLI.
+"""Bedrock Converse / ConverseStream fault semantics through the real ``rabbit chat -q`` CLI.
 
 Each scenario owns a loopback Bedrock fake (``tests/fakes/providers/bedrock_converse.py``) that the real
 boto3 client reaches via ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``; faults are the service's documented ones
@@ -60,7 +60,7 @@ class Scenario:
 
 # Each fault precedes a good answer: a retryable fault must be retried into it, a terminal one must not.
 SCENARIOS: dict[str, Scenario] = {
-    # botocore's own retries are off (documented AWS_MAX_ATTEMPTS) so the 429 reaches Hermes' loop.
+    # botocore's own retries are off (documented AWS_MAX_ATTEMPTS) so the 429 reaches Rabbit' loop.
     "throttle_http": Scenario((HttpError("ThrottlingException", "Too many requests, please wait before trying again."),
                                _answer()), env={"AWS_MAX_ATTEMPTS": "1"}),
     "unavailable_http": Scenario((HttpError("ServiceUnavailableException", "Bedrock is unable to process your request."),

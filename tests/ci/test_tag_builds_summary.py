@@ -47,9 +47,9 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
 
     tag = CANARY_TAG
     run_url = "https://github.example/o/r/actions/runs/12345"
-    base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
+    base = f"http://127.0.0.1:{r2_server.server_port}/rabbit-releases"
     channel_key = "releases/canary/index.html"
-    previous = b'<meta name="hermes-build" content="v0.27.0+canary.20260817T101010Z">'
+    previous = b'<meta name="rabbit-build" content="v0.27.0+canary.20260817T101010Z">'
     r2_server.store[channel_key] = (previous, "text/html")
     helper = tmp_path / "bin"
     helper.mkdir()
@@ -59,7 +59,7 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
         "import json, sys\n"
         f"sys.exit(1) if not {gh_available!r} else None\n"
         "if sys.argv[1:3] == ['release', 'view']:\n"
-        "    print(json.dumps({'body': '<!-- HERMES_BUILDS_TABLE -->'}))\n"
+        "    print(json.dumps({'body': '<!-- RABBIT_BUILDS_TABLE -->'}))\n"
         "elif sys.argv[1:3] == ['release', 'edit']:\n"
         "    assert 'Build incomplete' in sys.stdin.read()\n"
         "else: raise AssertionError(sys.argv)\n",
@@ -76,11 +76,11 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
         needs[name]["result"] = "failure"
     needs[windows_publisher]["result"] = "skipped"
     result = shell_step(tmp_path, r2_server, table, "Render", {
-        "HERMES_PAYLOAD_TAG": tag, "GITHUB_REPOSITORY": "o/r",
+        "RABBIT_PAYLOAD_TAG": tag, "GITHUB_REPOSITORY": "o/r",
         "RUN_URL": run_url,
         "RELEASE_NEEDS": json.dumps(needs), "CLOUDFLARE_R2_PUBLIC_URL": base,
         "CLOUDFLARE_R2_ACCOUNT_ID": "loopback", "CLOUDFLARE_R2_ACCESS_KEY_ID": "test-inert",
-        "CLOUDFLARE_R2_SECRET_ACCESS_KEY": "test-inert", "CLOUDFLARE_R2_BUCKET": "hermes-releases",
+        "CLOUDFLARE_R2_SECRET_ACCESS_KEY": "test-inert", "CLOUDFLARE_R2_BUCKET": "rabbit-releases",
     })
     assert (result.returncode == 0) is gh_available, result.stdout + result.stderr
     key = f"releases/tag/{tag}/index.html"

@@ -8,7 +8,7 @@ PARTIAL — it only carries the keys it overrides.
 Two layers live here:
 
 - **packs** — registered by plugins through ``PluginContext.register_locale`` (last registered wins);
-- **overlay** — ``$HERMES_HOME/locales/<lang>[.<surface>].yaml`` of the *current* profile home.
+- **overlay** — ``$RABBIT_HOME/locales/<lang>[.<surface>].yaml`` of the *current* profile home.
 
 Merged views are cached per ``(lang, surface)`` / ``(home, lang, surface)``; :func:`clear_cache` (called
 by ``agent.i18n.reset_language_cache``) drops them, and every pack mutation resets the facade's caches
@@ -73,7 +73,7 @@ def non_text_leaves(node: Any, prefix: str = "") -> list[str]:
 def parse_locale_file(path: Path) -> dict[str, str]:
     """Parse one locale YAML into a flat catalog. Raises on unreadable/unparseable input or a non-mapping
     document — the strict form for registration and validation."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
     with Path(path).open("r", encoding="utf-8-sig") as handle:
         data = yaml.safe_load(handle)
     if data is None:

@@ -1,18 +1,18 @@
-"""Persistent slash-command worker — one HermesCLI per TUI session.
+"""Persistent slash-command worker — one RabbitCLI per TUI session.
 
 Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|error} to stdout.
 """
 
-# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Hermes's own
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Rabbit's own
 # top-level modules: this worker is spawned as ``-m tui_gateway.slash_worker`` with the user's CWD, so
 # ``import cli`` would otherwise resolve ``utils`` to a colliding local package and crash the child in a
-# retry loop. ``hermes_bootstrap`` lives at the repo root (no collision risk), so importing it first is safe.
-# ``hermes_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
+# retry loop. ``rabbit_bootstrap`` lives at the repo root (no collision risk), so importing it first is safe.
+# ``rabbit_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
 # collide with a user package), and it owns the canonical path-hardening logic shared with the other entry
 # points — #51693 added the guard to ``entry.py``/``acp_adapter/entry.py`` but missed this child.
-import hermes_bootstrap
+import rabbit_bootstrap
 
-hermes_bootstrap.harden_import_path()
+rabbit_bootstrap.harden_import_path()
 
 import argparse
 import contextlib
@@ -29,11 +29,11 @@ from tui_gateway._env import env_float
 from tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
-    from cli import HermesCLI
+    from cli import RabbitCLI
 
 # Env-overridable so the integration test can drive sub-second timing.
-_WATCHDOG_POLL_S = max(0.05, env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
-_ORPHAN_GRACE_S = max(0.0, env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
+_WATCHDOG_POLL_S = max(0.05, env_float("RABBIT_SLASH_WATCHDOG_POLL_S", 2.0))
+_ORPHAN_GRACE_S = max(0.0, env_float("RABBIT_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,12 @@ def _watchdog_parent(parent_pid: int, *, is_windows: bool, getppid=os.getppid) -
 
 
 def _prepare_slash_worker_runtime() -> None:
-    """Start bounded MCP discovery before HermesCLI snapshots tools: each slash_worker child is its
-    own process — the parent ``hermes serve`` discovery thread does not populate this registry.
+    """Start bounded MCP discovery before RabbitCLI snapshots tools: each slash_worker child is its
+    own process — the parent ``rabbit serve`` discovery thread does not populate this registry.
 
     See #61891.
     """
-    from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
+    from rabbit_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
 
@@ -113,7 +113,7 @@ def _refuse_skill_slash(command: str) -> None:
         raise SkillSlashRefused(base)
 
 
-def _run(cli: "HermesCLI", command: str) -> str:
+def _run(cli: "RabbitCLI", command: str) -> str:
     """Run one command; return its captured, ANSI-stripped output.
 
     A command like /prompt or /blueprint parks the composed text on the one-shot
@@ -166,21 +166,21 @@ def main():
     p.add_argument("--provider", default="")
     p.add_argument("--parent-pid", type=int, default=0)
     args = p.parse_args()
-    os.environ["HERMES_SESSION_KEY"] = args.session_key
-    os.environ["HERMES_INTERACTIVE"] = "1"
+    os.environ["RABBIT_SESSION_KEY"] = args.session_key
+    os.environ["RABBIT_INTERACTIVE"] = "1"
     _start_parent_death_watchdog(_watchdog_parent(args.parent_pid, is_windows=sys.platform == "win32"))
     # Keep the heavyweight CLI import behind the watchdog (importing it at module
     # load left a reparenting window before main() could snapshot PPID), but ahead
-    # of MCP discovery: importing cli loads ~/.hermes/.env and sets HERMES_QUIET,
+    # of MCP discovery: importing cli loads ~/.rabbit/.env and sets RABBIT_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
-    from cli import HermesCLI
+    from cli import RabbitCLI
     _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         # --provider pins the CLI to the parent agent's resolved provider (a MoA session's virtual
-        # "moa" provider included). Without it HermesCLI re-resolves from config and dispatches the
+        # "moa" provider included). Without it RabbitCLI re-resolves from config and dispatches the
         # MoA preset NAME to the configured real provider (#57283).
-        cli = HermesCLI(model=args.model or None, provider=args.provider or None,
+        cli = RabbitCLI(model=args.model or None, provider=args.provider or None,
                         compact=True, resume=args.session_key, verbose=False)
     cli._slash_metrics_surface = None  # the TUI/Desktop client already counted the typed command
     cli.is_slash_worker = True
@@ -210,7 +210,7 @@ def main():
             # Workers persist for the TUI session: release allocator pages at the command boundary like
             # other long-lived gateway processes (trim_memory's shared cooldown coalesces nearby activity).
             try:
-                from hermes_cli.mem_trim import trim_memory
+                from rabbit_cli.mem_trim import trim_memory
                 trim_memory(reason="slash worker command completion")
             except Exception as exc:
                 # debug, not warning — a persistent failure would repeat every command.

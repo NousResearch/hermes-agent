@@ -47,7 +47,7 @@ def test_sessions_json_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monk
 def test_suggestions_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monkeypatch, broken_replace):
     from cron import suggestions
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     target = suggestions._current_suggestions_file()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('{"old": true}', encoding="utf-8")
@@ -60,7 +60,7 @@ def test_suggestions_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monkey
 def test_shell_hooks_allowlist_survives_failed_replace_without_temp(tmp_path, monkeypatch, broken_replace):
     from agent import shell_hooks
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     target = shell_hooks.allowlist_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps({"approvals": []}), encoding="utf-8")

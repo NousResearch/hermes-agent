@@ -3,7 +3,7 @@
 // (e.g. a new chat started in the compact pop-out) never reaches another
 // window. This bus pings every window to re-pull the shared session list; the
 // data already lives in the backend, the other window just doesn't know to look.
-const CHANNEL = 'hermes:sessions'
+const CHANNEL = 'rabbit:sessions'
 
 const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL)
 

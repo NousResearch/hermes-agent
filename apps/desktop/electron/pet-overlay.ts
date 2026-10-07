@@ -6,7 +6,7 @@
  * anchor window, and the overlay window itself.
  *
  * The bug this exists for: the renderer remembers the overlay's absolute
- * screen position (localStorage hermes.desktop.pet-overlay-bounds.v1) and
+ * screen position (localStorage rabbit.desktop.pet-overlay-bounds.v1) and
  * reuses it verbatim on the next pop-out / app restart. If that spot was on an
  * external monitor that has since been unplugged, the overlay is created
  * off-screen — and because it is a transparent, frameless, non-activating

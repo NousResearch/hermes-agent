@@ -146,7 +146,7 @@ describe('streaming-status invalidation scope', () => {
     // competing root swapped the element type at this position, so React
     // unmounted the row and mounted a fresh one — discarding the DOM the
     // scroll anchor was holding.
-    const delivery = 'Message from 🤖 Hermes (@hermes): please check the build'
+    const delivery = 'Message from 🤖 Rabbit (@rabbit): please check the build'
     const messages = [user('u1', delivery), assistant('a1', 'working on it', true)]
     const { container, findByText, rerender } = render(<Harness messages={messages} />)
 

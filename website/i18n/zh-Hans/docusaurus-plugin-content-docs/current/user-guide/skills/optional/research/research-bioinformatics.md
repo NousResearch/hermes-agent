@@ -14,7 +14,7 @@ description: "来自 bioSkills 和 ClawBio 的 400+ 生物信息学技能网关"
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/research/bioinformatics` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/research/bioinformatics` 安装 |
 | 路径 | `optional-skills/research/bioinformatics` |
 | 版本 | `1.0.0` |
 | 平台 | linux, macos |
@@ -23,7 +23,7 @@ description: "来自 bioSkills 和 ClawBio 的 400+ 生物信息学技能网关"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该技能时加载的完整技能定义。这是 Agent 在技能激活时所看到的指令内容。
+以下是 Rabbit 在触发该技能时加载的完整技能定义。这是 Agent 在技能激活时所看到的指令内容。
 :::
 
 # 生物信息学技能网关
@@ -61,7 +61,7 @@ description: "来自 bioSkills 和 ClawBio 的 400+ 生物信息学技能网关"
    # ClawBio — 每个技能位于：skills/<skill-name>/
    cat /tmp/ClawBio/skills/pharmgx-reporter/README.md
    ```
-4. 将获取的技能作为参考资料使用。这些**不是** Hermes 格式的技能——请将其视为专家领域指南。它们包含正确的参数、合适的工具标志和经过验证的流程。
+4. 将获取的技能作为参考资料使用。这些**不是** Rabbit 格式的技能——请将其视为专家领域指南。它们包含正确的参数、合适的工具标志和经过验证的流程。
 
 ## 按领域划分的技能索引
 
@@ -244,7 +244,7 @@ conda install -c bioconda samtools bcftools blast minimap2 bedtools fastp kraken
 
 ## 注意事项
 
-- 获取的技能**不是** Hermes SKILL.md 格式。它们使用各自的结构（bioSkills：代码模式手册；ClawBio：README + Python 脚本）。请将其作为专家参考资料阅读。
+- 获取的技能**不是** Rabbit SKILL.md 格式。它们使用各自的结构（bioSkills：代码模式手册；ClawBio：README + Python 脚本）。请将其作为专家参考资料阅读。
 - bioSkills 是参考指南——展示正确的参数和代码模式，但不是可执行的流程。
 - ClawBio 技能是可执行的——许多具有 `--demo` 标志，可直接运行。
 - 两个仓库均假设已安装生物信息学工具。运行流程前请检查前置条件。

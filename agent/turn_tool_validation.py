@@ -18,7 +18,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
                                           normalize_provider_tool_call_ids)
 from agent.turn_failure_copy import site_copy, stamp_failure
-from hermes_constants import FINISH_REASON_LENGTH
+from rabbit_constants import FINISH_REASON_LENGTH
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -102,7 +102,7 @@ def validate_tool_calls(
                 tc.function.name = repaired
                 repaired_ids.add(id(tc))
     # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
-    from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
+    from rabbit_cli.observability.shared_metrics_model import record_tool_call_quality
     record_tool_call_quality(agent, tool_calls, repaired_ids)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid

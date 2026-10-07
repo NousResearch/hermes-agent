@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
  * Compact theme picker mounted next to the language switcher in the header.
  * Each dropdown row shows a 3-stop swatch (background / midground / warm
  * glow) so users can preview the palette before committing. User-defined
- * themes from `~/.hermes/dashboard-themes/*.yaml` use their API-provided
+ * themes from `~/.rabbit/dashboard-themes/*.yaml` use their API-provided
  * definitions so they show real palette swatches just like built-ins.
  *
  * When placed at the bottom of a container (e.g. the sidebar rail), pass

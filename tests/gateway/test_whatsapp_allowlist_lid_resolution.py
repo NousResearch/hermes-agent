@@ -17,7 +17,7 @@ import json
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 PHONE = "351912345678"
@@ -52,7 +52,7 @@ def _make_adapter(dm_policy=None, allow_from=None, group_policy=None, group_allo
 
 def _write_lid_mapping(phone=PHONE, lid=LID):
     """Mirror what the JS bridge writes: phone→lid and lid→phone (reverse)."""
-    session_dir = get_hermes_home() / "whatsapp" / "session"
+    session_dir = get_rabbit_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / f"lid-mapping-{phone}.json").write_text(json.dumps(lid), encoding="utf-8")
     (session_dir / f"lid-mapping-{lid}_reverse.json").write_text(

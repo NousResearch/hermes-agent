@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 def main():
     with tempfile.TemporaryDirectory(prefix="property-guidance-") as temporary:
-        os.environ["HERMES_HOME"] = temporary
+        os.environ["RABBIT_HOME"] = temporary
         os.environ["TERMINAL_CWD"] = temporary
         os.chdir(temporary)
         import tiktoken

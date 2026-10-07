@@ -236,7 +236,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     due instead of being silently consumed.
     """
     try:
-        from hermes_cli.heartbeat import HeartbeatManager
+        from rabbit_cli.heartbeat import HeartbeatManager
     except Exception:
         return
     if not (sid_key := session.get("session_key") or ""):
@@ -274,7 +274,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
     try:
-        from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
+        from rabbit_cli.loops import LoopManager, goal_blocks_loop_tick
     except Exception:
         return
     if not (sid_key := session.get("session_key") or ""):
@@ -345,7 +345,7 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
 
 
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
-    """(slug, resolved DB identity) — multiple slugs can point at one DB when HERMES_KANBAN_DB pins it."""
+    """(slug, resolved DB identity) — multiple slugs can point at one DB when RABBIT_KANBAN_DB pins it."""
     slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
     db_path = (board_meta or {}).get("db_path")
     try:
@@ -358,8 +358,8 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved)."""
-    from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli import kanban_db_notify as _kbn
+    from rabbit_cli import kanban_db_connect as _kbc
+    from rabbit_cli import kanban_db_notify as _kbn
     with contextlib.suppress(Exception):
         if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
             return []
@@ -398,7 +398,7 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
 
 def _collect_kanban_notifications(session: dict) -> list:
     """Claim unseen terminal kanban events for this session's ``platform="tui"`` subscriptions (``kanban_create``
-    auto-subscribes with ``chat_id=HERMES_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
+    auto-subscribes with ``chat_id=RABBIT_SESSION_KEY``; no "tui" messaging adapter exists, so this poller is the
     delivery path). Same atomic cursor-claim as the gateway notifier: exactly-once even if a gateway polls the same DB.
 
     See #59890.
@@ -407,7 +407,7 @@ def _collect_kanban_notifications(session: dict) -> list:
     if not session_key or session.get("_finalized"):
         return []
     try:
-        from hermes_cli import kanban_db as _kb
+        from rabbit_cli import kanban_db as _kb
     except Exception:
         return []
     try:
@@ -417,7 +417,7 @@ def _collect_kanban_notifications(session: dict) -> list:
             boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
         except Exception:
             return []
-    # dict keyed by resolved DB identity: first slug per DB wins (a pinned HERMES_KANBAN_DB aliases slugs).
+    # dict keyed by resolved DB identity: first slug per DB wins (a pinned RABBIT_KANBAN_DB aliases slugs).
     unique = {}
     for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
@@ -800,7 +800,7 @@ _desktop_ui_wired = False
 def _wire_desktop_sinks() -> None:
     """Idempotently wire process-registry and desktop-tool sinks to renderer events: `agent.terminal.output` and
     `terminal.close` (drops a tab without killing the process) route to the window owning the process; desktop-only
-    tools pass the turn's ``HERMES_UI_SESSION_ID`` as ``sid``. `_emit` is thread-safe."""
+    tools pass the turn's ``RABBIT_UI_SESSION_ID`` as ``sid``. `_emit` is thread-safe."""
     global _desktop_ui_wired
     from tools.process_registry import process_registry
 

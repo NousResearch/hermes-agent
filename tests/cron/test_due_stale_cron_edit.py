@@ -7,7 +7,7 @@ A direct ``jobs.json`` edit that changes ``schedule.expr`` leaves the stored
 the job fired on the day the new expression excludes. The guard re-anchors
 ``next_run_at`` from the current expression and skips the fire.
 
-These exercise the real store against a temp ``HERMES_HOME`` (no mocks) per
+These exercise the real store against a temp ``RABBIT_HOME`` (no mocks) per
 the E2EE-over-mocks discipline for file-touching code.
 """
 
@@ -20,8 +20,8 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    """Isolated RABBIT_HOME so jobs.json doesn't touch the real store."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     yield tmp_path
 
 
@@ -50,7 +50,7 @@ def test_stale_next_run_on_excluded_dow_does_not_fire(temp_home, monkeypatch):
     from cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
+        "cron.jobs._rabbit_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 
@@ -67,7 +67,7 @@ def test_matching_next_run_still_fires(temp_home, monkeypatch):
     from cron.jobs import get_due_jobs
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
+        "cron.jobs._rabbit_now", lambda: _SATURDAY_0700 + timedelta(seconds=30)
     )
     jid = _write_cron_job("0 7 * * *", _SATURDAY_0700)
 
@@ -81,7 +81,7 @@ def test_manual_trigger_bypasses_stale_schedule_guard(temp_home, monkeypatch):
     from cron.jobs import create_job, get_due_jobs, get_job, mark_job_run, trigger_job
 
     now = _SATURDAY_0700 + timedelta(seconds=30)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: now)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="manual")
 
     triggered = trigger_job(job["id"])
@@ -106,11 +106,11 @@ def test_delayed_manual_trigger_is_not_counted_as_catch_up(temp_home, monkeypatc
     )
 
     trigger_time = _SATURDAY_0700 + timedelta(seconds=30)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: trigger_time)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="delayed")
     trigger_job(job["id"])
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: trigger_time + timedelta(hours=5)
+        "cron.jobs._rabbit_now", lambda: trigger_time + timedelta(hours=5)
     )
 
     due = get_due_jobs()
@@ -125,10 +125,10 @@ def test_manual_trigger_survives_timezone_change_before_tick(temp_home, monkeypa
 
     trigger_time = datetime.fromisoformat("2026-08-22T21:00:00+10:00")
     scan_time = datetime.fromisoformat("2026-08-22T13:00:00+02:00")
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: trigger_time)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: trigger_time)
     job = create_job(prompt="x", schedule="0 7 * * 1-5", name="tz-manual")
     trigger_job(job["id"])
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: scan_time)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: scan_time)
 
     due = get_due_jobs()
 
@@ -141,7 +141,7 @@ def test_stale_next_run_skips_even_inside_catchup_window(temp_home, monkeypatch)
     from cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(hours=5)
+        "cron.jobs._rabbit_now", lambda: _SATURDAY_0700 + timedelta(hours=5)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 
@@ -180,7 +180,7 @@ def test_stale_edit_without_manual_marker_still_reanchors(temp_home, monkeypatch
     from cron.jobs import get_due_jobs, get_job
 
     monkeypatch.setattr(
-        "cron.jobs._hermes_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
+        "cron.jobs._rabbit_now", lambda: _SATURDAY_0700 + timedelta(minutes=5)
     )
     jid = _write_cron_job("0 7 * * 1-5", _SATURDAY_0700)
 

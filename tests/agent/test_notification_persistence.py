@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from agent.notification_presentation import notification_turn
 from agent.session_persistence import _db_flush_collect
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway.server import _history_to_messages
 
 

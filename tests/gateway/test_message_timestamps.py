@@ -11,7 +11,7 @@ from gateway.message_timestamps import (
     format_message_timestamp,
     render_user_content_with_timestamp,
 )
-from hermes_time import safe_strftime
+from rabbit_time import safe_strftime
 
 
 BERLIN = ZoneInfo("Europe/Berlin")

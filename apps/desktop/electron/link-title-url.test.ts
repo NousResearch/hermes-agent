@@ -5,7 +5,7 @@ import { describe, test } from 'vitest'
 import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
 
 // #93893: the renderer can send ANY href-shaped string to the
-// hermes:fetchLinkTitle IPC; before these guards, an unparseable string
+// rabbit:fetchLinkTitle IPC; before these guards, an unparseable string
 // became its own cache key (canonicalTitleCacheKey returned the raw value)
 // and flowed to the hidden title window's loadURL(), producing repeating
 // `Failed to load URL: … ERR_NAME_NOT_RESOLVED` console noise.

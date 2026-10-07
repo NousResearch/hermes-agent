@@ -1,8 +1,8 @@
 """Regression test for #97905 / carrier PR #92489.
 
 A multiplex ticker (desktop dashboard backend, multiplex gateway) resolves
-``hermes_time`` under the process's own startup profile, then ticks OTHER
-profiles' cron stores via ``set_hermes_home_override()`` + ``use_cron_store()``.
+``rabbit_time`` under the process's own startup profile, then ticks OTHER
+profiles' cron stores via ``set_rabbit_home_override()`` + ``use_cron_store()``.
 Before the profile-keyed timezone cache, the first profile's resolved zone
 was process-global, so ``compute_next_run`` / ``create_job`` / ``mark_job_run``
 persisted ``next_run_at`` into the ticked profile's jobs.json with the FOREIGN
@@ -19,15 +19,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import hermes_time
+import rabbit_time
 
 
 @pytest.fixture(autouse=True)
 def _fresh_tz_cache(monkeypatch):
-    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
-    hermes_time.reset_cache()
+    monkeypatch.delenv("RABBIT_TIMEZONE", raising=False)
+    rabbit_time.reset_cache()
     yield
-    hermes_time.reset_cache()
+    rabbit_time.reset_cache()
 
 
 def test_foreign_process_tick_persists_owning_profile_offset(
@@ -46,28 +46,28 @@ def test_foreign_process_tick_persists_owning_profile_offset(
         "timezone: America/New_York\n", encoding="utf-8"
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(backend_home))
+    monkeypatch.setenv("RABBIT_HOME", str(backend_home))
 
     # Backend process resolves its own timezone first (process startup).
-    assert hermes_time.now().utcoffset() == datetime.now(
+    assert rabbit_time.now().utcoffset() == datetime.now(
         ZoneInfo("UTC")
     ).utcoffset()
 
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
+    from rabbit_constants import (
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
     from cron.jobs import create_job, load_jobs, use_cron_store
 
     # Exactly the scoping the multiplex ticker applies per profile
     # (cron/scheduler_provider.py::_tick_profiles).
-    token = set_hermes_home_override(str(profile_a))
+    token = set_rabbit_home_override(str(profile_a))
     try:
         with use_cron_store(profile_a):
             create_job(name="daily-2pm", prompt="x", schedule="0 14 * * *")
             job = load_jobs()[0]
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     next_run = datetime.fromisoformat(job["next_run_at"])
     expected_offset = datetime.now(ZoneInfo("America/New_York")).utcoffset()

@@ -34,14 +34,14 @@ def _entitlement_400():
 
 @pytest.fixture
 def pool(tmp_path, monkeypatch):
-    root = tmp_path / "hermes-root"
+    root = tmp_path / "rabbit-root"
     root.mkdir()
     (tmp_path / "fakehome").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    import hermes_constants
-    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    import rabbit_constants
+    rabbit_constants._default_rabbit_root_memo = None  # type: ignore[attr-defined]
     (root / "auth.json").write_text(json.dumps({"credential_pool": {"openai-codex": [
         {"id": f"cred-{i}", "label": f"acct-{i}", "auth_type": "oauth", "priority": i, "source": "manual",
          "access_token": tok, "refresh_token": f"rt-{i}", "expires_at_ms": 4_000_000_000_000}

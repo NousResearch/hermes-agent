@@ -1,10 +1,10 @@
 """Outbound send bodies must not carry lone surrogate code points (#113799).
 
-``hermes send MESSAGE`` passes argv through surrogateescape decoding on macOS
+``rabbit send MESSAGE`` passes argv through surrogateescape decoding on macOS
 shells; a lone surrogate then crashes the UTF-8 marshal inside platform SDK
 request bodies (feishu/lark) and the message is lost after the retries.
 ``_handle_send`` is the entry for every send_message caller (model tool call,
-``hermes send``, dashboard console), so scrubbing there closes the class.
+``rabbit send``, dashboard console), so scrubbing there closes the class.
 """
 
 import asyncio

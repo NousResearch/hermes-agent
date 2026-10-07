@@ -31,17 +31,17 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
         (root / "pm/lock.json").write_text("{}", encoding="utf-8")
     if missing != "checkout":
         (root / ".git").mkdir()
-    launcher = root / ".hermes/bin/hermes"
+    launcher = root / ".rabbit/bin/rabbit"
     if missing not in {"launcher", "legacy"}:
         launcher.parent.mkdir(parents=True)
         launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         launcher.chmod(0o755)
     if missing != "app":
-        (root / "apps/desktop/release/mac-arm64/Hermes.app").mkdir(parents=True)
+        (root / "apps/desktop/release/mac-arm64/Rabbit.app").mkdir(parents=True)
     if missing not in {"completion", "historical", "wrong-root-log"}:
-        (root / ".hermes-bootstrap-complete").write_text("completed", encoding="utf-8")
+        (root / ".rabbit-bootstrap-complete").write_text("completed", encoding="utf-8")
     # The legacy file must not mask a missing PM publication.
-    legacy = root / "venv/bin/hermes"
+    legacy = root / "venv/bin/rabbit"
     legacy.parent.mkdir(parents=True)
     legacy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     legacy.chmod(0o755)
@@ -57,17 +57,17 @@ def test_dmg_driver_requires_complete_pm_source_install(tmp_path, missing, expec
         command = mocks / name
         command.write_text(script, encoding="utf-8")
         command.chmod(0o755)
-    app_bin = tmp_path / "Hermes-Setup"
+    app_bin = tmp_path / "Rabbit-Setup"
     app_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     app_bin.chmod(0o755)
     home = tmp_path / "home"
     home.mkdir()
     if missing not in {"completion", "marker-only"}:
-        logs = home / ".hermes/logs"
+        logs = home / ".rabbit/logs"
         logs.mkdir(parents=True)
         logged_root = tmp_path / "other-install" if missing == "wrong-root-log" else root
         (logs / "bootstrap-installer.log").write_text(
-            f"INFO hermes_bootstrap_lib::bootstrap: bootstrap complete install_root={logged_root}\n",
+            f"INFO rabbit_bootstrap_lib::bootstrap: bootstrap complete install_root={logged_root}\n",
             encoding="utf-8",
         )
     result = subprocess.run(

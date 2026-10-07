@@ -10,8 +10,8 @@ tools consult it; a process the agent starts by hand against the published ``DIS
 (the ``terminal`` tool, a script) is inside the documented same-user boundary and is not stopped by it
 (bot-screen.md, "Threat model"; #110040).
 
-Authority lives ON DISK, ``<HERMES_HOME>/bot-desktop/lease.json`` under an fcntl lock, because the
-processes that must agree do not share memory: ``hermes serve`` (viewer bridge), the messaging
+Authority lives ON DISK, ``<RABBIT_HOME>/bot-desktop/lease.json`` under an fcntl lock, because the
+processes that must agree do not share memory: ``rabbit serve`` (viewer bridge), the messaging
 gateway, a CLI turn and isolated workers all drive the same display. Every read goes to the file;
 the in-process Condition only wakes local waiters early. ``epoch`` increments on every transition so
 an action admitted under one lease can tell that control changed underneath it.
@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key, secure_parent_dir
+from rabbit_constants import get_rabbit_home, rabbit_home_key, secure_parent_dir
 
 try:
     import fcntl
@@ -73,9 +73,9 @@ _listeners: List[Callable[[str, Lease], None]] = []
 
 
 def _path(profile_key: Optional[str]) -> Path:
-    """``profile_key`` is the HERMES_HOME path of the profile whose lease is meant (the RFB bridge
+    """``profile_key`` is the RABBIT_HOME path of the profile whose lease is meant (the RFB bridge
     serves several profiles from one process); ``None`` means the current profile."""
-    home = Path(profile_key) if profile_key else get_hermes_home()
+    home = Path(profile_key) if profile_key else get_rabbit_home()
     return home / "bot-desktop" / "lease.json"
 
 
@@ -169,7 +169,7 @@ def _notify(key: str, lease: Lease) -> None:
 
 
 def _transition(profile_key: Optional[str], mutate: Callable[[Lease], bool]) -> Lease:
-    key, path = hermes_home_key(profile_key) if profile_key else hermes_home_key(), _path(profile_key)
+    key, path = rabbit_home_key(profile_key) if profile_key else rabbit_home_key(), _path(profile_key)
     with _locked(path):
         lease = _read(path)
         if not mutate(lease):
@@ -244,7 +244,7 @@ def assert_agent_may_act(profile_key: Optional[str] = None) -> Lease:
 def _reset_for_tests() -> None:
     with _lock:
         _listeners.clear()
-    p = get_hermes_home() / "bot-desktop" / "lease.json"
+    p = get_rabbit_home() / "bot-desktop" / "lease.json"
     for f in (p, p.with_suffix(".lock"), p.with_suffix(".json.tmp")):
         try:
             f.unlink()

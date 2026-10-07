@@ -1,26 +1,26 @@
 ---
 sidebar_position: 3
 title: 'Learning Path'
-description: 'Choose your learning path through the Hermes Agent documentation based on your experience level and goals.'
+description: 'Choose your learning path through the Rabbit Agent documentation based on your experience level and goals.'
 ---
 
 # Learning Path
 
-Hermes Agent can do a lot — CLI assistant, Telegram/Discord bot, task automation, RL training, and more. This page helps you figure out where to start and what to read based on your experience level and what you're trying to accomplish.
+Rabbit Agent can do a lot — CLI assistant, Telegram/Discord bot, task automation, RL training, and more. This page helps you figure out where to start and what to read based on your experience level and what you're trying to accomplish.
 
 :::tip Start Here
-If you haven't installed Hermes Agent yet, begin with the [Installation guide](./installation.md) and then run through the [Quickstart](./quickstart.md). Everything below assumes you have a working installation.
+If you haven't installed Rabbit Agent yet, begin with the [Installation guide](./installation.md) and then run through the [Quickstart](./quickstart.md). Everything below assumes you have a working installation.
 :::
 
 :::tip First-time provider setup
-First-time users almost always want `hermes setup --portal` — one OAuth covers a model plus the four Tool Gateway tools (search/image/TTS/browser). See [Nous Portal](../integrations/nous-portal.md).
+
 :::
 
 ## How to Use This Page
 
 - **Know your level?** Jump to the [experience-level table](#by-experience-level) and follow the reading order for your tier.
 - **Have a specific goal?** Skip to [By Use Case](#by-use-case) and find the scenario that matches.
-- **Just browsing?** Check the [Key Features](#key-features-at-a-glance) table for a quick overview of everything Hermes Agent can do.
+- **Just browsing?** Check the [Key Features](#key-features-at-a-glance) table for a quick overview of everything Rabbit Agent can do.
 
 ## By Experience Level
 
@@ -36,7 +36,7 @@ Pick the scenario that matches what you want to do. Each one links you to the re
 
 ### "I want a CLI coding assistant"
 
-Use Hermes Agent as an interactive terminal assistant for writing, reviewing, and running code.
+Use Rabbit Agent as an interactive terminal assistant for writing, reviewing, and running code.
 
 1. [Installation](./installation.md)
 2. [Quickstart](./quickstart.md)
@@ -46,12 +46,12 @@ Use Hermes Agent as an interactive terminal assistant for writing, reviewing, an
 6. [Tips & Tricks](../guides/tips.md)
 
 :::tip
-Pass files directly into your conversation with context files. Hermes Agent can read, edit, and run code in your projects.
+Pass files directly into your conversation with context files. Rabbit Agent can read, edit, and run code in your projects.
 :::
 
 ### "I want a Telegram/Discord bot"
 
-Deploy Hermes Agent as a bot on your favorite messaging platform.
+Deploy Rabbit Agent as a bot on your favorite messaging platform.
 
 1. [Installation](./installation.md)
 2. [Configuration](../user-guide/configuration.md)
@@ -59,7 +59,7 @@ Deploy Hermes Agent as a bot on your favorite messaging platform.
 4. [Telegram Setup](../user-guide/messaging/telegram.md)
 5. [Discord Setup](../user-guide/messaging/discord.md)
 6. [Voice Mode](../user-guide/features/voice-mode.md)
-7. [Use Voice Mode with Hermes](../guides/use-voice-mode-with-hermes.md)
+7. [Use Voice Mode with Rabbit](../guides/use-voice-mode-with-rabbit.md)
 8. [Security](../user-guide/security.md)
 
 For full project examples, see:
@@ -77,7 +77,7 @@ Schedule recurring tasks, run batch jobs, or chain agent actions together.
 5. [Hooks](../user-guide/features/hooks.md)
 
 :::tip
-Cron jobs let Hermes Agent run tasks on a schedule — daily summaries, periodic checks, automated reports — without you being present.
+Cron jobs let Rabbit Agent run tasks on a schedule — daily summaries, periodic checks, automated reports — without you being present.
 :::
 
 ### "I want a team of specialist Bots"
@@ -92,10 +92,10 @@ Create named Bots with their own model, memory, skills, routines, and chats, the
 
 ### "I want to build custom tools/skills"
 
-Extend Hermes Agent with your own tools and reusable skill packages.
+Extend Rabbit Agent with your own tools and reusable skill packages.
 
 1. [Plugins](../user-guide/features/plugins.md)
-2. [Build a Hermes Plugin](../developer-guide/plugins/index.md)
+2. [Build a Rabbit Plugin](../developer-guide/plugins/index.md)
 3. [Tools Overview](../user-guide/features/tools.md)
 4. [Skills Overview](../user-guide/features/skills.md)
 5. [MCP (Model Context Protocol)](../user-guide/features/mcp.md)
@@ -105,26 +105,25 @@ Extend Hermes Agent with your own tools and reusable skill packages.
 
 :::tip
 For most custom tool creation, start with plugins. The [Adding Tools](../developer-guide/adding-tools.md)
-page is for built-in Hermes core development, not the usual user/custom-tool path.
+page is for built-in Rabbit core development, not the usual user/custom-tool path.
 :::
 
 ### "I want to train models"
 
-Use reinforcement learning to fine-tune model behavior with Hermes Agent's RL training pipeline (powered by [Atropos](https://github.com/NousResearch/atropos)).
+Use reinforcement learning to fine-tune model behavior with Rabbit Agent's RL training pipeline.
 
 1. [Quickstart](./quickstart.md)
 2. [Configuration](../user-guide/configuration.md)
-3. [Atropos RL Environments](https://github.com/NousResearch/atropos) (external)
-4. [Provider Routing](../user-guide/features/provider-routing.md)
-5. [Architecture](../developer-guide/architecture.md)
+3. [Provider Routing](../user-guide/features/provider-routing.md)
+4. [Architecture](../developer-guide/architecture.md)
 
 :::tip
-RL training works best when you already understand the basics of how Hermes Agent handles conversations and tool calls. Run through the Beginner path first if you're new.
+RL training works best when you already understand the basics of how Rabbit Agent handles conversations and tool calls. Run through the Beginner path first if you're new.
 :::
 
 ### "I want to use it as a Python library"
 
-Integrate Hermes Agent into your own Python applications programmatically.
+Integrate Rabbit Agent into your own Python applications programmatically.
 
 1. [Installation](./installation.md)
 2. [Quickstart](./quickstart.md)
@@ -147,7 +146,7 @@ Not sure what's available? Here's a quick directory of major features:
 | **MCP** | Connect to external tool servers via Model Context Protocol | [MCP](../user-guide/features/mcp.md) |
 | **Cron** | Schedule recurring agent tasks | [Cron](../user-guide/features/cron.md) |
 | **Delegation** | Spawn sub-agents for parallel work | [Delegation](../user-guide/features/delegation.md) |
-| **Code Execution** | Run Python scripts that call Hermes tools programmatically | [Code Execution](../user-guide/features/code-execution.md) |
+| **Code Execution** | Run Python scripts that call Rabbit tools programmatically | [Code Execution](../user-guide/features/code-execution.md) |
 | **Browser** | Web browsing and scraping | [Browser](../user-guide/features/browser.md) |
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](../user-guide/features/hooks.md) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](../user-guide/features/batch-processing.md) |

@@ -1,7 +1,7 @@
 """Fake Google AI Studio ``generateContent`` / ``streamGenerateContent`` endpoint behind a real
 TLS boundary.
 
-Hermes routes to its native Gemini adapter only for the real Google host
+Rabbit routes to its native Gemini adapter only for the real Google host
 (``generativelanguage.googleapis.com``), so the fake is reached the way any corporate egress
 proxy would be: an HTTPS ``CONNECT`` proxy on loopback that terminates TLS for the Google host
 with a leaf certificate signed by a throwaway CA. The child trusts that CA through the standard
@@ -41,15 +41,15 @@ from urllib.parse import parse_qs, urlsplit
 
 GEMINI_HOST = "generativelanguage.googleapis.com"
 MODEL_ID = "gemini-3-flash-preview"
-API_KEY = "AIzaFakeGeminiKeyForHermesE2E0000000000"
+API_KEY = "AIzaFakeGeminiKeyForRabbitE2E0000000000"
 # Documented dummy signatures that tell Gemini 3 to skip thought-signature validation.
 SKIP_SIGNATURES = frozenset({"skip_thought_signature_validator", "context_engineering_is_the_way_to_go"})
-# Hermes-side config for a home that talks to this fake: the user-facing provider id + model and the
+# Rabbit-side config for a home that talks to this fake: the user-facing provider id + model and the
 # key in ``.env`` (``model.base_url`` may pin another Google API version, e.g. ``.../v1``).
-HERMES_ENV = {"GEMINI_API_KEY": API_KEY}
+RABBIT_ENV = {"GEMINI_API_KEY": API_KEY}
 
 
-def hermes_model(base_url: str | None = None, **extra: Any) -> dict[str, Any]:
+def rabbit_model(base_url: str | None = None, **extra: Any) -> dict[str, Any]:
     model: dict[str, Any] = {"provider": "gemini", "default": MODEL_ID, **extra}
     if base_url:
         model["base_url"] = base_url
@@ -398,7 +398,7 @@ def _write_tls_material(directory: Path) -> tuple[Path, Path, Path]:
 
     now = datetime.datetime.now(datetime.timezone.utc)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "hermes-e2e gemini fake CA")])
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "rabbit-e2e gemini fake CA")])
     ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name)
           .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
           .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(days=1))
@@ -472,7 +472,7 @@ class GeminiFake:
         return f"http://127.0.0.1:{self._server.server_address[1]}"
 
     def child_env(self) -> dict[str, str]:
-        """Env for the ``hermes`` child: route HTTPS through the proxy and trust the fake CA."""
+        """Env for the ``rabbit`` child: route HTTPS through the proxy and trust the fake CA."""
         ca = str(self.ca_pem)
         return {"HTTPS_PROXY": self.proxy_url, "https_proxy": self.proxy_url,
                 "HTTP_PROXY": self.proxy_url, "http_proxy": self.proxy_url,
@@ -595,7 +595,7 @@ class GeminiFake:
                 if self.tunneled or host != GEMINI_HOST:
                     with fake._lock:
                         fake.refused_hosts.append(host)
-                    self.send_response(403, "Forbidden by hermes e2e fake proxy")
+                    self.send_response(403, "Forbidden by rabbit e2e fake proxy")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     self.close_connection = True

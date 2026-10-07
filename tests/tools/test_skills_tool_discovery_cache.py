@@ -5,7 +5,7 @@ commit: the original keyed the cache on the max mtime of only the TOP-LEVEL
 scan dirs, so adding/removing a skill inside a category subdir (which bumps
 the category dir's mtime, not the root's) served a stale list indefinitely.
 The signature now covers roots + immediate children (mirroring
-hermes_cli/profiles.py::_count_skills) plus the disabled-set, with a short
+rabbit_cli/profiles.py::_count_skills) plus the disabled-set, with a short
 TTL bounding in-place SKILL.md edit staleness.
 """
 

@@ -11,8 +11,8 @@ import threading
 
 import pytest
 
-import hermes_state
-from hermes_state import AsyncSessionDB
+import rabbit_state
+from rabbit_state import AsyncSessionDB
 
 
 class _SpyDB:
@@ -76,7 +76,7 @@ async def test_offloads_off_calling_thread():
 
 @pytest.mark.asyncio
 async def test_concurrent_claim_handoff_single_winner(tmp_path):
-    db = AsyncSessionDB(hermes_state.SessionDB(db_path=tmp_path / "state.db"))
+    db = AsyncSessionDB(rabbit_state.SessionDB(db_path=tmp_path / "state.db"))
     sid = "s-handoff"
     await db.create_session(sid, "test")
     await db.request_handoff(sid, "telegram")

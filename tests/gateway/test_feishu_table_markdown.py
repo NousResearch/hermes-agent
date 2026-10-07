@@ -1,6 +1,6 @@
 """Tests for Feishu adapter outbound markdown payload construction.
 
-Reproduces the bug tracked in hermes-agent issue #52786:
+Reproduces the bug tracked in rabbit-agent issue #52786:
 `_build_outbound_payload` was force-downgrading any message containing a
 markdown pipe table to ``msg_type=text``, so Feishu clients rendered the raw
 pipe-and-dash source instead of a table.  Empirically current Feishu clients

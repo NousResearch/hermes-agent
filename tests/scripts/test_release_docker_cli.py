@@ -81,7 +81,7 @@ def test_promotion_reuses_the_receipt_digest_without_rebuilding():
 
     promote_stable('v1.2.3', digest, run=run)
     create = next(argv for argv in calls if argv[3] == 'create')
-    assert create[-1] == f'nousresearch/hermes-agent@{digest}'
+    assert create[-1] == f'seven0070/Rabbit-@{digest}'
     assert all('build' not in argv for argv in calls)
 
     with pytest.raises(DockerReleaseError, match='versioned tag'):
@@ -106,15 +106,15 @@ def test_promotion_preserves_independent_desktop_digest():
         raise AssertionError(argv)
 
     promote_stable('v1.2.3', slim, run=run)
-    assert f'nousresearch/hermes-agent:v1.2.3-desktop' in inspected
+    assert f'seven0070/Rabbit-:v1.2.3-desktop' in inspected
     assert {tuple(cmd[4:]) for cmd in created} == {
-        ('-t', 'nousresearch/hermes-agent:stable', '-t', 'nousresearch/hermes-agent:latest',
-         f'nousresearch/hermes-agent@{slim}'),
-        ('-t', 'nousresearch/hermes-agent:stable-desktop', '-t',
-         'nousresearch/hermes-agent:latest-desktop', f'nousresearch/hermes-agent@{desktop}'),
+        ('-t', 'seven0070/Rabbit-:stable', '-t', 'seven0070/Rabbit-:latest',
+         f'seven0070/Rabbit-@{slim}'),
+        ('-t', 'seven0070/Rabbit-:stable-desktop', '-t',
+         'seven0070/Rabbit-:latest-desktop', f'seven0070/Rabbit-@{desktop}'),
     }
-    assert 'nousresearch/hermes-agent:stable-desktop' in inspected
-    assert 'nousresearch/hermes-agent:latest-desktop' in inspected
+    assert 'seven0070/Rabbit-:stable-desktop' in inspected
+    assert 'seven0070/Rabbit-:latest-desktop' in inspected
 
 
 def test_promotion_requires_desktop_version_before_moving_any_alias():
@@ -145,7 +145,7 @@ def test_published_digest_checks_desktop_tag():
         return 'sha256:' + ('e' if argv[4].endswith('-desktop') else 'd') * 64
 
     assert published_digest('v1.2.3', run=run) == 'sha256:' + 'd' * 64
-    assert inspected == ['nousresearch/hermes-agent:v1.2.3',
-                         'nousresearch/hermes-agent:v1.2.3-desktop']
+    assert inspected == ['seven0070/Rabbit-:v1.2.3',
+                         'seven0070/Rabbit-:v1.2.3-desktop']
     with pytest.raises(DockerReleaseError, match='desktop'):
         published_digest('v1.2.3', run=lambda argv: 'garbage' if argv[4].endswith('-desktop') else 'sha256:' + 'd' * 64)

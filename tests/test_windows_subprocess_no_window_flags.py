@@ -44,7 +44,7 @@ def _spawns(captured, *needles):
 def _is_git_spawn(cmd) -> bool:
     """True only for a ``git -C <cwd> ...`` spawn.
 
-    ``bounded_git_probe`` lives in ``hermes_cli._subprocess_compat`` and both
+    ``bounded_git_probe`` lives in ``rabbit_cli._subprocess_compat`` and both
     probe call sites delegate to it, so these tests patch
     ``_subprocess_compat.subprocess.Popen`` — which is the shared ``subprocess``
     module singleton, i.e. a process-wide patch. Any unrelated daemon spawn
@@ -88,8 +88,8 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     itself adds CREATE_SUSPENDED and assigns the real process handle, which a fake
     Popen cannot provide.
     """
-    from hermes_cli import _subprocess_compat
-    from hermes_cli.local_runtime import processes
+    from rabbit_cli import _subprocess_compat
+    from rabbit_cli.local_runtime import processes
 
     spawns = []
     fake_popen = _make_fake_popen(spawns, stdout="main\n")
@@ -115,7 +115,7 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
 
 
 def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
-    from hermes_cli import _subprocess_compat
+    from rabbit_cli import _subprocess_compat
 
     spawns = []
     monkeypatch.setattr(
@@ -139,7 +139,7 @@ def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
 
 def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
     """A spawn failure (git not on PATH) fails open to ""."""
-    from hermes_cli import _subprocess_compat
+    from rabbit_cli import _subprocess_compat
 
     def boom(cmd, **kwargs):
         raise FileNotFoundError("git not found")
@@ -221,7 +221,7 @@ def _patch_hide_flags(monkeypatch):
     ``creationflags`` — not the platform. Stubbing only the helper keeps that
     coverage on the Linux lane; no ``IS_WINDOWS`` fake is needed or wanted.
     """
-    import hermes_cli._subprocess_compat as subprocess_compat
+    import rabbit_cli._subprocess_compat as subprocess_compat
 
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
 
@@ -362,7 +362,7 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
     """
     import platform
 
-    from hermes_cli import _subprocess_compat
+    from rabbit_cli import _subprocess_compat
 
     # Register the original with monkeypatch so it gets restored after.
     monkeypatch.setattr(platform, "_syscmd_ver", platform._syscmd_ver)
@@ -391,7 +391,7 @@ def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
 def test_gitlock_git_spawns_hide_console_window(monkeypatch, tmp_path):
     """gitlock read-only git probes never flash: stdout-lines queries, the
     cat-file batch pair, the rev-list repair probe and the tag fetch."""
-    from hermes_cli import gitlock
+    from rabbit_cli import gitlock
 
     captured = []
 
@@ -421,7 +421,7 @@ def test_gitlock_git_spawns_hide_console_window(monkeypatch, tmp_path):
 
 def test_gitlock_tasklist_probe_hides_console_window(monkeypatch):
     """The stale-lock tasklist guard flashes on its own under pythonw."""
-    from hermes_cli import gitlock
+    from rabbit_cli import gitlock
 
     captured = []
 
@@ -441,7 +441,7 @@ def test_gitlock_tasklist_probe_hides_console_window(monkeypatch):
 
 def test_gitlock_tag_fetch_hides_console_window(monkeypatch, tmp_path):
     """The full-commit-graph fetch (update pipeline) hides its window."""
-    from hermes_cli import gitlock
+    from rabbit_cli import gitlock
 
     captured = []
 
@@ -464,7 +464,7 @@ def test_gitlock_tag_fetch_hides_console_window(monkeypatch, tmp_path):
 
 def test_gateway_scheduled_task_state_hides_powershell_window(monkeypatch):
     """Task Scheduler COM probe spawns powershell.exe during backend startup."""
-    from hermes_cli import gateway
+    from rabbit_cli import gateway
 
     captured = []
 
@@ -477,7 +477,7 @@ def test_gateway_scheduled_task_state_hides_powershell_window(monkeypatch):
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
     monkeypatch.setattr(gateway.shutil, "which", lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE")
 
-    assert gateway._windows_scheduled_task_state("hermes-gateway") == "Ready"
+    assert gateway._windows_scheduled_task_state("rabbit-gateway") == "Ready"
     assert len(captured) == 1, captured
     cmd, kwargs = captured[0]
     assert cmd[0].lower().endswith("powershell.exe"), cmd
@@ -486,7 +486,7 @@ def test_gateway_scheduled_task_state_hides_powershell_window(monkeypatch):
 
 def test_update_git_run_hides_console_window(monkeypatch, tmp_path):
     """The central update git runner (26 call sites) hides its window."""
-    from hermes_cli import update_cmd
+    from rabbit_cli import update_cmd
 
     captured = []
 
@@ -508,7 +508,7 @@ def test_update_git_run_hides_console_window(monkeypatch, tmp_path):
 def test_no_prompt_git_kwargs_hide_console_window(monkeypatch):
     """Network git kwargs (fetch/pull behind them) carry the hide flags too,
     so the upstream-sync fetch/pull spawns never flash."""
-    from hermes_cli import update_cmd
+    from rabbit_cli import update_cmd
 
     _patch_hide_flags(monkeypatch)
     kwargs = update_cmd._no_prompt_git_kwargs()
@@ -518,7 +518,7 @@ def test_no_prompt_git_kwargs_hide_console_window(monkeypatch):
 
 def test_update_git_plumbing_spawns_hide_console_window(monkeypatch, tmp_path):
     """rev-parse label, fork-bomb probe and EOL-normalization git spawns."""
-    from hermes_cli import update_cmd_git
+    from rabbit_cli import update_cmd_git
 
     captured = []
 
@@ -545,7 +545,7 @@ def test_update_git_plumbing_spawns_hide_console_window(monkeypatch, tmp_path):
 def test_safe_directory_git_config_probes_hide_console_window(monkeypatch):
     """safe.directory replay (two git config children per internal git call)
     never flashes."""
-    from hermes_cli import _subprocess_compat
+    from rabbit_cli import _subprocess_compat
 
     captured = []
 
@@ -576,8 +576,8 @@ def test_safe_directory_git_config_probes_hide_console_window(monkeypatch):
 def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
     """One hidden nvidia-smi spawn serves the budget probe, the endpoint and
     the vendor detector within the TTL; the second caller must not spawn."""
-    from hermes_cli.local_runtime import bootstrap, hardware
-    from hermes_cli.web_routers import local_models
+    from rabbit_cli.local_runtime import bootstrap, hardware
+    from rabbit_cli.web_routers import local_models
 
     captured = []
 
@@ -605,7 +605,7 @@ def test_cached_nvidia_gpu_query_hides_console_window_and_caches(monkeypatch):
 
 def test_cached_nvidia_gpu_query_failure_is_cached(monkeypatch):
     """A missing/failed smi must not re-spawn per poll either."""
-    from hermes_cli.local_runtime import hardware
+    from rabbit_cli.local_runtime import hardware
 
     captured = []
 

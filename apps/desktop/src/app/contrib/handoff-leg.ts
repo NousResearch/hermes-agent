@@ -1,8 +1,8 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 
 import type { ClientSessionState } from '@/app/types'
 import type { HandoffPlan } from '@/components/onboarding-chat/setup-profile'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 

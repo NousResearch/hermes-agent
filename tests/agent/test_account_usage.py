@@ -360,7 +360,7 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
     result = account_usage.redeem_codex_reset_credit()
 
     assert result.status == "unavailable"
-    assert "hermes auth" in result.message
+    assert "rabbit auth" in result.message
 
 
 def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_account(monkeypatch, codex_usage_payload):

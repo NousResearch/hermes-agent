@@ -50,12 +50,12 @@ export const ga: Translations = {
   },
 
   app: {
-    brand: "Hermes Agent",
+    brand: "Rabbit Agent",
     brandShort: "HA",
     closeNavigation: "Dún an nascleanúint",
     closeModelTools: "Dún an samhail agus na huirlisí",
     footer: {
-      org: "Nous Research",
+      org: "Sanath Patil",
     },
     activeSessionsLabel: "Seisiúin gníomhacha:",
     gatewayStatusLabel: "Stádas an gateway:",
@@ -120,8 +120,8 @@ export const ga: Translations = {
     starting: "Ag tosú",
     startedInBackground: "Tosaithe sa chúlra — seiceáil na logaí le haghaidh dul chun cinn",
     stopped: "Stoptha",
-    updateHermes: "Nuashonraigh Hermes",
-    updatingHermes: "Ag nuashonrú Hermes…",
+    updateRabbit: "Nuashonraigh Rabbit",
+    updatingRabbit: "Ag nuashonrú Rabbit…",
     waitingForOutput: "Ag fanacht le haschur…",
   },
 
@@ -341,7 +341,7 @@ export const ga: Translations = {
       "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
     headline:
-      "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
+      "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Rabbit (paireacht le `rabbit plugins`).",
     identifierLabel: "URL Git nó owner/repo",
     inactive: "neamhghníomhach",
     installBtn: "Suiteáil",
@@ -358,8 +358,8 @@ export const ga: Translations = {
     providersHint:
       "Scríobhann memory.provider (folamh = ionsuite) agus context.engine chuig config.yaml. Beidh éifeacht aige sa chéad seisiún eile.",
     refreshDashboard: "Athscan síntí an dashboard",
-    removeConfirm: "Bain an plugin seo ó ~/.hermes/plugins/?",
-    removeHint: "Ní féidir ach plugins atá suiteáilte ag an úsáideoir faoi ~/.hermes/plugins a bhaint.",
+    removeConfirm: "Bain an plugin seo ó ~/.rabbit/plugins/?",
+    removeHint: "Ní féidir ach plugins atá suiteáilte ag an úsáideoir faoi ~/.rabbit/plugins a bhaint.",
     rescanHeading: "Clár plugin SPA",
     rescanHint: "Athscan tar éis comhaid a chur leis an diosca ionas go n-aimseoidh barra taoibh an dashboard manifests nua.",
     runtimeHeading: "Runtime gateway (plugins YAML)",
@@ -381,7 +381,7 @@ export const ga: Translations = {
     all: "Gach ceann",
     categories: "Catagóirí",
     filters: "Scagairí",
-    noSkills: "Níor aimsíodh scileanna. Luchtaítear scileanna ó ~/.hermes/skills/",
+    noSkills: "Níor aimsíodh scileanna. Luchtaítear scileanna ó ~/.rabbit/skills/",
     noSkillsMatch: "Níl scil ar bith ag teacht le do chuardach nó scagaire.",
     skillCount: "{count} scil{s}",
     resultCount: "{count} torad{s}",
@@ -395,7 +395,7 @@ export const ga: Translations = {
   },
 
   config: {
-    configPath: "~/.hermes/config.yaml",
+    configPath: "~/.rabbit/config.yaml",
     filters: "Scagairí",
     sections: "Ranna",
     exportConfig: "Easpórtáil cumraíocht mar JSON",
@@ -455,7 +455,7 @@ export const ga: Translations = {
     showValue: "Taispeáin an fíorluach",
     hideValue: "Folaigh an luach",
     customTitle: "Eochracha Saincheaptha",
-    customHint: "Athróga timpeallachta treallach atá stóráilte i do .env nach n-aithníonn Hermes. Úsáid iad chun athróga timpeallachta a instealladh do scileanna, freastalaithe MCP, nó d'uirlisí féin.",
+    customHint: "Athróga timpeallachta treallach atá stóráilte i do .env nach n-aithníonn Rabbit. Úsáid iad chun athróga timpeallachta a instealladh do scileanna, freastalaithe MCP, nó d'uirlisí féin.",
     customConfigured: "{count} eochair shaincheaptha socraithe",
     addCustomKey: "Cuir eochair shaincheaptha leis",
     customKeyName: "Ainm na hathróige",
@@ -520,11 +520,11 @@ export const ga: Translations = {
   achievements: {
     hero: {
       kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
+      title: "Rabbit Achievements",
       subtitle:
-        "Suaitheantais Hermes inbhailithe a thuilltear ó stair fíor-session. Léirítear gnóthachtálacha aitheanta neamhchríochnaithe mar Discovered; fanann gnóthachtálacha Secret i bhfolach go dtí go bhfeictear an chéad iompar comhoiriúnach.",
+        "Suaitheantais Rabbit inbhailithe a thuilltear ó stair fíor-session. Léirítear gnóthachtálacha aitheanta neamhchríochnaithe mar Discovered; fanann gnóthachtálacha Secret i bhfolach go dtí go bhfeictear an chéad iompar comhoiriúnach.",
       scan_subtitle:
-        "Stair session Hermes á scanadh. Is féidir leis an gcéad scan 5–10 soicind a thógáil ar staireanna móra.",
+        "Stair session Rabbit á scanadh. Is féidir leis an gcéad scan 5–10 soicind a thógáil ar staireanna móra.",
     },
     actions: {
       rescan: "Athscan",
@@ -539,7 +539,7 @@ export const ga: Translations = {
       highest_tier: "An leibhéal is airde",
       highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
       latest: "An ceann is déanaí",
-      latest_hint_empty: "rith Hermes níos mó",
+      latest_hint_empty: "rith Rabbit níos mó",
       none_yet: "Aon cheann fós",
     },
     state: {
@@ -570,10 +570,10 @@ export const ga: Translations = {
       tiers_header: "Leibhéil",
       secret_header: "Gnóthachtálacha rúnda",
       secret_body:
-        "Coinníonn rúin a dtruicear cruinn faoi cheilt. Nuair a fheiceann Hermes comhartha gaolmhar, athraíonn an cárta go Aimsithe agus taispeánann sé a riachtanas.",
+        "Coinníonn rúin a dtruicear cruinn faoi cheilt. Nuair a fheiceann Rabbit comhartha gaolmhar, athraíonn an cárta go Aimsithe agus taispeánann sé a riachtanas.",
       scan_status_header: "Stádas an scanta",
       scan_status_body:
-        "Scanann Hermes an stair logánta uair amháin, ansin feicfear cártaí go huathoibríoch. Níl aon rud sáinnithe má thógann sé cúpla soicind.",
+        "Scanann Rabbit an stair logánta uair amháin, ansin feicfear cártaí go huathoibríoch. Níl aon rud sáinnithe má thógann sé cúpla soicind.",
       what_scanned_header: "Cad a scantar",
       what_scanned_body:
         "Sessions, glaonna ar uirlisí, meiteashonraí samhla, earráidí, gnóthachtálacha agus staid díghlasála logánta.",
@@ -620,7 +620,7 @@ export const ga: Translations = {
         "Osclaíonn Comhroinn ar X post réamhlíonta i gcluaisín nua. Cliceáil Cóipeáil íomhá ar dtús más mian leat an suaitheantas 1200×630 a bheith ceangailte — ligeann X duit é a ghreamú díreach isteach i scríbhneoir an tweet. Sábhálann Íoslódáil PNG an comhad le húsáid áit ar bith.",
       clipboard_unsupported:
         "Ní thacaítear le cóipeáil íomhá chuig an ngearrthaisce sa bhrabhsálaí seo — úsáid Íoslódáil ina ionad sin.",
-      tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
+      tweet_text: "Just unlocked {tier_part}\"{name}\" in Rabbit Agent ☤",
     },
   },
   kanban: {

@@ -1,4 +1,4 @@
-//! Hermes Setup — Tauri entrypoint.
+//! Rabbit Setup — Tauri entrypoint.
 //!
 //! Spawns a single window pointed at the React frontend (apps/bootstrap-installer/src/).
 //! All install-time work lives in `bootstrap.rs` and is invoked through the Tauri
@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 /// How the installer was invoked. Resolved once from the process args in
 /// `run()` and exposed to the frontend via `get_mode` so it can route to the
 /// install flow (first-run onboarding) or the update flow (driven by the
-/// desktop app handing off via `Hermes-Setup.exe --update`).
+/// desktop app handing off via `Rabbit-Setup.exe --update`).
 ///
 /// Bare launch (double-click, first-run) => Install.
 /// `--update` (spawned by the desktop's "Update" button) => Update.
@@ -69,7 +69,7 @@ where
 /// The runtime's default activation policy is Regular. Entering it registers
 /// this bootstrap process as a Dock app even when Info.plist sets
 /// `LSUIElement`, and the real desktop is a different bundle id, so that
-/// registration is a second Hermes icon. Update, repair, and non-macOS
+/// registration is a second Rabbit icon. Update, repair, and non-macOS
 /// launches still build the installer UI. The installed-on-disk check is I/O
 /// and stays with the caller.
 pub fn handoff_before_appkit(is_macos: bool, mode: AppMode, force_setup: bool) -> bool {
@@ -105,31 +105,31 @@ fn get_mode(state: tauri::State<'_, Arc<AppState>>) -> AppMode {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Tracing → bootstrap-installer.log under HERMES_HOME/logs/ so install
+    // Tracing → bootstrap-installer.log under RABBIT_HOME/logs/ so install
     // failures leave a trail for support. Console output also goes here in
     // debug builds.
     let _guard = paths::init_logging();
 
     let mode = AppMode::from_args(std::env::args().skip(1));
     // Escape hatch: `--reinstall`/`--repair` forces the installer UI even when
-    // Hermes is already installed, so users can re-run setup to repair a broken
+    // Rabbit is already installed, so users can re-run setup to repair a broken
     // install instead of the launcher fast path silently relaunching the app.
     let force_setup = force_setup_from_args(std::env::args().skip(1));
-    tracing::info!(?mode, force_setup, "Hermes installer starting");
+    tracing::info!(?mode, force_setup, "Rabbit installer starting");
 
     // Hand off before constructing Tauri/AppKit. The setup callback is too
     // late: by then the process has already been registered as a regular
     // Dock application.
     if handoff_before_appkit(cfg!(target_os = "macos"), mode, force_setup) {
-        let install_root = paths::hermes_home().join("hermes-agent");
-        if bootstrap::hermes_is_installed(&install_root) {
+        let install_root = paths::rabbit_home().join("rabbit-agent");
+        if bootstrap::rabbit_is_installed(&install_root) {
             match bootstrap::spawn_installed_desktop(&install_root) {
                 Ok(()) => {
                     // Brief grace so the spawned app is registered before we
-                    // exit (mirrors launch_hermes_desktop).
+                    // exit (mirrors launch_rabbit_desktop).
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     tracing::info!(
-                        "hermes already installed — relaunched desktop; exiting installer"
+                        "rabbit already installed — relaunched desktop; exiting installer"
                     );
                     return;
                 }
@@ -181,14 +181,14 @@ pub fn run() {
             // Update lifecycle
             update::start_update,
             // Hand-off
-            bootstrap::launch_hermes_desktop,
+            bootstrap::launch_rabbit_desktop,
             // Diagnostics
             paths::get_log_path,
-            paths::get_hermes_home,
+            paths::get_rabbit_home,
             paths::open_log_dir,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Hermes Setup");
+        .expect("error while running Rabbit Setup");
 }
 
 #[cfg(test)]

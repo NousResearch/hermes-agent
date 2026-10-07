@@ -6,7 +6,7 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_rabbit_home
 
 _PLUGIN = '''
 import dataclasses, json, os
@@ -16,7 +16,7 @@ CTX = None
 
 def _record(**kwargs):
     ident = CTX.current_cron_execution()
-    out = Path(os.environ["HERMES_HOME"]) / "seen.json"
+    out = Path(os.environ["RABBIT_HOME"]) / "seen.json"
     out.write_text(json.dumps({"tool": kwargs.get("tool_name"),
                                "identity": dataclasses.asdict(ident) if ident else None}))
 
@@ -30,7 +30,7 @@ _TICK = '''
 import json, sys
 from cron import scheduler
 from cron.executions import list_executions
-from hermes_cli.plugins import get_plugin_manager
+from rabbit_cli.plugins import get_plugin_manager
 scheduler.tick(verbose=False, sync=True)
 ctx = get_plugin_manager()._plugins["cron-identity-probe"].module.CTX
 print(json.dumps({"outside": ctx.current_cron_execution(), "profile": ctx.profile_name,
@@ -39,7 +39,7 @@ print(json.dumps({"outside": ctx.current_cron_execution(), "profile": ctx.profil
 
 
 def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path):
-    from hermes_time import now
+    from rabbit_time import now
 
     home = tmp_path / "home"
     plugin_dir = home / "plugins" / "cron-identity-probe"
@@ -48,7 +48,7 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
     (plugin_dir / "__init__.py").write_text(_PLUGIN)
     note = home / "note.txt"
     with FakeLLMServer([ToolCall("read_file", {"path": str(note)}), Text("done")]) as srv:
-        write_hermes_home(home, srv.base_url,
+        write_rabbit_home(home, srv.base_url,
                           extra_config="plugins:\n  enabled: [cron-identity-probe]\n")
         note.write_text("hello\n")
         (home / "cron").mkdir()
@@ -59,9 +59,9 @@ def test_tool_hook_in_a_ticked_job_sees_its_execution_and_none_outside(tmp_path)
             "enabled": True, "state": "scheduled", "deliver": "local",
             "repeat": {"times": None, "completed": 0}}]}))
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("HERMES_", "_HERMES_"))
+               if not k.startswith(("RABBIT_", "_RABBIT_"))
                and not k.endswith(("_API_KEY", "_TOKEN"))}
-        env.update(HERMES_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+        env.update(RABBIT_HOME=str(home), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
         result = subprocess.run([sys.executable, "-c", _TICK], env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr

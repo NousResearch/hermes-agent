@@ -35,7 +35,7 @@ class TestForegroundTimeoutCap:
         import time
         from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "hh"))
         marker = tmp_path / "ran"
         with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config(cwd=str(tmp_path))), \
              patch("tools.terminal_tool._start_cleanup_thread"), \

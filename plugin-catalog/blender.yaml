@@ -1,5 +1,5 @@
 name: blender
-repo: https://github.com/NousResearch/hermes-plugin-blender
+repo: https://github.com/NousResearch/rabbit-plugin-blender
 sha: d1929b593bddd2241a8939fb355e0a69b8e077af
 version: "0.1.0"
 description: >-
@@ -13,7 +13,7 @@ title: Blender
 maintainer: NousResearch
 tier: official
 category: tools
-docs_url: https://github.com/NousResearch/hermes-plugin-blender#readme
+docs_url: https://github.com/NousResearch/rabbit-plugin-blender#readme
 platforms: [windows, macos, linux]
 onboarding: true
 capabilities:

@@ -29,7 +29,7 @@ def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -
     if reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
         return False
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         threshold = float((load_config() or {}).get("fallback", {}).get("min_switch_reset_seconds") or 0)
     except Exception:
         return False
@@ -112,7 +112,7 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     )
     agent._buffer_diagnostic_status(
         f"🚫 This account is not entitled to {model} via {provider}; it will be skipped "
-        "until restart. Switch to an entitled model via /model or `hermes model`."
+        "until restart. Switch to an entitled model via /model or `rabbit model`."
     )
     return True
 
@@ -125,5 +125,5 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return False
     if (provider, model) in rejected:
         return True
-    from hermes_cli.model_normalize import normalize_model_for_provider
+    from rabbit_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected

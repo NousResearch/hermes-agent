@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.models_local import LMStudioLoadResult
+from rabbit_cli.models_local import LMStudioLoadResult
 from run_agent import AIAgent
-from hermes_cli.route_identity import normalize_route_base_url
+from rabbit_cli.route_identity import normalize_route_base_url
 from agent.context_compressor import ContextCompressor
 
 
@@ -47,7 +47,7 @@ def _make_direct_start_agent(
     cfg: dict, *, model: str, provider: str, base_url: str
 ) -> AIAgent:
     with (
-        patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("rabbit_cli.config.load_config", return_value=cfg), patch("rabbit_cli.config.load_config_readonly", return_value=cfg),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
@@ -342,11 +342,11 @@ def test_lmstudio_switch_uses_destination_context_and_verified_runtime(monkeypat
         calls.append(config_context_length)
         return LMStudioLoadResult(100_000)
 
-    monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+    monkeypatch.setattr("rabbit_cli.config.load_config", fake_load_config)
 
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", fake_load_config)
-    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", fake_compatible)
-    monkeypatch.setattr("hermes_cli.config.get_custom_provider_context_length", fake_provider_context)
+    monkeypatch.setattr("rabbit_cli.config.load_config_readonly", fake_load_config)
+    monkeypatch.setattr("rabbit_cli.config.get_compatible_custom_providers", fake_compatible)
+    monkeypatch.setattr("rabbit_cli.config.get_custom_provider_context_length", fake_provider_context)
     monkeypatch.setattr(AIAgent, "_ensure_lmstudio_runtime_loaded", fake_lmstudio_load)
 
     with patch("agent.model_metadata.get_model_context_length", return_value=100_000) as mock_ctx_len:

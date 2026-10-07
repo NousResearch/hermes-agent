@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Native fixture proof, not signed Hermes artifact E2E.
+// Native fixture proof, not signed Rabbit artifact E2E.
 // Run: node apps/desktop/scripts/verify-side-by-side-macos.mjs <icon-input-root>
 // Inputs: cases.json [{label, env}], plus <label>/icon{,-dark}.icns from
 // scripts/generate_icons.py. Use stable, canary, commit-a, commit-b, in order.
@@ -32,7 +32,7 @@ assert.deepEqual(
   cases.map(row => row.label),
   ['stable', 'canary', 'commit-a', 'commit-b']
 )
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sxs-macos-'))
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sxs-macos-'))
 const home = path.join(root, 'home')
 fs.mkdirSync(home)
 const env = {
@@ -40,12 +40,12 @@ const env = {
   HOME: home,
   CFFIXED_USER_HOME: home,
   TMPDIR: root,
-  HERMES_HOME: path.join(home, '.hermes'),
-  HERMES_RUNTIME_DIR: path.join(root, 'runtime')
+  RABBIT_HOME: path.join(home, '.rabbit'),
+  RABBIT_RUNTIME_DIR: path.join(root, 'runtime')
 }
 for (const key of Object.keys(env)) {
   if (
-    /^(HERMES_(BUILD_COMMIT|PAYLOAD_TAG|PAYLOAD_VERSION|DESKTOP_)|ELECTRON_RUN_AS_NODE|NODE_OPTIONS|BUILD_NUMBER)/.test(
+    /^(RABBIT_(BUILD_COMMIT|PAYLOAD_TAG|PAYLOAD_VERSION|DESKTOP_)|ELECTRON_RUN_AS_NODE|NODE_OPTIONS|BUILD_NUMBER)/.test(
       key
     )
   )
@@ -114,7 +114,7 @@ try {
       console.log(JSON.stringify({identity,config}));
     `
         ],
-        { env: { ...env, HERMES_DESKTOP_VARIANT: 'bundled', ...flavor } }
+        { env: { ...env, RABBIT_DESKTOP_VARIANT: 'bundled', ...flavor } }
       )
     )
     const { identity, config } = facts
@@ -229,7 +229,7 @@ try {
       platform: 'node',
       format: 'esm',
       external: ['electron'],
-      define: { __HERMES_PRODUCT_IDENTITY__: JSON.stringify(identity) }
+      define: { __RABBIT_PRODUCT_IDENTITY__: JSON.stringify(identity) }
     })
     const row = {
       label,
@@ -285,7 +285,7 @@ try {
     JSON.stringify(
       {
         scope:
-          'Native builder transformation and Electron fixture only; no release build, signing, registration, update or Hermes backend E2E.',
+          'Native builder transformation and Electron fixture only; no release build, signing, registration, update or Rabbit backend E2E.',
         platform: os.release(),
         arch: process.arch,
         node: process.version,

@@ -59,7 +59,7 @@ function applyStatus(status: QuickEntryStatus | undefined): void {
 
 /** True when the shell exposes the Quick Entry capability (desktop only). */
 export function canUseQuickEntry(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.quickEntry?.getSettings === 'function'
+  return typeof window !== 'undefined' && typeof window.rabbitDesktop?.quickEntry?.getSettings === 'function'
 }
 
 /** Read the live registration state into the store (Settings mount). */
@@ -69,7 +69,7 @@ export async function loadQuickEntrySettings(): Promise<void> {
   }
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.getSettings())
+    applyStatus(await window.rabbitDesktop.quickEntry.getSettings())
   } catch {
     // A failed read leaves the store as-is; the row keeps its last known copy.
   }
@@ -91,7 +91,7 @@ export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcu
   $quickEntry.set({ ...previous, ...patch, registered: previous.registered })
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.setSettings(patch))
+    applyStatus(await window.rabbitDesktop.quickEntry.setSettings(patch))
   } catch {
     $quickEntry.set(previous)
   }
@@ -197,7 +197,7 @@ export function quickEntryResultEvent(result: QuickEntrySubmitResult, submitId: 
 
   if (result.code === 'timeout') {
     return {
-      message: result.message || 'Hermes has not confirmed the prompt yet — it may still be delivered.',
+      message: result.message || 'Rabbit has not confirmed the prompt yet — it may still be delivered.',
       submitId,
       type: 'submit-unknown'
     }
@@ -513,7 +513,7 @@ function normalizeSubmitPayload(raw: unknown): null | QuickEntrySubmitPayload {
  * disposer. Idempotent — a second call while wired is a no-op.
  */
 export function initQuickEntryBridge(): () => void {
-  const api = typeof window === 'undefined' ? undefined : window.hermesDesktop?.quickEntry
+  const api = typeof window === 'undefined' ? undefined : window.rabbitDesktop?.quickEntry
 
   if (!api?.onSubmit || unsubscribeSubmit) {
     return () => {}

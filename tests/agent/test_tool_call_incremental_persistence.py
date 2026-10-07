@@ -34,7 +34,7 @@ import pytest
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.agent_runtime_helpers import sanitize_api_messages
 from agent.tool_executor import execute_tool_calls_segmented
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -59,8 +59,8 @@ def _make_tool_defs(*names: str) -> list:
 
 
 def _make_agent():
-    hermes_home = Path(tempfile.mkdtemp(prefix="hermes-test-home-"))
-    (hermes_home / "logs").mkdir(parents=True, exist_ok=True)
+    rabbit_home = Path(tempfile.mkdtemp(prefix="rabbit-test-home-"))
+    (rabbit_home / "logs").mkdir(parents=True, exist_ok=True)
     with (
         patch(
             "model_tools.get_tool_definitions",
@@ -68,7 +68,7 @@ def _make_agent():
         ),
         patch("model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", hermes_home),
+        patch("run_agent._rabbit_home", rabbit_home),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
@@ -939,7 +939,7 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     failure during the batch insert must roll back the assistant update and stamp
     no in-memory markers.
     """
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"

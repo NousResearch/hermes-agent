@@ -1,9 +1,9 @@
 """Human-friendly generic gateway status phrases: short chat-safe lines for the long-running
 status surface without relaying raw model scratch text — only configured phrase strings are used;
 tool args, commands, previews, and reasoning are never interpolated. Built-in defaults live in
-``gateway/assets/status_phrases.yaml``; users add profile-relative catalogs under ``HERMES_HOME``
+``gateway/assets/status_phrases.yaml``; users add profile-relative catalogs under ``RABBIT_HOME``
 via ``status_phrases.yaml`` / ``status_phrases/*.yaml`` or ``display.status_phrases: {path:
-<HERMES_HOME-relative>, mode: append|replace}``. Absolute paths and ``..`` escapes are ignored on
+<RABBIT_HOME-relative>, mode: append|replace}``. Absolute paths and ``..`` escapes are ignored on
 purpose so config stays profile-portable and cannot read arbitrary files."""
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 from typing import Any
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
-# Hermes UI surfaces, not app/vendor buckets.  Long-running-only: regular tool/thinking/interim
+# Rabbit UI surfaces, not app/vendor buckets.  Long-running-only: regular tool/thinking/interim
 # chatter is deliberately not rewritten (too noisy in chat).
 _STATUS_SURFACES = ("status", "generic")
 _MAX_CUSTOM_PHRASES_PER_SURFACE = 80
@@ -115,8 +115,8 @@ def resolve_status_phrase_catalog(user_config: Mapping[str, Any] | None,
     ``display.status_phrases`` (or legacy alias ``generic_status_phrases``), then
     ``display.platforms.<platform>.status_phrases``."""
     catalog = _copy_catalog(_DEFAULT_PHRASES)
-    hermes_home = get_hermes_home()
-    _merge_phrase_paths(catalog, list(_CONVENTIONAL_RELATIVE_PATHS), base_dir=hermes_home)
+    rabbit_home = get_rabbit_home()
+    _merge_phrase_paths(catalog, list(_CONVENTIONAL_RELATIVE_PATHS), base_dir=rabbit_home)
     display = (user_config or {}).get("display") if isinstance(user_config, Mapping) else None
     if not isinstance(display, Mapping):
         return catalog
@@ -125,13 +125,13 @@ def resolve_status_phrase_catalog(user_config: Mapping[str, Any] | None,
         sections.append(platforms[platform_key])
     for section in sections:
         for key in _CONFIG_KEYS:
-            _merge_phrase_config(catalog, section.get(key), base_dir=hermes_home)
+            _merge_phrase_config(catalog, section.get(key), base_dir=rabbit_home)
     return catalog
 
 
 def classify_status_context(kind: str, *, tool_name: str | None = None, preview: str | None = None,
                             args: Any = None) -> str:
-    """Classify an internal gateway event into a Hermes UI-surface bucket."""
+    """Classify an internal gateway event into a Rabbit UI-surface bucket."""
     if str(kind or "").strip().lower() in {"heartbeat", "waiting", "long_running", "status"}:
         return "status"
     return "generic"

@@ -17,7 +17,6 @@ Debug Python: pdb REPL + debugpy remote (DAP).
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/python-debugpy` |
 | Version | `1.0.0` |
-| Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `debugging`, `python`, `pdb`, `debugpy`, `breakpoints`, `dap`, `post-mortem` |
@@ -26,7 +25,7 @@ Debug Python: pdb REPL + debugpy remote (DAP).
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Python Debugger (pdb + debugpy)
@@ -47,7 +46,7 @@ Three tools, picked by situation:
 
 - A test fails and the traceback doesn't reveal why a value is wrong
 - You need to step through a function and watch a collection mutate
-- A long-running process (hermes gateway, tui_gateway) misbehaves and you can't restart it
+- A long-running process (rabbit gateway, tui_gateway) misbehaves and you can't restart it
 - Post-mortem: an exception fired in prod-ish code and you want to inspect locals at the crash site
 - A subprocess / child (Python `_SlashWorker`, PTY bridge worker) is the actual bug site
 
@@ -158,13 +157,13 @@ sys.excepthook = excepthook
 
 ## Recipe 5: Remote debug with debugpy (attach to running process)
 
-For long-lived processes: Hermes gateway, tui_gateway, a daemon, a process that's already misbehaving and can't be restarted clean.
+For long-lived processes: Rabbit gateway, tui_gateway, a daemon, a process that's already misbehaving and can't be restarted clean.
 
 ### Setup
 
-For Hermes, use a separate development checkout and data home, not a live
+For Rabbit, use a separate development checkout and data home, not a live
 production generation. Follow the
-[PM developer workflow](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+[PM developer workflow](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/package-management#developer-workflow)
 and activate that checkout — PowerShell: `. .\activate.ps1`. The declared `dev`
 extra includes debugpy, which PM activation does not sync (`all` excludes it).
 Through `terminal`, build a fresh, caller-owned debug/test environment with the
@@ -178,7 +177,7 @@ python -m pm.build_env --source . --out .venv --group dev --group test
 
 The output must not already exist. Stop its processes and intentionally remove
 only that disposable environment before rebuilding. Keep the same isolated
-`HERMES_HOME` for the debug target. `.venv/bin/python` is this explicitly built
+`RABBIT_HOME` for the debug target. `.venv/bin/python` is this explicitly built
 debug environment, not a guessed application venv, and the patterns below run
 through it. Do not add debugpy to a running production environment; reproduce
 there only with an already-prepared debug target or arrange a restart in the
@@ -226,12 +225,12 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
 
 ### Connecting a client from the terminal
 
-The easiest terminal-side DAP client is VS Code CLI or a small script. From inside Hermes you have two practical options:
+The easiest terminal-side DAP client is VS Code CLI or a small script. From inside Rabbit you have two practical options:
 
 **Option 1: `debugpy`'s own CLI REPL** — not an official feature, but a tiny DAP client script:
 
 ```python
-# ~/.hermes/cache/scratch/dap_client.py
+# ~/.rabbit/cache/scratch/dap_client.py
 import socket, json, itertools, time, sys
 
 HOST, PORT = "127.0.0.1", 5678
@@ -271,13 +270,13 @@ This is fine for one-off automation but painful as an interactive UX.
 
 ```json
 {
-  "name": "Attach to Hermes",
+  "name": "Attach to Rabbit",
   "type": "debugpy",
   "request": "attach",
   "connect": { "host": "127.0.0.1", "port": 5678 },
   "justMyCode": false,
   "pathMappings": [
-    { "localRoot": "${workspaceFolder}", "remoteRoot": "<hermes-agent-repo>" }
+    { "localRoot": "${workspaceFolder}", "remoteRoot": "<rabbit-agent-repo>" }
   ]
 }
 ```
@@ -286,8 +285,8 @@ This is fine for one-off automation but painful as an interactive UX.
 
 For an independently owned Python project, declare `remote-pdb` in that
 project's development dependencies and prepare its debug environment through
-the project's package manager. This is not a Hermes SDK install recipe. For
-Hermes, prefer the declared debugpy dependency; the remote-pdb examples below
+the project's package manager. This is not a Rabbit SDK install recipe. For
+Rabbit, prefer the declared debugpy dependency; the remote-pdb examples below
 require a separately declared, freshly built debug environment, never an
 in-place pip install into the selected application generation.
 
@@ -305,16 +304,16 @@ nc 127.0.0.1 4444
 
 `remote-pdb` is the cleanest agent-friendly choice when `debugpy`'s DAP protocol is overkill. Use `debugpy` only when you actually need IDE integration.
 
-## Debugging Hermes-specific Processes
+## Debugging Rabbit-specific Processes
 
 ### Tests
 See Recipe 3. The wrapper captures subprocess output, so run pytest directly for interactive pdb.
 
 ### `run_agent.py` / CLI — one-shot
 In the prepared debug checkout, add `breakpoint()` near the suspect line, then
-run `python hermes`. Control returns to your terminal at the pause point.
+run `python rabbit`. Control returns to your terminal at the pause point.
 
-### `tui_gateway` subprocess (spawned by `hermes --tui`)
+### `tui_gateway` subprocess (spawned by `rabbit --tui`)
 The gateway runs as a child of the Node TUI. Options:
 
 **A. Source-edit the gateway:**
@@ -324,7 +323,7 @@ import debugpy
 debugpy.listen(("127.0.0.1", 5678))
 debugpy.wait_for_client()
 ```
-Start `python hermes --tui` from the prepared debug checkout. The TUI will appear frozen (its backend is waiting). Attach a client; execution resumes when you `continue`. Check the child's interpreter and imports before assuming it inherited the debug environment.
+Start `python rabbit --tui` from the prepared debug checkout. The TUI will appear frozen (its backend is waiting). Attach a client; execution resumes when you `continue`. Check the child's interpreter and imports before assuming it inherited the debug environment.
 
 **B. Use `remote-pdb` at a specific handler:**
 ```python
@@ -360,7 +359,7 @@ Long-lived. Use `remote-pdb` at a handler, or `debugpy` with `--wait-for-client`
 
 8. **`scripts/run_tests.sh` strips credentials and sets `HOME=<tmpdir>`.** If your bug depends on user config or real API keys, it won't reproduce under the wrapper. Debug with raw `pytest` first to repro, then re-confirm under the wrapper.
 
-9. **Forking / multiprocessing.** pdb does not follow forks. Each child needs its own `breakpoint()` or `set_trace()`. For Hermes subagents, debug one process at a time.
+9. **Forking / multiprocessing.** pdb does not follow forks. Each child needs its own `breakpoint()` or `set_trace()`. For Rabbit subagents, debug one process at a time.
 
 ## Verification Checklist
 

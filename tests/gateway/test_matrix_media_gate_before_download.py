@@ -20,7 +20,7 @@ def _make_adapter(monkeypatch):
 
     adapter = MatrixAdapter(PlatformConfig(
         enabled=True, token="syt_test_token",
-        extra={"homeserver": "https://matrix.example.org", "user_id": "@hermes:example.org"}))
+        extra={"homeserver": "https://matrix.example.org", "user_id": "@rabbit:example.org"}))
     adapter._startup_ts = time.time() - 10
     adapter.handle_message = AsyncMock()
     adapter._client = None
@@ -42,7 +42,7 @@ def _image_event(body):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body, downloads, dispatched", [
     ("photo.png", 0, 0),           # unmentioned group media: never fetched
-    ("@hermes:example.org look", 1, 1),  # mentioned: fetched and dispatched
+    ("@rabbit:example.org look", 1, 1),  # mentioned: fetched and dispatched
 ])
 async def test_unmentioned_group_media_is_not_downloaded(monkeypatch, body, downloads, dispatched):
     adapter = _make_adapter(monkeypatch)

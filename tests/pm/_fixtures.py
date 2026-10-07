@@ -132,8 +132,8 @@ def client(tmp_path, monkeypatch, isolated_python):
     client = importlib.import_module("pm.client")
     monkeypatch.setattr("pm.runtime.runtime_python", lambda **kwargs: isolated_python)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     return client
 

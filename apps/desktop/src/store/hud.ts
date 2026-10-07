@@ -2,7 +2,7 @@
  * HUD mode — the chrome-free floating chat.
  *
  * A transparent, frameless, always-on-top window showing nothing but the REAL
- * composer with the reply scrolling above it, so Hermes can be driven while
+ * composer with the reply scrolling above it, so Rabbit can be driven while
  * the user works in another app (Figma, a browser).
  *
  * It is NOT a puppet window. Unlike the pet overlay / quick entry, the HUD is
@@ -41,10 +41,10 @@ export const $hudSession = atom<null | string>(null)
 
 /** True when the shell exposes HUD mode (desktop only). */
 export const canUseHud = (): boolean =>
-  typeof window !== 'undefined' && typeof window.hermesDesktop?.hud?.open === 'function'
+  typeof window !== 'undefined' && typeof window.rabbitDesktop?.hud?.open === 'function'
 
 export function openHud(sessionId?: null | string): void {
-  const api = window.hermesDesktop?.hud
+  const api = window.rabbitDesktop?.hud
 
   if (!api) {
     return
@@ -74,7 +74,7 @@ export function openHud(sessionId?: null | string): void {
 /** Leave HUD mode. Callable from either window — main closes the child, the
  *  HUD closes itself; both restore the app window. */
 export function closeHud(): void {
-  const api = window.hermesDesktop?.hud
+  const api = window.rabbitDesktop?.hud
 
   if (!api) {
     return
@@ -89,13 +89,13 @@ export const toggleHud = (sessionId?: null | string) => ($hudActive.get() ? clos
 
 /** Restore the HUD's persisted geometry to its display-aware default. */
 export function resetHudLayout(): void {
-  void window.hermesDesktop?.hud?.resetLayout?.()
+  void window.rabbitDesktop?.hud?.resetLayout?.()
 }
 
 /** Tell main which session this HUD is on. Main holds it (the HUD's renderer
  *  doesn't outlive the window) and hands it back in the close broadcast so the
  *  app window knows what to re-home onto. */
-export const reportHudSession = (sessionId: null | string): void => window.hermesDesktop?.hud?.setSession?.(sessionId)
+export const reportHudSession = (sessionId: null | string): void => window.rabbitDesktop?.hud?.setSession?.(sessionId)
 
 /**
  * Track the HUD window's real state so the titlebar toggle can't go stale when
@@ -104,7 +104,7 @@ export const reportHudSession = (sessionId: null | string): void => window.herme
  * Electron.
  */
 export function watchHudState(onClosed?: (sessionId: null | string) => void): () => void {
-  const off = window.hermesDesktop?.hud?.onChanged?.(({ open, sessionId }) => {
+  const off = window.rabbitDesktop?.hud?.onChanged?.(({ open, sessionId }) => {
     $hudActive.set(open)
     $hudSession.set(open ? sessionId : null)
 

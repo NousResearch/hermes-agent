@@ -1,9 +1,9 @@
-"""Tests for the ``hermes verify`` CLI command implementation."""
+"""Tests for the ``rabbit verify`` CLI command implementation."""
 
 import argparse
 import json
 
-from hermes_cli.verify_cmd import run_verify_command
+from rabbit_cli.verify_cmd import run_verify_command
 
 
 def make_args(path, **overrides):
@@ -42,7 +42,7 @@ def test_save_writes_manifest(tmp_path):
     (tmp_path / "go.mod").write_text("module x\n", encoding="utf-8")
     code = run_verify_command(make_args(tmp_path, detect_only=True, save=True, json=True))
     assert code == 0
-    manifest = tmp_path / ".hermes" / "environment.json"
+    manifest = tmp_path / ".rabbit" / "environment.json"
     assert manifest.exists()
     payload = json.loads(manifest.read_text())
     assert payload["version"] == 1
@@ -50,7 +50,7 @@ def test_save_writes_manifest(tmp_path):
 
 
 def test_run_phases_json(tmp_path, capsys):
-    manifest = tmp_path / ".hermes"
+    manifest = tmp_path / ".rabbit"
     manifest.mkdir()
     (manifest / "environment.json").write_text(
         json.dumps({"recipe": {"name": "Fake", "test": ["echo ok"]}}),
@@ -65,7 +65,7 @@ def test_run_phases_json(tmp_path, capsys):
 
 
 def test_failing_phase_exit_code(tmp_path, capsys):
-    manifest = tmp_path / ".hermes"
+    manifest = tmp_path / ".rabbit"
     manifest.mkdir()
     (manifest / "environment.json").write_text(
         json.dumps({"recipe": {"name": "Fake", "test": ["false"]}}),

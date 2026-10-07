@@ -10,17 +10,17 @@ const windowsMock = vi.hoisted(() => ({
 
 vi.mock('@/store/windows', () => windowsMock)
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
-const initialHermesDesktop = desktopWindow.hermesDesktop
+const desktopWindow = window as unknown as { rabbitDesktop?: Window['rabbitDesktop'] }
+const initialRabbitDesktop = desktopWindow.rabbitDesktop
 
 function installBridge() {
   const onExternalOpenFailed = vi.fn()
   const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
-  desktopWindow.hermesDesktop = {
+  desktopWindow.rabbitDesktop = {
     onExternalOpenFailed,
     writeClipboard
-  } as unknown as Window['hermesDesktop']
+  } as unknown as Window['rabbitDesktop']
 
   return { onExternalOpenFailed, writeClipboard }
 }
@@ -37,10 +37,10 @@ afterEach(() => {
   vi.restoreAllMocks()
   cleanup()
 
-  if (initialHermesDesktop) {
-    desktopWindow.hermesDesktop = initialHermesDesktop
+  if (initialRabbitDesktop) {
+    desktopWindow.rabbitDesktop = initialRabbitDesktop
   } else {
-    delete desktopWindow.hermesDesktop
+    delete desktopWindow.rabbitDesktop
   }
 })
 

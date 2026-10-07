@@ -9,7 +9,7 @@ from evals.heartbeat_idle_wire import WireAdapter
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
-from hermes_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, save_heartbeat
+from rabbit_cli.heartbeat import HeartbeatState, migrate_heartbeat_to_session, save_heartbeat
 
 
 @pytest.mark.asyncio

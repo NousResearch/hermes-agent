@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 @pytest.fixture()
@@ -369,7 +369,7 @@ class TestDurability:
         import time
         import weakref
 
-        from hermes_cli.sqlite_safe_read import has_live_connection
+        from rabbit_cli.sqlite_safe_read import has_live_connection
 
         db_path = tmp_path / "abandoned.db"
         monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
@@ -458,7 +458,7 @@ class TestWriterFailure:
 
         db._coalesce_token_deltas = broken
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="rabbit_state"):
                 db.queue_token_counts("s-co", input_tokens=3, api_call_count=1)
                 db.queue_token_counts("s-co", input_tokens=4, api_call_count=1)
                 assert db.flush_token_counts()

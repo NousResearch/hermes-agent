@@ -1,4 +1,4 @@
-import type { OnboardingEnsureSetupProfileResult } from '@hermes/shared'
+import type { OnboardingEnsureSetupProfileResult } from '@rabbit/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
@@ -50,7 +50,6 @@ export interface OnboardingKickoffOptions extends Pick<
 interface SetupStatus {
   ready?: boolean
   provider_configured?: boolean
-  free_tier_route?: boolean
 }
 
 interface GuideSession {
@@ -61,7 +60,6 @@ interface GuideSession {
 export async function adoptGuideSession(
   setupProfile: string,
   canonical: GuideSession,
-  freeTierRoute: SetupStatus['free_tier_route'],
   resumeSession: OnboardingKickoffOptions['resumeSession'],
   guideRequest: AmbientGatewayRequest
 ): Promise<void> {
@@ -88,14 +86,6 @@ export async function adoptGuideSession(
     storedId: canonical.id
   })
   prefetchGuideCatalogs(canonical.id, adoptedRuntimeId ?? canonical.id)
-
-  if (freeTierRoute) {
-    await guideRequest('config.set', {
-      session_id: adoptedRuntimeId,
-      key: 'reasoning',
-      value: 'minimal'
-    })
-  }
 }
 
 export function useOnboardingKickoff({
@@ -148,7 +138,7 @@ export function useOnboardingKickoff({
       const canonical = registryHit?.sessions?.[0]
 
       if (canonical?.id) {
-        await adoptGuideSession(setupProfile, canonical, record.free_tier_route, resumeSession, guideRequest)
+        await adoptGuideSession(setupProfile, canonical, resumeSession, guideRequest)
 
         return true
       }
@@ -160,15 +150,11 @@ export function useOnboardingKickoff({
 
       const seedMessages = buildChatOnboardingSeedMessages(
         pickOnboardingGreeting(),
-        record.free_tier_route !== true,
+        record.provider_configured === true,
         capabilities
       )
 
       const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
-
-      if (record.free_tier_route) {
-        createOverrides.reasoningEffort = 'minimal'
-      }
 
       const runtimeId = await runCreatePinnedTo(setupProfile, () =>
         createBackendSessionForSend(null, seedMessages, createOverrides)
@@ -193,7 +179,6 @@ export function useOnboardingKickoff({
       await adoptGuideSession(
         setupProfile,
         { id: storedId ?? runtimeId },
-        record.free_tier_route,
         resumeSession,
         guideRequest
       )

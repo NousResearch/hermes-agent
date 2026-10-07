@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
-import type { HermesApiRequest, HermesConnection } from '@/global'
+import type { RabbitApiRequest, RabbitConnection } from '@/global'
 import { $connection } from '@/store/session'
 
 import { LocalFilePreview } from './preview-file'
@@ -19,11 +19,11 @@ vi.mock('@/components/chat/shiki-highlighter', () => ({
 it.each(['connection', 'profile', 'local', 'api-route'] as const)(
   'never retargets a pending preview save after a %s switch and permits retry on its owner',
   async destination => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'hermes-save-scope-'))
+    const directory = await mkdtemp(path.join(tmpdir(), 'rabbit-save-scope-'))
     const originFile = path.join(directory, 'origin.txt')
     const otherFile = path.join(directory, 'other.txt')
     const logicalPath = '/workspace/note.txt'
-    const origin = { connectionId: 'gateway-a', mode: 'remote', profile: 'default' } as HermesConnection
+    const origin = { connectionId: 'gateway-a', mode: 'remote', profile: 'default' } as RabbitConnection
 
     const other = {
       connectionId:
@@ -34,7 +34,7 @@ it.each(['connection', 'profile', 'local', 'api-route'] as const)(
             : 'gateway-a',
       mode: destination === 'local' ? 'local' : 'remote',
       profile: destination === 'profile' ? 'other' : 'default'
-    } as HermesConnection
+    } as RabbitConnection
 
     const rangeDescriptors = Object.getOwnPropertyDescriptors(Range.prototype)
     let releaseRead!: () => void
@@ -66,7 +66,7 @@ it.each(['connection', 'profile', 'local', 'api-route'] as const)(
       return { path: logicalPath }
     }
 
-    const activate = (connection: HermesConnection) => {
+    const activate = (connection: RabbitConnection) => {
       $connection.set(connection)
       setApiRequestConnection(connection.connectionId ?? null)
       setApiRequestProfile(connection.profile ?? null)
@@ -75,8 +75,8 @@ it.each(['connection', 'profile', 'local', 'api-route'] as const)(
     try {
       await writeFile(originFile, 'origin baseline')
       await writeFile(otherFile, 'unrelated valuable contents')
-      vi.stubGlobal('hermesDesktop', {
-        api: async (request: HermesApiRequest) => {
+      vi.stubGlobal('rabbitDesktop', {
+        api: async (request: RabbitApiRequest) => {
           const file =
             request.connectionId === origin.connectionId && request.profile === origin.profile ? originFile : otherFile
 

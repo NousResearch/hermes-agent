@@ -153,7 +153,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
       activeSessionIdRef: sessionCache.activeSessionIdRef,
       hydrateFromStoredSession: vi.fn(async () => undefined),
       queryClient: queryClientRef.current,
-      refreshHermesConfig: vi.fn(async () => undefined),
+      refreshRabbitConfig: vi.fn(async () => undefined),
       refreshSessions: vi.fn(async () => undefined),
       sessionStateByRuntimeIdRef: sessionCache.sessionStateByRuntimeIdRef,
       updateSessionState: sessionCache.updateSessionState

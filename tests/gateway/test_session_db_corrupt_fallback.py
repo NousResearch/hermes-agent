@@ -40,11 +40,11 @@ def _assert_diverted(tmp_path, sid, needle):
 
 
 def test_corrupt_state_db_diverts_pending_without_fts_rebuild(tmp_path, monkeypatch):
-    import hermes_state
+    import rabbit_state
 
     live = tmp_path / "state.db"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", live)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setattr(rabbit_state, "DEFAULT_DB_PATH", live)
 
     store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
     sid = "gw-corrupt"

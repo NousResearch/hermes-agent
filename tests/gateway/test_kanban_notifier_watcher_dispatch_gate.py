@@ -19,10 +19,10 @@ def test_notifier_watcher_skips_when_notifications_disabled():
     runner = _make_runner(with_adapter=True)
 
     with patch(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         return_value={"kanban": {"notify_in_gateway": False}},
     ):
-        with patch("hermes_cli.kanban_db.list_boards") as list_boards:
+        with patch("rabbit_cli.kanban_db.list_boards") as list_boards:
             asyncio.run(runner._kanban_notifier_watcher())
 
     list_boards.assert_not_called()
@@ -44,10 +44,10 @@ def test_notifier_watcher_polls_without_dispatch_ownership():
     async def fake_to_thread(fn, *args, **kwargs):
         return fn(*args, **kwargs)
 
-    import hermes_cli.kanban_db as _kb
+    import rabbit_cli.kanban_db as _kb
 
     with patch(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         return_value={
             "kanban": {
                 "dispatch_in_gateway": False,

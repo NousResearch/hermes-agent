@@ -7,7 +7,7 @@ import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import { deferred } from '@/test/deferred'
-import type { ProjectInfo } from '@/types/hermes'
+import type { ProjectInfo } from '@/types/rabbit'
 
 import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
@@ -68,10 +68,10 @@ vi.mock('@/lib/desktop-git', async importOriginal => ({
   desktopGit: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({
-  getHermesConfig: vi.fn(),
+vi.mock('@/rabbit', () => ({
+  getRabbitConfig: vi.fn(),
   getProfiles: vi.fn(),
-  hermesApi: vi.fn(),
+  rabbitApi: vi.fn(),
   setApiRequestProfile: vi.fn(),
   STARTUP_REQUEST_TIMEOUT_MS: 1000
 }))
@@ -88,8 +88,8 @@ const gatewayAtom = gw.$gateway
 const git = await import('@/lib/desktop-git')
 const desktopGit = vi.mocked(git.desktopGit)
 
-const hermes = await import('@/hermes')
-const getHermesConfig = vi.mocked(hermes.getHermesConfig)
+const rabbit = await import('@/rabbit')
+const getRabbitConfig = vi.mocked(rabbit.getRabbitConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
@@ -119,7 +119,7 @@ describe('project scope', () => {
 
   it('persists the scope to localStorage', () => {
     enterProject('p_abc')
-    expect(window.localStorage.getItem('hermes.desktop.projectScope')).toBe('p_abc')
+    expect(window.localStorage.getItem('rabbit.desktop.projectScope')).toBe('p_abc')
   })
 })
 
@@ -369,7 +369,7 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
     desktopGit.mockReturnValue({
       worktreeAdd: vi.fn(async () => {
         throw new Error(
-          'Expected JSON from https://vps/api/git/worktree/add but got HTML (status 404). The endpoint is likely missing on the Hermes backend.'
+          'Expected JSON from https://vps/api/git/worktree/add but got HTML (status 404). The endpoint is likely missing on the Rabbit backend.'
         )
       })
     } as never)
@@ -434,22 +434,22 @@ describe('createProject', () => {
   })
 
   it.each(['default', 'coder'])('creates in the active %s profile without leaving All profiles', async profile => {
-    const created = { folders: [], id: 'p_new', name: 'Hermes Agent', primary_path: '/srv/hermes' }
+    const created = { folders: [], id: 'p_new', name: 'Rabbit Agent', primary_path: '/srv/rabbit' }
     const tree = { id: created.id, label: created.name, path: created.primary_path, repos: [], sessionCount: 0 }
     const request = vi.fn().mockResolvedValue({ project: created })
     activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-    vi.mocked(hermes.hermesApi).mockResolvedValue({ projects: [tree], active_id: created.id })
+    vi.mocked(rabbit.rabbitApi).mockResolvedValue({ projects: [tree], active_id: created.id })
     $activeGatewayProfile.set(profile)
     setShowAllProfiles(true)
 
-    await expect(createProject({ folders: ['/srv/hermes'], name: created.name, use: true })).resolves.toEqual(created)
+    await expect(createProject({ folders: ['/srv/rabbit'], name: created.name, use: true })).resolves.toEqual(created)
 
     expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ profile, name: created.name }))
     expect($profileScope.get()).toBe(ALL_PROFILES)
     expect($projects.get()).toContainEqual(created)
     expect($projectTree.get()).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]))
     expect($activeProjectId.get()).toBe(created.id)
-    expect(hermes.hermesApi).toHaveBeenCalledWith(
+    expect(rabbit.rabbitApi).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/profiles/projects/tree?preview_limit=3' })
     )
   })
@@ -462,8 +462,8 @@ describe('createProject', () => {
     $activeGatewayProfile.set('coder')
     setShowAllProfiles(true)
 
-    const pending = createProject({ folders: ['/srv/hermes'], name: 'Hermes Agent' })
-    const rejection = expect(pending).rejects.toThrow('Active Hermes profile changed while connecting')
+    const pending = createProject({ folders: ['/srv/rabbit'], name: 'Rabbit Agent' })
+    const rejection = expect(pending).rejects.toThrow('Active Rabbit profile changed while connecting')
     const otherGateway = { connectionState: 'open', request }
     $activeGatewayProfile.set('other')
     activeGateway.mockReturnValue(otherGateway as never)
@@ -746,7 +746,7 @@ describe('repository discovery policy', () => {
     gatewayWith(request)
     const scanRepos = vi.fn()
     desktopGit.mockReturnValue({ scanRepos } as never)
-    getHermesConfig.mockResolvedValue({
+    getRabbitConfig.mockResolvedValue({
       desktop: {
         repo_scan_enabled: false,
         repo_scan_exclude_paths: [],
@@ -774,7 +774,7 @@ describe('repository discovery policy', () => {
     gatewayWith(request)
     const scanRepos = vi.fn().mockResolvedValue([{ label: 'repo', root: '/work/repo' }])
     desktopGit.mockReturnValue({ scanRepos } as never)
-    getHermesConfig.mockResolvedValue({
+    getRabbitConfig.mockResolvedValue({
       desktop: {
         repo_scan_enabled: true,
         repo_scan_exclude_paths: ['/work/vendor'],
@@ -784,7 +784,7 @@ describe('repository discovery policy', () => {
 
     await scanAndRecordRepos()
 
-    expect(getHermesConfig).toHaveBeenCalledWith('default')
+    expect(getRabbitConfig).toHaveBeenCalledWith('default')
     expect(scanRepos).toHaveBeenCalledWith(['/work'], {
       enabled: true,
       excludePaths: ['/work/vendor']
@@ -819,10 +819,10 @@ describe('repository discovery policy', () => {
     await scanAndRecordRepos(true)
 
     expect(scanRepos).not.toHaveBeenCalled()
-    expect(getHermesConfig).not.toHaveBeenCalled()
+    expect(getRabbitConfig).not.toHaveBeenCalled()
     // The desktop can't crawl the remote host's filesystem, so it asks the
     // host to scan its own discovery roots (`projects.discover_repos` with
-    // `scan: true`) — repos with zero Hermes sessions must still surface —
+    // `scan: true`) — repos with zero Rabbit sessions must still surface —
     // then refreshes the tree to pick up the merged list. Regression for
     // #81723: the sidebar used to go silent in remote mode and never
     // refresh again.
@@ -919,7 +919,7 @@ describe('repository discovery policy', () => {
     })
 
     desktopGit.mockReturnValue({ scanRepos } as never)
-    getHermesConfig.mockResolvedValue({
+    getRabbitConfig.mockResolvedValue({
       desktop: {
         repo_scan_enabled: true,
         repo_scan_exclude_paths: [],

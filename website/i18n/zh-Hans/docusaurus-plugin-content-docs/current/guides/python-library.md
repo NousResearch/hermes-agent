@@ -1,36 +1,36 @@
 ---
 sidebar_position: 5
-title: "将 Hermes 作为 Python 库使用"
+title: "将 Rabbit 作为 Python 库使用"
 description: "将 AIAgent 嵌入你自己的 Python 脚本、Web 应用或自动化流水线——无需 CLI"
 ---
 
-# 将 Hermes 作为 Python 库使用
+# 将 Rabbit 作为 Python 库使用
 
-Hermes 不仅仅是一个 CLI 工具。你可以直接导入 `AIAgent`，在自己的 Python 脚本、Web 应用或自动化流水线中以编程方式使用它。本指南将介绍具体方法。
+Rabbit 不仅仅是一个 CLI 工具。你可以直接导入 `AIAgent`，在自己的 Python 脚本、Web 应用或自动化流水线中以编程方式使用它。本指南将介绍具体方法。
 
 ---
 
 ## 安装
 
-克隆 Hermes 并创建受支持的可编辑开发环境：
+克隆 Rabbit 并创建受支持的可编辑开发环境：
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+git clone https://github.com/seven0070/Rabbit-.git
+cd rabbit-agent
 source ./activate
 ```
 
-在该检出目录中使用 `python your_app.py` 运行应用。Hermes 不发布用于 `requirements.txt` 安装的受支持 wheel 或源代码发行版。
+在该检出目录中使用 `python your_app.py` 运行应用。Rabbit 不发布用于 `requirements.txt` 安装的受支持 wheel 或源代码发行版。
 
 :::tip
-将 Hermes 作为库使用时，CLI 所需的环境变量同样必须设置。至少需要设置 `OPENROUTER_API_KEY`（若直接访问提供商，则设置 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`）。
+将 Rabbit 作为库使用时，CLI 所需的环境变量同样必须设置。至少需要设置 `OPENROUTER_API_KEY`（若直接访问提供商，则设置 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`）。
 :::
 
 ---
 
 ## 基本用法
 
-使用 Hermes 最简单的方式是 `chat()` 方法——传入一条消息，返回一个字符串：
+使用 Rabbit 最简单的方式是 `chat()` 方法——传入一条消息，返回一个字符串：
 
 ```python
 from run_agent import AIAgent
@@ -46,7 +46,7 @@ print(response)
 `chat()` 在内部处理完整的对话循环——工具调用、重试等一切事务——并仅返回最终的文本响应。
 
 :::warning
-将 Hermes 嵌入自己的代码时，务必设置 `quiet_mode=True`。否则，agent 会打印 CLI 的加载动画、进度指示器及其他终端输出，从而干扰你的应用输出。
+将 Rabbit 嵌入自己的代码时，务必设置 `quiet_mode=True`。否则，agent 会打印 CLI 的加载动画、进度指示器及其他终端输出，从而干扰你的应用输出。
 :::
 
 ---
@@ -179,7 +179,7 @@ print(response)
 
 ## 批量处理
 
-如需并行运行大量 prompt，Hermes 提供了 `batch_runner.py`，它可管理并发的 `AIAgent` 实例并进行适当的资源隔离：
+如需并行运行大量 prompt，Rabbit 提供了 `batch_runner.py`，它可管理并发的 `AIAgent` 实例并进行适当的资源隔离：
 
 ```bash
 python batch_runner.py --input prompts.jsonl --output results.jsonl
@@ -258,7 +258,7 @@ client = discord.Client(intents=discord.Intents.default())
 async def on_message(message):
     if message.author == client.user:
         return
-    if message.content.startswith("!hermes "):
+    if message.content.startswith("!rabbit "):
         query = message.content[8:]
         agent = AIAgent(
             model="anthropic/claude-sonnet-4",

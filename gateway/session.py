@@ -235,8 +235,8 @@ def _slack_tools_loaded() -> bool:
     try:
         # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from rabbit_cli.config import load_config_readonly
+        from rabbit_cli.tools_config import _get_platform_tools
         # include_default_mcp_servers defaults True so a default-enabled Slack MCP counts too.
         return "slack" in _get_platform_tools(load_config_readonly(), "slack")
     except Exception:
@@ -250,8 +250,8 @@ def _discord_tools_loaded() -> bool:
         from agent.secret_scope import get_secret
         # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
         # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from rabbit_cli.config import load_config_readonly
+        from rabbit_cli.tools_config import _get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
@@ -447,14 +447,14 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     lines += ["", "**Delivery options for scheduled tasks:**"]
-    from hermes_constants import display_hermes_home
+    from rabbit_constants import display_rabbit_home
     if src.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
         _origin_label = _format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
-    lines.append(f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)")
+    lines.append(f"- `\"local\"` → Save to local files only ({display_rabbit_home()}/cron/output/)")
     for platform, home in context.home_channels.items():
         home_name = _format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
@@ -632,7 +632,7 @@ def build_channel_continuity_note(entry: "SessionEntry", source: SessionSource) 
         return None
     where = "thread" if source.thread_id else "channel"
     return (
-        f"[System note: This {where} had an earlier Hermes session (session_id: {prev}) that was "
+        f"[System note: This {where} had an earlier Rabbit session (session_id: {prev}) that was "
         f"auto-reset. If the user refers to earlier work here, or the request depends on this "
         f"{where}'s history, use the session_search tool to recall that prior session before "
         f"acting — do not assume an unrelated recent session is the right context.]"
@@ -823,7 +823,7 @@ class SessionStore(
         # Initialize SQLite session database. A multiplexed gateway serves every profile from a SINGLE
         # process, so a handle bound during __init__ is frozen to the process's own root home; every
         # profile's rows then land in the root state.db even though ``_profile_runtime_scope`` has already
-        # redirected ``get_hermes_home()`` for the turn (its docstring lists "sessions" among what it
+        # redirected ``get_rabbit_home()`` for the turn (its docstring lists "sessions" among what it
         # scopes). The row still carries the right ``profile_name``, so the damage is invisible in the data
         # and shows up only as the desktop listing a profile's session under the default bot --
         # ``_open_session_db_for_profile`` reads ``profiles/<name>/state.db``, which never received the
@@ -833,7 +833,7 @@ class SessionStore(
         self._db_pinned = _DB_UNPINNED
         self._db_handles: Dict[Path, Any] = {}
         self._db_handles_lock = threading.Lock()
-        self._profile_home_cache: Dict[str, Optional[Path]] = {}  # profile -> HERMES_HOME (hits)
+        self._profile_home_cache: Dict[str, Optional[Path]] = {}  # profile -> RABBIT_HOME (hits)
         # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
         # compression child row is written before its reroute is published).
         self._session_owner_hints: Dict[str, str] = {}
@@ -845,9 +845,9 @@ class SessionStore(
         # The routing index needs exactly one home for its lifetime: the gateway's own, captured
         # before any profile scope exists (see ``_routing_db``).
         try:
-            from hermes_constants import get_hermes_home
+            from rabbit_constants import get_rabbit_home
 
-            self._routing_home: Optional[Path] = Path(get_hermes_home())
+            self._routing_home: Optional[Path] = Path(get_rabbit_home())
         except Exception:
             self._routing_home = None
         self._open_session_db_for_active_scope()

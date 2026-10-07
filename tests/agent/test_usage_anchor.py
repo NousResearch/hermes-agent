@@ -163,7 +163,7 @@ class TestAnchorInvalidation:
     def test_persist_and_restore_across_processes(self, tmp_path):
         """A fresh agent (desktop per-turn ``serve``, ``--resume``) adopts the persisted anchor
         while the durable transcript still matches, and clears it once it does not."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "anchor-restore"
@@ -253,7 +253,7 @@ class TestCompressionTriggerUsesAnchor:
 class TestCodexAppServerAnchor:
     """The codex_app_server runtime bypasses the conversation loop, so its
     usage recording is the only site that can maintain agent._usage_anchor.
-    Without it, hermes-mode preflight falls back to the rough mirror-transcript
+    Without it, rabbit-mode preflight falls back to the rough mirror-transcript
     heuristic, which grows monotonically (native compaction preserves the
     mirror) and fires thread compaction on tiny real threads (#100381)."""
 

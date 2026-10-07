@@ -12,7 +12,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
+import { deleteLearningNode, editLearningNode, getLearningNode } from '@/rabbit'
 import { notifyError } from '@/store/notifications'
 import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
 

@@ -64,7 +64,7 @@ All names frozen from the complete reachable shipped updater history stay
 resolvable. Historical dependency hooks retain the stdlib-only takeover bridge:
 the old parent waits, carries receipt/recovery state and never resumes a retired
 installer. Newly retired preparation and module-reload hooks explicitly marked
-incomplete stop nonzero and request `hermes update` again; they cannot manufacture
+incomplete stop nonzero and request `rabbit update` again; they cannot manufacture
 a missing completion request. Current Git/current/ZIP callers use only the
 canonical completion transport, not the historical takeover entrypoint.
 Unfrozen branch-only retry compositions are deleted, not shimmed. ACP convenience

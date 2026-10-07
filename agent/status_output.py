@@ -31,7 +31,7 @@ class StatusOutputMixin:
 
     def _vprint(self, *args, force: bool = False, diagnostic: bool = False, **kwargs):
         """Verbose print — suppressed while tokens are streaming (allowed during tool execution) and after
-        the main response; ``force=True`` bypasses both. ``suppress_status_output`` (``hermes chat -q``) wins."""
+        the main response; ``force=True`` bypasses both. ``suppress_status_output`` (``rabbit chat -q``) wins."""
         if getattr(self, "suppress_status_output", False):
             return
         if diagnostic and not self._warning_presentation_enabled():
@@ -53,7 +53,7 @@ class StatusOutputMixin:
         """True when quiet-mode tool summaries should print directly (CLI, no callback owns rendering);
         ``suppress_status_output`` always wins so ``[tool]``/``[done]`` never land in captured stdout.
 
-        ``suppress_status_output`` (the strict machine-readable mode used by ``hermes chat -Q``) always
+        ``suppress_status_output`` (the strict machine-readable mode used by ``rabbit chat -Q``) always
         wins: those flows neutralize the rendering callbacks, and without this gate the "no callback owns
         rendering" fallback would print ``[tool]``/``[done]`` spinner lines into the captured stdout it
         exists to keep clean (#93220).
@@ -117,7 +117,7 @@ class StatusOutputMixin:
             return
         import zlib
 
-        from agent.credits_tracker import AgentNotice
+        from agent.notices import AgentNotice
 
         key = f"startup-warning.{zlib.crc32(message.encode()):08x}"
         level = "success" if message.startswith("✓") else "warn"  # a recovered provider is good news

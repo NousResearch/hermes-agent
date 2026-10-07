@@ -14,19 +14,18 @@ description: "使用 GitNexus 为代码库建立索引，并通过 Web UI + Clou
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/research/gitnexus-explorer` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/research/gitnexus-explorer` 安装 |
 | 路径 | `optional-skills/research/gitnexus-explorer` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent + Teknium |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `gitnexus`, `code-intelligence`, `knowledge-graph`, `visualization` |
-| 相关 skill | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent), [`codebase-inspection`](/user-guide/skills/bundled/github/github-codebase-inspection) |
+| 相关 skill | [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent), [`codebase-inspection`](/user-guide/skills/bundled/github/github-codebase-inspection) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # GitNexus Explorer
@@ -204,7 +203,7 @@ rm -rf .claude/
 
 - **隧道必须使用生产构建。** Vite 开发服务器默认阻止非 localhost 主机（`allowedHosts`）。使用生产构建 + Node 代理可完全规避此问题。
 
-- **Web UI 不会创建 `.claude/` 或 `CLAUDE.md`。** 这些文件由 `npx gitnexus analyze` 创建。使用 `--skip-agents-md` 可抑制 markdown 文件的生成，再用 `rm -rf .claude/` 清除其余内容。这些是 Claude Code 集成产物，Hermes Agent 用户无需使用。
+- **Web UI 不会创建 `.claude/` 或 `CLAUDE.md`。** 这些文件由 `npx gitnexus analyze` 创建。使用 `--skip-agents-md` 可抑制 markdown 文件的生成，再用 `rm -rf .claude/` 清除其余内容。这些是 Claude Code 集成产物，Rabbit Agent 用户无需使用。
 
 - **浏览器内存限制。** Web UI 将整个图谱加载至浏览器内存。文件数超过 5k 的仓库可能出现卡顿，超过 30k 文件的仓库很可能导致标签页崩溃。
 

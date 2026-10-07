@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SidebarListRow } from '@/lib/session-date-groups'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import {
   mergeVisibleReorder,

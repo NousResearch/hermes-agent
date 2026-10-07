@@ -1,14 +1,14 @@
 ---
 sidebar_position: 11
 title: "Wake Word"
-description: "Hands-free 'Hey Hermes' wake word — start a voice session by speaking, the 'Hey Siri' way"
+description: "Hands-free 'Hey Rabbit' wake word — start a voice session by speaking, the 'Hey Siri' way"
 ---
 
-# Wake Word ("Hey Hermes")
+# Wake Word ("Hey Rabbit")
 
-The wake word turns Hermes into a hands-free assistant across the CLI, TUI, and
-desktop app: with one setting on, Hermes listens in the background for a spoken
-trigger phrase. Say it, and Hermes starts a fresh session, opens the microphone,
+The wake word turns Rabbit into a hands-free assistant across the CLI, TUI, and
+desktop app: with one setting on, Rabbit listens in the background for a spoken
+trigger phrase. Say it, and Rabbit starts a fresh session, opens the microphone,
 captures your command via the normal [voice pipeline](./voice-mode.md),
 and answers — exactly like "Hey Siri" or "Alexa". Use `surface` to pick which
 one listens.
@@ -39,12 +39,12 @@ container" still goes through normally.
 
 ## Remote desktop (client capture)
 
-When the desktop app connects to a **remote** Hermes backend (for example a
+When the desktop app connects to a **remote** Rabbit backend (for example a
 headless Docker host or a machine in another room), the backend often has **no
 microphone**. Server-side PortAudio then fails with “Failed to open the
 wake-word microphone.”
 
-Hermes supports **client capture** for that case:
+Rabbit supports **client capture** for that case:
 
 1. The desktop arms wake with `capture: client` (automatic for the GUI when the
    backend has no local input device, or set explicitly below).
@@ -76,7 +76,7 @@ backend process.
 
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
-| **openWakeWord** | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on Intel macOS or native Windows ARM64. |
+| **openWakeWord** | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey rabbit"** model. Custom models require a `.tflite` file. Not available on Intel macOS or native Windows ARM64. |
 | **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Supports native Windows ARM64. |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
@@ -89,27 +89,27 @@ that of the Python backend, not a remote desktop client:
   (free, no key).
 
 An explicit provider stays selected, even if this platform does not support it.
-Hermes reports the requirement error instead of silently switching engines.
+Rabbit reports the requirement error instead of silently switching engines.
 Existing explicit settings are not migrated. To opt into automatic selection,
-run `hermes config set wake_word.provider auto`. Wake detection stays **off**
+run `rabbit config set wake_word.provider auto`. Wake detection stays **off**
 until you enable it.
 
-The default phrase label is **"hey hermes"**. For openWakeWord, Hermes includes
+The default phrase label is **"hey rabbit"**. For openWakeWord, Rabbit includes
 its trained TFLite model.
 The `pyopen-wakeword` package includes the shared feature-extraction models, so
 this engine does not download models when it starts.
 
-If the selected engine is missing, Hermes requests its PM extra when you enable
+If the selected engine is missing, Rabbit requests its PM extra when you enable
 wake-word detection. `security.allow_lazy_installs` controls this installation.
-A new dependency environment can require a Hermes restart before the engine loads.
+A new dependency environment can require a Rabbit restart before the engine loads.
 Packaged builds include the engine dependencies supported by their target.
 
 The `pyopen-wakeword` macOS
-wheel contains an ARM64-only library despite its `universal2` label. Hermes
+wheel contains an ARM64-only library despite its `universal2` label. Rabbit
 excludes that engine on Intel Macs and native Windows ARM64. Sherpa provides
 keyless detection on both targets.
 
-Porcupine's default keyword is **"jarvis"**, not "hey hermes". Its `phrase`
+Porcupine's default keyword is **"jarvis"**, not "hey rabbit". Its `phrase`
 setting is only a display label; choose a built-in keyword or supply a custom
 `.ppn` model to change what it detects. Get an access key at
 [console.picovoice.ai](https://console.picovoice.ai) and store
@@ -117,13 +117,13 @@ setting is only a display label; choose a built-in keyword or supply a custom
 
 The supported `pyopen-wakeword` wheels target Apple Silicon with macOS 15 or
 later, glibc Linux 2.35 or later, and Windows x64. These requirements apply to
-that engine, not every Hermes feature. Termux's core/ACP package does not
+that engine, not every Rabbit feature. Termux's core/ACP package does not
 include this wake stack.
 
 ## Quick start
 
 ```bash
-# In an interactive `hermes` session:
+# In an interactive `rabbit` session:
 /wake on        # start listening (installs the engine on first use)
 /wake status    # show phrase, provider, and state
 /wake off       # stop listening
@@ -133,7 +133,7 @@ In the desktop app, hover the microphone in the composer and click the ear
 that fans out of it. The ear is solid when the wake word is listening.
 
 The toggle IS the setting: turning the wake word on or off — via `/wake` or the
-desktop ear button — also writes `wake_word.enabled` to `~/.hermes/config.yaml`,
+desktop ear button — also writes `wake_word.enabled` to `~/.rabbit/config.yaml`,
 so your choice persists across sessions. You can also flip it by hand:
 
 ```yaml
@@ -150,12 +150,12 @@ wake_word:
   input_device: null           # PortAudio input index or device-name substring; null = process default
   capture: auto               # auto | local | client — where PCM is captured (see Remote desktop)
   provider: auto              # auto | openwakeword | sherpa | porcupine (requires an access key)
-  phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
+  phrase: "hey rabbit"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
-    model: hey_hermes         # bundled default, or an absolute path to a custom .tflite
+    model: hey_rabbit         # bundled default, or an absolute path to a custom .tflite
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
@@ -177,7 +177,7 @@ threshold and fire the wake word unintentionally. Two knobs control this:
 
 - **`confirmation_frames`** (default `3`, openWakeWord only) — how many
   *consecutive* over-threshold frames are required before the wake fires. A real
-  "hey hermes" holds a high score across several frames; an ambient blip spikes
+  "hey rabbit" holds a high score across several frames; an ambient blip spikes
   just one. Raise it (e.g. `4`–`5`) if you still get false triggers in a noisy
   room; the cost is a few tens of milliseconds of extra latency. `1` restores
   the old fire-on-first-frame behavior.
@@ -188,7 +188,7 @@ threshold and fire the wake word unintentionally. Two knobs control this:
   internally so "higher = stricter" holds there too. The `0.6` default sits
   above openWakeWord's permissive `0.5` baseline, which let near-misses like
   "hey hor" through; raise toward `0.8` if you still get false fires, lower it
-  if real "hey hermes" utterances are missed.
+  if real "hey rabbit" utterances are missed.
 
 The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
 don't have the single-frame-spike problem and ignore `confirmation_frames`
@@ -196,26 +196,26 @@ don't have the single-frame-spike problem and ignore `confirmation_frames`
 
 The `openwakeword` provider name now selects
 [pyopen-wakeword](https://github.com/rhasspy/pyopen-wakeword). Its wheel includes
-the TFLite library and shared feature models. Hermes uses the bundled
-`hey_hermes.tflite` model by default. ONNX wake models and the
+the TFLite library and shared feature models. Rabbit uses the bundled
+`hey_rabbit.tflite` model by default. ONNX wake models and the
 `inference_framework` setting are no longer supported.
 
 ### Surfaces (CLI, TUI, GUI)
 
-The wake word works in all three Hermes surfaces, and `surface` picks which one
+The wake word works in all three Rabbit surfaces, and `surface` picks which one
 owns the listener and opens the new session when it fires:
 
 | `surface` | Behavior |
 |-----------|----------|
 | `auto` (default) | All local surfaces are eligible; the first one to arm owns the listener. |
-| `cli` | Only the classic `hermes` CLI. |
-| `tui` | Only `hermes --tui`. |
+| `cli` | Only the classic `rabbit` CLI. |
+| `tui` | Only `rabbit --tui`. |
 | `gui` | Only the desktop app. |
 
 The detector is on-device and single-mic, so only one surface listens at a time,
-including when Hermes surfaces run in separate processes. Ownership is sticky:
+including when Rabbit surfaces run in separate processes. Ownership is sticky:
 the first eligible claimant keeps the listener until it stops, disconnects, or
-its process exits. Hermes does not silently fail over to another open surface.
+its process exits. Rabbit does not silently fail over to another open surface.
 Set `surface` when you want to pin ownership instead of using first-claim wins.
 The TUI and desktop GUI share the same Python backend (`tui_gateway`), which
 runs the detector server-side and yields the mic to voice capture while a
@@ -223,7 +223,7 @@ command records.
 
 ## Using a different phrase
 
-"Hey Hermes" is the default detection phrase with openWakeWord and sherpa.
+"Hey Rabbit" is the default detection phrase with openWakeWord and sherpa.
 Porcupine uses its configured keyword instead ("jarvis" by default).
 To wake on something else, the easiest path on supported platforms is the
 open-vocabulary engine:
@@ -251,14 +251,14 @@ phrase defaults to `hey <profile name>` when unset. Say a profile's phrase
 and the desktop app live-switches to that profile, opens a fresh session
 there, and starts hands-free voice:
 
-- "hey hermes" → default profile
+- "hey rabbit" → default profile
 - "hey coder" → the `coder` profile
 - "hey trader" → the `trader` profile
 
 Set `wake_word.profile_routing: false` on the listener's profile to opt out
 and listen only for its own phrase. The CLI and TUI are single-profile
 processes: a wake phrase belonging to another profile prints the switch
-command (`hermes -p <profile>`) instead of routing.
+command (`rabbit -p <profile>`) instead of routing.
 
 Names are matched acoustically by their English subword sounds: two-word
 phrases with distinct, 2+ syllable names work best. Very short names, heavy
@@ -268,7 +268,7 @@ degrade accuracy — tune per-profile `sensitivity` if needed.
 ### Option B — openWakeWord (free, trained model)
 
 For a different phrase, obtain or train a compatible openWakeWord TFLite model.
-Set its absolute path in the configuration. Hermes does not resolve built-in
+Set its absolute path in the configuration. Rabbit does not resolve built-in
 names such as `hey_jarvis` or download their models for you.
 
 ```yaml
@@ -287,25 +287,25 @@ Training references:
 
 :::tip Pick a distinctive phrase
 Wake phrases that don't collide with everyday speech generalize best. Two
-syllables with an uncommon word ("hermes" qualifies) beat common words like
+syllables with an uncommon word ("rabbit" qualifies) beat common words like
 "hello" or "stop".
 :::
 
 ### Option C — Porcupine (custom keyword in seconds)
 
-Create a "Hey Hermes" keyword in the [Picovoice Console](https://console.picovoice.ai/),
+Create a "Hey Rabbit" keyword in the [Picovoice Console](https://console.picovoice.ai/),
 download the `.ppn`, and:
 
 ```yaml
 wake_word:
   enabled: true
   provider: porcupine
-  phrase: "hey hermes"
+  phrase: "hey rabbit"
   porcupine:
-    keyword: ~/.hermes/wakewords/hey_hermes.ppn
+    keyword: ~/.rabbit/wakewords/hey_rabbit.ppn
 ```
 
-Set your access key in `~/.hermes/.env`:
+Set your access key in `~/.rabbit/.env`:
 
 ```bash
 PORCUPINE_ACCESS_KEY=your-key-here
@@ -320,8 +320,8 @@ PORCUPINE_ACCESS_KEY=your-key-here
   full provider list.
 - A TTS provider for speaking the reply (the default `edge-tts` works with no
   key). The wake flow is fully hands-free, so the toggle refuses to arm until
-  both STT and TTS are ready — `hermes tools` (Voice section) sets them up.
-- The wake engine deps (auto-installed, or `hermes-agent[wake]`).
+  both STT and TTS are ready — `rabbit tools` (Voice section) sets them up.
+- The wake engine deps (auto-installed, or `rabbit-agent[wake]`).
 
 `/wake status` reports exactly what's missing if the listener won't start.
 
@@ -331,11 +331,11 @@ macOS grants microphone access per **process**. STT working in the desktop app
 proves the *renderer* has mic access — the wake listener runs in the Python
 *backend*, which needs its own grant. Without it, CoreAudio hands the backend a
 "working" stream that only ever delivers silence, so the ear shows listening
-but the phrase never fires. Hermes detects this (`/wake status` shows
+but the phrase never fires. Rabbit detects this (`/wake status` shows
 "mic delivers only silence"; the desktop's folded voice menu carries the same
 hint on its trigger).
-Fix: System Settings → Privacy & Security → Microphone → enable the Hermes
-backend (it may appear as your terminal, `python`, or Hermes), then toggle the
+Fix: System Settings → Privacy & Security → Microphone → enable the Rabbit
+backend (it may appear as your terminal, `python`, or Rabbit), then toggle the
 wake word off and on.
 
 ### "Listening" but receives silence (Windows)
@@ -350,13 +350,13 @@ When it reports silence, set `wake_word.input_device` to the numeric index or an
 unambiguous name of the working PortAudio input, then toggle the wake word:
 
 ```bash
-hermes config set wake_word.input_device "Microphone Array"
+rabbit config set wake_word.input_device "Microphone Array"
 ```
 
 Use `null` to return to the process default:
 
 ```bash
-hermes config set wake_word.input_device null
+rabbit config set wake_word.input_device null
 ```
 
 ## Notes & limits

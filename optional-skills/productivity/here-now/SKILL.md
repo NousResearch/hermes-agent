@@ -8,7 +8,7 @@ prerequisites:
   commands: [curl, file, jq]
 platforms: [macos, linux]
 metadata:
-  hermes:
+  rabbit:
     tags: [here.now, herenow, publish, deploy, hosting, static-site, web, share, URL, drive, storage]
     homepage: https://here.now
     requires_toolsets: [terminal]
@@ -60,14 +60,14 @@ If the docs fetch fails or times out, continue with the local skill and live API
 - Optional Drive token variable: `$HERENOW_DRIVE_TOKEN`
 - Optional credentials file: `~/.herenow/credentials`
 - Skill helper paths:
-  - `${HERMES_SKILL_DIR}/scripts/publish.sh` for publishing sites
-  - `${HERMES_SKILL_DIR}/scripts/drive.sh` for private Drive storage
+  - `${RABBIT_SKILL_DIR}/scripts/publish.sh` for publishing sites
+  - `${RABBIT_SKILL_DIR}/scripts/drive.sh` for private Drive storage
 
 ## Create a site
 
 ```bash
-PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
-bash "$PUBLISH" {file-or-dir} --client hermes
+PUBLISH="${RABBIT_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --client rabbit
 ```
 
 Outputs the live URL (e.g. `https://bright-canvas-a7k2.here.now/`).
@@ -84,8 +84,8 @@ You can also publish raw files without any HTML. Single files get a rich auto-vi
 ## Update an existing site
 
 ```bash
-PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
-bash "$PUBLISH" {file-or-dir} --slug {slug} --client hermes
+PUBLISH="${RABBIT_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --slug {slug} --client rabbit
 ```
 
 The script auto-loads the `claimToken` from `.herenow/state.json` when updating anonymous sites. Pass `--claim-token {token}` to override.
@@ -99,7 +99,7 @@ Use a Drive when the user wants private cloud storage for agent files: documents
 Every signed-in account has a default Drive named `My Drive`.
 
 ```bash
-DRIVE="${HERMES_SKILL_DIR}/scripts/drive.sh"
+DRIVE="${RABBIT_SKILL_DIR}/scripts/drive.sh"
 bash "$DRIVE" default
 bash "$DRIVE" ls "My Drive"
 bash "$DRIVE" put "My Drive" notes/today.md --from ./notes/today.md
@@ -201,7 +201,7 @@ For Drives:
 | `--title {text}`       | Viewer title (non-HTML sites)             |
 | `--description {text}` | Viewer description                            |
 | `--ttl {seconds}`      | Set expiry (authenticated only)               |
-| `--client {name}`      | Agent name for attribution (e.g. `hermes`)    |
+| `--client {name}`      | Agent name for attribution (e.g. `rabbit`)    |
 | `--base-url {url}`     | API base URL (default: `https://here.now`)    |
 | `--allow-nonherenow-base-url` | Allow sending auth to non-default `--base-url` |
 | `--api-key {key}`      | API key override (prefer credentials file)    |

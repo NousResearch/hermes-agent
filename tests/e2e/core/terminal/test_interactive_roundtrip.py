@@ -5,7 +5,7 @@ prompt never shows, shows in the wrong place, is lost on a session switch or on 
 the answer never reaches the tool, the approval outcome is ignored (denied command runs / approved
 command blocked), or a prompt stays pending after the turn.
 
-Harness: one real ``hermes serve`` per module (``approvals.mode: manual`` — the shipped default,
+Harness: one real ``rabbit serve`` per module (``approvals.mode: manual`` — the shipped default,
 NOT yolo), Desktop-shaped WebSocket clients that advertise ``client.capabilities
 {server_requests: true}``, and a fake provider that issues ``clarify`` / ``terminal(rm -rf <victim>)``
 tool calls and records the tool result the agent sends back. The client observes the server→client

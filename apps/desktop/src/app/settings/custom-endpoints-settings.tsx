@@ -11,7 +11,7 @@ import {
   getCustomEndpoints,
   saveCustomEndpoint,
   validateCustomEndpoint
-} from '@/hermes'
+} from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
@@ -24,7 +24,7 @@ import type {
   CustomEndpointApiMode,
   CustomEndpointModelDetail,
   CustomEndpointUpdate
-} from '@/types/hermes'
+} from '@/types/rabbit'
 
 import { ComboboxInput } from './combobox-input'
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
@@ -47,7 +47,7 @@ interface EndpointForm {
   name: string
 }
 
-// Same choices as `hermes model`'s custom-provider setup; '' = runtime auto-detect.
+// Same choices as `rabbit model`'s custom-provider setup; '' = runtime auto-detect.
 const API_MODE_OPTIONS: readonly { id: CustomEndpointApiMode; label: string }[] = [
   { id: '', label: 'Auto-detect' },
   { id: 'chat_completions', label: 'Chat Completions' },

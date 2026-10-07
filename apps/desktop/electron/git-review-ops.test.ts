@@ -36,12 +36,12 @@ afterEach(() => {
 })
 
 function makeRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-git-status-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-git-status-'))
 
   tempDirs.push(dir)
   execFileSync('git', ['init', '-q'], { cwd: dir })
-  execFileSync('git', ['config', 'user.email', 'hermes-test@example.com'], { cwd: dir })
-  execFileSync('git', ['config', 'user.name', 'Hermes Test'], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', 'rabbit-test@example.com'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', 'Rabbit Test'], { cwd: dir })
   fs.writeFileSync(path.join(dir, 'tracked.txt'), 'tracked\n')
   execFileSync('git', ['add', 'tracked.txt'], { cwd: dir })
   execFileSync('git', ['commit', '-qm', 'initial'], { cwd: dir })
@@ -64,7 +64,7 @@ test('gitFor accepts internally resolved git paths with restricted non-space cha
   const restrictedBinaries = [
     String.raw`C:\Git(x86)\cmd\git.exe`,
     String.raw`C:\tools\git+portable\cmd\git.exe`,
-    String.raw`C:\Users\João\AppData\Local\hermes\git\cmd\git.exe`
+    String.raw`C:\Users\João\AppData\Local\rabbit\git\cmd\git.exe`
   ]
 
   for (const binary of restrictedBinaries) {
@@ -82,7 +82,7 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
       windowsGitHost: () => ({
         isWindows: true,
         pythonBin: String.raw`C:\Tools\python-3.14+build\python.exe`,
-        scriptPath: String.raw`C:\Hermes\hermes-no-console-git.py`
+        scriptPath: String.raw`C:\Rabbit\rabbit-no-console-git.py`
       })
     }
   })
@@ -100,7 +100,7 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
 test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
   // `windowsGitHost()` resolves nothing in this process (no configured roots, no
-  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
+  // RABBIT_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
   // spaced `Program Files` path, which warns once per factory call.
   const warnings: unknown[][] = []
   const originalWarn = console.warn

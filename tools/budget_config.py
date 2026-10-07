@@ -31,7 +31,7 @@ def _configured_mcp_result_size() -> int:
     can merge without a key rename.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None
         raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None

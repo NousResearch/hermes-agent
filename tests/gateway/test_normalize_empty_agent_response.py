@@ -113,7 +113,7 @@ class TestGenericFailureRegression:
 
         assert "provider exploded" not in response and "ValueError" not in response
         assert "/retry" in response and "/new" in response
-        assert "hermes logs" in response
+        assert "rabbit logs" in response
 
     def test_partial_turn_hides_provider_envelope_and_names_retry(self):
         raw = "API call failed after 3 retries: HTTP 500 internal server error"

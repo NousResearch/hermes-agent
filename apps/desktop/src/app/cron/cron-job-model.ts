@@ -1,4 +1,4 @@
-import type { CronJob, CronJobUpdates } from '@/types/hermes'
+import type { CronJob, CronJobUpdates } from '@/types/rabbit'
 
 const asText = (value: unknown): string => (typeof value === 'string' ? value : '')
 
@@ -104,7 +104,7 @@ export function toggleCronDeliveryTarget(value: string, target: string, checked:
 
 // The scheduler stores `last_error` as the raw exception text, e.g.
 // "RuntimeError: Cron job 'x' has no model configured (job.model=None, …). Set a
-// per-job model via `hermes cron edit …`". Users need the first plain sentence,
+// per-job model via `rabbit cron edit …`". Users need the first plain sentence,
 // not the Python wrapper; the full text stays reachable via a hover title.
 const ERROR_PREFIX_RE = /^(?:[A-Za-z_][\w.]*(?:Error|Exception)|Exception):\s*/
 const ERROR_MARKER_RE = /^\[[a-z_]+(?::[a-z_]+)?\]\s*/

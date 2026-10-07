@@ -5,7 +5,7 @@ attachments each user grants the bot ``chat.messages.create`` ONCE in their own 
 the bot stores per-user refresh tokens and uploads *as the user*
 (https://developers.google.com/chat/api/guides/auth/users). Library API for the
 adapter plus a CLI driven by ``/setup-files`` (``--help``; ``--email`` omitted ==
-legacy single-user mode). Files under ``${HERMES_HOME}``: ``google_chat_user_tokens/
+legacy single-user mode). Files under ``${RABBIT_HOME}``: ``google_chat_user_tokens/
 <email>.json`` (per-user) / ``google_chat_user_token.json`` (legacy); pending PKCE state
 in ``google_chat_user_oauth_pending[/<email>].json``; ``google_chat_user_client_secret.json``.
 """
@@ -25,14 +25,14 @@ from typing import Any, List, NoReturn, Optional, Tuple
 
 from packaging.requirements import Requirement
 
-from hermes_constants import display_hermes_home, get_hermes_home
+from rabbit_constants import display_rabbit_home, get_rabbit_home
 from utils import atomic_write_text
 
 # Pinned legacy logger name so operator log filters keep matching (see adapter.py).
 logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 
 # Filesystem-safe key: lowercase, keep ``[a-z0-9._-@]`` so token files stay
-# human-readable under ``ls ~/.hermes/google_chat_user_tokens/``.
+# human-readable under ``ls ~/.rabbit/google_chat_user_tokens/``.
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
 # Least privilege: chat.messages.create covers BOTH media.upload and the
@@ -63,27 +63,27 @@ def _sanitize_email(email: str) -> str:
 
 
 def _token_rel(email: Optional[str]) -> str:
-    """HERMES_HOME-relative token file: per-user under the tokens dir, else the legacy path."""
+    """RABBIT_HOME-relative token file: per-user under the tokens dir, else the legacy path."""
     return f"google_chat_user_tokens/{_sanitize_email(email)}.json" if email else "google_chat_user_token.json"
 
 
 def _user_tokens_dir() -> Path:
-    return get_hermes_home() / "google_chat_user_tokens"
+    return get_rabbit_home() / "google_chat_user_tokens"
 
 
 def _token_path(email: Optional[str] = None) -> Path:
     """Per-user token path for ``email``, or the legacy single-user path."""
-    return get_hermes_home() / _token_rel(email)
+    return get_rabbit_home() / _token_rel(email)
 
 
 def _client_secret_path() -> Path:
-    return get_hermes_home() / "google_chat_user_client_secret.json"
+    return get_rabbit_home() / "google_chat_user_client_secret.json"
 
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:
     if email:
-        return get_hermes_home() / "google_chat_user_oauth_pending" / f"{_sanitize_email(email)}.json"
-    return get_hermes_home() / "google_chat_user_oauth_pending.json"
+        return get_rabbit_home() / "google_chat_user_oauth_pending" / f"{_sanitize_email(email)}.json"
+    return get_rabbit_home() / "google_chat_user_oauth_pending.json"
 
 
 # -- Library API — called from the adapter at runtime -------------------------
@@ -125,7 +125,7 @@ def load_user_credentials(email: Optional[str] = None) -> Optional[Any]:
     except ImportError:
         logger.warning(
             "[google_chat_user_oauth] google-auth not installed; user-OAuth "
-            "attachment delivery is disabled. Run `hermes setup` to install Google Chat support."
+            "attachment delivery is disabled. Run `rabbit setup` to install Google Chat support."
         )
         return None
     try:
@@ -197,8 +197,8 @@ def _chmod_quiet(path: Path, mode: int) -> None:
 
 def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions (0o700 parent) where supported."""
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(path.parent)
+    from rabbit_constants import mkdir_under_rabbit_home
+    mkdir_under_rabbit_home(path.parent)
     _chmod_quiet(path.parent, 0o700)
     # mkstemp's 0o600 temp + atomic rename never exposes the token at process umask.
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), create_mode=0o600)
@@ -245,11 +245,11 @@ def install_deps() -> bool:
         remaining = _missing_required_packages()
         if remaining:
             raise RuntimeError("dependencies remain stale after install: " + " ".join(remaining))
-        print("Dependencies installed. Restart Hermes to activate any new dependency environment.")
+        print("Dependencies installed. Restart Rabbit to activate any new dependency environment.")
         return True
     except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
-        print("Run `hermes setup` to repair the managed installation, then retry.")
+        print("Run `rabbit setup` to repair the managed installation, then retry.")
         return False
 
 
@@ -267,7 +267,7 @@ def check_auth(email: Optional[str] = None) -> bool:
 
 
 def store_client_secret(path: str) -> None:
-    """Validate and copy the user's OAuth client_secret.json into HERMES_HOME."""
+    """Validate and copy the user's OAuth client_secret.json into RABBIT_HOME."""
     src = Path(path).expanduser().resolve()
     if not src.exists():
         _fail(f"ERROR: File not found: {src}")
@@ -381,7 +381,7 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
     _write_private_json(token_path, token_payload)
     _pending_auth_path(email).unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {token_path}")
-    print(f"Profile path: {display_hermes_home()}/{_token_rel(email)}")
+    print(f"Profile path: {display_rabbit_home()}/{_token_rel(email)}")
 
 
 def revoke(email: Optional[str] = None) -> None:
@@ -415,7 +415,7 @@ def revoke(email: Optional[str] = None) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Google Chat user-OAuth setup for Hermes (native attachment delivery)"
+        description="Google Chat user-OAuth setup for Rabbit (native attachment delivery)"
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")

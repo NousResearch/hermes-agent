@@ -70,7 +70,7 @@ def out_of_turn():
 
     Earlier AIAgent-driven tests in this process can leave those contextvars set, which would hand the
     header to an unfixed tree through ``get_conversation_context()`` instead of the explicit runtime."""
-    from agent import portal_tags
+    from agent import conversation_context as portal_tags
 
     tokens = (
         aux._RUNTIME_MAIN_CONTEXT.set(None),

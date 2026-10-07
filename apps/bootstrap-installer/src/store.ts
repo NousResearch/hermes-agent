@@ -68,14 +68,14 @@ export type Route = 'welcome' | 'progress' | 'success' | 'failure'
 
 /// How the installer was launched, mirrored from src-tauri AppMode.
 /// 'install' = first-run onboarding (bare launch). 'update' = driven by the
-/// desktop app handing off via `Hermes-Setup.exe --update`.
+/// desktop app handing off via `Rabbit-Setup.exe --update`.
 export type AppMode = 'install' | 'update'
 
 export const $route = atom<Route>('welcome')
 export const $mode = atom<AppMode>('install')
 export const $bootstrap = atom<BootstrapStateModel>(INITIAL)
 export const $logPath = atom<string | null>(null)
-export const $hermesHome = atom<string | null>(null)
+export const $rabbitHome = atom<string | null>(null)
 
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
@@ -177,8 +177,8 @@ export async function initialize(): Promise<void> {
 
   if (fake) {
     unlisten = () => {}
-    $logPath.set('~/.hermes/logs/bootstrap-installer.log')
-    $hermesHome.set('~/.hermes')
+    $logPath.set('~/.rabbit/logs/bootstrap-installer.log')
+    $rabbitHome.set('~/.rabbit')
     $mode.set(fake === 'update' ? 'update' : 'install')
 
     // Update auto-runs (it's a hand-off); install/failure wait for the welcome click.
@@ -189,14 +189,14 @@ export async function initialize(): Promise<void> {
 
   // Pull static info on mount for the diagnostics footer.
   try {
-    const [logPath, hermesHome, mode] = await Promise.all([
+    const [logPath, rabbitHome, mode] = await Promise.all([
       invoke<string>('get_log_path'),
-      invoke<string>('get_hermes_home'),
+      invoke<string>('get_rabbit_home'),
       invoke<AppMode>('get_mode')
     ])
 
     $logPath.set(logPath)
-    $hermesHome.set(hermesHome)
+    $rabbitHome.set(rabbitHome)
     $mode.set(mode)
   } catch (err) {
     console.warn('failed to fetch installer paths', err)
@@ -264,7 +264,7 @@ export async function initialize(): Promise<void> {
           currentStage: null
         })
 
-        // Install: show the "launch Hermes" success screen. Update: this is a
+        // Install: show the "launch Rabbit" success screen. Update: this is a
         // hand-off — the installer relaunches the desktop and exits within a
         // few hundred ms, so routing to success just flashes that screen
         // before the window closes. Stay on progress until we exit.
@@ -317,7 +317,7 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
       commit: null,
       branch: opts?.branch ?? null,
       include_desktop: true,
-      hermes_home: null
+      rabbit_home: null
     }
   })
 }
@@ -329,7 +329,7 @@ export async function startUpdate(): Promise<void> {
     return
   }
 
-  // Update is driven by the desktop handing off (Hermes-Setup.exe --update);
+  // Update is driven by the desktop handing off (Rabbit-Setup.exe --update);
   // there's no welcome click. Reset + jump straight to progress, then let the
   // Rust side stream the synthetic update manifest.
   $bootstrap.set(INITIAL)
@@ -347,12 +347,12 @@ export async function cancelInstall(): Promise<void> {
   await invoke('cancel_bootstrap')
 }
 
-export async function launchHermesDesktop(): Promise<void> {
+export async function launchRabbitDesktop(): Promise<void> {
   if (fakeMode()) {throw new Error('Preview mode — launching is disabled.')}
   const installRoot = $bootstrap.get().installRoot
 
   if (!installRoot) {throw new Error('no install root')}
-  await invoke('launch_hermes_desktop', { installRoot })
+  await invoke('launch_rabbit_desktop', { installRoot })
 }
 
 export async function openLogDir(): Promise<void> {
@@ -389,7 +389,7 @@ const FAKE_INSTALL_STAGES: FakeStage[] = [
   { name: 'system-packages', title: 'System packages' },
   { name: 'uv', title: 'uv' },
   { name: 'python', title: 'Python environment' },
-  { name: 'repo', title: 'Hermes repository' },
+  { name: 'repo', title: 'Rabbit repository' },
   { name: 'dependencies', title: 'Python dependencies' },
   { name: 'node', title: 'Node runtime' },
   { name: 'desktop', title: 'Desktop app' }

@@ -1,5 +1,5 @@
 """Multiplexed-gateway invariants: per-turn config, credentials and hooks follow the ROUTED profile
-(HERMES_HOME override), not the launch home the module constants were frozen from."""
+(RABBIT_HOME override), not the launch home the module constants were frozen from."""
 
 from __future__ import annotations
 
@@ -9,19 +9,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 @pytest.fixture
 def two_homes(tmp_path, monkeypatch):
-    """Launch home A (HERMES_HOME) and a routed profile B with different config everywhere."""
-    a = tmp_path / ".hermes"
+    """Launch home A (RABBIT_HOME) and a routed profile B with different config everywhere."""
+    a = tmp_path / ".rabbit"
     b = a / "profiles" / "b"
     b.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(a))
-    monkeypatch.delenv("HERMES_MAX_ITERATIONS", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(a))
+    monkeypatch.delenv("RABBIT_MAX_ITERATIONS", raising=False)
     for home, turns, model in ((a, 7, "A/fallback"), (b, 99, "B/fallback")):
         (home / "config.yaml").write_text(yaml.safe_dump({
             "agent": {"max_turns": turns},
@@ -31,11 +31,11 @@ def two_homes(tmp_path, monkeypatch):
 
 
 def _under(home: Path, fn):
-    token = set_hermes_home_override(str(home))
+    token = set_rabbit_home_override(str(home))
     try:
         return fn()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypatch):
@@ -43,7 +43,7 @@ def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypat
     from gateway import run as gateway_run
     from gateway.run import GatewayRunner
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", a)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", a)
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     runner = SimpleNamespace(_fallback_model=None)
     refresh = GatewayRunner._refresh_fallback_model.__get__(runner)
@@ -58,19 +58,7 @@ def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypat
     assert refresh() == [{"provider": "openrouter", "model": "A/fallback"}]
 
 
-def test_aux_nous_auth_reads_routed_profile_auth_json(two_homes, monkeypatch):
-    a, b = two_homes
-    import agent.auxiliary_client as aux
 
-    for home, token in ((a, "TOKEN_A"), (b, "TOKEN_B")):
-        (home / "auth.json").write_text(json.dumps({
-            "version": 1, "active_provider": "nous",
-            "providers": {"nous": {"agent_key": token, "access_token": token}},
-        }), encoding="utf-8")
-    monkeypatch.setattr(aux, "_select_pool_entry", lambda _provider: (False, None))
-
-    assert (aux._read_nous_auth() or {}).get("access_token") == "TOKEN_A"
-    assert (_under(b, aux._read_nous_auth) or {}).get("access_token") == "TOKEN_B"
 
 
 def _write_hook(home: Path, name: str) -> None:
@@ -93,15 +81,15 @@ async def test_gateway_hooks_fire_per_routed_profile(two_homes):
     hooks = ProfileHookRegistries()
     ctx_a: dict = {}
     await hooks.emit("agent:start", ctx_a)
-    token = set_hermes_home_override(str(b))
+    token = set_rabbit_home_override(str(b))
     try:
         ctx_b: dict = {}
         await hooks.emit("agent:start", ctx_b)
         assert [h["name"] for h in hooks.loaded_hooks] == ["hook-b"]
     finally:
-        reset_hermes_home_override(token)
-    assert ctx_a.get("seen") == ["hermes_hook_hook-a"]
-    assert ctx_b.get("seen") == ["hermes_hook_hook-b"]
+        reset_rabbit_home_override(token)
+    assert ctx_a.get("seen") == ["rabbit_hook_hook-a"]
+    assert ctx_b.get("seen") == ["rabbit_hook_hook-b"]
 
 
 def test_media_policy_reads_routed_profile_config_not_env(two_homes, monkeypatch):
@@ -113,9 +101,9 @@ def test_media_policy_reads_routed_profile_config_not_env(two_homes, monkeypatch
     (b / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"strict": False, "media_delivery_allow_dirs": ["/srv/b"]}}), encoding="utf-8")
     # Gateway startup bridges the LAUNCH profile's policy into the process env.
-    for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS"):
+    for var in ("RABBIT_MEDIA_DELIVERY_STRICT", "RABBIT_MEDIA_ALLOW_DIRS"):
         monkeypatch.delenv(var, raising=False)
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
     media_policy.apply_media_policy_env(load_config())
     assert media_policy.media_delivery_strict() is True
     assert media_policy.media_delivery_allow_dirs() == "/srv/a"
@@ -129,7 +117,7 @@ def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monke
     land in os.environ, where the launch profile's own deliveries and children read it."""
     a, b = two_homes
     from gateway import media_policy
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
 
     (b / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"strict": False, "media_delivery_allow_dirs": ["/srv/b"]}}), encoding="utf-8")

@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Connection lifecycle tool for managed gateway accounts and local MCP servers.
+"""Connection lifecycle tool for local MCP servers.
 
-Disconnecting accounts remains a portal-only user decision.
+This build has no hosted connector accounts: the managed tool gateway was removed.
+Hosted actions ('status', 'connect', 'reconnect') still parse so older frontends and
+cached schemas fail with a clear answer instead of an import error.
 """
 
+import json
 from typing import Any, Callable, Dict, Optional
 
 from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
 from tools.connectors.gateway import config as gateway_config
-from tools.connectors.managed import run_managed_action
 from tools.connectors.mcp import run_mcp_operation
 from tools.connectors.targets import ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
 from tools.registry import registry, tool_error
+
+_HOSTED_REMOVED = (
+    "Hosted connector accounts are not available in this build. "
+    "Use a local MCP server instead: action 'install' with "
+    'connectors [{"name": "<server>", "mcp": true}].'
+)
 
 
 def manage_connections(
@@ -38,36 +46,20 @@ def manage_connections(
             connection_callback=connection_callback, session_id=session_id, tool_call_id=tool_call_id,
         )
 
-    return run_managed_action(
-        action, managed, args,
-        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id,
-        connection_callback=connection_callback, connectors_available=connectors_available,
-    )
+    if action == "status":
+        # No hosted connectors exist in this build; report an empty list so the
+        # connectors panel renders "nothing connected" rather than an error.
+        return json.dumps({"connectors": []}, ensure_ascii=False)
+
+    return tool_error(_HOSTED_REMOVED)
 
 
 MANAGE_CONNECTIONS_SCHEMA = {
     "name": "manage_connections",
     "description": (
-        "Connect the user to apps. Two kinds: a hosted connector account (Gmail, Notion, ...) "
-        "served through the tool gateway, and a local MCP server from the bundled catalog. "
-        "Targets go in 'connectors': a bare slug or {\"name\": \"gmail\"} is a hosted connector "
-        "account; {\"name\": \"linear\", \"mcp\": true} is a local MCP server. Many names exist on "
-        "both sides, so the user's own words decide. Pass \"mcp\": true only when the user asks "
-        "for an MCP server, a local server or an install, or when the name exists only as a "
-        "catalog entry; otherwise the target is hosted. 'connect' and 'reconnect' are hosted "
-        "actions; 'install', 'enable' and 'authorize' are MCP actions. A target the other side "
-        "owns is refused with the call that does work. "
-        "Hosted actions: 'status' lists connectors and whether each is connected; 'connect' "
-        "starts an authorization for the given connectors; 'reconnect' checks each one and "
-        "repairs only what is not connected ('force': true restarts even a working one, for an "
-        "account switch). Pass SEVERAL slugs in one call. In the desktop app, the terminal UI and "
-        "the interactive CLI the call shows the user a card and blocks until every app is "
-        "connected, skipped, or the deadline passes; the result lists each target as connected / "
-        "skipped / not_connected and never carries a link. Where no card exists (a one-shot run, "
-        "a scheduled job, a messaging platform) the result carries a connect_url per app for the "
-        "USER to open in a browser (never open it yourself); ask them to say when they are done, "
-        "then use 'status'. "
-        "When a hosted connector tool call returns CONNECTION_REQUIRED, use 'connect'. "
+        "Install, enable and authorize local MCP servers from the bundled catalog. "
+        "Targets go in 'connectors' as objects carrying \"mcp\": true, e.g. "
+        '{"name": "linear", "mcp": true}. '
         "MCP actions (every target must carry \"mcp\": true): 'install' adds a catalog entry, "
         "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
         "They show the user an approval card and block until it settles. Never hand-edit "
@@ -76,8 +68,8 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "same app is not a re-ask — run it. A connected server's tools are named in the result and are "
         "callable at once through tool_describe/tool_call. Where no card exists an MCP target runs at once and the result says what "
         "happened, with a link for the user to open when one is needed. This tool can NOT "
-        "disconnect, delete, or revoke an account — that is deliberately user-only. When asked, say so and direct the user to the "
-        "Nous Portal (their org's Connectors page) or the desktop app."
+        "disconnect, delete, or revoke a server — that is deliberately user-only. When asked, say so and direct the user to the "
+        "desktop app."
     ),
     "parameters": {
         "type": "object",
@@ -86,8 +78,9 @@ MANAGE_CONNECTIONS_SCHEMA = {
                 "type": "string",
                 "enum": list(ALL_ACTIONS),
                 "description": (
-                    "Defaults to status. connect and reconnect take hosted connector slugs only. "
-                    "install, enable and authorize take mcp:true targets only."
+                    "install, enable and authorize take mcp:true targets only. "
+                    "status lists hosted connectors (always empty in this build); "
+                    "connect and reconnect are hosted-only and unavailable."
                 ),
             },
             "connectors": {
@@ -102,8 +95,8 @@ MANAGE_CONNECTIONS_SCHEMA = {
                                 "mcp": {
                                     "type": "boolean",
                                     "description": (
-                                        "true = a local MCP server from the catalog; absent or "
-                                        "false = a hosted connector account."
+                                        "true = a local MCP server from the catalog. "
+                                        "Hosted connector accounts are not available in this build."
                                     ),
                                 },
                             },
@@ -113,10 +106,8 @@ MANAGE_CONNECTIONS_SCHEMA = {
                     ]
                 },
                 "description": (
-                    "Targets. REQUIRED for every action but status "
-                    "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for "
-                    "status. A bare slug is a hosted connector, so an MCP server needs the object "
-                    "form with \"mcp\": true."
+                    "Targets. REQUIRED for install, enable and authorize "
+                    "(e.g. [{\"name\": \"linear\", \"mcp\": true}]); optional filter for status."
                 ),
             },
             "force": {
@@ -133,11 +124,6 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # The portal gate decides schema presence: an account the portal has not enabled for
-    # connectors never sees the tool, so the model cannot call it and read the gateway's
-    # 404 back to them. The handler runs the same gate so the RPC path (methods_connectors) and
-    # a cached schema agree. Read as a module attribute so tests patch
-    # ``gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), connectors_available=gateway_config.connectors_available,
     ),

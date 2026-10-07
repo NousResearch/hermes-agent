@@ -95,4 +95,4 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     # A usage-limit wall is a billing verdict: it names the limit and the provider-pin fix,
     # never the transient "backup provider" retry clause.
     assert "usage or credit limit" in msg
-    assert "hermes cron edit abc123 --provider" in msg
+    assert "rabbit cron edit abc123 --provider" in msg

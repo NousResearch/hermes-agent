@@ -2,7 +2,7 @@
 
 Git-only (outside a repo children share the parent's cwd); local terminal backend only (on
 docker/ssh/modal the host worktree is invisible in the sandbox, so isolation is skipped). One
-worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``hermes-subagent/<id>``;
+worktree per child under ``<repo>/.worktrees/subagent-<id>``, branch ``rabbit-subagent/<id>``;
 pruned only on proof (zero commits AND clean, both probes ok), else kept + ``inspection_failed``.
 """
 
@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from rabbit_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT, env=None):
 def local_backend_active() -> bool:
     """True when the terminal backend is local (worktrees visible to tools)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
 
         backend = (load_config_readonly().get("terminal") or {}).get("backend") or "local"
         return str(backend).strip().lower() in ("", "local")
@@ -78,7 +78,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
     if not repo_root:
         return None
     wt_name = f"subagent-{(subagent_id or uuid.uuid4().hex[:8]).replace('/', '-')}"
-    branch = f"hermes-subagent/{wt_name}"
+    branch = f"rabbit-subagent/{wt_name}"
     wt_path = Path(repo_root) / ".worktrees" / wt_name
     try:
         wt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +86,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
         # The checkout runs the repo-named smudge filter; skip isolation when it cannot be neutralized.
-        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        from rabbit_cli._subprocess_compat import noninteractive_repo_git_env
         add_env = noninteractive_repo_git_env(repo_root)
         if add_env is None:
             logger.warning("subagent worktree: filter discovery failed; not creating a worktree")
@@ -153,7 +153,7 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
         return mark_worktree_payload_unproven(
             payload, "no base_commit recorded — commit count unmeasurable", unmeasured="commits")
     # The status probe re-hashes files the child touched, which runs repo-named clean filters.
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from rabbit_cli._subprocess_compat import noninteractive_repo_git_env
     probe_env = noninteractive_repo_git_env(path)
     if probe_env is None:
         return mark_worktree_payload_unproven(payload, "filter discovery failed", unmeasured="dirty")
@@ -179,7 +179,7 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
-            from hermes_cli.worktree_ops import release_lsp_clients
+            from rabbit_cli.worktree_ops import release_lsp_clients
             release_lsp_clients(path)  # the child ran in-process: its language servers are ours
             removed = _run_git(["worktree", "remove", "--force", path], cwd=cwd)
             if removed.returncode == 0:

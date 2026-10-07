@@ -137,7 +137,7 @@ def test_rank_slash_completions_still_caps_plugin_commands_when_browsing():
 
 def test_rank_slash_completions_defaults_to_the_real_command_registry():
     # No registry_command_names override: this must wire up to the actual
-    # hermes_cli.commands.GATEWAY_KNOWN_COMMANDS, not just a test double.
+    # rabbit_cli.commands.GATEWAY_KNOWN_COMMANDS, not just a test double.
     # /help is a real registry command; /plugin* stands in for names a
     # plugin registered (kind "command", but not in the registry) and
     # must still be capped.

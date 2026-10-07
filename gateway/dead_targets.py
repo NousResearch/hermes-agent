@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli.config import get_hermes_home
+from rabbit_cli.config import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class DeadTargetRegistry:
     def __init__(self, path: Optional[Path] = None) -> None:
         self._lock = threading.RLock()
         self._dead: Dict[str, Dict[str, object]] = {}
-        self._path = path if path is not None else get_hermes_home() / "gateway" / "dead_targets.json"
+        self._path = path if path is not None else get_rabbit_home() / "gateway" / "dead_targets.json"
         try:
             if self._path.exists():
                 raw = json.loads(self._path.read_text(encoding="utf-8-sig"))

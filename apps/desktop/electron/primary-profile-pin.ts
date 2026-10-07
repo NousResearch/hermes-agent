@@ -5,14 +5,14 @@
  *
  *   - the stored preference (active-profile.json) — the profile Desktop should
  *     boot into on the NEXT launch. The rail's live workspace switch rewrites
- *     it via `hermes:profile:remember` without re-homing the primary.
+ *     it via `rabbit:profile:remember` without re-homing the primary.
  *   - the profile the live primary child was actually spawned with.
  *
  * Routing (`resolveProfileBackendRoute`, `ensureBackend`, the pool) must use
  * the second while a primary is up. Reading the preference instead made a
  * request for the booted profile (e.g. "default") stop matching
  * `primaryProfile`, fall through to the pool, and spawn a second backend for
- * the same HERMES_HOME. That duplicate held a pool slot and starved every other
+ * the same RABBIT_HOME. That duplicate held a pool slot and starved every other
  * profile into "timed out while waiting for a free slot".
  *
  * Pure: main.ts owns the file read and the start/teardown call sites.
@@ -20,7 +20,7 @@
 export class PrimaryProfilePin {
   #booted: null | string = null
 
-  /** Called by startHermes() with the profile the primary is launching as. */
+  /** Called by startRabbit() with the profile the primary is launching as. */
   pin(profile: null | string | undefined): string {
     const value = String(profile ?? '').trim() || 'default'
     this.#booted = value

@@ -3,9 +3,9 @@ label: SMS (Twilio)
 kind: platform
 version: 1.0.0
 description: >
-  SMS gateway adapter for Hermes Agent via Twilio. Sends and receives SMS
+  SMS gateway adapter for Rabbit Agent via Twilio. Sends and receives SMS
   through the Twilio REST API + inbound webhook, relaying texts between phone
-  numbers and the Hermes agent. Markdown is stripped to plain text.
+  numbers and the Rabbit agent. Markdown is stripped to plain text.
 author: NousResearch
 requires_env:
   - name: TWILIO_ACCOUNT_SID

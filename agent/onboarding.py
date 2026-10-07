@@ -86,11 +86,11 @@ def tool_progress_hint_cli() -> str:
 
 
 def openclaw_residue_hint_cli() -> str:
-    """Banner shown the first time Hermes finds ``~/.openclaw/``: migrate first, cleanup (which breaks OpenClaw) after."""
+    """Banner shown the first time Rabbit finds ``~/.openclaw/``: migrate first, cleanup (which breaks OpenClaw) after."""
     return (
         "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Hermes, run `hermes claw migrate`.\n"
-        "If you've already migrated and want to archive the old directory, run `hermes claw cleanup` "
+        "To port your config, memory, and skills over to Rabbit, run `rabbit claw migrate`.\n"
+        "If you've already migrated and want to archive the old directory, run `rabbit claw cleanup` "
         "(renames it to ~/.openclaw.pre-migration — OpenClaw will stop working after this).\n"
         "This tip only shows once."
     )
@@ -201,7 +201,7 @@ def is_seen(config: Mapping[str, Any], flag: str) -> bool:
 def mark_seen(config_path: Path, flag: str) -> bool:
     """Persist ``onboarding.seen.<flag> = True`` atomically; False on any error (best-effort)."""
     try:
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from rabbit_cli.config import atomic_config_write, read_user_config_raw
     except Exception as e:  # pragma: no cover — dependency issue
         logger.debug("onboarding: failed to import config helpers: %s", e)
         return False

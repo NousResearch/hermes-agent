@@ -17,7 +17,6 @@ description: "通过 gws CLI 或 Python 使用 Gmail、Calendar、Drive、Docs�
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/productivity/google-workspace` |
 | 版本 | `1.1.0` |
-| 作者 | Nous Research |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Google`, `Gmail`, `Calendar`, `Drive`, `Sheets`, `Docs`, `Contacts`, `Email`, `OAuth` |
@@ -26,12 +25,12 @@ description: "通过 gws CLI 或 Python 使用 Gmail、Calendar、Drive、Docs�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Google Workspace
 
-Gmail、Calendar、Drive、Contacts、Sheets 和 Docs —— 通过 Hermes 管理的 OAuth（开放授权）和轻量 CLI 封装器实现。若已安装 `gws`，该 skill 将以其作为执行后端以获得更广泛的 Google Workspace 覆盖；否则回退到内置的 Python 客户端实现。
+Gmail、Calendar、Drive、Contacts、Sheets 和 Docs —— 通过 Rabbit 管理的 OAuth（开放授权）和轻量 CLI 封装器实现。若已安装 `gws`，该 skill 将以其作为执行后端以获得更广泛的 Google Workspace 覆盖；否则回退到内置的 Python 客户端实现。
 
 ## 参考资料
 
@@ -40,7 +39,7 @@ Gmail、Calendar、Drive、Contacts、Sheets 和 Docs —— 通过 Hermes 管�
 ## 脚本
 
 - `scripts/setup.py` —— OAuth2 设置（运行一次以完成授权）
-- `scripts/google_api.py` —— 兼容性封装 CLI。在可用时优先使用 `gws` 执行操作，同时保留 Hermes 现有的 JSON 输出契约。
+- `scripts/google_api.py` —— 兼容性封装 CLI。在可用时优先使用 `gws` 执行操作，同时保留 Rabbit 现有的 JSON 输出契约。
 
 ## 首次设置
 
@@ -49,7 +48,7 @@ Gmail、Calendar、Drive、Contacts、Sheets 和 Docs —— 通过 Hermes 管�
 首先定义一个简写：
 
 ```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+GSETUP="python ${RABBIT_HOME:-$HOME/.rabbit}/skills/productivity/google-workspace/scripts/setup.py"
 ```
 
 ### 步骤 0：检查是否已完成设置
@@ -100,7 +99,7 @@ $GSETUP --check
 >    受众群体 → 测试用户 → 添加用户
 > 6. 下载 JSON 文件并告诉我文件路径
 >
-> Hermes CLI 重要提示：若文件路径以 `/` 开头，请勿在 CLI 中单独发送该裸路径，因为它可能被误识别为斜杠命令。请将其放在句子中发送，例如：
+> Rabbit CLI 重要提示：若文件路径以 `/` 开头，请勿在 CLI 中单独发送该裸路径，因为它可能被误识别为斜杠命令。请将其放在句子中发送，例如：
 > `The JSON file path is: /home/user/Downloads/client_secret_....json`
 
 用户提供路径后：
@@ -109,7 +108,7 @@ $GSETUP --check
 $GSETUP --client-secret /path/to/client_secret.json
 ```
 
-若用户粘贴的是原始客户端 ID / 客户端密钥值而非文件路径，请自行为其编写一个有效的桌面 OAuth JSON 文件，保存到明确的位置（例如 `~/Downloads/hermes-google-client-secret.json`），然后对该文件运行 `--client-secret`。
+若用户粘贴的是原始客户端 ID / 客户端密钥值而非文件路径，请自行为其编写一个有效的桌面 OAuth JSON 文件，保存到明确的位置（例如 `~/Downloads/rabbit-google-client-secret.json`），然后对该文件运行 `--client-secret`。
 
 ### 步骤 3：获取授权 URL
 
@@ -121,7 +120,7 @@ $GSETUP --auth-url --services calendar,drive,sheets,docs --format json
 $GSETUP --auth-url --services all --format json
 ```
 
-此命令返回包含 `auth_url` 字段的 JSON，并将该 URL 保存至 `~/.hermes/google_oauth_last_url.txt`。
+此命令返回包含 `auth_url` 字段的 JSON，并将该 URL 保存至 `~/.rabbit/google_oauth_last_url.txt`。
 
 本步骤的 Agent 规则：
 - 提取 `auth_url` 字段，将该确切 URL 以单行形式发送给用户。
@@ -149,9 +148,9 @@ $GSETUP --check
 
 ### 注意事项
 
-- Token 存储于 `~/.hermes/google_token.json`，自动刷新。
-- 待处理的 OAuth 会话状态/验证器临时存储于 `~/.hermes/google_oauth_pending.json`，直至交换完成。
-- 若已安装 `gws`，`google_api.py` 会将其指向同一个 `~/.hermes/google_token.json` 凭据文件。用户无需单独运行 `gws auth login` 流程。
+- Token 存储于 `~/.rabbit/google_token.json`，自动刷新。
+- 待处理的 OAuth 会话状态/验证器临时存储于 `~/.rabbit/google_oauth_pending.json`，直至交换完成。
+- 若已安装 `gws`，`google_api.py` 会将其指向同一个 `~/.rabbit/google_token.json` 凭据文件。用户无需单独运行 `gws auth login` 流程。
 - 撤销授权：`$GSETUP --revoke`
 
 ## 使用方法
@@ -159,7 +158,7 @@ $GSETUP --check
 所有命令均通过 API 脚本执行。将 `GAPI` 设为简写：
 
 ```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
+GAPI="python ${RABBIT_HOME:-$HOME/.rabbit}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
 
 ### Gmail

@@ -1,8 +1,8 @@
-"""``$HERMES_HOME`` model-provider plugins resolve for the profile home bound at lookup time (#88143).
+"""``$RABBIT_HOME`` model-provider plugins resolve for the profile home bound at lookup time (#88143).
 
 One process serves several profiles (multiplex gateway, Desktop ``serve``); discovery used to read the
 plugins of whichever home was bound first and never look again, so a plugin installed in a secondary
-profile was ``Unknown provider`` from Desktop while ``hermes -p <profile>`` in a terminal worked.
+profile was ``Unknown provider`` from Desktop while ``rabbit -p <profile>`` in a terminal worked.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 _PLUGIN = textwrap.dedent(
     """
@@ -41,27 +41,27 @@ def homes(tmp_path, monkeypatch):
     secondary = tmp_path / "profiles" / "scaleup"
     launch.mkdir()
     secondary.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
     monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
     monkeypatch.setattr(providers, "_HOME_LAYERS", {}, raising=False)
     yield launch, secondary
-    for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
+    for mod in [m for m in sys.modules if m.startswith("_rabbit_user_provider")]:
         del sys.modules[mod]
 
 
 def _bound(home: Path, fn):
-    token = set_hermes_home_override(home)
+    token = set_rabbit_home_override(home)
     try:
         return fn()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_secondary_profile_plugin_resolves_for_its_home_only(homes):
     import providers
-    from hermes_cli.auth import resolve_provider
+    from rabbit_cli.auth import resolve_provider
 
     launch, secondary = homes
     _install(secondary, "scaleup-only")

@@ -4,7 +4,7 @@ Two scenarios for _agent_home's resolution order (#86313 post-merge findings):
 
 1. MULTIPLEX INVERSION (@kshitijk4poor): the messaging gateway hands every
    agent the shared launch-home state.db but binds the profile home per turn
-   via the HERMES_HOME ContextVar (copy_context into the worker). A bound
+   via the RABBIT_HOME ContextVar (copy_context into the worker). A bound
    override must WIN over the db-derived launch home, else the shared-db
    fallback stomps the correct profile deterministically.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 class _DB:
@@ -62,10 +62,10 @@ def test_bound_override_wins_over_shared_db_home(tmp_path, monkeypatch):
     root.mkdir()
     bot_home = root / "profiles" / "mybot"
     bot_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
 
     agent = _agent_for(root)  # shared db lives at <root>/state.db
-    token = set_hermes_home_override(str(bot_home))
+    token = set_rabbit_home_override(str(bot_home))
     try:
         assert system_prompt._agent_home(agent) == bot_home
         assert (
@@ -73,7 +73,7 @@ def test_bound_override_wins_over_shared_db_home(tmp_path, monkeypatch):
             == "mybot"
         )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_db_home_wins_on_bare_thread_without_override(tmp_path, monkeypatch):
@@ -83,7 +83,7 @@ def test_db_home_wins_on_bare_thread_without_override(tmp_path, monkeypatch):
     root = tmp_path / "root"
     bot_home = root / "profiles" / "mybot"
     bot_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
 
     agent = _agent_for(bot_home)
     result = {}
@@ -125,7 +125,7 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
 
     # Ambient env resolves to the launch/default home; nothing binds the
     # ContextVar on the build thread.
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
     prompt_builder.clear_skills_system_prompt_cache(clear_snapshot=False)
 
     agent = _agent_for(bot_home, valid_tool_names=["skill_view"])
@@ -148,8 +148,8 @@ def test_full_prompt_scoped_to_bot_on_bare_thread(tmp_path, monkeypatch):
     skills_block = m.group(1) if m else ""
     assert "bot-skill" in skills_block
     assert "leaky-skill" not in skills_block
-    assert "Active Hermes profile: mybot" in prompt
-    assert "Active Hermes profile: default" not in prompt
+    assert "Active Rabbit profile: mybot" in prompt
+    assert "Active Rabbit profile: default" not in prompt
 
 
 def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
@@ -160,7 +160,7 @@ def test_plugin_session_info_profile_from_agent_home(tmp_path, monkeypatch):
     root = tmp_path / "root"
     bot_home = root / "profiles" / "mybot"
     bot_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
 
     agent = _agent_for(bot_home)
     result = {}

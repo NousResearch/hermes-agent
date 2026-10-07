@@ -45,7 +45,7 @@ describe('browserTabLabel', () => {
   // A tab restored from storage has reported nothing yet, so its target is all
   // there is to name it by.
   it('names an unreported tab from its target', () => {
-    expect(browserTabLabel({ ...target, url: 'https://github.com/nous' })).toBe('github.com')
+    expect(browserTabLabel({ ...target, url: 'https://github.com/acme' })).toBe('github.com')
   })
 })
 
@@ -65,7 +65,7 @@ describe('browserTabExternalUrl', () => {
   })
 
   it('falls back to the target when the tab has not reported a page yet', () => {
-    expect(browserTabExternalUrl(openBrowser('https://github.com/nous'))).toBe('https://github.com/nous')
+    expect(browserTabExternalUrl(openBrowser('https://github.com/acme'))).toBe('https://github.com/acme')
   })
 
   it('refuses about:blank and other non-pages', () => {

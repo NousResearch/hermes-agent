@@ -14,10 +14,9 @@ OBLITERATUS: abliterate LLM refusals (diff-in-means).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/obliteratus` |
+| Source | Optional — install with `rabbit skills install official/mlops/obliteratus` |
 | Path | `optional-skills/mlops/obliteratus` |
 | Version | `2.0.0` |
-| Author | Hermes Agent |
 | License | MIT |
 | Dependencies | `obliteratus`, `torch`, `transformers`, `bitsandbytes`, `accelerate`, `safetensors` |
 | Platforms | linux, macos |
@@ -27,7 +26,7 @@ OBLITERATUS: abliterate LLM refusals (diff-in-means).
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # OBLITERATUS Skill
@@ -38,11 +37,11 @@ The following is the complete skill definition that Hermes loads when this skill
 
 Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
-**License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
+**License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Rabbit Agent's MIT license clean.
 
 ## Video Guide
 
-Walkthrough of OBLITERATUS used by a Hermes agent to abliterate Gemma:
+Walkthrough of OBLITERATUS used by a Rabbit agent to abliterate Gemma:
 https://www.youtube.com/watch?v=8fG9BrNTeHs ("OBLITERATUS: An AI Agent Removed Gemma 4's Safety Guardrails")
 
 Useful when the user wants a visual overview of the end-to-end workflow before running it themselves.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, rabbitTheme } from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -33,7 +33,7 @@ describe('theme typography Latin Extended fallback (#61392)', () => {
       theme =>
         [
           `${theme.name}.effectiveFontMono`,
-          theme.typography?.fontMono ?? nousTheme.typography?.fontMono ?? DEFAULT_TYPOGRAPHY.fontMono
+          theme.typography?.fontMono ?? rabbitTheme.typography?.fontMono ?? DEFAULT_TYPOGRAPHY.fontMono
         ] as [string, string]
     )
   ]

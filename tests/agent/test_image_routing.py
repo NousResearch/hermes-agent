@@ -554,7 +554,7 @@ class TestCustomProviderVisionAlias:
 
         A named custom provider (``model.provider: my-vllm``) is rewritten to
         the runtime value ``provider="custom"`` by
-        ``hermes_cli/runtime_provider.py``. The resolver must still match the
+        ``rabbit_cli/runtime_provider.py``. The resolver must still match the
         ``my-vllm`` entry via the ``model.provider`` candidate and honour the
         ``vision`` alias.
         """

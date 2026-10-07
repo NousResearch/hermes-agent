@@ -179,7 +179,7 @@ class _AuxCallHooks:
 
 def _has_hook(name: str) -> bool:
     try:
-        from hermes_cli.lifecycle import has_hook
+        from rabbit_cli.lifecycle import has_hook
 
         return has_hook(name)
     except Exception:
@@ -190,7 +190,7 @@ def _fire(name: str, **payload: Any) -> None:
     """Dispatch one event; a failing subscriber is logged, never propagated (the aux task's
     result must not depend on an observer)."""
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from rabbit_cli.lifecycle import invoke_hook
 
         invoke_hook(name, **payload)
     except Exception:

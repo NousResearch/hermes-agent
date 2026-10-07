@@ -13,7 +13,7 @@ import pytest
 from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal  # noqa: F401
 from tools.environments import local
 from tools.environments import local_pythonpath as pp
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+from tools.environments.local_env_policy import _RABBIT_PROVIDER_ENV_BLOCKLIST
 
 
 def _running_venv_site_packages() -> Path:
@@ -25,7 +25,7 @@ def _running_venv_site_packages() -> Path:
 
 def _physical_repo_root(tmp_path: Path) -> Path:
     """Create the physical repo checkout directory for junction tests."""
-    physical_root = tmp_path / "physical-home" / "hermes-agent"
+    physical_root = tmp_path / "physical-home" / "rabbit-agent"
     physical_root.mkdir(parents=True)
     return physical_root
 
@@ -44,9 +44,9 @@ DISCORD_AUTO_THREAD SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME SLACK_ALLOWED_USE
 WHATSAPP_ENABLED WHATSAPP_MODE WHATSAPP_ALLOWED_USERS SIGNAL_HTTP_URL SIGNAL_ACCOUNT
 SIGNAL_ALLOWED_USERS SIGNAL_GROUP_ALLOWED_USERS SIGNAL_HOME_CHANNEL SIGNAL_HOME_CHANNEL_NAME
 SIGNAL_IGNORE_STORIES HASS_TOKEN HASS_URL EMAIL_ADDRESS EMAIL_PASSWORD EMAIL_IMAP_HOST
-EMAIL_SMTP_HOST EMAIL_HOME_ADDRESS EMAIL_HOME_ADDRESS_NAME HERMES_DASHBOARD_SESSION_TOKEN
-HERMES_DASHBOARD_BASIC_AUTH_PASSWORD HERMES_DASHBOARD_BASIC_AUTH_SECRET HERMES_DASHBOARD_DRAIN_SECRET
-HERMES_DASHBOARD_OIDC_CLIENT_SECRET HERMES_ANON_API_SECRET HERMES_MEET_REALTIME_KEY
+EMAIL_SMTP_HOST EMAIL_HOME_ADDRESS EMAIL_HOME_ADDRESS_NAME RABBIT_DASHBOARD_SESSION_TOKEN
+RABBIT_DASHBOARD_BASIC_AUTH_PASSWORD RABBIT_DASHBOARD_BASIC_AUTH_SECRET RABBIT_DASHBOARD_DRAIN_SECRET
+RABBIT_DASHBOARD_OIDC_CLIENT_SECRET RABBIT_ANON_API_SECRET RABBIT_MEET_REALTIME_KEY
 GATEWAY_ALLOWED_USERS GATEWAY_ALLOW_ALL_USERS GH_TOKEN GITHUB_APP_ID
 GITHUB_APP_PRIVATE_KEY_PATH GITHUB_APP_INSTALLATION_ID MODAL_TOKEN_ID MODAL_TOKEN_SECRET
 DAYTONA_API_KEY VERCEL_OIDC_TOKEN VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_TEAM_ID GATEWAY_RELAY_ID
@@ -68,8 +68,8 @@ def _running_site():
 
 
 def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import OPTIONAL_ENV_VARS
+    from rabbit_cli.auth import PROVIDER_REGISTRY
+    from rabbit_cli.config import OPTIONAL_ENV_VARS
     blocked = set(STATIC_BLOCKED)
     for config in PROVIDER_REGISTRY.values():
         blocked.update(config.api_key_env_vars)
@@ -78,7 +78,7 @@ def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
     blocked.update(name for name, meta in OPTIONAL_ENV_VARS.items()
                    if meta.get("category") in {"tool", "messaging"}
                    or (meta.get("category") == "setting" and meta.get("password")))
-    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Rabbit inference
     for name in blocked | set(OPERATOR_ALLOWED):
         monkeypatch.setenv(name, "fake-" + name)
     before = dict(os.environ)
@@ -102,7 +102,7 @@ YUANBAO_APP_SECRET FEISHU_ENCRYPT_KEY FEISHU_VERIFICATION_TOKEN TELEGRAM_WEBHOOK
 PHOTON_SIDECAR_TOKEN A2A_PUSH_SECRET TEAMS_GRAPH_ACCESS_TOKEN QQ_STT_API_KEY
 MSGRAPH_WEBHOOK_CLIENT_STATE MSGRAPH_CLIENT_SECRET
 """.split()
-# The user's own credentials that merely start with a platform name. Hermes never reads them, so
+# The user's own credentials that merely start with a platform name. Rabbit never reads them, so
 # they reach the terminal like any other variable, and passthrough can forward them.
 OPERATOR_SECRETS = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET", "SLACK_USER_TOKEN", "LOCAL_LLM_API_KEY",
                     "GATEWAY_API_KEY"]
@@ -113,15 +113,15 @@ def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, mo
     from providers import list_providers
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     secrets = set(ADAPTER_SECRETS)
-    # child_env's HERMES_HOME has no provider plugins, so these are the bundled profiles.
+    # child_env's RABBIT_HOME has no provider plugins, so these are the bundled profiles.
     secrets.update(name for profile in list_providers() for name in (profile.env_vars or ()))
-    secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
+    secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Rabbit inference
     for name in [*secrets, *OPERATOR_SECRETS]:
         monkeypatch.setenv(name, "fake-" + name)
     factories = {
         "foreground": lambda: local._make_run_env({}),
         "background": lambda: local._sanitize_subprocess_env(dict(os.environ)),
-        "nonterminal": local.hermes_subprocess_env,
+        "nonterminal": local.rabbit_subprocess_env,
     }
     observed = observe_child(factories[builder](), sorted(secrets | set(OPERATOR_SECRETS)))
     assert observed == {**dict.fromkeys(secrets), **{k: "fake-" + k for k in OPERATOR_SECRETS}}
@@ -143,7 +143,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     """A profile's user-installed platform plugin declares secrets for that profile only: bound to
     it, the name is stripped from every child and refused for passthrough; bound to a sibling
     profile, the sibling's own same-named value is its user variable and reaches its children."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     a, b = child_env / "profiles" / "a", child_env / "profiles" / "b"
     _user_platform_plugin(a, "chatx", "CHATX_SIGNING_SECRET")
@@ -152,28 +152,28 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     register_env_passthrough(["CHATX_SIGNING_SECRET"])
     seen = {}
     for home in (a, b):
-        token = set_hermes_home_override(home)
+        token = set_rabbit_home_override(home)
         try:
             seen[home.name] = (
-                "CHATX_SIGNING_SECRET" in local.hermes_subprocess_env(inherit_credentials=True),
+                "CHATX_SIGNING_SECRET" in local.rabbit_subprocess_env(inherit_credentials=True),
                 "CHATX_SIGNING_SECRET" in local._make_run_env({}),
                 is_env_passthrough("CHATX_SIGNING_SECRET"))
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
     assert seen == {"a": (False, False, False), "b": (True, True, True)}
     # An in-place manifest edit (no directory mtime change) takes effect on the next spawn.
     manifest = a / "plugins" / "platforms" / "chatx" / "plugin.yaml"
     manifest.write_text(manifest.read_text(encoding="utf-8") + "  - name: CHATX_WEBHOOK_KEY\n", encoding="utf-8")
     os.utime(manifest, ns=(manifest.stat().st_atime_ns, manifest.stat().st_mtime_ns + 10**9))
     monkeypatch.setenv("CHATX_WEBHOOK_KEY", "fake-value")
-    token = set_hermes_home_override(a)
+    token = set_rabbit_home_override(a)
     try:
-        assert "CHATX_WEBHOOK_KEY" not in local.hermes_subprocess_env(inherit_credentials=True)
+        assert "CHATX_WEBHOOK_KEY" not in local.rabbit_subprocess_env(inherit_credentials=True)
         # Removing the plugin releases its names.
         manifest.unlink()
-        assert "CHATX_WEBHOOK_KEY" in local.hermes_subprocess_env(inherit_credentials=True)
+        assert "CHATX_WEBHOOK_KEY" in local.rabbit_subprocess_env(inherit_credentials=True)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — short-circuits on nt
@@ -182,7 +182,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
 def test_a_failed_rescan_keeps_the_denials_it_already_knew(child_env, monkeypatch, layout):
     """healthy -> unreadable -> recovered: a plugin the scan cannot read right now still declared
     its secret a moment ago, and the value may already be in the process or profile overlay."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     home = child_env / "profiles" / "a"
     if layout == "platforms":
         _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
@@ -196,10 +196,10 @@ def test_a_failed_rescan_keeps_the_denials_it_already_knew(child_env, monkeypatc
             encoding="utf-8")
         locked = plugin_dir / "plugin.yaml"  # unreadable flat manifest: skipped, the scan is partial
     monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
-    token = set_hermes_home_override(home)
+    token = set_rabbit_home_override(home)
     try:
         def stripped():
-            return "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+            return "CHATX_SIGNING_SECRET" not in local.rabbit_subprocess_env(inherit_credentials=True)
         assert stripped()
         locked.chmod(0)
         try:
@@ -209,14 +209,14 @@ def test_a_failed_rescan_keeps_the_denials_it_already_knew(child_env, monkeypatc
             locked.chmod(0o755 if layout == "platforms" else 0o644)
         assert stripped()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
     """A manifest read that fails once (same file signature afterwards) must not pin the partial
     result: the next spawn reads it and strips the secret."""
     import builtins
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     home = child_env / "profiles" / "a"
     plugin_dir = home / "plugins" / "chatx"
     plugin_dir.mkdir(parents=True)
@@ -234,18 +234,18 @@ def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
 
     monkeypatch.setattr(builtins, "open", flaky_open)
     monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
-    token = set_hermes_home_override(home)
+    token = set_rabbit_home_override(home)
     try:
-        local.hermes_subprocess_env(inherit_credentials=True)
+        local.rabbit_subprocess_env(inherit_credentials=True)
         assert not failures  # the failed read happened
-        assert "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+        assert "CHATX_SIGNING_SECRET" not in local.rabbit_subprocess_env(inherit_credentials=True)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 @pytest.mark.platforms("posix")  # symlinks
 def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_env, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     from tools.environments import local_env_policy as policy
     home = child_env / "profiles" / "a"
     _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
@@ -254,11 +254,11 @@ def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_en
     monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
     sizes = []
     for bound in (home, alias):
-        token = set_hermes_home_override(bound)
+        token = set_rabbit_home_override(bound)
         try:
-            assert "CHATX_SIGNING_SECRET" not in local.hermes_subprocess_env(inherit_credentials=True)
+            assert "CHATX_SIGNING_SECRET" not in local.rabbit_subprocess_env(inherit_credentials=True)
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         sizes.append(len(policy._HOME_ADAPTER_SECRET_CACHE))
     assert sizes[0] == sizes[1]
 
@@ -268,7 +268,7 @@ def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_en
 def test_unreadable_platform_manifest_fails_closed(tmp_path):
     """A manifest that cannot be read might declare secrets, so the policy scan raises rather than
     returning a set without them. A malformed one declares nothing and is skipped."""
-    from hermes_cli.config import platform_manifest_secret_envs
+    from rabbit_cli.config import platform_manifest_secret_envs
     _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
     broken = tmp_path / "plugins" / "platforms" / "broken"
     broken.mkdir()
@@ -307,7 +307,7 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
 def test_manifest_scan_follows_plugin_discovery_and_sees_mtime_preserving_edits(tmp_path):
     """A __dunder__ dir is never a plugin, so it declares nothing; a rewrite that keeps the
     manifest's size and mtime (cp -p, rsync -t) still changes the stamp."""
-    from hermes_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
+    from rabbit_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
     _user_platform_plugin(tmp_path, "__cache__", "CACHED_SIGNING_SECRET")
     _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
     assert platform_manifest_secret_envs(tmp_path) == {"CHATX_SIGNING_SECRET"}
@@ -324,7 +324,7 @@ def test_unreadable_bundled_manifest_fails_the_policy_instead_of_dropping_it(mon
     """The import-time read keeps the bundled secret set only when every bundled manifest was
     read; otherwise the policy's strict re-read raises rather than building without them."""
     import builtins
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     target = next(path for _name, path, _kind, _st in cfg._platform_manifest_paths(source="bundled") if path)
     real_open = builtins.open
 
@@ -346,7 +346,7 @@ def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env
     granted = ["OPENAI_API_KEY", "NOUS_API_KEY", *OPERATOR_SECRETS]
     for name in [*ADAPTER_SECRETS, *granted]:
         monkeypatch.setenv(name, "fake-" + name)
-    observed = observe_child(local.hermes_subprocess_env(inherit_credentials=True),
+    observed = observe_child(local.rabbit_subprocess_env(inherit_credentials=True),
                              sorted([*ADAPTER_SECRETS, *granted]))
     assert observed == {**dict.fromkeys(ADAPTER_SECRETS), **{k: "fake-" + k for k in granted}}
 
@@ -354,7 +354,7 @@ def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env
 def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, monkeypatch):
     from gateway.platform_registry import PlatformEntry, platform_registry
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
-    home_a, home_b = child_env / "hermes", child_env / "profile-b"
+    home_a, home_b = child_env / "rabbit", child_env / "profile-b"
     home_a.mkdir(exist_ok=True)
     home_b.mkdir()
     name = "ACME_CHAT_SIGNING_SECRET"  # declared by a user adapter; no OPTIONAL_ENV_VARS entry
@@ -366,15 +366,15 @@ def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, m
                                              check_fn=lambda: True, required_env=[name]), scope=scope_a)
 
     def child_sees():
-        return observe_child(local.hermes_subprocess_env(), [name, "MY_APP_KEY"])
+        return observe_child(local.rabbit_subprocess_env(), [name, "MY_APP_KEY"])
 
     try:
         assert child_sees() == {name: None, "MY_APP_KEY": "operator"}
         register_env_passthrough([name])
         assert not is_env_passthrough(name)
-        monkeypatch.setenv("HERMES_HOME", str(home_b))  # B has no such adapter: operator-owned
+        monkeypatch.setenv("RABBIT_HOME", str(home_b))  # B has no such adapter: operator-owned
         assert child_sees() == {name: "fake-secret", "MY_APP_KEY": "operator"}
-        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        monkeypatch.setenv("RABBIT_HOME", str(home_a))
         assert child_sees() == {name: None, "MY_APP_KEY": "operator"}
     finally:
         platform_registry.unregister("acme-chat", scope=scope_a)
@@ -394,7 +394,7 @@ def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_i
     if declared_by == "skill":
         register_env_passthrough(names)
     else:
-        home = child_env / "hermes"
+        home = child_env / "rabbit"
         home.mkdir(exist_ok=True)
         (home / "config.yaml").write_text("terminal:\n  env_passthrough: [%s]\n" % ", ".join(names), encoding="utf-8")
     builders = [lambda: local._make_run_env({}), lambda: local._sanitize_subprocess_env(dict(os.environ)),
@@ -431,7 +431,7 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
         "foreground": lambda: local._make_run_env({}),
         "background": lambda: local._sanitize_subprocess_env(dict(os.environ), {"VIRTUAL_ENV": "/extra/venv"}),
         "factory": local.build_subprocess_env,
-        "nonterminal": local.hermes_subprocess_env,
+        "nonterminal": local.rabbit_subprocess_env,
     }
     before = dict(os.environ)
     actual = observe_child(factories[builder](), ["VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME", "PYTHONPATH", "HOME"])
@@ -453,22 +453,22 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
     assert not is_env_passthrough("AUXILIARY_VISION_API_KEY")
     assert is_env_passthrough("SERVICE_TOKEN")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-parent")
-    monkeypatch.setenv("_HERMES_FORCE_OPENAI_API_KEY", "base-forced")
-    extra = {"_HERMES_FORCE_OPENAI_BASE_URL": "extra-forced",
-             "_HERMES_FORCE_AUXILIARY_VISION_API_KEY": "never-forward",
+    monkeypatch.setenv("_RABBIT_FORCE_OPENAI_API_KEY", "base-forced")
+    extra = {"_RABBIT_FORCE_OPENAI_BASE_URL": "extra-forced",
+             "_RABBIT_FORCE_AUXILIARY_VISION_API_KEY": "never-forward",
              "AUXILIARY_VISION_API_KEY": "never-forward", "MY_CUSTOM_VAR": "caller-value"}
     factories = {
         "foreground": lambda: local._make_run_env(extra),
         "background": lambda: local._sanitize_subprocess_env(dict(os.environ), extra),
         "factory": lambda: local.build_subprocess_env(extra=extra),
-        "nonterminal": lambda: local.hermes_subprocess_env(base_env={**os.environ, **extra}),
+        "nonterminal": lambda: local.rabbit_subprocess_env(base_env={**os.environ, **extra}),
     }
     result = factories[builder]()
     assert result.get("OPENAI_API_KEY") == base_force
     assert result.get("OPENAI_BASE_URL") == extra_force
     assert result["MY_CUSTOM_VAR"] == "caller-value"
     assert "AUXILIARY_VISION_API_KEY" not in result
-    assert not any(k.startswith("_HERMES_FORCE_") for k in result)
+    assert not any(k.startswith("_RABBIT_FORCE_") for k in result)
     # Even a buggy plugin hook cannot bypass dynamic-secret exclusion.
     with patch("tools.env_passthrough.is_env_passthrough", return_value=True):
         assert "AUXILIARY_VISION_API_KEY" not in factories[builder]()
@@ -494,7 +494,7 @@ def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, p
         assert not any(is_env_passthrough(k) for k in buzz)
         for result in (local._make_run_env({}), local._sanitize_subprocess_env(dict(os.environ))):
             assert {k: result.get(k) for k in buzz} == (buzz if allowed else dict.fromkeys(buzz))
-        for result in (local.hermes_subprocess_env(), _scrub_child_env(os.environ)):
+        for result in (local.rabbit_subprocess_env(), _scrub_child_env(os.environ)):
             assert not set(buzz) & result.keys()
     finally:
         if scope_token is not None:
@@ -571,7 +571,7 @@ def test_profile_passthrough_in_terminal_child(child_env, monkeypatch, scoped, e
 def test_pythonpath_literal_policy(entries, expected):
     locations = {"REPO": str(Path(__file__).resolve().parents[2]), "SITE": str(_running_site())}
     env = {} if entries is None else {"PYTHONPATH": os.pathsep.join(locations.get(p, p) for p in entries)}
-    pp._strip_hermes_owned_pythonpath(env)
+    pp._strip_rabbit_owned_pythonpath(env)
     assert env.get("PYTHONPATH") == (os.pathsep.join(expected) if expected is not None else None)
 
 
@@ -580,7 +580,7 @@ def test_pythonpath_descendants_are_not_owned():
     entries = [str(site / "user-path"), str(repo / "tools"), str(repo / "tools/environments"),
                "/opt/other-venv/lib/python3.99/site-packages"]
     env = {"PYTHONPATH": os.pathsep.join(entries)}
-    pp._strip_hermes_owned_pythonpath(env)
+    pp._strip_rabbit_owned_pythonpath(env)
     assert env["PYTHONPATH"].split(os.pathsep) == entries
 
 
@@ -588,10 +588,10 @@ def test_pythonpath_descendants_are_not_owned():
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
-    from hermes_cli.gateway_windows import _preserve_hermes_home_path
-    from hermes_cli.profiles import resolve_profile_env
+    from rabbit_cli.gateway_windows import _preserve_rabbit_home_path
+    from rabbit_cli.profiles import resolve_profile_env
     physical_home = child_env / "physical-home"
-    physical_root = physical_home / "hermes-agent"
+    physical_root = physical_home / "rabbit-agent"
     physical_root.mkdir(parents=True)
     configured = child_env / "configured-home"
     if link_at == "home":
@@ -599,29 +599,29 @@ def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
     else:
         configured.mkdir()
         if link_at == "repo":
-            _make_directory_link(configured / "hermes-agent", physical_root)
+            _make_directory_link(configured / "rabbit-agent", physical_root)
         else:
-            (configured / "hermes-agent").mkdir()
+            (configured / "rabbit-agent").mkdir()
     (configured / "profiles/coder").mkdir(parents=True)
     (configured / "profiles/coder/config.yaml").write_text("{}\n", encoding="utf-8")
-    unrelated = child_env / "user-tools/hermes-agent"
+    unrelated = child_env / "user-tools/rabbit-agent"
     unrelated.mkdir(parents=True)
-    lexical_root = configured / "hermes-agent"
-    monkeypatch.setenv("HERMES_HOME", str(configured))
+    lexical_root = configured / "rabbit-agent"
+    monkeypatch.setenv("RABBIT_HOME", str(configured))
     assert Path(resolve_profile_env("default")) == configured
     assert Path(resolve_profile_env("coder")) == configured / "profiles/coder"
     if link_at == "home":
-        assert Path(_preserve_hermes_home_path(physical_root)) == lexical_root
+        assert Path(_preserve_rabbit_home_path(physical_root)) == lexical_root
     active_home = configured / "profiles/coder" if profile else configured
-    aliases = pp._build_hermes_repo_root_aliases(physical_root.resolve(), physical_root, active_home)
-    monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+    aliases = pp._build_rabbit_repo_root_aliases(physical_root.resolve(), physical_root, active_home)
+    monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
     nested = lexical_root / "user-data"
     entries = [str(lexical_root), str(nested), str(unrelated), str(active_home / "not-the-repo")]
     env = {"PYTHONPATH": os.pathsep.join(entries)}
-    pp._strip_hermes_owned_pythonpath(env)
+    pp._strip_rabbit_owned_pythonpath(env)
     assert env["PYTHONPATH"].split(os.pathsep) == (entries if link_at == "unrelated" else entries[1:])
     if profile:
-        assert active_home / "hermes-agent" not in aliases
+        assert active_home / "rabbit-agent" not in aliases
 
 
 @pytest.mark.parametrize("has_facts", [True, False])
@@ -641,9 +641,9 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
         facts.parent.mkdir(parents=True, exist_ok=True)
         facts.write_text(json.dumps({"packages": {"venv": {"environment": str(runtime)}}}), encoding="utf-8")
     monkeypatch.setattr(local, "_in_venv", False)
-    monkeypatch.setattr(local, "_hermes_site_packages", None)
+    monkeypatch.setattr(local, "_rabbit_site_packages", None)
     alias = child_env / "unrelated-repo-alias"
-    monkeypatch.setattr(local, "_hermes_repo_root_aliases", (alias,))
+    monkeypatch.setattr(local, "_rabbit_repo_root_aliases", (alias,))
     user_venv = child_env / "user-venv"
     user_site = user_venv / "Lib/site-packages"
     user_site.mkdir(parents=True)
@@ -657,32 +657,32 @@ def test_runtime_provenance_is_independent_of_aliases_and_virtual_env(child_env,
 
 
 @pytest.mark.parametrize("existing,expected", [
-    (["/usr/bin", "/bin"], ["/opt/hermes/bin", "/usr/bin", "/bin"]),
-    (["/usr/bin", "/opt/hermes/bin"], ["/usr/bin", "/opt/hermes/bin"]),
+    (["/usr/bin", "/bin"], ["/opt/rabbit/bin", "/usr/bin", "/bin"]),
+    (["/usr/bin", "/opt/rabbit/bin"], ["/usr/bin", "/opt/rabbit/bin"]),
 ])
-def test_background_hermes_path_repair_is_idempotent(child_env, monkeypatch, existing, expected):
-    monkeypatch.setattr(local, "_HERMES_BIN_DIR", "/opt/hermes/bin")
+def test_background_rabbit_path_repair_is_idempotent(child_env, monkeypatch, existing, expected):
+    monkeypatch.setattr(local, "_RABBIT_BIN_DIR", "/opt/rabbit/bin")
     result = local._sanitize_subprocess_env({"PATH": os.pathsep.join(existing)})
     assert result["PATH"].split(os.pathsep) == expected
     assert local._sanitize_subprocess_env(result)["PATH"] == result["PATH"]
 
 
-def test_hermes_bin_resolution_and_unresolved_noop(child_env, monkeypatch):
+def test_rabbit_bin_resolution_and_unresolved_noop(child_env, monkeypatch):
     bin_dir = child_env / "bin"
     bin_dir.mkdir()
-    monkeypatch.setattr(local, "_HERMES_BIN_DIR", local._SENTINEL)
-    monkeypatch.setattr(local.shutil, "which", lambda name: str(bin_dir / "hermes") if name == "hermes" else None)
-    assert local._resolve_hermes_bin_dir() == str(bin_dir)
-    monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
-    assert local._prepend_hermes_bin_dir("/usr/bin") == "/usr/bin"
+    monkeypatch.setattr(local, "_RABBIT_BIN_DIR", local._SENTINEL)
+    monkeypatch.setattr(local.shutil, "which", lambda name: str(bin_dir / "rabbit") if name == "rabbit" else None)
+    assert local._resolve_rabbit_bin_dir() == str(bin_dir)
+    monkeypatch.setattr(local, "_RABBIT_BIN_DIR", None)
+    assert local._prepend_rabbit_bin_dir("/usr/bin") == "/usr/bin"
 
 
 @pytest.mark.platforms("posix")
 def test_foreground_minimal_path_preserves_operator_precedence(child_env, monkeypatch):
-    monkeypatch.setattr(local, "_HERMES_BIN_DIR", "/opt/hermes/bin")
+    monkeypatch.setattr(local, "_RABBIT_BIN_DIR", "/opt/rabbit/bin")
     monkeypatch.setenv("PATH", "/custom/bin:/custom/bin::/usr/bin")
     result = local._make_run_env({})["PATH"].split(":")
-    assert result[:3] == ["/opt/hermes/bin", "/custom/bin", "/usr/bin"]
+    assert result[:3] == ["/opt/rabbit/bin", "/custom/bin", "/usr/bin"]
     assert "/opt/homebrew/bin" in result and "/opt/homebrew/sbin" in result
     assert "" not in result
     assert result.count("/custom/bin") == 1
@@ -718,52 +718,52 @@ def _make_directory_link(link: Path, target: Path) -> None:
 class TestNativeEnvironmentContracts:
     @pytest.fixture(autouse=True)
     def _no_bin_injection(self, monkeypatch):
-        monkeypatch.setattr(local, "_HERMES_BIN_DIR", None)
+        monkeypatch.setattr(local, "_RABBIT_BIN_DIR", None)
 
     @pytest.mark.platforms("windows")
-    def test_windows_hermes_owned_paths_stripped(self):
-        """On Windows, a Hermes venv site-packages entry written with
-        backslashes is stripped by the same Hermes-owned check, while a
+    def test_windows_rabbit_owned_paths_stripped(self):
+        """On Windows, a Rabbit venv site-packages entry written with
+        backslashes is stripped by the same Rabbit-owned check, while a
         user Windows path is preserved.  Windows-only: POSIX ``Path`` does
         not split on backslashes, so this cannot be meaningfully simulated
         on a POSIX host."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
 
         venv_sp = str(_running_site())
         # Windows form: C:\...\venv\Lib\site-packages (backslashes)
-        hermes_win = venv_sp
+        rabbit_win = venv_sp
         user_win = "D:\\\\user\\\\lib"
         env = {
-            "PYTHONPATH": ";".join([hermes_win, user_win]),
+            "PYTHONPATH": ";".join([rabbit_win, user_win]),
         }
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
         entries = env["PYTHONPATH"].split(";")
-        assert hermes_win not in entries
+        assert rabbit_win not in entries
         assert user_win in entries
 
     def test_empty_pythonpath_unchanged(self):
         """An empty PYTHONPATH is a no-op (falsy -> early return)."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
         env = {"PYTHONPATH": ""}
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
         # Empty string is falsy, so the function returns early without
         # modifying the dict.  The key stays as-is (empty string).
         assert env.get("PYTHONPATH") == ""
 
     def test_empty_component_preserved(self):
         """An empty component means cwd and must survive unchanged."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
 
         user_pp = os.pathsep.join(["/foo", "", "/bar"])
         env = {"PYTHONPATH": user_pp}
 
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == user_pp
 
     def test_raw_user_spelling_preserved(self):
         """The sanitizer does not trim, normalize, or deduplicate user entries."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
 
         user_pp = os.pathsep.join([
             " /opt/user-lib ",
@@ -774,7 +774,7 @@ class TestNativeEnvironmentContracts:
         ])
         env = {"PYTHONPATH": user_pp}
 
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == user_pp
 
@@ -783,14 +783,14 @@ class TestNativeEnvironmentContracts:
     def test_base_python_sanitizer_uses_validated_separate_runtime_venv(self, tmp_path, monkeypatch):
         """A base interpreter strips the exact Windows runtime site-packages.
 
-        This deliberately uses a synthetic Hermes venv separate from the test
+        This deliberately uses a synthetic Rabbit venv separate from the test
         runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
-        identifies ``<repo>/venv`` as the Hermes runtime producer contract.
+        identifies ``<repo>/venv`` as the Rabbit runtime producer contract.
         """
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        repo_root = tmp_path / "hermes-agent"
+        repo_root = tmp_path / "rabbit-agent"
         runtime_venv = repo_root / "venv"
         runtime_sp = runtime_venv / "Lib" / "site-packages"
         runtime_sp.mkdir(parents=True)
@@ -798,9 +798,9 @@ class TestNativeEnvironmentContracts:
         base_prefix = tmp_path / "base-python"
         unrelated = "/custom/lib/python3.13/site-packages"
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", (repo_root,))
         monkeypatch.setattr(local, "_in_venv", False)
-        monkeypatch.setattr(local, "_hermes_site_packages", None)
+        monkeypatch.setattr(local, "_rabbit_site_packages", None)
         monkeypatch.setattr(local.sys, "prefix", str(base_prefix))
         monkeypatch.setattr(local.sys, "base_prefix", str(base_prefix))
 
@@ -820,42 +820,42 @@ class TestNativeEnvironmentContracts:
         import tools.environments.local as local
         from tools.environments import local_pythonpath
 
-        repo_root = tmp_path / "hermes-agent"
+        repo_root = tmp_path / "rabbit-agent"
         repo_root.mkdir()
         unrelated_venv = tmp_path / "user-venv"
         unrelated_sp = unrelated_venv / "Lib" / "site-packages"
         unrelated_sp.mkdir(parents=True)
         (unrelated_venv / "pyvenv.cfg").write_text("version = 3.13\n", encoding="utf-8")
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", (repo_root,))
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", (repo_root,))
         monkeypatch.setattr(local, "_in_venv", False)
-        monkeypatch.setattr(local, "_hermes_site_packages", None)
+        monkeypatch.setattr(local, "_rabbit_site_packages", None)
 
         env = {
             "VIRTUAL_ENV": str(unrelated_venv),
             "PYTHONPATH": str(unrelated_sp),
         }
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
 
         assert env["PYTHONPATH"] == str(unrelated_sp)
 
 
     def test_no_pythonpath_key(self):
         """Missing PYTHONPATH key is a no-op."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
         env = {"PATH": "/usr/bin"}
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
         assert "PYTHONPATH" not in env
 
 
     @pytest.mark.parametrize("builder", [
         "_make_run_env",
         "_sanitize_subprocess_env",
-        "hermes_subprocess_env",
+        "rabbit_subprocess_env",
     ])
-    def test_builders_strip_hermes_venv_pythonpath(self, builder):
+    def test_builders_strip_rabbit_venv_pythonpath(self, builder):
         """Every subprocess env builder applies the same sanitation contract:
-        Hermes venv site-packages is stripped, user entries survive.
+        Rabbit venv site-packages is stripped, user entries survive.
         """
         from tools.environments import local as local_mod
 
@@ -871,20 +871,20 @@ class TestNativeEnvironmentContracts:
             elif builder == "_sanitize_subprocess_env":
                 result = local_mod._sanitize_subprocess_env(dict(os.environ))
             else:
-                result = local_mod.hermes_subprocess_env()
+                result = local_mod.rabbit_subprocess_env()
         pp = result.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
         assert "/home/user/my-lib" in entries
 
-    def test_scrub_child_env_strips_hermes_venv_pythonpath(self):
-        """execute_code's _scrub_child_env path: after scrubbing, Hermes venv
+    def test_scrub_child_env_strips_rabbit_venv_pythonpath(self):
+        """execute_code's _scrub_child_env path: after scrubbing, Rabbit venv
         site-packages entries should be stripped when
-        _strip_hermes_owned_pythonpath is applied (as the spawn path does),
+        _strip_rabbit_owned_pythonpath is applied (as the spawn path does),
         while user entries (even for another Python version) are preserved.
         """
         from tools.code_execution_env import _scrub_child_env
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
 
         venv_sp = str(_running_venv_site_packages())
         other_sp = "/opt/other-venv/lib/python3.99/site-packages"
@@ -897,7 +897,7 @@ class TestNativeEnvironmentContracts:
         # The scrubber passes PYTHONPATH through (it's in _SAFE_ENV_PREFIXES).
         assert "PYTHONPATH" in scrubbed
         # Now apply the selective strip (as the spawn path does).
-        _strip_hermes_owned_pythonpath(scrubbed)
+        _strip_rabbit_owned_pythonpath(scrubbed)
         pp = scrubbed.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
@@ -905,15 +905,15 @@ class TestNativeEnvironmentContracts:
         assert "/home/user/my-lib" in entries
 
     @pytest.mark.parametrize("same_env", [True, False])
-    def test_execute_code_composition_strips_inherited_hermes_entries(self, same_env):
+    def test_execute_code_composition_strips_inherited_rabbit_entries(self, same_env):
         """Integration: execute_code's real spawn path composes a clean PYTHONPATH.
 
-        Seeds a contaminated inherited PYTHONPATH (Hermes repo root + Hermes
+        Seeds a contaminated inherited PYTHONPATH (Rabbit repo root + Rabbit
         venv site-packages + user entries) through os.environ and drives
         execute_code all the way to Popen.  Proves the #84500 conditional
         composition and the #82581 selective strip compose correctly:
 
-        * inherited Hermes venv site-packages never survive into the sandbox;
+        * inherited Rabbit venv site-packages never survive into the sandbox;
         * the staging tmpdir stays the first entry;
         * the repo root is deliberately re-added exactly once for a same-env
           child (the single occurrence proves the inherited copy was stripped
@@ -926,7 +926,7 @@ class TestNativeEnvironmentContracts:
         def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
             return '{"output": "mock", "exit_code": 0}'
 
-        hermes_root = str(Path(cet.__file__).resolve().parents[1])
+        rabbit_root = str(Path(cet.__file__).resolve().parents[1])
         venv_sp = str(_running_venv_site_packages())
         user_a = "/home/user/my-lib"
         user_b = "/opt/project/lib"
@@ -952,12 +952,12 @@ class TestNativeEnvironmentContracts:
                    return_value={"mode": "strict"}), \
              patch("model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_env._uses_hermes_python_environment",
+             patch("tools.code_execution_env._uses_rabbit_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen), \
              patch.dict(os.environ, {
                  "PYTHONPATH": os.pathsep.join(
-                     [hermes_root, venv_sp, user_a, user_b]),
+                     [rabbit_root, venv_sp, user_a, user_b]),
              }):
             execute_code(code="pass", task_id="test-int", enabled_tools=[])
 
@@ -972,14 +972,14 @@ class TestNativeEnvironmentContracts:
         # composition contract (identity on POSIX).
         norm_parts = [os.path.normcase(p) for p in parts]
         norm_staging = os.path.normcase(captured["staging"])
-        norm_root = os.path.normcase(hermes_root)
+        norm_root = os.path.normcase(rabbit_root)
         norm_venv = os.path.normcase(venv_sp)
         norm_user_a = os.path.normcase(user_a)
         norm_user_b = os.path.normcase(user_b)
         assert norm_parts[0] == norm_staging, \
             "staging tmpdir must be the first PYTHONPATH entry"
         assert norm_venv not in norm_parts, \
-            "inherited Hermes venv site-packages must be stripped"
+            "inherited Rabbit venv site-packages must be stripped"
         assert norm_user_a in norm_parts and norm_user_b in norm_parts, \
             "user PYTHONPATH entries must survive"
         assert norm_parts.index(norm_user_a) > norm_parts.index(norm_staging), \
@@ -1016,7 +1016,7 @@ class TestNativeEnvironmentContracts:
         PYTHONPATH entry.  A user path that merely happens to live under
         the repo directory must therefore be preserved.
         """
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from tools.environments.local_pythonpath import _strip_rabbit_owned_pythonpath
 
         local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
         real_repo_root = local_file.parents[2]
@@ -1025,7 +1025,7 @@ class TestNativeEnvironmentContracts:
         env = {
             "PYTHONPATH": os.pathsep.join([direct_child, "/home/user/my-lib"]),
         }
-        _strip_hermes_owned_pythonpath(env)
+        _strip_rabbit_owned_pythonpath(env)
         pp = env.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert direct_child in entries
@@ -1035,7 +1035,7 @@ class TestNativeEnvironmentContracts:
         """The real producer spelling is derived and consumed end to end."""
         import tools.environments.local as local
         from tools.environments import local_pythonpath
-        from hermes_cli.gateway_windows import _preserve_hermes_home_path
+        from rabbit_cli.gateway_windows import _preserve_rabbit_home_path
 
         physical_home = tmp_path / "physical-home"
         physical_root = _physical_repo_root(tmp_path)
@@ -1044,19 +1044,19 @@ class TestNativeEnvironmentContracts:
             _make_directory_link(configured_home, physical_home)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
-        monkeypatch.setenv("HERMES_HOME", str(configured_home))
+        monkeypatch.setenv("RABBIT_HOME", str(configured_home))
 
-        launcher_entry = Path(_preserve_hermes_home_path(physical_root))
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        launcher_entry = Path(_preserve_rabbit_home_path(physical_root))
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
 
-        assert launcher_entry == configured_home / "hermes-agent"
+        assert launcher_entry == configured_home / "rabbit-agent"
         assert launcher_entry in aliases
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
         nested_user_path = launcher_entry / "user-data"
         env = {
             "PYTHONPATH": os.pathsep.join([
@@ -1065,7 +1065,7 @@ class TestNativeEnvironmentContracts:
                 "/home/user/my-lib",
             ])
         }
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
 
         assert env["PYTHONPATH"].split(os.pathsep) == [
             str(nested_user_path),
@@ -1075,19 +1075,19 @@ class TestNativeEnvironmentContracts:
     def test_profile_rehome_keeps_junction_lexical_alias(self, tmp_path, monkeypatch):
         """Profile re-home must not lose the launcher's lexical repo-root spelling.
 
-        The desktop/CLI spawn children with HERMES_HOME and PYTHONPATH in the
+        The desktop/CLI spawn children with RABBIT_HOME and PYTHONPATH in the
         configured (junction) spelling, but --profile / sticky active_profile
-        re-home HERMES_HOME through resolve_profile_env() before the
+        re-home RABBIT_HOME through resolve_profile_env() before the
         sanitizer loads.  Regression (junction + profile re-home): the alias
         builder must still recover the lexical root so the inherited lexical
         repo-root entry is stripped.
         """
         import tools.environments.local as local
         from tools.environments import local_pythonpath
-        from hermes_cli.profiles import resolve_profile_env
+        from rabbit_cli.profiles import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
-        physical_root = physical_home / "hermes-agent"
+        physical_root = physical_home / "rabbit-agent"
         physical_root.mkdir(parents=True)
         (physical_home / "profiles" / "coder").mkdir(parents=True)
         (physical_home / "profiles" / "coder" / "config.yaml").write_text("{}\n")  # identity marker
@@ -1098,31 +1098,31 @@ class TestNativeEnvironmentContracts:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
         # Launcher contract: the configured spelling is the env and the root.
-        monkeypatch.setenv("HERMES_HOME", str(configured_home))
-        lexical_root = configured_home / "hermes-agent"
+        monkeypatch.setenv("RABBIT_HOME", str(configured_home))
+        lexical_root = configured_home / "rabbit-agent"
 
         # Profile re-home keeps the configured spelling (physically identical
         # through the link; lexically the launcher spelling is preserved).
         assert Path(resolve_profile_env("default")) == configured_home
         assert Path(resolve_profile_env("coder")) == configured_home / "profiles" / "coder"
 
-        # The sanitizer now runs under the re-homed (profile) HERMES_HOME.
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        # The sanitizer now runs under the re-homed (profile) RABBIT_HOME.
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home / "profiles" / "coder",
         )
         assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
 
     def test_repo_level_junction_recovers_lexical_alias(self, tmp_path, monkeypatch):
         """The repo itself may be a junction under the configured root
-        (e.g. D:\\hermes\\hermes-agent -> C:\\...\\hermes-agent) while the
+        (e.g. D:\\rabbit\\rabbit-agent -> C:\\...\\rabbit-agent) while the
         editable import spelling resolves to the physical location.  The
         alias builder must recover the lexical spelling via exact-identity
         proof (strict resolve), not a name-based guess.
@@ -1133,23 +1133,23 @@ class TestNativeEnvironmentContracts:
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
         configured_home.mkdir()
-        # repo-level link: <configured-home>/hermes-agent -> physical repo
+        # repo-level link: <configured-home>/rabbit-agent -> physical repo
         try:
-            _make_directory_link(configured_home / "hermes-agent", physical_root)
+            _make_directory_link(configured_home / "rabbit-agent", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
-        lexical_root = configured_home / "hermes-agent"
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        lexical_root = configured_home / "rabbit-agent"
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
     def test_same_named_non_owned_directories_preserved(self, tmp_path, monkeypatch):
@@ -1163,27 +1163,27 @@ class TestNativeEnvironmentContracts:
 
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
-        (configured_home / "hermes-agent").mkdir(parents=True)
-        unrelated = tmp_path / "user-tools" / "hermes-agent"
+        (configured_home / "rabbit-agent").mkdir(parents=True)
+        unrelated = tmp_path / "user-tools" / "rabbit-agent"
         unrelated.mkdir(parents=True)
 
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
-        for lookalike in (configured_home / "hermes-agent", unrelated):
+        for lookalike in (configured_home / "rabbit-agent", unrelated):
             assert not any(local_pythonpath._same_path(a, lookalike) for a in aliases)
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
-        for lookalike in (configured_home / "hermes-agent", unrelated):
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
+        for lookalike in (configured_home / "rabbit-agent", unrelated):
             env = {"PYTHONPATH": os.pathsep.join([str(lookalike), "/home/user/my-lib"])}
-            local_pythonpath._strip_hermes_owned_pythonpath(env)
+            local_pythonpath._strip_rabbit_owned_pythonpath(env)
             assert env["PYTHONPATH"].split(os.pathsep) == [str(lookalike), "/home/user/my-lib"]
 
     def test_profile_home_with_repo_level_junction(self, tmp_path, monkeypatch):
         """Profile re-home + repo-level junction together: the configured home
-        is <root>/profiles/<name> while the repo is a link at <root>/hermes-agent.
+        is <root>/profiles/<name> while the repo is a link at <root>/rabbit-agent.
         The root spelling must be derived (profiles -> grandparent) and then
         the lexical repo alias recovered from it.
         """
@@ -1194,23 +1194,23 @@ class TestNativeEnvironmentContracts:
         configured_root = tmp_path / "configured-root"
         (configured_root / "profiles" / "coder").mkdir(parents=True)
         try:
-            _make_directory_link(configured_root / "hermes-agent", physical_root)
+            _make_directory_link(configured_root / "rabbit-agent", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
         configured_home = configured_root / "profiles" / "coder"
-        lexical_root = configured_root / "hermes-agent"
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        lexical_root = configured_root / "rabbit-agent"
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
-        assert not any(local_pythonpath._same_path(a, configured_home / "hermes-agent") for a in aliases)
+        assert not any(local_pythonpath._same_path(a, configured_home / "rabbit-agent") for a in aliases)
 
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
     @pytest.mark.platforms("windows")
@@ -1229,31 +1229,31 @@ class TestNativeEnvironmentContracts:
         configured_home = tmp_path / "configured-home"
         configured_home.mkdir()
         try:
-            _make_directory_link(configured_home / "hermes-agent", physical_root)
+            _make_directory_link(configured_home / "rabbit-agent", physical_root)
         except OSError as exc:
             pytest.skip(f"directory link unavailable on this host: {exc}")
 
-        lexical_root = configured_home / "hermes-agent"
-        aliases = local_pythonpath._build_hermes_repo_root_aliases(
+        lexical_root = configured_home / "rabbit-agent"
+        aliases = local_pythonpath._build_rabbit_repo_root_aliases(
             physical_root.resolve(),
             physical_root,
             configured_home,
         )
         assert any(local_pythonpath._same_path(a, lexical_root) for a in aliases)
-        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        monkeypatch.setattr(local, "_rabbit_repo_root_aliases", aliases)
 
         lexical_venv = lexical_root / "venv"
         validated = local_pythonpath._validated_runtime_venv({"VIRTUAL_ENV": str(lexical_venv)})
         assert validated is not None
         assert local_pythonpath._same_path(validated, lexical_venv)
 
-        local._hermes_site_packages = None
+        local._rabbit_site_packages = None
         env = {"PYTHONPATH": os.pathsep.join([
             str(lexical_root),
             str(lexical_venv / "Lib" / "site-packages"),
             "/home/user/my-lib",
         ]), "VIRTUAL_ENV": str(lexical_venv)}
-        local_pythonpath._strip_hermes_owned_pythonpath(env)
+        local_pythonpath._strip_rabbit_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
 
 
@@ -1261,18 +1261,18 @@ class TestNativeEnvironmentContracts:
 
 
 class TestPythonhomeSanitized:
-    """PYTHONHOME must not leak from the Hermes runtime into subprocesses.
+    """PYTHONHOME must not leak from the Rabbit runtime into subprocesses.
 
     The gateway inherits/sets PYTHONHOME in its process environment; a child
     interpreter (system Python, another venv, cron no_agent scripts) that
-    inherits it redirects its stdlib search to the Hermes venv and crashes
+    inherits it redirects its stdlib search to the Rabbit venv and crashes
     with version-mismatch errors before importing anything (#75018).
     """
 
     @pytest.mark.parametrize("builder", [
         "_make_run_env",
         "_sanitize_subprocess_env",
-        "hermes_subprocess_env",
+        "rabbit_subprocess_env",
         "build_subprocess_env",
     ])
     def test_builders_strip_pythonhome(self, builder):
@@ -1285,15 +1285,15 @@ class TestPythonhomeSanitized:
         seed = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "PYTHONHOME": "/opt/hermes-venv",
+            "PYTHONHOME": "/opt/rabbit-venv",
         }
         with patch.dict(os.environ, seed, clear=True):
             if builder == "_make_run_env":
                 result = local_mod._make_run_env({})
             elif builder == "_sanitize_subprocess_env":
                 result = local_mod._sanitize_subprocess_env(dict(os.environ))
-            elif builder == "hermes_subprocess_env":
-                result = local_mod.hermes_subprocess_env()
+            elif builder == "rabbit_subprocess_env":
+                result = local_mod.rabbit_subprocess_env()
             else:
                 result = local_mod.build_subprocess_env()
         assert "PYTHONHOME" not in result
@@ -1312,13 +1312,13 @@ class TestPythonhomeSanitized:
         base = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
-            "PYTHONHOME": "/opt/hermes-venv",
-            "VIRTUAL_ENV": "/opt/hermes-venv",
+            "PYTHONHOME": "/opt/rabbit-venv",
+            "VIRTUAL_ENV": "/opt/rabbit-venv",
             "SERVICE_TOKEN": "s3cr3t",
         }
         result = build_subprocess_env(base, scrub_secrets=False)
-        assert result.get("PYTHONHOME") == "/opt/hermes-venv"
-        assert result.get("VIRTUAL_ENV") == "/opt/hermes-venv"
+        assert result.get("PYTHONHOME") == "/opt/rabbit-venv"
+        assert result.get("VIRTUAL_ENV") == "/opt/rabbit-venv"
         assert result.get("SERVICE_TOKEN") == "s3cr3t"
 
 
@@ -1373,20 +1373,20 @@ class TestBlocklistCoverage:
         must appear in the blocklist — ensures no drift.
 
         CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
-        by the user's Claude Code install, not Hermes (#55878).
+        by the user's Claude Code install, not Rabbit (#55878).
         """
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from rabbit_cli.auth import PROVIDER_REGISTRY
 
         exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
         for pconfig in PROVIDER_REGISTRY.values():
             for var in pconfig.api_key_env_vars:
                 if var in exempt:
                     continue
-                assert var in _HERMES_PROVIDER_ENV_BLOCKLIST, (
+                assert var in _RABBIT_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry var {var} (provider={pconfig.id}) missing from blocklist"
                 )
             if pconfig.base_url_env_var:
-                assert pconfig.base_url_env_var in _HERMES_PROVIDER_ENV_BLOCKLIST, (
+                assert pconfig.base_url_env_var in _RABBIT_PROVIDER_ENV_BLOCKLIST, (
                     f"Registry base_url_env_var {pconfig.base_url_env_var} "
                     f"(provider={pconfig.id}) missing from blocklist"
                 )
@@ -1395,7 +1395,7 @@ class TestBlocklistCoverage:
     def test_general_aws_chain_not_in_blocklist(self):
         """The general AWS credential chain must NOT be in the blocklist —
         no-regression guard for #32314. These belong to the user's trusted
-        operator shell (SECURITY.md §3.2), not to Hermes, and blocklisting
+        operator shell (SECURITY.md §3.2), not to Rabbit, and blocklisting
         them would be unrecoverable via env_passthrough (GHSA-rhgp-j443-p4rf).
         """
         general_chain = {
@@ -1410,7 +1410,7 @@ class TestBlocklistCoverage:
             "AWS_WEB_IDENTITY_TOKEN_FILE",
             "AWS_ROLE_ARN",
         }
-        leaked_block = general_chain & _HERMES_PROVIDER_ENV_BLOCKLIST
+        leaked_block = general_chain & _RABBIT_PROVIDER_ENV_BLOCKLIST
         assert not leaked_block, (
             f"General AWS chain vars must stay inheritable, but these are "
             f"blocklisted: {sorted(leaked_block)} (capability regression, #32314)"
@@ -1419,11 +1419,11 @@ class TestBlocklistCoverage:
 
     def test_claude_code_oauth_token_is_inheritable(self):
         """CLAUDE_CODE_OAUTH_TOKEN is owned by the user's Claude Code install
-        (subscription OAuth), not a Hermes inference credential. Stripping it
+        (subscription OAuth), not a Rabbit inference credential. Stripping it
         made agent-spawned ``claude`` fall through to the shared Keychain /
         ~/.claude credential store and clobber the user's interactive login
         on auth failure (#55878). It must stay inheritable."""
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in _RABBIT_PROVIDER_ENV_BLOCKLIST
 
     def test_non_registry_provider_vars_are_in_blocklist(self):
         extras = {
@@ -1438,20 +1438,20 @@ class TestBlocklistCoverage:
             "XAI_API_KEY",
             "HELICONE_API_KEY",
         }
-        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_RABBIT_PROVIDER_ENV_BLOCKLIST)
 
     def test_optional_tool_and_messaging_vars_are_in_blocklist(self):
         """Tool/messaging vars from OPTIONAL_ENV_VARS should stay covered."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from rabbit_cli.config import OPTIONAL_ENV_VARS
 
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")
             if category in {"tool", "messaging"}:
-                assert name in _HERMES_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _RABBIT_PROVIDER_ENV_BLOCKLIST, (
                     f"Optional env var {name} (category={category}) missing from blocklist"
                 )
             elif category == "setting" and metadata.get("password"):
-                assert name in _HERMES_PROVIDER_ENV_BLOCKLIST, (
+                assert name in _RABBIT_PROVIDER_ENV_BLOCKLIST, (
                     f"Secret setting env var {name} missing from blocklist"
                 )
 
@@ -1485,7 +1485,7 @@ class TestBlocklistCoverage:
             "EMAIL_SMTP_HOST",
             "EMAIL_HOME_ADDRESS",
             "EMAIL_HOME_ADDRESS_NAME",
-            "HERMES_DASHBOARD_SESSION_TOKEN",
+            "RABBIT_DASHBOARD_SESSION_TOKEN",
             "GATEWAY_ALLOWED_USERS",
             "GH_TOKEN",
             "GITHUB_APP_ID",
@@ -1499,23 +1499,23 @@ class TestBlocklistCoverage:
             "VERCEL_PROJECT_ID",
             "VERCEL_TEAM_ID",
         }
-        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+        assert extras.issubset(_RABBIT_PROVIDER_ENV_BLOCKLIST)
 
 
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 
     @pytest.fixture(autouse=True)
-    def _disable_hermes_bin_injection(self):
+    def _disable_rabbit_bin_injection(self):
         """These tests assert the sane-path merge in isolation. Disable the
-        hermes-install-dir prepend (a separate concern, covered by
-        TestHermesBinDirOnPath) so a real ``hermes`` on the test runner's PATH
+        rabbit-install-dir prepend (a separate concern, covered by
+        TestRabbitBinDirOnPath) so a real ``rabbit`` on the test runner's PATH
         doesn't shift the asserted PATH layout."""
         from tools.environments import local as local_mod
-        saved = local_mod._HERMES_BIN_DIR
-        local_mod._HERMES_BIN_DIR = None  # resolved -> no dir to inject
+        saved = local_mod._RABBIT_BIN_DIR
+        local_mod._RABBIT_BIN_DIR = None  # resolved -> no dir to inject
         yield
-        local_mod._HERMES_BIN_DIR = saved
+        local_mod._RABBIT_BIN_DIR = saved
 
 
 
@@ -1574,7 +1574,7 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _make_run_env
         # Keep the real home vars: the adapter-secret lookup resolves the profile home.
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin",
-                       **{k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HERMES_HOME")
+                       **{k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "RABBIT_HOME")
                           if k in os.environ}}
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         with patch.object(local_mod.os, "environ", windows_env):

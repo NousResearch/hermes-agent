@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import plugins.memory.openviking as ov
 
@@ -15,7 +15,7 @@ import plugins.memory.openviking as ov
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "rabbit"))
     for key in (*ov._OPENVIKING_ENV_KEYS, "OPENVIKING_CLI_CONFIG_FILE"):
         # Track absent keys too, so setup's direct environment writes are undone.
         monkeypatch.setenv(key, "")
@@ -23,7 +23,7 @@ def isolated_config(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("source", ["env", "yaml", "actor_peer_id", "agent_id"])
-@pytest.mark.parametrize("peer", ["", "hermes", "work-assistant"])
+@pytest.mark.parametrize("peer", ["", "rabbit", "work-assistant"])
 def test_configured_peer_routing_is_preserved(tmp_path, monkeypatch, source, peer):
     config = {}
     if source == "env":
@@ -63,7 +63,7 @@ def test_unconfigured_client_and_schema_do_not_supply_a_peer():
     assert "X-OpenViking-Actor-Peer" not in client._multipart_headers()
 
 
-@pytest.mark.parametrize("peer", ["", "hermes"])
+@pytest.mark.parametrize("peer", ["", "rabbit"])
 def test_linked_profile_status_only_shows_a_configured_peer(tmp_path, peer):
     path = tmp_path / "ovcli.conf"
     path.write_text(
@@ -81,7 +81,7 @@ def test_linked_profile_status_only_shows_a_configured_peer(tmp_path, peer):
         assert "agent" not in display
 
 
-@pytest.mark.parametrize("peer", ["", "hermes"])
+@pytest.mark.parametrize("peer", ["", "rabbit"])
 def test_memory_uri_uses_captured_peer_even_when_empty(monkeypatch, peer):
     client = ov._VikingClient("http://localhost:1933", agent=peer)
     monkeypatch.setattr(client, "get", lambda *a, **kw: {"result": {"user": "alice"}})
@@ -105,9 +105,9 @@ def test_new_setup_does_not_ask_for_or_save_peer(
     credential,
     stale_env,
 ):
-    from hermes_cli import memory_setup
+    from rabbit_cli import memory_setup
 
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
     (home / ".env").write_text(
         "OPENVIKING_AGENT=old-peer\nOTHER_KEY=keep\n", encoding="utf-8"
@@ -167,7 +167,7 @@ def test_new_setup_does_not_ask_for_or_save_peer(
     assert all(values["agent"] == "" for values in validations)
     assert "OPENVIKING_AGENT" not in (home / ".env").read_text(encoding="utf-8")
     assert "OTHER_KEY=keep" in (home / ".env").read_text(encoding="utf-8")
-    saved_config = ov._load_hermes_openviking_config()
+    saved_config = ov._load_rabbit_openviking_config()
     assert saved_config["recall_limit"] == 9
     settings = ov._resolve_connection_settings(saved_config)
     assert settings["agent"] == ""
@@ -186,13 +186,13 @@ def test_new_setup_does_not_ask_for_or_save_peer(
 
 
 @pytest.mark.parametrize("peer", ["", "work-assistant"])
-def test_hermes_only_save_uses_the_same_clean_values_in_file_and_process(
+def test_rabbit_only_save_uses_the_same_clean_values_in_file_and_process(
     tmp_path, peer
 ):
     from dotenv import dotenv_values
 
     env_path = tmp_path / ".env"
-    ov._setup._save_hermes_only_config(
+    ov._setup._save_rabbit_only_config(
         config={"memory": {}},
         provider_config={},
         env_path=env_path,
@@ -215,7 +215,7 @@ def test_hermes_only_save_uses_the_same_clean_values_in_file_and_process(
     } == expected
 
 
-def test_hermes_only_save_failure_leaves_process_environment_unchanged(
+def test_rabbit_only_save_failure_leaves_process_environment_unchanged(
     tmp_path, monkeypatch
 ):
     for key in ov._OPENVIKING_ENV_KEYS:
@@ -226,7 +226,7 @@ def test_hermes_only_save_failure_leaves_process_environment_unchanged(
 
     monkeypatch.setattr(ov, "_write_env_vars", fail_write)
     with pytest.raises(OSError, match="test write failure"):
-        ov._setup._save_hermes_only_config(
+        ov._setup._save_rabbit_only_config(
             config={"memory": {}},
             provider_config={},
             env_path=tmp_path / ".env",
@@ -236,7 +236,7 @@ def test_hermes_only_save_failure_leaves_process_environment_unchanged(
     assert all(os.environ[key] == "old-value" for key in ov._OPENVIKING_ENV_KEYS)
 
 
-@pytest.mark.parametrize("peer", ["", "hermes"])
+@pytest.mark.parametrize("peer", ["", "rabbit"])
 def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
     tmp_path,
     monkeypatch,
@@ -272,7 +272,7 @@ def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
     server = HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
     provider_config = {"endpoint": f"http://127.0.0.1:{server.server_port}"}
     if peer:
@@ -285,7 +285,7 @@ def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
     )
     provider = ov.OpenVikingMemoryProvider()
     try:
-        provider.initialize("peer-test", hermes_home=str(home))
+        provider.initialize("peer-test", rabbit_home=str(home))
         assert provider._client is not None
         result = json.loads(
             provider.handle_tool_call("viking_remember", {"content": "I like tea"})
@@ -329,7 +329,7 @@ def test_wire_requests_keep_writes_and_session_messages_in_the_selected_scope(
     remember_messages = [
         (path, payload)
         for path, _, payload in records
-        if path.startswith("/api/v1/sessions/hermes-remember-")
+        if path.startswith("/api/v1/sessions/rabbit-remember-")
         and path.endswith("/messages")
     ]
     assert len(remember_messages) == 1

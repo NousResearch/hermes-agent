@@ -1,6 +1,6 @@
 """Bedrock Converse / ConverseStream wire conformance: tools, signed reasoning, resume, compaction.
 
-Real ``hermes chat -q`` subprocesses with ``model.provider: bedrock`` talk to the real boto3
+Real ``rabbit chat -q`` subprocesses with ``model.provider: bedrock`` talk to the real boto3
 ``bedrock-runtime`` client, redirected by botocore's documented ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``
 override to the loopback fake in ``tests/fakes/providers/bedrock_converse.py``. The fake verifies the
 SigV4 signature, validates each body against the botocore service model plus Converse's conversation
@@ -54,7 +54,7 @@ COMPACTION_FILES = 8
 
 
 def _home(root: Path, fake: FakeBedrock, extra_config: dict[str, Any] | None = None) -> NativeHome:
-    """Bedrock home: fake static creds in the profile .env (the chain Hermes loads), endpoint via env."""
+    """Bedrock home: fake static creds in the profile .env (the chain Rabbit loads), endpoint via env."""
     nh = make_home(root, {"provider": "bedrock", "default": MODEL, "context_length": 64000},
                    env_file={"AWS_ACCESS_KEY_ID": ACCESS_KEY, "AWS_SECRET_ACCESS_KEY": SECRET_KEY,
                              "AWS_REGION": REGION},

@@ -2,14 +2,14 @@
 sidebar_position: 11
 sidebar_label: "通过 Webhook 进行 GitHub PR 审查"
 title: "使用 Webhook 自动发布 GitHub PR 评论"
-description: "将 Hermes 连接到 GitHub，使其自动获取 PR diff、审查代码变更并发布评论——由 webhook 触发，无需手动提示"
+description: "将 Rabbit 连接到 GitHub，使其自动获取 PR diff、审查代码变更并发布评论——由 webhook 触发，无需手动提示"
 ---
 
 # 使用 Webhook 自动发布 GitHub PR 评论
 
-本指南介绍如何将 Hermes Agent 连接到 GitHub，使其自动获取 pull request 的 diff、分析代码变更并发布评论——由 webhook 事件触发，无需手动 prompt（提示词）。
+本指南介绍如何将 Rabbit Agent 连接到 GitHub，使其自动获取 pull request 的 diff、分析代码变更并发布评论——由 webhook 事件触发，无需手动 prompt（提示词）。
 
-当 PR 被打开或更新时，GitHub 会向你的 Hermes 实例发送一个 webhook POST 请求。Hermes 使用一个 prompt 运行 agent，该 prompt 指示其通过 `gh` CLI 获取 diff，并将响应发布回 PR 线程。
+当 PR 被打开或更新时，GitHub 会向你的 Rabbit 实例发送一个 webhook POST 请求。Rabbit 使用一个 prompt 运行 agent，该 prompt 指示其通过 `gh` CLI 获取 diff，并将响应发布回 PR 线程。
 
 :::tip 想要无需公网端点的更简单配置？
 如果你没有公网 URL，或只是想快速上手，请查看 [构建 GitHub PR 审查 Agent](./github-pr-review-agent.md) —— 使用 cron 作业按计划轮询 PR，可在 NAT 和防火墙后运行。
@@ -27,16 +27,16 @@ Webhook payload 包含攻击者可控的数据——PR 标题、commit 消息和
 
 ## 前提条件
 
-- Hermes Agent 已安装并运行（`hermes gateway`）
+- Rabbit Agent 已安装并运行（`rabbit gateway`）
 - [`gh` CLI](https://cli.github.com/) 已安装并在 gateway 主机上完成认证（`gh auth login`）
-- 你的 Hermes 实例有一个可公网访问的 URL（如果在本地运行，请参阅[使用 ngrok 进行本地测试](#local-testing-with-ngrok)）
+- 你的 Rabbit 实例有一个可公网访问的 URL（如果在本地运行，请参阅[使用 ngrok 进行本地测试](#local-testing-with-ngrok)）
 - 对 GitHub 仓库的管理员权限（管理 webhook 所需）
 
 ---
 
 ## 第一步——启用 webhook 平台
 
-在你的 `~/.hermes/config.yaml` 中添加以下内容：
+在你的 `~/.rabbit/config.yaml` 中添加以下内容：
 
 ```yaml
 platforms:
@@ -88,7 +88,7 @@ platforms:
 | `deliver_extra.pr_number` | 从 payload 中解析为 PR 编号。 |
 
 :::note Payload 中不包含代码
-GitHub webhook payload 包含 PR 元数据（标题、描述、分支名、URL），但**不包含 diff**。上方的 prompt 指示 agent 运行 `gh pr diff` 来获取实际变更。`terminal` 工具已包含在默认的 `hermes-webhook` 工具集中，无需额外配置。
+GitHub webhook payload 包含 PR 元数据（标题、描述、分支名、URL），但**不包含 diff**。上方的 prompt 指示 agent 运行 `gh pr diff` 来获取实际变更。`terminal` 工具已包含在默认的 `rabbit-webhook` 工具集中，无需额外配置。
 :::
 
 ---
@@ -96,7 +96,7 @@ GitHub webhook payload 包含 PR 元数据（标题、描述、分支名、URL�
 ## 第二步——启动 gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 你应该看到：
@@ -130,19 +130,19 @@ GitHub 会立即发送一个 `ping` 事件以确认连接。该事件会被安�
 
 ## 第四步——打开一个测试 PR
 
-创建一个分支，推送一个变更，并打开一个 PR。在 30–90 秒内（取决于 PR 大小和模型），Hermes 应该会发布一条审查评论。
+创建一个分支，推送一个变更，并打开一个 PR。在 30–90 秒内（取决于 PR 大小和模型），Rabbit 应该会发布一条审查评论。
 
 要实时跟踪 agent 的进度：
 
 ```bash
-tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
+tail -f "${RABBIT_HOME:-$HOME/.rabbit}/logs/gateway.log"
 ```
 
 ---
 
 ## 使用 ngrok 进行本地测试
 
-如果 Hermes 在你的笔记本上运行，使用 [ngrok](https://ngrok.com/) 将其暴露到公网：
+如果 Rabbit 在你的笔记本上运行，使用 [ngrok](https://ngrok.com/) 将其暴露到公网：
 
 ```bash
 ngrok http 8644
@@ -171,11 +171,11 @@ curl -s -X POST http://localhost:8644/webhooks/github-pr-review \
 
 然后观察 agent 运行：
 ```bash
-tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
+tail -f "${RABBIT_HOME:-$HOME/.rabbit}/logs/gateway.log"
 ```
 
 :::note
-`hermes webhook test <name>` 仅适用于通过 `hermes webhook subscribe` 创建的**动态订阅**。它不读取 `config.yaml` 中的路由。
+`rabbit webhook test <name>` 仅适用于通过 `rabbit webhook subscribe` 创建的**动态订阅**。它不读取 `config.yaml` 中的路由。
 :::
 
 ---
@@ -196,7 +196,7 @@ GitHub 会针对多种 action 发送 `pull_request` 事件：`opened`、`synchro
 
 ## 使用 skill 保持一致的审查风格
 
-加载一个 [Hermes skill](../user-guide/features/skills.md) 以赋予 agent 一致的审查风格。在 `config.yaml` 的 `platforms.webhook.extra.routes` 中，向你的路由添加 `skills`：
+加载一个 [Rabbit skill](../user-guide/features/skills.md) 以赋予 agent 一致的审查风格。在 `config.yaml` 的 `platforms.webhook.extra.routes` 中，向你的路由添加 `skills`：
 
 ```yaml
 platforms:
@@ -226,7 +226,7 @@ platforms:
             pr_number: "{number}"
 ```
 
-> **注意：** 列表中只有第一个找到的 skill 会被加载。Hermes 不会叠加多个 skill——后续条目会被忽略。
+> **注意：** 列表中只有第一个找到的 skill 会被加载。Rabbit 不会叠加多个 skill——后续条目会被忽略。
 
 ---
 
@@ -256,7 +256,7 @@ deliver_extra:
 
 ## GitLab 支持
 
-同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC）——Hermes 会自动处理两者。
+同一适配器也适用于 GitLab。GitLab 使用 `X-Gitlab-Token` 进行认证（纯字符串匹配，非 HMAC）——Rabbit 会自动处理两者。
 
 对于事件过滤，GitLab 将 `X-GitLab-Event` 设置为 `Merge Request Hook`、`Push Hook`、`Pipeline Hook` 等值。在 `events` 中使用精确的请求头值：
 
@@ -265,7 +265,7 @@ events:
   - Merge Request Hook
 ```
 
-GitLab 的 payload 字段与 GitHub 不同——例如，MR 标题使用 `{object_attributes.title}`，MR 编号使用 `{object_attributes.iid}`。发现完整 payload 结构最简单的方式是使用 GitLab webhook 设置中的 **Test** 按钮，结合 **Recent Deliveries** 日志。或者，在路由配置中省略 `prompt`——Hermes 将把完整 payload 作为格式化 JSON 直接传递给 agent，agent 的响应（在 gateway 日志中通过 `deliver: log` 可见）将描述其结构。
+GitLab 的 payload 字段与 GitHub 不同——例如，MR 标题使用 `{object_attributes.title}`，MR 编号使用 `{object_attributes.iid}`。发现完整 payload 结构最简单的方式是使用 GitLab webhook 设置中的 **Test** 按钮，结合 **Recent Deliveries** 日志。或者，在路由配置中省略 `prompt`——Rabbit 将把完整 payload 作为格式化 JSON 直接传递给 agent，agent 的响应（在 gateway 日志中通过 `deliver: log` 可见）将描述其结构。
 
 ---
 

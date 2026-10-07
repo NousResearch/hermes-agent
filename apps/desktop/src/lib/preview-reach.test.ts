@@ -4,15 +4,15 @@ import { $connection } from '@/store/session'
 
 import { reachablePreviewUrl } from './preview-reach'
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const desktopWindow = window as unknown as { rabbitDesktop?: Window['rabbitDesktop'] }
 
 function installBridge(reachPreviewUrl?: unknown) {
-  desktopWindow.hermesDesktop = { reachPreviewUrl } as unknown as Window['hermesDesktop']
+  desktopWindow.rabbitDesktop = { reachPreviewUrl } as unknown as Window['rabbitDesktop']
 }
 
 afterEach(() => {
   $connection.set(null)
-  delete desktopWindow.hermesDesktop
+  delete desktopWindow.rabbitDesktop
 })
 
 describe('reachablePreviewUrl', () => {
@@ -38,7 +38,7 @@ describe('reachablePreviewUrl', () => {
     expect(bridge).toHaveBeenCalledWith('http://localhost:5173/')
   })
 
-  // A url/cloud remote has no tunnel to borrow, so main hands the URL back
+  // A url remote has no tunnel to borrow, so main hands the URL back
   // unchanged; the pane's own error explains it from there.
   it('passes the original through when main cannot reach it', async () => {
     $connection.set({ mode: 'remote' } as never)

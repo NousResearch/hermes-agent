@@ -1,4 +1,4 @@
-# Copyright 2025 Nous Research (Licensed under the Apache License, Version 2.0)
+# Copyright 2025 Sanath Patil (Licensed under the Apache License, Version 2.0)
 """A live session rotated off a quota-benched credential moves back once the bench lifts.
 
 New sessions already do this (``load_pool().select()`` prefers the priority-0 entry again once

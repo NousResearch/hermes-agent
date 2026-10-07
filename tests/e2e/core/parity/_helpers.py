@@ -1,4 +1,4 @@
-"""Shared fixture HERMES_HOME + invariant checks for the entrypoint-parity suite.
+"""Shared fixture RABBIT_HOME + invariant checks for the entrypoint-parity suite.
 
 One fixture home carries every feature that has historically been wired into
 some entrypoints and forgotten in others (issue class C19): a shell hook and a
@@ -28,9 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_rabbit_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_MCP_SERVER = Path(__file__).with_name("fixture_mcp_server.py")
@@ -69,7 +69,7 @@ class ParityHome:
 
     root: Path
     home: Path
-    hermes_home: Path
+    rabbit_home: Path
     project: Path
     markers: Path
     pid_log: Path
@@ -77,45 +77,45 @@ class ParityHome:
     canaries: dict[str, str] = field(default_factory=dict)
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        """Hermetic env for a subprocess Hermes: fake HOME, no real credentials."""
+        """Hermetic env for a subprocess Rabbit: fake HOME, no real credentials."""
         import pwd  # POSIX-only; the suite is Linux-gated
 
         # Refuse only a home the real install would read as live state (its root or a profile).
-        # A tmp_path under ``~/.hermes/cache/scratch`` (TMPDIR when Hermes itself runs the suite)
-        # is fine: the child's HOME is the fixture home, so its ``~/.hermes`` never resolves there.
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()
-        fixture = self.hermes_home.resolve()
+        # A tmp_path under ``~/.rabbit/cache/scratch`` (TMPDIR when Rabbit itself runs the suite)
+        # is fine: the child's HOME is the fixture home, so its ``~/.rabbit`` never resolves there.
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".rabbit").resolve()
+        fixture = self.rabbit_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", (
-            f"fixture HERMES_HOME {self.hermes_home} is the real install's live home")
-        assert fixture == (self.home / ".hermes").resolve(), (
-            f"fixture HERMES_HOME {self.hermes_home} is not <fixture HOME>/.hermes")
-        # Allowlist, not denylist: the runner may itself be a Hermes process whose
-        # TERMINAL_CWD / HERMES_* / credential env would silently reroute the child.
+            f"fixture RABBIT_HOME {self.rabbit_home} is the real install's live home")
+        assert fixture == (self.home / ".rabbit").resolve(), (
+            f"fixture RABBIT_HOME {self.rabbit_home} is not <fixture HOME>/.rabbit")
+        # Allowlist, not denylist: the runner may itself be a Rabbit process whose
+        # TERMINAL_CWD / RABBIT_* / credential env would silently reroute the child.
         env = {
             k: v for k, v in os.environ.items()
             if (k in _PASSTHROUGH_ENV or k.startswith("LC_")) and not k.endswith(_SECRET_ENV_SUFFIXES)
         }
         env.update({
             "HOME": str(self.home),
-            "HERMES_HOME": str(self.hermes_home),
+            "RABBIT_HOME": str(self.rabbit_home),
             "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
             # Orphan-scan tag: every process in the spawned tree inherits it.
             "PARITY_TREE_TAG": self.tag,
-            # The child's HOME is the fixture home, so its ``~/.hermes/state.db`` IS
-            # the tmp HERMES_HOME's db; under a pytest ancestor the live-DB guard
-            # (hermes_state_guard) would refuse it. This is the guard's documented
+            # The child's HOME is the fixture home, so its ``~/.rabbit/state.db`` IS
+            # the tmp RABBIT_HOME's db; under a pytest ancestor the live-DB guard
+            # (rabbit_state_guard) would refuse it. This is the guard's documented
             # child-process escape hatch; the path is tmp_path by construction.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         })
         env.update(extra or {})
         return env
 
     def update_config(self, mutate: Callable[[dict], None]) -> None:
         """Apply ``mutate`` to config.yaml (for surfaces with a documented config-only channel)."""
-        path = self.hermes_home / "config.yaml"
+        path = self.rabbit_home / "config.yaml"
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         mutate(cfg)
         path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -129,22 +129,22 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
                       death_tool: bool = False, mcp_timeout: int = 60) -> ParityHome:
     """Write the full fixture home under ``root`` (a tmp_path)."""
     home = root / "home"
-    hermes_home = home / ".hermes"
+    rabbit_home = home / ".rabbit"
     project = root / "project"
     markers = root / "markers"
-    for d in (hermes_home, project, markers):
+    for d in (rabbit_home, project, markers):
         d.mkdir(parents=True, exist_ok=True)
     tag = uuid.uuid4().hex
     c = {name: f"{name.upper()}-{uuid.uuid4().hex[:12]}" for name in (
         "context", "skill", "memory", "shell_hook", "plugin_hook", "mcp")}
-    ph = ParityHome(root=root, home=home, hermes_home=hermes_home, project=project,
+    ph = ParityHome(root=root, home=home, rabbit_home=rabbit_home, project=project,
                     markers=markers, pid_log=root / "mcp_pids.log", tag=tag, canaries=c)
 
-    write_hermes_home(hermes_home, base_url)
-    cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+    write_rabbit_home(rabbit_home, base_url)
+    cfg = yaml.safe_load((rabbit_home / "config.yaml").read_text(encoding="utf-8"))
     cfg["agent"]["disabled_toolsets"] = [DISABLED_TOOLSET]
     cfg["hooks"] = {"pre_llm_call": [{
-        "command": f"{sys.executable} {hermes_home / 'agent-hooks' / 'shell_hook.py'}",
+        "command": f"{sys.executable} {rabbit_home / 'agent-hooks' / 'shell_hook.py'}",
         "timeout": 30,
     }]}
     cfg["hooks_auto_accept"] = True
@@ -175,9 +175,9 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
     # Keep turns hermetic and short: no title/aux model chatter decides anything here.
     cfg.setdefault("display", {})["compact"] = True
     cfg["updates"] = {"check": False}  # offline: no GitHub round-trip or git lazy fetch
-    (hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    (rabbit_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
-    hooks_dir = hermes_home / "agent-hooks"
+    hooks_dir = rabbit_home / "agent-hooks"
     hooks_dir.mkdir()
     (hooks_dir / "shell_hook.py").write_text(
         "import json, os, sys\n"
@@ -189,7 +189,7 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
         encoding="utf-8",
     )
 
-    plugin_dir = hermes_home / "plugins" / PLUGIN_NAME
+    plugin_dir = rabbit_home / "plugins" / PLUGIN_NAME
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "plugin.yaml").write_text(
         f"name: {PLUGIN_NAME}\nversion: 1.0.0\ndescription: parity suite marker plugin\n",
@@ -207,7 +207,7 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
         encoding="utf-8",
     )
 
-    skill_dir = hermes_home / "skills" / "parity-skill"
+    skill_dir = rabbit_home / "skills" / "parity-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: parity-skill\n"
@@ -216,7 +216,7 @@ def build_parity_home(root: Path, base_url: str, *, grandchild: bool = True,
         encoding="utf-8",
     )
 
-    mem_dir = hermes_home / "memories"
+    mem_dir = rabbit_home / "memories"
     mem_dir.mkdir()
     (mem_dir / "MEMORY.md").write_text(f"The parity memory canary is {c['memory']}.", encoding="utf-8")
 
@@ -342,7 +342,7 @@ def required_tool_names(toolset: str) -> set[str]:
     return {t for t in _FEATURE_TOOLS if t in promised} | {MCP_TOOL_NAME}
 
 
-def check_invariants(obs: Observation, ph: ParityHome, *, toolset: str = "hermes-cli",
+def check_invariants(obs: Observation, ph: ParityHome, *, toolset: str = "rabbit-cli",
                      context_file: bool = True) -> dict[str, bool]:
     """Evaluate every parity invariant; returns {cell: ok} (all must be True)."""
     c = ph.canaries
@@ -441,8 +441,8 @@ def kill_tagged(ph: ParityHome) -> None:
             pass
 
 
-def hermes_argv(*args: str) -> list[str]:
-    return [sys.executable, "-m", "hermes_cli.main", *args]
+def rabbit_argv(*args: str) -> list[str]:
+    return [sys.executable, "-m", "rabbit_cli.main", *args]
 
 
 def terminate(proc: subprocess.Popen, timeout: float = 30.0) -> int | None:

@@ -6,7 +6,7 @@ author: community
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Smart-Home, Hue, Lights, IoT, Automation]
     homepage: https://www.openhue.io/cli
 prerequisites:
@@ -22,8 +22,8 @@ Control Philips Hue lights and scenes via a Hue Bridge from the terminal.
 ```bash
 # Linux (pre-built binary — releases ship tarballs, not bare binaries)
 curl -sL "https://github.com/openhue/openhue-cli/releases/latest/download/openhue_Linux_x86_64.tar.gz" \
-  | tar -xz -C ~/.hermes/cache/scratch openhue \
-  && install -m 0755 ~/.hermes/cache/scratch/openhue ~/.local/bin/openhue
+  | tar -xz -C ~/.rabbit/cache/scratch openhue \
+  && install -m 0755 ~/.rabbit/cache/scratch/openhue ~/.local/bin/openhue
 # (use openhue_Linux_arm64.tar.gz on ARM64)
 
 # macOS
@@ -105,7 +105,7 @@ openhue set room "Living Room" --off
 
 ## Notes
 
-- Bridge must be on the same local network as the machine running Hermes
+- Bridge must be on the same local network as the machine running Rabbit
 - First run requires physically pressing the button on the Hue Bridge to authorize
 - Colors only work on color-capable bulbs (not white-only models)
 - Light and room names are case-sensitive — use `openhue get light` to check exact names

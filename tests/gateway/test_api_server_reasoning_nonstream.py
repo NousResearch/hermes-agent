@@ -47,13 +47,13 @@ async def test_non_streaming_routes_carry_reasoning_once():
 
         with patch.object(adapter, "_run_agent", side_effect=_fake_run_agent):
             r = await client.post("/v1/chat/completions", json={
-                "model": "hermes-agent", "messages": [{"role": "user", "content": "q"}]})
+                "model": "rabbit-agent", "messages": [{"role": "user", "content": "q"}]})
             assert r.status == 200
             message = (await r.json())["choices"][0]["message"]
             assert message["reasoning_content"] == REASONING
             assert REASONING not in message["content"]
 
-            r = await client.post("/v1/responses", json={"model": "hermes-agent", "input": "q", "store": True})
+            r = await client.post("/v1/responses", json={"model": "rabbit-agent", "input": "q", "store": True})
             assert r.status == 200
             data = await r.json()
             assert [o["type"] for o in data["output"]] == ["reasoning", "message"]
@@ -80,7 +80,7 @@ async def test_responses_input_ignores_echoed_reasoning_items():
                           "summary": [{"type": "summary_text", "text": "thought"}]}
         with patch.object(adapter, "_run_agent", side_effect=_fake_run_agent):
             r = await client.post("/v1/responses", json={
-                "model": "hermes-agent", "store": False,
+                "model": "rabbit-agent", "store": False,
                 "conversation_history": [{"role": "user", "content": "h0"}, reasoning_item,
                                          {"role": "assistant", "content": "a0"}],
                 "input": [{"role": "user", "content": "first"}, reasoning_item,

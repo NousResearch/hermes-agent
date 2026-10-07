@@ -1,6 +1,6 @@
 """Zero-cost local SDK wire capture. Fixtures are not vendor inference evidence.
 
-Run from a checkout with HERMES_HOME pointing to a disposable directory.
+Run from a checkout with RABBIT_HOME pointing to a disposable directory.
 """
 import json
 import os
@@ -49,15 +49,15 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Capture)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 url = f"http://127.0.0.1:{server.server_port}"
-home = Path(os.environ["HERMES_HOME"])
+home = Path(os.environ["RABBIT_HOME"])
 home.mkdir(parents=True, exist_ok=True)
 config = {"model": {"default": "fixture", "provider": "fixture-local", "max_tokens": 17}, "providers": {"fixture-local": {"api": url + "/v1", "api_key": "fixture", "max_output_tokens": 19}}}
 (home / "config.yaml").write_text(json.dumps(config))
-os.environ["HERMES_MAX_TOKENS"] = "13"
+os.environ["RABBIT_MAX_TOKENS"] = "13"
 from gateway.run import _resolve_runtime_agent_kwargs
 from gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
-from hermes_cli.runtime_provider import resolve_runtime_provider
-from hermes_cli.moa_config import _normalize_preset
+from rabbit_cli.runtime_provider import resolve_runtime_provider
+from rabbit_cli.moa_config import _normalize_preset
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.anthropic import AnthropicTransport
 from agent.transports.bedrock import BedrockTransport

@@ -13,19 +13,19 @@ from gateway import cgroup_cleanup
 class TestOwnCgroupPath:
     def test_parses_v2_cgroup_path(self, tmp_path, monkeypatch):
         proc_self = tmp_path / "cgroup"
-        proc_self.write_text("0::/user.slice/user-1000.slice/hermes-gateway.service\n")
+        proc_self.write_text("0::/user.slice/user-1000.slice/rabbit-gateway.service\n")
         monkeypatch.setattr(
             cgroup_cleanup,
             "Path",
             lambda p: proc_self if p == "/proc/self/cgroup" else Path(p),
         )
 
-        assert cgroup_cleanup._own_cgroup_path() == "/user.slice/user-1000.slice/hermes-gateway.service"
+        assert cgroup_cleanup._own_cgroup_path() == "/user.slice/user-1000.slice/rabbit-gateway.service"
 
 
 class TestReapCgroup:
     def test_noop_when_procs_file_missing(self, tmp_path, monkeypatch):
-        cgroup_path = "/missing.slice/hermes-gateway.service"
+        cgroup_path = "/missing.slice/rabbit-gateway.service"
         monkeypatch.setattr(
             cgroup_cleanup,
             "Path",
@@ -71,7 +71,7 @@ class TestLiveGatewayGuard:
         import gateway.status
 
         cgroup_path = "/some.slice/some-gateway.service"
-        gateway_cmdline = f"/opt/hermes/venv/bin/python -m hermes_cli.main gateway {verb}"
+        gateway_cmdline = f"/opt/rabbit/venv/bin/python -m rabbit_cli.main gateway {verb}"
         monkeypatch.setattr(
             cgroup_cleanup, "_read_cgroup_pids", lambda _p: [777, os.getpid()]
         )

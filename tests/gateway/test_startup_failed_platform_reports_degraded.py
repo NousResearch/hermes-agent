@@ -63,7 +63,7 @@ class _HealthyAdapter(BasePlatformAdapter):
 
 
 def _runner(monkeypatch, tmp_path, platforms, create_adapter) -> GatewayRunner:
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     # No plugin registers any platform here, so a None adapter is the "plugin never registered" case.
     monkeypatch.setattr("gateway.platform_registry.platform_registry.is_registered", lambda name: False)
     runner = GatewayRunner(GatewayConfig(platforms=platforms, sessions_dir=tmp_path / "sessions"))
@@ -116,7 +116,7 @@ async def test_parked_platform_is_logged_at_error_and_the_run_is_degraded(monkey
 @pytest.mark.asyncio
 async def test_every_platform_connected_still_reports_a_normal_run(monkeypatch, tmp_path, caplog):
     """Protection: a clean startup keeps the normal ``running`` state and logs no ERROR."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
         sessions_dir=tmp_path / "sessions",

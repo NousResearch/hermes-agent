@@ -14,10 +14,10 @@ Draw code changes as animated architecture/data-flow SVGs.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/software-development/pr-lens` |
+| Source | Optional — install with `rabbit skills install official/software-development/pr-lens` |
 | Path | `optional-skills/software-development/pr-lens` |
 | Version | `1.0.0` |
-| Author | Coldtea AI (adapted by Nous Research) |
+| Author | Coldtea AI |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `diagrams`, `pull-requests`, `code-review`, `svg` |
@@ -25,7 +25,7 @@ Draw code changes as animated architecture/data-flow SVGs.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # PR Lens Skill
@@ -76,7 +76,7 @@ Run all commands with the terminal tool from the repository root.
 
    It prints three links. Give the user the **view link** (`https://prlens.dev/c/{id}`): the full-screen diagram, every view on one page, no login. The **edit link** (ending in `#w=…`) lets its holder overwrite the canvas — it is a secret: leave it out of the reply unless asked, never paste it anywhere public. The embed link serves the top view as an SVG for a README. Pushing the same file again updates the same canvas, so "rename that node" is: edit, validate, render, push — the link stays the same. If the push fails, say so and tell the user where the local SVGs are and which is the top view.
 
-5. **Attach to a PR, when there is one.** Upstream documents `gh pr create/edit/comment --attach <path>`, but `--attach` arrived in GitHub CLI 2.99 — check `gh --version` first (e.g. gh 2.97 does NOT have it). With gh ≥ 2.99: write the body with a Markdown image `![alt](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/pr-lens/.pr-lens/<view>.svg)` (an HTML `<img>` is left as written and the file appended at the bottom instead; alt text is the one-line caption a reader without images gets), then repeat `--attach <path>` per referenced diagram:
+5. **Attach to a PR, when there is one.** Upstream documents `gh pr create/edit/comment --attach <path>`, but `--attach` arrived in GitHub CLI 2.99 — check `gh --version` first (e.g. gh 2.97 does NOT have it). With gh ≥ 2.99: write the body with a Markdown image `![alt](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/pr-lens/.pr-lens/<view>.svg)` (an HTML `<img>` is left as written and the file appended at the bottom instead; alt text is the one-line caption a reader without images gets), then repeat `--attach <path>` per referenced diagram:
 
    ```bash
    gh pr create --title "…" --body-file .pr-lens/body.md --attach .pr-lens/overview-light-<hash>.svg
@@ -146,7 +146,7 @@ Validator failure codes:
 Smoke test (live-verified 2026-09-12 with `@coldtea/pr-lens-cli` via npx, node on Linux):
 
 ```bash
-cp references/example.graph.json ~/.hermes/cache/scratch/prlens-smoke/ && cd ~/.hermes/cache/scratch/prlens-smoke
+cp references/example.graph.json ~/.rabbit/cache/scratch/prlens-smoke/ && cd ~/.rabbit/cache/scratch/prlens-smoke
 npx -y @coldtea/pr-lens-cli@latest validate example.graph.json
 # ✓ example.graph.json — graph document · 3 lanes, 10 nodes, 13 edges, 1 flow · 6 walkthrough steps
 npx -y @coldtea/pr-lens-cli@latest render example.graph.json --theme light

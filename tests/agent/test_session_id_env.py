@@ -1,4 +1,4 @@
-"""Test that HERMES_SESSION_ID is exposed as an env var and ContextVar."""
+"""Test that RABBIT_SESSION_ID is exposed as an env var and ContextVar."""
 
 import os
 import sys
@@ -12,16 +12,16 @@ from run_agent import AIAgent
 
 @pytest.fixture(autouse=True)
 def _cleanup_env():
-    """Remove HERMES_SESSION_ID before/after each test."""
-    os.environ.pop("HERMES_SESSION_ID", None)
+    """Remove RABBIT_SESSION_ID before/after each test."""
+    os.environ.pop("RABBIT_SESSION_ID", None)
     yield
-    os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("RABBIT_SESSION_ID", None)
 
 
 
 
 def test_session_id_env_uses_provided_id():
-    """When session_id is passed explicitly, HERMES_SESSION_ID reflects it."""
+    """When session_id is passed explicitly, RABBIT_SESSION_ID reflects it."""
     custom_id = "20260511_120000_abc12345"
     agent = AIAgent(
         api_key="test-key",
@@ -31,7 +31,7 @@ def test_session_id_env_uses_provided_id():
         skip_context_files=True,
         skip_memory=True,
     )
-    assert os.environ["HERMES_SESSION_ID"] == custom_id
+    assert os.environ["RABBIT_SESSION_ID"] == custom_id
     assert agent.session_id == custom_id
 
 

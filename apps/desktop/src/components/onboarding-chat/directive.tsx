@@ -17,7 +17,7 @@ const DATA_STEPS = new Map<string, AnswerField>([
   ['working', 'context']
 ])
 
-/** Guided-setup cards counted as first-run funnel steps (hermes.desktop.onboarding). */
+/** Guided-setup cards counted as first-run funnel steps (rabbit.desktop.onboarding). */
 const FUNNEL_STEPS = new Map<string, DesktopOnboardingStep>([
   ['connectors', 'guide_connectors'],
   ['first', 'guide_first_build'],

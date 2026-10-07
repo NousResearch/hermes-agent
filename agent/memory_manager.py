@@ -404,14 +404,14 @@ class MemoryManager:
         # ``clarify``, ``delegate_task``). Reject it here, at the door, so it never enters the routing table
         # at all — matching the built-ins-always-win invariant used by the TTS/browser/search provider
         # registries. See #40466.
-        from toolsets import _HERMES_CORE_TOOLS
+        from toolsets import _RABBIT_CORE_TOOLS
 
         for raw_schema in schemas:
             schema = normalize_tool_schema(raw_schema)
             if schema is None:
                 continue
             tool_name = schema["name"]
-            if tool_name in _HERMES_CORE_TOOLS:
+            if tool_name in _RABBIT_CORE_TOOLS:
                 logger.warning(
                     "Memory provider '%s' tool '%s' shadows a reserved core "
                     "tool name; registration ignored. Core tools always win — "
@@ -614,7 +614,7 @@ class MemoryManager:
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
         """Collect deduplicated tool schemas from all providers; reserved core tool names are
         skipped because :meth:`add_provider` refuses to route them."""
-        from toolsets import _HERMES_CORE_TOOLS
+        from toolsets import _RABBIT_CORE_TOOLS
 
         schemas: List[Dict[str, Any]] = []
         seen = set()
@@ -627,7 +627,7 @@ class MemoryManager:
                         "Memory provider '%s' returned a tool schema with "
                         "no resolvable name; skipping (%r)", provider.name, raw_schema,
                     )
-                elif schema["name"] not in _HERMES_CORE_TOOLS and schema["name"] not in seen:
+                elif schema["name"] not in _RABBIT_CORE_TOOLS and schema["name"] not in seen:
                     schemas.append(schema)
                     seen.add(schema["name"])
 
@@ -645,7 +645,7 @@ class MemoryManager:
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
-        from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
+        from rabbit_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
             result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
@@ -898,9 +898,9 @@ class MemoryManager:
         )
 
     def initialize_all(self, session_id: str, **kwargs) -> None:
-        """Initialize all providers, injecting ``hermes_home`` so they resolve profile-scoped paths."""
-        if "hermes_home" not in kwargs:
-            from hermes_constants import get_hermes_home
-            kwargs["hermes_home"] = str(get_hermes_home())
+        """Initialize all providers, injecting ``rabbit_home`` so they resolve profile-scoped paths."""
+        if "rabbit_home" not in kwargs:
+            from rabbit_constants import get_rabbit_home
+            kwargs["rabbit_home"] = str(get_rabbit_home())
         self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
                             level=logging.WARNING)

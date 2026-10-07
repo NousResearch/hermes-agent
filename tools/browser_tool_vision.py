@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from hermes_cli.config import cfg_get
+from rabbit_cli.config import cfg_get
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
@@ -39,9 +39,9 @@ def _lightpanda_vision_preroute(
     fb_path = fb_result.get("data", {}).get("path", "")
     if fb_path and os.path.exists(fb_path):
         import uuid as uuid_mod
-        from hermes_constants import get_hermes_dir
+        from rabbit_constants import get_rabbit_dir
 
-        screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+        screenshots_dir = get_rabbit_dir("cache/screenshots", "browser_screenshots")
         screenshots_dir.mkdir(parents=True, exist_ok=True)
         persistent_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
         shutil.copy2(fb_path, persistent_path)
@@ -108,7 +108,7 @@ def _analyze_screenshot_with_aux_llm(screenshot_path: Path, question: str) -> st
     vision_timeout = 120.0
     vision_temperature = 0.1
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         _vision_cfg = cfg_get(load_config(), "auxiliary", "vision", default={})
         if _vision_cfg.get("timeout") is not None:
             vision_timeout = float(_vision_cfg["timeout"])

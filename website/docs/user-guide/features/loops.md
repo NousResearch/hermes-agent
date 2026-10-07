@@ -1,14 +1,14 @@
 ---
 sidebar_position: 17
 title: "Recurring Loops"
-description: "Re-run a prompt on a recurring interval inside your session — Hermes' take on Claude Code's /loop."
+description: "Re-run a prompt on a recurring interval inside your session — Rabbit' take on Claude Code's /loop."
 ---
 
 # Recurring Loops (`/loop`)
 
-`/loop` re-runs a prompt (or a slash command) on a recurring cadence **inside your current session**. Each wakeup is a real agent turn: Hermes reads the current state fresh — the latest CI result, the newest queue depth, the file as it is now — does the work, reports back, and goes quiet until the next tick.
+`/loop` re-runs a prompt (or a slash command) on a recurring cadence **inside your current session**. Each wakeup is a real agent turn: Rabbit reads the current state fresh — the latest CI result, the newest queue depth, the file as it is now — does the work, reports back, and goes quiet until the next tick.
 
-It's Hermes' take on **Claude Code's `/loop`** (and its `/proactive` alias, which works here too). Where [`/goal`](./goals.md) is judge-driven — "keep working until this objective is achieved" — `/loop` is timer-driven: "do this again every N minutes (or whenever it makes sense) until something says stop."
+It's Rabbit' take on **Claude Code's `/loop`** (and its `/proactive` alias, which works here too). Where [`/goal`](./goals.md) is judge-driven — "keep working until this objective is achieved" — `/loop` is timer-driven: "do this again every N minutes (or whenever it makes sense) until something says stop."
 
 ## When to use it
 
@@ -28,7 +28,7 @@ When the work should run **unattended** — overnight, on a real schedule, survi
 What you'll see:
 
 1. **Loop accepted** — `↻ Loop set (every 5m): check the deploy status…`
-2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Hermes injects the wakeup and runs a normal turn against current state.
+2. **First wakeup fires right away** — on the next idle poll (gateway: the next 15s watcher scan), Rabbit injects the wakeup and runs a normal turn against current state.
 3. **Repeat** — every 5 minutes after that, until a stop condition fires or you stop it.
 
 Loop a slash command just as easily:
@@ -45,7 +45,7 @@ Loop a slash command just as easily:
 /loop 2m poll the build at ci.example.com/job/42 and ping me the moment it finishes
 ```
 
-**Self-paced — Hermes sets the clock.** Omit the interval and the loop paces itself: it starts at the floor (1 minute by default), and while the agent's replies stop changing it backs off exponentially — 2m, 4m, 8m, up to the ceiling (15 minutes by default). The moment a reply differs from the last one, cadence snaps back to the floor. Change detection is a local digest comparison (timestamps are ignored), so idle waits cost nothing extra:
+**Self-paced — Rabbit sets the clock.** Omit the interval and the loop paces itself: it starts at the floor (1 minute by default), and while the agent's replies stop changing it backs off exponentially — 2m, 4m, 8m, up to the ceiling (15 minutes by default). The moment a reply differs from the last one, cadence snaps back to the floor. Change detection is a local digest comparison (timestamps are ignored), so idle waits cost nothing extra:
 
 ```
 /loop keep an eye on the migration and summarize progress
@@ -83,7 +83,7 @@ Examples:
 | `/loop stop` | End the loop. |
 | `/proactive …` | Alias for `/loop` (Claude Code parity). |
 
-Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
+Works on the CLI, the TUI (`rabbit --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
 ## Mixing with `/goal`
 
@@ -102,7 +102,7 @@ A real user message always wins over both — wakeups only fire while the sessio
 ## Configuration
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 loops:
   min_interval_seconds: 30       # floor for fixed intervals
   max_ticks: 100                 # backstop budget (0 = unlimited)

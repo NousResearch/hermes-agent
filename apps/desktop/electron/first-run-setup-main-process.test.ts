@@ -11,17 +11,17 @@ test('a first-run bootstrap-needed remote apply connects without ensuring or boo
   const gate = createFirstRunSetupGate({ stuckAfterMs: 0 })
 
   const bootstrapBackend = {
-    activeRoot: '/tmp/hermes-home/hermes-agent',
+    activeRoot: '/tmp/rabbit-home/rabbit-agent',
     kind: 'bootstrap-needed',
     platform: 'linux'
   }
 
   const candidateRemote = {
     authMode: 'token',
-    baseUrl: 'https://gateway.example.com/hermes',
+    baseUrl: 'https://gateway.example.com/rabbit',
     source: 'settings',
     token: 'secret',
-    wsUrl: 'wss://gateway.example.com/hermes/api/ws?token=secret'
+    wsUrl: 'wss://gateway.example.com/rabbit/api/ws?token=secret'
   }
 
   let savedRemote: typeof candidateRemote | null = null
@@ -33,7 +33,7 @@ test('a first-run bootstrap-needed remote apply connects without ensuring or boo
   const ensureLocalRuntime = vi.fn(async backend => {
     await runBootstrap()
 
-    return { ...backend, command: 'hermes' }
+    return { ...backend, command: 'rabbit' }
   })
 
   const teardownPrimaryBackend = vi.fn(async () => {})

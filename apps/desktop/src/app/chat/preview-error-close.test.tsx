@@ -24,7 +24,7 @@ const target = {
   url: 'file:///tmp/gone/report.csv'
 }
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const desktopWindow = window as unknown as { rabbitDesktop?: Window['rabbitDesktop'] }
 
 beforeAll(() => {
   watchPreviewTiles()
@@ -32,11 +32,11 @@ beforeAll(() => {
 
 beforeEach(() => {
   $connection.set({ mode: 'local' } as never)
-  desktopWindow.hermesDesktop = {
+  desktopWindow.rabbitDesktop = {
     readFileText: vi.fn(async () => {
       throw new Error('Text preview failed: file does not exist.')
     })
-  } as unknown as Window['hermesDesktop']
+  } as unknown as Window['rabbitDesktop']
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
     window.setTimeout(() => callback(Date.now()), 0)
   )
@@ -47,7 +47,7 @@ afterEach(() => {
   cleanup()
   closeRightRail()
   $connection.set(null)
-  delete desktopWindow.hermesDesktop
+  delete desktopWindow.rabbitDesktop
   vi.unstubAllGlobals()
 })
 

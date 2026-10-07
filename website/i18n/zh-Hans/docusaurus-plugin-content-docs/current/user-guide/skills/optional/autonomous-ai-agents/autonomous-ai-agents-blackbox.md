@@ -14,24 +14,23 @@ description: "将编码任务委托给 Blackbox AI CLI 代理"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/autonomous-ai-agents/blackbox` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/autonomous-ai-agents/blackbox` 安装 |
 | 路径 | `optional-skills/autonomous-ai-agents/blackbox` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent (Nous Research) |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Coding-Agent`, `Blackbox`, `Multi-Agent`, `Judge`, `Multi-Model` |
-| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是代理在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是代理在 skill 激活时所看到的指令内容。
 :::
 
 # Blackbox CLI
 
-通过 Hermes 终端将编码任务委托给 [Blackbox AI](https://www.blackbox.ai/)。Blackbox 是一个多模型编码代理 CLI，可将任务分发给多个 LLM（Claude、Codex、Gemini、Blackbox Pro），并使用评判机制选出最佳实现。
+通过 Rabbit 终端将编码任务委托给 [Blackbox AI](https://www.blackbox.ai/)。Blackbox 是一个多模型编码代理 CLI，可将任务分发给多个 LLM（Claude、Codex、Gemini、Blackbox Pro），并使用评判机制选出最佳实现。
 
 该 CLI 为[开源项目](https://github.com/blackboxaicode/cli)（GPL-3.0，TypeScript，fork 自 Gemini CLI），支持交互式会话、非交互式单次执行、检查点（checkpointing）、MCP 以及视觉模型切换。
 

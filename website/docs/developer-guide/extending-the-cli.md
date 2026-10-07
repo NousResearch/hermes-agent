@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: "Extending the CLI"
-description: "Build wrapper CLIs that extend the Hermes TUI with custom widgets, keybindings, and layout changes"
+description: "Build wrapper CLIs that extend the Rabbit TUI with custom widgets, keybindings, and layout changes"
 ---
 
 # Extending the CLI
 
-Hermes exposes protected extension hooks on `HermesCLI` so wrapper CLIs can add widgets, keybindings, and layout customizations without overriding the `run()` method or the TUI construction in `hermes_cli/cli_tui_mixin.py` (where these hooks are defined; `HermesCLI` in `cli.py` mixes it in). This keeps your extension decoupled from internal changes.
+Rabbit exposes protected extension hooks on `RabbitCLI` so wrapper CLIs can add widgets, keybindings, and layout customizations without overriding the `run()` method or the TUI construction in `rabbit_cli/cli_tui_mixin.py` (where these hooks are defined; `RabbitCLI` in `cli.py` mixes it in). This keeps your extension decoupled from internal changes.
 
 ## Extension points
 
@@ -26,14 +26,14 @@ The first three are new protected hooks. The last two already existed.
 
 ```python
 #!/usr/bin/env python3
-"""my_cli.py — Example wrapper CLI that extends Hermes."""
+"""my_cli.py — Example wrapper CLI that extends Rabbit."""
 
-from cli import HermesCLI
+from cli import RabbitCLI
 from prompt_toolkit.layout import FormattedTextControl, Window
 from prompt_toolkit.filters import Condition
 
 
-class MyCLI(HermesCLI):
+class MyCLI(RabbitCLI):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -109,7 +109,7 @@ def _get_extra_tui_widgets(self):
 
 ### `_register_extra_tui_keybindings(kb, *, input_area)`
 
-Called after Hermes registers its own keybindings and before the layout is built. Add your keybindings to `kb`.
+Called after Rabbit registers its own keybindings and before the layout is built. Add your keybindings to `kb`.
 
 ```python
 def _register_extra_tui_keybindings(self, kb, *, input_area):

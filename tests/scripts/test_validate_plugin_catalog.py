@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -19,13 +19,13 @@ SCRIPT = REPO_ROOT / "scripts" / "validate_plugin_catalog.py"
 
 VALID_ENTRY = {
     "name": "example-plugin",
-    "repo": "https://github.com/NousResearch/hermes-example-plugins",
+    "repo": "https://github.com/NousResearch/rabbit-example-plugins",
     "sha": "38fe0fb53eff98d477f807432e965429e665ca33",
     "subdir": "",
     "description": "One-line description.",
     "maintainer": "NousResearch",
     "tier": "official",
-    "requires_hermes": ">=0.19",
+    "requires_rabbit": ">=0.19",
     "docs_url": "",
     "platforms": [],
     "capabilities": {
@@ -194,12 +194,12 @@ def test_capabilities_list_of_non_strings_fails(tmp_path):
     )
 
 
-def test_bad_requires_hermes_spec_fails(tmp_path):
-    _expect_error(tmp_path, {"requires_hermes": "banana"}, "requires_hermes")
+def test_bad_requires_rabbit_spec_fails(tmp_path):
+    _expect_error(tmp_path, {"requires_rabbit": "banana"}, "requires_rabbit")
 
 
-def test_comma_separated_requires_hermes_passes(tmp_path):
-    entry = {**VALID_ENTRY, "requires_hermes": ">=0.19, <2.0"}
+def test_comma_separated_requires_rabbit_passes(tmp_path):
+    entry = {**VALID_ENTRY, "requires_rabbit": ">=0.19, <2.0"}
     path = write_entry(tmp_path, entry)
     result = run_validator(str(path))
     assert result.returncode == 0, result.stdout + result.stderr

@@ -1,18 +1,18 @@
 name: adspirer
-repo: https://github.com/Adspirer/adspirer-hermes-plugin
+repo: https://github.com/Adspirer/adspirer-rabbit-plugin
 sha: 4688c38295a7b86f8119d7a0ecc09cd0b83a2730
 description: Create, analyze, and optimize campaigns across Google Ads, Meta Ads, TikTok Ads, LinkedIn
   Ads, Amazon Ads, ChatGPT Ads, and Microsoft Ads through the hosted Adspirer MCP. Portable Agent Plugins
   v1 package with fourteen paid-media workflow skills and approval safeguards; OAuth uses pinned mcp-remote@0.1.49
   over npx stdio, so Node.js 20.18.1+ and npm are required. Disclosure — creates and edits real ad campaigns
-  that spend your ad budgets; confirm-before-spend is enforced by skill instructions, not by Hermes.
+  that spend your ad budgets; confirm-before-spend is enforced by skill instructions, not by Rabbit.
 maintainer: Adspirer
 tier: community
 category: tools
-requires_hermes: '>=0.20'
-docs_url: https://github.com/Adspirer/adspirer-hermes-plugin#readme
+requires_rabbit: '>=0.20'
+docs_url: https://github.com/Adspirer/adspirer-rabbit-plugin#readme
 version: 1.0.0
-image: https://raw.githubusercontent.com/Adspirer/adspirer-hermes-plugin/4688c38295a7b86f8119d7a0ecc09cd0b83a2730/assets/icon.png
+image: https://raw.githubusercontent.com/Adspirer/adspirer-rabbit-plugin/4688c38295a7b86f8119d7a0ecc09cd0b83a2730/assets/icon.png
 platforms: []
 capabilities:
   provides_tools: []

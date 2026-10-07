@@ -149,7 +149,7 @@ export function cronLastResult(
   return { status, tone, detail: detail || null };
 }
 
-/** Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can run a few minutes late. */
+/** Mirrors rabbit_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can run a few minutes late. */
 export const CRON_NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000;
 
 /**
@@ -169,7 +169,7 @@ export function cronNextRunOverdueMs(
   return overdue > CRON_NEXT_RUN_OVERDUE_GRACE_MS ? overdue : null;
 }
 
-/** Mirrors hermes_cli/cron.py `STALE_AFTER`: ~3 missed ticker iterations (60s) plus slack. */
+/** Mirrors rabbit_cli/cron.py `STALE_AFTER`: ~3 missed ticker iterations (60s) plus slack. */
 export const CRON_SCHEDULER_STALE_S = 60 * 3 + 20;
 
 /**

@@ -42,8 +42,8 @@ def test_prune_site_pth_keeps_only_load_bearing_pth(tmp_path):
     for site in (win_site, posix_site):
         (site / "pywin32.pth").write_text("win32\nwin32\\lib\nimport pywin32_bootstrap\n", encoding="utf-8")
         (site / "_virtualenv.pth").write_text("import _virtualenv\n", encoding="utf-8")
-        (site / "__editable__.hermes_agent-0.21.1.pth").write_text(
-            "import __editable___hermes_agent_0_21_1_finder\n", encoding="utf-8"
+        (site / "__editable__.rabbit_agent-0.21.1.pth").write_text(
+            "import __editable___rabbit_agent_0_21_1_finder\n", encoding="utf-8"
         )
 
     prune_site_pth(win_venv)
@@ -83,7 +83,7 @@ def locked_project(tmp_path):
     config.mkdir()
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("UV_", "PYTHON")) and key != "VIRTUAL_ENV"}
-    env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(home / ".hermes"),
+    env.update(HOME=str(home), USERPROFILE=str(home), RABBIT_HOME=str(home / ".rabbit"),
                XDG_CONFIG_HOME=str(config), XDG_CONFIG_DIRS=str(config),
                UV_CACHE_DIR=str(tmp_path / "cache"), UV_PYTHON=sys.executable, UV_OFFLINE="1")
     _run([uv, "lock", "--python", sys.executable], cwd=source, env=env)
@@ -159,7 +159,7 @@ def test_public_build_installs_all_extras_at_explicit_destination(installable_pr
     assert (site / "construction_root.pth").is_file(), "load-bearing .pth must survive sealing"
     assert (source / "uv.lock").read_bytes() == locked
     assert dict(os.environ) == before
-    assert not Path(env["HERMES_HOME"]).exists()
+    assert not Path(env["RABBIT_HOME"]).exists()
 
 
 @pytest.mark.parametrize("selection, expected", [
@@ -187,13 +187,13 @@ def test_public_dependency_only_build_needs_no_application_source(installable_pr
     ))
     assert result == [*expected, False]
     assert (source / "uv.lock").read_bytes() == locked
-    assert not Path(env["HERMES_HOME"]).exists()
+    assert not Path(env["RABBIT_HOME"]).exists()
 
 
 def test_all_extras_build_leaves_out_opt_in_extras(installable_project, tmp_path):
     source, uv, env = installable_project
     manifest = source / "pyproject.toml"
-    manifest.write_text(manifest.read_text() + '\n[tool.hermes]\nopt-in-extras=["other"]\n', encoding="utf-8")
+    manifest.write_text(manifest.read_text() + '\n[tool.rabbit]\nopt-in-extras=["other"]\n', encoding="utf-8")
     from pm import build_environment
 
     probe = ("import json, importlib.util; print(json.dumps([importlib.util.find_spec(n) is not None "
@@ -227,7 +227,7 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
                          cache=tmp_path / "cache", offline=True, explicit=True)
     (tmp_path / "manifest.json").write_text(json.dumps({"repo": source.name, "venv": base.name}), encoding="utf-8")
     write_features(["chosen"], tmp_path)
-    home = Path(os.environ["HERMES_HOME"])
+    home = Path(os.environ["RABBIT_HOME"])
     home.mkdir(exist_ok=True)
     (home / "config.yaml").write_text(f"security:\n  allow_lazy_installs: {str(lazy).lower()}\n", encoding="utf-8")
     assert selected_venv(source) == base
@@ -319,7 +319,7 @@ def test_build_backend_output_is_streamed_before_build_finishes(installable_proj
     import io
     from pm.environment import PythonEnvironment
 
-    monkeypatch.setenv("HERMES_VERBOSE", "1")  # live backend output is the streamed (CI) view's contract
+    monkeypatch.setenv("RABBIT_VERBOSE", "1")  # live backend output is the streamed (CI) view's contract
     source, uv, env = installable_project
     release = tmp_path / "release-build"
     stdout_marker = "construction-root: backend stdout"
@@ -412,7 +412,7 @@ def test_child_output_is_live_and_keeps_explicit_index_credentials(tmp_path, mon
     import io
     from pm.environment import PythonEnvironment
 
-    monkeypatch.setenv("HERMES_VERBOSE", "1")  # CI's streamed log, not the contained view
+    monkeypatch.setenv("RABBIT_VERBOSE", "1")  # CI's streamed log, not the contained view
 
     released = tmp_path / "release-child"
 
@@ -460,7 +460,7 @@ def streaming_runner(request, tmp_path, monkeypatch):
     from pm.cli import _run_live
     from pm.environment import PythonEnvironment
 
-    monkeypatch.setenv("HERMES_VERBOSE", "1")  # CI's streamed log, not the contained view
+    monkeypatch.setenv("RABBIT_VERBOSE", "1")  # CI's streamed log, not the contained view
 
     output = io.StringIO()
     environment = PythonEnvironment(
@@ -633,7 +633,7 @@ def test_explicit_environment_installs_locked_members_without_live_selection(loc
     assert result == [sys.base_prefix, "1.0", True]
     assert (source / "uv.lock").read_bytes() == before_lock
     assert not (source / ".venv").exists()
-    assert not (Path(env["HERMES_HOME"])).exists()
+    assert not (Path(env["RABBIT_HOME"])).exists()
     assert env == before_env
     assert dict(os.environ) == before_process
 
@@ -681,7 +681,7 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     expected = tomllib.loads(before_member.decode("utf-8"))
     # A virtual member is renamed to its unique key (uv rejects two members with
     # one [project].name); everything the plugin declared must survive verbatim.
-    assert copied_document["project"]["name"].startswith("hermes-plugin-member-")
+    assert copied_document["project"]["name"].startswith("rabbit-plugin-member-")
     del copied_document["project"]["name"]
     del expected["project"]["name"]
     assert copied_document == expected
@@ -722,7 +722,7 @@ def test_real_sync_retains_selection_until_commit(locked_project, tmp_path, monk
     engine.sync_venv(["chosen"], plugins=Members([]), explicit=True)
     old = selected_venv(source)
     facts = paths.runtime_facts_path().read_bytes()
-    home = Path(os.environ["HERMES_HOME"])
+    home = Path(os.environ["RABBIT_HOME"])
     config = home / "config.yaml"
     config.write_text("plugins: {enabled: []}\nsecurity: {allow_lazy_installs: true}\n", encoding="utf-8")
     config_bytes = config.read_bytes()
@@ -764,7 +764,7 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     _run([str(uv), "lock", "--python", sys.executable], cwd=source, env=env)
     source_lock = (source / "uv.lock").read_bytes()
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "isolated-home")
-    monkeypatch.setenv("HERMES_HOME", env["HERMES_HOME"])
+    monkeypatch.setenv("RABBIT_HOME", env["RABBIT_HOME"])
     monkeypatch.setattr(pm.paths, "repo_root", lambda: source)
     # Tool acquisition is the adapter's job; the same prepared env is not mutated.
     monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (uv, Path(sys.executable)))

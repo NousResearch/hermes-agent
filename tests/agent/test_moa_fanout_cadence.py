@@ -69,9 +69,9 @@ def _iteration_messages(base, iterations):
 def test_every_n_cadence_runs_references_every_nth_iteration(monkeypatch, tmp_path):
     """With every_n:3, references run on iterations 1 and 4 of a 6-iteration
     tool loop (1 on-cadence, then every 3rd), not on all 6."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _cadence_config(home, "every_n:3")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
@@ -94,9 +94,9 @@ def test_every_n_cadence_runs_references_every_nth_iteration(monkeypatch, tmp_pa
 def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_path):
     """Off-cadence iterations must still give the aggregator the last
     on-cadence advisor guidance (cache reuse), not run advisor-less."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _cadence_config(home, "every_n:3")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
@@ -134,9 +134,9 @@ def test_every_n_off_cadence_iterations_reuse_cached_guidance(monkeypatch, tmp_p
 
 def test_per_iteration_default_unchanged_by_cadence_state(monkeypatch, tmp_path):
     """Default fanout still re-runs references on every state change."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _cadence_config(home, "per_iteration")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)

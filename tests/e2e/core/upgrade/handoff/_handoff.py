@@ -1,11 +1,11 @@
 """Staging for the hand-off suite: a real install at release N-1 (or HEAD), processes running
-from it, and the real ``hermes update`` to the next commit, all in one shared PID namespace.
+from it, and the real ``rabbit update`` to the next commit, all in one shared PID namespace.
 
 Two columns, both git-mode installs over a local bare ``origin`` (the official URL rewritten to it,
 so the updater takes the normal non-fork path and never touches the network):
 
 * ``n1``: ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``, overridable with
-  ``HERMES_E2E_UPGRADE_BASE``), its venv built from N-1's own ``uv.lock`` (the installer's tier 0),
+  ``RABBIT_E2E_UPGRADE_BASE``), its venv built from N-1's own ``uv.lock`` (the installer's tier 0),
   then ``main`` moves to HEAD;
 * ``head``: HEAD's ``scripts/install.sh`` into an empty HOME, then ``main`` gets NEXT, a synthetic
   child commit adding a marker file.
@@ -33,7 +33,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
@@ -60,7 +60,7 @@ def refs() -> Refs:
     """HEAD and release N-1, resolved on first use (collection runs no git)."""
     head = I.head_sha()
     try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or I.git(
+        tag = os.environ.get("RABBIT_E2E_UPGRADE_BASE") or I.git(
             "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1", cwd=H.WORKTREE)
         return Refs(head, tag, I.git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
     except AssertionError:  # shallow checkout without tags
@@ -92,30 +92,30 @@ class Install:
         return Path(self.env["HOME"])
 
     @property
-    def hermes_home(self) -> Path:
-        return Path(self.env["HERMES_HOME"])
+    def rabbit_home(self) -> Path:
+        return Path(self.env["RABBIT_HOME"])
 
     @property
     def checkout(self) -> Path:
-        return self.hermes_home / "hermes-agent"
+        return self.rabbit_home / "rabbit-agent"
 
     @property
-    def hermes(self) -> str:
-        """The command on the user's PATH (``~/.local/bin/hermes``)."""
-        return str(self.home / ".local" / "bin" / "hermes")
+    def rabbit(self) -> str:
+        """The command on the user's PATH (``~/.local/bin/rabbit``)."""
+        return str(self.home / ".local" / "bin" / "rabbit")
 
     def sha(self) -> str:
         return I.git("rev-parse", "HEAD", cwd=self.checkout)
 
     def cli(self, *args: str, timeout: float = 600, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
         assert self.host is not None
-        return self.host.run([self.hermes, *args], timeout=timeout, env=env)
+        return self.host.run([self.rabbit, *args], timeout=timeout, env=env)
 
     def spawn(self, name: str, *args: str, env: dict[str, str] | None = None) -> int:
         assert self.host is not None
         log = self.root / f"{name}.log"
         self.logs.append(log)
-        return self.host.spawn([self.hermes, *args], log=log, env=env)
+        return self.host.spawn([self.rabbit, *args], log=log, env=env)
 
     def update(self, *extra: str, timeout: float = UPDATE_TIMEOUT) -> subprocess.CompletedProcess:
         return self.cli("update", "--yes", "--branch", "main", *extra, timeout=timeout)
@@ -128,7 +128,7 @@ class Install:
         for log in self.logs:
             if log.exists():
                 parts.append(f"--- {log.name} (tail) ---\n{log.read_text(errors='replace')[-3000:]}")
-        logs = self.hermes_home / "logs"
+        logs = self.rabbit_home / "logs"
         for name in ("gateway.log", "errors.log", "update.log", "agent.log"):
             p = logs / name
             if p.exists():
@@ -151,11 +151,11 @@ class Install:
         return self.host.close() if self.host is not None else []
 
 
-def _user_uv(env: dict[str, str], hermes_home: Path) -> None:
+def _user_uv(env: dict[str, str], rabbit_home: Path) -> None:
     """Managed uv where the installer provisions it; ``uv self update`` is a no-op (no network)."""
     real = I.real_uv()
     assert real is not None
-    bin_dir = hermes_home / "bin"
+    bin_dir = rabbit_home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     uv = bin_dir / "uv"
     uv.write_text("#!/bin/sh\n" 'if [ "$1" = self ]; then exit 0; fi\n' f'exec "{real}" "$@"\n', encoding="utf-8")
@@ -168,9 +168,9 @@ def stage_n1(root: Path) -> Install:
     origin = I.make_origin(root, refs().base)
     sb = I.new_sandbox(root / "sb", origin)
     env = sb.env
-    hermes_home = Path(env["HERMES_HOME"])
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    checkout = hermes_home / "hermes-agent"
+    rabbit_home = Path(env["RABBIT_HOME"])
+    rabbit_home.mkdir(parents=True, exist_ok=True)
+    checkout = rabbit_home / "rabbit-agent"
     # Local-path clone (objects shared, nothing packed), then the official URL as the remote; the
     # sandbox's ~/.gitconfig rewrites it to the local origin for every fetch the updater makes.
     I.git("clone", "-q", "--shared", "-b", "main", str(origin), str(checkout), cwd=root)
@@ -187,8 +187,8 @@ def stage_n1(root: Path) -> Install:
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     local_bin = sb.home / ".local" / "bin"
     local_bin.mkdir(parents=True, exist_ok=True)
-    (local_bin / "hermes").symlink_to(checkout / "venv" / "bin" / "hermes")
-    _user_uv(env, hermes_home)
+    (local_bin / "rabbit").symlink_to(checkout / "venv" / "bin" / "rabbit")
+    _user_uv(env, rabbit_home)
     env["PATH"] = os.pathsep.join([str(local_bin), env["PATH"]])
     return Install("n1", root, origin, env)
 
@@ -277,7 +277,7 @@ def health(port: int) -> dict | None:
 
 def chat(port: int, text: str) -> tuple[int, dict | str]:
     return http("POST", f"http://127.0.0.1:{port}/v1/chat/completions",
-                {"model": "hermes-agent", "messages": [{"role": "user", "content": text}]}, timeout=180)
+                {"model": "rabbit-agent", "messages": [{"role": "user", "content": text}]}, timeout=180)
 
 
 def reply_text(body) -> str:
@@ -304,7 +304,7 @@ def gateway_pids(inst: Install) -> list[dict]:
         if p["state"] in ("Z", "X") or not argv:
             continue
         joined = " ".join(argv)
-        if "gateway" in argv and ("run" in argv or "start" in argv) and "hermes" in joined and "update" not in argv:
+        if "gateway" in argv and ("run" in argv or "start" in argv) and "rabbit" in joined and "update" not in argv:
             out.append(p)
     pids = {p["pid"] for p in out}
     return [p for p in out if p["ppid"] not in pids]
@@ -349,7 +349,7 @@ def cell(column: str, root: Path, provider_url: str, *, extra: dict | None = Non
     sandbox took every process with it."""
     inst = stage(column, root / column)
     inst.port = free_port()
-    write_config(inst.hermes_home, provider_url, port=inst.port, extra=extra)
+    write_config(inst.rabbit_home, provider_url, port=inst.port, extra=extra)
     start_host(inst)
     leaked: list[str] = []
     try:
@@ -363,11 +363,11 @@ def cell(column: str, root: Path, provider_url: str, *, extra: dict | None = Non
 
 
 def start_gateway(inst: Install, *args: str) -> dict:
-    """``hermes gateway run`` as a user starts it by hand; returns its ``identify`` answer."""
+    """``rabbit gateway run`` as a user starts it by hand; returns its ``identify`` answer."""
     inst.spawn("gateway", "gateway", "run", *args)
     try:
         wait_for(lambda: health(inst.port), timeout=240, what="the gateway API server /health")
-        ident = wait_for(lambda: identify(inst.hermes_home), timeout=60, what="control-socket identify")
+        ident = wait_for(lambda: identify(inst.rabbit_home), timeout=60, what="control-socket identify")
     except AssertionError as exc:
         raise AssertionError(f"premise: the gateway never came up: {exc}\n{inst.diagnostics()}") from None
     assert ident["code_sha"] == inst.sha(), f"premise: the gateway must serve the installed commit: {ident}"
@@ -376,7 +376,7 @@ def start_gateway(inst: Install, *args: str) -> dict:
 
 def gateway_starts(inst: Install) -> list[int]:
     """PIDs of every gateway boot recorded in ``logs/gateway-exit-diag.log`` (one ``gateway.start`` each)."""
-    p = inst.hermes_home / "logs" / "gateway-exit-diag.log"
+    p = inst.rabbit_home / "logs" / "gateway-exit-diag.log"
     pids = []
     for line in (p.read_text(errors="replace").splitlines() if p.exists() else []):
         try:
@@ -389,8 +389,8 @@ def gateway_starts(inst: Install) -> list[int]:
 
 
 def pid_file_pid(inst: Install) -> int | None:
-    """The PID ``$HERMES_HOME/gateway.pid`` names (JSON record or a bare number)."""
-    p = inst.hermes_home / "gateway.pid"
+    """The PID ``$RABBIT_HOME/gateway.pid`` names (JSON record or a bare number)."""
+    p = inst.rabbit_home / "gateway.pid"
     try:
         raw = p.read_text(encoding="utf-8").strip()
     except OSError:
@@ -405,13 +405,13 @@ def pid_file_pid(inst: Install) -> int | None:
 
 
 def receipt(inst: Install) -> dict:
-    return read_json(inst.hermes_home / "logs" / "update_receipts" / "latest.json") or {}
+    return read_json(inst.rabbit_home / "logs" / "update_receipts" / "latest.json") or {}
 
 
 def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict | None:
     """Wait for a gateway serving ``inst.target`` under a new PID; None if none shows up."""
     def serving():
-        ident = identify(inst.hermes_home)
+        ident = identify(inst.rabbit_home)
         return ident if ident and ident.get("pid") != old_pid and ident.get("code_sha") == inst.target else None
     try:
         return wait_for(serving, timeout=timeout, what="a relaunched gateway", interval=1.0)
@@ -449,7 +449,7 @@ def relaunch_verdict(inst: Install, old_pid: int, boots_before: int, ident: dict
                 f"(receipt gateway_restart={armed}, live gateways={alive})")
     if not alive:
         return f"relaunched gateway exited: boots {boots} after the update, none alive"
-    stale = identify(inst.hermes_home)
+    stale = identify(inst.rabbit_home)
     return f"gateway alive ({alive}) but not serving {inst.target[:12]}: identify={stale}"
 
 

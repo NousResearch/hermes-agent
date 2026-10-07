@@ -42,7 +42,7 @@ export function findLogSearchHits(lines: readonly string[], query: string): LogS
   return hits
 }
 
-// hermes_logging._LOG_FORMAT puts the level right after the timestamp. Anchoring
+// rabbit_logging._LOG_FORMAT puts the level right after the timestamp. Anchoring
 // to that column keeps a message that merely mentions "ERROR" from being
 // marked as one.
 const LEVEL_COLUMN = /^\d{4}-\d{2}-\d{2} [\d:.,]+ (WARNING|ERROR|CRITICAL)\b/

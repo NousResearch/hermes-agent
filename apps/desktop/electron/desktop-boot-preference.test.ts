@@ -8,7 +8,7 @@ import { test } from 'vitest'
 import { readDesktopBootPreference, writeDesktopProfile } from './desktop-boot-preference'
 
 test('profile writes preserve other-owned fields and never adopt a broken file', (): void => {
-  const directory: string = mkdtempSync(path.join(os.tmpdir(), 'hermes-boot-preference-'))
+  const directory: string = mkdtempSync(path.join(os.tmpdir(), 'rabbit-boot-preference-'))
   const preference: string = path.join(directory, 'active-profile.json')
 
   try {

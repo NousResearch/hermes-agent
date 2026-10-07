@@ -6,7 +6,7 @@ name: wolfram
 description: Wolfram|Alpha computation, math, and curated knowledge.
 source: https://www.wolfram.com/agent-tools/
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). No authentication required (verified live:
 # initialize succeeds anonymously).
 

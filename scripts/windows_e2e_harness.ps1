@@ -25,7 +25,7 @@ foreach ($m in @("desktop-installer@latest", "installer-script", "installer-scri
     if ($imSet -notcontains $m) { Write-Host "InstallMethod ValidateSet missing $m"; exit 1 }
 }
 $rSet = ($byName["Route"].Attributes | Where-Object { $_.TypeName.Name -eq "ValidateSet" }).PositionalArguments.Value
-foreach ($m in @("open-app-update", "hermes-desktop-app-update", "hermes-update", "installer-script", "installer-script+desktop", "desktop-installer@latest")) {
+foreach ($m in @("open-app-update", "rabbit-desktop-app-update", "rabbit-update", "installer-script", "installer-script+desktop", "desktop-installer@latest")) {
     if ($rSet -notcontains $m) { Write-Host "Route ValidateSet missing $m"; exit 1 }
 }
 Write-Host "parameter surface: OK"
@@ -38,8 +38,8 @@ foreach ($needle in @(
     'function Invoke-PhaseInstall',
     'function Invoke-PhaseUpdate',
     'Invoke-RefInstaller $state.old "old" -IncludeDesktop',
-    'Invoke-HermesDesktopAppUpdate $state.current',
-    'Invoke-HermesUpdate',
+    'Invoke-RabbitDesktopAppUpdate $state.current',
+    'Invoke-RabbitUpdate',
     'Invoke-PhaseInstallGui -Mode "update"'
 )) {
     if ($text.IndexOf($needle) -lt 0) { Write-Host "dispatch missing: $needle"; exit 1 }

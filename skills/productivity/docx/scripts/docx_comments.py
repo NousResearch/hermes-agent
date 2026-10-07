@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MIT License. Part of the Hermes docx skill.
+# MIT License. Part of the Rabbit docx skill.
 """List, add, and delete comments in a .docx.
 
 Subcommands:
@@ -238,7 +238,7 @@ def main() -> int:
     p.add_argument("--target", required=True,
                    help="anchor: first occurrence of this text")
     p.add_argument("--text", required=True, help="comment body")
-    p.add_argument("--author", default="Hermes")
+    p.add_argument("--author", default="Rabbit")
     p.add_argument("--initials", default="")
     p.add_argument("--xml", action="store_true",
                    help="force the XML fallback (skip native API)")

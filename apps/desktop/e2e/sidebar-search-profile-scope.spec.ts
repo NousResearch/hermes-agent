@@ -31,7 +31,7 @@ function seedSession(sandbox: Sandbox, home: string, sessionId: string, marker: 
   const script = [
     'import sys',
     'from pathlib import Path',
-    'from hermes_state import SessionDB',
+    'from rabbit_state import SessionDB',
     'home, sid, marker = sys.argv[1:4]',
     "db = SessionDB(db_path=Path(home) / 'state.db')",
     "db.create_session(sid, source='cli')",
@@ -45,7 +45,7 @@ function seedSession(sandbox: Sandbox, home: string, sessionId: string, marker: 
   const result = spawnSync(python, ['-c', script, home, sessionId, marker], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, HERMES_HOME: sandbox.hermesHome, HOME: sandbox.root, PYTHONPATH: REPO_ROOT }
+    env: { ...process.env, RABBIT_HOME: sandbox.rabbitHome, HOME: sandbox.root, PYTHONPATH: REPO_ROOT }
   })
 
   if (result.status !== 0) {
@@ -100,14 +100,14 @@ test.describe('sidebar session search — profile scope', () => {
     test.setTimeout(240_000)
     mock = await startMockServer()
     sandbox = createSandbox('search-scope')
-    writeMockProviderConfig(sandbox.hermesHome, mock.url)
-    writeEnvFile(sandbox.hermesHome)
+    writeMockProviderConfig(sandbox.rabbitHome, mock.url)
+    writeEnvFile(sandbox.rabbitHome)
 
-    const homeB = path.join(sandbox.hermesHome, 'profiles', PROFILE_B)
+    const homeB = path.join(sandbox.rabbitHome, 'profiles', PROFILE_B)
     fs.mkdirSync(homeB, { recursive: true })
     writeMockProviderConfig(homeB, mock.url)
     writeEnvFile(homeB)
-    seedSession(sandbox, sandbox.hermesHome, 'search-scope-default', MARKER.default)
+    seedSession(sandbox, sandbox.rabbitHome, 'search-scope-default', MARKER.default)
     seedSession(sandbox, homeB, 'search-scope-b', MARKER[PROFILE_B])
 
     ;({ app, page } = await launchDesktop(buildAppEnv(sandbox)))

@@ -100,8 +100,8 @@ class TestModalBulkUpload:
         src_b.write_text("skill_content")
 
         files = [
-            (str(src_a), "/root/.hermes/credentials/a.json"),
-            (str(src_b), "/root/.hermes/skills/b.py"),
+            (str(src_a), "/root/.rabbit/credentials/a.json"),
+            (str(src_b), "/root/.rabbit/skills/b.py"),
         ]
 
         exec_calls, _, stdin_mock = _wire_async_exec(env)
@@ -119,13 +119,13 @@ class TestModalBulkUpload:
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = sorted(tar.getnames())
-            assert "root/.hermes/credentials/a.json" in names
-            assert "root/.hermes/skills/b.py" in names
+            assert "root/.rabbit/credentials/a.json" in names
+            assert "root/.rabbit/skills/b.py" in names
 
             # Verify content
-            a_content = tar.extractfile("root/.hermes/credentials/a.json").read()
+            a_content = tar.extractfile("root/.rabbit/credentials/a.json").read()
             assert a_content == b"cred_content"
-            b_content = tar.extractfile("root/.hermes/skills/b.py").read()
+            b_content = tar.extractfile("root/.rabbit/skills/b.py").read()
             assert b_content == b"skill_content"
 
         # Verify stdin was closed
@@ -141,7 +141,7 @@ class TestModalBulkUpload:
         import os as _os
         src = tmp_path / "large.bin"
         src.write_bytes(_os.urandom(1024 * 1024 + 512 * 1024))
-        files = [(str(src), "/root/.hermes/large.bin")]
+        files = [(str(src), "/root/.rabbit/large.bin")]
 
         exec_calls, _, stdin_mock = _wire_async_exec(env)
         env._modal_bulk_upload(files)
@@ -155,7 +155,7 @@ class TestModalBulkUpload:
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = tar.getnames()
-            assert "root/.hermes/large.bin" in names
+            assert "root/.rabbit/large.bin" in names
 
 
 class TestModalCommandStdin:

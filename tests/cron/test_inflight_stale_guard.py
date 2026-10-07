@@ -127,7 +127,7 @@ class TestStaleInflightLeak:
         _inject_stale_claim(job_id, tmp_path)
 
         with caplog.at_level("WARNING"), \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+             patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "get_due_jobs", return_value=[]), \
              patch.object(sched, "mark_job_run") as mark:
@@ -164,7 +164,7 @@ class TestStaleInflightLeak:
         if running_since is not None:
             running_since[job_id] = time.time() - 60  # 1 minute old
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "get_due_jobs", return_value=[]), \
              patch.object(sched, "mark_job_run") as mark:
@@ -215,7 +215,7 @@ class TestStaleInflightSweep:
         sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 4 * 60 * 60  # 4h < 12h
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
         assert job["id"] in sched.get_running_job_ids()
 
@@ -226,7 +226,7 @@ class TestStaleInflightSweep:
         sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 4 * 60 * 60  # 4h ≪ 144h
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
         assert job["id"] in sched.get_running_job_ids()
 
@@ -237,7 +237,7 @@ class TestStaleInflightSweep:
         sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 24 * 60 * 60
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
         assert job["id"] in sched.get_running_job_ids()
 
@@ -252,14 +252,14 @@ class TestStaleInflightSweep:
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 10 * 60 * 60
         sched._running_futures[sched._inflight_key(job["id"], tmp_path)] = fut
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
         assert job["id"] in sched.get_running_job_ids()
         fut.set_result(True)
 
         # Once the future is done but the id somehow survived, it IS stale.
         with patch.object(sched, "mark_job_run"), \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+             patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == [job["id"]]
 
     def test_pending_sentinel_released_when_submit_hung(self, tmp_path):
@@ -271,7 +271,7 @@ class TestStaleInflightSweep:
         sched._running_futures[sched._inflight_key(job["id"], tmp_path)] = sched._FUTURE_PENDING
 
         with patch.object(sched, "mark_job_run") as mark, \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+             patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == [job["id"]]
         assert mark.call_count == 1
 
@@ -283,7 +283,7 @@ class TestStaleInflightSweep:
         sched._running_futures[sched._inflight_key(job["id"], tmp_path)] = sched._FUTURE_PENDING
 
         with patch.object(sched, "mark_job_run") as mark, \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+             patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
         assert job["id"] in sched.get_running_job_ids()
         mark.assert_not_called()
@@ -296,7 +296,7 @@ class TestStaleInflightSweep:
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 5 * 60 * 60
 
         with patch.object(sched, "mark_job_run") as mark, \
-             patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+             patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == [job["id"]]
         assert job["id"] not in sched.get_running_job_ids()
         mark.assert_not_called()
@@ -308,7 +308,7 @@ class TestStaleInflightSweep:
         job = _job()
         sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path):
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path):
             assert sched.sweep_stale_inflight([job]) == []
             assert sched._inflight_key(job["id"], tmp_path) in sched._running_since
             sched._running_since[sched._inflight_key(job["id"], tmp_path)] -= 5 * 60 * 60
@@ -325,7 +325,7 @@ class TestWedgedJobRefiresWithoutRestart:
         sched._running_job_ids.add(sched._inflight_key(job["id"], tmp_path))
         sched._running_since[sched._inflight_key(job["id"], tmp_path)] = time.time() - 6 * 60 * 60
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
              patch("cron.jobs.load_jobs", return_value=[job]), \
              patch.object(sched, "advance_next_runs"), \
@@ -389,7 +389,7 @@ class TestLedgerTerminalReconciliation:
         job_id = job["id"]
         self._inject_young_claim(job_id, tmp_path)
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={
                  job_id: {"status": "failed", "id": "exec-x",
                           "claimed_at": self._row_at(-30)},  # after claim (-60)
@@ -414,7 +414,7 @@ class TestLedgerTerminalReconciliation:
         job_id = job["id"]
         self._inject_young_claim(job_id, tmp_path)
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={
                  job_id: {"status": "completed", "id": "exec-prev",
                           "claimed_at": self._row_at(-600)},  # before claim (-60)
@@ -435,7 +435,7 @@ class TestLedgerTerminalReconciliation:
         job_id = job["id"]
         self._inject_young_claim(job_id, tmp_path)
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={
                  job_id: {"status": "failed", "id": "exec-x"},
              }), \
@@ -453,7 +453,7 @@ class TestLedgerTerminalReconciliation:
         job_id = job["id"]
         self._inject_young_claim(job_id, tmp_path)
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={}), \
              patch.object(sched, "mark_job_run"):
             released = sched.sweep_stale_inflight([job])
@@ -469,7 +469,7 @@ class TestLedgerTerminalReconciliation:
         job_id = job["id"]
         self._inject_young_claim(job_id, tmp_path)
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={
                  job_id: {"status": "running", "id": "exec-y"},
              }), \
@@ -488,7 +488,7 @@ class TestLedgerTerminalReconciliation:
         if hasattr(sched, "_running_since"):
             sched._running_since[sched._inflight_key(job_id, tmp_path)] = time.time() - 6 * 60 * 60  # 6h old
 
-        with patch.object(sched, "_get_hermes_home", return_value=tmp_path), \
+        with patch.object(sched, "_get_rabbit_home", return_value=tmp_path), \
              patch("cron.executions.latest_executions", return_value={
                  job_id: {"status": "completed", "id": "exec-z",
                           "claimed_at": self._row_at(-3 * 60 * 60)},  # after claim (-6h)

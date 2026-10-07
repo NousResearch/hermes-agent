@@ -1,7 +1,7 @@
 """The max-iterations summary call treats ``reasoning_details`` per api_mode: the
 anthropic_messages converter rebuilds signed thinking blocks from it, so the summary messages
 must keep it; a strict chat-completions route drops it on the wire via the same kwargs
-builder the main loop uses (hermes-agent#70233)."""
+builder the main loop uses (rabbit-agent#70233)."""
 
 import copy
 import json
@@ -21,7 +21,7 @@ _HISTORY = [
 
 @pytest.fixture
 def make_agent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     def _make(base_url, provider):
         agent = AIAgent(api_key="k", base_url=base_url, provider=provider, model="m", quiet_mode=True,
@@ -52,7 +52,7 @@ class TestSummaryPrefixParity:
     path applies (assemble_api_request): canonical tool-call argument JSON and
     stripped string content — otherwise the summary's prefix diverges from every
     prior request and prefix-caching providers re-read the whole conversation
-    (hermes-agent#123002)."""
+    (rabbit-agent#123002)."""
 
     def test_canonicalizes_tool_call_arguments_and_strips_content(self, make_agent):
         agent = make_agent("https://api.groq.com/openai/v1", "custom")

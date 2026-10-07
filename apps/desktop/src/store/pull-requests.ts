@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
-import type { HermesBranchPullRequest } from '@/global'
-import { scanSessionPullRequests, type SessionInfo } from '@/hermes'
+import type { RabbitBranchPullRequest } from '@/global'
+import { scanSessionPullRequests, type SessionInfo } from '@/rabbit'
 import { desktopGit } from '@/lib/desktop-git'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
@@ -16,7 +16,7 @@ const PR_STALE_MS = 60_000
 
 /** Every known PR keyed by `${repoRoot}\n${branch}` — the join a session row
  *  makes with its own `git_repo_root` + `git_branch`. */
-export const $pullRequestsByBranch = atom<Record<string, HermesBranchPullRequest>>({})
+export const $pullRequestsByBranch = atom<Record<string, RabbitBranchPullRequest>>({})
 
 /** Sessions whose PR isn't on the branch they recorded at start — the checkout
  *  moved mid-conversation, or the work went off to a worktree. Written when the
@@ -24,7 +24,7 @@ export const $pullRequestsByBranch = atom<Record<string, HermesBranchPullRequest
  *  lookup key, not the PR, so state stays live through the same refresh as
  *  everything else. */
 export const $prBranchBySession = persistentAtom<Record<string, string>>(
-  'hermes.desktop.prBranchBySession',
+  'rabbit.desktop.prBranchBySession',
   {},
   Codecs.stringRecord
 )
@@ -32,7 +32,7 @@ export const $prBranchBySession = persistentAtom<Record<string, string>>(
 /** Sessions already scanned for a PR url. A transcript doesn't grow a new PR,
  *  so a miss is permanent and a hit is already in {@link $prBranchBySession} —
  *  either way the session is never scanned again. */
-const $prScannedSessions = persistentAtom<string[]>('hermes.desktop.prScannedSessions', [], Codecs.stringArray)
+const $prScannedSessions = persistentAtom<string[]>('rabbit.desktop.prScannedSessions', [], Codecs.stringArray)
 
 const fetchedAt = new Map<string, number>()
 const inFlight = new Set<string>()
@@ -115,7 +115,7 @@ export async function recoverSessionPullRequests(sessions: SessionInfo[]): Promi
   }
 }
 
-export function pullRequestBucket(pr: HermesBranchPullRequest | undefined): PullRequestBucket {
+export function pullRequestBucket(pr: RabbitBranchPullRequest | undefined): PullRequestBucket {
   if (!pr) {
     return 'none'
   }

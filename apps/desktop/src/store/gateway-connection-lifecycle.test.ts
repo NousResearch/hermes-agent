@@ -1,11 +1,11 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
 
 // Connection lifecycle for registry-scoped secondary gateways:
 //
-//  1. Removing a connection must dispose its secondaries — remote/cloud
+//  1. Removing a connection must dispose its secondaries — remote
 //     sources have no local process whose death would drop the socket, so
 //     without an explicit dispose the WebSocket stays open and streams ghost
 //     events until page reload.
@@ -35,9 +35,9 @@ const reconnectStateMocks = vi.hoisted(() => ({
   resetTileRuntimeBindings: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   setApiRequestConnection: vi.fn(),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {
       this.connectionState = 'closed'
@@ -89,7 +89,7 @@ const {
 } = await import('./gateway')
 
 function installDesktop(stub: Record<string, unknown>): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = stub
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = stub
 }
 
 function descriptorFor(connectionId: string, profile: string) {
@@ -114,7 +114,7 @@ afterEach(() => {
   gatewayMocks.eventHandlers.length = 0
   vi.clearAllMocks()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('a redial of the active route', () => {
@@ -694,7 +694,7 @@ describe('reconnect fail-stop on a removed connection', () => {
     // path (wake sweep, agent activation) used to make ensureActiveGatewayOpen
     // return null immediately: reconnectSecondary early-returns on
     // `reconnecting`, the socket is still closed, and the caller surfaced
-    // "Hermes gateway is not connected" on the Sessions + action. The drive
+    // "Rabbit gateway is not connected" on the Sessions + action. The drive
     // must ride out the in-flight activation and hand back the opened socket.
     let releaseDial: (() => void) | undefined
 
@@ -818,9 +818,9 @@ describe('secondary stalled-dial budget', () => {
       .fn()
       .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
       .mockRejectedValueOnce(stalled)
-      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+      .mockRejectedValueOnce(new Error('Failed to connect to Rabbit gateway'))
       .mockRejectedValueOnce(stalled)
-      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+      .mockRejectedValueOnce(new Error('Failed to connect to Rabbit gateway'))
       .mockRejectedValue(stalled)
 
     installDesktop({ getConnectionFor })
@@ -889,7 +889,7 @@ describe('secondary stalled-dial budget', () => {
     const getConnectionFor = vi
       .fn()
       .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
-      .mockRejectedValueOnce(new Error('Failed to connect to Hermes gateway'))
+      .mockRejectedValueOnce(new Error('Failed to connect to Rabbit gateway'))
 
     installDesktop({ getConnectionFor })
 
@@ -1068,9 +1068,9 @@ describe('rejected secondary authentication', () => {
       authMode: 'oauth'
     }))
 
-    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://remote-gw.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-    await ensureGatewayForAgent('cloud', 'default')
+    await ensureGatewayForAgent('remote-gw', 'default')
     gatewayMocks.instances[0].connectionState = 'closed'
     getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
     const rejected = ensureActiveGatewayOpen()
@@ -1083,10 +1083,10 @@ describe('rejected secondary authentication', () => {
     await vi.advanceTimersByTimeAsync(8_000)
     expect(await nudged).toBeNull()
     expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls)
-    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://remote-gw.invalid/api/ws?ticket=new' })
     await ensureGatewayForAgent('healthy', 'default')
     expect(activeGateway()?.connectionState).toBe('open')
-    await ensureGatewayForAgent('cloud', 'default')
+    await ensureGatewayForAgent('remote-gw', 'default')
     expect(activeGateway()?.connectionState).toBe('open')
     expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(calls + 2)
   })
@@ -1099,9 +1099,9 @@ describe('rejected secondary authentication', () => {
       authMode: 'oauth'
     }))
 
-    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=fresh' }))
+    const getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: 'wss://remote-gw.invalid/api/ws?ticket=fresh' }))
     installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-    await ensureGatewayForAgent('cloud', 'default')
+    await ensureGatewayForAgent('remote-gw', 'default')
     gatewayMocks.instances[0].connectionState = 'closed'
     getGatewayWsUrlFor.mockResolvedValue({ ok: false, needsOauthLogin: true, error: 'Sign in again' } as never)
     const rejected = ensureActiveGatewayOpen()
@@ -1109,7 +1109,7 @@ describe('rejected secondary authentication', () => {
     expect(await rejected).toBeNull()
 
     // The user re-authenticated in Settings and pressed Reconnect on the same route.
-    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' })
+    getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://remote-gw.invalid/api/ws?ticket=new' })
     const calls = getGatewayWsUrlFor.mock.calls.length
     const recovered = ensureActiveGatewayOpen({ explicit: true })
     await vi.advanceTimersByTimeAsync(8_000)
@@ -1128,18 +1128,18 @@ it('keeps background auth rejection after socket disposal until recovery or conn
 
   const getGatewayWsUrlFor = vi.fn(async () => ({ ok: false, needsOauthLogin: true, error: 'Sign in again' }))
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('remote-gw', 'default', 'session.list')).rejects.toThrow()
   pruneSecondaryGateways(new Set())
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('remote-gw', 'default', 'session.list')).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(1)
 
   // Removing/replacing a connection must not leave a stale rejection behind.
-  disposeSecondariesForConnection('cloud')
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  disposeSecondariesForConnection('remote-gw')
+  await expect(requestGatewayForAgent('remote-gw', 'default', 'session.list')).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
 
-  getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://cloud.invalid/api/ws?ticket=new' } as never)
-  await ensureGatewayForAgent('cloud', 'default')
+  getGatewayWsUrlFor.mockResolvedValue({ ok: true, wsUrl: 'wss://remote-gw.invalid/api/ws?ticket=new' } as never)
+  await ensureGatewayForAgent('remote-gw', 'default')
   expect(activeGateway()?.connectionState).toBe('open')
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(3)
 })
@@ -1160,13 +1160,13 @@ it('does not let a removed connection repopulate the auth rejection', async () =
 
   const getGatewayWsUrlFor = vi.fn(() => ticket)
   installDesktop({ getConnectionFor, getGatewayWsUrlFor })
-  const pending = requestGatewayForAgent('cloud', 'default', 'session.list')
+  const pending = requestGatewayForAgent('remote-gw', 'default', 'session.list')
   const rejected = expect(pending).rejects.toThrow()
   await vi.waitFor(() => expect(getGatewayWsUrlFor).toHaveBeenCalledOnce())
-  disposeSecondariesForConnection('cloud')
+  disposeSecondariesForConnection('remote-gw')
   rejectTicket(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
   await rejected
-  await expect(requestGatewayForAgent('cloud', 'default', 'session.list')).rejects.toThrow()
+  await expect(requestGatewayForAgent('remote-gw', 'default', 'session.list')).rejects.toThrow()
   expect(getGatewayWsUrlFor).toHaveBeenCalledTimes(2)
 })
 

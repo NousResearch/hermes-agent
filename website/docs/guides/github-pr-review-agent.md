@@ -15,7 +15,7 @@ description: "Build an automated AI code reviewer that monitors your repos, revi
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │                                                                   │
-│   Cron Timer  ──▶  Hermes Agent  ──▶  GitHub API  ──▶  Review     │
+│   Cron Timer  ──▶  Rabbit Agent  ──▶  GitHub API  ──▶  Review     │
 │   (every 2h)       + gh CLI           (PR diffs)       delivery   │
 │                    + skill                             (Telegram, │
 │                    + memory                            Discord,   │
@@ -27,19 +27,19 @@ description: "Build an automated AI code reviewer that monitors your repos, revi
 This guide uses **cron jobs** to poll for PRs on a schedule — no server or public endpoint needed. Works behind NAT and firewalls.
 
 :::tip Want real-time reviews instead?
-If you have a public endpoint available, check out [Automated GitHub PR Comments with Webhooks](./webhook-github-pr-review.md) — GitHub pushes events to Hermes instantly when PRs are opened or updated.
+If you have a public endpoint available, check out [Automated GitHub PR Comments with Webhooks](./webhook-github-pr-review.md) — GitHub pushes events to Rabbit instantly when PRs are opened or updated.
 :::
 
 ---
 
 ## Prerequisites
 
-- **Hermes Agent installed** — see the [Installation guide](../getting-started/installation.md)
+- **Rabbit Agent installed** — see the [Installation guide](../getting-started/installation.md)
 - **Gateway running** for cron jobs:
   ```bash
-  hermes gateway install   # Install as a service
+  rabbit gateway install   # Install as a service
   # or
-  hermes gateway           # Run in foreground
+  rabbit gateway           # Run in foreground
   ```
 - **GitHub CLI (`gh`) installed and authenticated**:
   ```bash
@@ -53,23 +53,23 @@ If you have a public endpoint available, check out [Automated GitHub PR Comments
 - **Messaging configured** (optional) — [Telegram](../user-guide/messaging/telegram.md) or [Discord](../user-guide/messaging/discord.md)
 
 :::tip No messaging? No problem
-Use `deliver: "local"` to save reviews to `~/.hermes/cron/output/`. Great for testing before wiring up notifications.
+Use `deliver: "local"` to save reviews to `~/.rabbit/cron/output/`. Great for testing before wiring up notifications.
 :::
 
 ---
 
 ## Step 1: Verify the Setup
 
-Make sure Hermes can access GitHub. Start a chat:
+Make sure Rabbit can access GitHub. Start a chat:
 
 ```bash
-hermes
+rabbit
 ```
 
 Test with a simple command:
 
 ```
-Run: gh pr list --repo NousResearch/hermes-agent --state open --limit 3
+Run: gh pr list --repo seven0070/Rabbit- --state open --limit 3
 ```
 
 You should see a list of open PRs. If this works, you're ready.
@@ -78,16 +78,16 @@ You should see a list of open PRs. If this works, you're ready.
 
 ## Step 2: Try a Manual Review
 
-Still in the chat, ask Hermes to review a real PR:
+Still in the chat, ask Rabbit to review a real PR:
 
 ```
 Review this pull request. Read the diff, check for bugs, security issues,
 and code quality. Be specific about line numbers and quote problematic code.
 
-Run: gh pr diff 3888 --repo NousResearch/hermes-agent
+Run: gh pr diff 3888 --repo seven0070/Rabbit-
 ```
 
-Hermes will:
+Rabbit will:
 1. Execute `gh pr diff` to fetch the code changes
 2. Read through the entire diff
 3. Produce a structured review with specific findings
@@ -98,13 +98,13 @@ If you're happy with the quality, time to automate it.
 
 ## Step 3: Create a Review Skill
 
-A skill gives Hermes consistent review guidelines that persist across sessions and cron runs. Without one, review quality varies.
+A skill gives Rabbit consistent review guidelines that persist across sessions and cron runs. Without one, review quality varies.
 
 ```bash
-mkdir -p ~/.hermes/skills/code-review
+mkdir -p ~/.rabbit/skills/code-review
 ```
 
-Create `~/.hermes/skills/code-review/SKILL.md`:
+Create `~/.rabbit/skills/code-review/SKILL.md`:
 
 ```markdown
 ---
@@ -137,13 +137,13 @@ For each finding:
 - End with: APPROVE / REQUEST_CHANGES / COMMENT
 ```
 
-Verify it loaded — start `hermes` and you should see `code-review` in the skills list at startup.
+Verify it loaded — start `rabbit` and you should see `code-review` in the skills list at startup.
 
 ---
 
 ## Step 4: Teach It Your Conventions
 
-This is what makes the reviewer actually useful. Start a session and teach Hermes your team's standards:
+This is what makes the reviewer actually useful. Start a session and teach Rabbit your team's standards:
 
 ```
 Remember: In our backend repo, we use Python with FastAPI.
@@ -167,7 +167,7 @@ These memories persist forever — the reviewer will enforce your conventions wi
 Now wire it all together. Create a cron job that runs every 2 hours:
 
 ```bash
-hermes cron create "0 */2 * * *" \
+rabbit cron create "0 */2 * * *" \
   "Check for new open PRs and review them.
 
 Repos to monitor:
@@ -196,7 +196,7 @@ If no new PRs found, say: No new PRs to review." \
 Verify it's scheduled:
 
 ```bash
-hermes cron list
+rabbit cron list
 ```
 
 ### Other useful schedules
@@ -215,7 +215,7 @@ hermes cron list
 Don't want to wait for the schedule? Trigger it manually:
 
 ```bash
-hermes cron run pr-review
+rabbit cron run pr-review
 ```
 
 Or from within a chat session:
@@ -250,7 +250,7 @@ Make sure `gh` has a token with `repo` scope. Reviews are posted as whoever `gh`
 Create a Monday morning overview of all your repos:
 
 ```bash
-hermes cron create "0 9 * * 1" \
+rabbit cron create "0 9 * * 1" \
   "Generate a weekly PR dashboard:
 - myorg/backend-api
 - myorg/frontend-app
@@ -280,13 +280,13 @@ The gateway runs in a minimal environment. Ensure `gh` is in the system PATH and
 
 ### Reviews are too generic
 1. Add the `code-review` skill (Step 3)
-2. Teach Hermes your conventions via memory (Step 4)
+2. Teach Rabbit your conventions via memory (Step 4)
 3. The more context it has about your stack, the better the reviews
 
 ### Cron job doesn't run
 ```bash
-hermes gateway status    # Is the gateway running?
-hermes cron list         # Is the job enabled?
+rabbit gateway status    # Is the gateway running?
+rabbit cron list         # Is the job enabled?
 ```
 
 ### Rate limits

@@ -1,4 +1,4 @@
-"""pm.shell(): the one place Hermes resolves the shell it runs commands with.
+"""pm.shell(): the one place Rabbit resolves the shell it runs commands with.
 
 Owned by pm because the shell is a bundled tool on Windows (Git for Windows
 carries bash.exe), and the store is the authority on whether it exists.
@@ -72,13 +72,13 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
     precedes Git on most PATHs (#116818)."""
     programfiles = env.get("ProgramFiles", r"C:\Program Files")
     candidates = []
-    if env.get("HERMES_GIT_BASH_PATH"):
-        candidates.append(env["HERMES_GIT_BASH_PATH"])
+    if env.get("RABBIT_GIT_BASH_PATH"):
+        candidates.append(env["RABBIT_GIT_BASH_PATH"])
     roots = [ntpath.join(programfiles, "Git")]
     if env.get("ProgramFiles(x86)"):
         roots.append(ntpath.join(env["ProgramFiles(x86)"], "Git"))
     if env.get("LOCALAPPDATA"):
-        roots.extend((ntpath.join(env["LOCALAPPDATA"], "hermes", "git"),
+        roots.extend((ntpath.join(env["LOCALAPPDATA"], "rabbit", "git"),
                       ntpath.join(env["LOCALAPPDATA"], "Programs", "Git")))
     for root in roots:
         candidates.extend((ntpath.join(root, "bin", "bash.exe"),

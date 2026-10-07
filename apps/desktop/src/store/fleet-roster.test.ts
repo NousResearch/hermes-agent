@@ -31,7 +31,7 @@ describe('fleet roster recovery', () => {
     })
 
     const getAgentRoster = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(recovered)
-    vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
+    vi.stubGlobal('window', { rabbitDesktop: { getAgentRoster } })
 
     const initial = refreshFleetRoster()
     const recovery = refreshFleetRoster({ force: true })
@@ -51,7 +51,7 @@ describe('fleet roster recovery', () => {
     }
 
     const getAgentRoster = vi.fn().mockResolvedValueOnce(onDemand).mockResolvedValue(recovered)
-    vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
+    vi.stubGlobal('window', { rabbitDesktop: { getAgentRoster } })
 
     await refreshFleetRoster()
     await vi.advanceTimersByTimeAsync(5_000)
@@ -66,7 +66,7 @@ describe('fleet roster recovery', () => {
   it('retries incomplete rosters before the normal stale window without a focus-event hot loop', async () => {
     vi.useFakeTimers()
     const getAgentRoster = vi.fn().mockResolvedValueOnce(unreachable).mockResolvedValue(recovered)
-    vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
+    vi.stubGlobal('window', { rabbitDesktop: { getAgentRoster } })
 
     await refreshFleetRoster()
     await refreshFleetRoster()

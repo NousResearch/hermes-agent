@@ -216,7 +216,7 @@ function* walkFiles(dir) {
  * or linux payload they are inert bytes, not a wrong-arch bug.
  *
  * Anchored at agent-payload (not the tree root: mac nests the payload
- * under Hermes.app/Contents/Resources/). The lib segment is `Lib` on
+ * under Rabbit.app/Contents/Resources/). The lib segment is `Lib` on
  * Windows and `lib/python3.11` elsewhere; both separators appear in
  * relative paths depending on the build host.
  *

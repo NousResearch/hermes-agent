@@ -13,12 +13,12 @@ def test_injected_config_cannot_multiplex_a_standalone_home(tmp_path, monkeypatc
     from gateway.run import GatewayRunner, _profile_runtime_scope
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     solo = root / "profiles" / "solo"
     solo.mkdir(parents=True)
     (root / "config.yaml").write_text("{}\n")
     (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     previous = is_multiplex_active()
     try:
         for home in (solo, root, solo):

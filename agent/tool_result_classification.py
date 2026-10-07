@@ -10,7 +10,7 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
 
 
 # Tools whose interrupted/dangling execution is safe to discard because they
-# cannot mutate either external state or Hermes session state. Unknown/plugin/
+# cannot mutate either external state or Rabbit session state. Unknown/plugin/
 # MCP tools stay effect-capable by default.
 NO_EFFECT_TOOL_NAMES = frozenset({
     "read_file", "search_files", "session_search", "skill_view", "skills_list",

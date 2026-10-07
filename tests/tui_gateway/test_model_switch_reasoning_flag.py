@@ -27,9 +27,9 @@ def _quiet_switch(monkeypatch):
         success=True, new_model="new/model", target_provider="nous", base_url="", api_key="key",
         api_mode="chat_completions", warning_message="", model_info=None, error_message="",
         runtime_capabilities=None)
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: result)
-    monkeypatch.setattr("hermes_cli.model_switch.persist_model_selection", lambda _r: None)
-    monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: None)
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model", lambda **_kw: result)
+    monkeypatch.setattr("rabbit_cli.model_switch.persist_model_selection", lambda _r: None)
+    monkeypatch.setattr("rabbit_cli.model_cost_guard.expensive_model_warning", lambda *a, **k: None)
     for name in ("_restart_slash_worker", "_persist_live_session_runtime", "_persist_live_session_system_prompt",
                  "_append_model_switch_marker", "_emit_session_info"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)

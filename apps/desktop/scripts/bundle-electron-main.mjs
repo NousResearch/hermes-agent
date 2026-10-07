@@ -19,10 +19,10 @@ function productIdentity(source, stamp) {
   }
   return execFileSync(process.execPath, ['-e', 'console.log(JSON.stringify(require(process.argv[1])))',
     join(source, 'apps/desktop/product-identity.cjs')], {
-    env: { ...process.env, HERMES_DESKTOP_VARIANT: variant, HERMES_PAYLOAD_TAG: stamp.tag || '',
+    env: { ...process.env, RABBIT_DESKTOP_VARIANT: variant, RABBIT_PAYLOAD_TAG: stamp.tag || '',
       // Commit builds stamp source='commit-build'; the display name carries
       // the short SHA (see product-identity.cjs). Tagged builds pass ''.
-      HERMES_BUILD_COMMIT: stamp.source === 'commit-build' ? (stamp.commit || '') : '' },
+      RABBIT_BUILD_COMMIT: stamp.source === 'commit-build' ? (stamp.commit || '') : '' },
     encoding: 'utf8',
   }).trim()
 }
@@ -34,7 +34,7 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
   const { build } = await import(pathToFileURL(workspaceTool(source, 'apps/desktop', 'esbuild')).href)
   // Defaults must run before bundled modules resolve paths or onboarding flags.
   // Dev bundles leave the environment alone so source-tree resolution keeps working.
-  const envBanner = dev ? '' : environmentDefaultsBanner(process.env.HERMES_BUNDLE_ENV_JSON || '{}')
+  const envBanner = dev ? '' : environmentDefaultsBanner(process.env.RABBIT_BUNDLE_ENV_JSON || '{}')
   const define = {}
   let bakedStamp = null
   if (!dev) {
@@ -44,9 +44,9 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
     // The baked bytes, and the clock the caller must record: re-reading the stamp
     // after this point would report a restamp the output never saw.
     bakedStamp = metadata.builtAt ?? null
-    define['process.env.HERMES_DESKTOP_IS_PACKAGED'] = JSON.stringify(true)
-    define.__HERMES_INSTALL_STAMP__ = raw
-    define.__HERMES_PRODUCT_IDENTITY__ = productIdentity(source, metadata)
+    define['process.env.RABBIT_DESKTOP_IS_PACKAGED'] = JSON.stringify(true)
+    define.__RABBIT_INSTALL_STAMP__ = raw
+    define.__RABBIT_PRODUCT_IDENTITY__ = productIdentity(source, metadata)
   }
   mkdirSync(out, { recursive: true })
   const common = {

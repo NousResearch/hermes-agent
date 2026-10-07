@@ -115,7 +115,7 @@ def oauth_fixture(mode="success"):
 
 
 def run_cli(repo, mode):
-    with tempfile.TemporaryDirectory(prefix="hermes-device-wire-") as directory, oauth_fixture(mode) as (base, wire):
+    with tempfile.TemporaryDirectory(prefix="rabbit-device-wire-") as directory, oauth_fixture(mode) as (base, wire):
         home = Path(directory)
         oauth = {"flow": "device", "cimd": False, "scope": "fixture.read", "timeout": 15}
         if mode == "preregistered":
@@ -132,10 +132,10 @@ def run_cli(repo, mode):
             for filename, value in previous.items():
                 (token_dir / filename).write_text(value)
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith("HERMES_") and not any(part in key for part in ("API_KEY", "TOKEN", "SECRET"))}
-        env.update(HOME=str(home), HERMES_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1")
+               if not key.startswith("RABBIT_") and not any(part in key for part in ("API_KEY", "TOKEN", "SECRET"))}
+        env.update(HOME=str(home), RABBIT_HOME=str(home), PYTHONPATH=str(repo), PYTHONDONTWRITEBYTECODE="1")
         command = ["reauth", "fixture"] if mode == "preregistered" else ["login", "fixture", "--flow", "device"]
-        argv = [sys.executable, "-m", "hermes_cli.main", "mcp", *command]
+        argv = [sys.executable, "-m", "rabbit_cli.main", "mcp", *command]
         if mode == "persistence":
             # Inject a filesystem write error after real registration/metadata writes.
             argv = [sys.executable, "-c", '''
@@ -146,7 +146,7 @@ def fail_token(path, data):
         raise OSError("fixture disk failure")
     return write(path, data)
 mcp_oauth._write_json = fail_token
-from hermes_cli.main import main
+from rabbit_cli.main import main
 main()
 ''', "mcp", *command]
         result = subprocess.run(argv,
@@ -157,7 +157,7 @@ main()
             tokens = json.loads(token_path.read_text())
             tokens["expires_at"] = time.time() - 60
             token_path.write_text(json.dumps(tokens))
-            refreshed = subprocess.run([sys.executable, "-m", "hermes_cli.main", "mcp", "test", "fixture"],
+            refreshed = subprocess.run([sys.executable, "-m", "rabbit_cli.main", "mcp", "test", "fixture"],
                                        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
             refresh_output = refreshed.stdout + refreshed.stderr
         return {"mode": mode, "returncode": result.returncode, "output": result.stdout + result.stderr,

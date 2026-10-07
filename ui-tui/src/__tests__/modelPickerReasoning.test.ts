@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
+import type { ModelOptionProvider } from '@rabbit/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { draftModelNameFromArg } from '../components/activeSessionSwitcher.js'
@@ -7,23 +7,23 @@ import { applyLocale, messages, resetLocale } from '../i18n/runtime.js'
 
 const provider = (capabilities?: ModelOptionProvider['capabilities']): ModelOptionProvider => ({
   capabilities,
-  name: 'Nous Portal',
-  slug: 'nous'
+  name: 'OpenRouter',
+  slug: 'openrouter'
 })
 
 describe('ModelPicker reasoning step', () => {
   it('emits one /model request carrying provider, effort and scope', () => {
-    expect(modelPickerCommand('gpt-5.6', 'nous', false, 'high')).toBe(
-      'gpt-5.6 --provider nous --reasoning high --tui-session'
+    expect(modelPickerCommand('gpt-5.6', 'openrouter', false, 'high')).toBe(
+      'gpt-5.6 --provider openrouter --reasoning high --tui-session'
     )
-    expect(modelPickerCommand('gpt-5.6', 'nous', true, 'none')).toBe(
-      'gpt-5.6 --provider nous --reasoning none --global'
+    expect(modelPickerCommand('gpt-5.6', 'openrouter', true, 'none')).toBe(
+      'gpt-5.6 --provider openrouter --reasoning none --global'
     )
     // "Keep current effort" (empty value) adds no flag at all.
-    expect(modelPickerCommand('gpt-5.6', 'nous', false, '')).toBe('gpt-5.6 --provider nous --tui-session')
+    expect(modelPickerCommand('gpt-5.6', 'openrouter', false, '')).toBe('gpt-5.6 --provider openrouter --tui-session')
     expect(reasoningPickerRows().at(-1)?.value).toBe('')
     // The new-session draft label strips the effort flag like it strips --provider.
-    expect(draftModelNameFromArg(modelPickerCommand('gpt-5.6', 'nous', false, 'low'))).toBe('gpt-5.6')
+    expect(draftModelNameFromArg(modelPickerCommand('gpt-5.6', 'openrouter', false, 'low'))).toBe('gpt-5.6')
   })
 
   it('skips the step only when the catalog says the route has no reasoning control', () => {

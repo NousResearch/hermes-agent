@@ -2,7 +2,7 @@
 
 Providers register via ``PluginContext.register_video_gen_provider()`` and live
 in ``<repo>/plugins/video_gen/<name>/`` (built-in) or
-``~/.hermes/plugins/video_gen/<name>/``; mirrors ``agent/image_gen_provider.py``.
+``~/.rabbit/plugins/video_gen/<name>/``; mirrors ``agent/image_gen_provider.py``.
 One tool covers text-to-video and image-to-video: ``image_url`` present routes to
 the provider's image-to-video endpoint. Video edit/extend are deliberately NOT
 exposed — backends are too inconsistent for one unified tool.
@@ -73,7 +73,7 @@ _GENERATED_VIDEO_KIND = f"{provider_media.GENERATED_SUBDIR}/videos"
 
 
 def save_b64_video(b64_data: str,*, prefix: str="video", extension: str="mp4") -> Path:
-    """Decode base64 video data into ``$HERMES_HOME/cache/generated/videos/``; return the path."""
+    """Decode base64 video data into ``$RABBIT_HOME/cache/generated/videos/``; return the path."""
     return provider_media.save_b64(_GENERATED_VIDEO_KIND, b64_data, prefix=prefix, extension=extension)
 
 
@@ -97,7 +97,7 @@ def save_url_video(
     require_video_content_type: bool = False,
     trusted_origin: bool = False,
 ) -> Path:
-    """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/generated/videos/``;
+    """Download an (often ephemeral) video URL into ``$RABBIT_HOME/cache/generated/videos/``;
     raises on network / HTTP / oversize / empty errors so callers can fall back to the URL.
     ``trusted_origin`` is only for URLs built from the operator's configured provider
     ``base_url`` (see ``provider_media.save_url``)."""
@@ -199,7 +199,7 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
             import openai
         except ImportError:
             return error_response(
-                error="openai Python package not installed. Run: hermes pm repair",
+                error="openai Python package not installed. Run: rabbit pm repair",
                 error_type="missing_dependency", provider=self.name,
             )
 

@@ -132,13 +132,13 @@ def test_selection_refuses_config_edits_during_preparation(client, tmp_path, mon
     assert not (install_state_dir(repo) / "publication.json").exists()
 
 
-@pytest.mark.parametrize("invalid", ["name: [", "manifest_version: 999", "requires_hermes: '>=999'", "name: other"])
+@pytest.mark.parametrize("invalid", ["name: [", "manifest_version: 999", "requires_rabbit: '>=999'", "name: other"])
 def test_worker_rejects_unloadable_staged_plugin_without_app_dependencies(client, tmp_path, monkeypatch, invalid):
     from pm.store import tree_digest
     repo = _current_environment(tmp_path, monkeypatch, [])
     # The install stamp is the running version identity; without a release
-    # base (a tagless checkout) the requires_hermes gate is permissive.
-    monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
+    # base (a tagless checkout) the requires_rabbit gate is permissive.
+    monkeypatch.delenv("RABBIT_INSTALL_ROOT", raising=False)
     (repo / "install-stamp.json").write_text(json.dumps({
         "commit": "1" * 40, "updateMechanism": "self", "baseVersion": "1.0.0", "source": "local",
     }), encoding="utf-8")
@@ -170,7 +170,7 @@ def test_additional_candidates_are_discovered_by_sync_and_passive_probe(client, 
 
 
 def test_memory_setup_sends_candidate_paths_instead_of_discovery_callbacks(tmp_path, monkeypatch):
-    from hermes_cli.memory_setup import memory_provider_dependency_inputs
+    from rabbit_cli.memory_setup import memory_provider_dependency_inputs
     candidate = tmp_path / "provider"
     candidate.mkdir()
     (candidate / "plugin.yaml").write_text("name: provider\npython_dependencies: [fixture-dep==1]\n")
@@ -230,7 +230,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         payload = metadata
     # Exit immediately after the real durable write, not a simulated publication.
     injection = (
-        "import json\nimport pm.publication as publication\nimport hermes_cli.runtime_state as state\n"
+        "import json\nimport pm.publication as publication\nimport rabbit_cli.runtime_state as state\n"
         "original = state._atomic_bytes\n"
         "def write(path, data):\n    original(path, data)\n"
         f"    if {phase!r} == 'journal' and path.name == 'publication.json': os._exit(17)\n"
@@ -368,7 +368,7 @@ def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_man
     (home / "config.yaml").write_text("plugins:\n  enabled: [sibling]\n")
     staged = tmp_path / "staged"
     staged.mkdir()
-    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from rabbit_cli.agent_plugins import PLUGIN_SCHEMA_V1
     (staged / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "inactive", "version": "1.0.0"}))
     client.sync_venv(explicit=True, plugins=StagedUpdate({
         "target": str(target), "staged": str(staged), "target_digest": tree_digest(target),
@@ -379,14 +379,14 @@ def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_man
 
 
 def test_selection_preserves_yaml11_values_and_quotes_plugin_names(client, tmp_path, monkeypatch):
-    import hermes_yaml
+    import rabbit_yaml
     _current_environment(tmp_path, monkeypatch, [])
     home = tmp_path / "home"
     config = home / "config.yaml"
     config.write_text('feature: yes\nother: no\nlabel: "on"\nplugins: {enabled: []}\n')
-    before = hermes_yaml.safe_load(config.read_bytes())
+    before = rabbit_yaml.safe_load(config.read_bytes())
     client.sync_venv(explicit=True, plugins=Selection({"home": str(home), "enabled": ["on", "yes", "no"], "disabled": []}))
-    after = hermes_yaml.safe_load(config.read_bytes())
+    after = rabbit_yaml.safe_load(config.read_bytes())
     assert {key: after[key] for key in ("feature", "other", "label")} == {key: before[key] for key in ("feature", "other", "label")}
     assert set(after["plugins"]["enabled"]) == {"on", "yes", "no"}
     assert 'label: "on"' in config.read_text()
@@ -401,7 +401,7 @@ def test_explicit_publication_keeps_its_intent_through_tool_acquisition(client, 
     (project / "pyproject.toml").write_text('[project]\nname="explicit-proof"\nversion="1"\nrequires-python=">=3.11"\n[tool.uv]\npackage=false\n')
     worker_toolchain(client, monkeypatch, isolated_python)
     client.lock_project(project, offline=True, explicit=True)
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     worker_toolchain(client, monkeypatch, isolated_python,
         "from pm.package import InstallError\ntools = pm._uv._toolchain\n"
         "def acquire(*, explicit=False, **kwargs):\n"
@@ -412,8 +412,8 @@ def test_explicit_publication_keeps_its_intent_through_tool_acquisition(client, 
 
 
 def test_stale_enablement_cannot_replace_a_newer_selection(client, tmp_path, monkeypatch):
-    from hermes_cli import plugins_cmd as pc
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from rabbit_cli import plugins_cmd as pc
+    from rabbit_cli.plugins_admission import AdmissionRefused
     from utils import fast_safe_load
     _current_environment(tmp_path, monkeypatch, [])
     config = tmp_path / "home/config.yaml"

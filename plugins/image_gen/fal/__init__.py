@@ -29,7 +29,7 @@ class FalImageGenProvider(StaticImageGenProvider):
         key="FAL_KEY", prompt="FAL API key", url="https://fal.ai/dashboard/keys")
 
     def is_available(self) -> bool:
-        # Direct FAL_KEY or a managed Nous fal-queue origin, per the legacy module.
+        # Direct FAL_KEY or a managed fal-queue origin, per the legacy module.
         import tools.image_generation_tool as _it
 
         try:

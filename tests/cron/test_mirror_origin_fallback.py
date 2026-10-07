@@ -152,13 +152,13 @@ class TestFallbackMirrorEndToEnd:
 
     @pytest.fixture()
     def slack_env(self, monkeypatch, tmp_path):
-        home = tmp_path / "hermes-home"
+        home = tmp_path / "rabbit-home"
         home.mkdir()
         (home / "config.yaml").write_text(
             "cron:\n  mirror_delivery: true\n"
             "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
 
         send_calls = []
 
@@ -168,7 +168,7 @@ class TestFallbackMirrorEndToEnd:
             return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
 
         import gateway.platform_registry as reg
-        import hermes_cli.plugins as hp
+        import rabbit_cli.plugins as hp
 
         entry = reg.platform_registry.get("slack")
         if entry is None:

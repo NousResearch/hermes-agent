@@ -1,10 +1,10 @@
 """Auto-resume restart-loop breaker (defense-3).
 
-Defenses 1-2 (``_HERMES_GATEWAY`` guard on ``hermes gateway stop|restart`` /
+Defenses 1-2 (``_RABBIT_GATEWAY`` guard on ``rabbit gateway stop|restart`` /
 ``terminal_tool``, cron lifecycle filter) stop the agent scheduling its own restart
 but not every SIGTERM source: the supervisor respawns, the gateway auto-resumes the
 restart-interrupted session, whose next turn re-runs the offending logic.  Boots are
-persisted to ``<HERMES_HOME>/gateway/restart_loop.json`` and CHAIN while gaps stay
+persisted to ``<RABBIT_HOME>/gateway/restart_loop.json`` and CHAIN while gaps stay
 within ``max_gap_seconds`` (a ~150s watchdog-kill cycle trips like a ~10s loop).
 Tripped → caller SKIPS auto-resume.  Any I/O failure fails OPEN, never wedging.
 """
@@ -17,7 +17,7 @@ import logging
 import time
 from typing import List, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 logger = logging.getLogger("gateway.run")
 
@@ -35,7 +35,7 @@ _MAX_STORED_BOOTS = 50
 
 
 def _state_path():
-    return get_hermes_home() / "gateway" / "restart_loop.json"
+    return get_rabbit_home() / "gateway" / "restart_loop.json"
 
 
 def _load_boots() -> List[float]:

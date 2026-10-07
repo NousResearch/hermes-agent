@@ -43,7 +43,7 @@ describe('connection display helpers', () => {
       org: 'Editorial',
       port: 2222,
       remoteProfile: 'production',
-      user: 'hermes'
+      user: 'rabbit'
     }
 
     expect(connectionMatchesQuery(gateway, 'GENEVE')).toBe(true)
@@ -70,13 +70,13 @@ describe('connection display helpers', () => {
       host: 'studio.example.test',
       keyPath: '/secret/key',
       port: 2222,
-      user: 'hermes'
+      user: 'rabbit'
     }
 
     expect(connectionEndpoint(remote)).toBe('https://work.example.test:9443')
     expect(connectionTooltip(remote)).toBe('Work gateway\nhttps://work.example.test:9443')
     expect(connectionTooltip(remote)).not.toContain('sec...ret')
-    expect(connectionEndpoint(ssh)).toBe('hermes@studio.example.test:2222')
+    expect(connectionEndpoint(ssh)).toBe('rabbit@studio.example.test:2222')
     expect(connectionTooltip(ssh)).not.toContain('/secret/key')
     expect(connectionTooltip(connection('local', 'This device', 'local'))).toBe('This device')
   })

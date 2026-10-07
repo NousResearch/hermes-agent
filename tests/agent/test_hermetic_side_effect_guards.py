@@ -22,7 +22,7 @@ def test_webbrowser_get_controller_is_neutralized(_neutralize_webbrowser):
     """Direct controller access should still stay inside the test recorder."""
     url = "https://provider.example.invalid/oauth/authorize"
 
-    controller = webbrowser.get("hermes-test-browser")
+    controller = webbrowser.get("rabbit-test-browser")
 
     assert controller.open(url) is True
     assert controller.open_new(url) is True

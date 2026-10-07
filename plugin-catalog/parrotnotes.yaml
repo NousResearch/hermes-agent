@@ -1,5 +1,5 @@
 name: parrotnotes
-repo: https://github.com/ascetx/parrot-notes-hermes-plugin
+repo: https://github.com/ascetx/parrot-notes-rabbit-plugin
 sha: bf3d6fcaa8bc3fe8373b530ac4a0e71c6af53dd2
 description: >-
   Find, search, summarize and save insights for your ParrotNotes in-person meeting notes
@@ -9,7 +9,7 @@ description: >-
   remote MCP server at mcp.parrotnotes.app (OAuth via a Supabase auth backend); note titles,
   transcripts and insights from the user's ParrotNotes account are pulled into the session
   context, and text the model passes to save_note_insight is written to that account. OAuth
-  must be enabled with `hermes mcp add parrotnotes --url https://mcp.parrotnotes.app/mcp --auth oauth`;
+  must be enabled with `rabbit mcp add parrotnotes --url https://mcp.parrotnotes.app/mcp --auth oauth`;
   the bundled mcp.json alone yields 401.
 maintainer: ParrotNotes
 tier: community

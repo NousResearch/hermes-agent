@@ -125,7 +125,7 @@ def nearest_root(
         # Excludes are checked before markers at each level.
         if present(cur, excludes_list):
             return None
-        # A directory holding __init__.py is a Python package, never a project root (hermes_cli/setup.py
+        # A directory holding __init__.py is a Python package, never a project root (rabbit_cli/setup.py
         # matched the python marker list and gave every package dir its own pyright).
         if not present(cur, ["__init__.py"]) and present(cur, markers_list):
             return str(cur)
@@ -155,8 +155,8 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
 
 
 def operator_workspace_roots() -> Set[str]:
-    """Git worktrees the operator pointed Hermes at: the launch dir and the surface-set workspace
-    (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``hermes -w``'s worktree, a gateway's
+    """Git worktrees the operator pointed Rabbit at: the launch dir and the surface-set workspace
+    (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``rabbit -w``'s worktree, a gateway's
     ``terminal.cwd``).  The agent's ``cd`` moves neither (it only moves the terminal's cwd).  A repo at
     or above ``$HOME`` never counts: a dotfiles repo would trust every directory below it."""
     from agent.runtime_cwd import resolve_agent_cwd
@@ -166,10 +166,10 @@ def operator_workspace_roots() -> Set[str]:
     # Work the model can schedule has no operator anchor: a kanban worker is launched in (with
     # TERMINAL_CWD =) the task's workspace and a cron run's session cwd is the job's workdir, and the
     # kanban_create / cronjob tools let the model pick both.
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("RABBIT_KANBAN_TASK"):
         return set()
     anchors = [os.getcwd]
-    if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+    if not is_truthy_value(get_session_env("RABBIT_CRON_SESSION", "")):
         anchors.append(resolve_agent_cwd)
     home = normalize_path("~")
     roots: Set[str] = set()

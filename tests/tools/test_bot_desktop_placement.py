@@ -86,7 +86,7 @@ def test_sandbox_status_offers_the_image_switch_instead_of_a_config_hint(monkeyp
     """A docker sandbox kept on the previous default image (no desktop stack) is the common
     upgraded-install case: the blocker becomes the switch offer and ``image_switch`` carries what
     the pane needs to approve it. Without a pending switch the plain image hint stands."""
-    from hermes_cli import sandbox_image_switch as sw
+    from rabbit_cli import sandbox_image_switch as sw
     from tools.bot_desktop import sandbox_host
 
     monkeypatch.setattr(placement, "_setting", lambda: "auto")
@@ -95,9 +95,9 @@ def test_sandbox_status_offers_the_image_switch_instead_of_a_config_hint(monkeyp
     monkeypatch.setattr(sandbox_host, "missing_binaries", lambda env: ["Xvnc"])
     monkeypatch.setattr(sandbox_host, "published_env", lambda env, profile: {})
 
-    monkeypatch.setattr(sw, "pending", lambda: sw.PendingSwitch("old/base:1", "nousresearch/hermes-sandbox:desktop", ["hermes-a"]))
+    monkeypatch.setattr(sw, "pending", lambda: sw.PendingSwitch("old/base:1", "nousresearch/rabbit-sandbox:desktop", ["rabbit-a"]))
     st = runtime.status()
-    assert st.image_switch == {"current_image": "old/base:1", "target_image": "nousresearch/hermes-sandbox:desktop", "containers": 1}
+    assert st.image_switch == {"current_image": "old/base:1", "target_image": "nousresearch/rabbit-sandbox:desktop", "containers": 1}
     assert "old/base:1" in st.blocker and "/root and /workspace" in st.blocker
     assert st.installed and not st.running
 
@@ -142,9 +142,9 @@ def test_remote_command_survives_the_ssh_remote_shell_reparse():
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(runtime, "state_dir", lambda: home / "bot-desktop" / "default")
     return home
 
@@ -207,13 +207,13 @@ def test_sandbox_screen_that_cannot_come_up_is_an_error_not_a_host_browser(monke
 
 
 def test_start_adopting_a_screen_the_sandbox_kept_records_the_marker(monkeypatch, isolated_home):
-    """Host state can vanish while the sandbox keeps its Xvnc (fresh HERMES_HOME, a stop() whose kill missed
+    """Host state can vanish while the sandbox keeps its Xvnc (fresh RABBIT_HOME, a stop() whose kill missed
     the launcher). start() finding the display already published must record it like a fresh launch, or
     status/thumbnail/stop never learn the screen is ours (found live against an ssh sandbox)."""
     from tools.bot_desktop import sandbox_host
 
     monkeypatch.setattr(sandbox_host, "_published", lambda env, rdir: {"DISPLAY": ":20", "XAUTHORITY": f"{rdir}/Xauthority"})
-    monkeypatch.setattr(sandbox_host, "_remote_dir", lambda env, profile: f"/scratch/hermes-bot-desktop/{profile}")
+    monkeypatch.setattr(sandbox_host, "_remote_dir", lambda env, profile: f"/scratch/rabbit-bot-desktop/{profile}")
     env = _FakeDocker()
     assert sandbox_host.start(env, "default", geometry="1280x800")["DISPLAY"] == ":20"
     marker = json.loads(sandbox_host._marker().read_text())
@@ -228,7 +228,7 @@ def test_marker_survives_a_gateway_restart_while_the_container_lives(monkeypatch
 
     _placed(monkeypatch, "terminal", "docker")
     sandbox_host._marker().parent.mkdir(parents=True)
-    sandbox_host._marker().write_text('{"display": ":20", "dir": "/tmp/hermes-bot-desktop/default", "profile": "default", '
+    sandbox_host._marker().write_text('{"display": ":20", "dir": "/tmp/rabbit-bot-desktop/default", "profile": "default", '
                                       '"backend": "DockerEnvironment", "container": "c0ffee", "docker": "docker"}')
     inspected: list[list[str]] = []
     alive = {"running": True}

@@ -14,7 +14,7 @@ description: "将静态站点发布到 {slug}"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/productivity/here-now` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/productivity/here-now` 安装 |
 | 路径 | `optional-skills/productivity/here-now` |
 | 版本 | `1.15.3` |
 | 作者 | here.now |
@@ -25,7 +25,7 @@ description: "将静态站点发布到 {slug}"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # here.now
@@ -74,14 +74,14 @@ here.now 适用于两类任务：
 - 可选 Drive token 变量：`$HERENOW_DRIVE_TOKEN`
 - 可选凭据文件：`~/.herenow/credentials`
 - Skill 辅助脚本路径：
-  - `${HERMES_SKILL_DIR}/scripts/publish.sh` 用于发布站点
-  - `${HERMES_SKILL_DIR}/scripts/drive.sh` 用于私有 Drive 存储
+  - `${RABBIT_SKILL_DIR}/scripts/publish.sh` 用于发布站点
+  - `${RABBIT_SKILL_DIR}/scripts/drive.sh` 用于私有 Drive 存储
 
 ## 创建站点
 
 ```bash
-PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
-bash "$PUBLISH" {file-or-dir} --client hermes
+PUBLISH="${RABBIT_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --client rabbit
 ```
 
 输出实时 URL（例如 `https://bright-canvas-a7k2.here.now/`）。
@@ -98,8 +98,8 @@ bash "$PUBLISH" {file-or-dir} --client hermes
 ## 更新已有站点
 
 ```bash
-PUBLISH="${HERMES_SKILL_DIR}/scripts/publish.sh"
-bash "$PUBLISH" {file-or-dir} --slug {slug} --client hermes
+PUBLISH="${RABBIT_SKILL_DIR}/scripts/publish.sh"
+bash "$PUBLISH" {file-or-dir} --slug {slug} --client rabbit
 ```
 
 更新匿名站点时，脚本会自动从 `.herenow/state.json` 加载 `claimToken`。传入 `--claim-token {token}` 可覆盖此值。
@@ -113,7 +113,7 @@ bash "$PUBLISH" {file-or-dir} --slug {slug} --client hermes
 每个已登录账户都有一个名为 `My Drive` 的默认 Drive。
 
 ```bash
-DRIVE="${HERMES_SKILL_DIR}/scripts/drive.sh"
+DRIVE="${RABBIT_SKILL_DIR}/scripts/drive.sh"
 bash "$DRIVE" default
 bash "$DRIVE" ls "My Drive"
 bash "$DRIVE" put "My Drive" notes/today.md --from ./notes/today.md
@@ -215,7 +215,7 @@ mkdir -p ~/.herenow && echo "{API_KEY}" > ~/.herenow/credentials && chmod 600 ~/
 | `--title {text}` | 预览器标题（非 HTML 站点） |
 | `--description {text}` | 预览器描述 |
 | `--ttl {seconds}` | 设置过期时间（仅限已认证用户） |
-| `--client {name}` | 用于归因的 agent 名称（如 `hermes`） |
+| `--client {name}` | 用于归因的 agent 名称（如 `rabbit`） |
 | `--base-url {url}` | API 基础 URL（默认：`https://here.now`） |
 | `--allow-nonherenow-base-url` | 允许向非默认 `--base-url` 发送认证信息 |
 | `--api-key {key}` | API key 覆盖（优先使用凭据文件） |

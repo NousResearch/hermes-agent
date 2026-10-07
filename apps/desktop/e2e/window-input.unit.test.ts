@@ -8,8 +8,8 @@ const { prepareWindowForInput } = createRequire(import.meta.url)(
 
 test('does not finish when IPC reports 100% before the window factor settles', async () => {
   let observations = 0
-  const previous = (globalThis as any).hermesDesktop
-  ;(globalThis as any).hermesDesktop = { zoom: {
+  const previous = (globalThis as any).rabbitDesktop
+  ;(globalThis as any).rabbitDesktop = { zoom: {
     setPercent: () => undefined,
     get: async () => ({ percent: 100 }),
   } }
@@ -24,7 +24,7 @@ test('does not finish when IPC reports 100% before the window factor settles', a
     await prepareWindowForInput({ browserWindow: async () => appWindow }, page)
     expect(observations).toBeGreaterThan(1)
   } finally {
-    ;(globalThis as any).hermesDesktop = previous
+    ;(globalThis as any).rabbitDesktop = previous
   }
 })
 
@@ -32,9 +32,9 @@ test('reapplies zoom when startup overwrites the first request', async () => {
   let requests = 0
   let factor = 0.9
 
-  const previous = (globalThis as any).hermesDesktop
+  const previous = (globalThis as any).rabbitDesktop
 
-  ;(globalThis as any).hermesDesktop = { zoom: {
+  ;(globalThis as any).rabbitDesktop = { zoom: {
     setPercent: () => { requests++;
 
  if (requests > 1) {factor = 1} },
@@ -53,7 +53,7 @@ test('reapplies zoom when startup overwrites the first request', async () => {
     await prepareWindowForInput({ browserWindow: async () => window }, page)
     expect(requests).toBeGreaterThan(1)
   } finally {
-    ;(globalThis as any).hermesDesktop = previous
+    ;(globalThis as any).rabbitDesktop = previous
   }
 })
 
@@ -72,9 +72,9 @@ test('awaits the zoom response instead of accepting a truthy Promise', async () 
     },
   }
 
-  const previous = (globalThis as any).hermesDesktop
+  const previous = (globalThis as any).rabbitDesktop
 
-  ;(globalThis as any).hermesDesktop = { zoom }
+  ;(globalThis as any).rabbitDesktop = { zoom }
   const window = { evaluate: async (fn: any) => fn({ webContents: { getZoomFactor: () => factor } }) }
 
   const page = {
@@ -89,6 +89,6 @@ test('awaits the zoom response instead of accepting a truthy Promise', async () 
     expect(reads).toBeGreaterThan(1)
     expect(factor).toBe(1)
   } finally {
-    ;(globalThis as any).hermesDesktop = previous
+    ;(globalThis as any).rabbitDesktop = previous
   }
 })

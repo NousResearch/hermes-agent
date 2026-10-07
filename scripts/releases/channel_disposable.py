@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 
-from hermes_cli.release_channels import canonical_json, channel_key, validate_name
+from rabbit_cli.release_channels import canonical_json, channel_key, validate_name
 from scripts.releases import commit_build, r2
 from scripts.releases.channels import ChannelConflict, ChannelPublisher, R2ChannelStore
 from scripts.releases.job_groups import selects_all
@@ -57,7 +57,7 @@ def require_receiver_scope(publisher) -> None:
 
 def allocate_receivers(publisher, commit: str, source_version: str, controller: str) -> dict:
     """Reserve official-identity test packages, not accepted or published releases."""
-    from hermes_cli.release_channels import build_prefix, validate_request
+    from rabbit_cli.release_channels import build_prefix, validate_request
     from scripts.releases.channel_releases import product_identity
 
     require_receiver_scope(publisher)

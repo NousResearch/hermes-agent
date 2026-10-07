@@ -26,7 +26,7 @@ import {
 } from './zoom'
 
 test('storage key stays stable so persisted zoom survives upgrades', () => {
-  assert.equal(ZOOM_STORAGE_KEY, 'hermes:desktop:zoomLevel')
+  assert.equal(ZOOM_STORAGE_KEY, 'rabbit:desktop:zoomLevel')
 })
 
 test('clampZoomLevel rejects garbage and enforces bounds', () => {
@@ -318,7 +318,7 @@ test('unknown window kinds default to chat (zoom enabled)', () => {
 // The UI Scale settings control drifts out of sync after a restart when zoom
 // is applied to the window but the renderer is never told: its $zoomPercent
 // store (see store/zoom.ts) only updates from zoom.get() (once, on load) and
-// 'hermes:zoom:changed' events. applyZoomLevel is the single funnel every zoom
+// 'rabbit:zoom:changed' events. applyZoomLevel is the single funnel every zoom
 // path (user set, restore-on-load, lifecycle re-assert) shares, so applying a
 // level always notifies — the regression can't come back by forgetting a send.
 function fakeWebContents() {
@@ -338,7 +338,7 @@ test('applyZoomLevel applies the level then notifies the renderer', () => {
   assert.equal(applied, 3)
   assert.deepEqual(wc.calls, [
     ['setZoomLevel', 3],
-    ['send', 'hermes:zoom:changed', { level: 3, percent: zoomLevelToPercent(3) }]
+    ['send', 'rabbit:zoom:changed', { level: 3, percent: zoomLevelToPercent(3) }]
   ])
 })
 
@@ -350,6 +350,6 @@ test('applyZoomLevel clamps garbage before applying and notifying', () => {
   assert.equal(applied, clamped)
   assert.deepEqual(wc.calls, [
     ['setZoomLevel', clamped],
-    ['send', 'hermes:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
+    ['send', 'rabbit:zoom:changed', { level: clamped, percent: zoomLevelToPercent(clamped) }]
   ])
 })

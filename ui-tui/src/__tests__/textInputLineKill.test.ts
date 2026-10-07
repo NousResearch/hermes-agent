@@ -4,7 +4,7 @@ import { isLineKillModifier } from '../components/textInput.js'
 
 // Cmd+Backspace should kill to the line boundary, but the modifier it is
 // distinguished by matters a great deal. `isActionMod` is the wrong test:
-//   - on macOS it accepts `key.meta`, and hermes-ink reports Option as
+//   - on macOS it accepts `key.meta`, and rabbit-ink reports Option as
 //     `meta` — so Option+Backspace (delete-word, the macOS standard) would
 //     silently become "delete the whole line".
 //   - on Linux/Windows it is `key.ctrl`, and Ctrl+Backspace is delete-word

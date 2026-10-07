@@ -33,7 +33,7 @@ export function bundledPayload(
     storePython: path.join(root, runtime.storePython),
     sitePackages: path.join(root, runtime.sitePackages),
     commands,
-    shim: commands.hermes
+    shim: commands.rabbit
   }
 }
 
@@ -50,7 +50,7 @@ export function payloadPythonPath(payload: Pick<PayloadInfo, 'repoDir' | 'sitePa
 //
 // The CLI owns the channel records; Electron only reads the install id for
 // `update.installs.<sha16>/` bookkeeping. Channel resolution itself lives in
-// hermes_cli/update_channel.py — main.ts keys canary/stable off the baked
+// rabbit_cli/update_channel.py — main.ts keys canary/stable off the baked
 // install stamp tag directly.
 
 export type UpdateChannel = 'stable' | 'main' | 'canary'

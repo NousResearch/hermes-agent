@@ -1,4 +1,4 @@
-# Copyright 2025 Nous Research (Licensed under the Apache License, Version 2.0)
+# Copyright 2025 Sanath Patil (Licensed under the Apache License, Version 2.0)
 """Mid-run credential rotation never rebinds a session to a same-provider entry for another endpoint.
 
 A mixed ``openai`` pool (public api.openai.com key + Azure resource key) is legitimately shared with

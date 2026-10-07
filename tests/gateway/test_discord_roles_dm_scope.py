@@ -23,13 +23,13 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _set_dm_role_auth_guild(monkeypatch, guild_id=None):
-    """Stub ``hermes_cli.config.read_raw_config`` so ``_read_dm_role_auth_guild``
+    """Stub ``rabbit_cli.config.read_raw_config`` so ``_read_dm_role_auth_guild``
     resolves to ``guild_id`` (or None for the opt-out default).
     """
     cfg = {"discord": {"dm_role_auth_guild": guild_id if guild_id is not None else ""}}
-    # Patch the attribute ``hermes_cli.config.read_raw_config`` — that's
+    # Patch the attribute ``rabbit_cli.config.read_raw_config`` — that's
     # what ``_read_dm_role_auth_guild`` imports at call time.
-    import hermes_cli.config as _cfg_mod
+    import rabbit_cli.config as _cfg_mod
     monkeypatch.setattr(_cfg_mod, "read_raw_config", lambda: cfg, raising=True)
 
 

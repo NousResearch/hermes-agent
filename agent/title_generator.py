@@ -130,7 +130,7 @@ _CONTROL_WRAPPERS = tuple(
                 "local-command-stdout", "task-notification", "system-reminder", "ide_opened_file", "ide_selection")
 )
 
-# Hermes' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
+# Rabbit' own machine-authored openers: a compaction handoff or resumed session must not be titled after them.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION", LEGACY_SUMMARY_PREFIX, "[Runtime note:", "[System note:", "[SYSTEM]",
     # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX (keep in sync); persisted as role="user" because
@@ -145,8 +145,8 @@ _MACHINE_PREFIXES = (
 
 
 def _title_config() -> dict:
-    """``auxiliary.title_generation`` (lazy read-only import: no hermes_cli cycle, no migration writes)."""
-    from hermes_cli.config import load_config_readonly
+    """``auxiliary.title_generation`` (lazy read-only import: no rabbit_cli cycle, no migration writes)."""
+    from rabbit_cli.config import load_config_readonly
     return ((load_config_readonly() or {}).get("auxiliary") or {}).get("title_generation") or {}
 
 
@@ -211,7 +211,7 @@ def _is_self_hosted_provider(provider: str) -> bool:
 
     Normalised here so the main route and the title pin resolve aliases (``ollama``, ``lm-studio``…) the same way.
     """
-    from hermes_cli.providers import normalize_provider
+    from rabbit_cli.providers import normalize_provider
     provider = normalize_provider(provider)
     return provider in ("custom", "lmstudio", "local") or provider.startswith("custom:")
 
@@ -222,12 +222,12 @@ def _title_pin_may_share_endpoint(pinned_provider: str, main_provider: str, main
     Hosted pins (``openrouter``…) multiplex and never share the slot. A pin to ``custom``/``lmstudio``/``local``/any
     ``custom:<name>`` is assumed to share until the caller compares ``base_url``, and a bare ``<name>`` /
     display-name pin is the same endpoint when it aliases the main ``custom:<name>`` route
-    (``hermes_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
+    (``rabbit_cli.providers.custom_provider_aliases`` — the resolver's own identity set) or resolves to a
     configured custom entry serving ``main_base_url`` (a keyed ``providers:`` entry's display name does not
     alias its ``custom:<key>`` id).
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
-    from hermes_cli.providers import custom_provider_aliases, resolve_custom_provider
+    from rabbit_cli.config import get_compatible_custom_providers, load_config_readonly
+    from rabbit_cli.providers import custom_provider_aliases, resolve_custom_provider
     if _is_self_hosted_provider(pinned_provider):
         return True
     if custom_provider_aliases(pinned_provider) & custom_provider_aliases(main_provider):
@@ -652,14 +652,14 @@ def auto_title_session(
     """Generate and store the model title (daemon-thread target); skips sessions already carrying an
     ``llm``/``user`` title (a ``derived`` one is expected — upgrading it is the point). Never lets an
     exception escape (the threading excepthook would spray a traceback into the terminal); the canonical
-    trigger is the post-``hermes update`` window where lazy imports read NEW source against OLD modules."""
+    trigger is the post-``rabbit update`` window where lazy imports read NEW source against OLD modules."""
     try:
         if not session_db or not session_id or _has_upgraded_title(session_db, session_id):
             return
         # This thread starts AFTER the turn's ambient context was reset; republish it so the call carries
         # the same Portal ``conversation=`` tag (root-of-lineage) and bills usage to this session.
         from agent.aux_accounting import set_accounting_context
-        from agent.portal_tags import set_conversation_context
+        from agent.conversation_context import set_conversation_context
         conversation_id = session_id
         with suppress(Exception):
             conversation_id = session_db.get_conversation_root(session_id) or session_id
@@ -687,13 +687,13 @@ def auto_title_session(
             _notify_title(title_callback, persisted, source, "Auto-title")
     except Exception as e:
         # WARNING so operators see it in agent.log; names the likely cause.
-        logger.warning("Auto-title failed (harmless; if this started after an update, restart the running Hermes process): %s", e)
+        logger.warning("Auto-title failed (harmless; if this started after an update, restart the running Rabbit process): %s", e)
         logger.debug("Auto-title traceback", exc_info=True)
         _report_failure(failure_callback, e, "Auto-title")
 
 
 def _is_real_user_turn(message: Any) -> bool:
-    """A question a person actually asked (Hermes persists machinery under ``role="user"``)."""
+    """A question a person actually asked (Rabbit persists machinery under ``role="user"``)."""
     if not isinstance(message, dict) or message.get("role") != "user":
         return False
     content = message.get("content")
@@ -713,12 +713,12 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
 def _kanban_task_title() -> Optional[str]:
     """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere
     (including delegate_task children of the worker, which inherit the env var but are not the card)."""
-    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    task_id = (os.environ.get("RABBIT_KANBAN_TASK") or "").strip()
     if not task_id or not is_dispatcher_owned_worker_context():
         return None
     try:
-        from hermes_cli import kanban_db, kanban_db_connect
-        from hermes_state import SessionDB
+        from rabbit_cli import kanban_db, kanban_db_connect
+        from rabbit_state import SessionDB
         with kanban_db_connect.connect_closing() as conn:
             task = kanban_db.get_task(conn, task_id)
         title = " ".join((task.title or "").split()) if task is not None else ""

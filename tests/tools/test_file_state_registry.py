@@ -33,7 +33,7 @@ from tools.file_tools import (
 
 
 def _tmp_file(content: str = "initial\n") -> str:
-    fd, path = tempfile.mkstemp(prefix="hermes_file_state_test_", suffix=".txt")
+    fd, path = tempfile.mkstemp(prefix="rabbit_file_state_test_", suffix=".txt")
     with os.fdopen(fd, "w") as f:
         f.write(content)
     return path
@@ -209,7 +209,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
 
     def test_kill_switch_env_var(self):
         p = self._mk()
-        os.environ["HERMES_DISABLE_FILE_STATE_GUARD"] = "1"
+        os.environ["RABBIT_DISABLE_FILE_STATE_GUARD"] = "1"
         try:
             file_state.record_read("A", p)
             file_state.note_write("B", p)
@@ -220,7 +220,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
                 {},
             )
         finally:
-            del os.environ["HERMES_DISABLE_FILE_STATE_GUARD"]
+            del os.environ["RABBIT_DISABLE_FILE_STATE_GUARD"]
 
 
 class FileToolsIntegrationTests(unittest.TestCase):
@@ -232,7 +232,7 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._tmpdir = tempfile.mkdtemp(prefix="rabbit_file_state_int_")
 
     def tearDown(self) -> None:
         import shutil

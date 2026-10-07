@@ -1,7 +1,7 @@
 """Environment manifest for project verification.
 
 Ported from superagent-ai/grok-cli ``src/verify/environment.ts``. The manifest
-at ``<project>/.hermes/environment.json`` is the user-editable source of truth:
+at ``<project>/.rabbit/environment.json`` is the user-editable source of truth:
 when present and valid it wins over fresh static detection.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from agent.verify.recipes import Recipe, detect_recipe
 
 MANIFEST_VERSION = 1
-_MANIFEST_RELPATH = Path(".hermes") / "environment.json"
+_MANIFEST_RELPATH = Path(".rabbit") / "environment.json"
 
 
 def manifest_path(root: Path) -> Path:

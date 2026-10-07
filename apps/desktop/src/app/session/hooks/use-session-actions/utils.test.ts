@@ -19,7 +19,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/rabbit'
 
 import {
   appendLiveSessionProjection,
@@ -2487,7 +2487,7 @@ describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', ()
     expect($currentProvider.get()).toBe('')
 
     // …but nothing was persisted: the composer's sticky selection survives.
-    expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
-    expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
+    expect(localStorage.getItem('rabbit.desktop.composer.model')).toBe('user-pick')
+    expect(localStorage.getItem('rabbit.desktop.composer.provider')).toBe('anthropic')
   })
 })

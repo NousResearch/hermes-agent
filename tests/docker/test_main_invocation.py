@@ -15,7 +15,7 @@ import subprocess
 
 
 def test_chat_subcommand_passthrough(built_image: str) -> None:
-    """``docker run <image> chat --help`` should exec ``hermes chat --help``.
+    """``docker run <image> chat --help`` should exec ``rabbit chat --help``.
 
     Uses ``--help`` so the call doesn't need an upstream model configured.
     """
@@ -43,7 +43,7 @@ def test_bash_pattern(built_image: str) -> None:
 def test_container_exit_code_matches_inner_exit(built_image: str) -> None:
     """The container exit code must match the inner process's exit code.
 
-    Critical for CI: ``docker run <image> hermes batch ...`` returns a
+    Critical for CI: ``docker run <image> rabbit batch ...`` returns a
     non-zero status when batch fails. Phase 2 (s6) must preserve this.
     """
     r = subprocess.run(

@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesReadDirResult } from '@/global'
+import type { RabbitReadDirResult } from '@/global'
 import { $connection } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -9,14 +9,14 @@ import { clearProjectDirCache, readProjectDir } from './ipc'
 import { $showIgnoredRoots } from './prefs'
 import { resetProjectTreeState, useProjectTree } from './use-project-tree'
 
-const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
+const readDir = vi.fn<(path: string) => Promise<RabbitReadDirResult>>()
 
 beforeEach(() => {
   $connection.set(null)
   resetProjectTreeState()
   $showIgnoredRoots.set([])
   readDir.mockReset()
-  ;(window as unknown as { hermesDesktop: { readDir: typeof readDir } }).hermesDesktop = { readDir }
+  ;(window as unknown as { rabbitDesktop: { readDir: typeof readDir } }).rabbitDesktop = { readDir }
 })
 
 afterEach(() => {
@@ -24,10 +24,10 @@ afterEach(() => {
   $connection.set(null)
   resetProjectTreeState()
   $showIgnoredRoots.set([])
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
-function ok(entries: { name: string; path: string; isDirectory: boolean }[]): HermesReadDirResult {
+function ok(entries: { name: string; path: string; isDirectory: boolean }[]): RabbitReadDirResult {
   return { entries }
 }
 
@@ -73,16 +73,16 @@ describe('useProjectTree', () => {
   })
 
   it('does not fall back after a failed root read from a superseded connection', async () => {
-    let resolveRootFromA: ((result: HermesReadDirResult) => void) | undefined
+    let resolveRootFromA: ((result: RabbitReadDirResult) => void) | undefined
     const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/fallback', sanitized: true }))
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           resolveRootFromA = resolve
         })
     )
     readDir.mockResolvedValueOnce(ok([{ name: 'from-b', path: '/shared/from-b', isDirectory: false }]))
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { readDir, sanitizeWorkspaceCwd }
     $connection.set({ baseUrl: 'local-a', connectionId: 'connection-a', mode: 'local', profile: 'default' } as never)
 
     const { result } = renderHook(() => useProjectTree('/shared'))
@@ -181,7 +181,7 @@ describe('useProjectTree', () => {
 
       throw new Error(`unexpected path ${path}`)
     })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { gitRoot, readDir, readFileDataUrl }
 
     $connection.set({ baseUrl: 'local-a', mode: 'local' } as never)
     await expect(readProjectDir('/repo/src', '/repo')).resolves.toMatchObject({
@@ -247,10 +247,10 @@ describe('useProjectTree', () => {
   it('dedupes concurrent loadChildren calls for the same id', async () => {
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/p/src', isDirectory: true }]))
 
-    let resolveChildren: ((value: HermesReadDirResult) => void) | undefined
+    let resolveChildren: ((value: RabbitReadDirResult) => void) | undefined
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           resolveChildren = resolve
         })
     )
@@ -276,9 +276,9 @@ describe('useProjectTree', () => {
     async ({ read, refresh }) => {
       const src = { name: 'src', path: '/p/src', isDirectory: true }
       const fresh = { name: 'fresh.txt', path: '/p/fresh.txt', isDirectory: false }
-      let resolveOld!: (value: HermesReadDirResult) => void
+      let resolveOld!: (value: RabbitReadDirResult) => void
 
-      const oldRead = new Promise<HermesReadDirResult>(resolve => {
+      const oldRead = new Promise<RabbitReadDirResult>(resolve => {
         resolveOld = resolve
       })
 
@@ -334,14 +334,14 @@ describe('useProjectTree', () => {
 
   it('keeps a refreshed folder read in flight when its predecessor finishes', async () => {
     const src = { name: 'src', path: '/p/src', isDirectory: true }
-    let finishOld!: (value: HermesReadDirResult) => void
-    let finishNew!: (value: HermesReadDirResult) => void
+    let finishOld!: (value: RabbitReadDirResult) => void
+    let finishNew!: (value: RabbitReadDirResult) => void
 
-    const oldRead = new Promise<HermesReadDirResult>(resolve => {
+    const oldRead = new Promise<RabbitReadDirResult>(resolve => {
       finishOld = resolve
     })
 
-    const newRead = new Promise<HermesReadDirResult>(resolve => {
+    const newRead = new Promise<RabbitReadDirResult>(resolve => {
       finishNew = resolve
     })
 
@@ -393,11 +393,11 @@ describe('useProjectTree', () => {
   })
 
   it('discards a stale live refresh after the active registered connection changes', async () => {
-    let resolveRefreshFromA: ((result: HermesReadDirResult) => void) | undefined
+    let resolveRefreshFromA: ((result: RabbitReadDirResult) => void) | undefined
     readDir.mockResolvedValueOnce(ok([{ name: 'from-a', path: '/shared/from-a', isDirectory: false }]))
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           resolveRefreshFromA = resolve
         })
     )
@@ -436,11 +436,11 @@ describe('useProjectTree', () => {
   })
 
   it('discards a stale child read after the active registered connection changes', async () => {
-    let resolveChildFromA: ((result: HermesReadDirResult) => void) | undefined
+    let resolveChildFromA: ((result: RabbitReadDirResult) => void) | undefined
     readDir.mockResolvedValueOnce(ok([{ name: 'src', path: '/shared/src', isDirectory: true }]))
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           resolveChildFromA = resolve
         })
     )
@@ -479,10 +479,10 @@ describe('useProjectTree', () => {
   })
 
   it('discards a stale root read after the active registered connection changes', async () => {
-    let resolveFirst: ((result: HermesReadDirResult) => void) | undefined
+    let resolveFirst: ((result: RabbitReadDirResult) => void) | undefined
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           resolveFirst = resolve
         })
     )
@@ -539,7 +539,7 @@ describe('useProjectTree', () => {
 
       throw new Error(`unexpected path ${path}`)
     })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { readDir, sanitizeWorkspaceCwd }
 
     const { result } = renderHook(() => useProjectTree('/deleted/worktree'))
 
@@ -554,7 +554,7 @@ describe('useProjectTree', () => {
   it('keeps the root error when sanitize offers no usable fallback', async () => {
     const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/deleted/worktree', sanitized: false }))
     readDir.mockResolvedValue({ entries: [], error: 'ENOENT' })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { readDir, sanitizeWorkspaceCwd }
 
     const { result } = renderHook(() => useProjectTree('/deleted/worktree'))
 
@@ -562,8 +562,8 @@ describe('useProjectTree', () => {
     expect(result.current.effectiveCwd).toBe('/deleted/worktree')
   })
 
-  it('returns no-bridge gracefully when window.hermesDesktop is missing', async () => {
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  it('returns no-bridge gracefully when window.rabbitDesktop is missing', async () => {
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 
     const { result } = renderHook(() => useProjectTree('/p'))
 
@@ -581,11 +581,11 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.rootError).toBe('ENOENT'))
 
-    let releaseProbe: ((value: HermesReadDirResult) => void) | undefined
+    let releaseProbe: ((value: RabbitReadDirResult) => void) | undefined
 
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           releaseProbe = resolve
         })
     )
@@ -611,11 +611,11 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.data.length).toBe(1))
 
-    let releaseRefresh: ((value: HermesReadDirResult) => void) | undefined
+    let releaseRefresh: ((value: RabbitReadDirResult) => void) | undefined
 
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           releaseRefresh = resolve
         })
     )
@@ -640,11 +640,11 @@ describe('useProjectTree', () => {
 
     await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['from-a']))
 
-    let releaseFromB: ((value: HermesReadDirResult) => void) | undefined
+    let releaseFromB: ((value: RabbitReadDirResult) => void) | undefined
 
     readDir.mockImplementationOnce(
       () =>
-        new Promise<HermesReadDirResult>(resolve => {
+        new Promise<RabbitReadDirResult>(resolve => {
           releaseFromB = resolve
         })
     )
@@ -690,7 +690,7 @@ describe('useProjectTree', () => {
 
       return ok([])
     })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { gitRoot, readDir, readFileDataUrl }
 
     const { result } = renderHook(() => useProjectTree('/p'))
 
@@ -737,7 +737,7 @@ describe('useProjectTree', () => {
   it('drops a child listing that was read before the preference flipped', async () => {
     const gitRoot = vi.fn(async () => '/p')
     const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('*.log\n')}`)
-    let releaseChild: ((value: HermesReadDirResult) => void) | undefined
+    let releaseChild: ((value: RabbitReadDirResult) => void) | undefined
 
     readDir.mockImplementation(async path => {
       if (path === '/p') {
@@ -748,14 +748,14 @@ describe('useProjectTree', () => {
       }
 
       if (path === '/p/src') {
-        return new Promise<HermesReadDirResult>(resolve => {
+        return new Promise<RabbitReadDirResult>(resolve => {
           releaseChild = resolve
         })
       }
 
       return ok([])
     })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = { gitRoot, readDir, readFileDataUrl }
 
     const { result } = renderHook(() => useProjectTree('/p'))
 

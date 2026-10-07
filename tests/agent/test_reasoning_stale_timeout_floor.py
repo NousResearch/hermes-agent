@@ -3,9 +3,9 @@
 Reasoning models (Nemotron 3 Ultra, OpenAI o1/o3, Anthropic Opus 4.x
 thinking, DeepSeek R1, Qwen QwQ, xAI Grok reasoning) routinely exceed
 the 180s / 90s chat-model stale-timeout defaults during their
-thinking phase.  Hermes's default cloud-stream stale detector
-(``HERMES_STREAM_STALE_TIMEOUT`` = 180s) and non-stream detector
-(``HERMES_API_CALL_STALE_TIMEOUT`` = 90s) both fire before the
+thinking phase.  Rabbit's default cloud-stream stale detector
+(``RABBIT_STREAM_STALE_TIMEOUT`` = 180s) and non-stream detector
+(``RABBIT_API_CALL_STALE_TIMEOUT`` = 90s) both fire before the
 upstream proxy's idle timeout on a healthy reasoning stream.  Result:
 the user sees ``API call failed after 3 retries: [Errno 32] Broken
 pipe`` for every Nemotron 3 Ultra turn.
@@ -100,9 +100,9 @@ def _make_agent(tmp_path: Path, **overrides):
 
 def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     """GPT-5 (non-reasoning) without env var / config -> 90s default, implicit."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("RABBIT_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
     # No provider config, no env var, no floor match -> 90s implicit default.
@@ -122,8 +122,8 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
 
 def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_path):
     """Small GPT-5.6 requests get the reasoning floor on both request paths."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.delenv("RABBIT_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
     import run_agent
@@ -153,8 +153,8 @@ def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_fl
     same request with no explicit value still gets the 240s tier / 600s floor (control)."""
     from types import SimpleNamespace
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.delenv("RABBIT_STREAM_STALE_TIMEOUT", raising=False)
     from agent.chat_completion_helpers import _derive_stream_stale_timeout
 
     api_kwargs = {"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "word " * 60_000}]}

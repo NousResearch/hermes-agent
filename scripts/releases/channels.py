@@ -7,7 +7,7 @@ import http.client
 import secrets
 import uuid
 
-from hermes_cli.release_channels import (
+from rabbit_cli.release_channels import (
     ChannelError, ChannelNotFound, ChannelReader, artifact_key, build_prefix,
     canonical_json, channel_key, decode_json, package_versions, public_base as validate_public_base,
     validate_name, validate_record, validate_repository, validate_request, validate_manifest, require_sha256,
@@ -94,11 +94,11 @@ class R2ChannelStore:
 
 def preview_identity(name: str, token: str) -> dict:
     validate_name(name)
-    pascal = f"HermesChannel{token}"
-    return {"token": token, "displayName": f"Hermes {name}",
-            "appId": f"ai.hermes.channel.h{token}", "appNamePascal": pascal,
-            "artifactNamePascal": pascal, "cliName": f"hermes-{name}",
-            "windowsExecutableName": pascal, "msixAppIdWithOrg": f"NousResearch.{pascal}"}
+    pascal = f"RabbitChannel{token}"
+    return {"token": token, "displayName": f"Rabbit {name}",
+            "appId": f"ai.rabbit.channel.h{token}", "appNamePascal": pascal,
+            "artifactNamePascal": pascal, "cliName": f"rabbit-{name}",
+            "windowsExecutableName": pascal, "msixAppIdWithOrg": f"Seven0070.{pascal}"}
 
 
 class ChannelPublisher:
@@ -395,7 +395,7 @@ class ChannelPublisher:
             if policy is not None and record["head"] is not None:
                 from scripts.releases.semver import compare
                 from scripts.releases.stable import windows_version
-                from hermes_cli.update_channel import canary_timestamp
+                from rabbit_cli.update_channel import canary_timestamp
                 previous_head = record["head"]
                 previous = self.store.get(previous_head["manifestKey"])
                 if previous is None or hashlib.sha256(previous[0]).hexdigest() != previous_head["sha256"]:

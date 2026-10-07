@@ -4,7 +4,7 @@ anchor (#95759), exercised against the REAL ``posix.sh`` functions.
 The reverted anchor (#95425/#95541) left installs with a real-file
 ``venv/bin/python`` copy, a ``.tcc-anchor-source`` marker, and ``python3*``
 aliases that die at interpreter init (``No module named 'encodings'``).
-``venv/bin/hermes`` execs ``venv/bin/python3``, so the desktop update
+``venv/bin/rabbit`` execs ``venv/bin/python3``, so the desktop update
 hand-off — and every other CLI entrypoint, doctor included — dies before any
 Python-side heal can run.  The heal therefore lives in the hand-off shell.
 
@@ -131,7 +131,7 @@ class TestAnchorHeal:
             assert alias.read_text(encoding="utf-8") == GOOD_STUB
         assert (bin_dir / ".tcc-anchor-source").exists()
         assert not list(bin_dir.glob("*tcc-heal*"))
-        assert "invoke=" in out and out.endswith("/venv/bin/hermes")
+        assert "invoke=" in out and out.endswith("/venv/bin/rabbit")
 
     def test_full_brick_restored_to_symlinks(self, tmp_path):
         """Anchored copy AND aliases dead, marker source alive: restore the
@@ -203,44 +203,44 @@ class TestAnchorHeal:
 class TestUpdateInvokeFallback:
     def test_dead_alias_no_marker_falls_back_to_module_invocation(self, tmp_path):
         """No marker to heal from, but the venv python itself boots (the
-        launchd-gateway shape): drive the update as python -m hermes_cli.main."""
+        launchd-gateway shape): drive the update as python -m rabbit_cli.main."""
         root = make_venv(tmp_path, python=GOOD_STUB, python3=BAD_STUB,
                          marker=None)
         out = run_selftest(root)
         assert "state=no-marker" in out
-        assert out.endswith("/venv/bin/python -m hermes_cli.main")
+        assert out.endswith("/venv/bin/python -m rabbit_cli.main")
 
-    def test_healthy_venv_keeps_hermes_entrypoint(self, tmp_path):
+    def test_healthy_venv_keeps_rabbit_entrypoint(self, tmp_path):
         root = make_venv(tmp_path, python=GOOD_STUB, python3=GOOD_STUB,
                          marker=None)
         out = run_selftest(root)
-        assert out.endswith("/venv/bin/hermes")
+        assert out.endswith("/venv/bin/rabbit")
 
 
 @requires_bash
 class TestHandoffSurvivesBrickAB:
-    """A/B analog of the reported loop: `venv/bin/hermes` execs python3."""
+    """A/B analog of the reported loop: `venv/bin/rabbit` execs python3."""
 
-    def _make_hermes(self, root: Path) -> Path:
-        hermes = root / "venv/bin/hermes"
+    def _make_rabbit(self, root: Path) -> Path:
+        rabbit = root / "venv/bin/rabbit"
         _write_exe(
-            hermes,
+            rabbit,
             "#!/usr/bin/env bash\n"
             'exec "$(cd "$(dirname "$0")" && pwd)/python3" -c "import encodings"\n',
         )
-        return hermes
+        return rabbit
 
     def test_bricked_entrypoint_fails_before_and_boots_after_heal(self, tmp_path):
         root = make_venv(tmp_path, python=GOOD_STUB, python3=BAD_STUB,
                          marker="STORE")
-        hermes = self._make_hermes(root)
+        rabbit = self._make_rabbit(root)
         # BEFORE the heal: the entrypoint dies exactly like the field logs.
-        before = subprocess.run([str(hermes)], capture_output=True,
+        before = subprocess.run([str(rabbit)], capture_output=True,
                                 text=True, encoding="utf-8", errors="replace")
         assert before.returncode == 1
         assert "No module named 'encodings'" in before.stderr
         # Heal (real posix.sh function), then the same entrypoint boots.
         assert "state=healed-aliases" in run_selftest(root)
-        after = subprocess.run([str(hermes)], capture_output=True,
+        after = subprocess.run([str(rabbit)], capture_output=True,
                                text=True, encoding="utf-8", errors="replace")
         assert after.returncode == 0

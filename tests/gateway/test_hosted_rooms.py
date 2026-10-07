@@ -11,9 +11,9 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms as rooms
-import hermes_state_wal
+import rabbit_state_wal
 from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 USER = {"kind": "user", "id": "desktop-user", "display_name": "User"}
 GATEWAY_A = {"kind": "gateway", "id": "gateway-a"}
@@ -168,7 +168,7 @@ def test_first_database_open_retries_only_transient_journal_lock(
     tmp_path,
     monkeypatch,
 ):
-    original = hermes_state_wal.apply_wal_with_fallback
+    original = rabbit_state_wal.apply_wal_with_fallback
     attempts = 0
 
     def transient_lock(conn, **kwargs):
@@ -178,7 +178,7 @@ def test_first_database_open_retries_only_transient_journal_lock(
             raise sqlite3.OperationalError("database is locked")
         return original(conn, **kwargs)
 
-    monkeypatch.setattr(hermes_state_wal, "apply_wal_with_fallback", transient_lock)
+    monkeypatch.setattr(rabbit_state_wal, "apply_wal_with_fallback", transient_lock)
 
     assert _create(tmp_path / "state.db")["room_id"] == "room-1"
     assert attempts == 3
@@ -198,7 +198,7 @@ def test_first_database_open_does_not_retry_other_journal_errors(
         )
 
     monkeypatch.setattr(
-        hermes_state_wal, "apply_wal_with_fallback",
+        rabbit_state_wal, "apply_wal_with_fallback",
         configured_delete_refusal,
     )
 
@@ -1239,7 +1239,7 @@ def test_interrupted_draft_schema_migration_rolls_back_atomically(
 
 
 def test_gateway_event_budget_leaves_pre_update_snapshot_headroom():
-    from hermes_cli import update_cmd
+    from rabbit_cli import update_cmd
 
     # SQLite stores room ids and index entries beyond the logical payload
     # accounting, while session data shares the same file. Keep at least an
@@ -1301,13 +1301,13 @@ def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypa
     is shared across profiles (one file at the install root) but is not the
     SessionDB file the root gateway owns.
     """
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     profile_home = root / "profiles" / "bot1"
     profile_home.mkdir(parents=True)
 
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("RABBIT_HOME", str(profile_home))
     from_profile = rooms.default_db_path()
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     from_root = rooms.default_db_path()
 
     assert from_profile == from_root, "one coordination file per install"

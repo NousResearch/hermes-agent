@@ -65,13 +65,13 @@ jobs:
           prune-python-cache: true
 
       - name: Check SQLite runs WAL
-        # Hermes picks DELETE journal mode on a SQLite with the WAL-reset
+        # Rabbit picks DELETE journal mode on a SQLite with the WAL-reset
         # bug. If the PM-pinned interpreter links one, every WAL test silently
         # runs DELETE (or skips), so fail loudly instead. Tests that need DELETE
         # select it explicitly (journal_mode config, a pinned vulnerable
         # version), so they run on any interpreter.
         run: |
-          "$HERMES_PYTHON" -c "import sqlite3, sys, hermes_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
+          "$RABBIT_PYTHON" -c "import sqlite3, sys, rabbit_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
 
       - name: Restore per-file duration cache
         # scripts/run_tests_parallel.py raises a file's timeout to
@@ -100,9 +100,9 @@ jobs:
         run: |
           scripts/run_tests.sh
         env:
-          HERMES_TEST_SLICE: ${{ matrix.slice }}/2
-          HERMES_TEST_WORKERS: 32
-          HERMES_TEST_FILE_TIMEOUT: 600
+          RABBIT_TEST_SLICE: ${{ matrix.slice }}/2
+          RABBIT_TEST_WORKERS: 32
+          RABBIT_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -147,8 +147,8 @@ jobs:
           prune-python-cache: true
 
       - name: Install Node deps and build the Ink TUI
-        # tests/e2e/core/terminal drives the real `hermes --tui` over a PTY;
-        # HERMES_E2E_REQUIRE_TUI=1 below turns a missing build into a failure.
+        # tests/e2e/core/terminal drives the real `rabbit --tui` over a PTY;
+        # RABBIT_E2E_REQUIRE_TUI=1 below turns a missing build into a failure.
         uses: ./.github/actions/retry
         with:
           command: npm ci --workspace ui-tui --ignore-scripts --no-audit --no-fund && npm run build --workspace ui-tui
@@ -171,7 +171,7 @@ jobs:
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
         # instead of reporting green over zero coverage.
         run: |
-          "$HERMES_PYTHON" -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+          "$RABBIT_PYTHON" -c "import sqlite3, rabbit_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
       - name: Run e2e tests
         # One subprocess per file, in parallel: the core suites spawn real
@@ -188,16 +188,16 @@ jobs:
           # across unrelated SQLite, tenancy, provider and terminal suites.
           # Bound the trees, not the child readiness/turn timeouts. At 4 the
           # PTY turn and serve-SIGTERM deadlines still starved intermittently.
-          HERMES_TEST_WORKERS: "3"
+          RABBIT_TEST_WORKERS: "3"
           # Multi-process episodes (torture chamber, compaction kill -9,
           # gateway liveness, delivery exactly-once through a real gateway,
           # the cron virtual-clock soak) legitimately run past the 300 s default.
-          HERMES_TEST_FILE_TIMEOUT: "900"
+          RABBIT_TEST_FILE_TIMEOUT: "900"
           # No automatic re-run of a failed file: the torture chamber and the
           # exactly-once/compaction suites are race detectors, and a rare
           # corruption that passes on retry is still a corruption.
-          HERMES_TEST_FILE_RETRIES: "0"
-          HERMES_E2E_REQUIRE_TUI: "1"
+          RABBIT_TEST_FILE_RETRIES: "0"
+          RABBIT_E2E_REQUIRE_TUI: "1"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
@@ -235,7 +235,7 @@ jobs:
           echo "shards=$shards" | tee -a "$GITHUB_OUTPUT"
 
   e2e-upgrade:
-    # tests/e2e/core/upgrade: a real N-1 -> HEAD `hermes update` (clean,
+    # tests/e2e/core/upgrade: a real N-1 -> HEAD `rabbit update` (clean,
     # autostash, killed mid-pull / mid-deps, offline), fresh-process import and
     # entrypoint smoke, the config round-trip property matrix, and the lane
     # suites below it (pm: PM environment lifecycle across updates, ...).
@@ -258,7 +258,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Node
-        # `hermes update` builds the web UI / TUI workspaces.
+        # `rabbit update` builds the web UI / TUI workspaces.
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
         with:
           node-version: 26
@@ -285,7 +285,7 @@ jobs:
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
           # Newer than the unit job's pin on purpose: 0.9.28 only knows CPython
-          # 3.11.14, whose bundled SQLite has the WAL-reset bug, so Hermes runs
+          # 3.11.14, whose bundled SQLite has the WAL-reset bug, so Rabbit runs
           # state.db in DELETE mode and the WAL torture chamber would skip.
           version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
@@ -308,7 +308,7 @@ jobs:
         # `uv venv` step is needed.
         #
         # Same extras as the test job's sync above: the hermetic test env
-        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # forbids mid-run pip installs (RABBIT_DISABLE_LAZY_INSTALLS=1 in
         # tests/conftest.py), so lazy-install SDKs exercised by tests must be
         # in the venv up front.
         uses: ./.github/actions/retry
@@ -333,7 +333,7 @@ jobs:
         # instead of reporting green over zero coverage.
         run: |
           source .venv/bin/activate
-          python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+          python -c "import sqlite3, rabbit_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
       - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
@@ -353,8 +353,8 @@ jobs:
           # Each file drives real installs/updaters (process trees plus uv and
           # git I/O); cpu_count of them at once starves their deadlines. A
           # shard holds at most ~7 files, so this runs each shard in one wave.
-          HERMES_TEST_WORKERS: "6"
-          HERMES_TEST_FILE_TIMEOUT: "3000"
+          RABBIT_TEST_WORKERS: "6"
+          RABBIT_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""

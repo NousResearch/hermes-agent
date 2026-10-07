@@ -91,7 +91,7 @@ def _zero_event_then_completed_client(seen_inputs: list):
 
 
 def _oversized_codex_kwargs(size: int) -> dict:
-    return {"model": "gpt-5-codex", "instructions": "You are Hermes.", "store": False, "tools": None,
+    return {"model": "gpt-5-codex", "instructions": "You are Rabbit.", "store": False, "tools": None,
             "input": [{"role": "user", "content": "look"},
                       {"type": "function_call", "call_id": "call_browser", "name": "browser_exec", "arguments": "{}"},
                       {"type": "function_call_output", "call_id": "call_browser", "output": "x" * size},
@@ -104,8 +104,8 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     from tests.agent.test_run_agent_codex_responses import _build_agent
     from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setattr("rabbit_constants.get_rabbit_home", lambda: tmp_path, raising=False)
     agent = _build_agent(monkeypatch)
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)

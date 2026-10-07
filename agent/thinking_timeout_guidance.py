@@ -39,7 +39,7 @@ def build_thinking_timeout_guidance(provider: str, model: str, model_label: Opti
     """User-facing guidance appended to the final response: easiest fix first (``/reasoning
     low``), the config knob last. ``model`` is used verbatim in the config path so it is
     copy-pasteable; ``model_label`` is the optional prose name."""
-    from hermes_constants import display_hermes_home
+    from rabbit_constants import display_rabbit_home
 
     label = model_label or model
     return (
@@ -47,5 +47,5 @@ def build_thinking_timeout_guidance(provider: str, model: str, model_label: Opti
         "(common for reasoning models behind cloud gateways such as NVIDIA NIM, OpenAI, Anthropic, "
         "DeepSeek). Easiest fixes: `/reasoning low`, or switch to a faster model with /model. "
         f"Advanced: set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` in "
-        f"`{display_hermes_home()}/config.yaml` to allow a longer wait."
+        f"`{display_rabbit_home()}/config.yaml` to allow a longer wait."
     )

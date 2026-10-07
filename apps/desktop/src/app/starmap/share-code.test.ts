@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { StarmapGraph } from '@/types/hermes'
+import type { StarmapGraph } from '@/types/rabbit'
 
 import { decodeShareCode, encodeShareCode, ShareCodeError } from './share-code'
 

@@ -35,9 +35,9 @@ def _rows():
     return [
         {
             "profile": "default",
-            "handle": "hermes",
+            "handle": "rabbit",
             "connection_id": "cloud-1",
-            "connection_label": "Hermes Cloud",
+            "connection_label": "Rabbit Cloud",
             "title": "Moxie",
             "description": "Main cloud agent",
         },
@@ -58,7 +58,7 @@ def test_roster_roundtrip_and_validation(root):
         {"profile": "", "handle": "x", "connection_id": "c"},  # no profile
         {"profile": "bad name!", "connection_id": "c"},  # bad charset
         "not-a-dict",
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1"},  # dupe
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1"},  # dupe
     ]
     count = bot_relay.write_remote_roster(root, rows)
     assert count == 2
@@ -79,15 +79,15 @@ def test_resolve_remote_target_forms(root):
     bot_relay.write_remote_roster(root, _rows())
     roster = bot_relay.read_remote_roster(root)
     assert bot_relay.resolve_remote_target("researcher", roster)["connection_id"] == "ssh-vps"
-    assert bot_relay.resolve_remote_target("@hermes", roster)["profile"] == "default"
+    assert bot_relay.resolve_remote_target("@rabbit", roster)["profile"] == "default"
     # profile name resolves too
     assert bot_relay.resolve_remote_target("default", roster)["connection_id"] == "cloud-1"
     # exact connection-qualified form
-    assert bot_relay.resolve_remote_target("hermes@cloud-1", roster)["profile"] == "default"
+    assert bot_relay.resolve_remote_target("rabbit@cloud-1", roster)["profile"] == "default"
     # profile@connection — the form Desktop's mention middleware annotates
     # for remote bots (#97678); the UI alias form must not be required
     assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
-    assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
+    assert bot_relay.resolve_remote_target("rabbit@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
 
 
@@ -102,7 +102,7 @@ def test_resolve_ambiguous_handle_across_connections(root):
     assert match["connection_id"] == "ssh-vps"
     forms = bot_relay.remote_target_forms(roster)
     assert "researcher@ssh-vps" in forms and "researcher@cloud-1" in forms
-    assert "hermes" in forms  # unique handle stays bare
+    assert "rabbit" in forms  # unique handle stays bare
 
 
 # ── outbox / replies ─────────────────────────────────────────────────────────
@@ -286,7 +286,7 @@ import textwrap
 
 
 def _managed_home(tmp_path, *, legacy_soul=False):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir(exist_ok=True)
     d = home / "profiles" / "researcher"
     d.mkdir(parents=True, exist_ok=True)
@@ -295,7 +295,7 @@ def _managed_home(tmp_path, *, legacy_soul=False):
             """\
             description: teammate for tests
             ui_meta:
-              hermes-bots:
+              rabbit-bots:
                 shape: cloud
             """
         ),
@@ -352,8 +352,8 @@ def test_tool_injects_despite_legacy_soul_protocol(tmp_path):
 def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
     home = _managed_home(tmp_path)
     bot_relay.write_remote_roster(home, [
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1",
-         "connection_label": "Hermes Cloud", "title": "Moxie"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1",
+         "connection_label": "Rabbit Cloud", "title": "Moxie"},
     ])
 
     spawned = {}
@@ -365,15 +365,15 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
 
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
     agent = _FakeAgent(home)
-    out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
+    out = json.loads(message_agent_tool(target="rabbit", message="ping", agent=agent))
     assert out.get("status") == "queued"
-    assert "Hermes Cloud" in spawned["label"]
+    assert "Rabbit Cloud" in spawned["label"]
     # envelope landed in the outbox with attribution prefixed
     pending = bot_relay.claim_pending_envelopes(home)
     assert len(pending) == 1
     assert pending[0]["target_connection"] == "cloud-1"
     assert pending[0]["target_profile"] == "default"
-    assert pending[0]["message"].startswith("Message from 🤖 hermes (@hermes): ping")
+    assert pending[0]["message"].startswith("Message from 🤖 rabbit (@rabbit): ping")
     # waiter watches this envelope's reply file
     assert pending[0]["id"] in spawned["command"]
 
@@ -397,15 +397,15 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
 
 
 def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
-    """A remote ``default`` is ``@hermes`` like every gateway's own, so its Bot Mode title is the only
+    """A remote ``default`` is ``@rabbit`` like every gateway's own, so its Bot Mode title is the only
     bare form that singles it out: ``message_agent`` accepts the slug, the prompt roster offers it
-    (never bare ``@hermes``, which is the LOCAL default), and the form does not depend on roster order."""
+    (never bare ``@rabbit``, which is the LOCAL default), and the form does not depend on roster order."""
     from tools import bot_mode_probe
 
     home = _managed_home(tmp_path)
     rows = [
-        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "title": "Ops Bot"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "vps-1", "title": "CoS Bot"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1", "title": "Ops Bot"},
         {"profile": "cos-bot", "handle": "cos-bot", "connection_id": "cloud-1", "title": "Other"},
     ]
     monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "queued"}))
@@ -416,17 +416,17 @@ def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
         forms = dict(zip((r["connection_id"] + "/" + r["profile"] for r in roster),
                          bot_relay.remote_target_forms(roster, bot_mode_probe.local_taken_forms(home))))
         # an exact handle beats a colliding title slug; the collided title falls back to the qualified form
-        assert forms == {"cloud-1/cos-bot": "cos-bot", "vps-1/default": "hermes@vps-1", "cloud-1/default": "ops-bot"}
+        assert forms == {"cloud-1/cos-bot": "cos-bot", "vps-1/default": "rabbit@vps-1", "cloud-1/default": "ops-bot"}
         assert bot_relay.resolve_remote_target("cos-bot", roster)["profile"] == "cos-bot"
     out = json.loads(message_agent_tool(target="@ops-bot", message="ping", agent=agent))
     assert out.get("status") == "queued"
     [env] = bot_relay.claim_pending_envelopes(home)
     assert (env["target_connection"], env["target_profile"]) == ("cloud-1", "default")
-    # a bare @hermes from the local default is the two remote defaults — offered under their reply-safe forms
-    err = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))["error"]
-    assert "hermes@vps-1" in err and "ops-bot" in err
+    # a bare @rabbit from the local default is the two remote defaults — offered under their reply-safe forms
+    err = json.loads(message_agent_tool(target="rabbit", message="ping", agent=agent))["error"]
+    assert "rabbit@vps-1" in err and "ops-bot" in err
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
-    assert "`@ops-bot`" in section and "`@hermes@vps-1`" in section and "- `@hermes` —" not in section
+    assert "`@ops-bot`" in section and "`@rabbit@vps-1`" in section and "- `@rabbit` —" not in section
 
 
 
@@ -436,12 +436,12 @@ def test_protocol_section_lists_remote_teammates(tmp_path):
 
     home = _managed_home(tmp_path)
     bot_relay.write_remote_roster(home, [
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1",
-         "connection_label": "Hermes Cloud", "title": "Moxie"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1",
+         "connection_label": "Rabbit Cloud", "title": "Moxie"},
     ])
     section = bot_mode_probe.get_bot_mode_protocol_section(home, force_refresh=True)
-    # Offered under its title slug: bare `@hermes` is THIS gateway's own default (#103731).
-    assert "`@moxie`" in section and "Hermes Cloud" in section
+    # Offered under its title slug: bare `@rabbit` is THIS gateway's own default (#103731).
+    assert "`@moxie`" in section and "Rabbit Cloud" in section
 
 
 def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
@@ -450,7 +450,7 @@ def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
     home = _managed_home(tmp_path)
     before = bot_mode_probe.capability_fingerprint(home)
     bot_relay.write_remote_roster(home, [
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1"},
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1"},
     ])
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after  # eternal Bot Chats refresh once on roster change
@@ -463,16 +463,16 @@ def test_cleanup_bot_relay_artifacts_sweeps_stale_plaintext(tmp_path, monkeypatc
     import os as _os
     import time as _time
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
               "connection_label": "", "title": "", "description": ""}
     stale_env = bot_relay.enqueue_envelope(
         tmp_path, target=target, message="old secret",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     fresh_env = bot_relay.enqueue_envelope(
         tmp_path, target=target, message="new secret",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     base = bot_relay.relay_root(tmp_path)
     stale_reply = bot_relay.write_reply(tmp_path, stale_env["id"], reply="done")
@@ -489,7 +489,7 @@ def test_cleanup_bot_relay_artifacts_sweeps_stale_plaintext(tmp_path, monkeypatc
 
 
 def test_cleanup_bot_relay_artifacts_missing_dir_is_zero(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nope"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "nope"))
     assert bot_relay.cleanup_bot_relay_artifacts() == 0
 
 
@@ -514,7 +514,7 @@ def test_enqueue_fails_fast_when_row_explicitly_offline(root):
     with pytest.raises(bot_relay.EnvelopeRefusedError) as ei:
         bot_relay.enqueue_envelope(
             root, target=roster[0], message="hi",
-            sender_profile="default", sender_handle="hermes",
+            sender_profile="default", sender_handle="rabbit",
         )
     assert ei.value.reason == "runtime_offline"
     assert "offline" in str(ei.value)
@@ -528,7 +528,7 @@ def test_enqueue_fails_fast_when_target_absent_from_fresh_roster(root):
     with pytest.raises(bot_relay.EnvelopeRefusedError) as ei:
         bot_relay.enqueue_envelope(
             root, target=_target(), message="hi",
-            sender_profile="default", sender_handle="hermes",
+            sender_profile="default", sender_handle="rabbit",
         )
     assert ei.value.reason == "runtime_offline"
 
@@ -537,7 +537,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
     # 1. no roster ever synced → unknown → enqueue
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="hi",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env['id']}.json").exists()
     # 2. stale roster missing the target → unknown → enqueue
@@ -547,7 +547,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
     _os2.utime(roster_path, (old, old))
     env2 = bot_relay.enqueue_envelope(
         root, target=_target(), message="hi again",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env2['id']}.json").exists()
     # 3. fresh roster listing the target without an online flag → enqueue
@@ -555,7 +555,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
     target = bot_relay.read_remote_roster(root)[1]  # researcher@ssh-vps
     env3 = bot_relay.enqueue_envelope(
         root, target=target, message="hello",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     assert (bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR / f"{env3['id']}.json").exists()
 
@@ -563,7 +563,7 @@ def test_enqueue_fails_open_when_liveness_unknown(root):
 def test_drain_expires_old_envelope_with_queued_expired_reply(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="too late",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     base = bot_relay.relay_root(root)
     out_path = base / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
@@ -591,11 +591,11 @@ def test_the_outbox_is_claimed_oldest_first(root):
     deterministically, which random ids reproduce half the time."""
     first = bot_relay.enqueue_envelope(
         root, target=_target(), message="do this first",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     second = bot_relay.enqueue_envelope(
         root, target=_target(), message="then this",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     outbox = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR
     now = _time2.time()
@@ -613,7 +613,7 @@ def test_the_outbox_is_claimed_oldest_first(root):
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     claimed = bot_relay.claim_pending_envelopes(root)
     assert [e["id"] for e in claimed] == [env["id"]]
@@ -626,7 +626,7 @@ def test_drain_ttl_zero_disables_expiry(root, monkeypatch):
     monkeypatch.setattr(bot_relay, "_envelope_ttl_seconds", lambda: 0)
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="never expires",
-        sender_profile="default", sender_handle="hermes",
+        sender_profile="default", sender_handle="rabbit",
     )
     base = bot_relay.relay_root(root)
     out_path = base / bot_relay.OUTBOX_DIR / f"{env['id']}.json"
@@ -647,22 +647,22 @@ def test_invalid_ttl_config_falls_back_instead_of_breaking_drain(monkeypatch):
 def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     home = _managed_home(tmp_path)
     bot_relay.write_remote_roster(home, [
-        {"profile": "default", "handle": "hermes", "connection_id": "cloud-1",
-         "connection_label": "Hermes Cloud", "online": False},
+        {"profile": "default", "handle": "rabbit", "connection_id": "cloud-1",
+         "connection_label": "Rabbit Cloud", "online": False},
     ])
     monkeypatch.setattr(
         "tools.bot_mode_dm._spawn_delivery",
         lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
-    out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
+    out = json.loads(message_agent_tool(target="rabbit", message="ping", agent=agent))
     assert out.get("reason") == "runtime_offline"
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
 
 
-# ── delivery turn author (HERMES_TURN_AUTHOR on the recipient turn) ──────────
+# ── delivery turn author (RABBIT_TURN_AUTHOR on the recipient turn) ──────────
 
 
 def test_delivery_turn_author_from_envelope_sender_fields():
@@ -685,46 +685,46 @@ def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
 
 
 def test_delivery_env_carries_only_the_given_author(monkeypatch):
-    """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
+    """The dispatcher's own RABBIT_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
     from agent.turn_author import TURN_AUTHOR_ENV
 
-    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv("RABBIT_RELAY_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
-    monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")
-    monkeypatch.setenv("HERMES_UI_SESSION_ID", "ui-A")
-    monkeypatch.setenv("HERMES_SESSION_ID", "session-A")
-    monkeypatch.setenv("HERMES_SESSION_PROFILE", "profile-A")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "session-A")
+    monkeypatch.setenv("RABBIT_UI_SESSION_ID", "ui-A")
+    monkeypatch.setenv("RABBIT_SESSION_ID", "session-A")
+    monkeypatch.setenv("RABBIT_SESSION_PROFILE", "profile-A")
     # A session-* knob, not identity: stripping it would break the child's watcher tuning.
-    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "97")
+    monkeypatch.setenv("RABBIT_SESSION_STALL_TIMEOUT", "97")
 
     assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
     env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
     assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
-    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"
-    assert "HERMES_SESSION_KEY" not in env
-    assert "HERMES_UI_SESSION_ID" not in env
-    assert "HERMES_SESSION_ID" not in env
-    assert "HERMES_SESSION_PROFILE" not in env
-    assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+    assert env["RABBIT_RELAY_TEST_MARKER"] == "kept"
+    assert "RABBIT_SESSION_KEY" not in env
+    assert "RABBIT_UI_SESSION_ID" not in env
+    assert "RABBIT_SESSION_ID" not in env
+    assert "RABBIT_SESSION_PROFILE" not in env
+    assert env["RABBIT_SESSION_STALL_TIMEOUT"] == "97"
 
 
 def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, monkeypatch):
     """A relayed DM into the launch profile spawns with the launch home and its secrets, even after a
-    host mirrors another home into HERMES_HOME; a bound scope or home override still wins."""
+    host mirrors another home into RABBIT_HOME; a bound scope or home override still wins."""
     from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     launch, mirrored = tmp_path / "launch", tmp_path / "mirrored"
     launch.mkdir()
     mirrored.mkdir()
     (launch / ".env").write_text("OPENROUTER_API_KEY=sk-launch\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     set_multiplex_active(True)  # pins the launch home
-    monkeypatch.setenv("HERMES_HOME", str(mirrored))
+    monkeypatch.setenv("RABBIT_HOME", str(mirrored))
 
     env = bot_relay.delivery_env(None, None)
-    assert env["HERMES_HOME"] == str(launch)
+    assert env["RABBIT_HOME"] == str(launch)
     assert env["OPENROUTER_API_KEY"] == "sk-launch"
 
     token = set_secret_scope({"OPENROUTER_API_KEY": "sk-bound"})
@@ -734,18 +734,18 @@ def test_delivery_env_under_multiplex_names_the_pinned_launch_home(tmp_path, mon
         reset_secret_scope(token)
 
     (mirrored / ".env").write_text("OPENROUTER_API_KEY=sk-override\n", encoding="utf-8")
-    home_token = set_hermes_home_override(str(mirrored))
+    home_token = set_rabbit_home_override(str(mirrored))
     try:
         env = bot_relay.delivery_env(None, None)
-        assert (env["HERMES_HOME"], env["OPENROUTER_API_KEY"]) == (str(mirrored), "sk-override")
+        assert (env["RABBIT_HOME"], env["OPENROUTER_API_KEY"]) == (str(mirrored), "sk-override")
     finally:
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
 
 
 def test_delivery_env_single_profile_host_passes_the_process_env_through(tmp_path, monkeypatch):
     """Without multiplex nothing is pinned or overlaid: the child sees the process env as before."""
     (tmp_path / ".env").write_text("OPENROUTER_API_KEY=from-dotenv\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("OPENROUTER_API_KEY", "from-shell")
 
     assert bot_relay.delivery_env(None, None)["OPENROUTER_API_KEY"] == "from-shell"

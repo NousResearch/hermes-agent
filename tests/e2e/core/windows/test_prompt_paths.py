@@ -1,9 +1,9 @@
-"""Prompt assembly with native Windows paths, through real Hermes processes.
+"""Prompt assembly with native Windows paths, through real Rabbit processes.
 
 * Subdirectory hints: after a terminal command touches ``backend\\src``, the tool result the
   model receives carries ``backend/AGENTS.md`` — for the forward-slash spelling AND the
   native backslash spelling a model emits on Windows (#121150).
-* AGENTS.md chain: ``hermes chat -q`` launched in ``pkg\\inner`` of a git repo loads all
+* AGENTS.md chain: ``rabbit chat -q`` launched in ``pkg\\inner`` of a git repo loads all
   three AGENTS.md files and labels them ``../../AGENTS.md`` / ``../AGENTS.md`` / ``AGENTS.md``
   — one spelling on every OS (#121015).
 * ``@folder:`` references through the TUI gateway (the Ink TUI's process): the listing
@@ -22,7 +22,7 @@ from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.windows._helpers import (
     KnownBugSymptom,
     expect,
-    hermes,
+    rabbit,
     last_user,
     make_home,
     nonce,
@@ -59,7 +59,7 @@ def test_subdirectory_hint_reaches_model(spelling: str, tmp_path: Path) -> None:
         (home.project / "backend" / "src").mkdir(parents=True)
         (home.project / "backend" / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
         (home.project / "backend" / "AGENTS.md").write_text(f"# Backend\n\n{canary}\n", encoding="utf-8")
-        res = hermes(home, "chat", "-q", "Run the backend entry point.", "-Q")
+        res = rabbit(home, "chat", "-q", "Run the backend entry point.", "-Q")
         assert res.returncode == 0, res.tail()
         results = tool_results(srv)
     assert len(results) == 1, f"expected one terminal result on the wire, got {results}"
@@ -79,7 +79,7 @@ def test_agents_chain_labels_are_os_independent(tmp_path: Path) -> None:
         inner.mkdir(parents=True)
         for directory, name in ((repo, "root"), (repo / "pkg", "pkg"), (inner, "inner")):
             (directory / "AGENTS.md").write_text(f"# {name}\n\n{canaries[name]}\n", encoding="utf-8")
-        res = hermes(home, "chat", "-q", "hello", "-Q", cwd=inner)
+        res = rabbit(home, "chat", "-q", "hello", "-Q", cwd=inner)
         assert res.returncode == 0, res.tail()
         prompt = system_prompt(srv.main_requests()[0])
     missing = [name for name, c in canaries.items() if c not in prompt]

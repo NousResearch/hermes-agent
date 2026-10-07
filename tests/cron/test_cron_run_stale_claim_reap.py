@@ -1,4 +1,4 @@
-"""Regression for #86721 — a one-shot `hermes cron run` invocation's
+"""Regression for #86721 — a one-shot `rabbit cron run` invocation's
 dispatched runner thread dies with the exiting process, leaving a stale
 'claimed'/'running' row in cron/executions.db that blocks every subsequent
 manual run of the same job. recover_interrupted_executions() already
@@ -19,8 +19,8 @@ import sys
 
 
 def test_one_shot_cli_path_reaps_dead_owner_row_before_returning_sync(tmp_path, monkeypatch):
-    """The real one-shot `hermes cron run` shape (``_SESSION_ASYNC_DELIVERY`` scoped to False,
-    as hermes_cli/cron.py::_job_action does) must still reap a 'running' row whose owner pid
+    """The real one-shot `rabbit cron run` shape (``_SESSION_ASYNC_DELIVERY`` scoped to False,
+    as rabbit_cli/cron.py::_job_action does) must still reap a 'running' row whose owner pid
     is provably dead before falling back to the sync run — the early return used to skip it."""
     import subprocess as sp
     import sqlite3

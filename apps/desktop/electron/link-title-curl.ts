@@ -1,7 +1,7 @@
 import { decodeWebText } from './web-text-decoder'
 
-const CONTENT_TYPE_MARK = 'hermes-content-type:'
-const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
+const CONTENT_TYPE_MARK = 'rabbit-content-type:'
+const URL_EFFECTIVE_MARK = 'rabbit-url-effective:'
 
 export const CURL_TITLE_WRITE_OUT = `\n${CONTENT_TYPE_MARK}%{content_type}\n${URL_EFFECTIVE_MARK}%{url_effective}`
 

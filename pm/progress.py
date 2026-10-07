@@ -1,11 +1,11 @@
 """One output policy for long child processes: verbose in CI, contained elsewhere.
 
 CI logs are the only record of a remote failure, so CI (``CI`` /
-``GITHUB_ACTIONS``) or ``HERMES_VERBOSE=1`` streams child output unchanged.
+``GITHUB_ACTIONS``) or ``RABBIT_VERBOSE=1`` streams child output unchanged.
 Everywhere else a child collapses into one status line: on a terminal it is
 rewritten in place with the child's latest line, off a terminal only the
 start and finish are printed. A failure always prints the captured tail, so
-containment never hides an error. ``HERMES_VERBOSE=0`` forces containment.
+containment never hides an error. ``RABBIT_VERBOSE=0`` forces containment.
 
 Stdlib-only: the bootstrap runner imports this from a pre-3.11 system Python.
 """
@@ -40,7 +40,7 @@ class TextSink(Protocol):
 def verbose_output(env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether child output streams unchanged instead of being contained."""
     source = os.environ if env is None else env
-    explicit = source.get("HERMES_VERBOSE", "").strip().lower()
+    explicit = source.get("RABBIT_VERBOSE", "").strip().lower()
     if explicit in _TRUE:
         return True
     if explicit in _FALSE:

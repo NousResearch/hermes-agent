@@ -9,7 +9,7 @@ import { test } from 'vitest'
 import { readDirForIpc } from './fs-read-dir'
 
 function mkTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-read-dir-'))
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-fs-read-dir-'))
 }
 
 function fakeDirent(name, flags: any = {}) {

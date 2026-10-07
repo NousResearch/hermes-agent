@@ -34,17 +34,13 @@ export const gatewayMsgEn = {
       continuing: '↻ goal continuing',
       paused: '⏸ goal paused'
     },
-    billing: {
-      openLinkRemoteSpending: '💳 Open this link to allow Remote Spending:',
-      enterCode: (code: string) => `If prompted, enter code: ${code}`
-    },
     voice: {
       stopPhrase: 'voice: stop phrase — voice chat ended',
       noSpeechLimit: 'voice: no speech detected 3 times, continuous mode stopped'
     },
     wake: {
       // {0}=profile name (used twice: in the notice and in the suggested command)
-      otherProfile: (profile: string) => `wake phrase for profile '${profile}' — run: hermes -p ${profile} --tui`,
+      otherProfile: (profile: string) => `wake phrase for profile '${profile}' — run: rabbit -p ${profile} --tui`,
       failed: (message: string) => `wake: ${message}`
     },
     protocol: {

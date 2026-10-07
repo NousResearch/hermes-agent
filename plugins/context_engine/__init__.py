@@ -1,5 +1,5 @@
 """Context engine plugin discovery: bundled ``plugins/context_engine/<name>/`` then user
-``$HERMES_HOME/plugins/<name>/`` (bundled wins on collision) → ``ContextEngine``. Separate from the
+``$RABBIT_HOME/plugins/<name>/`` (bundled wins on collision) → ``ContextEngine``. Separate from the
 general plugin system: ``context.engine`` in config.yaml names the active engine (default
 ``"compressor"``, the built-in ContextCompressor), so a user-installed engine needs no
 ``plugins.enabled`` entry to be selectable."""
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 # Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
-_USER_NAMESPACE = "_hermes_user_context_engine"
+_USER_NAMESPACE = "_rabbit_user_context_engine"
 
 
 def _is_context_engine_dir(path: Path) -> bool:
@@ -74,7 +74,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noq
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
-    from hermes_cli.plugin_isolation import user_plugin_host
+    from rabbit_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
@@ -106,14 +106,14 @@ class _EngineCollector(_loader.NoopPluginContext):
             return
         conflict = "Context engine '%s' tried to register command '/%s' which %s Skipping."
         try:
-            from hermes_cli.commands import resolve_command
+            from rabbit_cli.commands import resolve_command
             if resolve_command(clean) is not None:
                 logger.warning(conflict, self._engine_name, clean, "conflicts with a built-in command.")
                 return
         except Exception:
             pass
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from rabbit_cli.plugins import get_plugin_manager
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
                 logger.warning(conflict, self._engine_name, clean, "is already registered by a plugin.")

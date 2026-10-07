@@ -6,12 +6,12 @@ delivery.
 
 ## Setup & Connection
 
-### 1. Start order: editor first, Hermes second
+### 1. Start order: editor first, Rabbit second
 
-Hermes probes MCP servers at session start. If the editor (and its server)
+Rabbit probes MCP servers at session start. If the editor (and its server)
 isn't up yet, no `mcp_unreal_engine_*` tools exist in the session. Fix:
 launch the editor, confirm the server bound (Output Log shows
-`LogModelContextProtocol` with the address), then open a NEW Hermes session.
+`LogModelContextProtocol` with the address), then open a NEW Rabbit session.
 Tools don't hot-appear mid-session.
 
 ### 2. Server enabled but no tools advertised
@@ -19,7 +19,7 @@ Tools don't hot-appear mid-session.
 The Unreal MCP plugin ships the SERVER, not the tools. If `list_toolsets`
 returns nothing/near-nothing, the toolset provider plugin (AllToolsets) or
 Toolset Registry isn't enabled in this project. Fix in Edit > Plugins,
-restart the editor, restart the Hermes session.
+restart the editor, restart the Rabbit session.
 
 ### 3. macOS: full Xcode is required, not just Command Line Tools
 
@@ -37,9 +37,9 @@ compiling shaders.
 ### 4. Port 8000 conflicts
 
 Common collisions: local dev servers, Jupyter, other MCP hosts. Symptom: the
-server fails to bind (Output Log) or Hermes' probe times out. Fix: change
+server fails to bind (Output Log) or Rabbit' probe times out. Fix: change
 Server Port Number in Editor Preferences > Model Context Protocol AND the
-`url` in `~/.hermes/config.yaml` (`mcp_servers.unreal-engine`), then restart
+`url` in `~/.rabbit/config.yaml` (`mcp_servers.unreal-engine`), then restart
 both sides. Verify: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/mcp`
 (non-000 means something is listening; whether it's Unreal is a different
 question — check the Output Log).
@@ -51,20 +51,20 @@ The editor was closed, crashed, or the server was stopped
 the user, have them relaunch/restart the server, then reconnect (new session
 if tools were lost).
 
-### 5. GenerateClientConfig is not for Hermes
+### 5. GenerateClientConfig is not for Rabbit
 
 `ModelContextProtocol.GenerateClientConfig` writes config files for Claude
-Code/Cursor/VSCode/Gemini/Codex into the project root. Hermes' connection
-lives in `~/.hermes/config.yaml` via `hermes mcp install unreal-engine`.
-Running GenerateClientConfig neither helps nor harms Hermes — just don't
-mistake it for the Hermes setup step.
+Code/Cursor/VSCode/Gemini/Codex into the project root. Rabbit' connection
+lives in `~/.rabbit/config.yaml` via `rabbit mcp install unreal-engine`.
+Running GenerateClientConfig neither helps nor harms Rabbit — just don't
+mistake it for the Rabbit setup step.
 
 ## Calling Discipline
 
 ### 6. One call at a time — never batch MCP calls
 
 The server executes tool calls serially on the game thread and Epic
-explicitly warns against overlapping calls. Hermes executes same-turn tool
+explicitly warns against overlapping calls. Rabbit executes same-turn tool
 calls concurrently — so batching two `mcp_unreal_engine_*` calls in one turn
 IS issuing overlapping calls. Strictly sequential: call, await, then next.
 This deliberately overrides the general "batch independent calls" guidance.
@@ -85,9 +85,9 @@ the user to look at the editor for a dialog. Prefer tool paths/parameters
 that avoid interactive prompts; save proactively so "unsaved changes"
 prompts don't appear at bad times.
 
-### 9. Timeouts: Hermes gives up before Unreal does
+### 9. Timeouts: Rabbit gives up before Unreal does
 
-Hermes' default per-call timeout is 120 s. Asset imports, first-shader
+Rabbit' default per-call timeout is 120 s. Asset imports, first-shader
 compiles, big saves, and renders can exceed it — the call "fails" while the
 editor happily finishes the work. Symptoms: timeout error, then the next
 scene query shows the operation actually completed. Fixes: raise
@@ -237,7 +237,7 @@ import/export file arguments and screenshot output paths.
 ### 18. Filesystem results land on the EDITOR host
 
 Screenshots, renders, and exports write to the machine running Unreal (e.g.
-`<Project>/Saved/Screenshots/...`). If Hermes runs elsewhere (SSH backend,
+`<Project>/Saved/Screenshots/...`). If Rabbit runs elsewhere (SSH backend,
 container), `read_file` on that path reads the wrong filesystem. Same-machine
 setups (the default here) can read captures directly.
 

@@ -164,7 +164,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
     def _credentials(self) -> Tuple[str, str]:
         """``(api_key, base_url)`` from the runtime resolver chat uses, so a pooled or OAuth credential counts
         and a multiplexed profile never spends the launch profile's ``os.environ`` key; raises on failure."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="openrouter")
         return (str(runtime.get("api_key") or "").strip(),
@@ -172,7 +172,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
 
     def _headers(self, api_key: str) -> Dict[str, str]:
         return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/NousResearch/hermes-agent", "X-Title": "Hermes Agent"}
+                "HTTP-Referer": "https://github.com/seven0070/Rabbit-", "X-Title": "Rabbit Agent"}
 
     def _session(self) -> Any:
         import requests
@@ -211,7 +211,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
 
     def _configured_model(self) -> str:
         try:
-            from hermes_cli.config import cfg_get, load_config
+            from rabbit_cli.config import cfg_get, load_config
             value = cfg_get(load_config(), "video_gen", "model")
         except Exception as exc:  # noqa: BLE001
             logger.debug("Could not read video_gen.model: %s", exc)
@@ -298,7 +298,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
         except Exception as exc:  # noqa: BLE001
             return fail(f"Could not resolve OpenRouter credentials: {exc}", "missing_credentials")
         if not api_key:
-            return fail("No OpenRouter credential: set OPENROUTER_API_KEY or run `hermes auth add openrouter`",
+            return fail("No OpenRouter credential: set OPENROUTER_API_KEY or run `rabbit auth add openrouter`",
                         "missing_credentials")
         # Resolved once: a rotating pool must not submit under one key and poll or download under another.
         headers = self._headers(api_key)

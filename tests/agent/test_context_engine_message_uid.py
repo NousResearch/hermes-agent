@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.context_engine import ContextEngine
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 UID_LEN = 32
 

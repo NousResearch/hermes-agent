@@ -394,9 +394,9 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
   const rows = await fetchRegistrySessionRows(
     [
       {
-        connectionId: 'gw-cloud',
+        connectionId: 'gw-remote',
         kind: 'remote',
-        backends: [{ descriptor: 'cloud-desc', profileLabel: null }]
+        backends: [{ descriptor: 'remote-desc', profileLabel: null }]
       }
     ],
     new URLSearchParams({ limit: '20', offset: '0' }),
@@ -405,7 +405,7 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
 
       return {
         sessions: [
-          { id: 'r-1', profile: 'hermes-claude' },
+          { id: 'r-1', profile: 'rabbit-claude' },
           { id: 'r-2', profile: '' }
         ],
         total: 2
@@ -422,8 +422,8 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
   assert.deepEqual(
     rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
     [
-      ['r-1', 'hermes-claude', 'gw-cloud'],
-      ['r-2', 'default', 'gw-cloud']
+      ['r-1', 'rabbit-claude', 'gw-remote'],
+      ['r-2', 'default', 'gw-remote']
     ]
   )
 })
@@ -433,7 +433,7 @@ test('registry sources: large aggregate reads stay within the backend page cap',
   const rows = Array.from({ length: 250 }, (_, index) => ({ id: `r-${index}` }))
 
   const result = await fetchRegistrySessionRows(
-    [{ connectionId: 'gw-cloud', kind: 'remote', backends: [{ descriptor: 'cloud-desc', profileLabel: null }] }],
+    [{ connectionId: 'gw-remote', kind: 'remote', backends: [{ descriptor: 'remote-desc', profileLabel: null }] }],
     new URLSearchParams({ limit: '250', offset: '0' }),
     async (_descriptor, path) => {
       calls.push(path)
@@ -560,7 +560,7 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
     merged,
     [
       { id: 'dupe', profile: 'work', connection_id: 'gw-1', last_active: 95 },
-      { id: 'remote-1', profile: 'hermes-claude', connection_id: 'gw-1', last_active: 120 },
+      { id: 'remote-1', profile: 'rabbit-claude', connection_id: 'gw-1', last_active: 120 },
       { id: 'remote-2', connection_id: 'gw-1', last_active: 110 }
     ],
     totals
@@ -571,7 +571,7 @@ test('splice: registry rows dedupe by id and extend per-profile totals', () => {
     merged.map(row => (row as any).id),
     ['local-1', 'dupe', 'remote-1', 'remote-2']
   )
-  assert.equal(totals['hermes-claude'], 1)
+  assert.equal(totals['rabbit-claude'], 1)
   assert.equal(totals.default, 2) // untagged registry row counts under default
   assert.equal(totals.work, 1) // deduped row does not double-count
 })

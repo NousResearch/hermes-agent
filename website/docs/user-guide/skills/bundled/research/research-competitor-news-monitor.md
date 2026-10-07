@@ -17,7 +17,7 @@ Watch named companies for material news; cited digests.
 | Source | Bundled (installed by default) |
 | Path | `skills/research/competitor-news-monitor` |
 | Version | `0.1.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Competitors`, `News`, `Market-Research`, `Monitoring` |
@@ -26,7 +26,7 @@ Watch named companies for material news; cited digests.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Competitor News Monitor
@@ -60,12 +60,12 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
+Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.rabbit/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",
         schedule="every monday 9am",
-        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at ~/.hermes/competitor-watches/<watch-slug>.json.",
+        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at ~/.rabbit/competitor-watches/<watch-slug>.json.",
         deliver=<user's destination>)
 ```
 

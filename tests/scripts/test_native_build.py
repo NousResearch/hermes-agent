@@ -58,7 +58,7 @@ def test_native_cli_consumes_real_minimal_preparation_without_bootstrap(tmp_path
     from pm.store import current_target
 
     out = tmp_path / "payload"
-    code = out / "hermes-agent"
+    code = out / "rabbit-agent"
     code.mkdir(parents=True)
     (code / "pyproject.toml").write_text('[project]\nname="native-fixture"\nversion="1.0"\n[project.scripts]\nprobe="entry:main"\n')
     (code / "entry.py").write_text('def main():\n print("native fixture")\n return 0\n')
@@ -74,19 +74,19 @@ def test_native_cli_consumes_real_minimal_preparation_without_bootstrap(tmp_path
     features.write_text('{"extras":[]}')
     (out / "uv-cache").mkdir()
     prepared = publish_prepared(out, ROOT, "a" * 40, AgentInputs(
-        project=code / "pyproject.toml", code=code, repo="hermes-agent", placement="contained",
+        project=code / "pyproject.toml", code=code, repo="rabbit-agent", placement="contained",
         target=current_target(), python=python, site_packages=site, environment=out / "venv",
         tools=out / "tools", pm_runtime=runtime, features=features, ref="fixture",
         resources={name: code / name for name in RESOURCE_ENV},
     ))
-    env = {**os.environ, "UV_OFFLINE": "1", "HERMES_HOME": str(tmp_path / "private")}
+    env = {**os.environ, "UV_OFFLINE": "1", "RABBIT_HOME": str(tmp_path / "private")}
     command = [sys.executable, "-S", "-B", str(SCRIPT), "--prepared", str(prepared)]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["runtime"]["commands"] == {"probe": "bin/probe"}
-    assert not (code / "hermes_cli/tui_dist").exists()
-    assert not (code / "hermes_cli/web_dist").exists()
+    assert not (code / "rabbit_cli/tui_dist").exists()
+    assert not (code / "rabbit_cli/web_dist").exists()
     probe = subprocess.run([str(out / "bin/probe")], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
     assert probe.returncode == 0, probe.stderr
     assert probe.stdout.strip() == "native fixture"

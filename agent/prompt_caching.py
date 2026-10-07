@@ -23,7 +23,7 @@ class PromptCachePlan:
 def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: str | None) -> bool:
     """Whether the envelope-layout route honors part-level markers on role:tool.
 
-    OpenRouter/Nous Portal relocate a part-level ``cache_control`` onto the ``tool_result``
+    OpenRouter relocates a part-level ``cache_control`` onto the ``tool_result``
     block; LiteLLM-style proxies copy parts verbatim, so it lands at ``tool_result.content[0]``
     (non-retryable 400). There, role:tool carries no part markers and the budget reallocates.
     """

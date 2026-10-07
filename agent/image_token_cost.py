@@ -6,7 +6,7 @@ request that carries it, so the cost is observable: with a fresh usage anchor (r
 the previous response), the residual between the next real ``prompt_tokens`` and
 ``anchor + text-only delta`` is the price of the N images that delta introduced (#70328).
 
-The learned value is kept per ``model@host`` in ``~/.hermes/cache/image_token_costs.json`` so a new
+The learned value is kept per ``model@host`` in ``~/.rabbit/cache/image_token_costs.json`` so a new
 session starts calibrated, and bound per turn through a ContextVar so every estimator
 (preflight trigger, tail-budget walk, gateway hygiene) prices images the same way.
 """
@@ -25,7 +25,7 @@ DEFAULT_IMAGE_TOKEN_COST = 1500
 _MIN_PLAUSIBLE, _MAX_PLAUSIBLE = 64, 32_768
 _EMA_ALPHA = 0.5
 
-_image_cost_var: ContextVar[Optional[int]] = ContextVar("hermes_image_token_cost", default=None)
+_image_cost_var: ContextVar[Optional[int]] = ContextVar("rabbit_image_token_cost", default=None)
 _LEARNED: Dict[str, int] = {}
 _LOADED = False
 # Routed profiles (multiplexed gateway) keep their own table, loaded from THEIR cache file: the
@@ -55,14 +55,14 @@ def _read_cache() -> Dict[str, int]:
 def _table() -> Dict[str, int]:
     """The active profile's learned table, loaded lazily from its cache file."""
     global _LOADED
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 
-    if get_hermes_home_override() is None:
+    if get_rabbit_home_override() is None:
         if not _LOADED:
             _LOADED = True
             _LEARNED.update(_read_cache())
         return _LEARNED
-    home_key = hermes_home_key()
+    home_key = rabbit_home_key()
     table = _LEARNED_BY_HOME.get(home_key)
     if table is None:
         table = _LEARNED_BY_HOME[home_key] = _read_cache()

@@ -81,10 +81,10 @@ def _run_with_hooks(agent, message="hi"):
 
     with (
         patch(
-            "hermes_cli.lifecycle.has_hook",
+            "rabbit_cli.lifecycle.has_hook",
             side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
         ),
-        patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
+        patch("rabbit_cli.lifecycle.invoke_hook", side_effect=_record_hook),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -171,7 +171,7 @@ class TestStreamHelperStashesFirstChunkAt:
 
         response = agent._interruptible_streaming_api_call({})
 
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
+        from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
         assert response.id == PARTIAL_STREAM_STUB_ID
         assert agent._last_api_first_chunk_at is None

@@ -1,4 +1,4 @@
-from hermes_state import AsyncSessionDB, SessionDB
+from rabbit_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
@@ -465,7 +465,7 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     assert result == "ok"
     runner.adapters[Platform.SLACK].send.assert_awaited_once()
     onboarding = runner.adapters[Platform.SLACK].send.await_args.args[1]
-    assert "/hermes sethome" in onboarding
+    assert "/rabbit sethome" in onboarding
     assert "Type /sethome" not in onboarding
 
 
@@ -555,7 +555,7 @@ async def test_status_command_bypasses_active_session_guard():
 
     async def fake_handler(event):
         handler_called_with.append(event)
-        return "📊 **Hermes Gateway Status**\n**Agent Running:** Yes ⚡"
+        return "📊 **Rabbit Gateway Status**\n**Agent Running:** Yes ⚡"
 
     # Concrete subclass to avoid abstract method errors
     class _ConcreteAdapter(BasePlatformAdapter):
@@ -602,8 +602,8 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     source (source.profile — URL prefix / per-credential adapter / room map),
     not the multiplexer's active profile, which is always the default and
     made /profile answer "default" in every persona chat."""
-    hermes_home = tmp_path / ".hermes"
-    profile_home = hermes_home / "profiles" / "milo"
+    rabbit_home = tmp_path / ".rabbit"
+    profile_home = rabbit_home / "profiles" / "milo"
     profile_home.mkdir(parents=True)
     (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
 
@@ -617,7 +617,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     )
     runner = _make_runner(session_entry)
     runner.config.multiplex_profiles = True
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
     event = _make_event("/profile")
     event.source.profile = "milo"
@@ -625,13 +625,13 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     result = await runner._handle_profile_command(event)
 
     assert "**Profile:** `milo`" in result
-    # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
+    # The reply renders display_rabbit_home() for the routed profile, which abbreviates a home
     # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
     from gateway.run import _profile_runtime_scope
-    from hermes_constants import display_hermes_home
+    from rabbit_constants import display_rabbit_home
 
     with _profile_runtime_scope(profile_home):
-        expected_home = display_hermes_home()
+        expected_home = display_rabbit_home()
     assert f"**Home:** `{expected_home}`" in result
 
 
@@ -677,7 +677,7 @@ async def test_context_command_keeps_configured_window_without_resident_agent():
     with patch("gateway.run._load_gateway_config", return_value=config), patch(
         "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
     ), patch(
-        "hermes_cli.config.get_compatible_custom_providers",
+        "rabbit_cli.config.get_compatible_custom_providers",
         return_value=config["custom_providers"],
     ), patch(
         "agent.model_metadata.get_model_context_length",
@@ -743,7 +743,7 @@ async def test_context_all_appends_expanded_listings():
     }
     fake_details = {
         "skills": [
-            {"name": "hermes-agent", "index_tokens": 30, "skill_md_tokens": 2_500},
+            {"name": "rabbit-agent", "index_tokens": 30, "skill_md_tokens": 2_500},
         ],
         "toolsets": [
             {"toolset": "terminal", "tool_count": 4, "schema_tokens": 5_100},
@@ -762,6 +762,6 @@ async def test_context_all_appends_expanded_listings():
     assert "Toolsets by schema cost" in result
     assert "terminal" in result and "5,100 tokens" in result
     assert "Skills by cost" in result
-    assert "hermes-agent" in result
+    assert "rabbit-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result

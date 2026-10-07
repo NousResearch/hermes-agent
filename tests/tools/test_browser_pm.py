@@ -20,9 +20,9 @@ def browser_store(tmp_path, monkeypatch):
     home.mkdir()
     store = home / "tools"
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(store))
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(bt, "_SANE_PATH_DIRS", ())
     monkeypatch.setattr(install, "_discover_homebrew_node_dirs", lambda: ())
@@ -64,7 +64,7 @@ def test_unrecorded_playwright_cache_is_not_a_pm_browser(browser_store):
 
 
 def test_doctor_fix_publishes_and_reads_the_pm_browser(browser_store, monkeypatch):
-    from hermes_cli import doctor_tools
+    from rabbit_cli import doctor_tools
     import pm.client
 
     _, _, publish = browser_store
@@ -114,7 +114,7 @@ def test_execution_acquires_missing_browser_through_pm(browser_store, monkeypatc
 
     _, _, publish = browser_store
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "0")
     assert pm.lazy_installs_allowed()
     requests = []
 
@@ -133,11 +133,11 @@ def test_execution_acquires_missing_browser_through_pm(browser_store, monkeypatc
 
 def test_termux_ownership_policy_never_provisions(browser_store, monkeypatch):
     # Exercise the real environment policy, not an emulated Android binary.
-    from hermes_cli import doctor_tools
+    from rabbit_cli import doctor_tools
 
     monkeypatch.setenv("TERMUX_VERSION", "test")
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "0")
     monkeypatch.setattr(install, "_running_in_docker", lambda: False)
     monkeypatch.setattr(bt, "_chromium_autoinstall_attempted", False)
 
@@ -298,7 +298,7 @@ def test_chromium_autoinstall_is_one_shot(browser_store, monkeypatch, fails):
     import pm.client
 
     _, _, publish = browser_store
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "0")
     monkeypatch.setattr(install, "_running_in_docker", lambda: False)
     calls = []
 
@@ -319,7 +319,7 @@ def test_chromium_acquisition_policy(browser_store, monkeypatch, policy, tmp_pat
     import pm.client
 
     monkeypatch.setattr(install, "_running_in_docker", lambda: policy == "docker")
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1" if policy == "disabled" else "0")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1" if policy == "disabled" else "0")
     if policy == "termux":
         monkeypatch.setenv("TERMUX_VERSION", "test")
     if policy == "override":

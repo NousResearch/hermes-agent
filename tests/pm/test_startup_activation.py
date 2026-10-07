@@ -18,8 +18,8 @@ from tests.pm._fixtures import make_tar, served as served
 def checked_store(tmp_path, monkeypatch, served):
     engine = importlib.import_module("pm.install")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
     monkeypatch.setattr(paths, "repo_root", lambda: tmp_path / "repo")
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     monkeypatch.setattr(registry, "_packages", {})
@@ -94,20 +94,20 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
 
         monkeypatch.setattr(run, "start_gateway", started)
         monkeypatch.setattr(run, "_exit_after_graceful_shutdown", lambda code: None)
-        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
+        monkeypatch.setattr("rabbit_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         monkeypatch.setattr(sys, "argv", ["gateway"])
         start = run.main
     else:
-        from hermes_cli import main
+        from rabbit_cli import main
 
         # Stop at --help: exercise the actual startup block, not an agent session.
-        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
+        monkeypatch.setattr("rabbit_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         for name in ("_set_process_title", "_advertise_agent_env",
                      "_sweep_stale_bytecode_if_checkout_changed",
                      "_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch",
                      "_try_fast_serve_launch", "_try_fast_chat_launch"):
             monkeypatch.setattr(main, name, lambda: None)
-        monkeypatch.setattr(sys, "argv", ["hermes", "--help"])
+        monkeypatch.setattr(sys, "argv", ["rabbit", "--help"])
 
         def start():
             with pytest.raises(SystemExit) as exit_info:

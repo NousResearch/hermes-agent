@@ -39,7 +39,7 @@ function clearProxyEnv() {
 
 test('update API uses an HTTPS proxy only when the environment selects one', () => {
   clearProxyEnv()
-  const url = 'https://api.github.com/repos/NousResearch/hermes-agent/commits/main'
+  const url = 'https://api.github.com/repos/seven0070/Rabbit-/commits/main'
 
   assert.equal(updateCheckAgent(url), undefined)
   process.env.HTTPS_PROXY = 'http://127.0.0.1:8080'
@@ -69,9 +69,9 @@ test('update API request reaches the configured HTTP CONNECT proxy', async () =>
     const status = await new Promise<number | undefined>((resolve, reject) => {
       https
         .get(
-          'https://api.github.com/repos/NousResearch/hermes-agent/commits/main',
+          'https://api.github.com/repos/seven0070/Rabbit-/commits/main',
           {
-            agent: updateCheckAgent('https://api.github.com/repos/NousResearch/hermes-agent/commits/main')
+            agent: updateCheckAgent('https://api.github.com/repos/seven0070/Rabbit-/commits/main')
           },
           res => resolve(res.statusCode)
         )

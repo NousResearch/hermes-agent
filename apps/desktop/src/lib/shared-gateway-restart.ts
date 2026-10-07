@@ -1,4 +1,4 @@
-import type { StatusResponse } from '@/types/hermes'
+import type { StatusResponse } from '@/types/rabbit'
 
 /** Profiles a gateway restart would blip when the polled profile is carried by the shared
  *  multiplexer, in display order (default first, then as recorded). `null` for a standalone

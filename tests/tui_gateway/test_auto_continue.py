@@ -15,7 +15,7 @@ time is positive proof the turn never finished. Contract pinned here:
   disabled / crash-looping / already-running cases, and bounds attempts via
   the marker's attempt counter;
 * a marker whose writer is still alive is ownership evidence, not crash
-  evidence: a second backend resuming the same session over one HERMES_HOME
+  evidence: a second backend resuming the same session over one RABBIT_HOME
   schedules nothing and leaves the marker for its owner to clear (#94778).
 """
 
@@ -91,8 +91,8 @@ def emits(monkeypatch):
 
 @pytest.fixture()
 def marker_home(monkeypatch, tmp_path):
-    """Point the server's marker storage at a temp HERMES_HOME."""
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    """Point the server's marker storage at a temp RABBIT_HOME."""
+    monkeypatch.setattr(server, "_rabbit_home", tmp_path)
     return tmp_path
 
 
@@ -523,7 +523,7 @@ def test_failed_agent_build_leaves_marker_for_retry(
 # ── Marker writer identity: a live writer is an owner, not a corpse ────
 #
 # The scheduler used to treat every marker it found as proof the writing
-# process died. Two backends over one HERMES_HOME break that assumption: A is
+# process died. Two backends over one RABBIT_HOME break that assumption: A is
 # mid-turn on session S while B resumes S — B read A's live marker as a crash
 # and started a second turn over it (#94778). Ownership now comes from the
 # writer's pid + create time.
@@ -566,7 +566,7 @@ def test_marker_writer_state_rejects_a_recycled_pid():
 
 
 def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, marker_home):
-    """Two backends, one HERMES_HOME, one session: A is mid-turn (alive writer)
+    """Two backends, one RABBIT_HOME, one session: A is mid-turn (alive writer)
 
     B resumes S and must read the marker as ownership evidence, not crash
     evidence — no continuation, no misleading "Resuming interrupted turn…"

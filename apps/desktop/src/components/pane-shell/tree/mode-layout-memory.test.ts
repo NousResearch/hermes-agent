@@ -88,7 +88,7 @@ it('restores independently customized modes through real pane bindings and reloa
       tree.setTreeGroupMinimized(model.findGroupOfPane(tree.$layoutTree.get()!, 'terminal')!.id, true)
       layout.setSidebarOpen(false)
       const advanced = app.snapshot()
-      const saved = window.localStorage.getItem('hermes.desktop.layoutTree.v2')
+      const saved = window.localStorage.getItem('rabbit.desktop.layoutTree.v2')
 
       mode.setInterfaceMode('simple')
       app.apply(simpleId)
@@ -96,7 +96,7 @@ it('restores independently customized modes through real pane bindings and reloa
       tree.setStripTabHidden('bots', false)
       layout.setSidebarOpen(true)
       const simple = app.snapshot()
-      expect(window.localStorage.getItem('hermes.desktop.layoutTree.v2')).toBe(saved)
+      expect(window.localStorage.getItem('rabbit.desktop.layoutTree.v2')).toBe(saved)
 
       terminal.$terminalInjection.set('pending fixture command')
       layout.$rightRailActiveTabId.set('file:fixture.txt')
@@ -160,13 +160,13 @@ it.each(['advanced', 'simple'] as const)(
 
     const legacyPanes = { 'chat-sidebar': { open: false, widthOverride: 301 }, 'file-browser': { open: true } }
     const raw = JSON.stringify(legacyTree)
-    window.localStorage.setItem('hermes.desktop.layoutTree.v2', raw)
-    window.localStorage.setItem('hermes.desktop.paneStates.v1', JSON.stringify(legacyPanes))
-    window.localStorage.setItem('hermes.desktop.layoutPreset.active', 'custom')
-    window.localStorage.setItem('hermes.desktop.hiddenStripTabs.v1', '["bots"]')
+    window.localStorage.setItem('rabbit.desktop.layoutTree.v2', raw)
+    window.localStorage.setItem('rabbit.desktop.paneStates.v1', JSON.stringify(legacyPanes))
+    window.localStorage.setItem('rabbit.desktop.layoutPreset.active', 'custom')
+    window.localStorage.setItem('rabbit.desktop.hiddenStripTabs.v1', '["bots"]')
 
     if (initialMode === 'simple') {
-      window.localStorage.setItem('hermes.desktop.interfaceMode.v1', 'simple')
+      window.localStorage.setItem('rabbit.desktop.interfaceMode.v1', 'simple')
     }
 
     const { mode, tree, panes, layout } = await boot()

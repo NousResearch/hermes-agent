@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-rabbit-env" python3 "$0" "$@"'
 """Render ``tui_gateway/contracts`` into TypeScript and OpenRPC.
 
 Python-only (the Python CI lane has no Node): Pydantic's ``model_json_schema()`` output is walked
@@ -36,18 +36,12 @@ from tui_gateway.contracts.connectors import (  # noqa: E402
 from tui_gateway.contracts.connectors_operation import ConnectionSettleReason, ConnectionTargetState  # noqa: E402
 from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS  # noqa: E402
 from tools.connectors.contract import SettleReason, TargetState  # noqa: E402
-from tools.connectors.gateway.wire import ConnectionStatus  # noqa: E402
-from tools.connectors.portal.tools_cache import ToolsRead  # noqa: E402
-from tools.connectors.portal.wire import ConnectorTool  # noqa: E402
 
 TS_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.generated.ts"
 OPENRPC_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"
 _ENUM_PAIRS = (
     ("ConnectionTargetState", ConnectionTargetState, "TargetState", TargetState),
     ("ConnectionSettleReason", ConnectionSettleReason, "SettleReason", SettleReason),
-    ("ConnectorAccountStatus", ConnectorAccountStatus, "ConnectionStatus", ConnectionStatus),
-    ("ConnectorToolFacet", ConnectorToolFacet, "ConnectorTool.facet", ConnectorTool.model_fields["facet"].annotation),
-    ("ConnectorToolsSource", ConnectorToolsSource, "ToolsRead.source", get_type_hints(ToolsRead)["source"]),
 )
 
 HEADER = (
@@ -314,7 +308,7 @@ def render_openrpc() -> str:
 
     doc = {
         "openrpc": "1.3.2",
-        "info": {"title": "Hermes TUI/Desktop gateway", "version": "1",
+        "info": {"title": "Rabbit TUI/Desktop gateway", "version": "1",
                  "description": "Generated from tui_gateway/contracts by scripts/gen_gateway_contracts.py."},
         "methods": [
             {"name": m.name, "summary": " ".join(m.doc.split()),

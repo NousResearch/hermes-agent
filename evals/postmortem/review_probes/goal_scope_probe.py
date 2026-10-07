@@ -10,11 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0,os.getcwd())
 home=tempfile.TemporaryDirectory(prefix='goals-probe-')
-os.environ['HERMES_HOME']=home.name
-os.environ['HERMES_TEST_MODE']='1'
-from hermes_cli import goals
+os.environ['RABBIT_HOME']=home.name
+os.environ['RABBIT_TEST_MODE']='1'
+from rabbit_cli import goals
 from tools import process_registry as pr,async_delegation as ad
-from hermes_cli.cli_loops_mixin import CLILoopsMixin
+from rabbit_cli.cli_loops_mixin import CLILoopsMixin
 from gateway.run_goals import GatewayGoalsMixin
 from tui_gateway import server as pt
 out={'module':goals.__file__,'sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True, encoding='utf-8', errors='replace').strip()}

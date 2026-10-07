@@ -1,13 +1,13 @@
 name: file-tray
-repo: https://github.com/aydnOktay/hermes-file-tray
+repo: https://github.com/aydnOktay/rabbit-file-tray
 sha: 275f040af145b6b3f9660487b7d35821d33d5aca
-description: Session file tray — paths the Hermes agent touched via read_file,
+description: Session file tray — paths the Rabbit agent touched via read_file,
   write_file, or patch. Desktop pane and /files. No API keys.
 maintainer: aydnOktay
 tier: community
 category: desktop
-requires_hermes: ">=0.21"
-docs_url: https://github.com/aydnOktay/hermes-file-tray
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/aydnOktay/rabbit-file-tray
 version: "0.1.0"
 platforms: []
 capabilities:

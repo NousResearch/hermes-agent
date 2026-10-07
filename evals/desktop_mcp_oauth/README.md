@@ -10,7 +10,7 @@ node evals/desktop_mcp_oauth/renderer_lifecycle.mjs "$PWD" /tmp/mcp-scope.json c
 node evals/desktop_mcp_oauth/renderer_lifecycle.mjs "$PWD" /tmp/mcp-unmount.json unmount
 ```
 
-The backend harness creates disposable HOME/HERMES_HOME directories and a local HTTP OAuth/MCP provider. It exercises production session functions, discovery, dynamic registration, PKCE code exchange, token persistence and fresh-process authenticated MCP access. Wrong state, callback replay, wrong server, wrong profile and cancellation are negative controls. It removes temporary token stores and reports only booleans/paths, never token values.
+The backend harness creates disposable HOME/RABBIT_HOME directories and a local HTTP OAuth/MCP provider. It exercises production session functions, discovery, dynamic registration, PKCE code exchange, token persistence and fresh-process authenticated MCP access. Wrong state, callback replay, wrong server, wrong profile and cancellation are negative controls. It removes temporary token stores and reports only booleans/paths, never token values.
 
 The renderer harness bundles the real McpTab and its dependencies in Chromium, runs the production native loopback listener with a registration-only Electron IPC adapter, and uses a fixture WebSocket backend. `cancel` changes the component's scope; `unmount` removes it entirely. Both must cancel the original backend session and close its native listener without relaying a callback. `approved` must use the native relay, not REST auth. Set `CHROMIUM_EXECUTABLE` to use an existing Chromium executable; otherwise Playwright's installed browser is used.
 

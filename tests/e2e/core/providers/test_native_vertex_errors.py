@@ -1,6 +1,6 @@
 """Vertex AI documented errors through the real CLI: retried per semantics or surfaced exactly once.
 
-Each scenario is one ``hermes chat -q`` turn against its own fake (``tests/fakes/providers/vertex.py``);
+Each scenario is one ``rabbit chat -q`` turn against its own fake (``tests/fakes/providers/vertex.py``);
 all run concurrently. Vertex's OpenAI-compatible endpoint returns google.rpc errors in a list-wrapped
 envelope (``[{"error": {"code", "message", "status"}}]``); the fake uses exactly that.
 
@@ -31,7 +31,7 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     FakeVertex,
     Say,
     TokenPolicy,
-    hermes_setup,
+    rabbit_setup,
 )
 
 _API_KEY_BLAME = (r"Vertex auth failure blamed on an API key",
@@ -75,7 +75,7 @@ def _run(tmp: Path, name: str, case: Case) -> dict[str, Any]:
                       script=list(case.script))
     fake.start()
     fake.token_policy = case.policy
-    nh = make_home(tmp / name / "h", **hermes_setup(fake, extra_config={"agent": {"api_max_retries": case.max_attempts}}))
+    nh = make_home(tmp / name / "h", **rabbit_setup(fake, extra_config={"agent": {"api_max_retries": case.max_attempts}}))
     return {"fake": fake, "nh": nh, "turn": run_chat(nh, "Say hello.", env=fake.child_env(), args=("-t", "file"))}
 
 
@@ -116,7 +116,7 @@ def test_terminal_error_surfaced_once_without_retry(results: dict[str, Any], nam
 
 
 def test_rejected_bearer_refreshes_once_then_surfaces(results: dict[str, Any]) -> None:
-    """Every bearer 401s: Hermes may re-mint and retry once, never loop, and shows the error once."""
+    """Every bearer 401s: Rabbit may re-mint and retry once, never loop, and shows the error once."""
     res = results["unauthenticated"]
     fake, turn = res["fake"], res["turn"]
     statuses = [r.get("status") for r in fake.requests]

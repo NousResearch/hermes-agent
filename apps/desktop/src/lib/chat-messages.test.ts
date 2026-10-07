@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { toolResultRecord } from '@/lib/tool-result-metadata'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
@@ -246,7 +246,7 @@ describe('toChatMessages', () => {
   })
 
   it('lifts the leading attachment block into the chip row, like the live bubble (large paste)', () => {
-    const paste = '@file:/home/u/.hermes/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
+    const paste = '@file:/home/u/.rabbit/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
 
     const [captioned, bare] = toChatMessages([
       {
@@ -287,13 +287,13 @@ describe('toChatMessages', () => {
     const [message] = toChatMessages([
       {
         role: 'assistant',
-        content: "MEDIA:/Users/brooklyn/.hermes/cache/audio/tts_20260501_222725.mp3\n\nhow's that sound?",
+        content: "MEDIA:/Users/brooklyn/.rabbit/cache/audio/tts_20260501_222725.mp3\n\nhow's that sound?",
         timestamp: 1
       }
     ])
 
     expect(chatMessageText(message)).toBe(
-      "[Audio: tts_20260501_222725.mp3](#media:%2FUsers%2Fbrooklyn%2F.hermes%2Fcache%2Faudio%2Ftts_20260501_222725.mp3)\n\nhow's that sound?"
+      "[Audio: tts_20260501_222725.mp3](#media:%2FUsers%2Fbrooklyn%2F.rabbit%2Fcache%2Faudio%2Ftts_20260501_222725.mp3)\n\nhow's that sound?"
     )
   })
 
@@ -362,7 +362,7 @@ describe('toChatMessages', () => {
     // How a turn sent to a natively-vision-capable model comes back out of the
     // session store: a backtick-quoted ref (the path has spaces) and the
     // `[screenshot]` stand-in left by flattening the parts list.
-    const ref = '@image:`/Users/me/Library/Application Support/Hermes/composer-images/a.png`'
+    const ref = '@image:`/Users/me/Library/Application Support/Rabbit/composer-images/a.png`'
 
     const [message] = toChatMessages([
       {
@@ -562,9 +562,9 @@ describe('toChatMessages', () => {
     ])
   })
 
-  // Hermes closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
+  // Rabbit closes a failed turn with an assistant-role row (agent/turn_failure_copy.py);
   // painted as the model's reply it read as the assistant refusing the request.
-  it('renders the failed-turn boundary as a Hermes notice, not a model reply', () => {
+  it('renders the failed-turn boundary as a Rabbit notice, not a model reply', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'do the thing', timestamp: 1 },
       { role: 'assistant', content: 'Your request was not processed.', display_kind: 'failed_turn', timestamp: 2 }

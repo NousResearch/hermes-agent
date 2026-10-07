@@ -15,7 +15,7 @@
  *    bounded SIGTERM -> SIGKILL escalation in waitForExit resolves;
  *  - concurrent stop requests for one key share the single in-flight stop;
  *  - spawn paths can await inFlight(key) so a fresh child never overlaps a
- *    dying one on the same HERMES_HOME.
+ *    dying one on the same RABBIT_HOME.
  *
  * Extracted into a dependency-free module (same pattern as backend-child.ts)
  * so the dedup and handle-retention semantics are asserted

@@ -34,7 +34,7 @@
  *   6. resolveGatedDownloadAuth — file save/read must present the SAME
  *      credentials as oauth REST. `saveGatewayFile` used to always ride the
  *      OAuth cookie partition, so a cookieless native (or native-password)
- *      session could list files via `hermes:api` and still 401 on Download.
+ *      session could list files via `rabbit:api` and still 401 on Download.
  *
  * All six are trivial once named; the value is the test that pins the
  * contract so the god-file call sites can't drift back to the buggy shape.
@@ -144,7 +144,7 @@ export interface AdvertisedAuthProvider {
 const PASSWORD_PROVIDER_NAMES = new Set(['basic'])
 
 const OAUTH_NOT_SIGNED_IN_MESSAGE =
-  'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+  'Remote Rabbit gateway uses OAuth, but you are not signed in. ' +
   'Open Settings → Gateway and click "Sign in", or switch back to Local.'
 
 const OAUTH_SESSION_EXPIRED_MESSAGE =

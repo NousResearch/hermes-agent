@@ -5,7 +5,7 @@ import path from 'node:path'
 import { afterAll, expect, test, vi } from 'vitest'
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>()
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-metrics-'))
+const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-desktop-metrics-'))
 const sent: string[] = []
 
 vi.mock('electron', () => ({
@@ -29,15 +29,15 @@ const strategy = (mechanism: string) => ({ mechanism, apply: async () => ({ ok: 
 test('a packaged apply is reported once through the renderer IPC; a checkout hand-off never is', async () => {
   const metrics = registerDesktopSharedMetrics()
 
-  expect(handlers.has('hermes:startup-latency:claim')).toBe(true)
-  expect(handlers.has('hermes:desktop-metrics:crash:take')).toBe(true)
+  expect(handlers.has('rabbit:startup-latency:claim')).toBe(true)
+  expect(handlers.has('rabbit:desktop-metrics:crash:take')).toBe(true)
 
   await metrics.trackUpdateApply(null, strategy('checkout'))
-  expect(handlers.get('hermes:updates:metric:take')!({})).toBeNull()
+  expect(handlers.get('rabbit:updates:metric:take')!({})).toBeNull()
 
   await metrics.trackUpdateApply(strategy('electron-updater'), strategy('electron-updater'))
-  expect(sent).toContain('hermes:updates:metric:pending')
-  expect(handlers.get('hermes:updates:metric:take')!({})).toMatchObject({
+  expect(sent).toContain('rabbit:updates:metric:pending')
+  expect(handlers.get('rabbit:updates:metric:take')!({})).toMatchObject({
     mechanism: 'electron-updater',
     outcome: 'noop',
     from_commit_date: 1_700_000_000

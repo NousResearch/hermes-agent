@@ -6,14 +6,14 @@ import pytest
 
 def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     from tui_gateway import server
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     worker = home / "profiles" / "worker"
     worker.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(server, "_rabbit_home", home)
     for path, marker in ((home, "launch"), (worker, "worker")):
         (path / "config.yaml").write_text(f"terminal:\n  cwd: /{marker}\n")
         with SessionDB(db_path=path / "state.db") as db:
@@ -48,8 +48,8 @@ def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, mon
     custom_home.mkdir()
     (custom_home / "config.yaml").write_text("terminal:\n  cwd: /custom\n")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(custom_home))
-    monkeypatch.setattr(server, "_hermes_home", custom_home)
+    monkeypatch.setenv("RABBIT_HOME", str(custom_home))
+    monkeypatch.setattr(server, "_rabbit_home", custom_home)
 
     with pytest.raises(FileNotFoundError):
         server._profile_home("customer-data")
@@ -64,14 +64,14 @@ def test_profile_param_traversal_fails_closed(tmp_path, monkeypatch, name):
     """A traversal-shaped ``profile`` param must never resolve outside profiles/."""
     from tui_gateway import server
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     outside = tmp_path / "outside"
     outside.mkdir(parents=True)   # a real directory the traversal could land on
     home.mkdir()
     (home / "config.yaml").write_text("terminal:\n  cwd: /launch\n")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(server, "_rabbit_home", home)
 
     with pytest.raises(FileNotFoundError):
         server._profile_home(name)
@@ -85,12 +85,12 @@ def test_unavailable_profile_is_a_typed_rpc_error_not_a_dispatch_crash(tmp_path,
     method (#107829) — the method itself keeps raising, the dispatcher chokepoint maps it."""
     from tui_gateway import server
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text("terminal:\n  cwd: /launch\n")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(server, "_rabbit_home", home)
 
     for method, params in (("session.create", {"profile": "gone"}),
                            ("config.get", {"profile": "gone", "key": "full"})):

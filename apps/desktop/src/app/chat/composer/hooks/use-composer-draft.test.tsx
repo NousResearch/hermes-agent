@@ -82,7 +82,7 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     }
 
     rotateFreshDraftKey()
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     vi.unstubAllGlobals()
     $connection.set(null)
   })
@@ -334,9 +334,9 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
 
     ;(
       window as unknown as {
-        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+        rabbitDesktop: { readFileDataUrl: typeof readFileDataUrl }
       }
-    ).hermesDesktop = { readFileDataUrl }
+    ).rabbitDesktop = { readFileDataUrl }
 
     let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
 

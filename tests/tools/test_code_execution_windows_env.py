@@ -90,7 +90,7 @@ def _configured_timezone_child_env():
     return code_execution_env._build_child_env(
         rpc_endpoint="socket",
         rpc_token="token",
-        tmpdir="/tmp/hermes-code-execution-test",
+        tmpdir="/tmp/rabbit-code-execution-test",
         child_python=sys.executable,
     )
 
@@ -104,7 +104,7 @@ def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(m
     ``time.timezone == 0`` (+01:00 instead of -07:00) while ``time.tzname`` still read correctly."""
     import json
 
-    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+    monkeypatch.setattr("rabbit_time.get_timezone_name", lambda: "America/Los_Angeles")
     child_env = _configured_timezone_child_env()
     assert "TZ" not in child_env
 

@@ -34,7 +34,7 @@ def _summaries(caplog):
 def test_register_summary_names_failed_server_with_reason(monkeypatch, tmp_path, caplog, _clean_registry):
     """Production path: ``register_mcp_servers`` with a stdio command that cannot start. The
     summary line itself carries the server name and the recorded connect error."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from tools import mcp_tool
     from tools.mcp_tool_discovery import register_mcp_servers
 

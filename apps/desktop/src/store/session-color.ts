@@ -4,7 +4,7 @@ import { sessionProjectColor } from '@/app/chat/sidebar/projects/workspace-group
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { $projectOwnerBySessionId, $projects } from '@/store/projects'
 import { $sessions, sessionPinId } from '@/store/session'
-import type { ProjectInfo, SessionInfo } from '@/types/hermes'
+import type { ProjectInfo, SessionInfo } from '@/types/rabbit'
 
 // Per-session color OVERRIDES — a user-picked color that wins over the inherited
 // project color (#66565 layer 2). Desktop-local like pins, keyed by the DURABLE
@@ -12,7 +12,7 @@ import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 // this to the TUI later, promote this one atom to a backend SessionInfo.color
 // field — the resolver below and the picker UI stay exactly as they are.
 export const $sessionColorOverrides = persistentAtom<Record<string, string>>(
-  'hermes.desktop.sessionColors',
+  'rabbit.desktop.sessionColors',
   {},
   Codecs.stringRecord
 )

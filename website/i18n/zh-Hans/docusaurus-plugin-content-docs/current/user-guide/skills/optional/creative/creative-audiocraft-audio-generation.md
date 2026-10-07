@@ -14,7 +14,7 @@ AudioCraft：MusicGen 文本转音乐，AudioGen 文本转声音。
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/creative/audiocraft-audio-generation` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/creative/audiocraft-audio-generation` 安装 |
 | 路径 | `optional-skills/creative/audiocraft-audio-generation` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -27,7 +27,7 @@ AudioCraft：MusicGen 文本转音乐，AudioGen 文本转声音。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # AudioCraft：音频生成
@@ -576,8 +576,8 @@ for desc in descriptions:
 
 ## 参考资料
 
-- **[高级用法](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/audiocraft/references/advanced-usage.md)** - 训练、微调、部署
-- **[故障排查](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/models/audiocraft/references/troubleshooting.md)** - 常见问题与解决方案
+- **[高级用法](https://github.com/seven0070/Rabbit-/blob/main/skills/mlops/models/audiocraft/references/advanced-usage.md)** - 训练、微调、部署
+- **[故障排查](https://github.com/seven0070/Rabbit-/blob/main/skills/mlops/models/audiocraft/references/troubleshooting.md)** - 常见问题与解决方案
 
 ## 资源
 

@@ -1,5 +1,5 @@
 """Tools package namespace. Kept side-effect free: importing ``tools`` must not
-load the tool stack (some subsystems import it while ``hermes_cli.config`` is
+load the tool stack (some subsystems import it while ``rabbit_cli.config`` is
 still initializing). Import concrete submodules directly."""
 
 

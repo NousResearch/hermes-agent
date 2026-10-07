@@ -1,6 +1,6 @@
 """Persistent CDP supervisor for browser dialog + frame detection.
 
-One ``CDPSupervisor`` per Hermes ``task_id`` with a reachable CDP endpoint: one
+One ``CDPSupervisor`` per Rabbit ``task_id`` with a reachable CDP endpoint: one
 persistent WebSocket, ``Page`` / ``Runtime`` / ``Target`` events on every attached
 session (top page + auto-attached OOPIF / worker targets), pending dialogs + frame
 tree exposed via a thread-safe snapshot. Not in the tool schema — output reaches the

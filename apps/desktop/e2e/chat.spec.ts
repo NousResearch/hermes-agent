@@ -1,7 +1,7 @@
 /**
  * E2E chat tests — send a message and verify a response appears.
  *
- * Requires the full boot chain to complete (hermes serve + mock inference
+ * Requires the full boot chain to complete (rabbit serve + mock inference
  * provider). The mock server returns a canned reply, so we verify the
  * response text shows up in the chat transcript.
  *

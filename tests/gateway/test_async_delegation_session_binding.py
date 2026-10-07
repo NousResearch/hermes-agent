@@ -178,7 +178,7 @@ class TestGatewayPinningFailsClosed:
     async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
         from gateway.run import GatewayRunner
         from gateway.session import AsyncSessionStore
-        from hermes_state import AsyncSessionDB, SessionDB
+        from rabbit_state import AsyncSessionDB, SessionDB
 
         session_db = SessionDB(db_path=tmp_path / "state.db")
         session_db.create_session("sess_parent", source="telegram")

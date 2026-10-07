@@ -96,12 +96,12 @@ export function resolveStamp({
     if (!local || local.commit !== channelBuild.commit || local.dirty) throw new Error('Channel build identity does not match clean checkout HEAD')
     return { ...local, branch: null, source: 'channel-build', baseVersion: channelBuild.sourceVersion, channelBuild }
   }
-  if (env.HERMES_BUILD_COMMIT) {
-    if (!/^[a-f0-9]{40}$/.test(env.HERMES_BUILD_COMMIT) || env.HERMES_PAYLOAD_TAG) {
+  if (env.RABBIT_BUILD_COMMIT) {
+    if (!/^[a-f0-9]{40}$/.test(env.RABBIT_BUILD_COMMIT) || env.RABBIT_PAYLOAD_TAG) {
       throw new Error('Commit builds require an exact full SHA without a release tag')
     }
     const local = fromLocalGit(repoRoot, execFn)
-    if (!local || local.commit !== env.HERMES_BUILD_COMMIT) {
+    if (!local || local.commit !== env.RABBIT_BUILD_COMMIT) {
       throw new Error('Commit build identity does not match the checkout HEAD')
     }
     return { ...local, branch: null, source: 'commit-build' }
@@ -124,7 +124,7 @@ export function stageDesktopLaunchers(root, identity = productIdentity) {
   const commands = {}
   const launchers = []
   for (const [name, source] of Object.entries(manifest.runtime.commands)) {
-    const alias = name.replace(/^hermes(?=-|$)/, identity.cliName)
+    const alias = name.replace(/^rabbit(?=-|$)/, identity.cliName)
     const destination = posix.join(posix.dirname(source), `${alias}${windows ? '.exe' : ''}`)
     if (source !== destination && existsSync(join(root, source))) {
       renameSync(join(root, source), join(root, destination))
@@ -184,7 +184,7 @@ function main() {
     )
   }
 
-  const bundled = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT)
+  const bundled = ['bundled', 'store'].includes(process.env.RABBIT_DESKTOP_VARIANT)
   const payload = bundled
     ? stageDesktopLaunchers(join(OUT_DIR, 'agent-payload'))
     : null
@@ -205,22 +205,22 @@ function main() {
  * The PM bundle builder supplies launch paths only for bundled artifacts.
  */
 export function buildStampPayload(stamp, env = process.env, platform = process.platform, payload = null) {
-  const variant = (env.HERMES_DESKTOP_VARIANT || "").trim()
+  const variant = (env.RABBIT_DESKTOP_VARIANT || "").trim()
   const channelBuild = channelBuildRequest(env)
   if (channelBuild && (stamp.commit !== channelBuild.commit || stamp.dirty)) throw new Error('Channel build identity does not match stamp')
-  const commitBuild = env.HERMES_BUILD_COMMIT || null
+  const commitBuild = env.RABBIT_BUILD_COMMIT || null
   if (commitBuild && (!/^[a-f0-9]{40}$/.test(commitBuild) || commitBuild !== stamp.commit)) {
     throw new Error('Commit build identity does not match the stamp commit')
   }
-  if (commitBuild && env.HERMES_PAYLOAD_TAG) {
+  if (commitBuild && env.RABBIT_PAYLOAD_TAG) {
     throw new Error('Commit builds cannot also set a release tag')
   }
-  const version = env.HERMES_PAYLOAD_VERSION || (env.HERMES_PAYLOAD_TAG || '').replace(/^v/, '') || null
+  const version = env.RABBIT_PAYLOAD_VERSION || (env.RABBIT_PAYLOAD_TAG || '').replace(/^v/, '') || null
   // The bundle's baked runtime defaults/clears, recorded as data so the smoke
-  // driver can predict the app's resolved Hermes home without reimplementing
+  // driver can predict the app's resolved Rabbit home without reimplementing
   // the banner. Only commit bundles carry one, but the field is harmless when
   // absent elsewhere.
-  const bundleEnv = env.HERMES_BUNDLE_ENV_JSON ? validateBundleEnvironment(JSON.parse(env.HERMES_BUNDLE_ENV_JSON)) : undefined
+  const bundleEnv = env.RABBIT_BUNDLE_ENV_JSON ? validateBundleEnvironment(JSON.parse(env.RABBIT_BUNDLE_ENV_JSON)) : undefined
   const base = {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
@@ -255,7 +255,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
   if (!updateMechanism) throw new Error(`Unknown desktop variant: ${variant}`)
   if (channelBuild && updateMechanism === 'external') throw new Error('Channel builds require a supported native update owner')
   const bundled = variant === 'bundled' || variant === 'store'
-  if (bundled && !payload?.runtime?.commands?.hermes) {
+  if (bundled && !payload?.runtime?.commands?.rabbit) {
     throw new Error('PM payload has no completed launch contract; stage the bundle before packaging')
   }
   return {
@@ -264,7 +264,7 @@ export function buildStampPayload(stamp, env = process.env, platform = process.p
     distribution: "desktop-app",
 
     updateMechanism: commitBuild ? 'external' : updateMechanism,
-    tag: channelBuild?.receiverCandidate ? channelBuild.releaseTag : env.HERMES_PAYLOAD_TAG || null,
+    tag: channelBuild?.receiverCandidate ? channelBuild.releaseTag : env.RABBIT_PAYLOAD_TAG || null,
     ...(bundleEnv ? { bundleEnv } : {}),
     ...(bundled ? { runtime: payload.runtime } : {})
   }

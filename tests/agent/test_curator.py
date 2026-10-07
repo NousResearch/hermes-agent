@@ -17,11 +17,11 @@ import pytest
 
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME + freshly reloaded curator + skill_usage modules."""
-    home = tmp_path / ".hermes"
+    """Isolated RABBIT_HOME + freshly reloaded curator + skill_usage modules."""
+    home = tmp_path / ".rabbit"
     (home / "skills").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     import tools.skill_usage as usage
     importlib.reload(usage)
@@ -43,12 +43,12 @@ def curator_env(tmp_path, monkeypatch):
 
     # Teardown: a curator review launched with synchronous=False spawns a
     # daemon "curator-review" thread that calls save_state() when it finishes.
-    # save_state() resolves the state path from HERMES_HOME at write time, so a
+    # save_state() resolves the state path from RABBIT_HOME at write time, so a
     # straggler thread that outlives this test would write into whatever home
-    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # the *next* test has configured (or the default ~/.rabbit once monkeypatch
     # restores the env) — corrupting an unrelated test's state file. This race
     # is invisible on a fast machine but flakes under CI load. Join any such
-    # thread here, while HERMES_HOME is still pinned to this test's tmp home
+    # thread here, while RABBIT_HOME is still pinned to this test's tmp home
     # (curator_env depends on monkeypatch, so this teardown runs before the
     # monkeypatch env is restored). See the salvage of #14261 CI flake.
     for t in threading.enumerate():
@@ -79,12 +79,12 @@ def test_bundled_skills_are_off_limits_unless_opted_in(curator_env, monkeypatch)
     the same reader flips with the key. Both loaders see the same answer (DEFAULT_CONFIG agrees)."""
     import importlib
     import tools.skill_usage as usage
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from rabbit_cli.config_defaults import DEFAULT_CONFIG
     importlib.reload(usage)  # the fixture pins _prune_builtins_enabled; reload restores the real reader
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {}})
+    monkeypatch.setattr("rabbit_cli.config.load_config", lambda: {"curator": {}})
     assert usage._prune_builtins_enabled() is False
     assert DEFAULT_CONFIG["curator"]["prune_builtins"] is False
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {"prune_builtins": True}})
+    monkeypatch.setattr("rabbit_cli.config.load_config", lambda: {"curator": {"prune_builtins": True}})
     assert usage._prune_builtins_enabled() is True
 
 
@@ -139,7 +139,7 @@ def test_set_paused_roundtrip(curator_env):
 def test_non_positive_archive_after_days_falls_back_to_default(curator_env, monkeypatch, bad_days):
     """``curator.archive_after_days: 0`` (or negative) collapses archive_cutoff onto or past "now",
     which would mass-archive every skill with any past activity on the very next automatic pass.
-    ``hermes curator prune --days`` already refuses the same value; apply_automatic_transitions()
+    ``rabbit curator prune --days`` already refuses the same value; apply_automatic_transitions()
     runs unconfirmed on an idle tick, so it must fall back to the default instead."""
     c = curator_env["curator"]
     u = curator_env["usage"]
@@ -690,7 +690,7 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
 
 
 def test_cli_pin_refuses_bundled_skill(curator_env):
-    from hermes_cli import curator as cli
+    from rabbit_cli import curator as cli
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "ship-skill")
     (skills_dir / ".bundled_manifest").write_text(
@@ -708,7 +708,7 @@ def test_cli_pin_refuses_bundled_skill(curator_env):
 # curator review-model resolution (canonical auxiliary.curator slot)
 #
 # Curator was unified with the rest of the aux task system in Apr 2026 so
-# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
+# `rabbit model` → auxiliary picker, the dashboard Models tab, and the full
 # per-task config (timeout, base_url, api_key, extra_body) all work for it.
 # Voscko report: curator.auxiliary.{provider,model} was advertised but never
 # read. Fix wires curator through auxiliary.curator with a legacy fallback.
@@ -864,15 +864,15 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
             pass
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "rabbit_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "rabbit_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
     monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
@@ -907,10 +907,10 @@ def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("rabbit_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: cfg)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "rabbit_cli.runtime_provider.resolve_runtime_provider",
         lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
                           "api_mode": "codex_responses"},
     )
@@ -929,15 +929,15 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
     captured = {}
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "rabbit_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "rabbit_cli.runtime_provider.resolve_runtime_provider",
         lambda **_kwargs: {
             "provider": "custom",
             "model": "real-model-id",
@@ -975,7 +975,7 @@ def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch)
     ``terminal`` was removed from this fork for issue #96962: a terminal
     mv/cp/rm under the skills tree bypasses the skill ledger entirely, so the
     archive that followed snapshotted an already-stripped package and
-    ``hermes curator rollback`` restored a hollow skill. Removing the toolset
+    ``rabbit curator rollback`` restored a hollow skill. Removing the toolset
     (rather than guarding terminal commands) closes every shell bypass by
     construction. Without ``enabled_toolsets=["skills"]`` on the AIAgent(...)
     call in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and
@@ -1026,7 +1026,7 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
     ``terminal`` and ``process`` must stay out of the curator fork's resolved
     surface (issue #96962): a shell mv/cp/rm under the skills tree bypasses
     the skill ledger entirely, the archive that follows snapshots an
-    already-stripped package, and ``hermes curator rollback`` restores a
+    already-stripped package, and ``rabbit curator rollback`` restores a
     hollow skill. The call-site kwarg is pinned to ``["skills"]`` by the test
     above; this test pins the RESOLUTION, so an ``includes: ["terminal"]``
     added to the skills toolset definition — or a new execution tool merged
@@ -1079,15 +1079,15 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
     from tools.skill_manager_guards import _background_review_read_paths
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "rabbit_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "rabbit_cli.runtime_provider.resolve_runtime_provider",
         lambda **_kwargs: {
             "provider": "custom",
             "model": "m",
@@ -1128,7 +1128,7 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     """#125032: the daemon ``curator-review`` thread must inherit the caller's contextvars (home
     override + secret scope), else on a multiplexed gateway it runs unscoped against the ROOT home."""
     from agent import secret_scope as ss
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import get_rabbit_home, reset_rabbit_home_override, set_rabbit_home_override
 
     c, root = curator_env["curator"], curator_env["home"]
     profile = tmp_path / "profiles" / "served"
@@ -1136,13 +1136,13 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
     seen = {}
 
     def _pass(prefix, auto_summary, dry_run, before_names):
-        seen["home"] = get_hermes_home()
+        seen["home"] = get_rabbit_home()
         seen["secret"] = ss.get_secret("CURATOR_PROBE_KEY")
         return f"{prefix}{auto_summary}; llm: stub", c._llm_meta("stub")
 
     monkeypatch.setattr(c, "_consolidation_pass", _pass)
     ss.set_multiplex_active(True)
-    home_tok = set_hermes_home_override(profile)
+    home_tok = set_rabbit_home_override(profile)
     scope_tok = ss.set_secret_scope({"CURATOR_PROBE_KEY": "served"}, profile_home=str(profile))
     try:
         c.run_curator_review(synchronous=False, consolidate=True)
@@ -1151,7 +1151,7 @@ def test_threaded_llm_pass_keeps_callers_profile_scope(curator_env, tmp_path, mo
                 t.join(timeout=10.0)
     finally:
         ss.reset_secret_scope(scope_tok)
-        reset_hermes_home_override(home_tok)
+        reset_rabbit_home_override(home_tok)
         ss.set_multiplex_active(False)
 
     assert seen == {"home": profile, "secret": "served"}

@@ -77,7 +77,7 @@ class TestPlanCacheSectionsHonorsDisable:
             {"role": "user", "content": "hello"},
         ]
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"prompt_caching": {"cache_ttl": "off"}},
         ):
             out_msgs, out_tools = plan_cache_sections_for_destination(
@@ -101,7 +101,7 @@ class TestPlanCacheSectionsHonorsDisable:
             {"role": "user", "content": "again"},
         ]
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"prompt_caching": {"cache_ttl": "5m"}},
         ):
             out_msgs, _ = plan_cache_sections_for_destination(
@@ -158,7 +158,7 @@ class TestMoASlotDecorationHonorsDisable:
             "api_mode": "anthropic_messages",
         }
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"prompt_caching": {"cache_ttl": False}},
         ):
             out = _maybe_apply_moa_cache_control(messages, runtime)
@@ -200,7 +200,7 @@ class TestPreparedAggregatorNoAgentConfigOff:
                 },
             ),
             patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"prompt_caching": {"cache_ttl": "off"}},
             ),
         ):
@@ -295,7 +295,7 @@ class TestOneShotSynthesisAgentDisable:
             ),
             # Config would enable caching; agent snapshot must win.
             patch(
-                "hermes_cli.config.load_config_readonly",
+                "rabbit_cli.config.load_config_readonly",
                 return_value={"prompt_caching": {"cache_ttl": "5m"}},
             ),
         ):
@@ -326,7 +326,7 @@ class TestAdvisorRuntimeDisable:
             {"role": "user", "content": "again"},
         ]
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"prompt_caching": {"cache_ttl": "5m"}},
         ):
             out = _maybe_apply_moa_cache_control(

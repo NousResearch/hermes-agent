@@ -15,7 +15,7 @@ import time
 
 # The installed interpreter supplies dependencies, never the implementation.
 sys.path.insert(0, sys.argv[1])
-home = Path(os.environ["HERMES_HOME"])
+home = Path(os.environ["RABBIT_HOME"])
 assert home.is_relative_to(Path(os.environ["HOME"]))
 
 if sys.argv[2] == "cron-busy":
@@ -38,7 +38,7 @@ if sys.argv[2] == "cron-busy":
         time.sleep(0.03)
     print("RETIREMENT_CRON_STARTED", flush=True)
 
-from hermes_cli.web_server import app, start_server
+from rabbit_cli.web_server import app, start_server
 
 original_lifespan = app.router.lifespan_context
 

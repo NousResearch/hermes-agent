@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions } from '@/rabbit'
 
 import {
   catalogProviderMatches,
@@ -11,9 +11,9 @@ import {
   requestModelOptions
 } from './model-options'
 
-const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
+const globalOptions = { model: 'model-4', provider: 'acme', providers: [] }
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getGlobalModelOptions: vi.fn(() => Promise.resolve(globalOptions))
 }))
 
@@ -40,12 +40,12 @@ describe('requestModelOptions', () => {
   })
 
   it('recovers an empty gateway catalog through profile-scoped REST without replacing the session selection', async () => {
-    const gatewayPayload = { model: 'hermes-local', provider: 'hermes-local' }
+    const gatewayPayload = { model: 'rabbit-local', provider: 'rabbit-local' }
 
     const restPayload = {
       model: 'profile-default',
       provider: 'openai-codex',
-      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+      providers: [{ models: ['rabbit-local'], name: 'Rabbit Local vLLM', slug: 'rabbit-local' }]
     }
 
     const gateway = {
@@ -56,8 +56,8 @@ describe('requestModelOptions', () => {
 
     await expect(requestModelOptions({ gateway: gateway as never, sessionId: 'session-1' })).resolves.toEqual({
       ...restPayload,
-      model: 'hermes-local',
-      provider: 'hermes-local'
+      model: 'rabbit-local',
+      provider: 'rabbit-local'
     })
 
     expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true })
@@ -65,9 +65,9 @@ describe('requestModelOptions', () => {
 
   it('recovers through profile-scoped REST when the gateway catalog request fails', async () => {
     const restPayload = {
-      model: 'hermes-local',
-      provider: 'hermes-local',
-      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+      model: 'rabbit-local',
+      provider: 'rabbit-local',
+      providers: [{ models: ['rabbit-local'], name: 'Rabbit Local vLLM', slug: 'rabbit-local' }]
     }
 
     const gateway = {
@@ -95,7 +95,7 @@ describe('requestModelOptions', () => {
   })
 
   it('keeps the gateway result when both catalog paths have no selectable models', async () => {
-    const gatewayPayload = { model: 'hermes-local', provider: 'hermes-local', providers: [] }
+    const gatewayPayload = { model: 'rabbit-local', provider: 'rabbit-local', providers: [] }
 
     const gateway = {
       request: vi.fn(() => Promise.resolve(gatewayPayload))
@@ -141,8 +141,8 @@ describe('requestModelOptions', () => {
   it('prefers an owner-routed request over the ambient gateway socket', async () => {
     const gatewayPayload = {
       model: 'chrome-model',
-      provider: 'nous',
-      providers: [{ models: ['chrome-model'], name: 'Nous', slug: 'nous' }]
+      provider: 'acme',
+      providers: [{ models: ['chrome-model'], name: 'Acme', slug: 'acme' }]
     }
 
     const routedPayload = {
@@ -177,7 +177,7 @@ describe('requestModelOptions', () => {
   })
 
   it('keeps an empty owner-routed catalog instead of replacing it from ambient REST', async () => {
-    const ownerPayload = { model: 'berry-local', provider: 'hermes-local', providers: [] }
+    const ownerPayload = { model: 'berry-local', provider: 'rabbit-local', providers: [] }
 
     const request = vi.fn(() => Promise.resolve(ownerPayload)) as unknown as <T>(
       method: string,

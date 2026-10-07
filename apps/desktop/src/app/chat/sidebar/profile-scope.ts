@@ -1,5 +1,5 @@
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 /**
  * Sessions visible in one sidebar profile scope.

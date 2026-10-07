@@ -9,8 +9,8 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 // shared fatal-handler address and no launcher kept the FATAL message. The
 // fix is not a guess at the cause; it is making the next crash legible.
 
-test('on linux, fatal Chromium output lands in a file under the Hermes logs dir', () => {
-  const plan = linuxCrashDiagnostics('/home/u/.hermes/logs', 'linux')
+test('on linux, fatal Chromium output lands in a file under the Rabbit logs dir', () => {
+  const plan = linuxCrashDiagnostics('/home/u/.rabbit/logs', 'linux')
 
   assert.ok(plan)
 
@@ -21,22 +21,22 @@ test('on linux, fatal Chromium output lands in a file under the Hermes logs dir'
   const logFile = switches.get('log-file')
 
   assert.ok(logFile)
-  assert.equal(path.dirname(logFile), '/home/u/.hermes/logs')
+  assert.equal(path.dirname(logFile), '/home/u/.rabbit/logs')
   // FATAL (3) must survive the level filter; anything stricter would drop it.
   assert.ok(Number(switches.get('log-level')) <= 3)
   assert.equal(plan.crashReporter.uploadToServer, false)
 })
 
 test('other platforms get no Chromium logging switches and no crash reporter', () => {
-  assert.equal(linuxCrashDiagnostics('/Users/u/.hermes/logs', 'darwin'), null)
-  assert.equal(linuxCrashDiagnostics('C:\\Users\\u\\.hermes\\logs', 'win32'), null)
+  assert.equal(linuxCrashDiagnostics('/Users/u/.rabbit/logs', 'darwin'), null)
+  assert.equal(linuxCrashDiagnostics('C:\\Users\\u\\.rabbit\\logs', 'win32'), null)
 })
 
 test('a logs dir that cannot be created degrades to no logging, never a dead shell', () => {
   const switches: string[] = []
   let reporterStarted = false
 
-  // Read-only or invalid HERMES_HOME/logs: mkdir throws before app readiness.
+  // Read-only or invalid RABBIT_HOME/logs: mkdir throws before app readiness.
   enableLinuxCrashDiagnostics(linuxCrashDiagnostics('/read-only/logs', 'linux'), '/read-only/logs', {
     ensureLogsDir: () => {
       throw new Error('EROFS: read-only file system')
@@ -57,7 +57,7 @@ test('a logs dir that cannot be created degrades to no logging, never a dead she
 test('a crash reporter that refuses to start is not fatal either', () => {
   const switches: string[] = []
 
-  enableLinuxCrashDiagnostics(linuxCrashDiagnostics('/home/u/.hermes/logs', 'linux'), '/home/u/.hermes/logs', {
+  enableLinuxCrashDiagnostics(linuxCrashDiagnostics('/home/u/.rabbit/logs', 'linux'), '/home/u/.rabbit/logs', {
     ensureLogsDir: () => {},
     reclaimChromiumLog: () => {},
     appendSwitch: name => switches.push(name),
@@ -72,7 +72,7 @@ test('a crash reporter that refuses to start is not fatal either', () => {
 test('the Chromium log is bounded before Chromium appends to it', () => {
   const reclaimed: string[] = []
 
-  enableLinuxCrashDiagnostics(linuxCrashDiagnostics('/home/u/.hermes/logs', 'linux'), '/home/u/.hermes/logs', {
+  enableLinuxCrashDiagnostics(linuxCrashDiagnostics('/home/u/.rabbit/logs', 'linux'), '/home/u/.rabbit/logs', {
     ensureLogsDir: () => {},
     reclaimChromiumLog: file => reclaimed.push(file),
     appendSwitch: () => {},
@@ -81,5 +81,5 @@ test('the Chromium log is bounded before Chromium appends to it', () => {
 
   // Electron opens an explicit --log-file with APPEND_TO_OLD_LOG_FILE, so the
   // file it is about to append to is exactly the one that must be reclaimed.
-  assert.deepEqual(reclaimed, [path.join('/home/u/.hermes/logs', CHROMIUM_LOG_FILENAME)])
+  assert.deepEqual(reclaimed, [path.join('/home/u/.rabbit/logs', CHROMIUM_LOG_FILENAME)])
 })

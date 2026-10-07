@@ -16,7 +16,7 @@ from agent.secret_scope import (
     set_multiplex_active,
     set_secret_scope,
 )
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 _SECONDARY_YAML = """\
 require_mention: false
@@ -64,27 +64,27 @@ _EXPECTED_EXTRA = (
 
 @pytest.fixture
 def secondary_scope(tmp_path, monkeypatch):
-    default_home = tmp_path / "hermes"
+    default_home = tmp_path / "rabbit"
     secondary = default_home / "profiles" / "bot2"
     secondary.mkdir(parents=True)
     (default_home / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
     (secondary / "config.yaml").write_text(_SECONDARY_YAML)
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
     for name in _BRIDGED_ENV:
         monkeypatch.delenv(name, raising=False)
     set_multiplex_active(True)
-    home_token = set_hermes_home_override(str(secondary))
+    home_token = set_rabbit_home_override(str(secondary))
     secret_token = set_secret_scope({"TELEGRAM_BOT_TOKEN": "222:b2"})
     try:
         yield
     finally:
         reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
         set_multiplex_active(False)
 
 
 def test_secondary_profile_yaml_reaches_its_extra_not_the_process_env(secondary_scope):
-    from hermes_cli.plugins import discover_plugins
+    from rabbit_cli.plugins import discover_plugins
     from gateway.config import Platform, load_gateway_config
 
     discover_plugins()

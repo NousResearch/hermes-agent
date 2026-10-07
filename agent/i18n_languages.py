@@ -62,9 +62,9 @@ def language_options() -> list[LanguageOption]:
     """``[{"id", "endonym", "rtl", "source"}, ...]`` for every supported language, ``en`` first then sorted
     by id — the list ``i18n.languages`` serves and every switcher renders (endonym only, no flags)."""
     from agent import i18n, i18n_layers
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
-    overlay_langs = i18n_layers.overlay_languages(get_hermes_home())
+    overlay_langs = i18n_layers.overlay_languages(get_rabbit_home())
     return [
         describe_language(lang, pack=i18n_layers.pack_info(lang), overlay=lang in overlay_langs)
         for lang in i18n.supported_languages()

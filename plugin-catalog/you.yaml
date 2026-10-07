@@ -8,7 +8,7 @@ description: 'You.com skills for live web search, URL content extraction, cited 
 maintainer: youdotcom-oss
 tier: community
 category: web
-requires_hermes: ">=0.20"
+requires_rabbit: ">=0.20"
 docs_url: https://github.com/youdotcom-oss/agent-skills#readme
 version: "0.6.0"
 image: https://raw.githubusercontent.com/youdotcom-oss/agent-skills/08f3d80e7ca9518ccc64b38b365a78cc4a762691/assets/logo.png

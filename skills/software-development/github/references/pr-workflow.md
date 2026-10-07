@@ -17,10 +17,10 @@ else
   AUTH="git"
   # Ensure we have a token for API calls
   if [ -z "$GITHUB_TOKEN" ]; then
-    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+    if _rabbit_env="${RABBIT_HOME:-$HOME/.rabbit}/.env"; [ -f "$_rabbit_env" ] && grep -q "^GITHUB_TOKEN=" "$_rabbit_env"; then
+      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_rabbit_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
     elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-      GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+      GITHUB_TOKEN=$(uv run python "${RABBIT_HOME:-$HOME/.rabbit}/skills/github/github-auth/scripts/git-credential-token.py")
     fi
   fi
 fi
@@ -232,8 +232,8 @@ RUN_ID=<run_id>
 curl -s -L \
   -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs \
-  -o ~/.hermes/cache/scratch/ci-logs.zip
-cd ~/.hermes/cache/scratch && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
+  -o ~/.rabbit/cache/scratch/ci-logs.zip
+cd ~/.rabbit/cache/scratch && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
 ```
 
 ### Step 2: Fix and Push

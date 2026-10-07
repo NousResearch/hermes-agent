@@ -17,7 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./syntax-diff', () => ({
   default: () => {
     throw new Error(
-      'Failed to fetch dynamically imported module: file:///Hermes.app/Contents/Resources/app.asar/dist/assets/syntax-diff-Bo0962zh.js'
+      'Failed to fetch dynamically imported module: file:///Rabbit.app/Contents/Resources/app.asar/dist/assets/syntax-diff-Bo0962zh.js'
     )
   }
 }))

@@ -74,7 +74,7 @@ class TestRunConversationCodexPath:
         [
             ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
             ({"enabled": False}, None, "none", None),
-            # Hermes-only levels are clamped to the route's vocabulary: gpt-5.4 has no `max`, so ultra goes out as xhigh.
+            # Rabbit-only levels are clamped to the route's vocabulary: gpt-5.4 has no `max`, so ultra goes out as xhigh.
             # A tier codex has no word for is not sent.
             ({"enabled": True, "effort": "ultra"}, "ultrafast", "xhigh", None),
         ],
@@ -372,7 +372,7 @@ class TestRunConversationCodexPath:
     def test_gateway_terminal_cwd_seeds_codex_thread_cwd(self, monkeypatch, tmp_path):
         """Gateway sessions set TERMINAL_CWD without pinning agent.session_cwd.
         Codex app-server must still start in that configured workspace instead
-        of falling back to the Hermes daemon process cwd."""
+        of falling back to the Rabbit daemon process cwd."""
         from agent.transports.codex_app_server_session import (
             CodexAppServerSession, TurnResult,
         )
@@ -423,7 +423,7 @@ class TestRunConversationCodexPath:
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
 
         with patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"model": {"codex_bin": configured}},
         ):
             agent = _make_codex_agent()
@@ -462,13 +462,13 @@ class TestRunConversationCodexPath:
     def test_approvals_mode_off_auto_approves_codex_server_requests(
         self, monkeypatch
     ):
-        """When the user disables Hermes approvals, codex app-server approval
+        """When the user disables Rabbit approvals, codex app-server approval
         requests should not fail closed just because no interactive callback is
         wired (the typical gateway path). Codex's own sandbox permission
         profile remains the filesystem boundary."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": "off"}},
         ):
             agent = _make_codex_agent()
@@ -487,7 +487,7 @@ class TestRunConversationCodexPath:
         subsystem's compatibility behavior for codex app-server routing too."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             return_value={"approvals": {"mode": False}},
         ):
             agent = _make_codex_agent()
@@ -506,7 +506,7 @@ class TestRunConversationCodexPath:
         this fix is a no-op for users who haven't opted out."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"approvals": {"mode": "manual"}},
         ):
             agent = _make_codex_agent()
@@ -521,7 +521,7 @@ class TestRunConversationCodexPath:
     def test_frozen_yolo_env_auto_approves_codex_server_requests(
         self, monkeypatch
     ):
-        """--yolo / HERMES_YOLO_MODE (frozen into _YOLO_MODE_FROZEN at import
+        """--yolo / RABBIT_YOLO_MODE (frozen into _YOLO_MODE_FROZEN at import
         time — a prompt-injection-safe process-scoped bypass) should flow
         through to codex app-server routing so gateway/cron contexts do not
         fail closed when the user launched with yolo mode."""
@@ -530,7 +530,7 @@ class TestRunConversationCodexPath:
         captured = self._capture_routing_agent(monkeypatch)
         monkeypatch.setattr(_approval, "_YOLO_MODE_FROZEN", True)
         with patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"approvals": {"mode": "manual"}},
         ):
             agent = _make_codex_agent()
@@ -549,7 +549,7 @@ class TestRunConversationCodexPath:
         time, independent of the startup-time approvals config."""
         captured = self._capture_routing_agent(monkeypatch)
         with patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"approvals": {"mode": "manual"}},
         ):
             agent = _make_codex_agent()
@@ -807,7 +807,7 @@ class TestSessionRetirementOnRunAgent:
 
 class TestCodexToolProgressBridge:
     """#38835 / #33200: Codex app-server item notifications must surface as
-    Hermes tool-progress so gateways show verbose breadcrumbs on this route.
+    Rabbit tool-progress so gateways show verbose breadcrumbs on this route.
     The original item/started-only mapper was superseded by the full event
     bridge (make_codex_app_server_event_bridge); these tests pin the same
     mapping contract against the bridge helpers."""

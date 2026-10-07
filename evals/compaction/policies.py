@@ -58,7 +58,7 @@ POLICIES: Dict[str, Dict[str, Any]] = {
         "engine": "jev",
         "jev": {"preserve_recent_messages": 40},
     },
-    # Threshold lowered to ~the median keep_result Jev assigns on Hermes
+    # Threshold lowered to ~the median keep_result Jev assigns on Rabbit
     # transcripts (0.15): tests whether its ranking carries signal below the
     # plugin's 0.5 calibration point, where it drops every candidate.
     "jev_t15": {

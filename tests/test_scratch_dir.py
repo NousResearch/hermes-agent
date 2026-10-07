@@ -1,4 +1,4 @@
-"""Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
+"""Scratch dir contract: TMPDIR/TMP/TEMP follow RABBIT_HOME/cache/scratch unless the user set them."""
 
 import os
 import stat
@@ -9,34 +9,34 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
+from rabbit_constants import apply_scratch_tmp_env, get_scratch_dir, prune_scratch_dir
 
 
 def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
-    """Unset temp vars → scratch of env HERMES_HOME; a Hermes-exported value re-derives for a routed
+    """Unset temp vars → scratch of env RABBIT_HOME; a Rabbit-exported value re-derives for a routed
     home; a user/OS-set value (macOS ``/var/folders``, ``%TEMP%``) is never touched."""
     home_a, home_b = tmp_path / "a", tmp_path / "b"
-    env = {"HERMES_HOME": str(home_a)}
+    env = {"RABBIT_HOME": str(home_a)}
     assert apply_scratch_tmp_env(env) is True
     scratch_a = str(home_a / "cache" / "scratch")
-    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["HERMES_SCRATCH_DIR"] == scratch_a
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["RABBIT_SCRATCH_DIR"] == scratch_a
     assert os.path.isdir(scratch_a)
 
-    env["HERMES_HOME"] = str(home_b)  # child served under another profile's home
+    env["RABBIT_HOME"] = str(home_b)  # child served under another profile's home
     assert apply_scratch_tmp_env(env) is True
     assert env["TMPDIR"] == str(home_b / "cache" / "scratch")
 
-    user_env = {"HERMES_HOME": str(home_a), "TMPDIR": "/var/folders/zz"}
+    user_env = {"RABBIT_HOME": str(home_a), "TMPDIR": "/var/folders/zz"}
     assert apply_scratch_tmp_env(user_env) is False
-    assert user_env["TMPDIR"] == "/var/folders/zz" and "HERMES_SCRATCH_DIR" not in user_env
+    assert user_env["TMPDIR"] == "/var/folders/zz" and "RABBIT_SCRATCH_DIR" not in user_env
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
 
 
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
-    """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
-    env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}
-    env["HERMES_HOME"] = str(tmp_path)
-    code = ("import tempfile, os, subprocess, sys; import hermes_bootstrap; "
+    """``import rabbit_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
+    env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "RABBIT_SCRATCH_DIR")}
+    env["RABBIT_HOME"] = str(tmp_path)
+    code = ("import tempfile, os, subprocess, sys; import rabbit_bootstrap; "
             "print(tempfile.gettempdir()); "
             "print(subprocess.run([sys.executable, '-c', 'import tempfile;print(tempfile.gettempdir())'],"
             " capture_output=True, text=True).stdout.strip())")
@@ -68,7 +68,7 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
 @pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:
-    an explicit HERMES_HOME_MODE and a managed/shared home win (#117347)."""
+    an explicit RABBIT_HOME_MODE and a managed/shared home win (#117347)."""
 
     @staticmethod
     def _native_mode_after_chmod(path, requested=0o2770):
@@ -85,9 +85,9 @@ class TestScratchDirPermissionPolicy:
         # A known, marker-free effective home: each case below plants `.managed` in the home whose
         # scratch dir it exercises (`get_scratch_dir(home)` reads the marker there), and the real
         # home's own marker must not leak into callers that still resolve the effective home.
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        for var in ("HERMES_HOME_MODE", "HERMES_MANAGED", "HERMES_CONTAINER",
-                    "HERMES_SKIP_CHMOD", "HERMES_UID", "HERMES_GID"):
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+        for var in ("RABBIT_HOME_MODE", "RABBIT_MANAGED", "RABBIT_CONTAINER",
+                    "RABBIT_SKIP_CHMOD", "RABBIT_UID", "RABBIT_GID"):
             monkeypatch.delenv(var, raising=False)
 
     def test_default_is_owner_only(self, tmp_path, monkeypatch):
@@ -100,13 +100,13 @@ class TestScratchDirPermissionPolicy:
         probe = tmp_path / "mode-probe"
         probe.mkdir()
         expected = self._native_mode_after_chmod(probe)
-        monkeypatch.setenv("HERMES_HOME_MODE", "2770")
+        monkeypatch.setenv("RABBIT_HOME_MODE", "2770")
         scratch = get_scratch_dir(tmp_path, prune=False)
         assert stat.S_IMODE(os.stat(scratch).st_mode) == expected
 
     def test_managed_env_leaves_preexisting_mode_untouched(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("HERMES_MANAGED", "nixos")
+        monkeypatch.setenv("RABBIT_MANAGED", "nixos")
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
         expected = self._native_mode_after_chmod(pre)
@@ -151,8 +151,8 @@ class TestScratchDirPermissionPolicy:
 
     def test_effective_home_marker_does_not_govern_another_homes_scratch(self, tmp_path, monkeypatch):
         # The caller's home decides the policy. A boot caller (``export_scratch_tmp_env``) and
-        # ``hermes doctor`` have already resolved theirs, so the marker lookup must not fall back
-        # to ``get_hermes_home()``: for a sticky profile with HERMES_HOME unset that lookup warns
+        # ``rabbit doctor`` have already resolved theirs, so the marker lookup must not fall back
+        # to ``get_rabbit_home()``: for a sticky profile with RABBIT_HOME unset that lookup warns
         # about the default profile on every command, and it is the wrong home to judge by anyway.
         selected = tmp_path / "home"
         selected.mkdir()
@@ -165,10 +165,10 @@ class TestScratchDirPermissionPolicy:
         assert stat.S_IMODE(os.stat(get_scratch_dir(other, prune=False)).st_mode) == 0o700
 
     def test_canonical_container_signal_without_env_override_keeps_operator_mode(self, tmp_path, monkeypatch):
-        # Podman/containerd/K8s runtimes often don't export HERMES_CONTAINER; the canonical
+        # Podman/containerd/K8s runtimes often don't export RABBIT_CONTAINER; the canonical
         # _detect_container breadth (not the narrower legacy signal set) must skip the chmod.
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+        monkeypatch.setattr("rabbit_constants._detect_container", lambda: True)
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o750)
@@ -180,7 +180,7 @@ class TestScratchDirPermissionPolicy:
         probe = tmp_path / "mode-probe"
         probe.mkdir()
         expected = self._native_mode_after_chmod(probe)
-        monkeypatch.setenv("HERMES_HOME_MODE", "2770")
+        monkeypatch.setenv("RABBIT_HOME_MODE", "2770")
         first = get_scratch_dir(tmp_path, prune=False)
         second = get_scratch_dir(tmp_path, prune=False)
         assert first == second
@@ -188,7 +188,7 @@ class TestScratchDirPermissionPolicy:
 
     def test_container_keeps_operator_mode_but_honors_explicit(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("HERMES_CONTAINER", "1")
+        monkeypatch.setenv("RABBIT_CONTAINER", "1")
         pre = tmp_path / "cache" / "scratch"
         pre.mkdir(parents=True)
         os.chmod(pre, 0o750)
@@ -196,13 +196,13 @@ class TestScratchDirPermissionPolicy:
         probe = tmp_path / "mode-probe"
         probe.mkdir()
         expected = self._native_mode_after_chmod(probe)
-        monkeypatch.setenv("HERMES_HOME_MODE", "2770")
+        monkeypatch.setenv("RABBIT_HOME_MODE", "2770")
         assert stat.S_IMODE(os.stat(get_scratch_dir(tmp_path, prune=False)).st_mode) == expected
 
-    def test_hermes_uid_gid_applied_to_scratch(self, tmp_path, monkeypatch):
+    def test_rabbit_uid_gid_applied_to_scratch(self, tmp_path, monkeypatch):
         self._isolate_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("HERMES_UID", "1000")
-        monkeypatch.setenv("HERMES_GID", "911")
+        monkeypatch.setenv("RABBIT_UID", "1000")
+        monkeypatch.setenv("RABBIT_GID", "911")
         with patch.object(os, "chown") as mock_chown:
             get_scratch_dir(tmp_path, prune=False)
         mock_chown.assert_called_once_with(tmp_path / "cache" / "scratch", 1000, 911)
@@ -211,13 +211,13 @@ class TestScratchDirPermissionPolicy:
 @pytest.mark.platforms("posix")  # POSIX file modes
 def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
     """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
-    get_scratch_dir already honor (one policy implementation in hermes_constants)."""
-    from hermes_cli import config
+    get_scratch_dir already honor (one policy implementation in rabbit_constants)."""
+    from rabbit_cli import config
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    for var in ("RABBIT_MANAGED", "RABBIT_CONTAINER", "RABBIT_SKIP_CHMOD"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("hermes_constants._detect_container", lambda: True)
+    monkeypatch.setattr("rabbit_constants._detect_container", lambda: True)
     f = tmp_path / "config.yaml"
     f.write_text("", encoding="utf-8")
     os.chmod(f, 0o640)

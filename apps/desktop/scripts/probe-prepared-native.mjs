@@ -14,7 +14,7 @@ async function probeChild(nativeDeps) {
   if (!process.versions.electron) throw new Error('Electron runtime required')
   /** @type {typeof import('node-pty')} */
   const pty = createRequire(import.meta.url)(path.join(nativeDeps, 'node-pty'))
-  const marker = `hermes-pty-${randomUUID()}`
+  const marker = `rabbit-pty-${randomUUID()}`
   const windows = process.platform === 'win32'
   const shell = windows ? (process.env.ComSpec || 'cmd.exe') : '/bin/sh'
   const args = windows ? ['/d', '/s', '/c', `echo ${marker}`] : ['-c', `echo ${marker}`]

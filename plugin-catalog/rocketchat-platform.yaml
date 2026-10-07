@@ -1,13 +1,13 @@
 name: rocketchat-platform
-repo: https://github.com/HalfbitStudio/hermes-plugin-rocketchat
+repo: https://github.com/HalfbitStudio/rabbit-plugin-rocketchat
 sha: 989a04cd5f09e57bdd88997940cd18e4d58415b2
-description: Rocket.Chat gateway adapter for Hermes Agent. Connects to a self-hosted Rocket.Chat instance
+description: Rocket.Chat gateway adapter for Rabbit Agent. Connects to a self-hosted Rocket.Chat instance
   via the REST API v1 for outbound traffic and the Realtime (DDP) WebSocket for inbound messages. Uses
-  aiohttp (already a Hermes dependency) — no extra packages needed.
+  aiohttp (already a Rabbit dependency) — no extra packages needed.
 maintainer: HalfbitStudio
 tier: community
 category: platform
-docs_url: https://github.com/HalfbitStudio/hermes-plugin-rocketchat#readme
+docs_url: https://github.com/HalfbitStudio/rabbit-plugin-rocketchat#readme
 capabilities:
   provides_tools:
   - rocketchat_create_channel

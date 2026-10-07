@@ -2,7 +2,7 @@ import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { rabbitDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 
 import { classify } from './hooks/use-at-completions'
 import { useComposerTrigger } from './hooks/use-composer-trigger'
@@ -59,7 +59,7 @@ function typed(text: string) {
 
 /** The label the sent message renders for a committed draft. */
 function sentLabel(draft: string) {
-  return hermesDirectiveFormatter
+  return rabbitDirectiveFormatter
     .parse(draft)
     .filter((s): s is Extract<typeof s, { kind: 'mention' }> => s.kind === 'mention')
     .map(s => s.label)
@@ -92,7 +92,7 @@ describe('one label per reference, on every surface', () => {
     // Rows exactly as complete.path emits profile mentions (colon-less text).
     const item = backendRow('@mr-tester', '@mr-tester', 'agent profile')
 
-    expect(hermesDirectiveFormatter.serialize(item)).toBe('@mr-tester')
+    expect(rabbitDirectiveFormatter.serialize(item)).toBe('@mr-tester')
 
     const { editor, result } = typed('@mr-')
 
@@ -133,12 +133,12 @@ describe('one label per reference, on every surface', () => {
   })
 
   it('a url still reads host + path on every surface', () => {
-    const item = backendRow('@url:https://github.com/NousResearch/hermes-agent/pull/74533', '', '')
+    const item = backendRow('@url:https://github.com/seven0070/Rabbit-/pull/74533', '', '')
     const { editor, result } = typed('@gith')
 
     act(() => result.current.replaceTriggerWithChip(item))
 
-    const expected = 'github.com/NousResearch/hermes-agent/pull/74533'
+    const expected = 'github.com/seven0070/Rabbit-/pull/74533'
 
     expect(item.label).toBe(expected)
     expect(editor.querySelector('[data-ref-text]')?.textContent).toBe(expected)

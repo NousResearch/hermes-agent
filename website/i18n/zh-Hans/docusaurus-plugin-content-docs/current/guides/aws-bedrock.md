@@ -1,15 +1,15 @@
 ---
 sidebar_position: 14
 title: "AWS Bedrock"
-description: "将 Hermes Agent 与 Amazon Bedrock 配合使用——原生 Converse API、IAM 身份验证、Guardrails 及跨区域推理"
+description: "将 Rabbit Agent 与 Amazon Bedrock 配合使用——原生 Converse API、IAM 身份验证、Guardrails 及跨区域推理"
 ---
 
 # AWS Bedrock
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
-Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
+Rabbit Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 OpenAI 兼容端点。这让你可以完整访问 Bedrock 生态系统：IAM 身份验证、Guardrails、跨区域推理配置文件以及所有基础模型。
 
 ## 前提条件
 
@@ -18,33 +18,33 @@ Hermes Agent 通过 **Converse API** 原生支持 Amazon Bedrock——而非 Ope
   - `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` 环境变量
   - `AWS_PROFILE`（用于 SSO 或命名配置文件）
   - `aws configure`（用于本地开发）
-- **boto3** — 通过 `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"` 安装
+- **boto3** — 通过 `cd ~/.rabbit/rabbit-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"` 安装
 - **IAM 权限** — 至少需要：
   - `bedrock:InvokeModel` 和 `bedrock:InvokeModelWithResponseStream`（用于推理）
   - `bedrock:ListFoundationModels` 和 `bedrock:ListInferenceProfiles`（用于模型发现）
 
 :::tip EC2 / ECS / Lambda
-在 AWS 计算环境中，为实例附加带有 `AmazonBedrockFullAccess` 的 IAM 角色即可。无需 API 密钥，无需 `.env` 配置——Hermes 会自动检测实例角色。
+在 AWS 计算环境中，为实例附加带有 `AmazonBedrockFullAccess` 的 IAM 角色即可。无需 API 密钥，无需 `.env` 配置——Rabbit 会自动检测实例角色。
 :::
 
 ## 快速开始
 
 ```bash
 # 安装并启用 Bedrock 支持
-cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"
+cd ~/.rabbit/rabbit-agent && python -c "import pm; pm.sync_venv(['bedrock'], explicit=True)"
 
 # 选择 Bedrock 作为提供商
-hermes model
+rabbit model
 # → 选择 "More providers..." → "AWS Bedrock"
 # → 选择你的区域和模型
 
 # 开始对话
-hermes chat
+rabbit chat
 ```
 
 ## 配置
 
-运行 `hermes model` 后，你的 `~/.hermes/config.yaml` 将包含以下内容：
+运行 `rabbit model` 后，你的 `~/.rabbit/config.yaml` 将包含以下内容：
 
 ```yaml
 model:
@@ -81,7 +81,7 @@ bedrock:
 
 ### 模型发现
 
-Hermes 通过 Bedrock 控制平面自动发现可用模型。你可以自定义发现行为：
+Rabbit 通过 Bedrock 控制平面自动发现可用模型。你可以自定义发现行为：
 
 ```yaml
 bedrock:
@@ -93,7 +93,7 @@ bedrock:
 
 ## 可用模型
 
-Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model` 选择器会自动显示这些 ID，并将推荐模型置于顶部：
+Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`rabbit model` 选择器会自动显示这些 ID，并将推荐模型置于顶部：
 
 | 模型 | ID | 备注 |
 |-------|-----|-------|
@@ -122,7 +122,7 @@ Bedrock 模型使用**推理配置文件 ID** 进行按需调用。`hermes model
 ## 诊断
 
 ```bash
-hermes doctor
+rabbit doctor
 ```
 
 诊断工具会检查：
@@ -133,11 +133,11 @@ hermes doctor
 
 ## Gateway（消息平台）
 
-Bedrock 可与所有 Hermes gateway 平台配合使用（Telegram、Discord、Slack、飞书等）。将 Bedrock 配置为提供商后，正常启动 gateway 即可：
+Bedrock 可与所有 Rabbit gateway 平台配合使用（Telegram、Discord、Slack、飞书等）。将 Bedrock 配置为提供商后，正常启动 gateway 即可：
 
 ```bash
-hermes gateway setup
-hermes gateway start
+rabbit gateway setup
+rabbit gateway start
 ```
 
 Gateway 读取 `config.yaml` 并使用相同的 Bedrock 提供商配置。
@@ -146,7 +146,7 @@ Gateway 读取 `config.yaml` 并使用相同的 Bedrock 提供商配置。
 
 ### "No API key found" / "No AWS credentials"
 
-Hermes 按以下顺序检查凭证：
+Rabbit 按以下顺序检查凭证：
 1. `AWS_BEARER_TOKEN_BEDROCK`
 2. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`
 3. `AWS_PROFILE`
@@ -164,10 +164,10 @@ Hermes 按以下顺序检查凭证：
 
 ### "ThrottlingException"
 
-你已触及 Bedrock 单模型速率限制。Hermes 会自动进行退避重试。如需提高限额，请在 [AWS Service Quotas 控制台](https://console.aws.amazon.com/servicequotas/)申请配额提升。
+你已触及 Bedrock 单模型速率限制。Rabbit 会自动进行退避重试。如需提高限额，请在 [AWS Service Quotas 控制台](https://console.aws.amazon.com/servicequotas/)申请配额提升。
 
 ## 一键 AWS 部署
 
 如需在 EC2 上通过 CloudFormation 进行全自动部署：
 
-**[sample-hermes-agent-on-aws-with-bedrock](https://github.com/JiaDe-Wu/sample-hermes-agent-on-aws-with-bedrock)** — 自动创建 VPC、IAM 角色、EC2 实例并配置 Bedrock。一键即可在任意区域完成部署。
+**[sample-rabbit-agent-on-aws-with-bedrock](https://github.com/JiaDe-Wu/sample-rabbit-agent-on-aws-with-bedrock)** — 自动创建 VPC、IAM 角色、EC2 实例并配置 Bedrock。一键即可在任意区域完成部署。

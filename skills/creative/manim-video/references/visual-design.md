@@ -101,7 +101,7 @@ Large title text (font_size >= 48) with short strings (1-3 words) can use propor
 
 ```python
 # Letter spacing (Pango units: 1/1024 of a point)
-MarkupText('<span letter_spacing="6000">HERMES</span>', font_size=18, font="Menlo")
+MarkupText('<span letter_spacing="6000">RABBIT</span>', font_size=18, font="Menlo")
 
 # Bold specific words
 MarkupText('This is <b>important</b>', font_size=24, font="Menlo")

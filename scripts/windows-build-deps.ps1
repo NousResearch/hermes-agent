@@ -1,22 +1,22 @@
 # Native build dependencies are separate from PM's application environment.
 
 # An interactive console sees one status line per build command, with the
-# full output in $script:HermesBuildLog; CI and a redirected stdout (pm under
+# full output in $script:RabbitBuildLog; CI and a redirected stdout (pm under
 # the installer, which logs that itself) keep the full stream. install.ps1
 # has its own copy: this file is dot-sourced by the build entry point and
-# setup-hermes.ps1, which never load the installer.
-function Test-HermesBuildQuiet {
-    if ($env:CI -or $env:GITHUB_ACTIONS -or $env:HERMES_INSTALL_VERBOSE -or -not $script:HermesBuildLog) { return $false }
+# setup-rabbit.ps1, which never load the installer.
+function Test-RabbitBuildQuiet {
+    if ($env:CI -or $env:GITHUB_ACTIONS -or $env:RABBIT_INSTALL_VERBOSE -or -not $script:RabbitBuildLog) { return $false }
     try { return -not [Console]::IsOutputRedirected } catch { return $false }
 }
 
-function Write-HermesBuildNote {
+function Write-RabbitBuildNote {
     # Discovery details belong in CI transcripts, not on a user's console.
     param([string]$Message)
-    if (-not (Test-HermesBuildQuiet)) { Write-Host "-> $Message" }
+    if (-not (Test-RabbitBuildQuiet)) { Write-Host "-> $Message" }
 }
 
-function Invoke-HermesBuildCommand {
+function Invoke-RabbitBuildCommand {
     param([string]$Command, [string[]]$Arguments, [string]$Label)
     # Windows PowerShell 5.1 returns every match from Get-Command even without
     # -All. .Source on that array is every path joined by a space, and the call
@@ -30,11 +30,11 @@ function Invoke-HermesBuildCommand {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        if (Test-HermesBuildQuiet) {
+        if (Test-RabbitBuildQuiet) {
             $recent = New-Object 'System.Collections.Generic.Queue[string]'
             $width = 80
             try { $width = [Math]::Max(20, $Host.UI.RawUI.WindowSize.Width) } catch { $width = 80 }
-            $writer = New-Object System.IO.StreamWriter($script:HermesBuildLog, $true, (New-Object System.Text.UTF8Encoding($false)))
+            $writer = New-Object System.IO.StreamWriter($script:RabbitBuildLog, $true, (New-Object System.Text.UTF8Encoding($false)))
             try {
                 $writer.WriteLine("==> $Label ($((Get-Date).ToUniversalTime().ToString('s'))Z)")
                 & $executable @Arguments 2>&1 | ForEach-Object {
@@ -55,7 +55,7 @@ function Invoke-HermesBuildCommand {
             if ($code -ne 0) {
                 Write-Host "[X] $Label failed (exit $code). Last output:" -ForegroundColor Red
                 foreach ($line in $recent) { Write-Host "    $line" }
-                Write-Host "    full log: $script:HermesBuildLog"
+                Write-Host "    full log: $script:RabbitBuildLog"
             }
         } else {
             Write-Host "-> $Label"
@@ -66,15 +66,15 @@ function Invoke-HermesBuildCommand {
     if ($code -ne 0) { throw "$Command failed with exit code $code" }
 }
 
-function Install-HermesArm64OpenSSL {
+function Install-RabbitArm64OpenSSL {
     param([string]$Vcpkg, [string]$Root)
     $prefix = Join-Path $Root 'installed\arm64-windows-static-md'
     $required = @('include\openssl\ssl.h', 'lib\libcrypto.lib', 'lib\libssl.lib')
     $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $prefix $_) -PathType Leaf) })
     if ($missing.Count) {
-        Invoke-HermesBuildCommand $Vcpkg @('install', 'openssl:arm64-windows-static-md', '--classic', '--disable-metrics', "--x-install-root=$(Join-Path $Root 'installed')") 'Building static ARM64 OpenSSL via vcpkg (several minutes)'
+        Invoke-RabbitBuildCommand $Vcpkg @('install', 'openssl:arm64-windows-static-md', '--classic', '--disable-metrics', "--x-install-root=$(Join-Path $Root 'installed')") 'Building static ARM64 OpenSSL via vcpkg (several minutes)'
     } else {
-        Write-HermesBuildNote "ARM64 OpenSSL development libraries found: $prefix"
+        Write-RabbitBuildNote "ARM64 OpenSSL development libraries found: $prefix"
     }
     foreach ($relative in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $prefix $relative) -PathType Leaf)) {
@@ -84,7 +84,7 @@ function Install-HermesArm64OpenSSL {
     return $prefix
 }
 
-function Get-HermesArm64VisualStudio {
+function Get-RabbitArm64VisualStudio {
     $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path -LiteralPath $vswhere)) { return $null }
     $found = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
@@ -92,7 +92,7 @@ function Get-HermesArm64VisualStudio {
     return ($found | Select-Object -First 1)
 }
 
-function Get-HermesClang {
+function Get-RabbitClang {
     param([string]$VisualStudio)
     $command = Get-Command clang.exe -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
@@ -106,16 +106,16 @@ function Get-HermesClang {
     return ($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
 }
 
-function Initialize-HermesArm64BuildTools {
+function Initialize-RabbitArm64BuildTools {
     param([string]$StateRoot, [string]$OpenSSLRoot)
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'ARM64 build dependencies require Windows.'
     }
     $buildRoot = Join-Path $StateRoot 'build-tools'
     New-Item -ItemType Directory -Force -Path $buildRoot | Out-Null
-    $script:HermesBuildLog = Join-Path $buildRoot 'build.log'
-    $vs = Get-HermesArm64VisualStudio
-    $clangPath = Get-HermesClang -VisualStudio $vs
+    $script:RabbitBuildLog = Join-Path $buildRoot 'build.log'
+    $vs = Get-RabbitArm64VisualStudio
+    $clangPath = Get-RabbitClang -VisualStudio $vs
     if (-not $vs -or -not $clangPath) {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -124,7 +124,7 @@ function Initialize-HermesArm64BuildTools {
         # runs would block on it, so they keep the explicit instruction.
         $canPrompt = [Environment]::UserInteractive -and -not $env:CI -and -not $env:GITHUB_ACTIONS -and
             -not $env:SSH_CONNECTION -and -not $env:SSH_CLIENT
-        $needsAdmin = 'ARM64 C++ or Clang build tools are missing. Run setup-hermes.ps1 once in an Administrator PowerShell to install them.'
+        $needsAdmin = 'ARM64 C++ or Clang build tools are missing. Run setup-rabbit.ps1 once in an Administrator PowerShell to install them.'
         if (-not $elevated -and -not $canPrompt) { throw $needsAdmin }
         $installer = Join-Path $buildRoot 'vs-buildtools.exe'
         Write-Host '-> Installing Visual Studio Build Tools (ARM64 C++ and Clang) to compile dependencies that have no ARM64 Windows wheel (such as cryptography).'
@@ -154,12 +154,12 @@ function Initialize-HermesArm64BuildTools {
             }
         }
         if ($install.ExitCode -notin @(0, 3010)) { throw "Visual Studio installation failed: $($install.ExitCode)" }
-        $vs = Get-HermesArm64VisualStudio
+        $vs = Get-RabbitArm64VisualStudio
         if (-not $vs) { throw 'ARM64 C++ build tools remain unavailable. Restart Windows if the installer requested it.' }
-        $clangPath = Get-HermesClang -VisualStudio $vs
+        $clangPath = Get-RabbitClang -VisualStudio $vs
         if (-not $clangPath) { throw 'The Clang compiler is still missing after Visual Studio setup.' }
     }
-    Write-HermesBuildNote "ARM64 C++ build tools found: $vs"
+    Write-RabbitBuildNote "ARM64 C++ build tools found: $vs"
     # CI, desktop builds and native staging can inherit the same developer
     # environment. VsDevCmd prepends its paths again on every call, eventually
     # overflowing cmd.exe's line limit. Reuse only a matching, usable environment.
@@ -212,19 +212,19 @@ function Initialize-HermesArm64BuildTools {
         if ((Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant() -ne 'de9f7d29ccd39efa59a3dda3ec363b396e09b92681229b9b8f6aaa4c84285e9c') {
             throw 'rustup installer SHA256 mismatch'
         }
-        Invoke-HermesBuildCommand $installer @('-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', '1.98.0-aarch64-pc-windows-msvc') 'Installing the Rust toolchain (1.98.0, ARM64) for those source builds'
+        Invoke-RabbitBuildCommand $installer @('-y', '--no-modify-path', '--profile', 'minimal', '--default-toolchain', '1.98.0-aarch64-pc-windows-msvc') 'Installing the Rust toolchain (1.98.0, ARM64) for those source builds'
         $rustup = Get-Command rustup.exe -ErrorAction Stop
     }
     $rustc = Get-Command rustc.exe -ErrorAction SilentlyContinue
     $rustInfo = if ($rustc) { (& $rustc.Source -vV) -join "`n" } else { '' }
     if ($rustInfo -notmatch 'host: aarch64-pc-windows-msvc') {
-        Invoke-HermesBuildCommand $rustup.Source @('toolchain', 'install', '1.98.0-aarch64-pc-windows-msvc', '--profile', 'minimal') 'Installing Rust 1.98.0 for ARM64'
+        Invoke-RabbitBuildCommand $rustup.Source @('toolchain', 'install', '1.98.0-aarch64-pc-windows-msvc', '--profile', 'minimal') 'Installing Rust 1.98.0 for ARM64'
         $env:RUSTUP_TOOLCHAIN = '1.98.0-aarch64-pc-windows-msvc'
     }
-    Write-HermesBuildNote 'ARM64 Rust toolchain ready'
+    Write-RabbitBuildNote 'ARM64 Rust toolchain ready'
 
     $env:CC_aarch64_pc_windows_msvc = $clangPath
-    Write-HermesBuildNote "ARM64 Rust C compiler: $clangPath"
+    Write-RabbitBuildNote "ARM64 Rust C compiler: $clangPath"
 
     $vcpkgRoot = $null
     $vcpkgCommand = Get-Command vcpkg.exe -ErrorAction SilentlyContinue
@@ -245,11 +245,11 @@ function Initialize-HermesArm64BuildTools {
             # Phase lines ("Receiving objects: 42%") feed the status line;
             # git prints none to a pipe unless asked.
             $progress = @()
-            if (Test-HermesBuildQuiet) { $progress = @('--progress') }
-            Invoke-HermesBuildCommand 'git' (@('clone') + $progress + @('https://github.com/microsoft/vcpkg.git', $vcpkgRoot)) 'Downloading vcpkg to build OpenSSL for ARM64'
-            Invoke-HermesBuildCommand 'git' @('-C', $vcpkgRoot, 'checkout', '--detach', '00c5775211f45cd08b37fce0484b4cb940e422ab') 'Pinning vcpkg'
+            if (Test-RabbitBuildQuiet) { $progress = @('--progress') }
+            Invoke-RabbitBuildCommand 'git' (@('clone') + $progress + @('https://github.com/microsoft/vcpkg.git', $vcpkgRoot)) 'Downloading vcpkg to build OpenSSL for ARM64'
+            Invoke-RabbitBuildCommand 'git' @('-C', $vcpkgRoot, 'checkout', '--detach', '00c5775211f45cd08b37fce0484b4cb940e422ab') 'Pinning vcpkg'
         }
-        Invoke-HermesBuildCommand (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') @('-disableMetrics') 'Building vcpkg'
+        Invoke-RabbitBuildCommand (Join-Path $vcpkgRoot 'bootstrap-vcpkg.bat') @('-disableMetrics') 'Building vcpkg'
     }
     $env:VCPKG_ROOT = $vcpkgRoot
     # vcpkg resolves Visual Studio itself and takes the newest instance, which may lack the
@@ -259,6 +259,6 @@ function Initialize-HermesArm64BuildTools {
     if (-not $env:VCPKG_VISUAL_STUDIO_PATH) { $env:VCPKG_VISUAL_STUDIO_PATH = $vs }
     # The install tree can be cached independently of the discovered checkout.
     if (-not $OpenSSLRoot) { $OpenSSLRoot = $vcpkgRoot }
-    $env:OPENSSL_DIR = Install-HermesArm64OpenSSL -Vcpkg (Join-Path $vcpkgRoot 'vcpkg.exe') -Root $OpenSSLRoot
+    $env:OPENSSL_DIR = Install-RabbitArm64OpenSSL -Vcpkg (Join-Path $vcpkgRoot 'vcpkg.exe') -Root $OpenSSLRoot
     $env:OPENSSL_STATIC = '1'
 }

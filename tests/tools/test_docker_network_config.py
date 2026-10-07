@@ -1,6 +1,6 @@
 """Regression tests for the Docker terminal network toggle.
 
-Ported from NanoClaw PR #2713's opt-in egress lockdown idea. Hermes already
+Ported from NanoClaw PR #2713's opt-in egress lockdown idea. Rabbit already
 has DockerEnvironment(network=False), but the terminal config path did not
 expose it, so operators could not request networkless Docker execution from
 config.yaml.
@@ -175,7 +175,7 @@ def test_reuse_keeps_the_old_container_when_the_replacement_cannot_be_pulled(mon
 
 
 def test_reuse_keeps_container_built_from_another_image_when_default_flipped(monkeypatch, caplog):
-    """A DEFAULT flip (nikolaik base -> hermes-sandbox:desktop) must not replace a sandbox the user has
+    """A DEFAULT flip (nikolaik base -> rabbit-sandbox:desktop) must not replace a sandbox the user has
     state in: the existing container is kept and the log names the approval command. Same rule Modal
     (snapshot wins) and Daytona (labeled sandbox wins) already apply."""
     import logging
@@ -185,7 +185,7 @@ def test_reuse_keeps_container_built_from_another_image_when_default_flipped(mon
 
     assert not any(cmd[1:3] == ["rm", "-f"] for cmd in commands), "an unpinned default never removes a sandbox"
     assert not any(len(cmd) > 2 and cmd[1:3] == ["run", "-d"] for cmd in commands), "existing container reused"
-    assert "hermes config set terminal.docker_image python:3.11" in caplog.text
+    assert "rabbit config set terminal.docker_image python:3.11" in caplog.text
 
 
 def test_extra_args_network_none_emits_flag_once(monkeypatch):

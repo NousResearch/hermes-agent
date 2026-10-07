@@ -33,9 +33,9 @@ def portable_stdio(log: Path, tag: str, **env: str) -> dict[str, Any]:
 
 def write_portable_plugin(eh: E2EHome, dirname: str, servers: dict[str, dict[str, Any]], *,
                           name: str | None = None, version: str = "1.0.0") -> Path:
-    """``<HERMES_HOME>/plugins/<dirname>/`` with ``plugin.json`` (manifest ``name``), ``mcp.json`` and an
+    """``<RABBIT_HOME>/plugins/<dirname>/`` with ``plugin.json`` (manifest ``name``), ``mcp.json`` and an
     in-root launcher that execs the fixture MCP server with this interpreter."""
-    root = eh.hermes_home / "plugins" / dirname
+    root = eh.rabbit_home / "plugins" / dirname
     root.mkdir(parents=True, exist_ok=True)
     (root / "plugin.json").write_text(json.dumps(
         {"$schema": PLUGIN_SCHEMA, "name": name or dirname, "version": version}), encoding="utf-8")

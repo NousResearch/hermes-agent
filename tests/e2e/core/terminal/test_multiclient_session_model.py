@@ -5,7 +5,7 @@ wrong connection, events rendered twice or leaking into another chat, a zombie l
 chat ("already has a live owner"), a ws drop orphaning the in-flight turn, client absence killing
 the turn, an active session hard-deleted.
 
-Harness: one real ``hermes serve`` (the Desktop's backend argv) per module, 3 Desktop-shaped
+Harness: one real ``rabbit serve`` (the Desktop's backend argv) per module, 3 Desktop-shaped
 WebSocket clients, and a seeded fuzzer that interleaves create / switch(resume) / prompt (fast and
 slow streams) / interrupt mid-stream / delete (inactive and active) / close / abrupt ws drop +
 reconnect + resume / owner death + takeover / client absence. The fake provider echoes a per-prompt
@@ -44,7 +44,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-g
 CANARY_RE = re.compile(r"cnry-s\d+-\d{3}")
 FILLER = " ".join(["stream"] * 45)
 ABSENCE_S = 3.0  # far below the 30 s WS send deadline and the reaper's activity-stale threshold
-GRACE_S = 2  # HERMES_TUI_WS_ORPHAN_REAP_GRACE_S: short so owner-death paths finish inside the test
+GRACE_S = 2  # RABBIT_TUI_WS_ORPHAN_REAP_GRACE_S: short so owner-death paths finish inside the test
 STEP_TIMEOUT = 90.0
 
 
@@ -72,7 +72,7 @@ def _responder(record: dict):
 def backend(tmp_path_factory):
     root = tmp_path_factory.mktemp("c14")
     be = Backend(root, _responder, extra_config="display:\n  busy_input_mode: queue\n",
-                 env={"HERMES_TUI_WS_ORPHAN_REAP_GRACE_S": str(GRACE_S)})
+                 env={"RABBIT_TUI_WS_ORPHAN_REAP_GRACE_S": str(GRACE_S)})
     be.start()
     try:
         yield be

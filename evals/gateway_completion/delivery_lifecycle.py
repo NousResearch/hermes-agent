@@ -1,9 +1,9 @@
 import os, sys, asyncio, json, tempfile, types
 from pathlib import Path
 
-ROOT = os.environ.get("HERMES_EVAL_REPO", str(Path(__file__).resolve().parents[2]))
+ROOT = os.environ.get("RABBIT_EVAL_REPO", str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, ROOT)
-HOME = Path(os.environ["HERMES_HOME"])
+HOME = Path(os.environ["RABBIT_HOME"])
 HOME.mkdir(parents=True, exist_ok=True)
 (HOME / "config.yaml").write_text(
     "display:\n  background_process_notifications: concise\n"

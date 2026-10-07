@@ -25,7 +25,7 @@ description: "通过 curl 调用 Airtable REST API"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Airtable — Bases、Tables 与 Records
@@ -40,7 +40,7 @@ description: "通过 curl 调用 Airtable REST API"
    - `data.records:write` — 创建 / 更新 / 删除行
    - `schema.bases:read` — 列出 bases 和 tables
 3. **重要：** 在同一令牌 UI 中，将你需要访问的每个 base 添加到令牌的 **Access** 列表中。PAT 是按 base 划定范围的——有效令牌若未授权对应 base 会返回 `403`。
-4. 将令牌存储在 `~/.hermes/.env` 中（或通过 `hermes setup` 配置）：
+4. 将令牌存储在 `~/.rabbit/.env` 中（或通过 `rabbit setup` 配置）：
    ```
    AIRTABLE_API_KEY=pat_your_token_here
    ```
@@ -61,7 +61,7 @@ curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=5" \
   -H "Authorization: Bearer $AIRTABLE_API_KEY" | python3 -m json.tool
 ```
 
-`-s` 会抑制 curl 的进度条——每次调用都保持此设置，以确保工具输出对 Hermes 保持整洁。通过 `python3 -m json.tool`（始终可用）或 `jq`（若已安装）管道输出以获得可读的 JSON。
+`-s` 会抑制 curl 的进度条——每次调用都保持此设置，以确保工具输出对 Rabbit 保持整洁。通过 `python3 -m json.tool`（始终可用）或 `jq`（若已安装）管道输出以获得可读的 JSON。
 
 ## 字段类型（请求体格式）
 
@@ -215,7 +215,7 @@ while :; do
 done
 ```
 
-## Hermes 典型工作流
+## Rabbit 典型工作流
 
 1. **确认认证。** `curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "Authorization: Bearer $AIRTABLE_API_KEY"` — 期望返回 `200`。
 2. **找到 base。** 列出 bases（见上方步骤），或在令牌缺少 `schema.bases:read` 权限时直接向用户索取 `app...` ID。
@@ -233,10 +233,10 @@ done
 - **令牌的 base 范围限制。** 某个 base 返回 `403` 而其他 base 正常，说明该 base 未添加到令牌的 Access 列表中——而非权限范围或认证问题。请引导用户前往 https://airtable.com/create/tokens 授权。
 - **速率限制是按 base 计算的，而非按令牌。** `baseA` 每秒 5 次、`baseB` 每秒 5 次是允许的；单独在 `baseA` 上每秒 6 次则会被限流。收到 `429` 时请监控 `Retry-After` 响应头。
 
-## Hermes 重要说明
+## Rabbit 重要说明
 
 - **始终使用 `terminal` 工具配合 `curl`。** 不要使用 `web_extract`（无法发送认证头）或 `browser_navigate`（需要 UI 认证且速度慢）。
-- **`AIRTABLE_API_KEY` 会在此 skill 加载时自动从 `~/.hermes/.env` 注入到子进程环境中**——每次 `curl` 调用前无需重新导出。
+- **`AIRTABLE_API_KEY` 会在此 skill 加载时自动从 `~/.rabbit/.env` 注入到子进程环境中**——每次 `curl` 调用前无需重新导出。
 - **在公式中谨慎转义花括号。** 在 heredoc 请求体中，`{Status}` 是字面量。在 shell 参数中，`{Status}` 在 `{...}` 大括号展开上下文之外是安全的——但在拼接到 URL 之前，动态字符串应通过 `python3 urllib.parse.quote` 处理。
 - **使用 `python3 -m json.tool` 格式化输出**（始终可用），而非 `jq`（可选）。仅在需要过滤/投影时才使用 `jq`。
 - **分页是按页计算的，而非全局。** Airtable 的 100 条记录上限是硬性限制，无法调整。使用 `offset` 循环直至该字段不再出现。

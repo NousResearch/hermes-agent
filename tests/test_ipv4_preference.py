@@ -6,10 +6,10 @@ import socket
 
 
 def _reload_constants():
-    """Reload hermes_constants to get a fresh apply_ipv4_preference."""
-    import hermes_constants
-    importlib.reload(hermes_constants)
-    return hermes_constants
+    """Reload rabbit_constants to get a fresh apply_ipv4_preference."""
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
+    return rabbit_constants
 
 
 class TestApplyIPv4Preference:
@@ -27,7 +27,7 @@ class TestApplyIPv4Preference:
 
     def test_double_patch_is_safe(self):
         """Calling apply twice doesn't double-wrap."""
-        from hermes_constants import apply_ipv4_preference
+        from rabbit_constants import apply_ipv4_preference
         apply_ipv4_preference(force=True)
         first_patch = socket.getaddrinfo
         apply_ipv4_preference(force=True)
@@ -35,7 +35,7 @@ class TestApplyIPv4Preference:
 
     def test_af_unspec_becomes_af_inet(self):
         """AF_UNSPEC (default) calls get rewritten to AF_INET."""
-        from hermes_constants import apply_ipv4_preference
+        from rabbit_constants import apply_ipv4_preference
 
         calls = []
 
@@ -52,7 +52,7 @@ class TestApplyIPv4Preference:
 
     def test_explicit_family_preserved(self):
         """Explicit AF_INET6 requests are not intercepted."""
-        from hermes_constants import apply_ipv4_preference
+        from rabbit_constants import apply_ipv4_preference
 
         calls = []
 

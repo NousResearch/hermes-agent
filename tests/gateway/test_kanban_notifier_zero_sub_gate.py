@@ -22,9 +22,9 @@ from unittest.mock import patch
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -71,7 +71,7 @@ def _create_completed_task(*, subscribe: bool) -> str:
 def test_zero_sub_board_is_never_opened_writable(tmp_path, monkeypatch):
     """A board with zero subscriptions must be skipped BEFORE `_kb.connect`."""
     db_path = tmp_path / "zero-subs.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(db_path))
     kb.init_db()
     _create_completed_task(subscribe=False)
 

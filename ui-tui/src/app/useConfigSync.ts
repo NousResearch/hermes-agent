@@ -1,4 +1,4 @@
-import type { MouseTrackingMode } from '@hermes/ink'
+import type { MouseTrackingMode } from '@rabbit/ink'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
@@ -47,7 +47,7 @@ export const normalizeStatusBarFields = (raw: unknown): null | ReadonlySet<strin
 const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
 
 // TUI defaults to `queue` even though the framework default
-// (`hermes_cli/config.py`) is `interrupt`.  Rationale: in a full-screen
+// (`rabbit_cli/config.py`) is `interrupt`.  Rationale: in a full-screen
 // TUI you're typically authoring the next prompt while the agent is
 // still streaming, and an unintended interrupt loses work.  Set
 // `display.busy_input_mode: interrupt` (or `steer`) explicitly to
@@ -343,7 +343,7 @@ export function useConfigSync({
     // can run long enough to delay prompt.submit on the single stdio RPC pipe.
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
-    setVoiceEnabled(process.env.HERMES_VOICE === '1')
+    setVoiceEnabled(process.env.RABBIT_VOICE === '1')
     quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is

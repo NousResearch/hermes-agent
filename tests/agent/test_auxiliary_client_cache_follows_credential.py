@@ -11,7 +11,7 @@ import pytest
 
 import agent.anthropic_credentials as anth_cred
 import agent.auxiliary_client as aux
-from hermes_cli.auth import write_credential_pool
+from rabbit_cli.auth import write_credential_pool
 
 MODEL = "claude-sonnet-4-5"
 
@@ -28,14 +28,14 @@ def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> No
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "rabbit"))
     monkeypatch.setattr(aux, "_client_cache", {})
-    # HERMES_HOME only redirects Hermes-owned state; the borrowed Claude Code
+    # RABBIT_HOME only redirects Rabbit-owned state; the borrowed Claude Code
     # reader still consults ~/.claude/.credentials.json and the macOS Keychain,
     # so an ambient login on the host would seed a second un-cooled-down pool
     # entry and break the cooldown assertions below (#114424).
     monkeypatch.setattr(anth_cred, "read_claude_code_credentials", lambda: None)
-    return tmp_path / "hermes"
+    return tmp_path / "rabbit"
 
 
 

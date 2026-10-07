@@ -30,9 +30,9 @@ export function nudgeOverlay(stage: WatchStage, owner?: PreviewOwner): void {
 
   void run(`(function () {
   var w = window;
-  var fn = w.__hermesWatch_fn;
+  var fn = w.__rabbitWatch_fn;
   if (!fn) { return 'cold'; }
-  try { fn(document, w.__hermesActHolder || {}, ${JSON.stringify(stage)}); } catch (err) {}
+  try { fn(document, w.__rabbitActHolder || {}, ${JSON.stringify(stage)}); } catch (err) {}
   return 'ok';
 })()`).catch(() => {
     // The page navigated out from under us. The next action re-injects.

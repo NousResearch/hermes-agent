@@ -2,7 +2,7 @@
 
 ``utils.warn_if_credential_file_broadly_readable`` is the shared helper for
 the class of bug PR #60009 reported for ``slack_tokens.json``: token files
-provisioned by hand (or written by older Hermes versions without an explicit
+provisioned by hand (or written by older Rabbit versions without an explicit
 mode) end up group/world-readable under the default umask, silently exposing
 plaintext secrets to other local users. The helper warns with a remediation
 hint; adapters call it on every read path.
@@ -64,7 +64,7 @@ class TestGoogleChatReadPathWarns:
         self, tmp_path, monkeypatch, caplog
     ):
         """The google_chat legacy token read path shares the Slack fix."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         # google-auth may not be installed in this environment; the warning
         # fires before the import guard, so a None return is fine either way.
         token = tmp_path / "google_chat_user_token.json"

@@ -3,7 +3,7 @@
 A worker wedged on a lock passes ``_owner_is_live()`` forever, so its ``running`` row was never
 reclaimed and every future fire of the job was skipped. ``recover_interrupted_executions`` now
 also releases a live-owned claim once it outlives a bound derived from the existing timeouts
-(``max(3 × HERMES_CRON_TIMEOUT, script timeout, 7200)``) and fails closed when the inactivity
+(``max(3 × RABBIT_CRON_TIMEOUT, script timeout, 7200)``) and fails closed when the inactivity
 timeout is unlimited or not a finite positive number.
 """
 
@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 
 import cron.executions as executions_mod
-from cron.executions import _hermes_now, _transaction, recover_interrupted_executions
+from cron.executions import _rabbit_now, _transaction, recover_interrupted_executions
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def _ledger(monkeypatch, tmp_path):
 
 
 def _seed_running(job_id: str, *, age_seconds: float, pid: int = 99999) -> str:
-    claimed_at = (_hermes_now() - timedelta(seconds=age_seconds)).isoformat()
+    claimed_at = (_rabbit_now() - timedelta(seconds=age_seconds)).isoformat()
     with _transaction() as conn:
         eid = uuid.uuid4().hex
         conn.execute(
@@ -47,7 +47,7 @@ def _status(eid: str) -> str:
 def test_live_owner_stale_claim_gets_recovered(monkeypatch):
     """A live-owned claim older than the derived bound is released as ``unknown``; the bound
     follows the configured timeouts rather than a fixed wall-clock constant."""
-    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    monkeypatch.setenv("RABBIT_CRON_TIMEOUT", "600")
     bound = executions_mod._live_owner_stale_after_seconds()
     assert bound is not None
     assert bound == pytest.approx(7200.0)  # max(3×600, 3600 script default, 7200 floor)
@@ -57,7 +57,7 @@ def test_live_owner_stale_claim_gets_recovered(monkeypatch):
     assert _status(eid) == "unknown"
 
     # A larger inactivity timeout widens the bound: the same age is no longer stale.
-    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "3600")
+    monkeypatch.setenv("RABBIT_CRON_TIMEOUT", "3600")
     assert executions_mod._live_owner_stale_after_seconds() == pytest.approx(10800.0)
     eid2 = _seed_running("job-long", age_seconds=bound + 60)
     assert recover_interrupted_executions() == 0
@@ -69,7 +69,7 @@ def test_live_owner_recent_claim_not_recovered(monkeypatch, timeout):
     """A live owner with a recent claim is left alone; with an unlimited (0) or non-finite
     inactivity timeout there is no bound to derive, so even an ancient live-owned claim is
     left alone (fail closed)."""
-    monkeypatch.setenv("HERMES_CRON_TIMEOUT", timeout)
+    monkeypatch.setenv("RABBIT_CRON_TIMEOUT", timeout)
     recent = _seed_running("job-recent", age_seconds=60, pid=88888)
     ancient = _seed_running("job-ancient", age_seconds=30 * 24 * 3600, pid=77777)
 

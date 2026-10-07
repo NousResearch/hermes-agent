@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.core.providers._catalog_helpers import (
-    AUTH_HEADER_OF_DIALECT, FINAL, Known, Row, decoy_keys, discover_catalog, gate, known_gate, run_hermes, write_home,
+    AUTH_HEADER_OF_DIALECT, FINAL, Known, Row, decoy_keys, discover_catalog, gate, known_gate, run_rabbit, write_home,
 )
 from tests.fakes.providers.catalog_fake import CatalogFake
 
@@ -50,7 +50,7 @@ def _drive(primary: Row, fallback: Row, root: Path) -> dict:
         home = write_home(root, {"provider": primary.name, "base_url": dead.origin + primary.base_path}, {
             "fallback_providers": [{"provider": fallback.name, "model": "catalog-model-a",
                                     "base_url": alive.origin + fallback.base_path}]})
-        proc = run_hermes(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.")
+        proc = run_rabbit(home, project, {**keys, **dead.proxy_env()}, "-z", "Read canary.txt and report.")
         dead_reqs, alive_reqs = dead.inference(), alive.inference()
         egress = dead.egress_hosts()
     pk, fk = keys[primary.key_env or ""], keys[fallback.key_env or ""]

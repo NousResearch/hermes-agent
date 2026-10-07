@@ -1,7 +1,7 @@
 """Regression guard: _create_openai_client must disable SDK-level retries.
 
 #26293: the OpenAI SDK default ``max_retries=2`` uses its own 1-2s backoff that
-ignores ``Retry-After`` and double-retries *inside* hermes's outer conversation
+ignores ``Retry-After`` and double-retries *inside* rabbit's outer conversation
 loop — burning request slots against a rate-limited bucket that won't refill for
 minutes. The outer loop already owns rate-limit backoff (honors Retry-After,
 adaptive + jittered), so every primary OpenAI/aggregator client must be built

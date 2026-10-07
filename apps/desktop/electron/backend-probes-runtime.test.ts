@@ -6,12 +6,12 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { canImportHermesCli } from './backend-probes'
+import { canImportRabbitCli } from './backend-probes'
 
 const REPO: string = path.resolve(import.meta.dirname, '../../..')
 
 const PYTHON: string =
-  process.env.HERMES_PYTHON || process.env.UV_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
+  process.env.RABBIT_PYTHON || process.env.UV_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')
 
 interface RuntimeFixture {
   python: string
@@ -20,15 +20,15 @@ interface RuntimeFixture {
 }
 
 test('the real bootstrap supplies ruamel-only dependencies and rejects foreign-path rescue', async (): Promise<void> => {
-  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-probe-runtime-'))
+  const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-probe-runtime-'))
   const home: string = path.join(temp, 'home')
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
-    HERMES_HOME: home,
-    HERMES_RUNTIME_DIR: path.join(temp, 'tools'),
-    HERMES_DISABLE_LAZY_INSTALLS: '1',
+    RABBIT_HOME: home,
+    RABBIT_RUNTIME_DIR: path.join(temp, 'tools'),
+    RABBIT_DISABLE_LAZY_INSTALLS: '1',
     UV_CACHE_DIR: path.join(temp, 'cache'),
     UV_NO_CONFIG: '1',
     PYTHONPATH: '',
@@ -75,9 +75,9 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
       })
     ) as RuntimeFixture
 
-    assert.equal(await canImportHermesCli(fixture.python, { cwd: REPO, env }), true)
+    assert.equal(await canImportRabbitCli(fixture.python, { cwd: REPO, env }), true)
     assert.equal(
-      await canImportHermesCli(fixture.python, {
+      await canImportRabbitCli(fixture.python, {
         cwd: REPO,
         env: { ...env, PYTHONHOME: path.join(temp, 'foreign-home') }
       }),
@@ -89,7 +89,7 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
     const foreign: string = path.join(temp, 'foreign-packages')
     fs.symlinkSync(fixture.dependencies, foreign, process.platform === 'win32' ? 'junction' : 'dir')
     assert.equal(
-      await canImportHermesCli(fixture.python, {
+      await canImportRabbitCli(fixture.python, {
         cwd: REPO,
         env: { ...env, PYTHONPATH: foreign }
       }),
@@ -97,7 +97,7 @@ print(json.dumps({'python': str(python), 'site': str(site), 'dependencies': str(
       'foreign dependencies must not conceal an empty selected environment'
     )
     assert.equal(
-      await canImportHermesCli(fixture.python, {
+      await canImportRabbitCli(fixture.python, {
         cwd: REPO,
         env: { ...env, PYTHONHOME: path.join(temp, 'foreign-home') }
       }),

@@ -5,7 +5,7 @@ name: Icon Assets Freshness
 # builds and user installs consume the committed files and never render, so
 # this lane is what keeps them honest: regenerate, structural --check, then
 # fail on any byte difference. Fix a red run with
-# `node scripts/generate-icons.mjs` on a Hermes runtime interpreter and commit.
+# `node scripts/generate-icons.mjs` on a Rabbit runtime interpreter and commit.
 #
 # Byte-determinism note: resvg renders the same SVG to identical bytes on any
 # host for pure-shape artwork. If the master ever contains <text>, font
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
-      # The generator runs on a Hermes runtime interpreter; [] exports one as HERMES_PYTHON.
+      # The generator runs on a Rabbit runtime interpreter; [] exports one as RABBIT_PYTHON.
       - uses: ./.github/actions/setup-pm
         with:
           toolchain: all
@@ -36,8 +36,8 @@ jobs:
 
       - name: Regenerate every target, verify structure, diff against committed
         env:
-          HERMES_PAYLOAD_TAG: ''
-          HERMES_BUILD_COMMIT: ''
+          RABBIT_PAYLOAD_TAG: ''
+          RABBIT_BUILD_COMMIT: ''
         run: |
           node scripts/generate-icons.mjs
           node scripts/generate-icons.mjs --check

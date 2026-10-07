@@ -97,7 +97,7 @@ interface AuthCase {
 }
 
 const authCases: AuthCase[] = [
-  { name: 'token', options: {}, header: 'x-hermes-session-token', value: 'session-token' },
+  { name: 'token', options: {}, header: 'x-rabbit-session-token', value: 'session-token' },
   { name: 'bearer', options: { bearer: 'native-token' }, header: 'authorization', value: 'Bearer native-token' }
 ]
 
@@ -108,7 +108,7 @@ test.each(authCases)(
 
     const baseUrl: string = await serve((request: http.IncomingMessage, response: http.ServerResponse): void => {
       expect(request.headers[header]).toBe(value)
-      expect(request.headers[header === 'authorization' ? 'x-hermes-session-token' : 'authorization']).toBeUndefined()
+      expect(request.headers[header === 'authorization' ? 'x-rabbit-session-token' : 'authorization']).toBeUndefined()
       response.writeHead(200, { 'Content-Disposition': 'attachment; filename="server.bin"' })
       response.flushHeaders()
       responseReady.resolve(response)
@@ -250,7 +250,7 @@ test('cookie connection timeout aborts before headers and never opens a dialog',
     { timeoutMs: 2000 }
   )
 
-  const rejected: Promise<void> = expect(pending).rejects.toThrow('Timed out connecting to Hermes backend after 2000ms')
+  const rejected: Promise<void> = expect(pending).rejects.toThrow('Timed out connecting to Rabbit backend after 2000ms')
   await vi.advanceTimersByTimeAsync(2000)
   await rejected
   expect(request.aborted).toBe(true)

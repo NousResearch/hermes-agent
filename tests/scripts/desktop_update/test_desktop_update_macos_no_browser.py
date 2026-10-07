@@ -47,16 +47,16 @@ def test_macos_handoff_opens_no_browser_window_when_chrome_is_default(tmp_path):
             {"LSHandlers": [{"LSHandlerURLScheme": "https", "LSHandlerRoleAll": "com.google.chrome"}]},
             f,
         )
-    install = tmp_path / "hermes-agent"
+    install = tmp_path / "rabbit-agent"
     install.mkdir()
     env = {
         **os.environ,
         "HOME": str(tmp_path),
         "TMPDIR": str(tmp_path),
         "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
-        "HERMES_SELFTEST_HOLD_SECONDS": "3",
+        "RABBIT_SELFTEST_HOLD_SECONDS": "3",
     }
-    env.pop("HERMES_SELFTEST_FAIL", None)
+    env.pop("RABBIT_SELFTEST_FAIL", None)
 
     proc = subprocess.Popen(
         ["bash", str(SHIM), "--install-root", str(install), "--self-test-ui"],

@@ -1,15 +1,15 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-rabbit-env" python3 "$0" "$@"'
 """Standalone structural validator for plugin-catalog entry files.
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and
 ``plugin-catalog/removed.yaml`` against the catalog contract schema, using
 only stdlib + ruamel.yaml so the admission CI (and third-party repos) can run it
-WITHOUT installing hermes-agent.
+WITHOUT installing rabbit-agent.
 
 NOTE: this script intentionally duplicates the schema rules instead of
-importing ``hermes_cli`` — the whole point is the no-install requirement for
+importing ``rabbit_cli`` — the whole point is the no-install requirement for
 cheap cross-repo CI use. The runtime twin of this schema lives in
-``hermes_cli/plugin_catalog.py``; if the contract changes there, update the
+``rabbit_cli/plugin_catalog.py``; if the contract changes there, update the
 rules here in lockstep.
 
 Usage:
@@ -65,7 +65,7 @@ KNOWN_KEYS = {
     "maintainer",
     "tier",
     "category",
-    "requires_hermes",
+    "requires_rabbit",
     "docs_url",
     "version",
     "image",
@@ -89,7 +89,7 @@ MAX_SCREENSHOTS = 6
 README_REPO_HOSTS = ("github.com", "gitlab.com")
 REQUIRED_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
-# One comparator clause of a requires_hermes spec, e.g. ">=0.19" or "!=1.2.3".
+# One comparator clause of a requires_rabbit spec, e.g. ">=0.19" or "!=1.2.3".
 _COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*\d+(\.\d+)*\Z")
 
 
@@ -125,16 +125,16 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
             errors.append(f"readme: true needs a repo on {list(README_REPO_HOSTS)} (the site fetches it from the pinned commit); omit it for other forges")
 
 
-def _check_requires_hermes(spec: object, errors: list[str]) -> None:
+def _check_requires_rabbit(spec: object, errors: list[str]) -> None:
     if not isinstance(spec, str):
-        errors.append(f"requires_hermes must be a string, got {type(spec).__name__}")
+        errors.append(f"requires_rabbit must be a string, got {type(spec).__name__}")
         return
     if spec.strip() == "":
         return  # empty = no constraint
     for clause in spec.split(","):
         if not _COMPARATOR_RE.match(clause.strip()):
             errors.append(
-                f"requires_hermes clause {clause.strip()!r} is not a valid "
+                f"requires_rabbit clause {clause.strip()!r} is not a valid "
                 "comparator spec (expected e.g. '>=0.19')"
             )
 
@@ -196,8 +196,8 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     if category not in CATEGORIES:
         errors.append(f"category {category!r} must be one of {list(CATEGORIES)}")
 
-    if "requires_hermes" in data:
-        _check_requires_hermes(data["requires_hermes"], errors)
+    if "requires_rabbit" in data:
+        _check_requires_rabbit(data["requires_rabbit"], errors)
 
     version = data.get("version")
     if version is not None and (not isinstance(version, str) or not VERSION_RE.match(version)):

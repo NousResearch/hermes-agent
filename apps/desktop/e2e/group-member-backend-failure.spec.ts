@@ -102,7 +102,7 @@ test('a member whose backend fails the turn is reported at once, not read as bus
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0, { timeout: 30_000 })
 
   const room = await page.evaluate(name => {
-    const rooms = JSON.parse(localStorage.getItem('hermes.plugin.hermes-bots.group-chats') || '{}')
+    const rooms = JSON.parse(localStorage.getItem('rabbit.plugin.rabbit-bots.group-chats') || '{}')
 
     return { stranded: Object.keys(rooms[name]?.stranded || {}), running: Boolean(rooms[name]?.running) }
   }, ROOM)
@@ -136,7 +136,7 @@ test('a member that fails after pre-tool text is reported, and that text is not 
   }).toPass({ timeout: 150_000 })
 
   const room = await page.evaluate(name => {
-    const rooms = JSON.parse(localStorage.getItem('hermes.plugin.hermes-bots.group-chats') || '{}')
+    const rooms = JSON.parse(localStorage.getItem('rabbit.plugin.rabbit-bots.group-chats') || '{}')
 
     return { log: (rooms[name]?.log || []).map((entry: { text?: string }) => entry.text || ''), stranded: Object.keys(rooms[name]?.stranded || {}) }
   }, ROOM)

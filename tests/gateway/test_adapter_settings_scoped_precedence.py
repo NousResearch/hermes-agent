@@ -18,7 +18,7 @@ import pytest
 
 from agent.secret_scope import set_multiplex_active
 from gateway.config import Platform, load_gateway_config
-from hermes_cli.plugins import discover_plugins
+from rabbit_cli.plugins import discover_plugins
 
 
 @pytest.fixture(autouse=True)
@@ -42,11 +42,11 @@ def _allowed_mentions(extra):
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    """(launch_home, secondary_home); HERMES_HOME points at the launch home, multiplex off on exit."""
+    """(launch_home, secondary_home); RABBIT_HOME points at the launch home, multiplex off on exit."""
     launch = tmp_path / "launch"
     secondary = tmp_path / "launch" / "profiles" / "b2"
     secondary.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     yield launch, secondary
     set_multiplex_active(False)
@@ -94,7 +94,7 @@ def test_secondary_reads_own_yaml_and_never_the_launch_env(homes, monkeypatch):
         # The seeded YAML lists reach the Matrix authz consumers.
         assert m._allowed_user_ids == {"@owner:example.org"} and len(m._ignored_user_patterns) == 1
         # The secondary's YAML proxy reaches request construction without an env bridge.
-        monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
+        monkeypatch.setenv("RABBIT_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
         built: list = []
         with patch.object(tg, "HTTPXRequest", lambda **kw: built.append(kw) or types.SimpleNamespace()), \
                 patch.object(t, "_instrument_polling_request", side_effect=lambda r: r):

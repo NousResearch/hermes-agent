@@ -3,7 +3,7 @@ never only logged (#119769): the CLI prints it; other drivers get a warn notice,
 messaging-gateway agent (callbacks wired per turn) replays on its first turn."""
 from agent.agent_init import _init_memory
 from agent.status_output import StatusOutputMixin
-from hermes_cli import memory_provider_migration as mig
+from rabbit_cli import memory_provider_migration as mig
 
 
 class StartupAgent(StatusOutputMixin):
@@ -22,7 +22,7 @@ class StartupAgent(StatusOutputMixin):
 
 
 def _start(tmp_path, monkeypatch, platform):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(mig, "_attempted", set())
     monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: False)
     agent = StartupAgent(platform)
@@ -34,7 +34,7 @@ def _start(tmp_path, monkeypatch, platform):
 
 def test_cli_start_prints_the_refusal(tmp_path, monkeypatch):
     agent = _start(tmp_path, monkeypatch, "cli")
-    assert any("hermes plugins install scout_missing_provider" in line for line in agent.printed)
+    assert any("rabbit plugins install scout_missing_provider" in line for line in agent.printed)
 
 
 def test_gateway_start_replays_the_refusal_once_on_first_turn(tmp_path, monkeypatch):
@@ -44,4 +44,4 @@ def test_gateway_start_replays_the_refusal_once_on_first_turn(tmp_path, monkeypa
     agent._replay_startup_warnings()
     agent._replay_startup_warnings()
     assert len(notices) == 1 and notices[0].level == "warn"
-    assert "hermes plugins install scout_missing_provider" in notices[0].text
+    assert "rabbit plugins install scout_missing_provider" in notices[0].text

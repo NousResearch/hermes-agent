@@ -38,7 +38,7 @@ class TestConfineSourceImages:
 
     def test_urls_pass_through_under_sandbox(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
         url, refs, err = igt._confine_source_images(
             "https://x/y.png", ["data:image/png;base64,AAAA"], "t1")
         assert url == "https://x/y.png"
@@ -51,7 +51,7 @@ class TestConfineSourceImages:
         from types import SimpleNamespace
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
 
         import tools.image_source as isrc
 
@@ -72,7 +72,7 @@ class TestConfineSourceImages:
     def test_unreadable_path_returns_error_payload(self, monkeypatch, tmp_path):
         """No sandbox env + non-cache path -> structured error, not a host read."""
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
 
         import tools.image_source as isrc
 
@@ -92,7 +92,7 @@ class TestConfineSourceImages:
         """_handle_image_generate returns the confinement error without ever
         reaching plugin/FAL dispatch."""
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
 
         import tools.image_source as isrc
 
@@ -117,7 +117,7 @@ class TestConfineSourceImages:
         import tools.video_generation_tool as vgt
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "h"))
 
         import tools.image_source as isrc
 

@@ -50,7 +50,7 @@ to read:
   chat) are exempted by instruction, not by a separate classifier
 
 Perplexity forbids raw URLs in the answer because its UI renders source cards.
-Hermes has no such UI layer in chat or in a written file, so this skill renders
+Rabbit has no such UI layer in chat or in a written file, so this skill renders
 the id → URL list explicitly instead.
 
 ## Related in-tree implementation

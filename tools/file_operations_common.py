@@ -193,7 +193,7 @@ class ExecuteResult:
 # ---------------------------------------------------------------------------
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
-_FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+_FENCE_MARKER_RE = re.compile(r"'?\x07?__RABBIT_FENCE_[A-Za-z0-9]+__\x07?'?")
 
 
 _CONFLICT_OPEN = re.compile(r"^\s*\d+\|<<<<<<< ", re.M)
@@ -215,7 +215,7 @@ def _strip_terminal_fence_leaks(text: str) -> str:
         return text
     cleaned_lines: List[str] = []
     for line in text.splitlines(keepends=True):
-        had_terminal_wrapper = "__HERMES_FENCE_" in line or "\x1b]" in line
+        had_terminal_wrapper = "__RABBIT_FENCE_" in line or "\x1b]" in line
         cleaned = _FENCE_MARKER_RE.sub("", _OSC_SEQUENCE_RE.sub("", line)).replace("\x07", "")
         if had_terminal_wrapper and cleaned.strip("'\r\n\t ") == "":
             continue

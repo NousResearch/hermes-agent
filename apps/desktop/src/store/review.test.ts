@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
-import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
+import type { RabbitReviewFile, RabbitReviewShipInfo } from '@/global'
 
 import {
   $reviewCommitDefault,
@@ -43,7 +43,7 @@ import { $busy, $currentCwd } from './session'
 import { $sessionStates } from './session-states'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
-// reaches the gateway); everything else routes through window.hermesDesktop.git,
+// reaches the gateway); everything else routes through window.rabbitDesktop.git,
 // which we stub per-test like the sibling coding-status.test.ts does.
 const requestOneShot = vi.fn(async (_args: unknown) => 'generated message')
 vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneShot(args) }))
@@ -53,8 +53,8 @@ vi.mock('@/lib/oneshot', () => ({ requestOneShot: (args: unknown) => requestOneS
 // branch either.
 vi.mock('./coding-status', () => ({ refreshRepoStatus: vi.fn(), repoStatusForCwd: () => ({ get: () => null }) }))
 
-function file(path: string, over: Partial<HermesReviewFile> = {}): HermesReviewFile {
-  return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as HermesReviewFile
+function file(path: string, over: Partial<RabbitReviewFile> = {}): RabbitReviewFile {
+  return { path, status: 'modified', staged: false, added: 1, removed: 0, ...over } as RabbitReviewFile
 }
 
 function deferred<T>() {
@@ -71,7 +71,7 @@ function deferred<T>() {
 
 type ReviewStub = Record<string, ReturnType<typeof vi.fn>>
 
-// Install a review bridge on window.hermesDesktop. Any op not supplied defaults
+// Install a review bridge on window.rabbitDesktop. Any op not supplied defaults
 // to a resolved no-op so a test only declares what it exercises.
 function stubReview(over: ReviewStub = {}) {
   const review: ReviewStub = {
@@ -89,7 +89,7 @@ function stubReview(over: ReviewStub = {}) {
     ...over
   }
 
-  ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop = {
     git: { review },
     openExternal: vi.fn()
   }
@@ -124,7 +124,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('refreshReview', () => {
@@ -141,7 +141,7 @@ describe('refreshReview', () => {
   })
 
   it('flags not-a-repo (and clears loading) when there is no bridge/cwd', async () => {
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     $reviewOpen.set(true)
     $reviewLoading.set(true)
 
@@ -202,8 +202,8 @@ describe('refreshReview', () => {
   it('keeps a new repository loading when the previous request rejects during the debounce gap', async () => {
     vi.useFakeTimers()
 
-    const repoA = deferred<{ files: HermesReviewFile[] }>()
-    const repoB = deferred<{ files: HermesReviewFile[] }>()
+    const repoA = deferred<{ files: RabbitReviewFile[] }>()
+    const repoB = deferred<{ files: RabbitReviewFile[] }>()
 
     const review = stubReview({
       list: vi.fn((cwd: string) => (cwd === '/repo-a' ? repoA.promise : repoB.promise))
@@ -236,7 +236,7 @@ describe('refreshReview', () => {
   })
 
   it('does not let an older list response clear a newer direct selection', async () => {
-    const pendingList = deferred<{ files: HermesReviewFile[] }>()
+    const pendingList = deferred<{ files: RabbitReviewFile[] }>()
     stubReview({ list: vi.fn(() => pendingList.promise), diff: vi.fn(async () => 'new diff') })
     $reviewOpen.set(true)
 
@@ -251,8 +251,8 @@ describe('refreshReview', () => {
   })
 
   it('does not let an older finally clear a newer in-flight refresh spinner', async () => {
-    const first = deferred<{ files: HermesReviewFile[] }>()
-    const second = deferred<{ files: HermesReviewFile[] }>()
+    const first = deferred<{ files: RabbitReviewFile[] }>()
+    const second = deferred<{ files: RabbitReviewFile[] }>()
     let call = 0
     stubReview({ list: vi.fn(() => (++call === 1 ? first.promise : second.promise)) })
     $reviewOpen.set(true)
@@ -318,7 +318,7 @@ describe('selectReviewFile', () => {
   })
 
   it('sets diff null when there is no bridge', async () => {
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 
     await selectReviewFile(file('a.ts'))
 
@@ -450,7 +450,7 @@ describe('view state', () => {
 
   it('keeps openReviewForPath ownership when a debounced refresh was already pending', async () => {
     vi.useFakeTimers()
-    const directList = deferred<{ files: HermesReviewFile[] }>()
+    const directList = deferred<{ files: RabbitReviewFile[] }>()
     const review = stubReview({ list: vi.fn(() => directList.promise), diff: vi.fn(async () => 'target diff') })
     $reviewOpen.set(true)
 
@@ -529,13 +529,13 @@ describe('ship flow', () => {
 
   it('createOrOpenPr opens the existing PR without creating a new one', async () => {
     const review = stubReview()
-    $reviewShipInfo.set({ ghReady: true, pr: { url: 'https://example.com/pr/9' } } as HermesReviewShipInfo)
+    $reviewShipInfo.set({ ghReady: true, pr: { url: 'https://example.com/pr/9' } } as RabbitReviewShipInfo)
 
     await createOrOpenPr()
 
     expect(review.createPr).not.toHaveBeenCalled()
     expect(
-      (window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
+      (window.rabbitDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
     ).toHaveBeenCalledWith('https://example.com/pr/9')
   })
 
@@ -547,15 +547,15 @@ describe('ship flow', () => {
 
     expect(review.createPr).toHaveBeenCalledWith('/repo')
     expect(
-      (window.hermesDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
+      (window.rabbitDesktop as unknown as { openExternal: ReturnType<typeof vi.fn> }).openExternal
     ).toHaveBeenCalledWith('https://example.com/pr/new')
   })
 })
 
 describe('refreshShipInfo', () => {
   it('resets ship info when there is no bridge', async () => {
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
-    $reviewShipInfo.set({ ghReady: true, pr: { url: 'x' } } as HermesReviewShipInfo)
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
+    $reviewShipInfo.set({ ghReady: true, pr: { url: 'x' } } as RabbitReviewShipInfo)
 
     await refreshShipInfo()
 
@@ -568,7 +568,7 @@ describe('refreshShipInfo', () => {
         throw new Error('gh missing')
       })
     })
-    $reviewShipInfo.set({ ghReady: true, pr: { url: 'x' } } as HermesReviewShipInfo)
+    $reviewShipInfo.set({ ghReady: true, pr: { url: 'x' } } as RabbitReviewShipInfo)
 
     await refreshShipInfo()
 
@@ -689,7 +689,7 @@ describe('turn baseline capture', () => {
   })
 
   it('leaves the baseline empty when there is no git bridge', async () => {
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 
     $sessionStates.set({ rt_nobridge: sessionState(true, '/repo') })
 

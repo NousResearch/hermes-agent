@@ -12,7 +12,7 @@ from tools.skills_tool import (
 
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     skills = home / "skills"
     d = skills / "demo-dedup-skill"
     d.mkdir(parents=True)
@@ -24,7 +24,7 @@ def skills_home(tmp_path, monkeypatch):
     refs = d / "references"
     refs.mkdir()
     (refs / "guide.md").write_text("# Guide\n\nDetailed reference content here.\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     reset_skill_view_dedup()
     from tools.skill_manager_guards import _reset_background_review_read_marks
     _reset_background_review_read_marks()

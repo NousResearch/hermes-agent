@@ -3,7 +3,7 @@
  *
  * Decides whether a failed primary-backend boot should *latch* into
  * `backendStartFailure`. A latched failure makes every subsequent
- * startHermes() re-throw the cached error without re-attempting the connect —
+ * startRabbit() re-throw the cached error without re-attempting the connect —
  * the right behavior for a LOCAL backend so the renderer's retry loop can't
  * restart a broken install over and over.
  *
@@ -25,7 +25,7 @@
 export interface BackendStartFailureContext {
   /**
    * True when the boot that just failed was resolving/dialing a REMOTE (or
-   * cloud) primary backend rather than spawning a local child.
+   * primary backend rather than spawning a local child.
    */
   attemptedRemote: boolean
   /**
@@ -36,7 +36,7 @@ export interface BackendStartFailureContext {
 }
 
 /**
- * Whether a startHermes() failure should latch into `backendStartFailure`.
+ * Whether a startRabbit() failure should latch into `backendStartFailure`.
  * Latch local failures (prevent install-restart loops); never latch remote
  * failures (they are transient and must stay retryable so recovery paths work
  * without an app restart).
@@ -51,7 +51,7 @@ export function shouldLatchBackendStartFailure(context: BackendStartFailureConte
 }
 
 export interface RemoteReauthFailureContext {
-  /** True when the boot that just failed was dialing a REMOTE (or cloud) backend. */
+  /** True when the boot that just failed was dialing a REMOTE backend. */
   attemptedRemote: boolean
   /**
    * True when the failure was a CONFIRMED auth rejection (a credentialed
@@ -70,7 +70,7 @@ export interface RemoteReauthFailureContext {
  * signs in again.
  *
  * Without a latch, the non-latching remote path actively prevents recovery.
- * Every subsequent `getConnection`/`api` call re-runs `startHermes`, re-emits
+ * Every subsequent `getConnection`/`api` call re-runs `startRabbit`, re-emits
  * `running: true`, and the boot-failure overlay (`visible = Boolean(boot.error)
  * && !boot.running`) hides itself — so the "Sign in" button flickers out from
  * under the user before they can click it. Latching holds the overlay still
@@ -82,7 +82,7 @@ export function shouldLatchRemoteReauthFailure(context: RemoteReauthFailureConte
 }
 
 export interface RemoteBootRetryContext {
-  /** True when the boot that just failed was dialing a REMOTE (or cloud/SSH) backend. */
+  /** True when the boot that just failed was dialing a REMOTE (or SSH) backend. */
   attemptedRemote: boolean
   /**
    * True when the failure was a CONFIRMED auth rejection (401/403), which can
@@ -193,7 +193,7 @@ export function shouldLatchSshClientFailure(context: RemoteBootRetryContext): bo
 /**
  * Whether a failed remote boot should latch (into `backendStartFailure`)
  * because SSH rejected the credentials (#72698). Unlatched, every
- * `getConnection`/api call re-runs startHermes, re-emits `running: true` and
+ * `getConnection`/api call re-runs startRabbit, re-emits `running: true` and
  * hides the boot-failure overlay, so its Gateway settings button — the only
  * way to fix the key — ignores clicks. Released by reset/repair/apply-config
  * like the host-key latch.

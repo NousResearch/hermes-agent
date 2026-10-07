@@ -2,7 +2,7 @@
 """Capture a HAR from a browser you connect to over CDP (not one you launch).
 
 Use this when the browser is owned by someone else and only reachable over the
-Chrome DevTools Protocol: Hermes cloud backends (Browserbase, Browser-Use,
+Chrome DevTools Protocol: Rabbit cloud backends (Browserbase, Browser-Use,
 Firecrawl), a Camofox session exposing CDP, or anything wired via
 `/browser connect <url>` / BROWSER_CDP_URL / browser.cdp_url in config.
 
@@ -15,7 +15,7 @@ Usage:
   python3 har_capture_cdp.py <cdp_url> <output.har> [--wait S] \
       [--goto URL] [--action "fill:SEL:TEXT"] [--action "click:SEL"] ...
 
-<cdp_url> is the ws:// or http:// CDP endpoint. For Hermes: run
+<cdp_url> is the ws:// or http:// CDP endpoint. For Rabbit: run
 `/browser connect` to see the active endpoint, or read BROWSER_CDP_URL.
 """
 import argparse

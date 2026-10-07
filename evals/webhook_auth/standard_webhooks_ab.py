@@ -7,7 +7,7 @@ docs describe: HMAC-SHA256 over ``{id}.{timestamp}.{body}``, ``v1,<base64>``. Ca
 positive path plus negative paths (wrong secret, tampered body, stale timestamp, partial headers,
 wrong scheme) and the regressions that must not move (svix-*, GitLab X-Gitlab-Token, dual-token).
 
-    HERMES_HOME=$(mktemp -d) python evals/gateway_status_render/standard_webhooks_ab.py [--port 18644]
+    RABBIT_HOME=$(mktemp -d) python evals/gateway_status_render/standard_webhooks_ab.py [--port 18644]
 """
 
 from __future__ import annotations

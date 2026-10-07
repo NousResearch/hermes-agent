@@ -8,7 +8,7 @@ root = Path(sys.argv[1]).resolve()
 arm = sys.argv[2]
 home = tempfile.mkdtemp(prefix="video-wire-")
 os.environ.clear()
-os.environ.update(HOME=home, HERMES_HOME=home, PATH="/usr/bin:/bin", NO_PROXY="*")
+os.environ.update(HOME=home, RABBIT_HOME=home, PATH="/usr/bin:/bin", NO_PROXY="*")
 sys.path.insert(0, str(root))
 os.chdir(home)
 sys.dont_write_bytecode = True

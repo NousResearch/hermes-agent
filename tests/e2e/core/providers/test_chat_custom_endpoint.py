@@ -1,11 +1,11 @@
-"""Custom / Ollama-style chat-completions endpoints through REAL ``hermes -z`` processes.
+"""Custom / Ollama-style chat-completions endpoints through REAL ``rabbit -z`` processes.
 
 * Ollama's chat renderer refuses a payload with no ``user`` message (HTTP 500 ``no user
   query found in messages``). The fake enforces that rule on every main request while
   the session goes through a tool continuation, a stream that drops mid-tool-call and
   is retried, and a ``--resume`` of the result: no request may ever lack the user turn
   (#120828 reports one escaping on a continuation/retry path). Ollama answers that
-  refusal with a 500, which Hermes (correctly, it cannot tell) treats as a transient
+  refusal with a 500, which Rabbit (correctly, it cannot tell) treats as a transient
   outage and keeps retrying under ``agent.auto_recovery_cycles`` for minutes; the test
   turns that recovery off and bounds each turn, and checks the recorded requests FIRST so
   a regression fails in seconds naming the request that lost the user turn.
@@ -60,7 +60,7 @@ def test_ollama_strict_endpoint_always_receives_the_user_turn(tmp_path) -> None:
     overrun: HarnessError | None = None
     with FakeChatVariantServer(script, strict_user_turn=True) as srv:
         cfg = custom_chat_config(srv.base_url, model="qwen3:27b")
-        # The strict 500 is retryable to Hermes; no minutes-long auto-recovery on a regression.
+        # The strict 500 is retryable to Rabbit; no minutes-long auto-recovery on a regression.
         cfg["agent"] = {"auto_recovery_cycles": 0}
         h.write(cfg, dotenv={"OPENAI_API_KEY": "ollama"})
         (h.project / "a.txt").write_text("CANARY-A\n", encoding="utf-8")

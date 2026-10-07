@@ -23,7 +23,7 @@
  * the next refresh retries; a backend without the endpoint (version skew)
  * stays armed-off for this renderer lifetime.
  */
-import { getApiRequestConnection, hermesApi } from '@/api/client'
+import { getApiRequestConnection, rabbitApi } from '@/api/client'
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { resolveLegacyOwnerBackfillScope } from '@/lib/session-owner-stamp'
 import { $connectionsRegistry, hasRegistryTopology } from '@/store/connection-registry-state'
@@ -65,7 +65,7 @@ export function maybeBackfillLegacySessionOwners(): void {
 
   attemptedScopes.add(key)
 
-  void hermesApi<{ ok: boolean; profile: string; stamped: number }>({
+  void rabbitApi<{ ok: boolean; profile: string; stamped: number }>({
     ...(scope.connectionId ? { connectionId: scope.connectionId } : {}),
     ...(scope.profile ? { profile: scope.profile } : {}),
     path: '/api/sessions/owner-backfill',

@@ -4,15 +4,15 @@ sidebar_position: 7
 
 # Profile Commands Reference
 
-This page covers all commands related to [Hermes profiles](../user-guide/profiles.md). For general CLI commands, see [CLI Commands Reference](./cli-commands.md).
+This page covers all commands related to [Rabbit profiles](../user-guide/profiles.md). For general CLI commands, see [CLI Commands Reference](./cli-commands.md).
 
-## `hermes profile`
+## `rabbit profile`
 
 ```bash
-hermes profile <subcommand>
+rabbit profile <subcommand>
 ```
 
-Top-level command for managing profiles. Running `hermes profile` without a subcommand shows help.
+Top-level command for managing profiles. Running `rabbit profile` without a subcommand shows help.
 
 | Subcommand | Description |
 |------------|-------------|
@@ -30,10 +30,10 @@ Top-level command for managing profiles. Running `hermes profile` without a subc
 | `update` | Re-pull a distribution-managed profile and re-apply its bundle. |
 | `info` | Show distribution metadata for a profile (origin URL, commit, last update). |
 
-## `hermes profile list`
+## `rabbit profile list`
 
 ```bash
-hermes profile list
+rabbit profile list
 ```
 
 Lists all profiles. The currently active profile is marked with `*`.
@@ -41,7 +41,7 @@ Lists all profiles. The currently active profile is marked with `*`.
 **Example:**
 
 ```bash
-$ hermes profile list
+$ rabbit profile list
   default
 * work
   dev
@@ -50,13 +50,13 @@ $ hermes profile list
 
 No options.
 
-## `hermes profile use`
+## `rabbit profile use`
 
 ```bash
-hermes profile use <name>
+rabbit profile use <name>
 ```
 
-Sets `<name>` as the active profile. All subsequent `hermes` commands (without `-p`) will use this profile.
+Sets `<name>` as the active profile. All subsequent `rabbit` commands (without `-p`) will use this profile.
 
 | Argument | Description |
 |----------|-------------|
@@ -65,14 +65,14 @@ Sets `<name>` as the active profile. All subsequent `hermes` commands (without `
 **Example:**
 
 ```bash
-hermes profile use work
-hermes profile use default
+rabbit profile use work
+rabbit profile use default
 ```
 
-## `hermes profile create`
+## `rabbit profile create`
 
 ```bash
-hermes profile create <name> [options]
+rabbit profile create <name> [options]
 ```
 
 Creates a new profile.
@@ -81,11 +81,11 @@ Creates a new profile.
 |-------------------|-------------|
 | `<name>` | Name for the new profile. Must be a valid directory name (alphanumeric, hyphens, underscores). |
 | `--clone` | Copy `config.yaml`, `.env`, `SOUL.md`, skills, the curated `memories/MEMORY.md` / `memories/USER.md`, and the active `memory.provider`'s own config (`<provider>/` or `<provider>.json`, e.g. `hindsight/config.json`) from the current profile. Sessions, `state.db` and cron jobs are not copied. |
-| `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `hermes backup` excludes. |
+| `--clone-all` | Copy everything (config, memories, skills, plugins) from the current profile. Excludes per-profile history: sessions, `state.db`, backups, state-snapshots, checkpoints — and cron jobs, which stay bound to the source profile (a clone that inherited them would fire every job twice). When the source is the default profile, the machine-scoped local-model trees (`models/`, `runtimes/`, `node/`) are also skipped — the same trees `rabbit backup` excludes. |
 | `--clone-from <profile>` | Clone config/skills/SOUL from a specific profile instead of the current one. Implies `--clone` unless paired with `--clone-all`. |
 | `--no-alias` | Skip wrapper script creation. |
-| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `hermes profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
-| `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `hermes update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.hermes`), use `hermes skills opt-out` / `hermes skills opt-in`. |
+| `--description "<text>"` | One- or two-sentence description of what this profile is good at. Used by the kanban orchestrator to route tasks based on role instead of profile name alone. Skip and add later via `rabbit profile describe`. Persisted in `<profile_dir>/profile.yaml`. |
+| `--no-skills` | Create an **empty** profile with zero bundled skills enabled. Writes a `.no-bundled-skills` marker into the profile so future `rabbit update` runs won't re-seed the bundled set, and refuses to combine with `--clone`, `--clone-from`, or `--clone-all` (which would copy skills in anyway). Useful for narrow orchestrator profiles or sandbox profiles that should not inherit the full skill catalog. To toggle this on an already-created profile (including the default `~/.rabbit`), use `rabbit skills opt-out` / `rabbit skills opt-in`. |
 
 Creating a profile does **not** make that profile directory the default project/workspace directory for terminal commands. If you want a profile to start in a specific project, set `terminal.cwd` in that profile's `config.yaml`.
 
@@ -93,25 +93,25 @@ Creating a profile does **not** make that profile directory the default project/
 
 ```bash
 # Blank profile — needs full setup
-hermes profile create mybot
+rabbit profile create mybot
 
 # Clone config only from current profile
-hermes profile create work --clone
+rabbit profile create work --clone
 
 # Clone everything from current profile
-hermes profile create backup --clone-all
+rabbit profile create backup --clone-all
 
 # Clone config from a specific profile
-hermes profile create work2 --clone-from work
+rabbit profile create work2 --clone-from work
 
 # Clone everything from a specific profile
-hermes profile create work2-backup --clone-from work --clone-all
+rabbit profile create work2-backup --clone-from work --clone-all
 ```
 
-## `hermes profile describe`
+## `rabbit profile describe`
 
 ```bash
-hermes profile describe [<name>] [options]
+rabbit profile describe [<name>] [options]
 ```
 
 Read or set a profile's description. The description is consumed by the kanban orchestrator to route tasks based on what each profile is good at, rather than guessing from the profile name alone. Persisted in `<profile_dir>/profile.yaml` so it survives reboots and is shared with the gateway.
@@ -130,22 +130,22 @@ With no flags, prints the current description (or `(no description set for '<nam
 
 ```bash
 # Read the current description
-hermes profile describe researcher
+rabbit profile describe researcher
 
 # Set it explicitly
-hermes profile describe researcher --text "Reads source code and writes findings."
+rabbit profile describe researcher --text "Reads source code and writes findings."
 
 # Let the LLM generate one
-hermes profile describe researcher --auto
+rabbit profile describe researcher --auto
 
 # Fill in descriptions for every profile that doesn't have one
-hermes profile describe --all --auto
+rabbit profile describe --all --auto
 ```
 
-## `hermes profile delete`
+## `rabbit profile delete`
 
 ```bash
-hermes profile delete <name> [options]
+rabbit profile delete <name> [options]
 ```
 
 Deletes a profile and removes its shell alias.
@@ -158,25 +158,25 @@ Deletes a profile and removes its shell alias.
 **Example:**
 
 ```bash
-hermes profile delete mybot
-hermes profile delete mybot --yes
+rabbit profile delete mybot
+rabbit profile delete mybot --yes
 ```
 
 :::warning
-This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile (`~/.hermes`) cannot be deleted — use `hermes uninstall` to remove everything.
+This permanently deletes the profile's entire directory including all config, memories, sessions, and skills. The `default` profile (`~/.rabbit`) cannot be deleted — use `rabbit uninstall` to remove everything.
 :::
 
-## `hermes profile show`
+## `rabbit profile show`
 
 ```bash
-hermes profile show <name>
+rabbit profile show <name>
 ```
 
 Displays details about a profile including its home directory, configured model, gateway status, skills count, and configuration file status.
 
-The skills count here (and in `hermes profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
+The skills count here (and in `rabbit profile list`) is counted on the spot. The Desktop and dashboard profile lists are polled every few seconds, so they show the last known count instead and refresh it in the background — a freshly started backend may briefly show `0` skills for a profile until the first background count lands, and a skill you just installed appears in those lists within about a minute.
 
-This shows the profile's Hermes home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
+This shows the profile's Rabbit home directory, not the terminal working directory. Terminal commands start from `terminal.cwd` (or the launch directory on the local backend when `cwd: "."`).
 
 | Argument | Description |
 |----------|-------------|
@@ -185,9 +185,9 @@ This shows the profile's Hermes home directory, not the terminal working directo
 **Example:**
 
 ```bash
-$ hermes profile show work
+$ rabbit profile show work
 Profile: work
-Path:    ~/.hermes/profiles/work
+Path:    ~/.rabbit/profiles/work
 Model:   anthropic/claude-sonnet-4 (anthropic)
 Gateway: stopped
 Skills:  12
@@ -196,13 +196,13 @@ SOUL.md: exists
 Alias:   ~/.local/bin/work
 ```
 
-## `hermes profile alias`
+## `rabbit profile alias`
 
 ```bash
-hermes profile alias <name> [options]
+rabbit profile alias <name> [options]
 ```
 
-Regenerates the shell alias script at `~/.local/bin/<name>`. Useful if the alias was accidentally deleted or if you need to update it after moving your Hermes installation.
+Regenerates the shell alias script at `~/.local/bin/<name>`. Useful if the alias was accidentally deleted or if you need to update it after moving your Rabbit installation.
 
 | Argument / Option | Description |
 |-------------------|-------------|
@@ -213,26 +213,26 @@ Regenerates the shell alias script at `~/.local/bin/<name>`. Useful if the alias
 **Example:**
 
 ```bash
-hermes profile alias work
+rabbit profile alias work
 # Creates/updates ~/.local/bin/work
 
-hermes profile alias work --name mywork
+rabbit profile alias work --name mywork
 # Creates ~/.local/bin/mywork
 
-hermes profile alias work --remove
+rabbit profile alias work --remove
 # Removes the wrapper script
 ```
 
-## `hermes profile rename`
+## `rabbit profile rename`
 
 ```bash
-hermes profile rename <old-name> <new-name>
+rabbit profile rename <old-name> <new-name>
 ```
 
 Renames a profile. Updates the directory and shell alias. A gateway service installed under the
-old name (`hermes -p <old-name> gateway install`) is removed, whether or not the gateway is
+old name (`rabbit -p <old-name> gateway install`) is removed, whether or not the gateway is
 running, because it would start the old name at the next login; reinstall it with
-`hermes -p <new-name> gateway install`. Inside the Docker image the s6 gateway slot moves to the
+`rabbit -p <new-name> gateway install`. Inside the Docker image the s6 gateway slot moves to the
 new name.
 
 | Argument | Description |
@@ -243,8 +243,8 @@ new name.
 **Example:**
 
 ```bash
-hermes profile rename mybot assistant
-# ~/.hermes/profiles/mybot → ~/.hermes/profiles/assistant
+rabbit profile rename mybot assistant
+# ~/.rabbit/profiles/mybot → ~/.rabbit/profiles/assistant
 # ~/.local/bin/mybot → ~/.local/bin/assistant
 ```
 
@@ -253,16 +253,16 @@ The rename also migrates the profile's persisted session/routing identity — se
 name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
 when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
 live inside the profile directory is rekeyed to their new path as well, so it stays reachable
-after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
+after the rename; `rabbit profile migrate-identity` retries that step too if it was reported as
 failed.
 
-## `hermes profile migrate-identity`
+## `rabbit profile migrate-identity`
 
 ```bash
-hermes profile migrate-identity <old-name> <new-name>
+rabbit profile migrate-identity <old-name> <new-name>
 ```
 
-Retries the identity migration of a rename that already completed. Run it if `hermes profile
+Retries the identity migration of a rename that already completed. Run it if `rabbit profile
 rename` warned that the live gateway could not migrate session identity: restart the gateway
 (it reloads the routing index from the database, so the migration lands), or stop it — with no
 gateway holding the store the command performs the durable rewrite itself.
@@ -276,22 +276,22 @@ while the other succeeds), naming the database and error.
 **Example:**
 
 ```bash
-hermes profile rename mybot assistant
+rabbit profile rename mybot assistant
 # ⚠ Profile was renamed, but the live gateway could not migrate session identity (…).
 #   Restart the gateway, then run:
-#     hermes profile migrate-identity mybot assistant
+#     rabbit profile migrate-identity mybot assistant
 
-hermes profile migrate-identity mybot assistant
+rabbit profile migrate-identity mybot assistant
 # ✓ Session/routing identity migrated: mybot → assistant
 ```
 
-## `hermes profile purge-identity`
+## `rabbit profile purge-identity`
 
 ```bash
-hermes profile purge-identity <name>
+rabbit profile purge-identity <name>
 ```
 
-Retries the identity purge of a delete that already completed. Run it if `hermes profile delete`
+Retries the identity purge of a delete that already completed. Run it if `rabbit profile delete`
 reported that its session/routing identity settlement is still pending: restart the gateway (it
 reloads the routing index from the database, so the purge lands), or stop it — with no gateway
 holding the store the command performs the durable delete itself.
@@ -302,7 +302,7 @@ the new profile's routing with it. Routing keys (`agent:<name>:*`), heartbeat ro
 Telegram topic bindings/mode rows are deleted; `delivery_obligations` rows are marked `abandoned`
 rather than dropped, so pending delivery state is not lost silently. Session rows are not deleted by
 the purge itself — it settles identity, not history; whether a conversation record outlives a delete
-is decided by `hermes profile delete`, which removes the profile's own `profiles/<name>/`, its
+is decided by `rabbit profile delete`, which removes the profile's own `profiles/<name>/`, its
 `state.db` included. Idempotent — re-running a completed purge succeeds with nothing left to purge.
 Exits non-zero when the name is a live profile again, when a live gateway refuses the purge, or when
 a database rejects the delete (a lock, or a partial failure).
@@ -310,19 +310,19 @@ a database rejects the delete (a lock, or a partial failure).
 **Example:**
 
 ```bash
-hermes profile delete mybot
+rabbit profile delete mybot
 # ⚠ Profile was deleted, but the live gateway could not purge its session identity (…).
 #   Restart the gateway, then run:
-#     hermes profile purge-identity mybot
+#     rabbit profile purge-identity mybot
 
-hermes profile purge-identity mybot
+rabbit profile purge-identity mybot
 # ✓ Session/routing identity purged: mybot
 ```
 
-## `hermes profile export`
+## `rabbit profile export`
 
 ```bash
-hermes profile export <name> [options]
+rabbit profile export <name> [options]
 ```
 
 Exports a profile as a compressed tar.gz archive — a portable snapshot you can back up, move to another machine, or hand to someone else. `auth.json`, `.env` and the other credential stores are always excluded; see [what an export file contains](../user-guide/profile-distributions.md#what-an-export-file-contains).
@@ -337,18 +337,18 @@ Also available in chat as [`/export`](./slash-commands.md), and in the desktop a
 **Example:**
 
 ```bash
-hermes profile export work
+rabbit profile export work
 # Creates work.tar.gz in the current directory
 
-hermes profile export work -o ./work-2026-03-29.tar.gz
+rabbit profile export work -o ./work-2026-03-29.tar.gz
 ```
 
 See [Export and import a profile file](../user-guide/profile-distributions.md#export-and-import-a-profile-file) for exactly what lands in the archive and what to check before sending one to someone else.
 
-## `hermes profile import`
+## `rabbit profile import`
 
 ```bash
-hermes profile import <archive> [options]
+rabbit profile import <archive> [options]
 ```
 
 Imports a profile from a tar.gz archive, as a new profile. Refuses to overwrite an existing profile, and cannot import as `default` (the built-in root profile) — pass `--name` in either case. A shell wrapper is created when the name doesn't collide with an existing command.
@@ -363,10 +363,10 @@ Also available in chat as [`/import`](./slash-commands.md), and in the desktop a
 **Example:**
 
 ```bash
-hermes profile import ./work-2026-03-29.tar.gz
+rabbit profile import ./work-2026-03-29.tar.gz
 # Infers profile name from the archive
 
-hermes profile import ./work-2026-03-29.tar.gz --name work-restored
+rabbit profile import ./work-2026-03-29.tar.gz --name work-restored
 ```
 
 ## Distribution commands
@@ -388,13 +388,13 @@ The recipient's user data (memories, sessions, auth, their own edits to
 updates.
 
 :::info
-Two ways to share a profile, and they complement each other. `hermes profile export` / `import` (also `/export` and `/import` in chat) produce a **single file** — no repo, no manifest, and a desktop export carries your theme and layout too. Distribution (`install` / `update` / `info`) publishes a profile as a **git repo** so recipients can pull versioned updates later. Backup and restore is the export file's other job. See [Two ways to share a profile](../user-guide/profile-distributions.md#two-ways-to-share-a-profile).
+Two ways to share a profile, and they complement each other. `rabbit profile export` / `import` (also `/export` and `/import` in chat) produce a **single file** — no repo, no manifest, and a desktop export carries your theme and layout too. Distribution (`install` / `update` / `info`) publishes a profile as a **git repo** so recipients can pull versioned updates later. Backup and restore is the export file's other job. See [Two ways to share a profile](../user-guide/profile-distributions.md#two-ways-to-share-a-profile).
 :::
 
-### `hermes profile install`
+### `rabbit profile install`
 
 ```bash
-hermes profile install <source> [--name <name>] [--alias] [--force] [--yes]
+rabbit profile install <source> [--name <name>] [--alias] [--force] [--yes]
 ```
 
 Installs a profile distribution from a git URL or a local directory.
@@ -403,7 +403,7 @@ Installs a profile distribution from a git URL or a local directory.
 |--------|-------------|
 | `<source>` | Git URL (`github.com/user/repo`, `https://...`, `git@...`, `ssh://`, `git://`) or a local directory containing `distribution.yaml` at its root. |
 | `--name NAME` | Override the profile name from the manifest. |
-| `--alias` | Also create a shell wrapper (e.g. `telemetry` → `hermes -p telemetry`). |
+| `--alias` | Also create a shell wrapper (e.g. `telemetry` → `rabbit -p telemetry`). |
 | `--force` | Overwrite an existing profile of the same name. User data is still preserved. |
 | `-y`, `--yes` | Skip the manifest-preview confirmation prompt. |
 
@@ -415,22 +415,22 @@ cron jobs before asking for confirmation. Required env vars go into a
 
 ```bash
 # Install from a GitHub repo (shorthand)
-hermes profile install github.com/kyle/telemetry-distribution --alias
+rabbit profile install github.com/kyle/telemetry-distribution --alias
 
 # Install from a full HTTPS git URL
-hermes profile install https://github.com/kyle/telemetry-distribution.git
+rabbit profile install https://github.com/kyle/telemetry-distribution.git
 
 # Install from SSH
-hermes profile install git@github.com:kyle/telemetry-distribution.git
+rabbit profile install git@github.com:kyle/telemetry-distribution.git
 
 # Install from a local directory during development
-hermes profile install ./telemetry/
+rabbit profile install ./telemetry/
 ```
 
-### `hermes profile update`
+### `rabbit profile update`
 
 ```bash
-hermes profile update <name> [--force-config] [--yes]
+rabbit profile update <name> [--force-config] [--yes]
 ```
 
 Re-clones the distribution from its recorded source and applies updates.
@@ -444,21 +444,21 @@ directory and re-run.
 `config.yaml` is preserved by default to keep your local overrides.
 Pass `--force-config` to reset it to the distribution's shipped config.
 
-### `hermes profile info`
+### `rabbit profile info`
 
 ```bash
-hermes profile info <name>
+rabbit profile info <name>
 ```
 
 Prints the profile's distribution manifest — name, version, required
-Hermes version, author, env var requirements, the source URL/path, and
+Rabbit version, author, env var requirements, the source URL/path, and
 the `Installed:` timestamp recorded when the distribution was last
 `install`-ed or `update`-d. Useful for checking what a shared profile
 needs before installing it, and for spotting "this profile was installed
 6 months ago and hasn't been updated."
 
-`hermes profile list` also shows the distribution name and version in a
-`Distribution` column, and `hermes profile show <name>` / `delete <name>`
+`rabbit profile list` also shows the distribution name and version in a
+`Distribution` column, and `rabbit profile show <name>` / `delete <name>`
 surface the source URL so you can tell at a glance which profiles came
 from a git repo vs. were created locally.
 
@@ -472,10 +472,10 @@ transparently.
 
 ```bash
 # Uses your SSH key, the same as any other `git clone`
-hermes profile install git@github.com:your-org/internal-assistant.git
+rabbit profile install git@github.com:your-org/internal-assistant.git
 
 # Uses your git credential helper
-hermes profile install https://github.com/your-org/internal-assistant.git
+rabbit profile install https://github.com/your-org/internal-assistant.git
 ```
 
 If a clone prompts for credentials interactively in your terminal during
@@ -490,7 +490,7 @@ Every distribution has a `distribution.yaml` at the root of its repository:
 name: telemetry
 version: 0.1.0
 description: "Compliance monitoring harness"
-hermes_requires: ">=0.12.0"
+rabbit_requires: ">=0.12.0"
 author: "Your Name"
 license: "MIT"
 env_requires:
@@ -508,9 +508,9 @@ distribution_owned:   # optional; defaults to SOUL.md, config.yaml,
   - cron/
 ```
 
-`hermes_requires` supports `>=`, `<=`, `==`, `!=`, `>`, `<`, or a bare
+`rabbit_requires` supports `>=`, `<=`, `==`, `!=`, `>`, `<`, or a bare
 version (treated as `>=`). Install fails with a clear error if the current
-Hermes version doesn't satisfy the spec.
+Rabbit version doesn't satisfy the spec.
 
 `distribution_owned` is optional. If set, only those paths are updated;
 anything else in the profile stays user-owned. A directory of skills, such as
@@ -526,20 +526,20 @@ Authoring a distribution is just a git push:
 1. In your profile directory, create `distribution.yaml` with at least `name`
    and `version`.
 2. Initialize a git repo (or use an existing one) and push to GitHub /
-   GitLab / any host Hermes can clone from.
-3. Tell recipients to run `hermes profile install <your-repo-url>`.
+   GitLab / any host Rabbit can clone from.
+3. Tell recipients to run `rabbit profile install <your-repo-url>`.
 
 Use git tags for versioned releases — recipients who clone `HEAD` get your
 latest state, and you can always bump `version:` in the manifest.
 
-## `hermes -p` / `hermes --profile`
+## `rabbit -p` / `rabbit --profile`
 
 ```bash
-hermes -p <name> <command> [options]
-hermes --profile <name> <command> [options]
+rabbit -p <name> <command> [options]
+rabbit --profile <name> <command> [options]
 ```
 
-Global flag to run any Hermes command under a specific profile without changing the sticky default. This overrides the active profile for the duration of the command.
+Global flag to run any Rabbit command under a specific profile without changing the sticky default. This overrides the active profile for the duration of the command.
 
 | Option | Description |
 |--------|-------------|
@@ -548,16 +548,16 @@ Global flag to run any Hermes command under a specific profile without changing 
 **Examples:**
 
 ```bash
-hermes -p work chat -q "Check the server status"
-hermes --profile dev gateway start
-hermes -p personal skills list
-hermes -p work config edit
+rabbit -p work chat -q "Check the server status"
+rabbit --profile dev gateway start
+rabbit -p personal skills list
+rabbit -p work config edit
 ```
 
-## `hermes completion`
+## `rabbit completion`
 
 ```bash
-hermes completion <shell>
+rabbit completion <shell>
 ```
 
 Generates shell completion scripts. Includes completions for profile names and profile subcommands.
@@ -570,18 +570,18 @@ Generates shell completion scripts. Includes completions for profile names and p
 
 ```bash
 # Install completions
-hermes completion bash >> ~/.bashrc
-hermes completion zsh >> ~/.zshrc
-hermes completion fish > ~/.config/fish/completions/hermes.fish
+rabbit completion bash >> ~/.bashrc
+rabbit completion zsh >> ~/.zshrc
+rabbit completion fish > ~/.config/fish/completions/rabbit.fish
 
 # Reload shell
 source ~/.bashrc
 ```
 
 After installation, tab completion works for:
-- `hermes profile <TAB>` — subcommands (list, use, create, etc.)
-- `hermes profile use <TAB>` — profile names
-- `hermes -p <TAB>` — profile names
+- `rabbit profile <TAB>` — subcommands (list, use, create, etc.)
+- `rabbit profile use <TAB>` — profile names
+- `rabbit -p <TAB>` — profile names
 
 ## See also
 

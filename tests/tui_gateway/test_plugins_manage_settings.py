@@ -1,6 +1,6 @@
 """Gateway ``plugins.manage`` — manifest ``config_schema`` rendered as settings fields (#46600, #87934).
 
-Drives the real discovery + config writer against a temp HERMES_HOME: ``list`` carries each user
+Drives the real discovery + config writer against a temp RABBIT_HOME: ``list`` carries each user
 plugin's schema with the current values, and ``settings`` writes through the same
 ``plugins.entries.<id>.settings`` namespace ``ctx.get_config`` reads — never a secret into config.yaml.
 """
@@ -23,12 +23,12 @@ config_schema:
 
 @pytest.fixture
 def plugins_home(tmp_path, monkeypatch):
-    home = tmp_path / "hermes-home"
+    home = tmp_path / "rabbit-home"
     (home / "plugins" / "demo-plugin").mkdir(parents=True)
     (home / "plugins" / "demo-plugin" / "plugin.yaml").write_text(MANIFEST, encoding="utf-8")
     (home / "config.yaml").write_text(
         "plugins:\n  entries:\n    demo-plugin:\n      settings:\n        retries: 7\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
@@ -55,7 +55,7 @@ def test_settings_writes_the_plugin_namespace_and_refuses_secrets_and_bad_types(
     resp = _manage(action="settings", key="demo-plugin", values={"api_url": "https://real.invalid", "retries": 2, "mode": "careful"})
 
     assert resp["result"]["ok"] is True and sorted(resp["result"]["written"]) == ["api_url", "mode", "retries"]
-    from hermes_cli.config import load_config_readonly
+    from rabbit_cli.config import load_config_readonly
     assert load_config_readonly()["plugins"]["entries"]["demo-plugin"]["settings"] == {
         "api_url": "https://real.invalid", "retries": 2, "mode": "careful"}
     refreshed = {f["key"]: f["value"] for f in resp["result"]["plugin"]["settings_schema"] if "value" in f}

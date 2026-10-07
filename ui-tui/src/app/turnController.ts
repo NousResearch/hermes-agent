@@ -1,4 +1,4 @@
-import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@hermes/shared/gateway-events'
+import type { MessageCompletePayload, SubagentEventPayload, ToolLabel } from '@rabbit/shared/gateway-events'
 
 import {
   REASONING_PULSE_MS,

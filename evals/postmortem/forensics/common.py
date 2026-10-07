@@ -1,11 +1,11 @@
-"""Shared loaders for the post-mortem forensics: point at ANY Hermes ``state.db`` (a copy, never the live
+"""Shared loaders for the post-mortem forensics: point at ANY Rabbit ``state.db`` (a copy, never the live
 file) and get the run tree, the in-run session set, fitted pricing and message iterators.
 
 Nothing here knows about a particular run. The root is discovered as the session with the most
 descendants unless ``--root`` is given; compression-rollover children (a child whose ``id`` the parent's
 ``compaction`` metadata names as its continuation) are excluded from the tree so cost populations stay
 disjoint. Pricing is fitted by least squares from ``sessions`` usage columns to ``estimated_cost_usd``, so
-the recomputed dollars match what THAT Hermes recorded, not an invoice.
+the recomputed dollars match what THAT Rabbit recorded, not an invoice.
 
 Usage from a lane script::
 
@@ -61,7 +61,7 @@ class Run:
     @classmethod
     def parser(cls, description: str = "") -> argparse.ArgumentParser:
         ap = argparse.ArgumentParser(description=description)
-        ap.add_argument("--db", required=True, help="path to a COPY of ~/.hermes/state.db")
+        ap.add_argument("--db", required=True, help="path to a COPY of ~/.rabbit/state.db")
         ap.add_argument("--root", default=None, help="root session id (default: the session with the most descendants)")
         ap.add_argument("--out", default="postmortem_out", help="directory for JSON/markdown outputs")
         return ap

@@ -15,13 +15,13 @@ import type devIdentity from '../product-identity.cjs'
 /** Mirrors product-identity.cjs (see product-identity.d.cts). */
 export type ProductIdentity = typeof devIdentity
 
-declare const __HERMES_PRODUCT_IDENTITY__: ProductIdentity
+declare const __RABBIT_PRODUCT_IDENTITY__: ProductIdentity
 
 /** The baked identity of this artifact (dev bundles derive it live). */
 export const PRODUCT_IDENTITY: Readonly<ProductIdentity> =
-  typeof __HERMES_PRODUCT_IDENTITY__ === 'undefined'
+  typeof __RABBIT_PRODUCT_IDENTITY__ === 'undefined'
     ? Object.freeze(nodeCreateRequire(import.meta.url)('../product-identity.cjs') as ProductIdentity)
-    : Object.freeze(__HERMES_PRODUCT_IDENTITY__)
+    : Object.freeze(__RABBIT_PRODUCT_IDENTITY__)
 
 /** Pin before the first userData lookup and single-instance lock. Electron's
  * later display-name changes must not redirect an installed build's state.

@@ -30,11 +30,11 @@ async function seedPackagedMain(context) {
   await mkdir(path.join(`${asarPath}.unpacked`, 'dist'), { recursive: true })
   await writeFile(
     path.join(`${asarPath}.unpacked`, 'dist', 'electron-main.mjs'),
-    'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
+    'const re = /RABBIT_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
   )
 }
 
-function context(appOutDir, productFilename = 'Hermes Preview') {
+function context(appOutDir, productFilename = 'Rabbit Preview') {
   // Use electron-builder's real bundle path resolution, including branding.
   const packager = Object.assign(Object.create(PlatformPackager.prototype), {
     platform: Platform.MAC,
@@ -45,7 +45,7 @@ function context(appOutDir, productFilename = 'Hermes Preview') {
 }
 
 it('restores app localizations from the filtered framework without copying locale data', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'rabbit-locale-pack-'))
   try {
     const ctx = context(root)
     await seedPackagedMain(ctx)
@@ -73,7 +73,7 @@ it('restores app localizations from the filtered framework without copying local
 it('puts the full-resolution .icns back after electron-builder packaged the layered icon', async () => {
   // With `mac.icon` pointing at the Icon Composer package, electron-builder
   // bundles actool's 256px fallback as icon.icns; macOS <= 15 shows that file.
-  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-mac-icon-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'rabbit-mac-icon-'))
   try {
     const ctx = context(root)
     await seedPackagedMain(ctx)
@@ -91,7 +91,7 @@ it('puts the full-resolution .icns back after electron-builder packaged the laye
 })
 
 it('leaves Linux alone and reports a missing framework without failing packaging', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'rabbit-locale-pack-'))
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
   try {
     // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
@@ -103,7 +103,7 @@ it('leaves Linux alone and reports a missing framework without failing packaging
     await seedPackagedMain(ctx)
     await configuredHook(ctx)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('macOS locale markers were not restored'))
-    expect((await readdir(root)).sort()).toEqual(['Hermes Preview.app', 'resources'])
+    expect((await readdir(root)).sort()).toEqual(['Rabbit Preview.app', 'resources'])
     expect(await readdir(ctx.packager.getResourcesDir(root))).toContain('icon.icns')
   } finally {
     warn.mockRestore()

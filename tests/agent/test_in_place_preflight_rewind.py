@@ -29,7 +29,7 @@ def _reply(content, prompt_tokens):
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from run_agent import AIAgent
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
@@ -55,7 +55,7 @@ def _turn(db, agent, cli, surface, n, prompt_tokens):
         history = _build_gateway_agent_history(db.get_messages_as_conversation("sid", repair_alternation=True))[0]
         agent.run_conversation(user_message=text, conversation_history=history, task_id="sid", persist_user_message=text)
         return
-    from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
+    from rabbit_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
     CLIChatTurnMixin._chat_stage_user_message(cli, agent, text)
     result = agent.run_conversation(

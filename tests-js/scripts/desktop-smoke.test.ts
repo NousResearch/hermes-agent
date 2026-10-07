@@ -6,7 +6,7 @@ import path from 'node:path'
 import yaml from 'js-yaml'
 import { expect, test } from 'vitest'
 
-import { candidateSmokeHermesHomes, predictSmokeHermesHome, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
+import { candidateSmokeRabbitHomes, predictSmokeRabbitHome, resolveSmokeLaunch, runInstalledDesktopSmoke, smokeEnvironment } from '../../tests/install/e2e-assets/desktop-smoke.ts'
 import { sourceRuntimeSettleCommand } from '../../tests/install/e2e-assets/source-runtime-settle.mjs'
 import { assertUpdateWindowBackendOrigin, assertUpdateWindowProcess } from '../../tests/install/e2e-assets/update-window-chat.mjs'
 
@@ -121,9 +121,9 @@ test.runIf(process.platform !== 'win32')('shell wrapper exports the live witness
       log_group() { :; }
       source "$ASSETS/mock-provider.sh"
       trap mock_stop EXIT
-      mock_start "$HERMES_HOME"
-      node --input-type=module -e 'const r=await fetch(process.env.HERMES_E2E_MOCK_URL+"/__e2e__/prompts"); if(!r.ok || (await r.json()).receivedPrompts.length!==0)process.exit(1)'
-    `], { env: { ...process.env, ASSETS: assets, HERMES_HOME: home, LOG_DIR: home }, encoding: 'utf8', timeout: 20_000 })
+      mock_start "$RABBIT_HOME"
+      node --input-type=module -e 'const r=await fetch(process.env.RABBIT_E2E_MOCK_URL+"/__e2e__/prompts"); if(!r.ok || (await r.json()).receivedPrompts.length!==0)process.exit(1)'
+    `], { env: { ...process.env, ASSETS: assets, RABBIT_HOME: home, LOG_DIR: home }, encoding: 'utf8', timeout: 20_000 })
 
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(yaml.load(fs.readFileSync(path.join(home, 'config.yaml'), 'utf8'))).toMatchObject({ updates: { desktop_feed_base_url: 'http://127.0.0.1:1234/feed' } })
@@ -152,7 +152,7 @@ test('a backend bound to the tree by environment needs no root in argv', (): voi
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 
   try {
-    const root = path.join(home, 'hermes-agent')
+    const root = path.join(home, 'rabbit-agent')
     fs.mkdirSync(path.join(root, 'venv'), { recursive: true })
     // The macOS shape: a venv's interpreter is a SYMLINK to the framework
     // binary, and the app resolves it before spawning, so argv names that binary
@@ -162,7 +162,7 @@ test('a backend bound to the tree by environment needs no root in argv', (): voi
     fs.symlinkSync(resolvedPython, interpreter)
 
     const base = { pid: process.pid, parentPid: 1, executable: interpreter, cwd: home,
-      command: `"${resolvedPython}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0` }
+      command: `"${resolvedPython}" "-m" "rabbit_cli.main" serve --host 127.0.0.1 --port 0` }
 
     // Control: with no environment evidence this is still a different tree.
     expect((): void => { assertBackendOrigin(base, root, 'source') }).toThrow('source tree')
@@ -186,7 +186,7 @@ test('a platform that cannot read the backend environment proves ownership by th
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-owner-origin-'))
 
   try {
-    const root = path.join(home, 'hermes-agent')
+    const root = path.join(home, 'rabbit-agent')
     const other = path.join(home, 'other-tree')
     fs.mkdirSync(root, { recursive: true })
     fs.mkdirSync(other, { recursive: true })
@@ -198,7 +198,7 @@ test('a platform that cannot read the backend environment proves ownership by th
       pid: process.pid,
       parentPid: 1,
       executable: path.join(home, 'python.exe'),
-      command: `"${path.join(home, 'python.exe')}" "-m" "hermes_cli.main" serve --host 127.0.0.1 --port 0`,
+      command: `"${path.join(home, 'python.exe')}" "-m" "rabbit_cli.main" serve --host 127.0.0.1 --port 0`,
     }
 
     // Control row: with nothing readable and no report from the app, this is still a
@@ -225,19 +225,19 @@ test('OLD update-window source provenance carries its verified app identity to t
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-old-owner-origin-'))
 
   try {
-    const root = path.join(home, 'hermes-agent')
+    const root = path.join(home, 'rabbit-agent')
     const other = path.join(home, 'other-tree')
     fs.mkdirSync(root, { recursive: true })
     fs.mkdirSync(other, { recursive: true })
 
     const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'),
-      command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
+      command: `"${path.join(home, 'python.exe')}" -m rabbit_cli.main dashboard --port 0` }
 
     expect((): void => {
-      assertUpdateWindowBackendOrigin(backend, { hermesRoot: root }, root, 'source')
+      assertUpdateWindowBackendOrigin(backend, { rabbitRoot: root }, root, 'source')
     }).not.toThrow()
     expect((): void => {
-      assertUpdateWindowBackendOrigin(backend, { hermesRoot: other }, root, 'source')
+      assertUpdateWindowBackendOrigin(backend, { rabbitRoot: other }, root, 'source')
     }).toThrow('resolved another source installation')
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
@@ -255,30 +255,30 @@ test('source launch restores only an explicitly captured exact editable root', (
   const writeSpec = (sourceRoot: string): void => {
     // oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- This is the existing launch-capture wire field.
     fs.writeFileSync(specPath, JSON.stringify({ argv: [process.execPath], cwd: home, matchedShape: 'packaged',
-      env: { HERMES_DESKTOP_PYTHON: process.execPath, HERMES_PYTHON_SRC_ROOT: sourceRoot } }))
+      env: { RABBIT_DESKTOP_PYTHON: process.execPath, RABBIT_PYTHON_SRC_ROOT: sourceRoot } }))
   }
 
   try {
     writeSpec(home)
-    expect(resolveSmokeLaunch(options).env.HERMES_PYTHON_SRC_ROOT).toBe(home)
+    expect(resolveSmokeLaunch(options).env.RABBIT_PYTHON_SRC_ROOT).toBe(home)
 
     for (const wrong of [childRoot, path.dirname(home), 'relative-root']) {
       writeSpec(wrong)
       expect((): void => { resolveSmokeLaunch(options) }).toThrow('expected source installation')
     }
 
-    expect(smokeEnvironment({ HERMES_PYTHON_SRC_ROOT: home }, home, options['user-data']).HERMES_PYTHON_SRC_ROOT).toBeUndefined()
+    expect(smokeEnvironment({ RABBIT_PYTHON_SRC_ROOT: home }, home, options['user-data']).RABBIT_PYTHON_SRC_ROOT).toBeUndefined()
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 })
 
 test.runIf(process.platform === 'linux')('module-launched source listener proves its import root without an argv path', async (): Promise<void> => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-module-'))
-  fs.mkdirSync(path.join(home, 'hermes_cli'))
-  fs.writeFileSync(path.join(home, 'hermes_cli', '__init__.py'), '')
-  fs.writeFileSync(path.join(home, 'hermes_cli', 'main.py'), 'import socket, time\ns = socket.socket()\ns.bind(("127.0.0.1", 0))\ns.listen()\nprint(s.getsockname()[1], flush=True)\ntime.sleep(60)\n')
+  fs.mkdirSync(path.join(home, 'rabbit_cli'))
+  fs.writeFileSync(path.join(home, 'rabbit_cli', '__init__.py'), '')
+  fs.writeFileSync(path.join(home, 'rabbit_cli', 'main.py'), 'import socket, time\ns = socket.socket()\ns.bind(("127.0.0.1", 0))\ns.listen()\nprint(s.getsockname()[1], flush=True)\ntime.sleep(60)\n')
 
-  const child = spawn('python3', ['-m', 'hermes_cli.main'], {
-    cwd: home, env: { ...process.env, HERMES_PYTHON_SRC_ROOT: home }, stdio: ['ignore', 'pipe', 'pipe'],
+  const child = spawn('python3', ['-m', 'rabbit_cli.main'], {
+    cwd: home, env: { ...process.env, RABBIT_PYTHON_SRC_ROOT: home }, stdio: ['ignore', 'pipe', 'pipe'],
   })
 
   try {
@@ -309,11 +309,11 @@ test('a module launch proves its tree without leaning on the app-owned cwd', ():
     const launched = (executable: string, command: string): Parameters<typeof assertBackendOrigin>[0] =>
       ({ pid: 1, parentPid: 1, executable, command, cwd: path.join(os.tmpdir(), 'app-owned-cwd') })
 
-    const venv = launched(python, `"${python}" "-m" "hermes_cli.main" "serve" --host 127.0.0.1 --port 0`)
+    const venv = launched(python, `"${python}" "-m" "rabbit_cli.main" "serve" --host 127.0.0.1 --port 0`)
     // The app owns the backend's cwd; the installation's own venv interpreter is the evidence.
     expect((): void => assertBackendOrigin(venv, root, 'source')).not.toThrow()
     // A foreign interpreter whose command names no tree is still rejected.
-    expect((): void => assertBackendOrigin(launched('/usr/bin/python3', '"python3" "-m" "hermes_cli.main" "serve"'), root, 'source')).toThrow('source tree')
+    expect((): void => assertBackendOrigin(launched('/usr/bin/python3', '"python3" "-m" "rabbit_cli.main" "serve"'), root, 'source')).toThrow('source tree')
     // A captured root disagrees: authoritative, even when the command names the expected tree.
     expect((): void => assertBackendOrigin({ ...venv, sourceRoot: os.tmpdir() }, root, 'source')).toThrow('source tree')
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
@@ -321,7 +321,7 @@ test('a module launch proves its tree without leaning on the app-owned cwd', ():
 
 test('historical identity needs verified provenance and never overrides an app-reported mismatch', (): void => {
   const expected = 'a'.repeat(40)
-  const identity = { appVersion: 'historical', commit: null, hermesRoot: '/unused', platform: process.platform }
+  const identity = { appVersion: 'historical', commit: null, rabbitRoot: '/unused', platform: process.platform }
   expect((): void => assertChatCommit(identity, expected)).toThrow('provenance is required')
   expect((): void => assertChatCommit(identity, expected, expected)).not.toThrow()
   expect((): void => assertChatCommit(identity, expected, 'b'.repeat(40))).toThrow('does not equal expected')
@@ -343,13 +343,13 @@ test('driver strips caller secrets and records missing executables as failure wi
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-admission-'))
 
   try {
-    const env = smokeEnvironment({ PATH: '/usr/bin', DISPLAY: ':1', OPENAI_API_KEY: 'secret', HERMES_DESKTOP_BOOT_FAKE: '1',
-      HERMES_DESKTOP_HERMES_ROOT: '/wrong', PYTHONPATH: '/wrong', NODE_OPTIONS: '--inspect', HERMES_HOME: '/wrong' }, home, path.join(home, 'user-data'))
+    const env = smokeEnvironment({ PATH: '/usr/bin', DISPLAY: ':1', OPENAI_API_KEY: 'secret', RABBIT_DESKTOP_BOOT_FAKE: '1',
+      RABBIT_DESKTOP_RABBIT_ROOT: '/wrong', PYTHONPATH: '/wrong', NODE_OPTIONS: '--inspect', RABBIT_HOME: '/wrong' }, home, path.join(home, 'user-data'))
 
-    expect(env).toMatchObject({ PATH: '/usr/bin', DISPLAY: ':1', HERMES_HOME: home,
-      HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1' })
+    expect(env).toMatchObject({ PATH: '/usr/bin', DISPLAY: ':1', RABBIT_HOME: home,
+      RABBIT_DESKTOP_SKIP_QUIT_CONFIRM: '1' })
 
-    for (const key of ['OPENAI_API_KEY', 'HERMES_DESKTOP_BOOT_FAKE', 'HERMES_DESKTOP_HERMES_ROOT', 'PYTHONPATH', 'NODE_OPTIONS']) {
+    for (const key of ['OPENAI_API_KEY', 'RABBIT_DESKTOP_BOOT_FAKE', 'RABBIT_DESKTOP_RABBIT_ROOT', 'PYTHONPATH', 'NODE_OPTIONS']) {
       expect(env[key]).toBeUndefined()
     }
 
@@ -367,7 +367,7 @@ test.runIf(process.platform !== 'win32')('OLD and NEW source smokes settle the c
   const out = path.join(workspace, 'out')
   const userData = path.join(workspace, 'user-data')
   const exe = path.join(root, 'fake-desktop')
-  const launcher = path.join(root, '.hermes', 'bin', 'hermes')
+  const launcher = path.join(root, '.rabbit', 'bin', 'rabbit')
   const witness = path.join(workspace, 'settled')
 
   try {
@@ -377,7 +377,7 @@ test.runIf(process.platform !== 'win32')('OLD and NEW source smokes settle the c
     fs.writeFileSync(launcher, `#!/bin/sh
 set -eu
 [ "$1" = status ]
-[ "$HERMES_HOME" = ${JSON.stringify(home)} ]
+[ "$RABBIT_HOME" = ${JSON.stringify(home)} ]
 [ "$HOME" = ${JSON.stringify(path.join(home, '.desktop-smoke-home'))} ]
 [ -z "\${PM_E2E_LEAK-}" ]
 printf 'clean source runtime settled\\n'
@@ -409,22 +409,22 @@ test('Windows source settle bypasses the current cmd launcher beside a stale his
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-windows-settle-'))
 
   try {
-    const bin = path.join(root, '.hermes', 'bin')
+    const bin = path.join(root, '.rabbit', 'bin')
     fs.mkdirSync(bin, { recursive: true })
-    const current = path.join(bin, 'hermes.cmd')
+    const current = path.join(bin, 'rabbit.cmd')
     const python = path.join(root, 'managed python', 'python.exe')
     fs.mkdirSync(path.dirname(python), { recursive: true })
     fs.writeFileSync(python, '')
-    const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
+    const prepareLaunch = path.join(root, 'rabbit_cli', 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, '')
     fs.writeFileSync(current, `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
-    fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
+    fs.writeFileSync(path.join(bin, 'rabbit.exe'), 'locked historical launcher')
     const invocation = sourceRuntimeSettleCommand(root, { ComSpec: 'C:\\Windows\\System32\\cmd.exe' }, 'win32')
     expect(invocation).toEqual({
       launcher: current,
       command: python,
-      args: ['-I', '-B', '-c', `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from hermes_cli.venv_sync import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`],
+      args: ['-I', '-B', '-c', `import pathlib, sys; sys.path.insert(0, ${JSON.stringify(root)}); from rabbit_cli.venv_sync import prepare_launch; prepare_launch(pathlib.Path(${JSON.stringify(root)}), ['status'])`],
       windowsVerbatimArguments: false,
     })
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
@@ -435,17 +435,17 @@ test('Windows source settle bypasses the generated cmd command line', (): void =
   const root = path.join(workspace, 'source with spaces')
 
   try {
-    const bin = path.join(root, '.hermes', 'bin')
+    const bin = path.join(root, '.rabbit', 'bin')
     const witness = path.join(workspace, 'settled.txt')
     fs.mkdirSync(bin, { recursive: true })
     const pythonProbe = spawnSync('python', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' })
     expect(pythonProbe.status, pythonProbe.stderr || String(pythonProbe.error)).toBe(0)
     const python = pythonProbe.stdout.trim()
-    fs.writeFileSync(path.join(bin, 'hermes.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
-    const prepareLaunch = path.join(root, 'hermes_cli', 'venv_sync.py')
+    fs.writeFileSync(path.join(bin, 'rabbit.cmd'), `@"${python}" -I -c "import base64; exec(base64.b64decode('eA=='))" %*\r\n`)
+    const prepareLaunch = path.join(root, 'rabbit_cli', 'venv_sync.py')
     fs.mkdirSync(path.dirname(prepareLaunch), { recursive: true })
     fs.writeFileSync(prepareLaunch, `from pathlib import Path\ndef prepare_launch(root, args):\n    Path(${JSON.stringify(witness)}).write_text(str(root) + '\\n' + '\\n'.join(args))\n`)
-    fs.writeFileSync(path.join(bin, 'hermes.exe'), 'locked historical launcher')
+    fs.writeFileSync(path.join(bin, 'rabbit.exe'), 'locked historical launcher')
     const invocation = sourceRuntimeSettleCommand(root, process.env, 'win32')
 
     const result = spawnSync(invocation.command, invocation.args, {
@@ -465,14 +465,14 @@ test('update-window process checks use the isolated launch environment, not the 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-update-window-process-'))
 
   try {
-    const executable = path.join(root, 'Hermes')
+    const executable = path.join(root, 'Rabbit')
     const isolated = path.join(root, 'isolated-user-data')
     const driver = path.join(root, 'driver-user-data')
     fs.writeFileSync(executable, '')
     fs.mkdirSync(isolated)
     fs.mkdirSync(driver)
-    const prior = process.env.HERMES_DESKTOP_USER_DATA_DIR
-    process.env.HERMES_DESKTOP_USER_DATA_DIR = driver
+    const prior = process.env.RABBIT_DESKTOP_USER_DATA_DIR
+    process.env.RABBIT_DESKTOP_USER_DATA_DIR = driver
 
     try {
       expect(() => assertUpdateWindowProcess(
@@ -485,24 +485,24 @@ test('update-window process checks use the isolated launch environment, not the 
       )).toThrow('OLD update window did not honor isolated userData')
     } finally {
       if (prior === undefined) {
-        delete process.env.HERMES_DESKTOP_USER_DATA_DIR
+        delete process.env.RABBIT_DESKTOP_USER_DATA_DIR
       } else {
-        process.env.HERMES_DESKTOP_USER_DATA_DIR = prior
+        process.env.RABBIT_DESKTOP_USER_DATA_DIR = prior
       }
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test('predictSmokeHermesHome replays the bundle banner through the shared resolver', (): void => {
-  const launchEnv = { HERMES_HOME: '/pinned/home', HERMES_DESKTOP_USER_DATA_DIR: '/pinned/userdata', LOCALAPPDATA: 'C:/Users/runner/AppData/Local' }
-  // No baked env: the driver's own HERMES_HOME pin wins.
-  expect(predictSmokeHermesHome(launchEnv, {}, 'linux', '/real/home')).toBe('/pinned/home')
-  // HERMES_HOME cleared -> the <userData>/hermes-home fallback.
-  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null }, 'linux', '/real/home')).toBe('/pinned/userdata/hermes-home')
+test('predictSmokeRabbitHome replays the bundle banner through the shared resolver', (): void => {
+  const launchEnv = { RABBIT_HOME: '/pinned/home', RABBIT_DESKTOP_USER_DATA_DIR: '/pinned/userdata', LOCALAPPDATA: 'C:/Users/runner/AppData/Local' }
+  // No baked env: the driver's own RABBIT_HOME pin wins.
+  expect(predictSmokeRabbitHome(launchEnv, {}, 'linux', '/real/home')).toBe('/pinned/home')
+  // RABBIT_HOME cleared -> the <userData>/rabbit-home fallback.
+  expect(predictSmokeRabbitHome(launchEnv, { RABBIT_HOME: null }, 'linux', '/real/home')).toBe('/pinned/userdata/rabbit-home')
   // Both cleared + baked suffix -> the platform default with that suffix.
-  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null, HERMES_DATA_DIR_SUFFIX: '-magic' }, 'linux', '/real/home')).toBe('/real/home/.hermes-magic')
+  expect(predictSmokeRabbitHome(launchEnv, { RABBIT_HOME: null, RABBIT_DESKTOP_USER_DATA_DIR: null, RABBIT_DATA_DIR_SUFFIX: '-magic' }, 'linux', '/real/home')).toBe('/real/home/.rabbit-magic')
   // On Windows the default derives from the sandboxed LOCALAPPDATA, not the OS home.
-  expect(predictSmokeHermesHome(launchEnv, { HERMES_HOME: null, HERMES_DESKTOP_USER_DATA_DIR: null, HERMES_DATA_DIR_SUFFIX: '-magic' }, 'win32', 'C:/Users/real')).toBe('C:\\Users\\runner\\AppData\\Local\\hermes-magic')
+  expect(predictSmokeRabbitHome(launchEnv, { RABBIT_HOME: null, RABBIT_DESKTOP_USER_DATA_DIR: null, RABBIT_DATA_DIR_SUFFIX: '-magic' }, 'win32', 'C:/Users/real')).toBe('C:\\Users\\runner\\AppData\\Local\\rabbit-magic')
 })
 
 test('readBundledBundleEnv reads the stamped defaults/clears and is absent when unstamped', (): void => {
@@ -510,12 +510,12 @@ test('readBundledBundleEnv reads the stamped defaults/clears and is absent when 
 
   try {
     expect(readBundledBundleEnv(path.join(root, 'agent-payload'))).toBeUndefined()
-    fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', commit: 'a'.repeat(40), bundleEnv: { HERMES_HOME: null, SUFFIX: 'x' } }))
-    expect(readBundledBundleEnv(path.join(root, 'agent-payload'))).toEqual({ HERMES_HOME: null, SUFFIX: 'x' })
+    fs.writeFileSync(path.join(root, 'install-stamp.json'), JSON.stringify({ payload: 'bundled', commit: 'a'.repeat(40), bundleEnv: { RABBIT_HOME: null, SUFFIX: 'x' } }))
+    expect(readBundledBundleEnv(path.join(root, 'agent-payload'))).toEqual({ RABBIT_HOME: null, SUFFIX: 'x' })
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
-test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the resolved home', async (): Promise<void> => {
+test('a bundle-env RABBIT_HOME clear cannot strand the mock config outside the resolved home', async (): Promise<void> => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-bundle-clear-'))
   const home = path.join(root, 'home')
   const userData = path.join(root, 'root', 'user-data')
@@ -533,13 +533,13 @@ test('a bundle-env HERMES_HOME clear cannot strand the mock config outside the r
     const mock = await startMockServer()
 
     try {
-      // The bundled app's banner turns HERMES_HOME=null into HERMES_HOME='', so
-      // resolveDesktopHermesHome falls to <userData>/hermes-home. The driver must
+      // The bundled app's banner turns RABBIT_HOME=null into RABBIT_HOME='', so
+      // resolveDesktopRabbitHome falls to <userData>/rabbit-home. The driver must
       // have seeded THAT home, not only the --home the caller named.
       await expect(runInstalledDesktopSmoke({ exe, root: path.join(root, 'root'), origin: 'bundled', home,
         'user-data': userData, out: root, phase: 'installed', 'expect-commit': 'a'.repeat(40) }, refuseLaunch)).rejects.toThrow('launch refused by test')
 
-      for (const candidate of candidateSmokeHermesHomes(home, userData)) {
+      for (const candidate of candidateSmokeRabbitHomes(home, userData)) {
         expect(yaml.load(fs.readFileSync(path.join(candidate, 'config.yaml'), 'utf8'))).toMatchObject({ model: { provider: 'custom' } })
         const env = fs.readFileSync(path.join(candidate, '.env'), 'utf8')
         expect(env).toMatch(/MOCK_API_KEY=/)

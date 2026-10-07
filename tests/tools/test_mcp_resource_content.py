@@ -34,7 +34,7 @@ def doc_cache(tmp_path, monkeypatch):
     import gateway.platforms.base as base
 
     monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", tmp_path)
-    monkeypatch.setenv("HERMES_DOCUMENT_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("RABBIT_DOCUMENT_CACHE_DIR", str(tmp_path))
     # _resolve_cache_dir consults the module constant; patching the constant
     # is sufficient because the import-default comparison detects the change.
     return tmp_path

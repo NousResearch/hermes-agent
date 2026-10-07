@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 // Repro for #119543: user sends a new message while the previous turn's
 // `background_review` fork is still in flight. The fork itself emits nothing
 // to the desktop, but the supersede window is where the previous turn's own

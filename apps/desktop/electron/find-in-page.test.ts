@@ -204,7 +204,7 @@ describe('installFoundInPageForwarder', () => {
     // Drive the fake's emit directly — this exercises the same code path
     // as Electron's actual `webContents.emit('found-in-page', …)`.
     wc.emit('found-in-page', {}, { activeMatchOrdinal: 2, matches: 5 })
-    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 2, count: 5 } }])
+    assert.deepEqual(wc.calls.send, [{ channel: 'rabbit:found-in-page', payload: { activeMatchOrdinal: 2, count: 5 } }])
   })
 
   test('skips send when webContents is destroyed at fire time', () => {
@@ -247,7 +247,7 @@ describe('installFoundInPageForwarder', () => {
     installFoundInPageForwarder(asWC(wcB))
     wcA.emit('found-in-page', {}, { activeMatchOrdinal: 1, matches: 1 })
     assert.deepEqual(wcA.calls.send, [
-      { channel: 'hermes:found-in-page', payload: { activeMatchOrdinal: 1, count: 1 } }
+      { channel: 'rabbit:found-in-page', payload: { activeMatchOrdinal: 1, count: 1 } }
     ])
     assert.equal(wcB.calls.send.length, 0, 'wcB must not receive wcA results')
   })
@@ -259,7 +259,7 @@ describe('installFindShortcut', () => {
     return { webContents: asWC(wc) } as unknown as BrowserWindow
   }
 
-  test('sends hermes:open-find-bar on Ctrl+F (Linux/Windows) and prevents default', () => {
+  test('sends rabbit:open-find-bar on Ctrl+F (Linux/Windows) and prevents default', () => {
     const wc = makeFakeWebContents()
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win)
@@ -281,7 +281,7 @@ describe('installFindShortcut', () => {
     // truthy because the event fired — what matters is the side effects.
     void result
 
-    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+    assert.deepEqual(wc.calls.send, [{ channel: 'rabbit:open-find-bar', payload: undefined }])
 
     uninstall()
   })
@@ -289,7 +289,7 @@ describe('installFindShortcut', () => {
   // macOS branch: inject `isMac: () => true` so we exercise the REAL
   // `meta` (Cmd) path — previously untested, because `process.platform` is
   // baked at import time and the old "Cmd+F" case actually sent Ctrl.
-  test('sends hermes:open-find-bar on Cmd+F (meta) on macOS and prevents default', () => {
+  test('sends rabbit:open-find-bar on Cmd+F (meta) on macOS and prevents default', () => {
     const wc = makeFakeWebContents()
     const win = makeFakeWindow(wc)
     const uninstall = installFindShortcut(win, () => true)
@@ -307,7 +307,7 @@ describe('installFindShortcut', () => {
       }
     )
 
-    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+    assert.deepEqual(wc.calls.send, [{ channel: 'rabbit:open-find-bar', payload: undefined }])
 
     uninstall()
   })
@@ -333,7 +333,7 @@ describe('installFindShortcut', () => {
       }
     )
 
-    assert.deepEqual(wc.calls.send, [{ channel: 'hermes:open-find-bar', payload: undefined }])
+    assert.deepEqual(wc.calls.send, [{ channel: 'rabbit:open-find-bar', payload: undefined }])
 
     uninstall()
   })

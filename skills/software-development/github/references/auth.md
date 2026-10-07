@@ -39,7 +39,7 @@ This is the most portable method — works everywhere, no SSH config needed.
 Tell the user to go to: **https://github.com/settings/tokens**
 
 - Click "Generate new token (classic)"
-- Give it a name like "hermes-agent"
+- Give it a name like "rabbit-agent"
 - Select scopes:
   - `repo` (full repository access — read, write, push, PRs)
   - `workflow` (trigger and manage GitHub Actions)
@@ -118,7 +118,7 @@ cat ~/.ssh/id_ed25519.pub
 Tell the user to add the public key at: **https://github.com/settings/keys**
 - Click "New SSH key"
 - Paste the public key content
-- Give it a title like "hermes-agent-<machine-name>"
+- Give it a title like "rabbit-agent-<machine-name>"
 
 **Step 3: Test the connection**
 
@@ -263,7 +263,7 @@ If git credentials are already configured (via credential.helper store), the tok
 
 ```bash
 # Read from git credential store
-uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py"
+uv run python "${RABBIT_HOME:-$HOME/.rabbit}/skills/github/github-auth/scripts/git-credential-token.py"
 ```
 
 ### Helper: Detect Auth Method
@@ -276,11 +276,11 @@ if command -v gh &>/dev/null && gh auth status &>/dev/null; then
   echo "AUTH_METHOD=gh"
 elif [ -n "$GITHUB_TOKEN" ]; then
   echo "AUTH_METHOD=curl"
-elif _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
-  export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+elif _rabbit_env="${RABBIT_HOME:-$HOME/.rabbit}/.env"; [ -f "$_rabbit_env" ] && grep -q "^GITHUB_TOKEN=" "$_rabbit_env"; then
+  export GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_rabbit_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
   echo "AUTH_METHOD=curl"
 elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
-  export GITHUB_TOKEN=$(uv run python "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+  export GITHUB_TOKEN=$(uv run python "${RABBIT_HOME:-$HOME/.rabbit}/skills/github/github-auth/scripts/git-credential-token.py")
   echo "AUTH_METHOD=curl"
 else
   echo "AUTH_METHOD=none"

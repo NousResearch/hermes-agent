@@ -8,7 +8,7 @@ import {
   toggleFavoriteModel
 } from './favorite-models'
 
-const STORAGE_KEY = 'hermes.desktop.favorite-models'
+const STORAGE_KEY = 'rabbit.desktop.favorite-models'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -25,38 +25,38 @@ afterEach(() => {
 // they put it.
 describe('favorite models keep their starred order', () => {
   it('appends new favorites after existing ones', () => {
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
     toggleFavoriteModel('anthropic', 'claude-sonnet-5')
 
     expect($favoriteModels.get()).toEqual([
-      favoriteModelKey('nous', 'opus-5'),
+      favoriteModelKey('acme', 'opus-5'),
       favoriteModelKey('anthropic', 'claude-sonnet-5')
     ])
   })
 
   it('unfavoriting leaves the remaining order intact', () => {
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
     toggleFavoriteModel('anthropic', 'claude-sonnet-5')
     toggleFavoriteModel('google', 'gemini-3.1-pro')
 
     toggleFavoriteModel('anthropic', 'claude-sonnet-5')
 
     expect($favoriteModels.get()).toEqual([
-      favoriteModelKey('nous', 'opus-5'),
+      favoriteModelKey('acme', 'opus-5'),
       favoriteModelKey('google', 'gemini-3.1-pro')
     ])
   })
 
   it('re-starring an unfavorited model puts it at the end, not back in its old slot', () => {
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
     toggleFavoriteModel('google', 'gemini-3.1-pro')
 
-    toggleFavoriteModel('nous', 'opus-5')
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
 
     expect($favoriteModels.get()).toEqual([
       favoriteModelKey('google', 'gemini-3.1-pro'),
-      favoriteModelKey('nous', 'opus-5')
+      favoriteModelKey('acme', 'opus-5')
     ])
   })
 })
@@ -65,14 +65,14 @@ describe('favorite models keep their starred order', () => {
 // so the store must reach localStorage rather than only the atom.
 describe('favorites persist', () => {
   it('writes the favorites list to storage', () => {
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
 
-    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')).toEqual([favoriteModelKey('nous', 'opus-5')])
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')).toEqual([favoriteModelKey('acme', 'opus-5')])
   })
 
   it('clears the key once the last favorite is removed', () => {
-    toggleFavoriteModel('nous', 'opus-5')
-    toggleFavoriteModel('nous', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
+    toggleFavoriteModel('acme', 'opus-5')
 
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull()
   })
@@ -82,9 +82,9 @@ describe('favorites persist', () => {
 // both serve `claude-opus-5`); starring one must not star the other.
 describe('favorites are provider-scoped', () => {
   it('does not report a same-named model on another provider as a favorite', () => {
-    toggleFavoriteModel('nous', 'claude-opus-5')
+    toggleFavoriteModel('acme', 'claude-opus-5')
 
-    expect(isModelFavorite('nous', 'claude-opus-5')).toBe(true)
+    expect(isModelFavorite('acme', 'claude-opus-5')).toBe(true)
     expect(isModelFavorite('openrouter', 'claude-opus-5')).toBe(false)
   })
 })

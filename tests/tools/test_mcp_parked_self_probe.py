@@ -46,7 +46,7 @@ def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
 def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
     """A parked server must revive on its own once the backend recovers,
     without any explicit _reconnect_event.set()."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_tool import MCPServerTask

@@ -35,18 +35,18 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves: the official
-    endpoint gets Hermes' originator and version, custom endpoints keep the
+    endpoint gets Rabbit' originator and version, custom endpoints keep the
     codex_cli_rs compatibility identity. The account headers come from the
     OAuth JWT (see :func:`codex_account_headers`).
     """
     if is_official_codex_base_url(base_url):
-        from hermes_cli.version_info import get_version_info
+        from rabbit_cli.version_info import get_version_info
         headers = {
-            "User-Agent": f"HermesAgent/{get_version_info().base_version}",
-            "originator": "hermes-agent",
+            "User-Agent": f"RabbitAgent/{get_version_info().base_version}",
+            "originator": "rabbit-agent",
         }
     else:
-        headers = {"User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)", "originator": "codex_cli_rs"}
+        headers = {"User-Agent": "codex_cli_rs/0.0.0 (Rabbit Agent)", "originator": "codex_cli_rs"}
     headers.update(codex_account_headers(access_token))
     return headers
 

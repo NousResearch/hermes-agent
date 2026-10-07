@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import { toChatMessages } from './chat-messages'
 import { messagesIfTranscriptBehind, surplusIsCompetingView } from './stale-transcript-guard'

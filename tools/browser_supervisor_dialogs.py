@@ -58,7 +58,7 @@ RECENT_DIALOGS_MAX = 20
 
 # Magic host the bridge XHRs to; intercepted via CDP Fetch before any network
 # resolution, so it never has to exist. Keep ASCII + URL-safe (Fetch patterns gate on it).
-DIALOG_BRIDGE_HOST = "hermes-dialog-bridge.invalid"
+DIALOG_BRIDGE_HOST = "rabbit-dialog-bridge.invalid"
 DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
 
 # Injected into every frame via Page.addScriptToEvaluateOnNewDocument. Sync GET with
@@ -67,9 +67,9 @@ DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
 # prompted synchronously without racing navigation); the native path still records it.
 _DIALOG_BRIDGE_SCRIPT = r"""
 (() => {
-  if (window.__hermesDialogBridgeInstalled) return;
-  window.__hermesDialogBridgeInstalled = true;
-  const ENDPOINT = "http://hermes-dialog-bridge.invalid/";
+  if (window.__rabbitDialogBridgeInstalled) return;
+  window.__rabbitDialogBridgeInstalled = true;
+  const ENDPOINT = "http://rabbit-dialog-bridge.invalid/";
   function ask(kind, message, defaultPrompt) {
     try {
       const xhr = new XMLHttpRequest();

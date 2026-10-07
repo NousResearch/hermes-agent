@@ -3,7 +3,7 @@
  * only when the rows/transcript actually changed.
  */
 
-import type { SessionInfo, SessionMessage } from '@/hermes'
+import type { SessionInfo, SessionMessage } from '@/rabbit'
 
 export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   if (a.length !== b.length) {

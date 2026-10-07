@@ -357,14 +357,14 @@ test('update-all deduplicates the same recovery scope and keeps primary preceden
 test.runIf(process.platform !== 'win32').each([0, 23])(
   'POSIX managed launcher executes the updater command and atomically publishes status %i',
   async (exitCode: number): Promise<void> => {
-    const home: string = await mkdtemp(path.join(os.tmpdir(), 'hermes managed launch '))
+    const home: string = await mkdtemp(path.join(os.tmpdir(), 'rabbit managed launch '))
     const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
-    const launcher: string = path.join(home, 'hermes launcher')
+    const launcher: string = path.join(home, 'rabbit launcher')
 
     try {
       await writeFile(
         launcher,
-        `#!${shell}\nprintf '%s\\n' "$@" "$HERMES_HOME" "$HERMES_UPDATE_CORRELATION_ID" "$HERMES_UPDATE_ORIGIN_PROFILE" "$HERMES_UPDATE_ORIGIN_HOME" "$HERMES_UPDATE_OUTPUT_PATH"\nexit ${exitCode}\n`,
+        `#!${shell}\nprintf '%s\\n' "$@" "$RABBIT_HOME" "$RABBIT_UPDATE_CORRELATION_ID" "$RABBIT_UPDATE_ORIGIN_PROFILE" "$RABBIT_UPDATE_ORIGIN_HOME" "$RABBIT_UPDATE_OUTPUT_PATH"\nexit ${exitCode}\n`,
         { encoding: 'utf8', mode: 0o700 }
       )
 
@@ -372,13 +372,13 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
         {
           ssh: { exec: async (): Promise<string> => '' },
           platform: 'Linux',
-          hermesPath: launcher,
-          hermesHome: home
+          rabbitPath: launcher,
+          rabbitHome: home
         },
         CORRELATION
       )
 
-      const { stdout, stderr } = await exec(command, { shell, env: { ...process.env, HOME: home, HERMES_HOME: home } })
+      const { stdout, stderr } = await exec(command, { shell, env: { ...process.env, HOME: home, RABBIT_HOME: home } })
       const statusPath: string = path.join(home, `.update_exit_code.${CORRELATION}`)
       const logPath: string = path.join(home, 'logs', `desktop-update-${CORRELATION}.log`)
       let status: string | undefined
@@ -421,9 +421,9 @@ test('Windows managed launcher starts a hidden child and leaves exit 75 to the e
     {
       ssh: { exec: async () => '' },
       platform: 'Windows',
-      hermesPath: 'C:\\Hermes\\hermes.exe',
-      hermesHome: 'C:\\Users\\alice\\.hermes',
-      pythonPath: 'C:\\Hermes\\python.exe'
+      rabbitPath: 'C:\\Rabbit\\rabbit.exe',
+      rabbitHome: 'C:\\Users\\alice\\.rabbit',
+      pythonPath: 'C:\\Rabbit\\python.exe'
     },
     CORRELATION
   )
@@ -438,9 +438,9 @@ test('Windows managed launcher starts a hidden child and leaves exit 75 to the e
 
   assert.match(wrapper, /update --yes/)
   assert.doesNotMatch(wrapper, /update --yes --gateway/)
-  assert.match(wrapper, /HERMES_UPDATE_WINDOWS_DETACHED/)
-  assert.match(wrapper, /HERMES_UPDATE_TAURI_READY_PATH/)
-  assert.match(wrapper, /HERMES_UPDATE_TAURI_OUTCOME_PATH/)
+  assert.match(wrapper, /RABBIT_UPDATE_WINDOWS_DETACHED/)
+  assert.match(wrapper, /RABBIT_UPDATE_TAURI_READY_PATH/)
+  assert.match(wrapper, /RABBIT_UPDATE_TAURI_OUTCOME_PATH/)
   assert.match(wrapper, /\$rc -ne 75/)
   assert.match(wrapper, /\$handoffAccepted=/)
   assert.match(wrapper, new RegExp(`update_launch_intent\\.${CORRELATION}`))
@@ -465,7 +465,7 @@ test('remote observation rejects a receipt for another correlation', () => {
 test.runIf(process.platform !== 'win32')(
   'POSIX observer reads the exact correlation receipt and terminal marker from disk',
   async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
+    const home = await mkdtemp(path.join(os.tmpdir(), 'rabbit-managed-update-'))
 
     try {
       const receipts = path.join(home, 'logs', 'update_receipts')
@@ -487,8 +487,8 @@ test.runIf(process.platform !== 'win32')(
         {
           ssh: { exec: async () => '' },
           platform: 'Linux',
-          hermesPath: '/opt/hermes/hermes',
-          hermesHome: home
+          rabbitPath: '/opt/rabbit/rabbit',
+          rabbitHome: home
         },
         CORRELATION
       )
@@ -510,19 +510,19 @@ test.runIf(process.platform !== 'win32')(
 test.runIf(process.platform !== 'win32')(
   'managed observer unwraps a named profile home for the install-wide marker',
   async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rabbit-managed-profile-marker-'))
     const profileHome = path.join(root, 'profiles', 'research')
 
     try {
       await mkdir(profileHome, { recursive: true })
-      await writeFile(path.join(root, '.hermes-update-in-progress'), `${process.pid}\n1\n`)
+      await writeFile(path.join(root, '.rabbit-update-in-progress'), `${process.pid}\n1\n`)
 
       const command = buildRemoteUpdateObservationCommand(
         {
           ssh: { exec: async () => '' },
           platform: 'Linux',
-          hermesPath: '/opt/hermes/hermes',
-          hermesHome: profileHome
+          rabbitPath: '/opt/rabbit/rabbit',
+          rabbitHome: profileHome
         },
         CORRELATION
       )
@@ -562,9 +562,9 @@ test('Windows coordinator handoff is pending until its marker clears and correla
 
   const target = {
     platform: 'Windows' as const,
-    hermesPath: 'C:\\Hermes\\hermes.exe',
-    hermesHome: 'C:\\Users\\alice\\.hermes',
-    pythonPath: 'C:\\Hermes\\python.exe',
+    rabbitPath: 'C:\\Rabbit\\rabbit.exe',
+    rabbitHome: 'C:\\Users\\alice\\.rabbit',
+    pythonPath: 'C:\\Rabbit\\python.exe',
     ssh: {
       exec: async () => {
         const reply = replies[Math.min(calls, replies.length - 1)]
@@ -590,8 +590,8 @@ test('terminal status without its durable receipt fails instead of claiming succ
 
   const target = {
     platform: 'Linux' as const,
-    hermesPath: '~/.local/bin/hermes',
-    hermesHome: '~/.hermes',
+    rabbitPath: '~/.local/bin/rabbit',
+    rabbitHome: '~/.rabbit',
     ssh: { exec: async () => observation({ marker: 'absent', exitCode: 0 }) }
   }
 
@@ -613,8 +613,8 @@ test('live or malformed remote markers fail actionably at bounded update and rec
 
     const target = {
       platform: 'Linux' as const,
-      hermesPath: '~/.local/bin/hermes',
-      hermesHome: '~/.hermes',
+      rabbitPath: '~/.local/bin/rabbit',
+      rabbitHome: '~/.rabbit',
       ssh: { exec: async () => observation({ marker, ...(marker === 'live' ? { markerPid: 44 } : {}) }) }
     }
 
@@ -638,8 +638,8 @@ test('a journaled launch requires correlated terminal proof or an observed live-
 
   const target = {
     platform: 'Linux' as const,
-    hermesPath: '~/.local/bin/hermes',
-    hermesHome: '~/.hermes',
+    rabbitPath: '~/.local/bin/rabbit',
+    rabbitHome: '~/.rabbit',
     ssh: { exec: async () => observation({ marker: 'absent' }) }
   }
 
@@ -672,8 +672,8 @@ test('remote launch intent fences crash recovery even before the local journal r
 
   const target = {
     platform: 'Linux' as const,
-    hermesPath: '~/.local/bin/hermes',
-    hermesHome: '~/.hermes',
+    rabbitPath: '~/.local/bin/rabbit',
+    rabbitHome: '~/.rabbit',
     ssh: { exec: async () => observation({ marker: 'absent', launchIntent: 'present' }) }
   }
 
@@ -1041,7 +1041,7 @@ test('preflight refusal leaves a healthy primary scope untouched and releases wi
 })
 
 test('refused result is structured and has no managed scopes to restore', () => {
-  const result = refusedManagedSshUpdate('cloud', CORRELATION, 'not managed')
+  const result = refusedManagedSshUpdate('remote', CORRELATION, 'not managed')
 
   assert.equal(result.outcome, 'refused')
   assert.equal(result.restoreOk, true)

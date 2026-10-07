@@ -33,11 +33,11 @@ def plant_surfaces(repo: Path, frontends: dict[str, Path]) -> None:
     validate_frontends(frontends)
     if "tui" in frontends:
         tui = frontends["tui"]
-        destination = repo / "hermes_cli/tui_dist"
+        destination = repo / "rabbit_cli/tui_dist"
         _copy(tui / "dist", destination, replace=True)
         _copy(tui / "package.json", destination / "package.json")
     if "web" in frontends:
-        _copy(frontends["web"], repo / "hermes_cli/web_dist", replace=True)
+        _copy(frontends["web"], repo / "rabbit_cli/web_dist", replace=True)
 
 
 def write_metadata(project_path: Path, repo: Path) -> None:
@@ -100,7 +100,7 @@ def assemble(inputs: AgentInputs, out: Path) -> dict:
         if not inputs.site_packages.resolve().is_relative_to(out):
             raise ValueError("source binding requires an output-owned dependency directory")
         relative_code = Path(os.path.relpath(repo, inputs.site_packages)).as_posix()
-        (inputs.site_packages / "hermes-agent.pth").write_text(relative_code + "\n", encoding="utf-8")
+        (inputs.site_packages / "rabbit-agent.pth").write_text(relative_code + "\n", encoding="utf-8")
     for source, destination in ((inputs.stamp, repo / "install-stamp.json"),
                                 (inputs.features, out / "enabled-features.json")):
         if source is not None:
@@ -118,11 +118,11 @@ def assemble(inputs: AgentInputs, out: Path) -> dict:
         for command in commands.values():
             if not Path(command).is_file():
                 raise FileNotFoundError(f"prepared command missing: {command}")
-        env = {**inputs.env, "HERMES_PYTHON": str(inputs.python), "HERMES_INSTALL_ROOT": str(repo)}
+        env = {**inputs.env, "RABBIT_PYTHON": str(inputs.python), "RABBIT_INSTALL_ROOT": str(repo)}
         links = {RESOURCE_ENV[name]: (path, repo / name) for name, path in inputs.resources.items()}
         for name, path in inputs.frontends.items():
-            key, destination = {"tui": ("HERMES_TUI_DIR", out / "ui-tui"),
-                                "web": ("HERMES_WEB_DIST", repo / "web_dist")}[name]
+            key, destination = {"tui": ("RABBIT_TUI_DIR", out / "ui-tui"),
+                                "web": ("RABBIT_WEB_DIST", repo / "web_dist")}[name]
             links[key] = (path, destination)
         for key, (source, destination) in links.items():
             destination.unlink(missing_ok=True)

@@ -6,7 +6,7 @@ from .method_ctx import bind_module
 
 
 def handle_request(req: dict) -> dict | None:
-    from hermes_cli.backend_retirement import retirement
+    from rabbit_cli.backend_retirement import retirement
 
     with retirement.work() as admitted:
         if not admitted:
@@ -20,8 +20,8 @@ def _handle_admitted_request(req: dict) -> dict | None:
         return normalized
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
-                    "(different versions); run `hermes update` and restart both")
+        return _err(rid, -32601, f"unknown method: {method} — the client and the Rabbit backend are out of sync "
+                    "(different versions); run `rabbit update` and restart both")
     # Test doubles register straight into ``_methods`` without a contract; every production
     # handler comes through ``register_method`` and therefore has one.
     contract = _contracts.METHODS.get(method)
@@ -61,7 +61,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
-        from hermes_cli.backend_retirement import retirement
+        from rabbit_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
         if not retirement.acquire():

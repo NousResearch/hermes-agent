@@ -18,7 +18,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ProfileInfo } from '@/types/hermes'
+import type { ProfileInfo } from '@/types/rabbit'
 
 vi.mock('@/app/chat/session-view', async () => {
   const { atom } = await import('nanostores')
@@ -40,7 +40,7 @@ vi.mock('@/components/pane-shell/tree/store', async () => {
   }
 })
 vi.mock('@/contrib/events', () => ({ onGatewayEvent: vi.fn() }))
-vi.mock('@/hermes', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), hermesApi: vi.fn() }))
+vi.mock('@/rabbit', () => ({ deleteProfile: vi.fn(), getLogs: vi.fn(), getStatus: vi.fn(), rabbitApi: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/system-actions', () => ({ runGatewayRestart: vi.fn() }))
 vi.mock('@/store/session', async () => {

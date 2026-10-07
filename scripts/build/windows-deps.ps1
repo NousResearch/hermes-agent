@@ -1,4 +1,4 @@
-# Build-only prerequisites; setup-hermes.ps1 uses the same installer functions.
+# Build-only prerequisites; setup-rabbit.ps1 uses the same installer functions.
 param(
     [Parameter(Mandatory = $true)][string]$StateRoot,
     [string]$OpenSSLRoot,
@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 $before = @{}
 Get-ChildItem Env: | ForEach-Object { $before[$_.Name] = $_.Value }
 . (Join-Path $PSScriptRoot '..\windows-build-deps.ps1')
-Initialize-HermesArm64BuildTools -StateRoot $StateRoot -OpenSSLRoot $OpenSSLRoot
+Initialize-RabbitArm64BuildTools -StateRoot $StateRoot -OpenSSLRoot $OpenSSLRoot
 
 $after = @{}
 Get-ChildItem Env: | ForEach-Object { $after[$_.Name] = $_.Value }
@@ -28,7 +28,7 @@ if ($GithubEnv) {
         # Rust homes must stay explicit when a later child isolates HOME.
         if ($name -notin @('CARGO_HOME', 'RUSTUP_HOME') -and
             $before.ContainsKey($name) -and $before[$name] -ceq $after[$name]) { continue }
-        $delimiter = 'hermes_' + [Guid]::NewGuid().ToString('N')
+        $delimiter = 'rabbit_' + [Guid]::NewGuid().ToString('N')
         [IO.File]::AppendAllText($GithubEnv, "$name<<$delimiter`n$($after[$name])`n$delimiter`n", $utf8)
     }
 }

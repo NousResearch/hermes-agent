@@ -30,7 +30,7 @@ def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, th
     from gateway import run
 
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
-    monkeypatch.setattr(run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(run, "_rabbit_home", tmp_path)
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", user_id="U1", thread_id=thread_id)
     metadata = {"thread_id": thread_id} if thread_id else {}
     pc = PlatformConfig(extra={"reply_in_thread": bool(thread_id)})
@@ -87,14 +87,14 @@ def test_profile_config_isolated_for_callbacks_and_direct_warnings(tmp_path, mon
         home.mkdir()
         (home / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {value}}}")
     # The ambient default must never override the context-bound owner.
-    monkeypatch.setattr(run, "_hermes_home", homes[1])
+    monkeypatch.setattr(run, "_rabbit_home", homes[1])
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", user_id="U1")
     for home, expected in ((homes[0], False), (homes[1], True), (homes[0], False)):
         with _profile_runtime_scope(home, prepared_secret_scope={}):
             config = _load_gateway_config()
             assert warning_notifications_enabled(source.platform, config) is expected
-            from tests.gateway.test_warning_notifications import RecordingAdapter
-            adapter = RecordingAdapter()
+            from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
+            adapter = HygieneCaptureAdapter()
             adapter.send = AsyncMock()
             gateway = object.__new__(GatewayRunner)
             gateway._delivery_adapter_for = lambda source: adapter

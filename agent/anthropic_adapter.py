@@ -1,4 +1,4 @@
-"""Anthropic Messages API adapter: client construction + the Messages call for Hermes's
+"""Anthropic Messages API adapter: client construction + the Messages call for Rabbit's
 OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth setup-tokens
 (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header. Endpoint predicates,
 payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
@@ -19,7 +19,7 @@ from utils import normalize_proxy_env_vars
 from agent.anthropic_credentials import _is_oauth_token
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
-    _is_minimax_anthropic_endpoint, _is_nous_portal_endpoint, _is_opencode_endpoint,
+    _is_minimax_anthropic_endpoint, _is_opencode_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_kimi_family, _normalize_base_url_text,
     _requires_bearer_auth,
 )
@@ -28,7 +28,7 @@ from agent.anthropic_message_convert import (
 )
 from agent.errors import EmptyStreamError
 
-from hermes_cli.version_info import get_version_info
+from rabbit_cli.version_info import get_version_info
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
@@ -71,7 +71,7 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
-# Hermes effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
+# Rabbit effort -> Anthropic adaptive-thinking effort (output_config.effort). 4.7+ exposes
 # low/medium/high/xhigh/max; Opus/Sonnet 4.6 have no xhigh, so callers downgrade xhigh->max
 # there (see _supports_xhigh_effort). "minimal" is a legacy alias for low on every model.
 ADAPTIVE_EFFORT_MAP = {
@@ -275,7 +275,7 @@ def find_claude_code_cli(command: str) -> Optional[str]:
     agree with version detection about whether the CLI is installed under a GUI/service PATH."""
     if command not in _CLAUDE_CODE_NAMES:
         return None
-    from hermes_platform.resolver import locate_command
+    from rabbit_platform.resolver import locate_command
 
     found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
     return found[0] if found else None
@@ -307,7 +307,7 @@ def _get_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
-# Anthropic's OAuth billing classifier fingerprints certain Hermes tool schemas/prose as a
+# Anthropic's OAuth billing classifier fingerprints certain Rabbit tool schemas/prose as a
 # third-party app and reroutes to the metered extra-usage lane (HTTP 400 "You're out of extra
 # usage" on a valid subscription). Live A/B repros isolated two independent triggers — the
 # ``session_search`` tool (schema/name/prose) and the ``memory`` tool (schema/name) — so both are
@@ -359,8 +359,8 @@ def _beta_header(betas: list) -> Dict[str, str]:
 def _attribution_headers() -> Dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+        "HTTP-Referer": "https://github.com/seven0070/Rabbit-", "X-Title": "Rabbit Agent",
+        "User-Agent": f"RabbitAgent/{get_version_info().base_version}",
     }
 
 
@@ -373,7 +373,7 @@ def _client_timeout(timeout):
 
 def _base_client_kwargs(base_url, timeout) -> tuple[str, Dict[str, Any]]:
     """Shared SDK constructor kwargs -> ``(normalized_base_url, kwargs)``. Retry is delegated to
-    hermes's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
+    rabbit's outer loop (``max_retries=0``): the SDK default of 2 uses its own backoff that ignores
     Retry-After and double-retries inside our loop. Any trailing ``/v1`` is stripped because the
     SDK appends ``/v1/messages``. Azure's ``api-version`` goes through ``default_query`` so the
     base_url is not corrupted into ``/anthropic?api-version=.../v1/messages``."""
@@ -420,7 +420,7 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route:
     keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
 
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
-    ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
+    ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.rabbit/.env) and then sends dual
     auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
     / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
     SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
@@ -445,7 +445,7 @@ def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
     if not base_url:
         return {}
     try:
-        from hermes_cli.config import get_custom_provider_extra_headers
+        from rabbit_cli.config import get_custom_provider_extra_headers
         return get_custom_provider_extra_headers(str(base_url))
     except Exception:
         logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)
@@ -513,7 +513,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: rabbit pm repair")
     # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
     # launch profile's process env); unscoped passes nothing and keeps the default chain.
     scoped = scoped_aws_session_kwargs()
@@ -521,7 +521,7 @@ def build_anthropic_bedrock_client(region: str):
                   "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
     return sdk.AnthropicBedrock(
         aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
-        max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
+        max_retries=0,  # retry belongs to rabbit's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
 
@@ -530,7 +530,7 @@ def _normalize_to_mcp_wire(name: str) -> str:
     """OAuth wire form of a tool name (no aliasing): ``mcp__<...>``. Anthropic's OAuth billing
     classifier treats a single-underscore ``mcp_`` tool name as a third-party-app fingerprint
     (HTTP 400 "Third-party apps now draw from extra usage"); ``mcp__foo`` is accepted. Both bare
-    Hermes tools (``read_file``) and native MCP tools registered as ``mcp_<server>_<tool>`` must
+    Rabbit tools (``read_file``) and native MCP tools registered as ``mcp_<server>_<tool>`` must
     land on the double-underscore form. normalize_response reverses both via registry lookup."""
     if name.startswith("mcp__"):
         return name  # already correct, don't double-prefix
@@ -558,14 +558,14 @@ def _oauth_wire_namer(anthropic_tools: List[Dict[str, Any]]):
 
 
 _OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"), ("Hermes agent", "Claude Code"), ("Nous Research", "Anthropic"),
+    ("Rabbit Agent", "Claude Code"), ("Rabbit agent", "Claude Code"), ("Sanath Patil", "Anthropic"),
 )
 # The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
-# or quoted as an identifier (``hermes-agent.nousresearch.com``, ``~/.hermes/hermes-agent/venv``,
-# ``NousResearch/hermes-agent``, ``skill_view(name='hermes-agent')``) it is an address the model
+# or quoted as an identifier (``https://github.com/seven0070/Rabbit-``, ``~/.rabbit/rabbit-agent/venv``,
+# ``seven0070/Rabbit-``, ``skill_view(name='rabbit-agent')``) it is an address the model
 # dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
 # identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
-_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])hermes-agent(?![\w/@-]|\.\w)""")
+_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])rabbit-agent(?![\w/@-]|\.\w)""")
 
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
@@ -600,7 +600,7 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
-    4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
+    4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Rabbit shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
     if reasoning_config.get("enabled") is False:
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
@@ -645,10 +645,7 @@ def build_anthropic_kwargs(
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
-    # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
-    # make the model unresolvable there (prefix AND dots kept).
-    if not _is_nous_portal_endpoint(base_url):
-        model = normalize_model_name(model, preserve_dots=preserve_dots)
+    model = normalize_model_name(model, preserve_dots=preserve_dots)
     # Non-positive/non-finite values fail locally instead of 400-ing upstream.
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)
     if context_length and effective_max_tokens > context_length:
@@ -677,7 +674,7 @@ def build_anthropic_kwargs(
     # ``output_config.effort``, and the replay-validation 400s that originally motivated dropping the
     # parameter (#13848) no longer occur. (Kimi on chat_completions enables thinking via extra_body in the
     # ChatCompletionsTransport — see #13503.) On 4.7+ the `thinking.display` field defaults to "omitted",
-    # which silently hides reasoning text that Hermes surfaces in its CLI. We request "summarized" so the
+    # which silently hides reasoning text that Rabbit surfaces in its CLI. We request "summarized" so the
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):

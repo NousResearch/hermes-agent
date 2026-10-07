@@ -1,6 +1,6 @@
 """Cron imports remain usable when a daemon spans an on-disk upgrade.
 
-A long-running scheduler already has ``hermes_cli.sqlite_util`` and ``cron.jobs`` cached from
+A long-running scheduler already has ``rabbit_cli.sqlite_util`` and ``cron.jobs`` cached from
 BEFORE the upgrade; the first lazy import of a cron store afterwards must not need names those
 stale modules lack (``scheduler_prompt._build_job_prompt`` imports ``cron.notepad`` unguarded, so
 an ``ImportError`` there fails every job tick until restart).
@@ -16,7 +16,7 @@ import pytest
 
 _SKEW_SCRIPT = """
 import sys, types
-import hermes_cli.sqlite_util as sqlite_util
+import rabbit_cli.sqlite_util as sqlite_util
 import cron.jobs as jobs
 
 # The pre-upgrade sqlite_util only had add_column_if_missing / write_txn.

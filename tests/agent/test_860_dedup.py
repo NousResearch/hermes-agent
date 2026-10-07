@@ -40,7 +40,7 @@ class TestFlushDeduplication:
 
     def test_flush_writes_only_new_messages(self):
         """First flush writes all new messages, second flush writes none."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -82,7 +82,7 @@ class TestAppendToTranscriptSkipDb:
         """With skip_db=True and a real DB, message does NOT appear in SQLite."""
         from gateway.config import GatewayConfig
         from gateway.session import SessionStore
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         db_path = tmp_path / "test_skip.db"
         db = SessionDB(db_path=db_path)

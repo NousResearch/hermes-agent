@@ -14,10 +14,10 @@ Three invariants, each broken before the multiplex-scope fix:
 from __future__ import annotations
 
 import cron.scheduler as sched
-from hermes_constants import (
-    hermes_home_key,
-    reset_hermes_home_override,
-    set_hermes_home_override,
+from rabbit_constants import (
+    rabbit_home_key,
+    reset_rabbit_home_override,
+    set_rabbit_home_override,
 )
 
 
@@ -28,11 +28,11 @@ class _Scope:
         self._home = str(home)
 
     def __enter__(self):
-        self._token = set_hermes_home_override(self._home)
+        self._token = set_rabbit_home_override(self._home)
         return self
 
     def __exit__(self, *_exc):
-        reset_hermes_home_override(self._token)
+        reset_rabbit_home_override(self._token)
         return False
 
 
@@ -94,7 +94,7 @@ class TestPerProfileYieldGate:
         monkeypatch.setattr(
             gateway_status,
             "read_runtime_status",
-            lambda: {"pid": 4321, "code_sha": disk, "hermes_home": str(home_a)},
+            lambda: {"pid": 4321, "code_sha": disk, "rabbit_home": str(home_a)},
         )
         ownership.register_ticked_homes([home_a, home_b])
         try:

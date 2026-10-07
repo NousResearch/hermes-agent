@@ -8,8 +8,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _ensure_redaction_enabled(monkeypatch):
-    """Ensure redaction is active regardless of host HERMES_REDACT_SECRETS."""
-    monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+    """Ensure redaction is active regardless of host RABBIT_REDACT_SECRETS."""
+    monkeypatch.delenv("RABBIT_REDACT_SECRETS", raising=False)
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
 
@@ -27,7 +27,7 @@ class TestBrowserSecretExfil:
     def test_cloud_browser_allows_credential_named_query_param(self):
         """Magic links / OAuth callbacks / signed assets carry ``?token=``-style params and must
         reach a cloud browser too: the browser is where the agent signs in, and it already sees the
-        session's cookies and typed passwords. Only Hermes-secret-shaped values stay blocked."""
+        session's cookies and typed passwords. Only Rabbit-secret-shaped values stay blocked."""
         from tools.browser_tool import browser_navigate
 
         url = "https://example.com/callback?token=opaque-oauth-code&signature=abc123"
@@ -96,7 +96,7 @@ class TestWebExtractSecretExfil:
     @pytest.mark.asyncio
     async def test_allows_credential_named_query_param(self):
         """``?access_token=`` is how magic links and signed URLs look; the extract backend may fetch them.
-        Only Hermes-secret-shaped VALUES are blocked (see test_blocks_api_key_in_url)."""
+        Only Rabbit-secret-shaped VALUES are blocked (see test_blocks_api_key_in_url)."""
         from tools.web_tools import web_extract_tool
 
         result = await web_extract_tool(urls=["https://example.com/callback?access_token=opaque-oauth-value"])

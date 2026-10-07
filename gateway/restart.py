@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 
-from hermes_cli.config import DEFAULT_CONFIG
+from rabbit_cli.config import DEFAULT_CONFIG
 
 # EX_TEMPFAIL (sysexits.h): ask the service manager to restart after a graceful drain/reload.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
@@ -31,14 +31,14 @@ def map_fatal_config_exit_for_launchd(returncode: int) -> int:
         return 0
     return returncode
 
-# Set by ``hermes gateway run --external-supervisor``. Unlike systemd's INVOCATION_ID
+# Set by ``rabbit gateway run --external-supervisor``. Unlike systemd's INVOCATION_ID
 # and launchd's XPC_SERVICE_NAME, this survives wrappers that replace the child
 # environment (e.g. ``sudo env -i``).
-EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
+EXTERNAL_GATEWAY_SUPERVISOR_ENV = "RABBIT_GATEWAY_EXTERNAL_SUPERVISOR"
 
-# Forwarded by the stderr-timestamp launchd wrapper (hermes_cli/stderr_timestamp.py) to the gateway
+# Forwarded by the stderr-timestamp launchd wrapper (rabbit_cli/stderr_timestamp.py) to the gateway
 # grandchild, which sees ``XPC_SERVICE_NAME=0``. Read only via :func:`launchd_job_label`.
-LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
+LAUNCHD_LABEL_ENV = "RABBIT_LAUNCHD_LABEL"
 
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])
 DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT = float(DEFAULT_CONFIG["gateway"]["signal_interrupt_grace_timeout"])
@@ -89,25 +89,25 @@ def parse_launchd_exit_timeout(print_output: object) -> float | None:
 
 
 def launchd_job_label(environ: Mapping[str, str] | None = None) -> str | None:
-    """The ``ai.hermes.*`` launchd job label in *environ*, or ``None`` (no darwin gate).
+    """The ``ai.rabbit.*`` launchd job label in *environ*, or ``None`` (no darwin gate).
 
     launchd stamps ``XPC_SERVICE_NAME`` only on the job process it spawns. The generated plist
     runs the stderr-timestamp wrapper there, so the gateway grandchild reads ``XPC_SERVICE_NAME=0``
-    and finds its label only in the wrapper's re-export, ``HERMES_LAUNCHD_LABEL``. Both go through
-    the same ``ai.hermes`` predicate: app-coalition labels (``application.<bundle>…``, exported
+    and finds its label only in the wrapper's re-export, ``RABBIT_LAUNCHD_LABEL``. Both go through
+    the same ``ai.rabbit`` predicate: app-coalition labels (``application.<bundle>…``, exported
     into IDE integrated terminals) are not our job. ONE seam for every reader of launchd identity
     (drain cap, restart route, control-socket supervisor declaration).
     """
     env = os.environ if environ is None else environ
     for var in ("XPC_SERVICE_NAME", LAUNCHD_LABEL_ENV):
         label = str(env.get(var, "") or "").strip()
-        if label.startswith("ai.hermes"):
+        if label.startswith("ai.rabbit"):
             return label
     return None
 
 
 def launchd_service_label(environ: Mapping[str, str] | None = None, *, platform: str = sys.platform) -> str | None:
-    """Return this process's ``ai.hermes.*`` launchd job label, or ``None`` off darwin.
+    """Return this process's ``ai.rabbit.*`` launchd job label, or ``None`` off darwin.
 
     ``launchctl print`` reports ``exit timeout = 1`` for app-coalition labels — treating those as
     a budget would cap the drain to 0 for a gateway Ctrl+C'd in an IDE terminal, hence the
@@ -130,7 +130,7 @@ def read_launchd_exit_timeout_s(
     """Live ``ExitTimeOut`` (seconds) launchd enforces for this gateway's job.
 
     Returns ``None`` — meaning "no launchd budget applies" — when the process
-    is not launchd-owned (non-darwin, or no ``ai.hermes`` job label — see :func:`launchd_job_label`), ``launchctl`` is missing
+    is not launchd-owned (non-darwin, or no ``ai.rabbit`` job label — see :func:`launchd_job_label`), ``launchctl`` is missing
     or fails, or the print output carries no ``exit timeout`` line. Callers
     must treat ``None`` as fail-open: the configured drain stands unchanged.
     """
@@ -243,14 +243,14 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
 
     Selects the exit-75 restart route, so only markers of a manager with a restart policy count:
     systemd ``INVOCATION_ID``, launchd ``XPC_SERVICE_NAME`` (or the wrapper-forwarded
-    ``HERMES_LAUNCHD_LABEL`` the grandchild sees), the s6 sentinel, or the explicit
-    ``--external-supervisor`` opt-in. The generalized ``HERMES_SUPERVISED_CHILD`` launcher marker is
+    ``RABBIT_LAUNCHD_LABEL`` the grandchild sees), the s6 sentinel, or the explicit
+    ``--external-supervisor`` opt-in. The generalized ``RABBIT_SUPERVISED_CHILD`` launcher marker is
     deliberately NOT read here: the Windows Scheduled-Task launcher sets it without a restart policy
     (#113670), and routing its ``/restart`` through exit 75 would leave the gateway dead.
     """
     env = os.environ if environ is None else environ
     xpc_service = env.get("XPC_SERVICE_NAME", "")
-    return bool(env.get("INVOCATION_ID") or env.get("HERMES_S6_SUPERVISED_CHILD") or (xpc_service and xpc_service != "0")
+    return bool(env.get("INVOCATION_ID") or env.get("RABBIT_S6_SUPERVISED_CHILD") or (xpc_service and xpc_service != "0")
                 or launchd_job_label(env)
                 or str(env.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() in _TRUTHY)
 
@@ -258,14 +258,14 @@ def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> b
 def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bool:
     """Return whether this gateway was launched by a generated service/launcher rather than a shell.
 
-    Superset of :func:`is_gateway_supervisor_process` that also honours ``HERMES_SUPERVISED_CHILD``,
+    Superset of :func:`is_gateway_supervisor_process` that also honours ``RABBIT_SUPERVISED_CHILD``,
     the marker every generated launcher exports (systemd unit, launchd plist, s6 run script, Windows
-    Scheduled Task — see ``hermes_cli.main._apply_profile_override``). This is the identity the
+    Scheduled Task — see ``rabbit_cli.main._apply_profile_override``). This is the identity the
     self-targeting guards key on: a kill or lifecycle command issued from inside such a gateway takes
     down the process hosting the caller with nobody at a terminal to bring it back (#113667).
     """
     env = os.environ if environ is None else environ
-    if env.get("HERMES_SUPERVISED_CHILD"):
+    if env.get("RABBIT_SUPERVISED_CHILD"):
         return True
     return is_gateway_supervisor_process(environ)
 

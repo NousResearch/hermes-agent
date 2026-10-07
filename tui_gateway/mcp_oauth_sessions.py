@@ -41,7 +41,7 @@ def register_flow(flow, *, httpd=None) -> Dict[str, Any]:
     rec = {
         "session_id": flow.flow_id,
         "server_name": flow.server_name,
-        "hermes_home": flow.hermes_home,
+        "rabbit_home": flow.rabbit_home,
         "flow": flow,
         "httpd": httpd,
         "created_at": time.time(),
@@ -60,7 +60,7 @@ def finish_flow(session_id: str) -> None:
 
 
 def start_flow(
-    hermes_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
+    rabbit_home: str, server_name: str, cfg: dict, *, reconnect_live: bool = False,
     url_timeout: float = 30.0, client_redirect_uri: Optional[str] = None) -> Dict[str, Any]:
     """Begin an MCP OAuth flow and return ``{session_id, auth_url, flow}``; blocks up to
     ``url_timeout`` for the authorization URL. With ``client_redirect_uri`` (invalid values
@@ -76,17 +76,17 @@ def start_flow(
         active = [r for r in _sessions.values() if not r["flow"].worker_done]
         if len(active) >= _MAX_PENDING:
             raise RuntimeError("Too many MCP OAuth flows are already in progress")
-        if any(r["server_name"] == server_name and r["hermes_home"] == hermes_home for r in active):
+        if any(r["server_name"] == server_name and r["rabbit_home"] == rabbit_home for r in active):
             raise RuntimeError(f"MCP OAuth for '{server_name}' is already in progress")
 
     session_id = secrets.token_urlsafe(24)
     flow = DashboardOAuthFlow(
-        flow_id=session_id, server_name=server_name, profile=None, hermes_home=hermes_home,
+        flow_id=session_id, server_name=server_name, profile=None, rabbit_home=rabbit_home,
         redirect_uri="", reconnect_live=reconnect_live)
     httpd = choose_callback_receiver(flow, cfg, client_redirect_uri)
     rec = register_flow(flow, httpd=httpd)
     threading.Thread(
-        target=run_worker, args=(hermes_home, server_name, dict(cfg), reconnect_live),
+        target=run_worker, args=(rabbit_home, server_name, dict(cfg), reconnect_live),
         kwargs={"flow": flow, "on_done": lambda: _shutdown_listener(rec)},
         daemon=True, name=f"mcp-oauth-{server_name}").start()
     try:
@@ -113,17 +113,17 @@ def start_flow(
 
 
 def _lookup(
-    session_id: str, server_name: str, hermes_home: Optional[str] = None,
+    session_id: str, server_name: str, rabbit_home: Optional[str] = None,
 ) -> "tuple[Dict[str, Any] | None, str | None]":
     """Find a session belonging to the caller's resolved profile."""
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     with _sessions_lock:
         rec = _sessions.get(session_id)
     if rec is None:
         return None, "OAuth session not found or expired"
     if rec["server_name"] != server_name:
         return None, "server name mismatch for session"
-    if hermes_home_key(rec["hermes_home"]) != hermes_home_key(hermes_home):
+    if rabbit_home_key(rec["rabbit_home"]) != rabbit_home_key(rabbit_home):
         return None, "profile mismatch for session"
     return rec, None
 
@@ -147,9 +147,9 @@ def poll_flow(session_id: str, server_name: str) -> Dict[str, Any]:
     return out
 
 
-def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str, Any]:
+def cancel_flow(session_id: str, server_name: str, rabbit_home: str) -> Dict[str, Any]:
     """Cancel only the owning profile's flow and release its callback waiter."""
-    rec, err = _lookup(session_id, server_name, hermes_home)
+    rec, err = _lookup(session_id, server_name, rabbit_home)
     if rec is None:
         return {"ok": False, "error_message": err}
     flow = rec["flow"]

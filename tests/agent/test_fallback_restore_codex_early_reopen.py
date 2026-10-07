@@ -66,14 +66,14 @@ def _pin_to_fallback(agent):
 
 def _restore(agent, quota_restored):
     with (
-        patch("hermes_cli.auth._probe_codex_quota_restored", return_value=quota_restored),
+        patch("rabbit_cli.auth._probe_codex_quota_restored", return_value=quota_restored),
         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         return agent._restore_primary_runtime()
 
 
 def test_returns_to_primary_when_quota_reopens_before_declared_reset(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _write_exhausted_codex_pool(tmp_path, reset_in_seconds=3 * 86400)
     agent = _fallback_agent()
 
@@ -82,7 +82,7 @@ def test_returns_to_primary_when_quota_reopens_before_declared_reset(tmp_path, m
 
 
 def test_stays_on_fallback_while_quota_is_still_spent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _write_exhausted_codex_pool(tmp_path, reset_in_seconds=3 * 86400)
     agent = _fallback_agent()
 
@@ -92,7 +92,7 @@ def test_stays_on_fallback_while_quota_is_still_spent(tmp_path, monkeypatch):
 
 def test_a_wrong_restored_verdict_does_not_flip_back_every_turn(tmp_path, monkeypatch):
     """The probe caches "restored" for its interval and a fresh 429 does not clear it."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _write_exhausted_codex_pool(tmp_path, reset_in_seconds=3 * 86400)
     agent = _fallback_agent()
     assert _restore(agent, quota_restored=True) is True

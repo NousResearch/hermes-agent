@@ -12,7 +12,7 @@ entries. Start Vite from `apps/desktop` with its normal config and a free loopba
 port. Set a private Vite cache **under a node_modules directory**; a cache outside
 node_modules can be transformed again by the React compiler.
 
-Use isolated HOME and HERMES_HOME for the server and probe. Set
+Use isolated HOME and RABBIT_HOME for the server and probe. Set
 `PLAYWRIGHT_BROWSERS_PATH` explicitly if HOME changes Chromium's cache lookup.
 Both root and apps/desktop dependencies must be available in a worktree.
 

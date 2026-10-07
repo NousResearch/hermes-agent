@@ -12,7 +12,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { getHermesConfigRecord, saveMcpServers } from '@/hermes'
+import { getRabbitConfigRecord, saveMcpServers } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { MCP_DEEPLINK_NAME_RE } from '@/lib/mcp-deeplink'
@@ -20,15 +20,15 @@ import { getServers } from '@/lib/mcp-servers'
 import { $mcpInstallRequest } from '@/store/mcp-deeplink-install'
 import { notify, readableError } from '@/store/notifications'
 
-import { setHermesConfigCache } from '../hooks/use-config-record'
+import { setRabbitConfigCache } from '../hooks/use-config-record'
 
 /**
- * Explicit-confirm gate for `hermes://mcp/install` deep links. The payload is
+ * Explicit-confirm gate for `rabbit://mcp/install` deep links. The payload is
  * arbitrary attacker-controllable input (any web page can open the link), so
  * this dialog shows the server name and the FULL pretty-printed config —
  * exactly what would be written — and nothing touches config until the user
  * confirms. stdio (`command`) entries carry an extra caution banner because
- * confirming lets Hermes spawn that local process. An existing server name is
+ * confirming lets Rabbit spawn that local process. An existing server name is
  * never silently overwritten: confirm stays blocked until the user picks a
  * fresh name or cancels.
  */
@@ -57,7 +57,7 @@ export function McpInstallDeepLinkDialog() {
 
     let cancelled = false
 
-    getHermesConfigRecord()
+    getRabbitConfigRecord()
       .then(config => {
         if (!cancelled) {
           setExistingNames(Object.keys(getServers(config)))
@@ -103,7 +103,7 @@ export function McpInstallDeepLinkDialog() {
       // Merge over the FRESHEST server map — saveMcpServers replaces the whole
       // `mcp_servers` document, so saving over a stale snapshot would drop
       // servers added elsewhere since the dialog opened.
-      const current = getServers(await getHermesConfigRecord())
+      const current = getServers(await getRabbitConfigRecord())
 
       if (Object.prototype.hasOwnProperty.call(current, trimmedName)) {
         setExistingNames(Object.keys(current))
@@ -114,7 +114,7 @@ export function McpInstallDeepLinkDialog() {
 
       const nextServers = { ...current, [trimmedName]: request.config }
       await saveMcpServers(nextServers)
-      setHermesConfigCache(previous => (previous ? { ...previous, mcp_servers: nextServers } : previous))
+      setRabbitConfigCache(previous => (previous ? { ...previous, mcp_servers: nextServers } : previous))
       notify({ kind: 'success', title: m.savedTitle, message: m.savedMessage(trimmedName) })
       $mcpInstallRequest.set(null)
       navigate(`/capabilities?tab=connectors&server=${encodeURIComponent(trimmedName)}`)

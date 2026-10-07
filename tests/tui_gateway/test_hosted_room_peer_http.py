@@ -369,7 +369,7 @@ def test_post_connect_failures_proven_before_admission_are_safe_to_queue(
         calls.append((args, kwargs))
         raise urllib.error.URLError(reason)
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", unreachable)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", unreachable)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
 
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -397,7 +397,7 @@ def test_post_connection_failures_that_may_follow_send_remain_ambiguous(
         calls.append((args, kwargs))
         raise failure
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", uncertain)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", uncertain)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
 
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -421,7 +421,7 @@ def test_post_http_5xx_remains_ambiguous(monkeypatch):
             io.BytesIO(b'{"error":"unavailable"}'),
         )
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", rejected)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
 
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -449,7 +449,7 @@ def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch
             ),
         )
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", rejected)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
 
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -510,7 +510,7 @@ def test_peer_http_error_body_is_never_exposed_or_logged(monkeypatch, caplog):
             ),
         )
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", rejected)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
     caplog.set_level("DEBUG", logger="tui_gateway.hosted_room_peer_http")
 
@@ -547,7 +547,7 @@ def test_peer_response_content_length_fails_before_read(monkeypatch):
 
     response = OversizedResponse()
     monkeypatch.setattr(
-        "hermes_cli.urllib_security.open_credentialed_url",
+        "rabbit_cli.urllib_security.open_credentialed_url",
         lambda *_args, **_kwargs: response,
     )
     client = PeerRunsHTTPClient(
@@ -599,7 +599,7 @@ def test_peer_success_and_error_reads_are_bounded(monkeypatch):
         return response
 
     monkeypatch.setattr(
-        "hermes_cli.urllib_security.open_credentialed_url",
+        "rabbit_cli.urllib_security.open_credentialed_url",
         open_response,
     )
     client = PeerRunsHTTPClient(
@@ -834,7 +834,7 @@ def test_invalid_room_grant_is_classified_without_echoing_secret(monkeypatch):
             body,
         )
 
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
+    monkeypatch.setattr("rabbit_cli.urllib_security.open_credentialed_url", rejected)
     client = PeerRunsHTTPClient(
         base_url="https://peer.example.test",
         api_key="",

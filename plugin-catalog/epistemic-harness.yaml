@@ -6,7 +6,7 @@ description: Record a provisional claim or uncertainty before an evidence-gather
 maintainer: quangphucqp
 tier: community
 category: general
-requires_hermes: ">=0.21,<1.0"
+requires_rabbit: ">=0.21,<1.0"
 platforms:
   - linux
   - macos

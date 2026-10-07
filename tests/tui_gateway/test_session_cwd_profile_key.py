@@ -14,7 +14,7 @@ import tui_gateway.server as server
 
 def test_secondary_profile_session_cwd_is_found_inside_its_scope(monkeypatch, tmp_path):
     from agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
@@ -28,12 +28,12 @@ def test_secondary_profile_session_cwd_is_found_inside_its_scope(monkeypatch, tm
     secret_scope.set_multiplex_active(True)
     try:
         server._register_session_cwd(session)  # session.create path: no scope bound by the caller
-        token = set_hermes_home_override(str(home))
+        token = set_rabbit_home_override(str(home))
         try:
             assert terminal_tool.get_session_cwd("sess-b") == str(workspace)
             assert terminal_tool.resolve_task_overrides("sess-b")["cwd"] == str(workspace)
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert terminal_tool.get_session_cwd("sess-b") is None  # not leaked onto the launch profile's key
     finally:
         secret_scope.set_multiplex_active(False)

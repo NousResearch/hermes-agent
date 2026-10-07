@@ -29,7 +29,7 @@ export interface PreviewArtifact {
 }
 
 const MAX_PER_SESSION = 4
-const DISMISSED_PREVIEWS_KEY = 'hermes.desktop.previewDismissals.v1'
+const DISMISSED_PREVIEWS_KEY = 'rabbit.desktop.previewDismissals.v1'
 const MAX_DISMISSED_SESSIONS = 128
 const MAX_DISMISSED_TARGETS = 64
 

@@ -28,7 +28,7 @@ def _fake_anthropic_call(**kwargs):
 def test_strips_all_responses_only_keys():
     payload = {
         "model": "claude-sonnet-4-6",
-        "instructions": "You are Hermes.",
+        "instructions": "You are Rabbit.",
         "input": [{"role": "user", "content": "hi"}],
         "store": False,
         "parallel_tool_calls": True,

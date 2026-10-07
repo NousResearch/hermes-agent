@@ -1,12 +1,12 @@
 ---
 sidebar_position: 7
 title: "Email"
-description: "Set up Hermes Agent as an email assistant via IMAP/SMTP"
+description: "Set up Rabbit Agent as an email assistant via IMAP/SMTP"
 ---
 
 # Email Setup
 
-Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
+Rabbit can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
 
 :::info Gateway adapter only: no external dependencies
 This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
@@ -16,14 +16,14 @@ This is separate from the bundled [Himalaya email skill](../skills/bundled/email
 
 | Use case | What to configure | External dependency |
 |---|---|---|
-| Let people email the Hermes agent and receive replies | Email gateway adapter on this page | None beyond an IMAP/SMTP email account |
+| Let people email the Rabbit agent and receive replies | Email gateway adapter on this page | None beyond an IMAP/SMTP email account |
 | Let the agent inspect, compose, move, and manage mailbox messages from terminal tools | Himalaya email skill | `himalaya` CLI and `~/.config/himalaya/config.toml` |
 
 ---
 
 ## Prerequisites
 
-- **A dedicated email account** for your Hermes agent (don't use your personal email)
+- **A dedicated email account** for your Rabbit agent (don't use your personal email)
 - **IMAP enabled** on the email account
 - **An app password** if using Gmail or another provider with 2FA
 
@@ -53,7 +53,7 @@ Most email providers support IMAP/SMTP. Check your provider's documentation for:
 Proton Mail Bridge (and similar local relays such as a self-hosted MTA) listen on
 loopback with **STARTTLS** and a self-signed certificate, so the defaults
 (implicit TLS on IMAP 993, verified certificates) won't connect. Override the
-transport in `~/.hermes/config.yaml`:
+transport in `~/.rabbit/config.yaml`:
 
 ```yaml
 platforms:
@@ -69,29 +69,29 @@ platforms:
 ```
 
 and set `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` alongside your Bridge
-credentials in `~/.hermes/.env`. Unknown `*_security` values log a warning and
+credentials in `~/.rabbit/.env`. Unknown `*_security` values log a warning and
 fall back to the secure default. Only disable `*_tls_verify` for loopback hosts —
-Hermes logs a warning when verification is off for any other host.
+Rabbit logs a warning when verification is off for any other host.
 
 ---
 
-## Step 1: Configure Hermes
+## Step 1: Configure Rabbit
 
 The easiest way:
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 Select **Email** from the platform menu. The wizard prompts for your email address, password, IMAP/SMTP hosts, and allowed senders.
 
 ### Manual Configuration
 
-Add to `~/.hermes/.env`:
+Add to `~/.rabbit/.env`:
 
 ```bash
 # Required
-EMAIL_ADDRESS=hermes@gmail.com
+EMAIL_ADDRESS=rabbit@gmail.com
 EMAIL_PASSWORD=abcd efgh ijkl mnop    # App password (not your regular password)
 EMAIL_IMAP_HOST=imap.gmail.com
 EMAIL_SMTP_HOST=smtp.gmail.com
@@ -115,9 +115,9 @@ EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ## Step 2: Start the Gateway
 
 ```bash
-hermes gateway              # Run in foreground
-hermes gateway install      # Install as a user service
-sudo hermes gateway install --system   # Linux only: boot-time system service
+rabbit gateway              # Run in foreground
+rabbit gateway install      # Install as a user service
+sudo rabbit gateway install --system   # Linux only: boot-time system service
 ```
 
 On startup, the adapter:
@@ -181,12 +181,12 @@ Email access is stricter by default than chat-style platforms:
 
 Allowlist entries match whole addresses. A bare entry such as `alice` (a chat username in `GATEWAY_ALLOWED_USERS`, say) never admits `alice@` at any domain, and mail from such an address is dropped rather than paired or declined.
 
-Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when the topmost `Authentication-Results` header (the one your server prepends; lower ones are never consulted) does not name exactly the pinned `authserv_id`. `authserv_id` must equal exactly the authserv-id your server writes before the first `;` of that header. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
+Rabbit acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Rabbit mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when the topmost `Authentication-Results` header (the one your server prepends; lower ones are never consulted) does not name exactly the pinned `authserv_id`. `authserv_id` must equal exactly the authserv-id your server writes before the first `;` of that header. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
 
-**The `authserv_id` pin is required while sender authentication is on.** Without `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`), Hermes cannot tell your server's `Authentication-Results` header from one the sender wrote (a self-hosted MTA that adds none of its own leaves the sender's on top), so it trusts none: every message that needs an authenticated `From:` is dropped, and the gateway log says so once, with the fix. To find the value, open a message your server delivered ("show original" / raw source) and copy the token before the first `;` of the **topmost** `Authentication-Results` header, for example `mx.google.com` for Gmail. If that token seems to change between messages, it is a per-relay hostname rather than an authserv-id: RFC 8601 defines the authserv-id as a stable name for the administrative domain, so configure your MTA to stamp one (for example `AuthservID` in OpenDKIM / OpenDMARC) and pin that. A matching id is a pin, not proof of provenance: confirm your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own. If you cannot pin a stable id, opt out explicitly with `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) and accept that `From:` is then trusted as written.
+**The `authserv_id` pin is required while sender authentication is on.** Without `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`), Rabbit cannot tell your server's `Authentication-Results` header from one the sender wrote (a self-hosted MTA that adds none of its own leaves the sender's on top), so it trusts none: every message that needs an authenticated `From:` is dropped, and the gateway log says so once, with the fix. To find the value, open a message your server delivered ("show original" / raw source) and copy the token before the first `;` of the **topmost** `Authentication-Results` header, for example `mx.google.com` for Gmail. If that token seems to change between messages, it is a per-relay hostname rather than an authserv-id: RFC 8601 defines the authserv-id as a stable name for the administrative domain, so configure your MTA to stamp one (for example `AuthservID` in OpenDKIM / OpenDMARC) and pin that. A matching id is a pin, not proof of provenance: confirm your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own. If you cannot pin a stable id, opt out explicitly with `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) and accept that `From:` is then trusted as written.
 
 :::warning
-**Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
+**Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Rabbit should not reply to those contacts by default.
 :::
 
 ---
@@ -199,7 +199,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. If the gateway log shows `authserv-id is not configured`, set `EMAIL_AUTHSERV_ID` to the exact id on the topmost `Authentication-Results` header your server writes. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
-| **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
+| **Duplicate replies** | Ensure only one gateway instance is running. Check `rabbit gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
 
@@ -214,7 +214,7 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 - Use **App Passwords** instead of your main password (required for Gmail with 2FA)
 - Set `EMAIL_ALLOWED_USERS` to restrict who can interact with the agent
 - Set `EMAIL_AUTHSERV_ID` to the exact id of the receiving MTA's topmost `Authentication-Results` stamp, and verify that MTA strips inbound headers claiming that id
-- The password is stored in `~/.hermes/.env` — protect this file (`chmod 600`)
+- The password is stored in `~/.rabbit/.env` — protect this file (`chmod 600`)
 - IMAP uses SSL (port 993) and SMTP uses STARTTLS (port 587) by default — connections are encrypted
 
 ---

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import get_rabbit_home, reset_rabbit_home_override, set_rabbit_home_override
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
@@ -51,7 +51,7 @@ def _clean_state():
 def _orphan(home: Path) -> str:
     """Run a real owner process under ``home`` and return the id of the completion it left pending."""
     home.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": REPO}
+    env = {**os.environ, "RABBIT_HOME": str(home), "PYTHONPATH": REPO}
     out = subprocess.run([sys.executable, "-c", _OWNER], cwd=REPO, env=env, text=True,
                          capture_output=True, timeout=60, check=True)
     return out.stdout.strip().splitlines()[-1]
@@ -83,11 +83,11 @@ class _Home:
         self.home = home
 
     def __enter__(self):
-        self._token = set_hermes_home_override(str(self.home))
+        self._token = set_rabbit_home_override(str(self.home))
         return self
 
     def __exit__(self, *exc):
-        reset_hermes_home_override(self._token)
+        reset_rabbit_home_override(self._token)
 
 
 def _drain(q) -> list:
@@ -210,7 +210,7 @@ def test_gateway_watcher_sweeps_each_served_ledger_in_its_own_scope(tmp_path, mo
     monkeypatch.setattr(process_registry, "completion_queue", isolated)
     runner = object.__new__(GatewayRunner)
     runner._primary_profile_name = "default"
-    runner._served_profile_homes = {"default": get_hermes_home(), "b": home_b}
+    runner._served_profile_homes = {"default": get_rabbit_home(), "b": home_b}
     runner._sweep_orphaned_completion_ledgers()
     assert [e["delegation_id"] for e in _drain(isolated)] == [delegation_id]
 
@@ -225,7 +225,7 @@ def test_tui_notification_poller_sweeps_under_its_session_profile(tmp_path, monk
     seen = []
 
     def fake_sweep(target_queue):
-        seen.append((str(get_hermes_home()), target_queue))
+        seen.append((str(get_rabbit_home()), target_queue))
         stop.set()
         return 0
 
@@ -305,7 +305,7 @@ def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypa
 
 def test_throttle_runs_at_most_one_sweep_per_home_per_interval(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(ad, "sweep_orphaned_completions", lambda q, **kw: calls.append(str(get_hermes_home())) or 0)
+    monkeypatch.setattr(ad, "sweep_orphaned_completions", lambda q, **kw: calls.append(str(get_rabbit_home())) or 0)
     q = queue.Queue()
     with _Home(tmp_path / "a"):
         ad.maybe_sweep_orphaned_completions(q, now=100.0)

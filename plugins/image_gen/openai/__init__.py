@@ -51,7 +51,7 @@ def _named_endpoint(name: str) -> Tuple[str, str]:
     """``(base_url, api_key)`` of the user-declared custom endpoint *name* (``providers:`` /
     ``custom_providers:``), so image generation reuses a chat endpoint's URL and credential without
     duplicating the key into OpenAI variables (#83080). Unknown name → ``("", "")`` with a warning."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from rabbit_cli.runtime_provider import _get_named_custom_provider
 
     entry = _get_named_custom_provider(name)
     if not entry:
@@ -77,7 +77,7 @@ def _resolve_endpoint() -> Tuple[str, str]:
 
 
 def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
-    """``openai.OpenAI`` on Hermes' env-only-proxy httpx client, so a local/custom endpoint never
+    """``openai.OpenAI`` on Rabbit' env-only-proxy httpx client, so a local/custom endpoint never
     routes through a macOS system proxy whose ExceptionsList httpx cannot see (#64888). The project
     header is blanked: an ``OPENAI_PROJECT_ID`` set for chat makes ``/images/generations`` 403 on
     projects with a model allow-list, and the key already carries the project (#60748)."""
@@ -161,7 +161,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
         if not api_key:
             return error_factory("openai", aspect)(
                 "OPENAI_API_KEY not set (or the variable named by image_gen.openai.key_env is empty). "
-                "Run `hermes tools` → Image Generation → OpenAI to configure, or `hermes setup` "
+                "Run `rabbit tools` → Image Generation → OpenAI to configure, or `rabbit setup` "
                 "to add the key.",
                 "auth_required")
 
@@ -194,7 +194,7 @@ class OpenAIImageGenProvider(StaticImageGenProvider):
             logger.debug("OpenAI image %s failed", verb, exc_info=True)
             return fail(f"OpenAI image {'editing' if is_edit else 'generation'} failed: {exc}", "api_error")
 
-        # gpt-image bills per text/image token; the tier id is a Hermes label, the API model prices.
+        # gpt-image bills per text/image token; the tier id is a Rabbit label, the API model prices.
         # Recorded before extraction/save: the tokens are billed whether or not an image came back.
         record_token_usage(getattr(response, "usage", None), model=meta["api_model"], provider="openai")
         data = getattr(response, "data", None) or []

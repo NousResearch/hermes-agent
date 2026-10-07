@@ -6,7 +6,7 @@ author: JulienTant (fork of Hyaxia/blogwatcher)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [RSS, Blogs, Feed-Reader, Monitoring]
     homepage: https://github.com/JulienTant/blogwatcher-cli
 prerequisites:
@@ -17,9 +17,9 @@ prerequisites:
 
 Track blog and RSS/Atom feed updates with the `blogwatcher-cli` tool. Supports automatic feed discovery, HTML scraping fallback, OPML import, and read/unread article management.
 
-## Working with Hermes tools (read this first)
+## Working with Rabbit tools (read this first)
 
-`blogwatcher-cli` is the feed database; Hermes tools do the automation around it:
+`blogwatcher-cli` is the feed database; Rabbit tools do the automation around it:
 
 - **Recurring watch — use the cronjob tool's `monitor` field, not a bare schedule.** `monitor` runs a script each tick and only wakes the agent when output changes: set it to a script that runs `blogwatcher-cli scan >/dev/null 2>&1 && blogwatcher-cli articles` (deterministic output; new articles = changed output = agent wakes with the diff injected). Unchanged ticks cost zero LLM calls. Set `deliver` to route digests to a chat/channel; add `continuity: true` so consecutive digests can dedupe.
 - **Reading an article the user asks about**: `web_extract([url])` on the article URL from `blogwatcher-cli articles` — do not re-scrape by hand.

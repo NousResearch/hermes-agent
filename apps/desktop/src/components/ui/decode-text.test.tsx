@@ -25,21 +25,21 @@ afterEach(() => {
 })
 
 it('resolves once and stops ticking by default', () => {
-  const { container } = render(<DecodeText prefix={1} text="HERMES" />)
+  const { container } = render(<DecodeText prefix={1} text="RABBIT" />)
 
-  act(() => vi.advanceTimersByTime(settleTicks('HERMES') * TICK_MS))
-  expect(container.textContent).toBe('HERMES')
+  act(() => vi.advanceTimersByTime(settleTicks('RABBIT') * TICK_MS))
+  expect(container.textContent).toBe('RABBIT')
 
   // Fully resolved and held: the timer must be gone, not replaying.
   expect(vi.getTimerCount()).toBe(0)
   act(() => vi.advanceTimersByTime(TICK_MS * 40))
-  expect(container.textContent).toBe('HERMES')
+  expect(container.textContent).toBe('RABBIT')
 })
 
 it('keeps replaying only when the caller asks for loop', () => {
-  const { container } = render(<DecodeText loop prefix={1} text="HERMES" />)
+  const { container } = render(<DecodeText loop prefix={1} text="RABBIT" />)
 
-  act(() => vi.advanceTimersByTime(settleTicks('HERMES') * TICK_MS))
+  act(() => vi.advanceTimersByTime(settleTicks('RABBIT') * TICK_MS))
   expect(vi.getTimerCount()).toBe(1)
 
   // The replay scrambles the tail again at some point after the hold.

@@ -17,7 +17,7 @@ beforeAll(() => {
 
 const getGlobalModelOptions = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getGlobalModelOptions: (...args: unknown[]) => getGlobalModelOptions(...args),
   getLocalModelsJobs: vi.fn(async () => ({ jobs: [] })),
   getLocalModelsStatus: vi.fn().mockResolvedValue({ loading: {} }),

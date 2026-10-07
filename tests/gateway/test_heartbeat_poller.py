@@ -11,7 +11,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND, display_kind_for_event
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.heartbeat import HeartbeatManager
+from rabbit_cli.heartbeat import HeartbeatManager
 
 
 class _HeartbeatAdapter(BasePlatformAdapter):
@@ -32,7 +32,7 @@ class _HeartbeatAdapter(BasePlatformAdapter):
 
 @pytest.fixture
 def poller(monkeypatch):
-    from hermes_cli import goals, heartbeat
+    from rabbit_cli import goals, heartbeat
 
     goals._DB_CACHE.clear()
     goals._get_session_db()
@@ -121,8 +121,8 @@ async def test_unavailable_or_busy_session_leaves_persisted_tick_due(poller):
 
 @pytest.mark.asyncio
 async def test_emergency_stop_holds_due_tick_without_messaging_until_resume(poller, monkeypatch):
-    """`hermes pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
-    identical paused notices in 5h); the tick fires normally after `hermes resume`."""
+    """`rabbit pause` must not turn a due heartbeat into a chat message on every poll (prod: ~10k
+    identical paused notices in 5h); the tick fires normally after `rabbit resume`."""
     from agent import estop
 
     runner, adapter, watch, key, clock = poller

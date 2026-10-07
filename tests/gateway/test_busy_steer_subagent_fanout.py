@@ -32,7 +32,7 @@ def _event(text="focus on rows 10-20"):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("route", ["busy_steer_mode", "priority", "explicit_command"])
 async def test_busy_steer_fans_out_to_active_subagents(route, tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.run._rabbit_home", tmp_path)
     runner = GatewayRunner(config=GatewayConfig())
     child_a, child_b = _Agent(), _Agent()
     parent = _Agent(children=[child_a, child_b])

@@ -1,7 +1,7 @@
 """Regression test for #25676 — nested gateway.streaming config must be loaded."""
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 
@@ -10,7 +10,7 @@ def _load_with_yaml_dict(yaml_dict: dict, tmp_path):
     from gateway.config import load_gateway_config
 
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(yaml_dict), encoding="utf-8")
-    with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+    with patch("gateway.config.get_rabbit_home", return_value=tmp_path):
         return load_gateway_config()
 
 
@@ -98,7 +98,7 @@ class TestStreamingYamlBooleanQuirk:
         from gateway.config import load_gateway_config
 
         (tmp_path / "config.yaml").write_text("streaming:\n  mode: off\n", encoding="utf-8")
-        with patch("gateway.config.get_hermes_home", return_value=tmp_path):
+        with patch("gateway.config.get_rabbit_home", return_value=tmp_path):
             cfg = load_gateway_config()
         assert cfg.streaming.enabled is False
         assert cfg.streaming.transport == "off"

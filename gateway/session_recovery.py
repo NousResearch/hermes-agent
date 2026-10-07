@@ -46,7 +46,7 @@ class SessionRecoveryMixin:
         if source is not None and source.profile:
             return source.profile
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from rabbit_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return None
@@ -65,7 +65,7 @@ class SessionRecoveryMixin:
     @staticmethod
     def _active_profile_name() -> str:
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from rabbit_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
@@ -393,7 +393,7 @@ class SessionRecoveryMixin:
         ``suspended`` vs plain ``session_reset``), then INSERT the new row + routing
         peer. Both best-effort: failures are warned and self-healed by the next peer refresh."""
         if end_session_id:
-            from hermes_cli.observability.relay_shared_metrics import close_session_run
+            from rabbit_cli.observability.relay_shared_metrics import close_session_run
 
             close_session_run(end_session_id)
         if self._db_for_key(session_key) and end_session_id:

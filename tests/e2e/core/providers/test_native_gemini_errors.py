@@ -1,6 +1,6 @@
 """Gemini native wire conformance: documented errors, blocked candidates and a mid-stream drop.
 
-Each scenario is one real ``hermes chat -q`` turn against the fake Google endpoint
+Each scenario is one real ``rabbit chat -q`` turn against the fake Google endpoint
 (``tests/fakes/providers/gemini_native.py``); the scenarios are independent and run concurrently.
 
 * retryable (429 ``RESOURCE_EXHAUSTED`` with ``RetryInfo``, 503 ``UNAVAILABLE``): retried, then the
@@ -22,7 +22,7 @@ import pytest
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import (
-    HERMES_ENV,
+    RABBIT_ENV,
     Blocked,
     Drop,
     GeminiFake,
@@ -31,7 +31,7 @@ from tests.fakes.providers.gemini_native import (
     Reply,
     Responder,
     Text,
-    hermes_model,
+    rabbit_model,
 )
 
 KNOWN: dict[str, tuple[str, str]] = {
@@ -83,7 +83,7 @@ class Outcome:
 
 
 def _run(root: Path, name: str, case: Case) -> Outcome:
-    home = nh.make_home(root / name, hermes_model(), env_file=HERMES_ENV,
+    home = nh.make_home(root / name, rabbit_model(), env_file=RABBIT_ENV,
                         extra_config={"agent": {"api_max_retries": case.max_retries}})
     with GeminiFake(root / name / "fake", case.script, route=case.route) as fake:
         result = nh.run_chat(home, f"Say hello ({name}).", env=fake.child_env())

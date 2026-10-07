@@ -14,7 +14,7 @@ silently-ignored disable is a much better failure than a dead turn.
 Legacy manual-thinking Claude (<= 4.5) needs no disable at all: thinking is
 opt-in there via ``budget_tokens``, so sending nothing already means off.
 
-Sibling contract on the chat_completions wire: hermes-agent#90412.
+Sibling contract on the chat_completions wire: rabbit-agent#90412.
 """
 
 from __future__ import annotations

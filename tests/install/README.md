@@ -21,7 +21,7 @@ To declare a new method, edit the generator. To implement a method, flip the gat
 
 ## The isolation trick
 
-Source drivers redirect canonical Hermes Git URLs to a local bare clone at
+Source drivers redirect canonical Rabbit Git URLs to a local bare clone at
 `serve.git`, using a driver-owned `GIT_CONFIG_GLOBAL` rewrite. This controls
 the source install/update boundary, not all network access: tool/dependency
 downloads and published bootstrap artifacts can still use the network.
@@ -30,13 +30,13 @@ Packaged-update legs instead use verified signed downloads and a temporary feed.
 The driver parks the `main` branch of `serve.git` at the old release. The installer runs and lands on the old release. Then the driver moves `main` to HEAD. An update becomes available in the same way that it does for a real user.
 
 For script-install legs, the installer comes from the old Git ref. A
-script-reinstall update uses the target revision's script. A `hermes-update`
+script-reinstall update uses the target revision's script. A `rabbit-update`
 leg starts the old release's updater, and app-update legs start its app flow.
 These paths are intentionally different.
 
 ### The HEAD -> NEXT column
 
-Every combination also runs from HEAD itself. The driver installs HEAD, then mints NEXT: a synthetic child of HEAD that adds one marker file (`.hermes-e2e-next`). NEXT exists only in the object store, with no ref, and the bare clone carries it into `serve.git`. The driver then moves `main` to NEXT and applies the update method.
+Every combination also runs from HEAD itself. The driver installs HEAD, then mints NEXT: a synthetic child of HEAD that adds one marker file (`.rabbit-e2e-next`). NEXT exists only in the object store, with no ref, and the bare clone carries it into `serve.git`. The driver then moves `main` to NEXT and applies the update method.
 
 This column tests two things that no tag leg tests:
 
@@ -50,14 +50,14 @@ On Windows, the HEAD leg also takes every `git.exe` directory off PATH and insta
 Each leg with the script drivers has these phases:
 
 1. Stage: make the bare clone, park `main` at the old release.
-2. Install: run the old release's own installer script. Make sure that the checkout is at the old commit and that `hermes --version` works.
+2. Install: run the old release's own installer script. Make sure that the checkout is at the old commit and that `rabbit --version` works.
 3. Update: move `main` to HEAD. Apply one update method. An app update must produce a new successful receipt or handoff result; a changed checkout alone is not completion.
-4. Verify the installed command and products before running `hermes --version`. Select the command under the installation's `.hermes/bin`; use the old venv only for a source tree without PM. Check PM currency and compiler receipts where supported. Preserve the no-desktop scenario for a plain install. Do not rebuild, remove dependencies, or force-stop an updater during verification. Historical installs without these receipts get artifact-presence checks, not a freshness claim.
+4. Verify the installed command and products before running `rabbit --version`. Select the command under the installation's `.rabbit/bin`; use the old venv only for a source tree without PM. Check PM currency and compiler receipts where supported. Preserve the no-desktop scenario for a plain install. Do not rebuild, remove dependencies, or force-stop an updater during verification. Historical installs without these receipts get artifact-presence checks, not a freshness claim.
 
 The cheap fixture checks are `tests/scripts/test_source_driver.py` and `tests-js/source-update-observer.test.mjs`. They do not run installers or prove native GUI relaunch. The native packaged-update drivers own automatic-relaunch acceptance. A later driver-owned launch checks chat only after the original update/relaunch assertions pass; it cannot repair a failed handoff. The observer does not change source files, products, dependency selections, or facts.
 
 The Windows `desktop-installer@latest` install downloads the published
-`Hermes-Setup.exe` and drives its GUI with AutoHotkey. The selected update
+`Rabbit-Setup.exe` and drives its GUI with AutoHotkey. The selected update
 method is a separate axis. App-update methods click the running app's Update
 control; script and CLI methods use their corresponding entry points.
 
@@ -140,14 +140,14 @@ A leg can install a release from months back. The driver must not assume that th
   acceptance](BUNDLED_UPDATES.md) for the manifest and proof contracts.
 - `installer-script`: the platform's one-liner (`curl | bash` on linux and macos, `irm | iex` on windows).
 - `installer-script+desktop`: the same one-liner with its desktop stage opted in (`--include-desktop` / `-IncludeDesktop`). The stage builds the desktop app during the install. On windows it also registers Start Menu and Desktop shortcuts. On linux and macos it builds the app inside the checkout and registers no OS entry point.
-- `desktop-installer@latest`: the published GUI installer (`Hermes-Setup.exe` on windows, `Hermes-Setup.dmg` on macos), driven through the real user flow.
+- `desktop-installer@latest`: the published GUI installer (`Rabbit-Setup.exe` on windows, `Rabbit-Setup.dmg` on macos), driven through the real user flow.
 
 ## The two app-update variants
 
 The desktop app has two launch paths, so the matrix has two app-update methods. Both click "Update now" in the running app. They differ in how the app starts:
 
 - `open-app-update`: the app starts from the installed app entry point. On Windows, both the desktop installer and `installer-script+desktop` create shortcuts, so both support this route. On Linux and macOS, the script's opt-in desktop stage builds inside the checkout without registering an OS entry point. The macOS route therefore requires a desktop-installer install; Linux has no open-app-update leg.
-- `hermes-desktop-app-update`: the app starts with the `hermes desktop` command. Every install method provides this command, on each OS that ships the desktop app. On linux this is the only app surface: no desktop installer and no packaged desktop artifact exist for linux. The driver captures the product's own launch call (argv, cwd, environment) with `e2e-assets/launch-capture/sitecustomize.py` and re-executes it under Playwright, which owns the app and clicks the update flow. Pre-PM console scripts load the capture hook via `PYTHONPATH`; PM launchers use `-I`, so `launch-capture/pm-launch.py` obtains the installed launcher's own isolated runtime command and loads the driver hook before its bootstrap.
+- `rabbit-desktop-app-update`: the app starts with the `rabbit desktop` command. Every install method provides this command, on each OS that ships the desktop app. On linux this is the only app surface: no desktop installer and no packaged desktop artifact exist for linux. The driver captures the product's own launch call (argv, cwd, environment) with `e2e-assets/launch-capture/sitecustomize.py` and re-executes it under Playwright, which owns the app and clicks the update flow. Pre-PM console scripts load the capture hook via `PYTHONPATH`; PM launchers use `-I`, so `launch-capture/pm-launch.py` obtains the installed launcher's own isolated runtime command and loads the driver hook before its bootstrap.
 
 ## Skips
 
@@ -162,7 +162,7 @@ The result chart on the run summary shows each leg as passed, failed, or skipped
 
 The full matrix does not run on pull requests. One leg installs real toolchains and takes more than 10 minutes. The triggers are:
 
-- A pull request that touches the install/update surface (the `paths:` list in `install-e2e.yml`). It runs only the `pr` route: `installer-script -> hermes-update` on Linux (newest release -> PR, and PR -> NEXT), Windows (PR -> NEXT) and macOS (newest release -> PR). The four legs run in parallel, so the wall clock is about one leg.
+- A pull request that touches the install/update surface (the `paths:` list in `install-e2e.yml`). It runs only the `pr` route: `installer-script -> rabbit-update` on Linux (newest release -> PR, and PR -> NEXT), Windows (PR -> NEXT) and macOS (newest release -> PR). The four legs run in parallel, so the wall clock is about one leg.
 - A schedule, every 12 hours. This finds upstream drift. When a scheduled run goes red, `install-e2e-red.yml` opens one issue labelled `install-e2e-red`, rewrites its body in place on every later red run, and closes it on the first green one.
 - A matching release tag push.
 - A reusable workflow call from the stable release gate.
@@ -187,7 +187,7 @@ Per-leg timeouts and GitHub's matrix limits remain workflow constraints, not
 proof that every declared combination ran. Native package acceptance is separate
 from the deferred desktop Playwright application suite.
 
-Running the drivers locally: don't, except in a disposable VM. The windows driver kills every process named Hermes during teardown and the macos driver operates on `/Applications/Hermes.app`; on a machine with a real Hermes install they will interfere with it.
+Running the drivers locally: don't, except in a disposable VM. The windows driver kills every process named Rabbit during teardown and the macos driver operates on `/Applications/Rabbit.app`; on a machine with a real Rabbit install they will interfere with it.
 
 ## Plugin upgrade preservation
 
@@ -225,8 +225,8 @@ contract and not exercised.
 ## Manual update rehearsals
 
 There is no `manual/` directory in this repo. The rehearsal scripts — `pre`
-(back up the whole `HERMES_HOME`, the desktop app's Electron userData, the
-`hermes` shims on PATH and the global git config, then point the install's
+(back up the whole `RABBIT_HOME`, the desktop app's Electron userData, the
+`rabbit` shims on PATH and the global git config, then point the install's
 update source at a custom repo + ref) and `post` (undo all of it and report how
 exact the restore was) — are a hand-off kit for someone with a *real* install,
 kept outside this checkout on purpose: they are not part of the repo and not
@@ -253,8 +253,8 @@ re-syncs it), but it may not delete or modify the user's own durable state —
   purpose: the state it defends must be produced by the product through the
   ordinary user path, never hand-written by the harness.
 - `e2e-assets/user-state-actions.sh` produces that state with real commands —
-  `hermes chat -q` (a real turn → `sessions/` + `state.db` rows),
-  `hermes auth add` (→ `auth.json`), `hermes profile create`
+  `rabbit chat -q` (a real turn → `sessions/` + `state.db` rows),
+  `rabbit auth add` (→ `auth.json`), `rabbit profile create`
   (→ `profiles/<name>/`) — after probing `--help` for each flag, per the
   harness's "probe, do not assume" rule. Each action asserts it actually landed,
   so a leg can never "pass" while testing nothing.

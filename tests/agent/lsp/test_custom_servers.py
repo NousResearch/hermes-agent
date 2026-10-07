@@ -46,7 +46,7 @@ def test_service_gets_diagnostics_from_config_declared_server(tmp_path, monkeypa
         "servers": {"panache": {"command": [sys.executable, _MOCK], "extensions": [".pnch"],
                                 "env": {"MOCK_LSP_SCRIPT": "errors"}}},
     }}), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     ws = tmp_path / "ws"
     ws.mkdir()
     subprocess.run(["git", "init", "-q", str(ws)], check=True)

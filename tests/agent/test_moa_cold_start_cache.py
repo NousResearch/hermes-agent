@@ -14,7 +14,7 @@ import types  # noqa: F401  (used by _fake_response)
 
 import pytest
 
-from hermes_constants import hermes_home_key
+from rabbit_constants import rabbit_home_key
 
 
 def _make_preset_config() -> dict:
@@ -43,7 +43,7 @@ def test_preset_resolution_is_cached_across_create_calls(monkeypatch, tmp_path):
     moa._preset_cache.clear()
 
     calls = {"n": 0}
-    import hermes_cli.moa_config as moa_cfg_mod
+    import rabbit_cli.moa_config as moa_cfg_mod
     real_resolve = moa_cfg_mod.resolve_moa_preset
 
     def counting_resolve(config, name=None):
@@ -51,7 +51,7 @@ def test_preset_resolution_is_cached_across_create_calls(monkeypatch, tmp_path):
         return real_resolve(config, name)
 
     monkeypatch.setattr(moa_cfg_mod, "resolve_moa_preset", counting_resolve)
-    import hermes_cli.config as cfg_mod
+    import rabbit_cli.config as cfg_mod
     # The cache keys on the config FILE's st_mtime_ns — give the test a real
     # stat-able file (no config file -> stamp=None -> caching fails open).
     cfg_file = tmp_path / "config.yaml"
@@ -79,7 +79,7 @@ def test_preset_cache_invalidates_on_config_edit(monkeypatch, tmp_path):
     moa._preset_cache.clear()
 
     calls = {"n": 0}
-    import hermes_cli.moa_config as moa_cfg_mod
+    import rabbit_cli.moa_config as moa_cfg_mod
     real_resolve = moa_cfg_mod.resolve_moa_preset
 
     def counting_resolve(config, name=None):
@@ -87,7 +87,7 @@ def test_preset_cache_invalidates_on_config_edit(monkeypatch, tmp_path):
         return real_resolve(config, name)
 
     monkeypatch.setattr(moa_cfg_mod, "resolve_moa_preset", counting_resolve)
-    import hermes_cli.config as cfg_mod
+    import rabbit_cli.config as cfg_mod
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text("moa: {}\n")
     monkeypatch.setattr(cfg_mod, "get_config_path", lambda: cfg_file)
@@ -112,7 +112,7 @@ def test_no_config_file_fails_open(monkeypatch, tmp_path):
 
     moa._preset_cache.clear()
 
-    import hermes_cli.config as cfg_mod
+    import rabbit_cli.config as cfg_mod
     monkeypatch.setattr(
         cfg_mod, "get_config_path", lambda: tmp_path / "missing.yaml"
     )
@@ -138,9 +138,9 @@ def test_slot_runtime_is_cached_across_create_calls(monkeypatch, tmp_path):
         calls["n"] += 1
         return {"base_url": None, "api_key": None, "api_mode": None}
 
-    import hermes_cli.runtime_provider as rt_mod
+    import rabbit_cli.runtime_provider as rt_mod
     monkeypatch.setattr(rt_mod, "resolve_runtime_provider", counting_resolve)
-    import hermes_cli.config as cfg_mod
+    import rabbit_cli.config as cfg_mod
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text("moa: {}\n")
     monkeypatch.setattr(cfg_mod, "get_config_path", lambda: cfg_file)
@@ -171,7 +171,7 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
         return {"base_url": "http://x", "api_key": f"key-{calls['n']}",
                 "api_mode": None}
 
-    import hermes_cli.runtime_provider as rt_mod
+    import rabbit_cli.runtime_provider as rt_mod
     monkeypatch.setattr(rt_mod, "resolve_runtime_provider", counting_resolve)
 
     slot = {"provider": "openai", "model": "gpt-5"}
@@ -183,7 +183,7 @@ def test_slot_runtime_cache_expires_after_ttl(monkeypatch):
     assert calls["n"] == 1
 
     # Age the entry past the TTL and confirm re-resolution.
-    key = (hermes_home_key(), "openai", "gpt-5")
+    key = (rabbit_home_key(), "openai", "gpt-5")
     stamped_at, cached = moa._runtime_cache[key]
     moa._runtime_cache[key] = (
         stamped_at - moa._RUNTIME_CACHE_TTL_SECONDS - 1, cached
@@ -207,7 +207,7 @@ def test_slot_runtime_resolution_error_is_not_cached(monkeypatch):
             raise RuntimeError("catalog hiccup")
         return {"base_url": "http://ok", "api_key": None, "api_mode": None}
 
-    import hermes_cli.runtime_provider as rt_mod
+    import rabbit_cli.runtime_provider as rt_mod
     monkeypatch.setattr(rt_mod, "resolve_runtime_provider", flaky_resolve)
 
     slot = {"provider": "openai", "model": "gpt-5"}
@@ -230,29 +230,29 @@ def _fake_response():
 
 def test_slot_runtime_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """Under a multiplex gateway two profiles can share (provider, model) with different
-    accounts; a cached api_key/base_url must never cross the per-turn HERMES_HOME override."""
+    accounts; a cached api_key/base_url must never cross the per-turn RABBIT_HOME override."""
     import agent.moa_loop as moa
-    import hermes_constants
+    import rabbit_constants
 
     moa._runtime_cache.clear()
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(); b.mkdir()
 
-    import hermes_cli.runtime_provider as rt_mod
+    import rabbit_cli.runtime_provider as rt_mod
     monkeypatch.setattr(
         rt_mod, "resolve_runtime_provider",
         lambda **kw: {"provider": "openai", "model": "gpt-5",
-                      "api_key": f"key-{hermes_constants.get_hermes_home().name}",
+                      "api_key": f"key-{rabbit_constants.get_rabbit_home().name}",
                       "base_url": "https://x", "api_mode": None})
 
     slot = {"provider": "openai", "model": "gpt-5"}
-    tok = hermes_constants.set_hermes_home_override(str(a))
+    tok = rabbit_constants.set_rabbit_home_override(str(a))
     try:
         assert moa._slot_runtime(slot)["api_key"] == "key-a"
     finally:
-        hermes_constants.reset_hermes_home_override(tok)
-    tok = hermes_constants.set_hermes_home_override(str(b))
+        rabbit_constants.reset_rabbit_home_override(tok)
+    tok = rabbit_constants.set_rabbit_home_override(str(b))
     try:
         assert moa._slot_runtime(slot)["api_key"] == "key-b"
     finally:
-        hermes_constants.reset_hermes_home_override(tok)
+        rabbit_constants.reset_rabbit_home_override(tok)

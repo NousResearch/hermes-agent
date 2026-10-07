@@ -1,6 +1,6 @@
 """Plugin survival + upgrade contracts (mnemosyne-oss/mnemosyne#859).
 
-Hermes-side contracts an external memory-provider wrapper can hold us to,
+Rabbit-side contracts an external memory-provider wrapper can hold us to,
 exercised through PUBLIC paths (no source inspection, no network — uv
 resolves offline local path-source fixtures):
 
@@ -9,8 +9,8 @@ resolves offline local path-source fixtures):
    pyproject belonging to a nested or external sidecar dir must NOT
    join the pm workspace union, because pm scans only plugin roots.
 2. Conflict admission. Through the PUBLIC admission authority
-   (hermes_cli.plugins_admission.admit_plugin_set_change — the one path
-   `hermes plugins enable/install` use), a candidate union with no
+   (rabbit_cli.plugins_admission.admit_plugin_set_change — the one path
+   `rabbit plugins enable/install` use), a candidate union with no
    valid solution is REFUSED before anything is published: the
    candidate stays unenabled (so the loader never imports it), the
    plugin trees and every home's config.yaml survive untouched, the
@@ -19,7 +19,7 @@ resolves offline local path-source fixtures):
    The retry path — re-admitting only the resolvable candidate —
    commits through the same public function.
 3. Active-home propagation. The active CONTEXT home
-   (hermes_constants.set_hermes_home_override) is what wrapper/sidecar
+   (rabbit_constants.set_rabbit_home_override) is what wrapper/sidecar
    subprocess launches must inherit through build_subprocess_env.
 """
 
@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import pm.workspace as ws
 from pm.plugin_inputs import Members
@@ -81,7 +81,7 @@ def test_sidecar_no_root_pyproject_excludes_nested_and_external(tmp_path, monkey
     )
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     assert ws._is_member_candidate(wrapper) is False, (
         "a wrapper root without pyproject/dep keys must never be a member candidate"
@@ -133,7 +133,7 @@ def _local_conflict_members(home: Path) -> tuple[Path, Path, Path, Path]:
 
 @pytest.fixture
 def admission_env(tmp_path, monkeypatch):
-    """Fake core repo + temp HERMES_HOME so the REAL pm.install.sync_venv
+    """Fake core repo + temp RABBIT_HOME so the REAL pm.install.sync_venv
     transaction (lock, receipts, config publication) runs entirely under
     tmp — the production path, temp homes."""
     core = tmp_path / "core"
@@ -159,11 +159,11 @@ def admission_env(tmp_path, monkeypatch):
     import pm.paths
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(pm.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ws.paths, "repo_root", lambda: core)
     monkeypatch.setattr(ensure, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     # Exercise the real dependency transaction in-process so the local uv
     # fixture owns provisioning; worker transport is covered separately. The
     # facade's project_root selects a foreign checkout for the worker; this
@@ -190,7 +190,7 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     plugin identity + resolver reason; the candidate is NOT published to
     config (so the plugin loader never imports it); plugin trees and
     configs survive; the receipt records the failure."""
-    from hermes_cli import plugins_admission as admission
+    from rabbit_cli import plugins_admission as admission
 
     tmp_path, home = admission_env
     plug_a, plug_b, *_ = _local_conflict_members(home)
@@ -315,12 +315,12 @@ def test_malformed_secondary_cannot_evict_recorded_member(admission_env, monkeyp
 
     home_b = tmp_path / "home-b"
     _write_enabled(home_b, [])
-    monkeypatch.setenv("HERMES_HOME", str(home_b))
+    monkeypatch.setenv("RABBIT_HOME", str(home_b))
     sync_venv(explicit=True)
     assert selected_venv(core).is_dir()
     assert Facts(runtime_facts_path(core), strict=True).get("venv")["stamp"] != recorded["stamp"]
 
-    monkeypatch.setenv("HERMES_HOME", str(home_a))
+    monkeypatch.setenv("RABBIT_HOME", str(home_a))
     with pytest.raises(ValueError, match="config.yaml"):
         sync_venv(explicit=True)
     assert selected_venv(core) == selected
@@ -427,19 +427,19 @@ def test_update_sync_survives_unreadable_secondary_profile(admission_env):
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_env, monkeypatch):
-    """requires_hermes is judged against our version identity, which can lag (an untagged
+    """requires_rabbit is judged against our version identity, which can lag (an untagged
     source checkout reads as an older release). Such a plugin sits out: config untouched,
     boot's currency check neither raises nor loops, and it rejoins once the verdict flips."""
     from pm.environments import runtime_facts_path
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
 
-    import hermes_cli.plugins_manifest as plugins_manifest
+    import rabbit_cli.plugins_manifest as plugins_manifest
 
     tmp_path, home = admission_env
     core = tmp_path / "core"
-    # A tagless checkout (CI's) has no parseable version, which makes requires_hermes permissive.
-    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
+    # A tagless checkout (CI's) has no parseable version, which makes requires_rabbit permissive.
+    monkeypatch.setattr(plugins_manifest, "running_rabbit_version", lambda: "1.0.0")
     for name in ("fits", "needs-newer"):
         plugin = home / "plugins" / name
         plugin.mkdir(parents=True)
@@ -448,7 +448,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
             'dependencies=[]\n[tool.uv]\npackage=false\n', encoding="utf-8",
         )
     manifest = home / "plugins" / "needs-newer" / "plugin.yaml"
-    manifest.write_text("name: needs-newer\nrequires_hermes: '>=999'\n", encoding="utf-8")
+    manifest.write_text("name: needs-newer\nrequires_rabbit: '>=999'\n", encoding="utf-8")
     _write_enabled(home, ["fits", "needs-newer"])
     before = (home / "config.yaml").read_bytes()
 
@@ -461,7 +461,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
     assert "needs-newer" not in (workspace / "pyproject.toml").read_text()
     assert venv_is_current(project_root=core) is True
 
-    manifest.write_text("name: needs-newer\nrequires_hermes: '>=0'\n", encoding="utf-8")
+    manifest.write_text("name: needs-newer\nrequires_rabbit: '>=0'\n", encoding="utf-8")
     assert venv_is_current(project_root=core) is False
     sync_venv(explicit=True, evict_incompatible_plugins=True)
     workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
@@ -519,19 +519,19 @@ def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env
 
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
     from tools.environments.local import build_subprocess_env
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ambient"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "ambient"))
     active = tmp_path / "custom-root/profiles/worker"
     active.mkdir(parents=True)
-    token = set_hermes_home_override(active)
+    token = set_rabbit_home_override(active)
     try:
         child_env = build_subprocess_env()
         child = subprocess.run(
-            [sys.executable, "-c", "import os; print(os.environ['HERMES_HOME'], end='')"],
+            [sys.executable, "-c", "import os; print(os.environ['RABBIT_HOME'], end='')"],
             env=child_env, capture_output=True, text=True, check=True, timeout=60,
         )
         assert child.stdout == str(active)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)

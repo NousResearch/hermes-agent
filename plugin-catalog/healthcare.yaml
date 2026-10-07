@@ -1,5 +1,5 @@
 name: healthcare
-repo: https://github.com/harrylabsj/hermes-plugin-healthcare
+repo: https://github.com/harrylabsj/rabbit-plugin-healthcare
 sha: 09f3af2b2b862efececbcfa784c4442fcc2978df
 description: 'Local-first personal health records: encrypted on-device Vault (AES-GCM) for
   vitals, medications, activities, emotions, sleep, encounters, diagnosis mentions,

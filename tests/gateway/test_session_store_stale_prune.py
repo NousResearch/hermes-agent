@@ -176,7 +176,7 @@ class TestPruneStaleSessionsLocked:
         context that the user reset. Exercise the real SessionDB query here
         rather than mocking its result.
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         key = "agent:main:telegram:dm:5140768830"
         db = SessionDB(tmp_path / "state.db")

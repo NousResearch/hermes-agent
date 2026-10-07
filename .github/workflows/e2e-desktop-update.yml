@@ -1,7 +1,7 @@
 name: E2E Desktop update
 
 # The Desktop install/update suite (apps/desktop/e2e/update): the packaged app
-# a REAL local install built (scripts/install.sh + `hermes desktop
+# a REAL local install built (scripts/install.sh + `rabbit desktop
 # --build-only`, inside the upgrade suite's sandbox machinery), driven through
 # the flows Desktop users hit and the CLI suites cannot see:
 #   - first run on a healthy install (no setup chooser, no bootstrap installer);
@@ -96,9 +96,9 @@ jobs:
             npx playwright test -c e2e/update/playwright.config.ts ${{ matrix.specs }}
         env:
           CI: 'true'
-          HERMES_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
+          RABBIT_E2E_PYTHON: ${{ steps.pm.outputs.python-path }}
           # Short on purpose: the install bakes this path into AF_UNIX socket paths.
-          HERMES_E2E_UPDATE_ROOT: ${{ runner.temp }}/hdu
+          RABBIT_E2E_UPDATE_ROOT: ${{ runner.temp }}/hdu
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
@@ -108,7 +108,7 @@ jobs:
         if: failure() || cancelled()
         run: |
           mkdir -p apps/desktop/test-results/update/install-logs
-          cp -r "${{ runner.temp }}/hdu/sb/home/.hermes/logs" apps/desktop/test-results/update/install-logs/ 2>/dev/null || true
+          cp -r "${{ runner.temp }}/hdu/sb/home/.rabbit/logs" apps/desktop/test-results/update/install-logs/ 2>/dev/null || true
           cp "${{ runner.temp }}/hdu/sb/terminal-update.log" apps/desktop/test-results/update/install-logs/ 2>/dev/null || true
 
       - name: Upload failure artifacts

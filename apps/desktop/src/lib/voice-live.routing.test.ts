@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { setApiRequestConnection, setApiRequestProfile } from '@/rabbit'
 
 import { type VoiceLiveHandlers, VoiceLiveSession } from './voice-live'
 
@@ -23,7 +23,7 @@ function installApi() {
     transport: { sdp: 'answer', type: 'answer' }
   }))
 
-  Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
+  Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: { api } })
 
   return api
 }
@@ -53,7 +53,7 @@ function installWebRTC() {
 afterEach(() => {
   setApiRequestConnection(null)
   setApiRequestProfile(null)
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  Reflect.deleteProperty(window, 'rabbitDesktop')
   Reflect.deleteProperty(globalThis, 'RTCPeerConnection')
   Reflect.deleteProperty(window.navigator, 'mediaDevices')
 })

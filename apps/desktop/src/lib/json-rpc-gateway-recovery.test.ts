@@ -1,4 +1,4 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { JsonRpcGatewayClient } from '@rabbit/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 interface ListenerEntry {
@@ -126,7 +126,7 @@ class RecoveryBackend {
   }
 }
 
-describe('hermes-ws-recovery-v1 silent blackhole', () => {
+describe('rabbit-ws-recovery-v1 silent blackhole', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()

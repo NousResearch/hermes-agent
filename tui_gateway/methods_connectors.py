@@ -1,4 +1,3 @@
-import contextlib
 import contextvars
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -29,7 +28,7 @@ def _connector_auth_error(rid, exc):
             "This account cannot manage connectors for this organization.",
         )
     if exc.status == 401 or exc.code in {"invalid_token", "INVALID_TOKEN", "NO_TOKEN"}:
-        return _connector_rpc_error(rid, 4032, ConnectorErrorReason.needs_nous_auth, "Sign in to use connectors.")
+        return _connector_rpc_error(rid, 4032, ConnectorErrorReason.needs_sign_in, "Sign in to use connectors.")
     return _connector_rpc_error(
         rid, 4030, ConnectorErrorReason.forbidden_scope, "Connector access is not permitted for this account."
     )
@@ -37,15 +36,12 @@ def _connector_auth_error(rid, exc):
 
 def _connector_guard(fn):
     def handler(rid, params):
-        from tools.connectors.gateway.errors import GatewayAuthError
         from tui_gateway.contracts.connectors import ConnectorErrorReason
 
         try:
             return fn(rid, params)
         except ProfileUnavailableError:
             raise
-        except GatewayAuthError as exc:
-            return _connector_auth_error(rid, exc)
         except Exception:
             return _connector_rpc_error(
                 rid, 5034, ConnectorErrorReason.connector_request_failed, "Connector request failed. Try again explicitly."
@@ -172,43 +168,9 @@ def _session_connector_rpc(rid, request, session, action):
 
 
 def _connector_rows(rows):
-    from tools.connectors.gateway.wire import ConnectorListItem
     from tui_gateway.connector_payload import connector_ui_payload
 
-    return connector_ui_payload([
-        ConnectorListItem.model_validate(row).model_dump(mode="json", by_alias=False)
-        for row in rows
-    ])
-
-
-def _account_connector_list(rid):
-    from tools.connectors.managed import managed_client
-
-    return _ok(rid, {"available": True, "connectors": _connector_rows(managed_client().list_connectors())})
-
-
-def _account_connector_connect(rid, request):
-    from tools.connectors import account
-    from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
-
-    action = "reconnect" if request.reconnect else "connect"
-    try:
-        start = account.find_or_start_operation(request.connectors, action=action, profile_home=_account_home(request))
-        if not start.started:
-            from tools.connectors.contract import TargetState
-
-            targets = [start.operation.target(name) for name in request.connectors]
-            if any(target.state in (TargetState.failed, TargetState.expired) for target in targets):
-                return _reissue(rid, start.operation, {"connectors": request.connectors})
-            return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
-        if not account.wait_for_prepare(start):
-            return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
-        if start.failed:
-            return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, "Connector request failed. Try again explicitly.")
-        return _ok(rid, connector_ui_payload(_operation_view(start.operation)))
-    except ValueError:
-        return _connector_rpc_error(rid, 4000, ConnectorErrorReason.invalid_params, "Connector parameters are invalid.")
+    return connector_ui_payload(rows)
 
 
 def _connector_rpc(rid, params, action):
@@ -219,15 +181,18 @@ def _connector_rpc(rid, params, action):
     if error:
         return error
     if request.owner.type == "account":
-        with _account_scope(request):
-            if closed := _account_gate_closed(rid):
-                return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
-            return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
+        # Account-scoped connector management ran against the hosted tool gateway,
+        # which is not part of this build.
+        from tui_gateway.contracts.connectors import ConnectorErrorReason
+
+        if action == "status":
+            return _ok(rid, {"available": False, "connectors": []})
+        return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
 
     runtime_token = _current_runtime_session_record.set(session)
     try:
         profile_home = session.get("profile_home")
-        with _session_profile_runtime_scope({"profile_home": profile_home or str(_hermes_home)}):
+        with _session_profile_runtime_scope({"profile_home": profile_home or str(_rabbit_home)}):
             tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session), ui_session_id=request.owner.session_id)
             try:
                 result = _session_connector_rpc(rid, request, session, action)
@@ -287,21 +252,6 @@ def _(rid, params):
     return _connector_rpc(rid, params, "connect")
 
 
-def _account_home(request):
-    home = _profile_home(request.profile)
-    return str(home) if home else None
-
-
-@contextlib.contextmanager
-def _account_scope(request):
-    with _session_profile_runtime_scope({"profile_home": _account_home(request)}):
-        tokens = _set_session_context("")
-        try:
-            yield
-        finally:
-            _clear_session_context(tokens)
-
-
 def _operation_for_request(rid, request, session):
     from tools.connectors import live
     from tui_gateway.contracts.connectors import ConnectorErrorReason
@@ -309,10 +259,8 @@ def _operation_for_request(rid, request, session):
     if request.owner.type == "session":
         operation = live.get(session["session_key"], request.op_id, profile_home=session.get("profile_home"))
     else:
-        with _account_scope(request):
-            if closed := _account_gate_closed(rid):
-                return None, closed
-            operation = live.get_by_op_id(request.op_id, profile_home=_account_home(request))
+        # Account-scoped operations ran against the hosted tool gateway, removed in this build.
+        return None, _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "Connectors are not available.")
     if operation is None:
         return None, _connector_rpc_error(rid, 4004, ConnectorErrorReason.unknown_operation, "No open operation with that op_id.")
     return operation, None
@@ -362,10 +310,7 @@ def _(rid, params):
     operation, error = _operation_for_request(rid, request, session)
     if error:
         return error
-    if request.owner.type == "account":
-        with _account_scope(request):
-            return _apply_connection_answer(rid, answer, operation)
-    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or str(_hermes_home)}):
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or str(_rabbit_home)}):
         return _apply_connection_answer(rid, answer, operation)
 
 
@@ -396,7 +341,7 @@ def _operation_view(operation):
 
 
 def _connection_update(operation, change, snapshot):
-    from hermes_constants import get_process_hermes_home, hermes_home_key
+    from rabbit_constants import get_process_rabbit_home, rabbit_home_key
     from tui_gateway import server
     from tui_gateway.connector_payload import connector_ui_payload
 
@@ -417,7 +362,7 @@ def _connection_update(operation, change, snapshot):
                 sid
                 for sid, session in server._sessions.items()
                 if session.get("session_key") == operation.session_key
-                and hermes_home_key(session.get("profile_home") or get_process_hermes_home()) == operation.profile_key
+                and rabbit_home_key(session.get("profile_home") or get_process_rabbit_home()) == operation.profile_key
             ),
             None,
         )

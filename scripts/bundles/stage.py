@@ -34,15 +34,15 @@ def main(argv=None) -> int:
     node = shutil.which("node")
     if node is None:
         raise FileNotFoundError("Node is required to build frontend products")
-    with tempfile.TemporaryDirectory(prefix="hermes-products-") as temp:
+    with tempfile.TemporaryDirectory(prefix="rabbit-products-") as temp:
         products = Path(temp)
         source = products / "source"
         from scripts.bundles.payload import snapshot
         from scripts.build.icon_environment import prepare_icon_environment
         snapshot(ROOT, args.ref, source)
-        # The staging interpreter need not be a Hermes runtime; render icons on one.
+        # The staging interpreter need not be a Rabbit runtime; render icons on one.
         icon_python = prepare_icon_environment(source, products / "icon-environment", args.cache)
-        env = {**os.environ, "HERMES_PYTHON": str(icon_python)}
+        env = {**os.environ, "RABBIT_PYTHON": str(icon_python)}
         commands = [
             ["scripts/build/node-deps.mjs", "--source", str(source), "--workspace", "ui-tui", "--workspace", "web"],
             ["scripts/generate-icons.mjs", "--source", str(source), "--out", str(products / "icons")],

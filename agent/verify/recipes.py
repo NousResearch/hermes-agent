@@ -5,8 +5,8 @@ detection order and command choices). Layer ownership: ``detect_project_facts``
 in :mod:`agent.coding_context` owns the cheap, byte-stable prompt-time facts —
 never push runtime detection into it. This module owns the deep runtime recipe
 (framework, bootstrap/build/test, start command, port, readiness path) that lets
-``hermes verify`` boot the app; the CLI merges project-facts verify commands the
-recipe missed (``hermes_cli.verify_cmd._merge_project_facts_commands``).
+``rabbit verify`` boot the app; the CLI merges project-facts verify commands the
+recipe missed (``rabbit_cli.verify_cmd._merge_project_facts_commands``).
 """
 
 from __future__ import annotations

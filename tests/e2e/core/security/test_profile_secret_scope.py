@@ -1,4 +1,4 @@
-"""Per-profile secret scope on ONE multi-profile ``hermes serve`` host.
+"""Per-profile secret scope on ONE multi-profile ``rabbit serve`` host.
 
 Class: multiplex secret isolation. Users hit it as "my dashboard plugin says 'Balance unavailable'
 only when I have more than one profile" (#120310) or, worse, "profile B's MCP server received
@@ -11,7 +11,7 @@ each ``.env`` carries a distinct random canary under the same variable NAME plus
 harness canaries (provider key, API-server key, marker). A user dashboard plugin whose API route
 reads that variable through ``agent.secret_scope.get_secret`` is enabled via ``plugins.enabled``,
 and each profile configures a stdio MCP server that dumps the environment it was spawned with and
-is handed exactly one secret (``env: {X: ${SECRET}}``). One real ``hermes serve`` hosts both;
+is handed exactly one secret (``env: {X: ${SECRET}}``). One real ``rabbit serve`` hosts both;
 the Desktop's per-request profile selector is ``?profile=<name>`` (HTTP) / ``session.create
 {profile}`` (``/api/ws``).
 

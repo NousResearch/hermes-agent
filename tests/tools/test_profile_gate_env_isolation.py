@@ -4,7 +4,7 @@
 decide WHO may talk to the agent. They are not credentials (no secret scrub sees them), a unit-file
 ``Environment=`` or operator export never appears in the launch ``.env`` (no name list sees them), and
 the target profile's own ``.env`` rarely defines them (its dotenv load never overwrites them) — so a
-``hermes -p B`` child built from profile A's process enforced A's channel list as its own.
+``rabbit -p B`` child built from profile A's process enforced A's channel list as its own.
 """
 
 import json
@@ -34,13 +34,13 @@ def _seen_by_child(env: dict) -> set[str]:
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    """Launch home A (the process's HERMES_HOME) and routed home B; gates in the process env only."""
-    a = tmp_path / ".hermes"
+    """Launch home A (the process's RABBIT_HOME) and routed home B; gates in the process env only."""
+    a = tmp_path / ".rabbit"
     b = a / "profiles" / "b"
     b.mkdir(parents=True)
     (a / ".env").write_text("A_MARKER=a\n", encoding="utf-8")
     (b / ".env").write_text("B_MARKER=b\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(a))
+    monkeypatch.setenv("RABBIT_HOME", str(a))
     for key, value in _GATES.items():
         monkeypatch.setenv(key, value)
     return a, b
@@ -57,7 +57,7 @@ def test_routed_child_drops_gates_and_same_home_child_keeps_them(homes):
 def test_update_recovery_child_env_drops_gates_only_for_other_profiles(homes):
     """The updater relaunches EVERY profile from one environment; the per-profile child env must
     strip gates for a foreign profile and keep them for the profile the updater itself runs as."""
-    from hermes_cli import update_restart_recovery as recovery
+    from rabbit_cli import update_restart_recovery as recovery
 
     routed = recovery._child_environment("b")
     same = recovery._child_environment("default")

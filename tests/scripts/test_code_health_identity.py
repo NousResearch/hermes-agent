@@ -262,7 +262,7 @@ def test_typescript_install_uses_repo_npmrc_and_fails_cleanly(tmp_path, monkeypa
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     with pytest.raises(RuntimeError, match="typescript"):
         resolve_typescript(repo)
-    prefix = next((tmp_path / "cache" / "hermes-code-health").iterdir())
+    prefix = next((tmp_path / "cache" / "rabbit-code-health").iterdir())
     got = subprocess.run([npm, "config", "get", "min-release-age", "--prefix", str(prefix)],
                          cwd=prefix, capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     assert got == "14"

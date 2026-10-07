@@ -1,4 +1,4 @@
-"""Tests for file write safety and HERMES_WRITE_SAFE_ROOT sandboxing.
+"""Tests for file write safety and RABBIT_WRITE_SAFE_ROOT sandboxing.
 
 Based on PR #1085 by ismoilh (salvaged).
 """
@@ -68,36 +68,36 @@ class TestSshConfigApprovalGate:
 
 
 class TestSafeWriteRoot:
-    """HERMES_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
+    """RABBIT_WRITE_SAFE_ROOT should sandbox writes to a specific subtree."""
 
     def test_writes_inside_safe_root_are_allowed(self, tmp_path: Path, monkeypatch):
         safe_root = tmp_path / "workspace"
         child = safe_root / "subdir" / "file.txt"
         os.makedirs(child.parent, exist_ok=True)
 
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(safe_root))
         assert _is_write_denied(str(child)) is False
 
 
     def test_safe_root_with_tilde_expansion(self, tmp_path: Path, monkeypatch):
-        """~ in HERMES_WRITE_SAFE_ROOT should be expanded."""
+        """~ in RABBIT_WRITE_SAFE_ROOT should be expanded."""
         # Use a real subdirectory of tmp_path so we can test tilde-style paths
         safe_root = tmp_path / "workspace"
         inside = safe_root / "file.txt"
         os.makedirs(safe_root, exist_ok=True)
 
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(safe_root))
         assert _is_write_denied(str(inside)) is False
 
     def test_safe_root_does_not_override_static_deny(self, tmp_path: Path, monkeypatch):
         """Even if a static-denied path is inside the safe root, it's still denied."""
         # Point safe root at home to include ~/.ssh
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.path.expanduser("~"))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 
 
 class TestMultipleSafeWriteRoots:
-    """HERMES_WRITE_SAFE_ROOT with multiple colon-separated directories."""
+    """RABBIT_WRITE_SAFE_ROOT with multiple colon-separated directories."""
 
     def test_write_inside_first_root_allowed(self, tmp_path: Path, monkeypatch):
         root_a = tmp_path / "workspace_a"
@@ -106,7 +106,7 @@ class TestMultipleSafeWriteRoots:
         os.makedirs(child.parent, exist_ok=True)
         os.makedirs(root_b, exist_ok=True)
 
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{root_b}")
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", f"{root_a}{os.pathsep}{root_b}")
         assert _is_write_denied(str(child)) is False
 
 
@@ -115,7 +115,7 @@ class TestMultipleSafeWriteRoots:
         inside = root / "file.txt"
         os.makedirs(root, exist_ok=True)
 
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", f"{root}{os.pathsep}")
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", f"{root}{os.pathsep}")
         assert _is_write_denied(str(inside)) is False
 
 
@@ -125,7 +125,7 @@ class TestMultipleSafeWriteRoots:
         os.makedirs(root, exist_ok=True)
 
         monkeypatch.setenv(
-            "HERMES_WRITE_SAFE_ROOT",
+            "RABBIT_WRITE_SAFE_ROOT",
             f"{root}{os.pathsep}{os.path.expanduser('~')}",
         )
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
@@ -136,7 +136,7 @@ class TestMultipleSafeWriteRoots:
         os.makedirs(root, exist_ok=True)
 
         monkeypatch.setenv(
-            "HERMES_WRITE_SAFE_ROOT",
+            "RABBIT_WRITE_SAFE_ROOT",
             f"{root}{os.pathsep}{root}",
         )
         assert _is_write_denied(str(inside)) is False
@@ -151,7 +151,7 @@ class TestGetWriteDeniedError:
         err = get_write_denied_error(os.path.expanduser("~/.ssh/id_rsa"))
         assert err is not None
         assert "protected system/credential file" in err
-        assert "HERMES_WRITE_SAFE_ROOT" not in err
+        assert "RABBIT_WRITE_SAFE_ROOT" not in err
 
     def test_safe_root_message(self, tmp_path: Path, monkeypatch):
         from agent.file_safety import get_write_denied_error
@@ -160,10 +160,10 @@ class TestGetWriteDeniedError:
         outside = tmp_path / "outside.txt"
         os.makedirs(safe_root, exist_ok=True)
 
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(safe_root))
         err = get_write_denied_error(str(outside))
         assert err is not None
-        assert "outside HERMES_WRITE_SAFE_ROOT" in err
+        assert "outside RABBIT_WRITE_SAFE_ROOT" in err
         assert str(safe_root) in err
         assert "protected system/credential file" not in err
 
@@ -176,7 +176,7 @@ class TestGetWriteDeniedError:
 
 class TestSafeRootDenialMessageIntegration:
     """Regression tests verifying that file-tools surface the correct denial
-    message when HERMES_WRITE_SAFE_ROOT blocks a path.
+    message when RABBIT_WRITE_SAFE_ROOT blocks a path.
 
     Prior to this fix, ALL write denials returned the same "protected
     system/credential file" message regardless of root cause.  These tests
@@ -198,11 +198,11 @@ class TestSafeRootDenialMessageIntegration:
         safe_root.mkdir()
         outside = tmp_path / "other" / "file.txt"
         outside.parent.mkdir()
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(safe_root))
 
         res = ops.write_file(str(outside), "content")
         assert res.error is not None
-        assert "outside HERMES_WRITE_SAFE_ROOT" in res.error
+        assert "outside RABBIT_WRITE_SAFE_ROOT" in res.error
         assert str(safe_root) in res.error
         assert "credential" not in res.error
         assert not outside.exists()
@@ -222,7 +222,7 @@ class TestSafeRootDenialMessageIntegration:
         safe_root = tmp_path / "workspace"
         safe_root.mkdir()
         inside = safe_root / "file.txt"
-        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setenv("RABBIT_WRITE_SAFE_ROOT", str(safe_root))
 
         res = ops.write_file(str(inside), "content")
         assert res.error is None
@@ -293,7 +293,7 @@ class TestAtomicWrite:
     def test_no_temp_file_leaked_on_success(self, ops, tmp_path: Path):
         target = tmp_path / "f.txt"
         ops.write_file(str(target), "hello\n")
-        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
+        assert [p for p in os.listdir(tmp_path) if ".rabbit-tmp" in p] == []
 
 
     @pytest.mark.platforms("linux")
@@ -377,7 +377,7 @@ class TestBomHandling:
         target = tmp_path / "prompt.sh"
         original = (b'set_title() { printf "\x1b]0;%s\x07" "$1"; }\n'
                     b'beep() { printf "\x07"; }\n'
-                    b'SENTINEL = "__HERMES_FENCE_a9f7b3__\x07"  # marker text is file content too\n'
+                    b'SENTINEL = "__RABBIT_FENCE_a9f7b3__\x07"  # marker text is file content too\n'
                     b'VERSION=1\n')
         target.write_bytes(original)
         patch = (
@@ -432,7 +432,7 @@ class TestBomHandling:
         # lands at the head of the file. Remote backends announce things on connect, so the local
         # native fast path is off here and the base64 transport is what runs.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
 
         target = tmp_path / "conf.txt"
         original = b"HEADER\nVERSION=1\n"
@@ -449,7 +449,7 @@ class TestBomHandling:
         # file is editable at all and what a refusal reports about it. The sample must be the file's
         # own leading bytes, not the backend's banner decoded into them.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
 
         target = tmp_path / "head.bin"
         original = b"\x00\x01\x02binary payload\n"
@@ -477,7 +477,7 @@ class TestBomHandling:
         # base64 is not on every backend. The sample path already degrades when it is missing
         # (_detect_binary), so the byte-exact read must too, and byte-exactly.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         target = tmp_path / "conf.txt"
         original = b"HEADER\nVERSION=1\n"
         target.write_bytes(original)
@@ -493,7 +493,7 @@ class TestBomHandling:
         # transport at all makes that read FAIL, which must not read as "the path is free" —
         # that writes the Add payload over the file the check exists to protect.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         target = tmp_path / "KEEP.txt"
         precious = b"KEEP ME\n"
         target.write_bytes(precious)
@@ -510,7 +510,7 @@ class TestBomHandling:
         # Validation must keep "the read failed" apart from "the path is absent" for a Move
         # destination too, and the apply must re-check it before `mv` replaces whatever is there.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         dst = tmp_path / "dst.txt"
         dst.write_bytes(b"PRECIOUS DESTINATION\n")
         ops = ShellFileOperations(self._env_without("base64", "od")(cwd=str(tmp_path)), cwd=str(tmp_path))
@@ -531,7 +531,7 @@ class TestBomHandling:
         # hook firing for the transport command alone puts text inside the payload that still
         # decodes ("TERM" is b"LDL"; "4c 44" is hex). Such a read must fail, and no edit may write.
         from tools.file_operations import ShellFileOperations
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         hook = tmp_path / "hook.sh"
         hook.write_text(f"trap '[[ $BASH_COMMAND == {transport}* ]] && echo \"{noise}\"' DEBUG\n")
         target = tmp_path / "conf.txt"
@@ -597,7 +597,7 @@ class TestBomHandling:
         from tools.environments.local import LocalEnvironment
         if not shutil.which("bash"):
             pytest.skip("bash not installed")
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         hook = tmp_path / "xtrace.sh"
         hook.write_text("set -x\n")
         target = tmp_path / "conf.txt"
@@ -614,7 +614,7 @@ class TestBomHandling:
 class TestProtectedInstructionFiles:
     """Writes to agent-instruction files ALWAYS require approval.
 
-    AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .hermes
+    AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .rabbit
     config steer future agent behavior, so a prompt-injected agent writing
     them is a persistence vector. The gate must ask the human every time —
     even under yolo/auto-approve — and fail closed when no human channel
@@ -770,32 +770,32 @@ class TestProtectedInstructionFiles:
         res = self._write(deep / "CLAUDE.md")
         assert res.get("error") and "BLOCKED" in res["error"]
 
-    def test_project_local_hermes_dir_is_gated(self, tmp_path, approvals):
-        proj = tmp_path / "proj" / ".hermes"
+    def test_project_local_rabbit_dir_is_gated(self, tmp_path, approvals):
+        proj = tmp_path / "proj" / ".rabbit"
         proj.mkdir(parents=True)
         approvals["answer"] = "deny"
         res = self._write(proj / "config.yaml")
         assert res.get("error") and "BLOCKED" in res["error"]
 
-    def test_checkout_nested_under_hermes_dir_not_gated(self, tmp_path, approvals):
-        """A repo living UNDER a .hermes dir (e.g. ~/.hermes/hermes-agent)
+    def test_checkout_nested_under_rabbit_dir_not_gated(self, tmp_path, approvals):
+        """A repo living UNDER a .rabbit dir (e.g. ~/.rabbit/rabbit-agent)
         must not have every write gated — only files directly inside a
-        .hermes dir count as project config."""
-        repo = tmp_path / ".hermes" / "some-repo" / "src"
+        .rabbit dir count as project config."""
+        repo = tmp_path / ".rabbit" / "some-repo" / "src"
         repo.mkdir(parents=True)
         res = self._write(repo / "module.py", "x = 1\n")
         assert not res.get("error"), res
         assert approvals["calls"] == []
 
-    def test_real_hermes_home_not_gated_by_this_check(
+    def test_real_rabbit_home_not_gated_by_this_check(
         self, tmp_path, approvals, monkeypatch
     ):
-        """~/.hermes itself is governed by existing guards, not this gate."""
+        """~/.rabbit itself is governed by existing guards, not this gate."""
         import tools.file_tools_write_guards as ft
-        fake_home = tmp_path / ".hermes"
+        fake_home = tmp_path / ".rabbit"
         (fake_home / "notes").mkdir(parents=True)
         monkeypatch.setattr(
-            ft, "_get_real_hermes_home", lambda: str(fake_home.resolve())
+            ft, "_get_real_rabbit_home", lambda: str(fake_home.resolve())
         )
         res = self._write(fake_home / "notes" / "scratch.txt", "ok")
         assert not res.get("error"), res
@@ -919,13 +919,13 @@ class TestProtectedInstructionFiles:
         assert rendered["choices"] == ["once", "deny"]
 
 
-class TestProfileHomeExemptsHermesRoot:
-    """issue #60: under ``hermes -p <name>`` (``HERMES_HOME=<root>/profiles/<name>``)
+class TestProfileHomeExemptsRabbitRoot:
+    """issue #60: under ``rabbit -p <name>`` (``RABBIT_HOME=<root>/profiles/<name>``)
     the exemption used to cover ONLY the profile dir, so the ROOT's direct files
-    (LEDGER.md / MEMORY.md / SOUL.md ...) fell through to the ``.hermes`` component
-    rule, were read as project-local ``.hermes`` config, and — having no approval
+    (LEDGER.md / MEMORY.md / SOUL.md ...) fell through to the ``.rabbit`` component
+    rule, were read as project-local ``.rabbit`` config, and — having no approval
     channel headless — failed closed. That blocked #54 (LEDGER.md edit). The gate
-    must exempt the whole Hermes tree, exactly like the default profile does.
+    must exempt the whole Rabbit tree, exactly like the default profile does.
     """
 
     @pytest.fixture(autouse=True)
@@ -935,8 +935,8 @@ class TestProfileHomeExemptsHermesRoot:
             ft, "_protected_instruction_config", lambda: (True, [])
         )
         # The resolved-home slot is filled once per process; keep the fixture honest.
-        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
-        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
+        monkeypatch.setattr(ft, "_real_rabbit_home_loaded", False)
+        monkeypatch.setattr(ft, "_real_rabbit_home_cached", None)
         yield
 
     @pytest.fixture
@@ -958,7 +958,7 @@ class TestProfileHomeExemptsHermesRoot:
         return json.loads(write_file_tool(str(path), content))
 
     def _profile_layout(self, tmp_path: Path):
-        """A real-shaped Hermes root: ``<tmp>/home/profiles/worker`` + root markers."""
+        """A real-shaped Rabbit root: ``<tmp>/home/profiles/worker`` + root markers."""
         root = tmp_path / "home"
         profile = root / "profiles" / "worker"
         (profile / "workspace").mkdir(parents=True)
@@ -967,58 +967,58 @@ class TestProfileHomeExemptsHermesRoot:
 
     def test_named_profile_scope_exempts_root_direct_files(self, tmp_path, monkeypatch, approvals):
         """Under a named profile bound by the per-turn scope (multiplex path), the ROOT's own store is
-        not project-local ``.hermes`` config: the write lands with no approval prompt."""
+        not project-local ``.rabbit`` config: the write lands with no approval prompt."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         root, profile = self._profile_layout(tmp_path)
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-        token = set_hermes_home_override(str(profile))
+        monkeypatch.delenv("RABBIT_HOME", raising=False)
+        token = set_rabbit_home_override(str(profile))
         try:
-            assert os.path.realpath(str(root)) in ft._hermes_exempt_homes()
+            assert os.path.realpath(str(root)) in ft._rabbit_exempt_homes()
             for name in ("LEDGER.md", "MEMORY.md", "SOUL.md", "AGENTS.md"):
                 assert ft._protected_instruction_reason(str(root / name)) is None, name
             res = self._write(root / "LEDGER.md", "caliber fixed")
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert not res.get("error"), res
         assert (root / "LEDGER.md").read_text(encoding="utf-8") == "caliber fixed"
         assert approvals["calls"] == []
 
-    def test_only_a_real_hermes_root_is_exempt(self, tmp_path, monkeypatch, approvals):
-        """Negatives hold with a named profile active: a checkout's ``.hermes/config.yaml`` and
+    def test_only_a_real_rabbit_root_is_exempt(self, tmp_path, monkeypatch, approvals):
+        """Negatives hold with a named profile active: a checkout's ``.rabbit/config.yaml`` and
         protected basenames stay gated (fail-closed, unwritten), and a coincidental
-        ``.../profiles/<name>`` tree that is NOT a Hermes root never exempts its parent."""
+        ``.../profiles/<name>`` tree that is NOT a Rabbit root never exempts its parent."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         root, profile = self._profile_layout(tmp_path)
         repo = tmp_path / "repo"
-        (repo / ".hermes").mkdir(parents=True)
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-        token = set_hermes_home_override(str(profile))
+        (repo / ".rabbit").mkdir(parents=True)
+        monkeypatch.delenv("RABBIT_HOME", raising=False)
+        token = set_rabbit_home_override(str(profile))
         try:
-            assert ft._protected_instruction_reason(str(repo / ".hermes" / "config.yaml"))
+            assert ft._protected_instruction_reason(str(repo / ".rabbit" / "config.yaml"))
             assert ft._protected_instruction_reason(str(repo / "AGENTS.md")) == "AGENTS.md"
-            target = repo / ".hermes" / "config.yaml"
+            target = repo / ".rabbit" / "config.yaml"
             res = self._write(target, "gate: off\n")
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert res.get("error") and "BLOCKED" in res["error"]
         assert not target.exists()
         assert len(approvals["calls"]) == 1
 
-        fake_profile = tmp_path / "not-a-hermes-root" / "profiles" / "worker"
+        fake_profile = tmp_path / "not-a-rabbit-root" / "profiles" / "worker"
         fake_profile.mkdir(parents=True)
-        token = set_hermes_home_override(str(fake_profile))
+        token = set_rabbit_home_override(str(fake_profile))
         try:
-            assert ft._hermes_exempt_homes() == (os.path.realpath(str(fake_profile)),)
+            assert ft._rabbit_exempt_homes() == (os.path.realpath(str(fake_profile)),)
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
 
 class TestMultiplexProfileWriteGuardsAreProfileScoped:
-    """#107327: a multiplexed gateway scopes ``HERMES_HOME`` per turn via a
+    """#107327: a multiplexed gateway scopes ``RABBIT_HOME`` per turn via a
     contextvar. The home/config path getters must resolve per call, or whichever
     profile ran first in the process freezes both the protected-instruction gate
     and the ``config.yaml`` hard-block for every later profile — up to letting a
@@ -1036,45 +1036,45 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
 
     def test_home_getter_tracks_active_profile_after_a_prior_scope(self, tmp_path):
         import tools.file_tools_write_guards as ft
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
 
         a, b = self._profiles(tmp_path)
         # A normal alpha turn resolves (and, on the buggy path, would freeze) home.
-        tok = set_hermes_home_override(str(a))
+        tok = set_rabbit_home_override(str(a))
         try:
-            assert ft._get_real_hermes_home() == os.path.realpath(str(a))
+            assert ft._get_real_rabbit_home() == os.path.realpath(str(a))
         finally:
-            reset_hermes_home_override(tok)
+            reset_rabbit_home_override(tok)
         # The next turn is beta — the getter must now return beta's home, not alpha's.
-        tok = set_hermes_home_override(str(b))
+        tok = set_rabbit_home_override(str(b))
         try:
-            assert ft._get_real_hermes_home() == os.path.realpath(str(b))
+            assert ft._get_real_rabbit_home() == os.path.realpath(str(b))
         finally:
-            reset_hermes_home_override(tok)
+            reset_rabbit_home_override(tok)
 
     def test_config_hard_block_refuses_beta_config_even_after_alpha_turn(self, tmp_path):
         """End-to-end: the ``config.yaml`` hard-block must fire for beta's own
         config under beta's scope, regardless of alpha having run first."""
         import tools.file_tools_write_guards as ft
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
 
         a, b = self._profiles(tmp_path)
-        tok = set_hermes_home_override(str(a))
+        tok = set_rabbit_home_override(str(a))
         try:
-            ft._get_hermes_config_resolved()  # warm the (formerly poisoning) alpha lookup
+            ft._get_rabbit_config_resolved()  # warm the (formerly poisoning) alpha lookup
         finally:
-            reset_hermes_home_override(tok)
+            reset_rabbit_home_override(tok)
 
-        tok = set_hermes_home_override(str(b))
+        tok = set_rabbit_home_override(str(b))
         try:
             err = ft._check_sensitive_path(str(b / "config.yaml"), "default")
         finally:
-            reset_hermes_home_override(tok)
+            reset_rabbit_home_override(tok)
         assert err is not None
-        assert "Refusing to write to Hermes config file" in err
+        assert "Refusing to write to Rabbit config file" in err

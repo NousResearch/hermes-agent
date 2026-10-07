@@ -40,7 +40,7 @@ class TestLoadGatewayConfigForRunner:
         home.mkdir()
         (home / ".env").write_text("TELEGRAM_BOT_TOKEN=from-default-env\n", encoding="utf-8")
         (home / "config.yaml").write_text("gateway:\n  multiplex_profiles: false\n", encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 
         # Without multiplex, dotenv is still loaded into os.environ by the
@@ -74,15 +74,15 @@ class TestLoadGatewayConfigForRunner:
         (home / "config.yaml").write_text(
             "gateway:\n  multiplex_profiles: true\n", encoding="utf-8"
         )
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         # Listener settings live ONLY in os.environ — the Docker compose case.
         monkeypatch.setenv("API_SERVER_ENABLED", "true")
         monkeypatch.setenv("API_SERVER_HOST", "0.0.0.0")
         monkeypatch.setenv("API_SERVER_PORT", "8642")
         monkeypatch.delenv("API_SERVER_KEY", raising=False)
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
-        monkeypatch.setattr(run_mod, "_hermes_home", home)
+        monkeypatch.setattr(run_mod, "get_rabbit_home", lambda: home)
+        monkeypatch.setattr(run_mod, "_rabbit_home", home)
         # Model the real multiplexed gateway: run.py flips the runtime flag
         # before the runner reload, making any installed scope authoritative.
         ss.set_multiplex_active(True)
@@ -155,11 +155,11 @@ class TestPlatformHasBotCredential:
         Guards the #64674 intent, and specifically pins "read extra, not the
         environment". A fully-populated MATRIX_* environment is set here on
         purpose: on a real host those vars are present (build_config exports
-        them, and importing gateway.run loads ~/.hermes/.env), so an
+        them, and importing gateway.run loads ~/.rabbit/.env), so an
         implementation that falls back to os.getenv would report every Matrix
         config as credentialed and never evict anything.
 
-        conftest sandboxes HERMES_HOME and scrubs MATRIX_* from the
+        conftest sandboxes RABBIT_HOME and scrubs MATRIX_* from the
         environment, so without these explicit setenv calls this test would
         pass against an env-reading implementation and guard nothing.
         """
@@ -248,7 +248,7 @@ class TestPrimaryMessageRuntimeScope:
         (home / "config.yaml").write_text(
             "platform_toolsets:\n  discord:\n    - discord\n", encoding="utf-8"
         )
-        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(run_mod, "get_rabbit_home", lambda: home)
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "wrong-process-token")
         secret_scope.set_multiplex_active(True)
 
@@ -296,7 +296,7 @@ class TestPrimaryMessageRuntimeScope:
         (sharik / ".env").write_text("# no Signal allowlist here\n", encoding="utf-8")
         (sharik / "config.yaml").write_text("{}\n", encoding="utf-8")
 
-        monkeypatch.setattr(run_mod, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(run_mod, "get_rabbit_home", lambda: home)
         secret_scope.set_multiplex_active(True)
 
         runner = GatewayRunner.__new__(GatewayRunner)

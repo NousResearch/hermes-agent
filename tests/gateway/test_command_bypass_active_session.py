@@ -201,7 +201,7 @@ class TestAllResolvableCommandsBypassGuard:
 
     def test_should_bypass_returns_false_for_unknown(self):
         """Unknown words don't bypass — they get queued as user text."""
-        from hermes_cli.commands import should_bypass_active_session
+        from rabbit_cli.commands import should_bypass_active_session
 
         assert should_bypass_active_session("foobar") is False
         assert should_bypass_active_session(None) is False
@@ -277,15 +277,15 @@ class TestBypassWithBotnameSuffix:
 
     @pytest.mark.asyncio
     async def test_stop_with_botname(self):
-        """/stop@MyHermesBot must bypass the guard."""
+        """/stop@MyRabbitBot must bypass the guard."""
         adapter = _make_adapter()
         sk = _session_key()
         adapter._active_sessions[sk] = asyncio.Event()
 
-        await adapter.handle_message(_make_event("/stop@MyHermesBot"))
+        await adapter.handle_message(_make_event("/stop@MyRabbitBot"))
 
         assert sk not in adapter._pending_messages, (
-            "/stop@MyHermesBot was queued instead of bypassing"
+            "/stop@MyRabbitBot was queued instead of bypassing"
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
 

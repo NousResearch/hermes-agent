@@ -1,11 +1,11 @@
 """Hermetic rig for the Anthropic Messages wire-conformance E2E suite.
 
-Hermes' native ``anthropic`` provider runs with NO base URL override, i.e. the
+Rabbit' native ``anthropic`` provider runs with NO base URL override, i.e. the
 exact production route to ``https://api.anthropic.com`` (native thinking-signature
 policy, native headers). The child reaches the scripted fake through an
 ``HTTPS_PROXY`` that terminates TLS for ``api.anthropic.com`` with a leaf signed
 by a throwaway CA trusted via ``SSL_CERT_FILE``; only the vendor HTTP boundary
-is faked. Every child runs with an allowlisted env, ``HOME``/``HERMES_HOME``
+is faked. Every child runs with an allowlisted env, ``HOME``/``RABBIT_HOME``
 under ``tmp_path`` and a unique tag so cleanup signals only its own tree.
 """
 
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.fakes.providers.anthropic_messages import MODEL_ID, AnthropicMessagesServer, Response, Responder
 from tests.fakes.providers.oauth_token_server import TLSInterceptProxy, make_test_ca
@@ -43,7 +43,7 @@ _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SH
 class Rig:
     root: Path
     home: Path
-    hermes_home: Path
+    rabbit_home: Path
     project: Path
     srv: AnthropicMessagesServer
     proxy: TLSInterceptProxy
@@ -53,35 +53,35 @@ class Rig:
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         import pwd  # POSIX-only; the suite is Linux-gated
 
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()
-        fixture = self.hermes_home.resolve()
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".rabbit").resolve()
+        fixture = self.rabbit_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", (
-            f"fixture HERMES_HOME {fixture} is the real install's live home")
+            f"fixture RABBIT_HOME {fixture} is the real install's live home")
         env = {k: v for k, v in os.environ.items()
                if (k in _PASSTHROUGH_ENV or k.startswith("LC_")) and not k.endswith(_SECRET_ENV_SUFFIXES)}
         loopback = "127.0.0.1,localhost"
         env.update({
-            "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home), "PYTHONPATH": str(REPO_ROOT),
+            "HOME": str(self.home), "RABBIT_HOME": str(self.rabbit_home), "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb", TAG_VAR: self.tag,
             "HTTPS_PROXY": self.proxy.url, "https_proxy": self.proxy.url,
             "NO_PROXY": loopback, "no_proxy": loopback, "SSL_CERT_FILE": str(self.ca_pem),
-            # The child's ~/.hermes/state.db IS the tmp home's db (see parity/_helpers.py).
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            # The child's ~/.rabbit/state.db IS the tmp home's db (see parity/_helpers.py).
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         })
         env.update(extra or {})
         return env
 
     def config(self) -> dict[str, Any]:
-        return yaml.safe_load((self.hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        return yaml.safe_load((self.rabbit_home / "config.yaml").read_text(encoding="utf-8"))
 
     def update_config(self, mutate: Callable[[dict[str, Any]], None]) -> None:
         cfg = self.config()
         mutate(cfg)
-        (self.hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+        (self.rabbit_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
     def run(self, *args: str, timeout: float = TURN_TIMEOUT, extra_env: dict[str, str] | None = None,
             ) -> subprocess.CompletedProcess:
-        return subprocess.run(hermes_argv(*args), cwd=self.project, env=self.env(extra_env), capture_output=True,
+        return subprocess.run(rabbit_argv(*args), cwd=self.project, env=self.env(extra_env), capture_output=True,
                               text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
     def stop(self) -> None:
@@ -91,7 +91,7 @@ class Rig:
 
     def log_tail(self, chars: int = 3000, pattern: str = "") -> str:
         """The child's agent.log tail (CI prints only the assertion message, so failures carry it)."""
-        log = self.hermes_home / "logs" / "agent.log"
+        log = self.rabbit_home / "logs" / "agent.log"
         if not log.exists():
             return "<no agent.log>"
         lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -99,7 +99,7 @@ class Rig:
 
     # persisted state ------------------------------------------------------------
     def _db(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{self.hermes_home / 'state.db'}?mode=ro", uri=True)
+        return sqlite3.connect(f"file:{self.rabbit_home / 'state.db'}?mode=ro", uri=True)
 
     def session_ids(self) -> list[str]:
         with self._db() as db:
@@ -112,8 +112,8 @@ class Rig:
                 "select * from messages where session_id = ? order by id", (session_id,))]
 
 
-def hermes_argv(*args: str) -> list[str]:
-    return [sys.executable, "-m", "hermes_cli.main", *args]
+def rabbit_argv(*args: str) -> list[str]:
+    return [sys.executable, "-m", "rabbit_cli.main", *args]
 
 
 _PR_SET_CHILD_SUBREAPER = 36
@@ -122,7 +122,7 @@ _PR_SET_CHILD_SUBREAPER = 36
 def become_subreaper() -> None:
     """Adopt this test process's orphaned descendants (Linux ``PR_SET_CHILD_SUBREAPER``).
 
-    A Hermes child that daemonises a helper leaves it reparented to init, outside the test's
+    A Rabbit child that daemonises a helper leaves it reparented to init, outside the test's
     process tree, so teardown could neither reap it nor (under the local live-system guard)
     signal it. As subreaper the orphans stay our children: ``kill_tagged`` stays in-tree and
     ``reap_adopted`` (``Rig.stop``) collects them instead of leaving zombies."""
@@ -139,9 +139,9 @@ def start_rig(root: Path, script: list[Response] | Responder, *, config: dict[st
     ca = make_test_ca(root / "ca", [VENDOR_HOST])
     proxy = TLSInterceptProxy(srv, ca, [VENDOR_HOST]).start()  # type: ignore[arg-type]
     home = root / "home"
-    rig = Rig(root=root, home=home, hermes_home=home / ".hermes", project=root / "project", srv=srv,
+    rig = Rig(root=root, home=home, rabbit_home=home / ".rabbit", project=root / "project", srv=srv,
               proxy=proxy, ca_pem=ca.ca_pem)
-    rig.hermes_home.mkdir(parents=True)
+    rig.rabbit_home.mkdir(parents=True)
     rig.project.mkdir()
     cfg: dict[str, Any] = {
         # No base_url: the production native route (the proxy intercepts api.anthropic.com).
@@ -153,8 +153,8 @@ def start_rig(root: Path, script: list[Response] | Responder, *, config: dict[st
     }
     for key, value in (config or {}).items():
         cfg[key] = {**cfg.get(key, {}), **value} if isinstance(value, dict) else value
-    (rig.hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    (rig.hermes_home / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-api03-e2e-fake-key\n", encoding="utf-8")
+    (rig.rabbit_home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    (rig.rabbit_home / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-api03-e2e-fake-key\n", encoding="utf-8")
     return rig
 
 

@@ -3,8 +3,8 @@
  *
  * In-memory session-cookie mirror for remote gateways (#61457).
  *
- * The `persist:hermes-remote-oauth` partition family is supposed to keep the
- * dashboard `hermes_session*` cookies on disk, but in the field the Chromium
+ * The `persist:rabbit-remote-oauth` partition family is supposed to keep the
+ * dashboard `rabbit_session*` cookies on disk, but in the field the Chromium
  * jar can drop them (Windows %3A profile folders, lazy hydration, jar flush
  * races), and `electronNet` with `useSessionCookies: true` then intermittently
  * omits the cookie entirely → every authed REST call and WS-ticket mint 401s

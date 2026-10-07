@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID } from '@rabbit/shared'
 import { useRef, useState } from 'react'
 
 import { FirstRunRemoteSetup } from '@/components/remote-setup/first-run'
@@ -11,7 +11,7 @@ import { notifyError } from '@/store/notifications'
  * Missing bridge fails closed: a click must not reach runBootstrap unseen.
  */
 async function probeLocalBackend(): Promise<boolean> {
-  const probe = window.hermesDesktop?.probeLocalBackend
+  const probe = window.rabbitDesktop?.probeLocalBackend
 
   if (!probe) {
     return true
@@ -24,7 +24,7 @@ export interface LocalDeviceTarget {
   connectionId: string
   label: string
   profile?: string
-  /** The switch replaces the center with a fresh session, even when Hermes is already installed. */
+  /** The switch replaces the center with a fresh session, even when Rabbit is already installed. */
   replaceCenter?: boolean
 }
 

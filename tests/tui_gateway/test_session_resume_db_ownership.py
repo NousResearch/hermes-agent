@@ -37,7 +37,7 @@ from tui_gateway import server
 
 
 class _RecordingDB:
-    """Stand-in for ``hermes_state.SessionDB`` that counts ``close()`` calls.
+    """Stand-in for ``rabbit_state.SessionDB`` that counts ``close()`` calls.
 
     Implements only the surface ``session.resume`` touches.
     """
@@ -95,13 +95,13 @@ def profile_dbs(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     monkeypatch.setattr(
         server, "_profile_home", lambda profile: profile_home if profile else None
     )
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
     # The handler builds nothing on the paths under test; keep it hermetic and
-    # off the real agent/secret/HERMES_HOME machinery.
+    # off the real agent/secret/RABBIT_HOME machinery.
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key, *_a: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
@@ -151,7 +151,7 @@ def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
 
     resp = _resume(session_id="s1", profile="work", source="desktop")
     session = server._sessions[resp["result"]["session_id"]]
@@ -176,7 +176,7 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
 
     resp = _resume(session_id="s1", profile="work")
 
@@ -199,7 +199,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     live_session = {}
     with server._sessions_lock:
         server._sessions["live-sid"] = live_session
@@ -235,7 +235,7 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
     resp = _resume(session_id="s1", profile="work")
@@ -268,7 +268,7 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
 
@@ -310,7 +310,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
         captured["init_db"] = session_db
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
     monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
@@ -355,7 +355,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
             server._sessions[sid] = {"agent": agent, "session_key": key}
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    monkeypatch.setattr("rabbit_state_registry.acquire", _factory)
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )

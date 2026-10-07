@@ -70,8 +70,8 @@ class TestBusyCommandPersistence:
             "_load_gateway_config",
             lambda: {"display": {"busy_input_mode": new_mode}},
         )
-        monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
-        monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+        monkeypatch.delenv("RABBIT_GATEWAY_BUSY_TEXT_MODE", raising=False)
+        monkeypatch.delenv("RABBIT_GATEWAY_BUSY_INPUT_MODE", raising=False)
         event = _make_event(f"/busy {new_mode}")
         result = await runner._handle_busy_command(event)
         assert new_mode in str(result).lower()

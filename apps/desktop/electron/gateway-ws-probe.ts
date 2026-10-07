@@ -5,7 +5,7 @@
  *
  *   1. The MAIN process hits ``GET /api/status`` over HTTP (token in a header)
  *      to confirm the backend is up. This is what "Test remote" historically
- *      checked, and what the boot logs print as "Remote Hermes backend is
+ *      checked, and what the boot logs print as "Remote Rabbit backend is
  *      ready".
  *   2. The RENDERER then opens a live WebSocket to ``/api/ws`` (credential in a
  *      query param) via ``gateway.connect()``. The chat surface only works once
@@ -16,7 +16,7 @@
  * sees (Host/Origin checks, ws-ticket/token auth, peer-IP checks). So a gateway
  * can pass the HTTP status check yet reject the WebSocket — which surfaces to
  * the user as a green "Test remote" followed by an opaque "Could not connect to
- * Hermes gateway" on the boot overlay.
+ * Rabbit gateway" on the boot overlay.
  *
  * This module performs the second half of the check: it actually opens the WS
  * URL and confirms the upgrade is accepted (and isn't immediately torn down by

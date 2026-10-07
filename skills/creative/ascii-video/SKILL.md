@@ -2,11 +2,11 @@
 name: ascii-video
 description: "ASCII video: convert video/audio to colored ASCII MP4/GIF."
 version: 1.0.0
-author: SHL0MS, Hermes Agent
+author: SHL0MS, Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [ASCII, Video, FFmpeg, Terminal-Art]
     related_skills: []
 ---

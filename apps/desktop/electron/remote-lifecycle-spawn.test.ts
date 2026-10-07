@@ -58,8 +58,8 @@ interface SpawnLock {
   pid: number
   port: number
   profile: string
-  hermesPath: string
-  hermesHome: string
+  rabbitPath: string
+  rabbitHome: string
   logPath: string
   tokenFingerprint: string
   protocolVersion: number
@@ -80,11 +80,11 @@ interface SpawnFixture {
 }
 
 async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promise<SpawnFixture> {
-  const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-spawn-'))
+  const root: string = await mkdtemp(path.join(os.tmpdir(), 'rabbit-spawn-'))
   const bin: string = path.join(root, 'bin')
   const shell: string = (await exec('command -v sh', { shell: 'sh' })).stdout.trim()
   const localPath = (remotePath: string): string => remotePath.replace(/^~/, root)
-  const env: NodeJS.ProcessEnv = { HOME: root, HERMES_HOME: path.join(root, '.hermes'), PATH: bin, LANG: 'C.UTF-8' }
+  const env: NodeJS.ProcessEnv = { HOME: root, RABBIT_HOME: path.join(root, '.rabbit'), PATH: bin, LANG: 'C.UTF-8' }
 
   const run = async (command: string): Promise<{ stdout: string; stderr: string }> =>
     exec(command, { shell, env, timeout: 10_000 })
@@ -93,9 +93,9 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
     exec: async (command: string): Promise<string> => (await run(command)).stdout
   }
 
-  const hermesPath: string = path.join(root, 'fake hermes')
-  const hermesHome: string = path.join(root, '.hermes')
-  const marker: string = path.join(hermesHome, '.hermes-update-in-progress')
+  const rabbitPath: string = path.join(root, 'fake rabbit')
+  const rabbitHome: string = path.join(root, '.rabbit')
+  const marker: string = path.join(rabbitHome, '.rabbit-update-in-progress')
 
   const lock: SpawnLock = {
     schemaVersion: LOCKFILE_SCHEMA_VERSION,
@@ -104,8 +104,8 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
     pid: 0,
     port: 0,
     profile: 'ops__PID__',
-    hermesPath,
-    hermesHome,
+    rabbitPath,
+    rabbitHome,
     logPath: spawnLogPath(ownershipId, spawnNonce),
     tokenFingerprint: fingerprintToken('fixture-token'),
     protocolVersion: PROTOCOL_VERSION,
@@ -113,7 +113,7 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
   }
 
   await mkdir(bin)
-  await mkdir(hermesHome)
+  await mkdir(rabbitHome)
   await mkdir(path.join(root, 'reports'))
 
   // Restrict capability discovery, not the reported host OS. The fallback runs
@@ -138,12 +138,12 @@ async function spawnFixture(launcher: 'setsid' | 'nohup', owned: boolean): Promi
   }
 
   await writeFile(
-    hermesPath,
+    rabbitPath,
     `#!${path.join(bin, 'python3')}
 import json,os,signal,time
 from pathlib import Path
 pid=os.getpid()
-mutex=Path(os.environ['HERMES_HOME'])/'.hermes-update-in-progress.mutex'
+mutex=Path(os.environ['RABBIT_HOME'])/'.rabbit-update-in-progress.mutex'
 identity=mutex.stat()
 fds=[]
 for fd in range(3,256):
@@ -160,8 +160,8 @@ time.sleep(30)
     { encoding: 'utf8', mode: 0o700 }
   )
 
-  const command: string = buildSpawnCommand(hermesPath, lock.profile, {
-    hermesHome,
+  const command: string = buildSpawnCommand(rabbitPath, lock.profile, {
+    rabbitHome,
     logPath: lock.logPath,
     spawnNonce,
     tokenFilePath: spawnTokenPath(ownershipId, spawnNonce),
@@ -179,7 +179,7 @@ time.sleep(30)
       const report: ChildReport = JSON.parse(await readFile(path.join(root, 'reports', name), 'utf8'))
 
       try {
-        if (await pidIsOurDashboard(ssh, report.pid, spawnNonce, hermesPath, hermesHome, ownershipId, lock.profile)) {
+        if (await pidIsOurDashboard(ssh, report.pid, spawnNonce, rabbitPath, rabbitHome, ownershipId, lock.profile)) {
           process.kill(report.pid, 'SIGKILL')
         }
       } catch (error) {

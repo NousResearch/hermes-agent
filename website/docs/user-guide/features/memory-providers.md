@@ -6,30 +6,30 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 5 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight and Supermemory) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Rabbit Agent ships with 5 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md, and more (such as Honcho, Hindsight and Supermemory) are available from the [plugin catalog](./plugins.md). Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
 ```bash
-hermes memory setup      # interactive picker + configuration
-hermes memory status     # check what's active
-hermes memory off        # disable external provider
+rabbit memory setup      # interactive picker + configuration
+rabbit memory status     # check what's active
+rabbit memory off        # disable external provider
 ```
 
-You can also select the active memory provider via `hermes plugins` → Provider Plugins → Memory Provider.
+You can also select the active memory provider via `rabbit plugins` → Provider Plugins → Memory Provider.
 
-Or set manually in `~/.hermes/config.yaml`:
+Or set manually in `~/.rabbit/config.yaml`:
 
 ```yaml
 memory:
   provider: openviking   # or mem0, holographic, retaindb, byterover,
                          # or honcho / hindsight / supermemory (plugin catalog — run
-                         # `hermes plugins install <name>` first)
+                         # `rabbit plugins install <name>` first)
 ```
 
 ## How It Works
 
-When a memory provider is active, Hermes automatically:
+When a memory provider is active, Rabbit automatically:
 
 1. **Injects provider context** into the system prompt (what the provider knows)
 2. **Prefetches relevant memories** before each turn (background, non-blocking)
@@ -45,7 +45,7 @@ The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. T
 ### Honcho
 
 :::info Plugin catalog
-Honcho is maintained by [Plastic Labs](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. It is the same provider that used to ship in-tree: tools, config files and the `hermes honcho` commands are unchanged.
+Honcho is maintained by [Plastic Labs](https://github.com/plastic-labs/honcho/tree/main/rabbit-plugin-honcho) and installed from the [plugin catalog](./plugins.md) rather than bundled with Rabbit. It is the same provider that used to ship in-tree: tools, config files and the `rabbit honcho` commands are unchanged.
 :::
 
 AI-native cross-session user modeling with dialectic reasoning, session-scoped context injection, semantic search, and persistent conclusions. Base context now includes the session summary alongside user representation and peer cards, giving the agent awareness of what has already been discussed.
@@ -53,7 +53,7 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 | | |
 |---|---|
 | **Best for** | Multi-agent systems with cross-session context, user-agent alignment |
-| **Requires** | `hermes plugins install honcho` (installs the `honcho-ai` SDK with it); [API key](https://app.honcho.dev) or self-hosted instance |
+| **Requires** | `rabbit plugins install honcho` (installs the `honcho-ai` SDK with it); [API key](https://app.honcho.dev) or self-hosted instance |
 | **Data storage** | Honcho Cloud or self-hosted |
 | **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
@@ -71,15 +71,15 @@ The auto-injected dialectic also scales its reasoning level by query length (lon
 
 **Setup Wizard:**
 ```bash
-hermes plugins install honcho   # from the plugin catalog
-hermes memory setup             # select "honcho" — runs the Honcho-specific post-setup
+rabbit plugins install honcho   # from the plugin catalog
+rabbit memory setup             # select "honcho" — runs the Honcho-specific post-setup
 ```
 
-The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
+The legacy `rabbit honcho setup` command still works (it now redirects to `rabbit memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
 **Headless / remote machines:** for cloud auth on a box without a browser (SSH, remote VM), pick **device** at the wizard's auth-method prompt. The CLI prints a short code and a verification link; open the link in a browser on any other machine, approve, and setup completes — no API key copy-paste. The wizard defaults to this option automatically when it detects no usable local browser.
 
-**Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [plugin README](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+**Config:** `$RABBIT_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$RABBIT_HOME/honcho.json` > `~/.rabbit/honcho.json` > `~/.honcho/config.json`. See the [plugin README](https://github.com/plastic-labs/honcho/tree/main/rabbit-plugin-honcho) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/rabbit).
 
 <details>
 <summary>Full config reference</summary>
@@ -119,11 +119,11 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 {
   "apiKey": "your-key-from-app.honcho.dev",
   "hosts": {
-    "hermes": {
+    "rabbit": {
       "enabled": true,
-      "aiPeer": "hermes",
+      "aiPeer": "rabbit",
       "peerName": "your-name",
-      "workspace": "hermes"
+      "workspace": "rabbit"
     }
   }
 }
@@ -138,11 +138,11 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 {
   "baseUrl": "http://localhost:8000",
   "hosts": {
-    "hermes": {
+    "rabbit": {
       "enabled": true,
-      "aiPeer": "hermes",
+      "aiPeer": "rabbit",
       "peerName": "your-name",
-      "workspace": "hermes"
+      "workspace": "rabbit"
     }
   }
 }
@@ -150,45 +150,45 @@ The legacy `hermes honcho setup` command still works (it now redirects to `herme
 
 </details>
 
-:::tip Migrating from `hermes honcho`
-If you previously used `hermes honcho setup`, your config and all server-side data are intact. Just re-enable through the setup wizard again or manually set `memory.provider: honcho` to reactivate via the new system.
+:::tip Migrating from `rabbit honcho`
+If you previously used `rabbit honcho setup`, your config and all server-side data are intact. Just re-enable through the setup wizard again or manually set `memory.provider: honcho` to reactivate via the new system.
 :::
 
 **Multi-peer setup:**
 
-Honcho models conversations as peers exchanging messages — one user peer plus one AI peer per Hermes profile, all sharing a workspace. The workspace is the shared environment: the user peer is global across profiles, each AI peer is its own identity. Every AI peer builds an independent representation / card from its own observations, so a `coder` profile stays code-oriented while a `writer` profile stays editorial against the same user.
+Honcho models conversations as peers exchanging messages — one user peer plus one AI peer per Rabbit profile, all sharing a workspace. The workspace is the shared environment: the user peer is global across profiles, each AI peer is its own identity. Every AI peer builds an independent representation / card from its own observations, so a `coder` profile stays code-oriented while a `writer` profile stays editorial against the same user.
 
 The mapping:
 
 | Concept | What it is |
 |---------|-----------|
-| **Workspace** | Shared environment. All Hermes profiles under one workspace see the same user identity. |
+| **Workspace** | Shared environment. All Rabbit profiles under one workspace see the same user identity. |
 | **User peer** (`peerName`) | The human. Shared across profiles in the workspace. |
-| **AI peer** (`aiPeer`) | One per Hermes profile. Host key `hermes` → default; `hermes.<profile>` for others. |
+| **AI peer** (`aiPeer`) | One per Rabbit profile. Host key `rabbit` → default; `rabbit.<profile>` for others. |
 | **Observation** | Per-peer toggles controlling what Honcho models from whose messages. `directional` (default, all four on) or `unified` (single-observer pool). |
 
 ### New profile, fresh Honcho peer
 
 ```bash
-hermes profile create coder --clone
+rabbit profile create coder --clone
 ```
 
-`--clone` creates a `hermes.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
+`--clone` creates a `rabbit.coder` host block in `honcho.json` with `aiPeer: "coder"`, shared `workspace`, inherited `peerName`, `recallMode`, `writeFrequency`, `observation`, etc. The AI peer is eagerly created in Honcho so it exists before the first message.
 
 ### Existing profiles, backfill Honcho peers
 
 ```bash
-hermes honcho sync
+rabbit honcho sync
 ```
 
-Scans every Hermes profile, creates host blocks for any profile without one, inherits settings from the default `hermes` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
+Scans every Rabbit profile, creates host blocks for any profile without one, inherits settings from the default `rabbit` block, and creates the new AI peers eagerly. Idempotent — skips profiles that already have a host block.
 
 ### Per-profile observation
 
 Each host block can override the observation config independently. Example: a code-focused profile where the AI peer observes the user but doesn't self-model:
 
 ```json
-"hermes.coder": {
+"rabbit.coder": {
   "aiPeer": "coder",
   "observation": {
     "user": { "observeMe": true, "observeOthers": true },
@@ -223,7 +223,7 @@ The peer model above covers CLI, TUI, and desktop sessions, where every conversa
 | `userPeerAliases` | Maps specific runtime IDs to peers (`{"7654321": "alice"}`). The home for routing distinct identities — including agents that each carry their own peer |
 | `runtimePeerPrefix` | Namespaces any unmapped runtime ID (`telegram_7654321`) so platforms with same-shaped IDs don't collide |
 
-Off-gateway these keys do nothing. `hermes memory setup` only prompts for them when it detects a connected gateway platform. See the [Honcho page](./honcho.md#gateway-identity-mapping) for the resolver ladder and the setup flow.
+Off-gateway these keys do nothing. `rabbit memory setup` only prompts for them when it detects a connected gateway platform. See the [Honcho page](./honcho.md#gateway-identity-mapping) for the resolver ladder and the setup flow.
 
 <details>
 <summary>Full honcho.json example (multi-profile)</summary>
@@ -231,13 +231,13 @@ Off-gateway these keys do nothing. `hermes memory setup` only prompts for them w
 ```json
 {
   "apiKey": "your-key",
-  "workspace": "hermes",
+  "workspace": "rabbit",
   "peerName": "eri",
   "hosts": {
-    "hermes": {
+    "rabbit": {
       "enabled": true,
-      "aiPeer": "hermes",
-      "workspace": "hermes",
+      "aiPeer": "rabbit",
+      "workspace": "rabbit",
       "peerName": "eri",
       "recallMode": "hybrid",
       "writeFrequency": "async",
@@ -255,10 +255,10 @@ Off-gateway these keys do nothing. `hermes memory setup` only prompts for them w
       "messageMaxChars": 25000,
       "saveMessages": true
     },
-    "hermes.coder": {
+    "rabbit.coder": {
       "enabled": true,
       "aiPeer": "coder",
-      "workspace": "hermes",
+      "workspace": "rabbit",
       "peerName": "eri",
       "recallMode": "tools",
       "observation": {
@@ -266,10 +266,10 @@ Off-gateway these keys do nothing. `hermes memory setup` only prompts for them w
         "ai": { "observeMe": true, "observeOthers": true }
       }
     },
-    "hermes.writer": {
+    "rabbit.writer": {
       "enabled": true,
       "aiPeer": "writer",
-      "workspace": "hermes",
+      "workspace": "rabbit",
       "peerName": "eri"
     }
   },
@@ -281,11 +281,11 @@ Off-gateway these keys do nothing. `hermes memory setup` only prompts for them w
 
 </details>
 
-See the [plugin README](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
+See the [plugin README](https://github.com/plastic-labs/honcho/tree/main/rabbit-plugin-honcho) and [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/rabbit).
 
 #### Upgrading from the bundled Honcho
 
-Earlier Hermes releases shipped Honcho in-tree. If a profile still has `memory.provider: honcho`, Hermes installs the catalog plugin automatically the next time it starts or runs `hermes update` — your `~/.honcho/config.json` (or `$HERMES_HOME/honcho.json`), host blocks, peers and session mappings are read exactly as before, so no memory is lost. To do it by hand, or on a machine without network access at startup, run `hermes plugins install honcho`.
+Earlier Rabbit releases shipped Honcho in-tree. If a profile still has `memory.provider: honcho`, Rabbit installs the catalog plugin automatically the next time it starts or runs `rabbit update` — your `~/.honcho/config.json` (or `$RABBIT_HOME/honcho.json`), host blocks, peers and session mappings are read exactly as before, so no memory is lost. To do it by hand, or on a machine without network access at startup, run `rabbit plugins install honcho`.
 
 
 ---
@@ -310,16 +310,16 @@ openviking-server init
 openviking-server doctor
 openviking-server
 
-# Then configure Hermes
-hermes memory setup    # select "openviking"
+# Then configure Rabbit
+rabbit memory setup    # select "openviking"
 # Or manually:
-hermes config set memory.provider openviking
+rabbit config set memory.provider openviking
 ```
 
-`hermes memory setup` can reuse or copy connection values from
+`rabbit memory setup` can reuse or copy connection values from
 `~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
-for the default profile that is `~/.hermes/.env`, and for named profiles use
-`~/.hermes/profiles/<profile>/.env`.
+for the default profile that is `~/.rabbit/.env`, and for named profiles use
+`~/.rabbit/profiles/<profile>/.env`.
 
 ```text
 OPENVIKING_ENDPOINT=http://127.0.0.1:1933
@@ -333,11 +333,11 @@ OpenViking server settings live in `ov.conf` (`--config`,
 live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 `~/.openviking/ovcli.conf`).
 
-When the endpoint is local and nothing is listening, Hermes starts
+When the endpoint is local and nothing is listening, Rabbit starts
 `openviking-server` in the background. That server gets your model-provider
 keys (for its embedding and VLM models), your `HOME` and
 `OPENVIKING_CONFIG_FILE`, but never bot, gateway or relay tokens, and not
-Hermes's `PYTHONPATH`. Put anything else the server needs in `ov.conf`.
+Rabbit's `PYTHONPATH`. Put anything else the server needs in `ov.conf`.
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
@@ -345,7 +345,7 @@ Hermes's `PYTHONPATH`. Put anything else the server needs in `ov.conf`.
 - `viking://` URI scheme for hierarchical knowledge browsing
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-Peer identity is optional. By default, Hermes sends no peer ID and writes
+Peer identity is optional. By default, Rabbit sends no peer ID and writes
 explicit memories to `viking://user/<user>/memories/...`. Setup does not ask
 for a peer ID. For separate assistant context, set
 `memory.openviking.agent: work-assistant` in `config.yaml`.
@@ -356,11 +356,11 @@ linked OpenViking config. Existing memories are not moved or deleted.
 With no peer ID, default search covers user memory and existing peer memories
 under the same OpenViking user. Old peer memories remain searchable at their
 existing paths. Ranking and result limits determine which memories are returned.
-Set `memory.openviking.agent: hermes` to restore the old peer-scoped writes.
+Set `memory.openviking.agent: rabbit` to restore the old peer-scoped writes.
 Memories written at user scope before this change stay there and remain
 searchable. The setting changes future writes, not existing memory locations.
 
-Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
+Rabbit sends `User-Agent: openviking-memory-rabbit/<version>` on OpenViking
 requests. This standard harness identifier contains no per-user identifier and
 does not add a separate request.
 
@@ -373,7 +373,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `hermes memory setup` prepares the Mem0 SDK through PM; API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
+| **Requires** | `rabbit memory setup` prepares the Mem0 SDK through PM; API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
 | **Data storage** | Mem0 Cloud (platform), your own Mem0 server (self-hosted dashboard), or in-process (OSS) |
 | **Cost** | Mem0 pricing (platform) / free (self-hosted or OSS) |
 
@@ -385,37 +385,37 @@ in-process SDK runs on that target.
 
 **Setup (Platform):**
 ```bash
-hermes memory setup    # select "mem0" → "Platform"
+rabbit memory setup    # select "mem0" → "Platform"
 # Or manually:
-hermes config set memory.provider mem0
-echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
+rabbit config set memory.provider mem0
+echo "MEM0_API_KEY=your-key" >> ~/.rabbit/.env
 ```
 
 **Setup (OSS):**
 ```bash
-hermes memory setup    # select "mem0" → "Open Source (self-hosted)"
+rabbit memory setup    # select "mem0" → "Open Source (self-hosted)"
 # Or via flags:
-hermes memory setup mem0 --mode oss --oss-llm openai --oss-llm-key sk-... --oss-vector qdrant
+rabbit memory setup mem0 --mode oss --oss-llm openai --oss-llm-key sk-... --oss-vector qdrant
 ```
 
 Preview without writing files:
 ```bash
-hermes memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
+rabbit memory setup mem0 --mode oss --oss-llm-key sk-... --dry-run
 ```
 
 **Setup (Self-Hosted Dashboard):** connect to a Mem0 server you run via Docker (the dashboard's REST API):
 
 ```bash
-hermes memory setup    # select "mem0" → "Self-hosted server"
+rabbit memory setup    # select "mem0" → "Self-hosted server"
 # Or via flags:
-hermes memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
+rabbit memory setup mem0 --mode selfhosted --host http://localhost:8888 --api-key your-admin-api-key
 ```
 
 Or configure manually — either as env vars:
 
 ```bash
-echo "MEM0_HOST=http://localhost:8888" >> ~/.hermes/.env
-echo "MEM0_API_KEY=your-admin-api-key" >> ~/.hermes/.env
+echo "MEM0_HOST=http://localhost:8888" >> ~/.rabbit/.env
+echo "MEM0_API_KEY=your-admin-api-key" >> ~/.rabbit/.env
 ```
 
 or in `mem0.json`:
@@ -426,14 +426,14 @@ or in `mem0.json`:
 
 The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/memories` routes. `api_key` is optional (omit only for `AUTH_DISABLED` servers). Don't set `mode: oss` — it takes precedence over `host`.
 
-**Config:** `$HERMES_HOME/mem0.json` (behavioral settings). Only the secret `MEM0_API_KEY` belongs in `~/.hermes/.env`.
+**Config:** `$RABBIT_HOME/mem0.json` (behavioral settings). Only the secret `MEM0_API_KEY` belongs in `~/.rabbit/.env`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `platform` | `platform` (Mem0 Cloud) or `oss` (self-managed, in-process) |
 | `host` | — | Self-hosted Mem0 server URL (Docker dashboard). Routes over HTTP with `X-API-Key`; don't combine with `mode: oss` |
-| `user_id` | `hermes-user` | User identifier |
-| `agent_id` | `hermes` | Agent identifier |
+| `user_id` | `rabbit-user` | User identifier |
+| `agent_id` | `rabbit` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
 | `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction, cut at the last sentence boundary. The default fits 512-token embedders (Ollama `bge-small-zh-v1.5`, `all-minilm`); raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3` or `bge-m3` |
 
@@ -445,14 +445,14 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | Embedder | openai, ollama |
 | Vector Store | qdrant (local/server), pgvector |
 
-**Switching modes:** Re-run `hermes memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
+**Switching modes:** Re-run `rabbit memory setup mem0 --mode <platform|selfhosted|oss>` or edit `mem0.json` directly.
 
 ---
 
 ### Hindsight
 
 :::info Plugin catalog
-Hindsight is maintained by [vectorize-io](https://github.com/vectorize-io/hindsight) and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. Setup details live in the upstream docs: [hindsight.vectorize.io/sdks/integrations/hermes](https://hindsight.vectorize.io/sdks/integrations/hermes).
+Hindsight is maintained by [vectorize-io](https://github.com/vectorize-io/hindsight) and installed from the [plugin catalog](./plugins.md) rather than bundled with Rabbit. Setup details live in the upstream docs: [hindsight.vectorize.io/sdks/integrations/rabbit](https://hindsight.vectorize.io/sdks/integrations/rabbit).
 :::
 
 Long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval. The `hindsight_reflect` tool provides cross-memory synthesis that no other provider offers. Automatically retains full conversation turns (including tool calls) with session-level document tracking.
@@ -460,7 +460,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 | | |
 |---|---|
 | **Best for** | Knowledge graph-based recall with entity relationships |
-| **Requires** | `hermes plugins install hindsight`. Cloud: API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io). Local: LLM API key (OpenAI, Groq, OpenRouter, etc.) |
+| **Requires** | `rabbit plugins install hindsight`. Cloud: API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io). Local: LLM API key (OpenAI, Groq, OpenRouter, etc.) |
 | **Data storage** | Hindsight Cloud, local embedded PostgreSQL, or an external local Hindsight server |
 | **Cost** | Hindsight pricing (cloud) or free (local) |
 
@@ -468,49 +468,49 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 
 **Setup:**
 ```bash
-hermes plugins install hindsight   # from the plugin catalog
-hermes memory setup                # select "hindsight"
+rabbit plugins install hindsight   # from the plugin catalog
+rabbit memory setup                # select "hindsight"
 # Or manually:
-hermes config set memory.provider hindsight
-echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
+rabbit config set memory.provider hindsight
+echo "HINDSIGHT_API_KEY=your-key" >> ~/.rabbit/.env
 ```
 
-The plugin lands in `~/.hermes/plugins/hindsight/` (per profile home) and is enabled under `plugins.enabled` in `config.yaml`. `hermes memory setup`, `hermes memory status`, `hermes plugins list` and the dashboard Memory settings all work with the catalog-installed plugin. In local embedded mode the plugin installs `hindsight-all` on first use through Hermes' lazy-install path, which honours `security.allow_lazy_installs`.
+The plugin lands in `~/.rabbit/plugins/hindsight/` (per profile home) and is enabled under `plugins.enabled` in `config.yaml`. `rabbit memory setup`, `rabbit memory status`, `rabbit plugins list` and the dashboard Memory settings all work with the catalog-installed plugin. In local embedded mode the plugin installs `hindsight-all` on first use through Rabbit' lazy-install path, which honours `security.allow_lazy_installs`.
 
-**Local mode UI:** `hindsight-embed -p hermes ui start`
+**Local mode UI:** `hindsight-embed -p rabbit ui start`
 
-**Config:** `$HERMES_HOME/hindsight/config.json`
+**Config:** `$RABBIT_HOME/hindsight/config.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `mode` | `cloud` | `cloud`, `local_embedded`, or `local_external` |
-| `bank_id` | `hermes` | Memory bank identifier |
+| `bank_id` | `rabbit` | Memory bank identifier |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |
 | `auto_recall` | `true` | Automatically recall memories before each turn |
 | `retain_async` | `true` | Process retain asynchronously on the server |
-| `retain_context` | `conversation between Hermes Agent and the User` | Context label for retained memories |
+| `retain_context` | `conversation between Rabbit Agent and the User` | Context label for retained memories |
 | `retain_tags` | — | Default tags applied to retained memories; merged with per-call tool tags |
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
 
-See the [upstream Hermes integration docs](https://hindsight.vectorize.io/sdks/integrations/hermes) for the full configuration reference.
+See the [upstream Rabbit integration docs](https://hindsight.vectorize.io/sdks/integrations/rabbit) for the full configuration reference.
 
 #### Migrating from bundled Hindsight
 
-Hindsight used to ship inside the Hermes tree (and as the `hermes-agent[hindsight]` pip extra). If your `config.yaml` already has `memory.provider: hindsight`, there is nothing to do for most users:
+Hindsight used to ship inside the Rabbit tree (and as the `rabbit-agent[hindsight]` pip extra). If your `config.yaml` already has `memory.provider: hindsight`, there is nothing to do for most users:
 
-- `hermes update` installs the catalog plugin into every profile home that names the provider. Each line names the profile it is about. In a terminal it asks before preparing the plugin's Python dependencies; when several profiles use the provider, the questions are asked once and the answers apply to all of them. Without a terminal (the Desktop app, a script, a service) nobody can answer, so each profile prepares them unattended when its `security.allow_lazy_installs` is on (the default); a profile with it off gets the exact `hermes -p <profile> plugins install hindsight` command instead, and the other profiles still migrate.
-- If the plugin is still missing on the first agent start (`hermes chat`, Desktop, the gateway, …), Hermes installs it, dependencies included, and shows ``✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (memory.provider and your stored memories are unchanged; check its settings with `hermes memory status`).`` Messaging platforms get the line with the first reply.
+- `rabbit update` installs the catalog plugin into every profile home that names the provider. Each line names the profile it is about. In a terminal it asks before preparing the plugin's Python dependencies; when several profiles use the provider, the questions are asked once and the answers apply to all of them. Without a terminal (the Desktop app, a script, a service) nobody can answer, so each profile prepares them unattended when its `security.allow_lazy_installs` is on (the default); a profile with it off gets the exact `rabbit -p <profile> plugins install hindsight` command instead, and the other profiles still migrate.
+- If the plugin is still missing on the first agent start (`rabbit chat`, Desktop, the gateway, …), Rabbit installs it, dependencies included, and shows ``✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (memory.provider and your stored memories are unchanged; check its settings with `rabbit memory status`).`` Messaging platforms get the line with the first reply.
 - When the agent-start install cannot happen, you see why instead of silently running without external memory: with `security.allow_lazy_installs: false` the warning names the install command for that profile; offline or declined installs show the error and the same command.
 
-What changes on disk: the plugin appears in `~/.hermes/plugins/hindsight/` and `config.yaml` gains `plugins.enabled: [hindsight]`. `memory.provider`, `$HERMES_HOME/hindsight/config.json`, `HINDSIGHT_API_KEY` in `.env` and your memory bank data are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
+What changes on disk: the plugin appears in `~/.rabbit/plugins/hindsight/` and `config.yaml` gains `plugins.enabled: [hindsight]`. `memory.provider`, `$RABBIT_HOME/hindsight/config.json`, `HINDSIGHT_API_KEY` in `.env` and your memory bank data are untouched. Verify with `rabbit memory status` (provider active) and `rabbit plugins list` (plugin installed and enabled).
 
 :::warning Where the plugin reads its config
-Hindsight reads `$HERMES_HOME/hindsight/config.json` (per profile home), `~/.hindsight/config.json` (legacy shared), and the `HINDSIGHT_*` variables in `.env`. It does not read a `memory.hindsight` section of `config.yaml`: a `memory.hindsight.*` key there is ignored. Edit the plugin's own `config.json` (key table above) or use `hermes memory setup`.
+Hindsight reads `$RABBIT_HOME/hindsight/config.json` (per profile home), `~/.hindsight/config.json` (legacy shared), and the `HINDSIGHT_*` variables in `.env`. It does not read a `memory.hindsight` section of `config.yaml`: a `memory.hindsight.*` key there is ignored. Edit the plugin's own `config.json` (key table above) or use `rabbit memory setup`.
 :::
 
 ---
@@ -530,16 +530,16 @@ Local SQLite fact store with FTS5 full-text search, trust scoring, and HRR (Holo
 
 **Setup:**
 ```bash
-hermes memory setup    # select "holographic"
+rabbit memory setup    # select "holographic"
 # Or manually:
-hermes config set memory.provider holographic
+rabbit config set memory.provider holographic
 ```
 
-**Config:** `config.yaml` under `plugins.hermes-memory-store`
+**Config:** `config.yaml` under `plugins.rabbit-memory-store`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `db_path` | `$HERMES_HOME/memory_store.db` | SQLite database path |
+| `db_path` | `$RABBIT_HOME/memory_store.db` | SQLite database path |
 | `auto_extract` | `false` | Auto-extract facts at session end |
 | `default_trust` | `0.5` | Default trust score (0.0–1.0) |
 
@@ -566,10 +566,10 @@ Cloud memory API with hybrid search (Vector + BM25 + Reranking), 7 memory types,
 
 **Setup:**
 ```bash
-hermes memory setup    # select "retaindb"
+rabbit memory setup    # select "retaindb"
 # Or manually:
-hermes config set memory.provider retaindb
-echo "RETAINDB_API_KEY=your-key" >> ~/.hermes/.env
+rabbit config set memory.provider retaindb
+echo "RETAINDB_API_KEY=your-key" >> ~/.rabbit/.env
 ```
 
 ---
@@ -592,15 +592,15 @@ Persistent memory via the `brv` CLI — hierarchical knowledge tree with tiered 
 # Install the CLI first
 curl -fsSL https://byterover.dev/install.sh | sh
 
-# Then configure Hermes
-hermes memory setup    # select "byterover"
+# Then configure Rabbit
+rabbit memory setup    # select "byterover"
 # Or manually:
-hermes config set memory.provider byterover
+rabbit config set memory.provider byterover
 ```
 
 **Key features:**
 - Automatic pre-compression extraction (saves insights before context compression discards them)
-- Knowledge tree stored at `$HERMES_HOME/byterover/` (profile-scoped)
+- Knowledge tree stored at `$RABBIT_HOME/byterover/` (profile-scoped)
 - SOC2 Type II certified cloud sync (optional)
 
 ---
@@ -608,7 +608,7 @@ hermes config set memory.provider byterover
 ### Supermemory
 
 :::info Plugin catalog
-Supermemory is maintained by Supermemory and installed from the [plugin catalog](./plugins.md) rather than bundled with Hermes. Source and full configuration reference: [supermemoryai/hermes-supermemory](https://github.com/supermemoryai/hermes-supermemory). Existing setups are migrated automatically — see [Migrating from bundled Supermemory](#migrating-from-bundled-supermemory).
+Supermemory is maintained by Supermemory and installed from the [plugin catalog](./plugins.md) rather than bundled with Rabbit. Source and full configuration reference: [supermemoryai/rabbit-supermemory](https://github.com/supermemoryai/rabbit-supermemory). Existing setups are migrated automatically — see [Migrating from bundled Supermemory](#migrating-from-bundled-supermemory).
 :::
 
 Semantic long-term memory with profile recall, semantic search, explicit memory tools, and per-turn conversation capture (one document per session per 4-hour window).
@@ -616,7 +616,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | | |
 |---|---|
 | **Best for** | Semantic recall with user profiling and session-level graph building |
-| **Requires** | `hermes plugins install supermemory` (installs the Supermemory SDK with the plugin); [cloud API key](http://app.supermemory.ai/integrations?connect=hermes), or a [self-hosted server](https://supermemory.ai/docs/self-hosting/overview) |
+| **Requires** | `rabbit plugins install supermemory` (installs the Supermemory SDK with the plugin); [cloud API key](http://app.supermemory.ai/integrations?connect=rabbit), or a [self-hosted server](https://supermemory.ai/docs/self-hosting/overview) |
 | **Data storage** | Supermemory Cloud or self-hosted |
 | **Cost** | Supermemory pricing (cloud) / free (self-hosted) |
 
@@ -624,11 +624,11 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 
 **Setup:**
 ```bash
-hermes plugins install supermemory   # from the plugin catalog
-hermes memory setup                  # select "supermemory"
+rabbit plugins install supermemory   # from the plugin catalog
+rabbit memory setup                  # select "supermemory"
 # Or manually:
-hermes config set memory.provider supermemory
-echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
+rabbit config set memory.provider supermemory
+echo 'SUPERMEMORY_API_KEY=***' >> ~/.rabbit/.env
 ```
 
 Self-hosted setup:
@@ -637,8 +637,8 @@ Self-hosted setup:
 npx supermemory local
 ```
 
-After `hermes plugins install supermemory` and before running `hermes memory setup`, set `base_url` in
-`$HERMES_HOME/supermemory.json`:
+After `rabbit plugins install supermemory` and before running `rabbit memory setup`, set `base_url` in
+`$RABBIT_HOME/supermemory.json`:
 
 ```json
 {
@@ -646,16 +646,16 @@ After `hermes plugins install supermemory` and before running `hermes memory set
 }
 ```
 
-Then run `hermes memory setup` and enter the API key printed by the local
+Then run `rabbit memory setup` and enter the API key printed by the local
 server. Configuring the endpoint first ensures the setup connection probe also
 stays local.
 
-**Config:** `$HERMES_HOME/supermemory.json`
+**Config:** `$RABBIT_HOME/supermemory.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_url` | `https://api.supermemory.ai` | API endpoint for hosted or self-hosted Supermemory. Takes priority over `SUPERMEMORY_BASE_URL`. |
-| `container_tag` | `hermes` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags. |
+| `container_tag` | `rabbit` | Container tag used for search and writes. Supports `{identity}` template for profile-scoped tags. |
 | `auto_recall` | `true` | Inject relevant memory context before turns |
 | `auto_capture` | `true` | Store cleaned user-assistant turns after each response |
 | `max_recall_results` | `10` | Max recalled items to format into context |
@@ -674,7 +674,7 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 - Failed turn writes are retried (at-least-once) on the next turn, session end, `/reset`, or shutdown
 - End-to-end self-hosted routing — SDK and probe requests use the same configured endpoint
 - Profile facts injected on first turn and at configurable intervals
-- **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile
+- **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `rabbit-{identity}` → `rabbit-coder`) to isolate memories per Rabbit profile
 - **Multi-container mode** — enable `enable_custom_container_tags` with a `custom_containers` list to let the agent read/write across named containers. Automatic operations stay on the primary container.
 
 <details>
@@ -682,7 +682,7 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 
 ```json
 {
-  "container_tag": "hermes",
+  "container_tag": "rabbit",
   "enable_custom_container_tags": true,
   "custom_containers": ["project-alpha", "shared-knowledge"],
   "custom_container_instructions": "Use project-alpha for coding context."
@@ -695,13 +695,13 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 
 ### Migrating from bundled Supermemory
 
-Supermemory used to ship inside the Hermes tree (and as the `hermes-agent[supermemory]` pip extra). If your `config.yaml` already has `memory.provider: supermemory`, there is nothing to do for most users:
+Supermemory used to ship inside the Rabbit tree (and as the `rabbit-agent[supermemory]` pip extra). If your `config.yaml` already has `memory.provider: supermemory`, there is nothing to do for most users:
 
-- `hermes update` installs the catalog plugin into every profile home that names the provider (this runs even when `security.allow_lazy_installs` is `false`).
-- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, …), Hermes installs it and prints `✓ Memory provider 'supermemory' moved out of core — installed its plugin from the catalog (your memory.supermemory settings and data are unchanged).`
-- With `security.allow_lazy_installs: false`, the agent-start path instead logs one line — ``Memory provider 'supermemory' is not installed; security.allow_lazy_installs is off — run `hermes plugins install supermemory`.`` — and you run `hermes plugins install supermemory` yourself.
+- `rabbit update` installs the catalog plugin into every profile home that names the provider (this runs even when `security.allow_lazy_installs` is `false`).
+- If the plugin is still missing on the first agent start (`rabbit chat`, the gateway, …), Rabbit installs it and prints `✓ Memory provider 'supermemory' moved out of core — installed its plugin from the catalog (your memory.supermemory settings and data are unchanged).`
+- With `security.allow_lazy_installs: false`, the agent-start path instead logs one line — ``Memory provider 'supermemory' is not installed; security.allow_lazy_installs is off — run `rabbit plugins install supermemory`.`` — and you run `rabbit plugins install supermemory` yourself.
 
-What changes on disk: the plugin appears in `~/.hermes/plugins/supermemory/` and `config.yaml` gains `plugins.enabled: [supermemory]`. The Supermemory SDK is installed from the plugin's own package metadata, so the `hermes-agent[supermemory]` extra is no longer needed. `memory.provider`, `$HERMES_HOME/supermemory.json`, the `SUPERMEMORY_*` keys in `.env` and the memories stored in your Supermemory account are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
+What changes on disk: the plugin appears in `~/.rabbit/plugins/supermemory/` and `config.yaml` gains `plugins.enabled: [supermemory]`. The Supermemory SDK is installed from the plugin's own package metadata, so the `rabbit-agent[supermemory]` extra is no longer needed. `memory.provider`, `$RABBIT_HOME/supermemory.json`, the `SUPERMEMORY_*` keys in `.env` and the memories stored in your Supermemory account are untouched. Verify with `rabbit memory status` (provider active) and `rabbit plugins list` (plugin installed and enabled).
 
 ### Memori
 
@@ -710,7 +710,7 @@ Structured long-term memory using Memori Cloud, with background completed-turn c
 | | |
 |---|---|
 | **Best for** | Agent-controlled recall with structured project and session attribution |
-| **Requires** | Externally supplied `hermes-memori` CLI and provider integration + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Requires** | Externally supplied `rabbit-memori` CLI and provider integration + [Memori API key](https://app.memorilabs.ai/signup) |
 | **Data storage** | Memori Cloud |
 | **Cost** | Memori pricing |
 
@@ -718,24 +718,24 @@ Structured long-term memory using Memori Cloud, with background completed-turn c
 
 **Setup:**
 
-`hermes-memori` is an external integration, not a managed PM tool name. Follow
+`rabbit-memori` is an external integration, not a managed PM tool name. Follow
 its publisher's instructions to install the CLI in an independent environment.
-Before running its installer, confirm that it targets the intended Hermes home
+Before running its installer, confirm that it targets the intended Rabbit home
 and supplies a provider with declared Python dependencies. Do not let an external
-installer pip-install into Hermes's selected environment. CLI availability alone
-does not make the Python provider available inside Hermes; an entry-point-only
+installer pip-install into Rabbit's selected environment. CLI availability alone
+does not make the Python provider available inside Rabbit; an entry-point-only
 distribution needs an owner-managed build that includes it.
 
 ```bash
 # Run only after confirming the external installer's integration contract above.
-hermes-memori install
-hermes config set memory.provider memori
-hermes memory setup
+rabbit-memori install
+rabbit config set memory.provider memori
+rabbit memory setup
 ```
 
 If the installer does not support PM-managed directory-provider admission, ask
-the publisher for that integration rather than inventing a `hermes pm install`
-package command. Restart Hermes after successful dependency preparation.
+the publisher for that integration rather than inventing a `rabbit pm install`
+package command. Restart Rabbit after successful dependency preparation.
 
 ---
 
@@ -743,39 +743,39 @@ package command. Restart Hermes after successful dependency preparation.
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
-| **Honcho** (plugin catalog) | Cloud/Self-hosted | Paid/Free | 5 | `hermes plugins install honcho` | Dialectic user modeling + session-scoped context |
+| **Honcho** (plugin catalog) | Cloud/Self-hosted | Paid/Free | 5 | `rabbit plugins install honcho` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 6 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 4 | `mem0ai` | Server-side LLM extraction + self-hosted/OSS modes |
-| **Hindsight** (plugin catalog) | Cloud/Local | Free/Paid | 3 | `hermes plugins install hindsight` | Knowledge graph + reflect synthesis |
+| **Hindsight** (plugin catalog) | Cloud/Local | Free/Paid | 3 | `rabbit plugins install hindsight` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 10 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
-| **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
-| **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `rabbit plugins install supermemory` | Context fencing + session graph ingest + multi-container |
+| **Memori** | Cloud | Free/Paid | 5 | `rabbit-memori` | Tool-aware memory + structured recall |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](../profiles.md):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Local storage providers** (Holographic, ByteRover) use `$RABBIT_HOME/` paths which differ per profile
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$RABBIT_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
 ## Providers Moving to the Plugin Catalog
 
-Memory providers are moving out of the Hermes tree into their maintainers' own repositories,
+Memory providers are moving out of the Rabbit tree into their maintainers' own repositories,
 published through the [plugin catalog](./plugins.md). Hindsight moved first (see
 [Migrating from bundled Hindsight](#migrating-from-bundled-hindsight)), then Honcho (see
 [Upgrading from the bundled Honcho](#upgrading-from-the-bundled-honcho)) and Supermemory (see
 [Migrating from bundled Supermemory](#migrating-from-bundled-supermemory)). Nothing changes for you: the
 provider name, the settings it reads, its data directory and its tools stay the same.
-When a provider you have configured stops shipping with Hermes, `hermes update` installs its
+When a provider you have configured stops shipping with Rabbit, `rabbit update` installs its
 catalog plugin for every profile that names it; if you update through the Desktop app, the
 agent does the same the first time it starts. Every outcome is shown to you — in the terminal,
 in Desktop, or with the first reply on a messaging platform. If the install cannot happen
 (`security.allow_lazy_installs: false`, offline, declined), the warning includes the exact
-`hermes plugins install <name>` command.
+`rabbit plugins install <name>` command.
 
 ## Building a Memory Provider
 

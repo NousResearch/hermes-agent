@@ -65,7 +65,7 @@ describe('parseHyprlandClients', () => {
   it('leaves our own windows out, even when the HUD itself is focused', () => {
     const parsed = parseHyprlandClients(
       payload(
-        client({ class: 'hermes', focusHistoryID: 0, pid: SELF_PID }),
+        client({ class: 'rabbit', focusHistoryID: 0, pid: SELF_PID }),
         client({ class: 'firefox', focusHistoryID: 1, pid: 2 })
       ),
       SELF_PID
@@ -80,7 +80,7 @@ describe('parseHyprlandClients', () => {
   it('drops windows on workspaces other than ours', () => {
     const parsed = parseHyprlandClients(
       payload(
-        client({ class: 'hermes', pid: SELF_PID, workspace: { id: 2 } }),
+        client({ class: 'rabbit', pid: SELF_PID, workspace: { id: 2 } }),
         client({ class: 'visible', focusHistoryID: 1, pid: 2, workspace: { id: 2 } }),
         client({ class: 'elsewhere', focusHistoryID: 1, pid: 3, workspace: { id: 7 } })
       ),

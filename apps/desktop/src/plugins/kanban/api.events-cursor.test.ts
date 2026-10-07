@@ -1,4 +1,4 @@
-import { type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
+import { type PluginRestOptions, type PluginStorage, queryClient } from '@rabbit/plugin-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Opening /events with no since replayed the board's whole task_events history.

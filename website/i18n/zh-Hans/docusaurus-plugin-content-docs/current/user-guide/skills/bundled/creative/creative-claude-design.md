@@ -26,7 +26,7 @@ description: "设计一次性 HTML 制品（落地页、幻灯片、原型）"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # 面向 CLI/API Agent 的 Claude Design
@@ -39,7 +39,7 @@ description: "设计一次性 HTML 制品（落地页、幻灯片、原型）"
 
 ## 何时使用此 Skill vs `popular-web-designs` vs `design-md`
 
-Hermes 在 `skills/creative/` 下有三个与设计相关的 skill，它们各司其职——请加载正确的一个（或组合使用）：
+Rabbit 在 `skills/creative/` 下有三个与设计相关的 skill，它们各司其职——请加载正确的一个（或组合使用）：
 
 | Skill | 提供内容 | 适用场景 |
 |---|---|---|

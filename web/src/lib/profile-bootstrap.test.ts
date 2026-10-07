@@ -25,7 +25,7 @@ describe("initialProfileScope", () => {
   });
 
   it("keeps a named-profile dashboard on its own profile (#96712)", () => {
-    // `hermes -p demo serve` with the machine's sticky active profile on
+    // `rabbit -p demo serve` with the machine's sticky active profile on
     // `default`: the dashboard must not retarget chats to the other agent.
     expect(shouldAdoptActiveProfile(null, "", "demo", "default")).toBe(false);
     expect(shouldAdoptActiveProfile(null, "", "custom", "default")).toBe(false);
@@ -38,7 +38,7 @@ describe("dashboardServingProfile", () => {
   });
 
   it.each([
-    ["an injected serving profile", { __HERMES_DASHBOARD_PROFILE__: "served" }, "served"],
+    ["an injected serving profile", { __RABBIT_DASHBOARD_PROFILE__: "served" }, "served"],
     ["a window without one", {}, ""],
   ])("reports %s", (_label, windowStub, expected) => {
     vi.stubGlobal("window", windowStub);
@@ -63,7 +63,7 @@ describe("initialProfileScope precedence", () => {
   });
 
   it("defaults the serving profile to the one this backend injected", () => {
-    vi.stubGlobal("window", { __HERMES_DASHBOARD_PROFILE__: "served" });
+    vi.stubGlobal("window", { __RABBIT_DASHBOARD_PROFILE__: "served" });
     expect(initialProfileScope(new URLSearchParams("resume=s1"), "")).toBe("served");
   });
 });

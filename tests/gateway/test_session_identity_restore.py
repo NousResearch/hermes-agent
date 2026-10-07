@@ -3,7 +3,7 @@
 A restarted multiplexed gateway rebuilds every lane from the routing index; the key namespace says
 where the lane runs but not which bot received it. ``SessionEntry.transport_profile`` persists that
 bot, ``_restored_source`` re-pins the identity, and delivery goes through that bot or fails closed.
-Real ``GatewayRunner`` resolvers and a real ``SessionStore`` over a temp ``HERMES_HOME`` — no
+Real ``GatewayRunner`` resolvers and a real ``SessionStore`` over a temp ``RABBIT_HOME`` — no
 patched predicates.
 """
 
@@ -67,11 +67,11 @@ def mux(tmp_path, monkeypatch):
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):
         (home / "profiles" / name).mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+    with patch("rabbit_cli.profiles.profiles_to_serve", return_value=served), \
+            patch("rabbit_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
+            patch("rabbit_cli.profiles.profile_exists", return_value=True):
         yield _runner(home)
 
 
@@ -138,7 +138,7 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     wire dict is byte-identical to before, and a restored source resolves as it always did."""
     home = tmp_path / "solo"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     solo = _runner(home, multiplex=False)
     store = SessionStore(sessions_dir=home / "sessions", config=solo.runner.config)
     source = solo.primary.build_source(chat_id="4040", chat_type="dm", user_id="4040")

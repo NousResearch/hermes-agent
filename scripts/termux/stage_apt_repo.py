@@ -6,7 +6,7 @@ and copies .debs into pool/<first-char>/.
 
 Usage:
   python stage_apt_repo.py --pool POOL_DIR --out OUT_DIR \
-      --suite hermes-stable|hermes-canary [--gpg-key-file PATH]
+      --suite rabbit-stable|rabbit-canary [--gpg-key-file PATH]
 
 Exit codes:
   0 - success
@@ -266,9 +266,9 @@ def stage(
                 "Package": fields["Package"],
                 "Version": fields["Version"],
                 "Architecture": arch,
-                "Maintainer": fields.get("Maintainer", "Hermes Agent <noreply@nousresearch.com>"),
+                "Maintainer": fields.get("Maintainer", "Sanath Patil <sanathpatil8861@gmail.com>"),
                 "Installed-Size": fields.get("Installed-Size", "0"),
-                "Description": fields.get("Description", "Hermes Agent"),
+                "Description": fields.get("Description", "Rabbit Agent"),
                 "Filename": filename,
                 "Size": str(size),
                 "SHA256": sha256,
@@ -296,14 +296,14 @@ def stage(
     # line ends the record, and apt then never sees the hashes ("weak
     # security information"). One paragraph, no blank lines.
     release_fields = [
-        "Origin: Hermes Agent",
-        "Label: hermes-agent",
+        "Origin: Rabbit Agent",
+        "Label: rabbit-agent",
         f"Suite: {suite}",
         f"Codename: {suite}",
         f"Architectures: {ARCH}",
         f"Components: {COMPONENT}",
         "Acquire-By-Hash: yes",
-        f"Description: Hermes Agent apt repository ({suite})",
+        f"Description: Rabbit Agent apt repository ({suite})",
         "Date: " + time.strftime("%a, %d %b %Y %H:%M:%S UTC", time.gmtime()),
     ]
     checksums = []
@@ -514,13 +514,13 @@ def main(argv: list | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage a static APT repo layout.")
     ap.add_argument("--pool", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
-    # hermes-nightly is the suite actually published today
-    # (https://hermes-assets.nousresearch.com/releases/termux/nightly/,
-    # verified 2026-09-06); hermes-stable/hermes-canary are what CI stages
+    # rabbit-nightly is the suite actually published today
+    # (https://rabbit-assets.nousresearch.com/releases/termux/nightly/,
+    # verified 2026-09-06); rabbit-stable/rabbit-canary are what CI stages
     # for the stable/canary channels.
     ap.add_argument(
         "--suite", required=True,
-        choices=["hermes-stable", "hermes-canary", "hermes-nightly"],
+        choices=["rabbit-stable", "rabbit-canary", "rabbit-nightly"],
     )
     ap.add_argument("--gpg-key-file", type=Path, default=None)
     ap.add_argument("--pool-subdir", default="")

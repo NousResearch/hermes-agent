@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import {
   type CronTriggerController,
   createCronTriggerController,
-} from "@hermes/shared";
+} from "@rabbit/shared";
 import { Clock, Pause, Pencil, Play, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -607,7 +607,7 @@ export default function CronPage() {
   });
 
   // Skills installed in the profile a job will run under, for the
-  // attach-skill selector (parity with `hermes cron edit --add-skill`).
+  // attach-skill selector (parity with `rabbit cron edit --add-skill`).
   // Keyed on the create-modal profile; the edit modal reuses the list —
   // a job's current skills are always shown even if not in it.
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);

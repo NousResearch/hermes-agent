@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import tui_gateway.server as server
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 LAUNCH_CWD = "/workspace/default"
@@ -51,8 +51,8 @@ def _reset_cfg_cache() -> None:
 
 
 def _bind_homes(monkeypatch, launch: Path, worker: Path) -> None:
-    monkeypatch.setattr(server, "_hermes_home", launch)
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", launch)
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setattr(
         server,
         "_profile_home",
@@ -125,11 +125,11 @@ def test_launch_cwd_reads_launch_config_during_foreign_profile_scope(tmp_path, m
     _write_cfg(worker, str(worker_cwd), WORKER_ROOTS)
     _bind_homes(monkeypatch, launch, worker)
 
-    token = set_hermes_home_override(str(worker))
+    token = set_rabbit_home_override(str(worker))
     try:
         assert server._launch_configured_cwd() == str(launch_cwd)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_profile_cwd_write_does_not_retarget_launch_session(tmp_path, monkeypatch):

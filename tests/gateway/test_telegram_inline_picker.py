@@ -4,7 +4,7 @@ Covers the PTB-free logic module ``plugins/platforms/telegram/inline_picker``
 (catalog collection, ranking, pagination) and the adapter's
 ``_handle_inline_query`` (auth gate, personal caching, empty-answer on
 deny). The picker exists because the BotCommand menu is capped (60-slot
-Hermes default / 100 API max, ~4KB payload) while inline mode is uncapped —
+Rabbit default / 100 API max, ~4KB payload) while inline mode is uncapped —
 every command and skill must be reachable through it.
 """
 
@@ -118,7 +118,7 @@ class TestBuildInlineResults:
 class TestCollectInlineCatalog:
     def test_catalog_is_uncapped_and_includes_all_skills(self, tmp_path, monkeypatch):
         """The whole point: unlike the 60-slot menu, EVERY skill appears."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         skills = tmp_path / "skills"
         names = [f"filler-{i:02d}" for i in range(70)] + ["zzz-last-skill"]
         for n in names:
@@ -128,7 +128,7 @@ class TestCollectInlineCatalog:
                 f"---\nname: {n}\ndescription: test skill {n}\n---\n# {n}\n"
             )
         # SKILLS_DIR is resolved at import time — in a full-suite run it
-        # points at an earlier test's HERMES_HOME, so pin it (both the
+        # points at an earlier test's RABBIT_HOME, so pin it (both the
         # scanner in agent.skill_commands and the prefix allowlist in
         # _collect_gateway_skill_entries import it from tools.skills_tool).
         from tools import skills_tool
@@ -144,7 +144,7 @@ class TestCollectInlineCatalog:
         assert "help" in got and "plan" in got
 
     def test_no_duplicate_names(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         (tmp_path / "skills").mkdir()
         catalog = collect_inline_catalog()
         names = [i["name"] for i in catalog]

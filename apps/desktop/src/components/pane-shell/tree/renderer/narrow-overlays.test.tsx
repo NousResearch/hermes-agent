@@ -54,7 +54,7 @@ afterEach(() => {
   $layoutTree.set(null)
   $connection.set(null)
   vi.restoreAllMocks()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
   disposers.splice(0).forEach(dispose => dispose())
 })
 
@@ -102,7 +102,7 @@ describe('narrow overlay of a stacked zone', () => {
     // lights on a narrow window" (#110033). The overlay starts at the
     // viewport's top edge, so without a reservation its tab strip sits under
     // the native controls.
-    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+    Object.defineProperty(window, 'rabbitDesktop', { configurable: true, value: {} })
     $connection.set({ windowButtonPosition: { x: 24, y: 0 } } as never)
     // jsdom has no layout: the overlay fills the viewport's top-left corner.
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({

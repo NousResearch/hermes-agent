@@ -14,10 +14,9 @@ description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/data-science/jupyter-notebook` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/data-science/jupyter-notebook` 安装 |
 | 路径 | `optional-skills/data-science/jupyter-notebook` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `jupyter`, `notebook`, `repl`, `data-science`, `exploration`, `iterative` |
@@ -25,7 +24,7 @@ description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Jupyter Notebook（hamelnb 实时内核）
@@ -37,7 +36,7 @@ description: "通过实时 Jupyter 内核进行迭代式 Python 开发（hamelnb
 | 工具 | 使用场景 |
 |------|----------|
 | **本 skill** | 迭代式探索、跨步骤保持状态、数据科学、机器学习、"试试看再检查" |
-| `execute_code` | 需要访问 Hermes 工具（web_search、文件操作）的一次性脚本。无状态。 |
+| `execute_code` | 需要访问 Rabbit 工具（web_search、文件操作）的一次性脚本。无状态。 |
 | `terminal` | Shell 命令、构建、安装、git、进程管理 |
 
 **经验法则：** 如果你会为某个任务打开 Jupyter notebook，就使用本 skill。

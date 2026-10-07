@@ -10,7 +10,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
     def test_auth_error_tries_fallback(self, tmp_path, monkeypatch):
         """When primary provider raises AuthError, fallback is attempted."""
-        from hermes_cli.auth import AuthError
+        from rabbit_cli.auth import AuthError
 
         # Create a config with fallback
         config_path = tmp_path / "config.yaml"
@@ -20,7 +20,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             "  model: meta-llama/llama-4-maverick\n"
         )
 
-        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setattr("gateway.run._rabbit_home", tmp_path)
 
         call_count = {"n": 0}
 
@@ -43,7 +43,7 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             }
 
         with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "rabbit_cli.runtime_provider.resolve_runtime_provider",
             side_effect=_mock_resolve,
         ):
             from gateway.run import _resolve_runtime_agent_kwargs

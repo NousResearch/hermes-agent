@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 class TestAtomicRoundtripYamlSave:
@@ -253,7 +253,7 @@ class TestAtomicRoundtripYamlSave:
         return fake_open
 
     def test_refuses_to_overwrite_unreadable_existing_config(self, config_path):
-        """Shares the fail-closed contract with hermes_cli.config.atomic_config_write:
+        """Shares the fail-closed contract with rabbit_cli.config.atomic_config_write:
         an existing-but-unreadable config.yaml (permission error, broken mount)
         must raise rather than being silently replaced with only new_state."""
         original = "model:\n  default: test-model\n"

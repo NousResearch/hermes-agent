@@ -1,11 +1,11 @@
 """Agent-as-provider transcript projection + skill-nudge tick.
 
 A provider that IS an agent executes its own tools inside its own session. Those
-calls never come back as pending ``tool_calls`` (Hermes would re-run finished
+calls never come back as pending ``tool_calls`` (Rabbit would re-run finished
 work), so two subsystems would otherwise be blind to them:
 
   * the self-improvement loop, which distils skills/memories from ``messages``;
-  * the skill-review nudge, whose counter only moves on Hermes tool iterations.
+  * the skill-review nudge, whose counter only moves on Rabbit tool iterations.
 
 ``splice_provider_projection`` closes both gaps. The helper is unit tested here,
 and the wiring is exercised for real: the last tests drive a whole
@@ -68,7 +68,7 @@ def test_projected_rows_are_appended_and_the_nudge_ticks():
     messages = [{"role": "user", "content": "edit main.py"}]
     spliced = splice_provider_projection(
         agent,
-        _response(hermes_projected_messages=_projected_rows(), hermes_provider_tool_iterations=1),
+        _response(rabbit_projected_messages=_projected_rows(), rabbit_provider_tool_iterations=1),
         messages,
     )
     assert spliced == 2
@@ -82,14 +82,14 @@ def test_rows_are_stamped_like_every_other_live_transcript_append():
     from the ones the loop appends itself."""
     messages: list = []
     splice_provider_projection(
-        _agent(), _response(hermes_projected_messages=_projected_rows()), messages
+        _agent(), _response(rabbit_projected_messages=_projected_rows()), messages
     )
     assert all(isinstance(m.get("timestamp"), float) for m in messages)
 
 
 def test_iterations_accumulate_across_calls():
     agent = _agent(iters=2)
-    splice_provider_projection(agent, _response(hermes_provider_tool_iterations=3), [])
+    splice_provider_projection(agent, _response(rabbit_provider_tool_iterations=3), [])
     assert agent._iters_since_skill == 5
 
 
@@ -108,8 +108,8 @@ def test_garbage_attributes_cannot_break_the_turn():
     assert splice_provider_projection(
         agent,
         _response(
-            hermes_projected_messages="not-a-list",
-            hermes_provider_tool_iterations="lots",
+            rabbit_projected_messages="not-a-list",
+            rabbit_provider_tool_iterations="lots",
         ),
         messages,
     ) == 0
@@ -119,7 +119,7 @@ def test_garbage_attributes_cannot_break_the_turn():
     # A list with non-dict entries keeps only the usable rows.
     assert splice_provider_projection(
         agent,
-        _response(hermes_projected_messages=[{"role": "tool", "content": "ok"}, "junk", None]),
+        _response(rabbit_projected_messages=[{"role": "tool", "content": "ok"}, "junk", None]),
         messages,
     ) == 1
     assert [m["role"] for m in messages] == ["tool"]
@@ -140,8 +140,8 @@ class _FakeAgentProviderCompletions:
         return SimpleNamespace(
             choices=[SimpleNamespace(message=message, finish_reason="stop")],
             usage=None,
-            hermes_projected_messages=self._projected,
-            hermes_provider_tool_iterations=self._iterations,
+            rabbit_projected_messages=self._projected,
+            rabbit_provider_tool_iterations=self._iterations,
         )
 
 

@@ -19,7 +19,7 @@ def routing_cfg(monkeypatch):
         "openai/gpt-6-astra": {"only": ["openai"]},
         "anthropic/claude-fable-5.1": {"only": ["anthropic"], "sort": "throughput"},
     }}}
-    import hermes_cli.config as config_mod
+    import rabbit_cli.config as config_mod
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda: cfg)
     return cfg
 

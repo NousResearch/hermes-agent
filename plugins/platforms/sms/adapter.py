@@ -83,7 +83,7 @@ def check_sms_requirements() -> bool:
 
 
 class SmsAdapter(BasePlatformAdapter):
-    """Twilio SMS <-> Hermes: one session per inbound number; replies always from TWILIO_PHONE_NUMBER."""
+    """Twilio SMS <-> Rabbit: one session per inbound number; replies always from TWILIO_PHONE_NUMBER."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
 
@@ -287,7 +287,7 @@ _SMS_MARKDOWN_SUBS = (
 # #3823) Added when the SMS (Twilio) adapter moved from gateway/platforms/sms.py into this bundled plugin.
 # register() exposes the platform via the registry, replacing the Platform.SMS elif in gateway/run.py, the
 # _PLATFORM_CONNECTED_CHECKERS entry in gateway/config.py, the _PLATFORMS["sms"] static dict in
-# hermes_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
+# rabbit_cli/gateway.py, and the _send_sms dispatch in tools/send_message_tool.py. TWILIO_*
 # env→PlatformConfig seeding stays in core.
 # ──────────────────────────────────────────────────────────────────────────
 def _strip_markdown_for_sms(message: str) -> str:
@@ -328,7 +328,7 @@ _is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Rabbit plugin system."""
     ctx.register_platform(
         name="sms", label="SMS (Twilio)", adapter_factory=SmsAdapter,
         check_fn=check_sms_requirements, is_connected=_is_connected,

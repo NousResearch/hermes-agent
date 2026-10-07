@@ -38,8 +38,8 @@ from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from agent.skill_commands import extract_user_instruction_from_skill_message
-from hermes_cli.version_info import get_version_info
-from hermes_constants import get_hermes_home
+from rabbit_cli.version_info import get_version_info
+from rabbit_constants import get_rabbit_home
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = ""
-_OPENVIKING_USER_AGENT = f"openviking-memory-hermes/{get_version_info().base_version}"
+_OPENVIKING_USER_AGENT = f"openviking-memory-rabbit/{get_version_info().base_version}"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -64,7 +64,7 @@ _SESSION_DRAIN_TIMEOUT = 10.0
 _DEFERRED_COMMIT_TIMEOUT = (_TIMEOUT * 2) + 5.0
 _SESSION_MESSAGE_BATCH_LIMIT = 100
 _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
-_SYNC_TRACE_ENV = "HERMES_OPENVIKING_SYNC_TRACE"
+_SYNC_TRACE_ENV = "RABBIT_OPENVIKING_SYNC_TRACE"
 _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
@@ -124,7 +124,7 @@ _OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
 # Identity probe states; "modern" and "legacy" are the two identified ones.
 _OPENVIKING_IDENTIFIED_STATES = frozenset({"modern", "legacy"})
 _RETRY_LATER = (
-    "OpenViking memory is temporarily unavailable; Hermes will retry on a later access or when the config changes."
+    "OpenViking memory is temporarily unavailable; Rabbit will retry on a later access or when the config changes."
 )
 _FIX_ENDPOINT = "OpenViking memory is temporarily unavailable; correct the endpoint and reload the configuration."
 _HTTPX_MISSING = "httpx not installed — OpenViking plugin disabled"
@@ -187,7 +187,7 @@ def _format_openviking_exception(error: Exception) -> str:
 
 
 def _derive_openviking_user_text(content: Any) -> str:
-    """Strip Hermes slash-skill scaffolding before sending content to OpenViking
+    """Strip Rabbit slash-skill scaffolding before sending content to OpenViking
     (MemoryManager already does this for the fan-out; kept for direct hook callers)."""
     return extract_user_instruction_from_skill_message(content) or ""
 
@@ -199,7 +199,7 @@ def _preview(value: Any, limit: int = 160) -> str:
 
 # atexit safety net: commit pending sessions even if shutdown_memory_provider
 # never runs (gateway crash, exception in the session expiry watcher, ...).
-# One entry per Hermes home: a multiplexed gateway initializes a provider per profile and every
+# One entry per Rabbit home: a multiplexed gateway initializes a provider per profile and every
 # one of them holds pending sessions worth committing, not just the last to initialize.
 _active_providers_by_home: Dict[str, "OpenVikingMemoryProvider"] = {}
 
@@ -645,7 +645,7 @@ def _normalize_openviking_url(url: str) -> str:
         blocked = _openviking_endpoint_is_always_blocked(candidate)
     except Exception as exc:
         logger.debug("OpenViking endpoint safety validation failed", exc_info=True)
-        raise _OpenVikingEndpointError("OpenViking endpoint safety validation failed; Hermes refused the connection.") from exc
+        raise _OpenVikingEndpointError("OpenViking endpoint safety validation failed; Rabbit refused the connection.") from exc
     if blocked:
         raise _OpenVikingEndpointError(
             f"OpenViking endpoint {_openviking_endpoint_label(candidate)} targets a blocked metadata address."
@@ -741,9 +741,9 @@ def _is_local_openviking_url(value: str) -> bool:
     return parsed.scheme.lower() == "http" and (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
 
 
-def _load_hermes_openviking_config() -> dict:
+def _load_rabbit_openviking_config() -> dict:
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
 
         config = load_config_readonly()
         memory_config = config.get("memory", {}) if isinstance(config, dict) else {}
@@ -963,32 +963,32 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     # An occupied port only prevents spawning — it never proves the listener is OpenViking.
     if _local_openviking_port_is_open(host, port):
         return _LOCAL_SERVER_OCCUPIED, (
-            f"Port {host}:{port} is occupied by {_describe_local_port_listener(host, port)}. Hermes did not start "
+            f"Port {host}:{port} is occupied by {_describe_local_port_listener(host, port)}. Rabbit did not start "
             "openviking-server because the listener has not passed OpenViking's /health check."
         )
     server_cmd = shutil.which("openviking-server")
     if not server_cmd:
         return _LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
-    log_path = get_hermes_home() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
+    log_path = get_rabbit_home() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        # Strip PYTHONPATH: the Desktop backend puts the Hermes venv on it, which
+        # Strip PYTHONPATH: the Desktop backend puts the Rabbit venv on it, which
         # would shadow openviking-server's own site-packages (and on Windows lock
-        # the Hermes venv's .pyd files, breaking `hermes update`).
+        # the Rabbit venv's .pyd files, breaking `rabbit update`).
         # Do not let the server child inherit this process's PYTHONPATH. If inherited, openviking-server
-        # would import aiohttp and friends from the Hermes venv instead of its own (its venv's site-packages
+        # would import aiohttp and friends from the Rabbit venv instead of its own (its venv's site-packages
         # are shadowed because PYTHONPATH precedes them) — and on Windows the loaded DLLs then lock the
-        # Hermes venv, aborting `hermes update` with access-denied on .pyd files. (#78153)
+        # Rabbit venv, aborting `rabbit update` with access-denied on .pyd files. (#78153)
         # The server's embedding/VLM models may read provider keys, so the bound profile's pass
         # (never the launch profile's: under multiplex the process env belongs to whoever started
         # the gateway, and with no bound profile the builder refuses); bot, gateway and relay
         # tokens never do. HOME stays the user's: ov.conf defaults to ~/.openviking.
-        from tools.environments.local import hermes_subprocess_env, served_profile_child_env
+        from tools.environments.local import rabbit_subprocess_env, served_profile_child_env
         # The profile overlay re-adds everything in its .env, bot tokens included; the second pass
         # drops Tier 1 again while keeping the provider keys.
-        child_env = hermes_subprocess_env(
+        child_env = rabbit_subprocess_env(
             inherit_credentials=True, base_env=served_profile_child_env(inherit_credentials=True))
-        child_env["HOME"] = child_env["HERMES_REAL_HOME"]
+        child_env["HOME"] = child_env["RABBIT_REAL_HOME"]
         child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:
             subprocess.Popen([server_cmd, "--host", host, "--port", str(port)], stdout=log_file, stderr=log_file,
@@ -1215,7 +1215,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def __init__(self):
         self._client: Optional[_VikingClient] = None
         self._endpoint = self._api_key = self._account = self._user = self._agent = ""
-        self._session_id, self._turn_count, self._hermes_home = "", 0, ""
+        self._session_id, self._turn_count, self._rabbit_home = "", 0, ""
         # (conn snapshot, user): keyed on the snapshot so every client built from it
         # shares the resolved user and a /reload invalidates it.
         # Server-asserted user space for explicit-uid URIs (#91995). Key the cache on the connection
@@ -1241,7 +1241,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Guards the (_session_id, _turn_count) pair. sync_turn runs on the MemoryManager's background sync
         # executor while on_session_end / on_session_switch run on the caller's thread, so the
         # snapshot+reset of the turn counter and the session-id rotation must be atomic against a concurrent
-        # increment. See hermes-agent#28296 review.
+        # increment. See rabbit-agent#28296 review.
         self._inflight_writers: Dict[str, Set[threading.Thread]] = {}
         self._deferred_commit_sids: Set[str] = set()
         self._deferred_commit_threads: Set[threading.Thread] = set()
@@ -1263,7 +1263,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """Configured? (env endpoint, config.yaml endpoint, or a linked ovcli profile). No network."""
         if get_secret("OPENVIKING_ENDPOINT", ""):
             return True
-        provider_config = _load_hermes_openviking_config()
+        provider_config = _load_rabbit_openviking_config()
         if _clean_config_value(provider_config.get("endpoint")):
             return True
         try:
@@ -1274,14 +1274,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [dict(field) for field in _CONFIG_SCHEMA]
 
-    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+    def save_config(self, values: Dict[str, Any], rabbit_home: str) -> None:
         """Validate and persist Dashboard configuration for the active profile (secrets excluded)."""
         normalized = {k: v for k, v in (values or {}).items() if k not in ("api_key", "root_api_key")}
         endpoint = _clean_config_value(normalized.get("endpoint"))
         if endpoint:
             normalized["endpoint"] = _normalize_openviking_url(endpoint)
 
-        from hermes_cli.config import load_config, save_config
+        from rabbit_cli.config import load_config, save_config
 
         config = load_config()
         if not isinstance(config.get("memory"), dict):
@@ -1308,9 +1308,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             display["env_overrides"] = ", ".join(env_overrides)
         return display
 
-    def post_setup(self, hermes_home: str, config: dict) -> None:
+    def post_setup(self, rabbit_home: str, config: dict) -> None:
         """Interactive setup that can reuse OpenViking's shared CLI config (see ``_setup``)."""
-        _setup.run_setup(hermes_home, config)
+        _setup.run_setup(rabbit_home, config)
 
     # -- connection lifecycle ------------------------------------------------
 
@@ -1401,7 +1401,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         status_callback = kwargs.get("status_callback") if is_cli else None
         connection_error = ""
         try:
-            settings = _resolve_connection_settings(_load_hermes_openviking_config())
+            settings = _resolve_connection_settings(_load_rabbit_openviking_config())
         except _OpenVikingEndpointError as exc:
             connection_error = str(exc)
             settings = dict.fromkeys(_CONNECTION_KEYS, "")
@@ -1413,7 +1413,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
-        self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(get_hermes_home())
+        self._rabbit_home = str(kwargs.get("rabbit_home") or "").strip() or str(get_rabbit_home())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
 
@@ -1438,7 +1438,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = self._settings_tuple()
             self._recover_pending_sessions()
 
-        _active_providers_by_home[self._hermes_home] = self  # atexit safety net
+        _active_providers_by_home[self._rabbit_home] = self  # atexit safety net
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Active client, rebuilt if the resolved config changed.
@@ -1448,8 +1448,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         health-check only when a value changed (hot path: one tuple compare).
 
         ``/reload`` only refreshes ``os.environ`` — the existing provider instance is not re-initialized —
-        so OPENVIKING_* values added to ``~/.hermes/.env`` after startup never reach the live client and
-        tools keep running against stale auth until the user restarts hermes (#21130).
+        so OPENVIKING_* values added to ``~/.rabbit/.env`` after startup never reach the live client and
+        tools keep running against stale auth until the user restarts rabbit (#21130).
         """
         if not self._env_refresh_enabled:
             return self._client  # no baseline yet: keep whatever the caller wired up
@@ -1466,7 +1466,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._client = None
             return None
         try:
-            settings = _resolve_connection_settings(_load_hermes_openviking_config())
+            settings = _resolve_connection_settings(_load_rabbit_openviking_config())
         except _OpenVikingEndpointError as exc:
             failed_key = ("invalid-endpoint", str(exc))
             if not self._in_cooldown(failed_key):
@@ -1501,7 +1501,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._failed_refresh = (settings_key, time.monotonic())
         if health_state == "responded":
             logger.warning(
-                "%s OpenViking memory is temporarily unavailable; Hermes will retry on a later access (after cooldown) or when the config changes.",
+                "%s OpenViking memory is temporarily unavailable; Rabbit will retry on a later access (after cooldown) or when the config changes.",
                 health_message,
             )
         else:
@@ -1665,11 +1665,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return max(spec["minimum"], min(spec["maximum"], parsed)) if "minimum" in spec else parsed
 
     def _recall_config(self) -> Dict[str, Any]:
-        cfg = _load_hermes_openviking_config()
+        cfg = _load_rabbit_openviking_config()
         return {key.removeprefix("recall_"): self._setting(key, cfg) for key in _RECALL_SETTING_KEYS}
 
     def _profile_token_budget(self) -> int:
-        return self._setting("profile_token_budget", _load_hermes_openviking_config())
+        return self._setting("profile_token_budget", _load_rabbit_openviking_config())
 
     # -- session-start memory block -----------------------------------------
 
@@ -1948,7 +1948,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _extract_current_turn_messages(messages: Optional[List[Dict[str, Any]]], user_content: str, assistant_content: str) -> List[Dict[str, Any]]:
-        """Slice the completed turn out of Hermes' full canonical transcript: the last
+        """Slice the completed turn out of Rabbit' full canonical transcript: the last
         assistant message matching assistant_content (else the last assistant message,
         else the transcript end) back to the matching (else nearest) user message."""
         if not messages:
@@ -1968,7 +1968,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _messages_to_openviking_batch(messages: List[Dict[str, Any]], *, assistant_peer_id: str = "") -> List[Dict[str, Any]]:
-        """Convert Hermes canonical messages into OpenViking batch payloads.
+        """Convert Rabbit canonical messages into OpenViking batch payloads.
 
         Recall-tool calls/results are dropped (re-ingesting recalled memory would
         re-store it); tool results are grouped into assistant messages; a tool call
@@ -2138,14 +2138,14 @@ class OpenVikingMemoryProvider(MemoryProvider):
             (self._committed_session_ids.add if committed else self._committed_session_ids.discard)(sid)
 
     def _state_path(self, kind: str, name: str) -> Optional[Path]:
-        """Marker/lock file under HERMES_HOME: ``pending`` -> pending_sessions/<sid>.json,
+        """Marker/lock file under RABBIT_HOME: ``pending`` -> pending_sessions/<sid>.json,
         ``lock`` -> runs/<run_id>.lock; an empty run id maps to the legacy recovery lock."""
         name = str(name or "").strip()
-        if not self._hermes_home or (not name and kind != "lock"):
+        if not self._rabbit_home or (not name and kind != "lock"):
             return None
         if kind == "pending":
-            return Path(self._hermes_home) / _PENDING_SESSIONS_RELATIVE_DIR / f"{quote(name, safe='')}.json"
-        return Path(self._hermes_home) / _RUN_LOCKS_RELATIVE_DIR / (f"{quote(name, safe='')}.lock" if name else _LEGACY_RECOVERY_LOCK_FILENAME)
+            return Path(self._rabbit_home) / _PENDING_SESSIONS_RELATIVE_DIR / f"{quote(name, safe='')}.json"
+        return Path(self._rabbit_home) / _RUN_LOCKS_RELATIVE_DIR / (f"{quote(name, safe='')}.lock" if name else _LEGACY_RECOVERY_LOCK_FILENAME)
 
     @staticmethod
     def _flock_open(path: Path):
@@ -2226,8 +2226,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.debug("Could not safely mark OpenViking session %s pending without a run lock", sid)
             return
         try:
-            from hermes_constants import mkdir_under_hermes_home
-            mkdir_under_hermes_home(path.parent)
+            from rabbit_constants import mkdir_under_rabbit_home
+            mkdir_under_rabbit_home(path.parent)
             atomic_json_write(path, {"session_id": sid, "owner_run_id": self._run_id}, mode=0o600)
             self._pending_marked_sids.add(sid)
         except Exception as e:
@@ -2244,7 +2244,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def _pending_sessions(self) -> List[tuple[str, str]]:
         """(sid, owner_run_id) for every marker file; sid falls back to the file name."""
-        directory = Path(self._hermes_home) / _PENDING_SESSIONS_RELATIVE_DIR if self._hermes_home else None
+        directory = Path(self._rabbit_home) / _PENDING_SESSIONS_RELATIVE_DIR if self._rabbit_home else None
         if directory is None or not directory.is_dir():
             return []
         sessions: List[tuple[str, str]] = []
@@ -2377,7 +2377,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         session's drain+commit is offloaded so command threads never block.
 
         The new session never accumulates messages, and memory extraction never fires for it. See
-        hermes-agent#28296.
+        rabbit-agent#28296.
         """
         new_id = str(new_session_id or "").strip()
         if not new_id or not self._ensure_client():
@@ -2491,8 +2491,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if t.is_alive():
                 t.join(timeout=5.0)
         # Clear so atexit doesn't double-commit.
-        if _active_providers_by_home.get(self._hermes_home) is self:
-            del _active_providers_by_home[self._hermes_home]
+        if _active_providers_by_home.get(self._rabbit_home) is self:
+            del _active_providers_by_home[self._rabbit_home]
         self._release_run_lock()
 
     @staticmethod
@@ -2602,7 +2602,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return json.dumps(result, ensure_ascii=False)
 
     def _tool_remember(self, args: dict) -> str:
-        """Submit content through a dedicated session so it never touches the live Hermes session."""
+        """Submit content through a dedicated session so it never touches the live Rabbit session."""
         content = args.get("content", "")
         if not content:
             return tool_error("content is required")
@@ -2610,7 +2610,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not client:
             return tool_error("OpenViking server not connected")
 
-        session_id = f"hermes-remember-{uuid.uuid4().hex[:12]}"
+        session_id = f"rabbit-remember-{uuid.uuid4().hex[:12]}"
         session_uri = f"viking://user/{self._user_space(client)}/sessions/{session_id}"
 
         def failure(message: str, *, stage: str, message_status: str) -> str:
@@ -2620,7 +2620,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 recovery_note=(
                     "Inspect session_uri before recovery. If history/archive_* exists, do not retry. If messages.jsonl contains "
                     "the fact and no archive exists, run recovery_command with the same OpenViking profile and credentials as "
-                    "Hermes. Otherwise, do not resubmit automatically; report the uncertain state to the user."
+                    "Rabbit. Otherwise, do not resubmit automatically; report the uncertain state to the user."
                 ),
             )
         try:

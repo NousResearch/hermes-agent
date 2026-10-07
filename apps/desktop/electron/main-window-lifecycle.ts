@@ -71,7 +71,7 @@ export function shouldQuitOnLastChatClosed({
  *
  * Unlike the ambient `focusWindow` in main.ts (showInactive, never steal
  * foreground per #83998), a second-instance / dock-activate / tray-click is
- * the user asking for Hermes back, so the window must come back activatable:
+ * the user asking for Rabbit back, so the window must come back activatable:
  * restore a minimized window, show a tray-hidden one with `show()` (not
  * `showInactive()` — the latter leaves a Windows hidden-minimized window
  * painted-but-dead, #119252), then take keyboard focus when unfocused.

@@ -1,4 +1,4 @@
-"""Email platform adapter for the Hermes gateway: users talk to Hermes by sending email; IMAP (polled)
+"""Email platform adapter for the Rabbit gateway: users talk to Rabbit by sending email; IMAP (polled)
 receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in config.yaml (see website docs)."""
 
 import asyncio
@@ -191,12 +191,12 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
         return
     try:
         try:
-            from hermes_cli.version_info import get_version_info
+            from rabbit_cli.version_info import get_version_info
             version = get_version_info().base_version
         except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
             version = "0"
-        imap.xatom("ID", f'("name" "hermes-agent" "version" "{version}" '
-                         '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
+        imap.xatom("ID", f'("name" "rabbit-agent" "version" "{version}" '
+                         '"vendor" "ExampleCo" "support-email" "support@example.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)
 
@@ -605,7 +605,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Validate up front so a missing host is an actionable config error, not IMAP4_SSL("") raising ``[Errno 8]``.
         required = (("EMAIL_ADDRESS", self._address), ("EMAIL_PASSWORD", self._password), ("EMAIL_IMAP_HOST", self._imap_host), ("EMAIL_SMTP_HOST", self._smtp_host))
         if missing := [name for name, value in required if not value]:
-            message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
+            message = f"Not configured — missing {', '.join(missing)}. Set it via `rabbit gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
@@ -861,12 +861,12 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject", "Rabbit Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
+        msg_id = f"<rabbit-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
@@ -992,13 +992,13 @@ def _is_connected(config) -> bool:
     """Connected when an address is configured (PlatformConfig.extra or EMAIL_ADDRESS)."""
     if (getattr(config, "extra", {}) or {}).get("address"):
         return True
-    import hermes_cli.gateway as gateway_mod
+    import rabbit_cli.gateway as gateway_mod
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Rabbit plugin system."""
     ctx.register_platform(
         name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],

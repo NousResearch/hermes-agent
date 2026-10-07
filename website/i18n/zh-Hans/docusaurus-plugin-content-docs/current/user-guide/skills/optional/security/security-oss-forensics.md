@@ -17,14 +17,14 @@ GitHub 仓库的供应链调查、证据恢复与取证分析。
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/security/oss-forensics` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/security/oss-forensics` 安装 |
 | 路径 | `optional-skills/security/oss-forensics` |
 | 平台 | linux, macos, windows |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # OSS 安全取证 Skill
@@ -58,7 +58,7 @@ GitHub 仓库的供应链调查、证据恢复与取证分析。
 
 ---
 
-> **路径约定**：在本 skill 中，`SKILL_DIR` 指本 skill 安装目录的根目录（包含此 `SKILL.md` 的文件夹）。加载 skill 时，请将 `SKILL_DIR` 解析为实际路径——例如 `~/.hermes/skills/security/oss-forensics/` 或对应的 `optional-skills/` 路径。所有脚本和模板引用均相对于该目录。
+> **路径约定**：在本 skill 中，`SKILL_DIR` 指本 skill 安装目录的根目录（包含此 `SKILL.md` 的文件夹）。加载 skill 时，请将 `SKILL_DIR` 解析为实际路径——例如 `~/.rabbit/skills/security/oss-forensics/` 或对应的 `optional-skills/` 路径。所有脚本和模板引用均相对于该目录。
 
 ## 阶段 0：初始化
 
@@ -99,7 +99,7 @@ GitHub 仓库的供应链调查、证据恢复与取证分析。
 - 值
 - 来源（用户提供、推断得出）
 
-**参考**：IOC 分类法见 [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md)。
+**参考**：IOC 分类法见 [evidence-types.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md)。
 
 ---
 
@@ -145,7 +145,7 @@ git log --show-signature --format="%H %ai %aN" > ../signature_check.txt 2>&1
 - 已验证贡献者的未签名提交 → 类型：`git`
 - 可疑二进制文件添加 → 类型：`git`
 
-**参考**：访问强制推送提交的方法见 [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md)。
+**参考**：访问强制推送提交的方法见 [recovery-techniques.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md)。
 
 ---
 
@@ -185,7 +185,7 @@ curl -s "https://api.github.com/repos/OWNER/REPO/commits/SHA" | jq .sha
 - 贡献者出现在归档事件中但不在贡献者列表中 → 权限撤销证据
 - 提交出现在归档 PushEvent 中但不在 API 提交列表中 → 强制推送/删除证据
 
-**参考**：GH 事件类型见 [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md)。
+**参考**：GH 事件类型见 [evidence-types.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md)。
 
 ---
 
@@ -222,7 +222,7 @@ curl -s "https://web.archive.org/cdx/search/cdx?url=github.com/OWNER/REPO/wiki/*
 - 显示变更的历史 README 版本
 - 存在于归档中但在当前 GitHub 状态中缺失的内容证据
 
-**参考**：CDX API 参数见 [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md)。
+**参考**：CDX API 参数见 [github-archive-guide.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md)。
 
 ---
 
@@ -271,7 +271,7 @@ LIMIT 200
 - 可疑 CI/CD 自动化的 WorkflowRunEvent
 - 在 git 日志出现"空白"之前的 PushEvent（历史重写证据）
 
-**参考**：所有 12 种事件类型及查询模式见 [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md)。
+**参考**：所有 12 种事件类型及查询模式见 [github-archive-guide.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md)。
 
 ---
 
@@ -284,7 +284,7 @@ LIMIT 200
 - 对每个域名/IP：检查被动 DNS、WHOIS 记录（通过 `web_extract` 访问公开 WHOIS 服务）
 - 对每个包名：检查 npm/PyPI 中是否有匹配的恶意包报告
 - 对每个 actor 用户名：检查 GitHub 个人资料、贡献历史、账户注册时间
-- 使用 3 种方法恢复强制推送的提交（见 [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md)）
+- 使用 3 种方法恢复强制推送的提交（见 [recovery-techniques.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md)）
 
 ---
 
@@ -311,7 +311,7 @@ LIMIT 200
 - 指明哪些证据可以推翻它
 - 在验证之前标注 `[HYPOTHESIS]`
 
-**常见假设模板**（见 [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md)）：
+**常见假设模板**（见 [investigation-templates.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md)）：
 - 维护者账户被攻陷：合法账户在被接管后用于注入恶意代码
 - 依赖混淆：包名抢注以拦截安装
 - CI/CD 注入：恶意 workflow 变更以在构建期间运行代码
@@ -343,7 +343,7 @@ LIMIT 200
 
 ## 阶段 6：最终报告生成
 
-使用 [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md) 中的模板填写 `investigation-report.md`。
+使用 [forensic-report.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md) 中的模板填写 `investigation-report.md`。
 
 **必填章节**：
 - 执行摘要：一段式结论（已被攻陷 / 干净 / 不确定），含置信度等级
@@ -413,9 +413,9 @@ GitHub REST API 强制执行速率限制，如不加以管理，将中断大型�
 
 ## 参考资料
 
-- [github-archive-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md) — BigQuery 查询、CDX API、12 种事件类型
-- [evidence-types.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) — IOC 分类法、证据来源类型、观察类型
-- [recovery-techniques.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md) — 恢复已删除的提交、PR、issues
-- [investigation-templates.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md) — 按攻击类型预置的假设模板
-- [evidence-store.py](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/scripts/evidence-store.py) — 用于管理证据 JSON 库的 CLI 工具
-- [forensic-report.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md) — 结构化报告模板
+- [github-archive-guide.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/github-archive-guide.md) — BigQuery 查询、CDX API、12 种事件类型
+- [evidence-types.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/evidence-types.md) — IOC 分类法、证据来源类型、观察类型
+- [recovery-techniques.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/recovery-techniques.md) — 恢复已删除的提交、PR、issues
+- [investigation-templates.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/references/investigation-templates.md) — 按攻击类型预置的假设模板
+- [evidence-store.py](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/scripts/evidence-store.py) — 用于管理证据 JSON 库的 CLI 工具
+- [forensic-report.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/security/oss-forensics/templates/forensic-report.md) — 结构化报告模板

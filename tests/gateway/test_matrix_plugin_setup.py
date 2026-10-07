@@ -1,14 +1,14 @@
 """Tests for the Matrix plugin's interactive_setup wizard home-channel flow.
 
 The interactive_setup wizard lazy-imports its CLI helpers from
-``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value),
-``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*), and
+``rabbit_cli.config`` (get_env_value / save_env_value / remove_env_value),
+``rabbit_cli.cli_output`` (prompt / prompt_yes_no / print_*), and
 ``pm`` (Matrix sync_venv). We patch each at its source module so
 the wizard runs without provisioning dependencies. Covers the home-channel
 clear-on-blank behavior added in the follow-up to PR #58421.
 """
-import hermes_cli.config as config_mod
-import hermes_cli.cli_output as cli_output_mod
+import rabbit_cli.config as config_mod
+import rabbit_cli.cli_output as cli_output_mod
 import pm as pm_mod
 from plugins.platforms.matrix.adapter import interactive_setup
 
@@ -65,7 +65,7 @@ class TestMatrixHomeChannelClear:
     """Blank home-room answer must clear MATRIX_HOME_ROOM (#12423)."""
 
     def test_blank_removes_existing_home_room(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         saved, removed = {}, []
         _patch_setup_io(
             monkeypatch,

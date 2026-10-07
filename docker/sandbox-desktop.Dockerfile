@@ -1,14 +1,14 @@
 # Terminal-backend sandbox image WITH a desktop: the default sandbox base every
 # docker/modal/daytona/singularity user already runs (nikolaik/python-nodejs), plus
-# the tools that base was missing, plus the same display stack the -desktop Hermes
+# the tools that base was missing, plus the same display stack the -desktop Rabbit
 # image carries (TigerVNC + Xfce components + headed Chromium) and cua-driver, so
 # Bot Screen, computer_use and the browser can live INSIDE the sandbox instead of
-# on the gateway host. No Hermes runtime in here; the gateway shells in.
+# on the gateway host. No Rabbit runtime in here; the gateway shells in.
 #
-#   docker build -f docker/sandbox-desktop.Dockerfile -t nousresearch/hermes-sandbox:desktop .
+#   docker build -f docker/sandbox-desktop.Dockerfile -t nousresearch/rabbit-sandbox:desktop .
 #
-# Published as nousresearch/hermes-sandbox:desktop by .github/workflows/sandbox-image.yml
-# on releases and manual dispatch only: it carries no Hermes code, so it does not track main.
+# Published as nousresearch/rabbit-sandbox:desktop by .github/workflows/sandbox-image.yml
+# on releases and manual dispatch only: it carries no Rabbit code, so it does not track main.
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
 # see through the substitution, hence the inline ignore.
 ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26
@@ -33,8 +33,8 @@ RUN apt-get -o Acquire::Retries=3 update && \
     ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     rm -rf /var/lib/apt/lists/*
 
-# Display stack: identical package set to the Hermes -desktop image (Dockerfile,
-# HERMES_BOT_DESKTOP=1) so tools/bot_desktop/launcher.sh finds the same binaries.
+# Display stack: identical package set to the Rabbit -desktop image (Dockerfile,
+# RABBIT_BOT_DESKTOP=1) so tools/bot_desktop/launcher.sh finds the same binaries.
 # Components are launched individually by the launcher, never xfce4-session.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
@@ -43,7 +43,7 @@ RUN apt-get -o Acquire::Retries=3 update && \
         at-spi2-core libgtk-3-0 libnss3 libasound2 libxss1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Headed Chromium through Playwright (the same build the Hermes -desktop image
+# Headed Chromium through Playwright (the same build the Rabbit -desktop image
 # uses), so agent-browser and the dock's Browser icon share one binary and one
 # --user-data-dir. --with-deps pulls the Chromium runtime libraries. agent-browser
 # itself is baked (the CLI the browser tools drive), pinned to the same range the
@@ -81,14 +81,14 @@ RUN pip install --no-cache-dir "pillow>=10" && python3 -c "from PIL import Image
 # AT-SPI bus wants a real user session. `pn` may sudo for ad-hoc installs.
 RUN echo "pn ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/pn && chmod 0440 /etc/sudoers.d/pn && \
     mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix && \
-    mkdir -p /tmp/hermes-runtime && chown pn:pn /tmp/hermes-runtime && chmod 0700 /tmp/hermes-runtime
+    mkdir -p /tmp/rabbit-runtime && chown pn:pn /tmp/rabbit-runtime && chmod 0700 /tmp/rabbit-runtime
 
 # Runtime dir for dbus/Xvnc; containers have no logind to create it. Both /tmp
 # paths above are fixed by the X11 protocol / seeded per container, never shared.
-ENV XDG_RUNTIME_DIR=/tmp/hermes-runtime
+ENV XDG_RUNTIME_DIR=/tmp/rabbit-runtime
 # Dockerfile ENV reaches `docker exec` only. When this image is the target of the
 # ssh backend (sshd added on top), a login session gets its environment from PAM,
 # so the browser location must also live where pam_env reads it or agent-browser
 # reports "Chrome not found" over ssh while working under docker exec.
-RUN printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/playwright\nXDG_RUNTIME_DIR=/tmp/hermes-runtime\n' >> /etc/environment
+RUN printf 'PLAYWRIGHT_BROWSERS_PATH=/opt/playwright\nXDG_RUNTIME_DIR=/tmp/rabbit-runtime\n' >> /etc/environment
 CMD ["sleep", "infinity"]

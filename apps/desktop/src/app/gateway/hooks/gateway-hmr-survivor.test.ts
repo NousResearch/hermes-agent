@@ -7,7 +7,7 @@ import {
   takeGatewaySurvivor
 } from './gateway-hmr-survivor'
 
-// A minimal stand-in for HermesGateway: the survivor cache only reads
+// A minimal stand-in for RabbitGateway: the survivor cache only reads
 // `connectionState`. Cast through unknown so we don't drag the whole class in.
 function fakeGateway(state: 'idle' | 'connecting' | 'open' | 'closed' | 'error') {
   return { connectionState: state } as unknown as GatewaySurvivor['gateway']

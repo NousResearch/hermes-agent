@@ -14,10 +14,10 @@ Generate a bash wizard guiding a human through manual setup.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/devops/setup-wizard-generator` |
+| Source | Optional — install with `rabbit skills install official/devops/setup-wizard-generator` |
 | Path | `optional-skills/devops/setup-wizard-generator` |
 | Version | `1.0.0` |
-| Author | Matt Pocock (mattpocock/skills, wizard) + Hermes Agent |
+| Author | Matt Pocock (mattpocock/skills, wizard) + Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `wizard`, `setup`, `onboarding`, `credentials`, `secrets`, `migration`, `bash`, `human-in-the-loop` |
@@ -25,7 +25,7 @@ Generate a bash wizard guiding a human through manual setup.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Setup Wizard Generator

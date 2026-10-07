@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { setEnvVar } from '@/api/config'
-import type { HermesApiRequest } from '@/global'
+import type { RabbitApiRequest } from '@/global'
 import { makeOAuthProvider } from '@/test/oauth-provider'
 
 import {
@@ -26,7 +26,7 @@ vi.mock('@/store/gateway', async importOriginal => ({
 }))
 
 const owner = { connectionId: 'athena', profile: 'leverage-ai' }
-const requests: HermesApiRequest[] = []
+const requests: RabbitApiRequest[] = []
 let authFlow: 'device_code' | 'pkce'
 let deferStart: (() => Promise<void>) | undefined
 
@@ -37,11 +37,11 @@ beforeEach(() => {
   requests.length = 0
   setApiRequestConnection(owner.connectionId)
   setApiRequestProfile(owner.profile)
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'rabbitDesktop', {
     configurable: true,
     value: {
       openExternal: vi.fn(async () => undefined),
-      api: vi.fn(async (request: HermesApiRequest) => {
+      api: vi.fn(async (request: RabbitApiRequest) => {
         requests.push(request)
         const { path } = request
 
@@ -89,7 +89,7 @@ afterEach(() => {
   setApiRequestConnection(null)
   setApiRequestProfile(null)
   vi.useRealTimers()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 function beginContext(): OnboardingContext {
@@ -195,7 +195,7 @@ it('preserves explicit local and untagged legacy routes instead of filling ambie
 // not a hard-coded `default` profile that may be a different one.
 it('keeps readiness on the same profile as REST writes when the owner has none', async () => {
   const getConnectionFor = vi.fn(async () => ({ sharedRemote: true }))
-  Object.assign(window.hermesDesktop, { getConnection: vi.fn(), getConnectionFor })
+  Object.assign(window.rabbitDesktop, { getConnection: vi.fn(), getConnectionFor })
   setApiRequestProfile(null)
   const scope = captureOnboardingScope()
 

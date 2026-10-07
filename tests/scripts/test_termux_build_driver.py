@@ -164,8 +164,8 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
     (repo / "termux-build/payload").symlink_to(payload, target_is_directory=True)
     tools = log.parent / "tools"
     (tools / "python3").symlink_to(sys.executable)
-    env.update(HERMES_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
-               HERMES_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
+    env.update(RABBIT_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
+               RABBIT_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
     workflow = YAML(typ="safe").load((ROOT / ".github/workflows/desktop-bundled-release.yml").read_text())
     step = next(step for step in workflow["jobs"]["termux-deb"]["steps"]
                 if step.get("name") == "Assemble the .deb")
@@ -206,7 +206,7 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
         return result.stdout.splitlines()[-1]
 
     original = image()
-    assert original.startswith("ghcr.io/fixture/hermes-termux-builder:")
+    assert original.startswith("ghcr.io/fixture/rabbit-termux-builder:")
     assert image() == original
     changed = scripts / "termux-builder.Dockerfile" if changed_input == "Dockerfile" else repo / "pm/lock.json"
     before = changed.read_bytes()

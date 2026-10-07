@@ -19,7 +19,6 @@ from typing import Any
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint,
     _is_kimi_family_endpoint,
-    _is_nous_portal_endpoint,
     _is_third_party_anthropic_endpoint,
     _model_name_is_deepseek_thinking,
 )
@@ -60,8 +59,8 @@ def model_preserves_prior_thinking(model: Any) -> bool:
 def anthropic_thinking_route(base_url: Any, model: Any) -> str:
     """Which thinking-replay contract an Anthropic Messages request follows: ``kimi`` (replay as-is),
     ``deepseek`` (unsigned only), ``third_party`` (strip all) or ``native`` (Anthropic-signed blocks:
-    direct Anthropic and Nous Portal). The converter and signature-rejection state share this."""
-    is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
+    direct Anthropic). The converter and signature-rejection state share this."""
+    is_third_party = _is_third_party_anthropic_endpoint(base_url)
     if _is_kimi_family_endpoint(base_url, model):
         return "kimi"
     if _is_deepseek_anthropic_endpoint(base_url) or (is_third_party and _model_name_is_deepseek_thinking(model)):
@@ -70,5 +69,5 @@ def anthropic_thinking_route(base_url: Any, model: Any) -> str:
 
 
 def native_anthropic_preserves_prior_thinking(base_url: Any, model: Any) -> bool:
-    """True for direct Anthropic/Nous Portal routes whose model retains old thinking."""
+    """True for direct Anthropic routes whose model retains old thinking."""
     return anthropic_thinking_route(base_url, model) == "native" and model_preserves_prior_thinking(model)

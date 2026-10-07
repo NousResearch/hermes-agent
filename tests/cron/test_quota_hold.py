@@ -18,16 +18,16 @@ from cron import quota_hold as qh
 from cron.jobs import (
     _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
 )
-from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+from rabbit_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
 
 QUOTA_MSG = "Codex provider quota exhausted (429); retry after 123518s. Credentials are still valid."
 
 
 @pytest.fixture
 def tmp_cron_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
@@ -59,8 +59,8 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
     it is not silently deferred until the following week's natural occurrence."""
     now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
     natural_next = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
-    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: now)
+    monkeypatch.setattr(qh, "_rabbit_now", lambda: now)
     job = create_job("weekly digest", "0 12 * * 5")
     assert datetime.fromisoformat(job["next_run_at"]) == natural_next
 
@@ -77,7 +77,7 @@ def test_weekly_cron_retries_when_quota_recovers_before_next_occurrence(
     edited = {**held, "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
     assert not qh.is_recovery_fire(edited, edited["next_run_at"])
 
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_at + timedelta(seconds=1))
+    monkeypatch.setattr("cron.jobs._rabbit_now", lambda: retry_at + timedelta(seconds=1))
     assert job["id"] in {due["id"] for due in get_due_jobs()}
 
 
@@ -86,7 +86,7 @@ def test_recovery_fire_skips_dense_schedules_and_never_re_parks(monkeypatch):
     minutes before :00 keeps its natural :00 (no off-lattice near-duplicate), and a job that is
     already the recovery fire (carries quota_hold_until) failing again is not re-parked."""
     now = datetime(2026, 9, 18, 12, 1, tzinfo=timezone.utc)
-    monkeypatch.setattr(qh, "_hermes_now", lambda: now)
+    monkeypatch.setattr(qh, "_rabbit_now", lambda: now)
 
     dense = {
         "schedule": {"kind": "cron", "expr": "0 * * * *"},
@@ -116,13 +116,13 @@ def _raise_quota(**_kw):
 
 def _tick(job, home, deliveries, resolve):
     """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*."""
-    with patch("cron.scheduler._hermes_home", home), \
+    with patch("cron.scheduler._rabbit_home", home), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=MagicMock()), \
+         patch("rabbit_cli.env_loader.load_rabbit_dotenv"), \
+         patch("rabbit_cli.env_loader.reset_secret_source_cache"), \
+         patch("rabbit_state_registry.acquire", return_value=MagicMock()), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("rabbit_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch.object(sched, "_deliver_result",
                       side_effect=lambda jb, content, **kw: deliveries.append(content)), \
          patch("run_agent.AIAgent") as agent_cls:

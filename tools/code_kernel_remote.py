@@ -40,7 +40,7 @@ _CELL_POLL_INTERVAL = 0.5
 # persistent namespace, writes response files. Pure files + stdlib only (transport-agnostic);
 # cells and tool-RPC share the kernel dir under distinct prefixes.
 REMOTE_KERNEL_RUNNER_SOURCE = '''\
-"""Auto-generated Hermes REMOTE session-kernel runner (file cell protocol)."""
+"""Auto-generated Rabbit REMOTE session-kernel runner (file cell protocol)."""
 import contextlib
 import io
 import json
@@ -49,7 +49,7 @@ import sys
 import time
 import traceback
 
-KDIR = os.environ["HERMES_KERNEL_DIR"]
+KDIR = os.environ["RABBIT_KERNEL_DIR"]
 CELLS = os.path.join(KDIR, "cells")
 _CAPTURE_LIMIT = {capture_limit}
 IDLE_EXIT_SECONDS = {idle_exit}
@@ -119,7 +119,7 @@ class RemoteKernel:
     cell_seq: int = 0
     # Cells currently running on this kernel. Reap/evict skip attached
     # kernels: killing one mid-cell tears the runner out from under a live
-    # poll loop (same guard as tools.code_kernel, hermes-agent#101861).
+    # poll loop (same guard as tools.code_kernel, rabbit-agent#101861).
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
@@ -152,7 +152,7 @@ class RemoteKernel:
 
 
 def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
-    """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
+    """The rabbit_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
     is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
     return (owner, "remote", env_type, task_env_id, tuple(sorted(sandbox_tools)))
 
@@ -210,9 +210,9 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
     from tools.code_execution_tool import (
         MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
-        _ship_env_file_and_launch, generate_hermes_tools_module,
+        _ship_env_file_and_launch, generate_rabbit_tools_module,
     )
-    kernel_dir = f"{_env_temp_dir(env)}/hermes_rkernel_{uuid.uuid4().hex[:12]}"
+    kernel_dir = f"{_env_temp_dir(env)}/rabbit_rkernel_{uuid.uuid4().hex[:12]}"
     q_dir = shlex.quote(kernel_dir)
     kernel = None
     try:
@@ -226,8 +226,8 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
             cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
-        _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+        _ship_file_to_remote(env, f"{kernel_dir}/rabbit_tools.py",
+                             generate_rabbit_tools_module(list(sandbox_tools), transport="file"))
         # kernel.env is removed after sourcing: the runner's env keeps the
         # values, so the token file need not sit at rest for the kernel's
         # lifetime. runner.log is pre-created 600 so the launch redirect never
@@ -238,7 +238,7 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
             "rm -f ./kernel.env && touch runner.log && chmod 600 runner.log && "
             '{ nohup python3 kernel_runner.py > runner.log 2>&1 & echo "PID:$!"; }',
             rpc_dir=f"{kernel_dir}/rpc", rpc_token=rpc_token,
-            HERMES_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir)
+            RABBIT_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir)
         started = _sh(env, launch_cmd, timeout=20)
         pid = next((line.strip()[4:].strip() for line in started.splitlines()
                     if line.strip().startswith("PID:")), "")

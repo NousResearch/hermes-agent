@@ -10,8 +10,8 @@
 #   reps           repetitions per cell (default 3)
 #   model ...      models to test (default: the Aug 2026 pair)
 #
-# Requires: ABEVAL_HOME pointing at a configured Hermes home (see README.md),
-# and this script run with the python that has hermes-agent's deps installed.
+# Requires: ABEVAL_HOME pointing at a configured Rabbit home (see README.md),
+# and this script run with the python that has rabbit-agent's deps installed.
 set -euo pipefail
 
 BASE=${1:?usage: run_all.sh <baseline-tree> <fixes-tree> [reps] [model ...]}

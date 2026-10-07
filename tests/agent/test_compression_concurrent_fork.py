@@ -1,6 +1,6 @@
 """Regression: prevent transcript fork when two paths compress the same session_id.
 
-Damien's incident (Discord, 2026-05-28): a long Hermes session in a Discord
+Damien's incident (Discord, 2026-05-28): a long Rabbit session in a Discord
 gateway hit the compression threshold at the end of a turn.  The parent agent
 finished delivering the response and ``conversation_loop.py`` fired
 ``_spawn_background_review(...)`` — which builds a forked ``AIAgent`` that
@@ -40,7 +40,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 def _build_agent_with_db(
     db: SessionDB,

@@ -95,18 +95,18 @@ class SelfHostedBackend(Mem0Backend):
             self._client.close()
 
 
-_DIRECT_OPENAI_PROVIDER = "hermes_openai"
+_DIRECT_OPENAI_PROVIDER = "rabbit_openai"
 _DIRECT_OPENAI_CLASS_PATH = "plugins.memory.mem0._openai_llm.DirectOpenAILLM"
 
 
 def _register_direct_openai_provider() -> None:
-    """Register Hermes' OpenAI-only Mem0 LLM provider once per factory."""
+    """Register Rabbit' OpenAI-only Mem0 LLM provider once per factory."""
     from mem0.configs.llms.openai import OpenAIConfig
     from mem0.utils.factory import LlmFactory
     provider_map = getattr(LlmFactory, "provider_to_class", None)
     register_provider = getattr(LlmFactory, "register_provider", None)
     if not isinstance(provider_map, dict) or not callable(register_provider):
-        raise RuntimeError("mem0 LlmFactory does not support the provider registration required for the Hermes OpenAI OSS backend")
+        raise RuntimeError("mem0 LlmFactory does not support the provider registration required for the Rabbit OpenAI OSS backend")
     if provider_map.get(_DIRECT_OPENAI_PROVIDER) != (_DIRECT_OPENAI_CLASS_PATH, OpenAIConfig):
         register_provider(_DIRECT_OPENAI_PROVIDER, _DIRECT_OPENAI_CLASS_PATH, OpenAIConfig)
 
@@ -149,7 +149,7 @@ class OSSBackend(Mem0Backend):
             try:
                 memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
             except (AttributeError, TypeError) as exc:
-                raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
+                raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Rabbit OpenAI OSS backend") from exc
             self._memory = Memory(memory_config)
         else:
             self._memory = Memory.from_config(config)

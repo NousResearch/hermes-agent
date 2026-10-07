@@ -156,7 +156,7 @@ def main():
         if any(token in key.upper() for token in ("TOKEN", "SECRET", "API_KEY", "AUTH")):
             os.environ.pop(key, None)
     with tempfile.TemporaryDirectory(prefix="reasoning-wire-") as home:
-        os.environ.update(HOME=home, HERMES_HOME=home)
+        os.environ.update(HOME=home, RABBIT_HOME=home)
         sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         result = run_matrix(("main", "relay", "aux-sync", "aux-async", "nonstream"))
     Path(args.output).write_text(json.dumps(result, indent=2), encoding="utf-8")

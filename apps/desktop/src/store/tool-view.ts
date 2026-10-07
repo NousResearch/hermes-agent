@@ -7,9 +7,9 @@ export type ToolViewMode = 'product' | 'technical'
 
 type ToolDisclosureStates = Record<string, boolean>
 
-const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
-const HIDE_CODE_DIFFS_STORAGE_KEY = 'hermes.desktop.toolView.hideCodeDiffs'
-const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
+const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'rabbit.desktop.toolView.technical'
+const HIDE_CODE_DIFFS_STORAGE_KEY = 'rabbit.desktop.toolView.hideCodeDiffs'
+const TOOL_DISCLOSURE_STORAGE_KEY = 'rabbit.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
 // Simple mode rests on product summaries, diffs folded, without touching either

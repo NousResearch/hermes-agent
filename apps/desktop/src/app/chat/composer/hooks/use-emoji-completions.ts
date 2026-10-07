@@ -6,7 +6,7 @@ import { type CompletionEntry, type CompletionPayload, useLiveCompletionAdapter 
  * `:shortcode:` completions for the composers, Slack-style (`:joy` → 😂).
  *
  * Draws from the same bundled emojibase-data the reaction picker uses (served
- * at ./emojibase by the `hermes:emojibase-assets` vite plugin — offline, no
+ * at ./emojibase by the `rabbit:emojibase-assets` vite plugin — offline, no
  * CDN). The index lazy-loads on the first `:` trigger, then every query is
  * answered from memory, so `isCached` skips the debounce and loading state
  * after that first load.

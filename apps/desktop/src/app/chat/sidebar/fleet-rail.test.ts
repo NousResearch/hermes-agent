@@ -17,7 +17,7 @@ const roster: DesktopAgentRoster = {
       connectionKind: 'remote',
       connectionLabel: 'Pandora',
       profile: 'default',
-      handle: 'hermes-pandora'
+      handle: 'rabbit-pandora'
     },
     {
       connectionId: 'pandora',
@@ -38,7 +38,7 @@ const roster: DesktopAgentRoster = {
       connectionKind: 'local',
       connectionLabel: 'This device',
       profile: 'default',
-      handle: 'hermes'
+      handle: 'rabbit'
     },
     {
       connectionId: 'local',
@@ -72,7 +72,7 @@ describe('buildRestGroups', () => {
       connectionId: 'local',
       profile: 'default',
       isDefault: true,
-      handle: 'hermes'
+      handle: 'rabbit'
     })
     expect(local.named.map(agent => agent.profile)).toEqual(['omer'])
     expect(local.named[0]).toMatchObject({
@@ -95,7 +95,7 @@ describe('buildRestGroups', () => {
     expect(vps?.named).toEqual([])
   })
 
-  it('keeps an expired Cloud source visible but not reachable even with cached profiles', () => {
+  it('keeps an expired remote source visible but not reachable even with cached profiles', () => {
     const expired: DesktopAgentRoster = {
       ...roster,
       sources: roster.sources.map(source =>
@@ -106,9 +106,9 @@ describe('buildRestGroups', () => {
     }
 
     const groups = buildRestGroups({ activeConnectionId: 'local', connections, roster: expired })
-    const cloud = groups.find(group => group.connectionId === 'pandora')
-    expect(cloud).toMatchObject({ reachable: false, error: 'OAuth expired', needsSignIn: true })
-    expect(cloud?.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
+    const expired2 = groups.find(group => group.connectionId === 'pandora')
+    expect(expired2).toMatchObject({ reachable: false, error: 'OAuth expired', needsSignIn: true })
+    expect(expired2?.named.map(agent => agent.profile)).toEqual(['omer', 'scout'])
   })
 
   it('shows every gateway with just its default before the roster has loaded', () => {

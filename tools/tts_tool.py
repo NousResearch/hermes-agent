@@ -23,7 +23,7 @@ from typing import Callable, Dict, Any, List, Optional
 
 import copy
 
-from hermes_constants import display_hermes_home
+from rabbit_constants import display_rabbit_home
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,6 @@ def _resolve_provider_key(env_var: str, provider_id: str) -> str:
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _configured_command_tts_output_path, _generate_command_tts,
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
     _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
@@ -105,8 +104,8 @@ DEFAULT_PROVIDER = "edge"
 
 
 def _get_default_output_dir() -> str:
-    from hermes_constants import get_hermes_dir
-    return str(get_hermes_dir("cache/audio", "audio_cache"))
+    from rabbit_constants import get_rabbit_dir
+    return str(get_rabbit_dir("cache/audio", "audio_cache"))
 
 
 DEFAULT_OUTPUT_DIR = _DEFAULT_OUTPUT_DIR_AT_IMPORT = _get_default_output_dir()
@@ -118,11 +117,11 @@ def _default_output_dir() -> str:
 
     Same bug class as skills_tool (f8723c478) and skills_sync (#65828): long-lived multi-profile runtimes
     (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the launch
-    HERMES_HOME and later scope requests to a different profile via
-    ``hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
+    RABBIT_HOME and later scope requests to a different profile via
+    ``rabbit_constants.set_rabbit_home_override()`` — a frozen module constant keeps writing synthesized
     audio into the launch profile's cache instead of the active profile's (#98749). Keep the legacy
     ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers; when it has not been patched,
-    re-resolve from the live profile-scoped HERMES_HOME on every call.
+    re-resolve from the live profile-scoped RABBIT_HOME on every call.
     """
     if DEFAULT_OUTPUT_DIR != _DEFAULT_OUTPUT_DIR_AT_IMPORT:
         return DEFAULT_OUTPUT_DIR
@@ -132,10 +131,10 @@ def _default_output_dir() -> str:
 def _load_tts_config() -> Dict[str, Any]:
     """Return the ``tts`` config section ({} when unavailable)."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         return load_config().get("tts") or {}
     except ImportError:
-        logger.debug("hermes_cli.config not available, using default TTS config")
+        logger.debug("rabbit_cli.config not available, using default TTS config")
     except Exception as e:
         logger.warning("Failed to load TTS config: %s", e, exc_info=True)
     return {}
@@ -143,9 +142,8 @@ def _load_tts_config() -> Dict[str, Any]:
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Configured provider or the free default (inference credentials never imply consent to paid
-    speech); ``nous`` is serviced by the OpenAI path through the managed openai-audio gateway."""
-    provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
-    return "openai" if provider == NOUS_MANAGED_PROVIDER else provider
+    speech)."""
+    return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
@@ -179,17 +177,17 @@ _BUILTIN_DISPATCH: Dict[str, tuple] = {
     "xai": (None, "xAI TTS", "_generate_xai_tts", None),
     "mistral": (lambda: _importable(_import_mistral_client), "Mistral Voxtral TTS", "_generate_mistral_tts",
                 "Mistral provider selected but 'mistralai' package not installed. "
-                "Run `hermes setup` to install Mistral support."),
+                "Run `rabbit setup` to install Mistral support."),
     "gemini": (None, "Google Gemini TTS", "_generate_gemini_tts", None),
     "neutts": (lambda: _check_neutts_available(), "NeuTTS (local)", "_generate_neutts",
                "NeuTTS provider selected but neutts is not installed. "
-               "Run hermes setup tts and choose NeuTTS; espeak-ng is also required."),
+               "Run rabbit setup tts and choose NeuTTS; espeak-ng is also required."),
     "kittentts": (lambda: _importable(_import_kittentts), "KittenTTS (local, ~25MB)", "_generate_kittentts",
                   "KittenTTS provider selected but 'kittentts' package not installed. "
-                  "Run 'hermes setup tts' and choose KittenTTS."),
+                  "Run 'rabbit setup tts' and choose KittenTTS."),
     "piper": (lambda: _importable(_import_piper), "Piper (local)", "_generate_piper_tts",
               "Piper provider selected but 'piper-tts' package not installed. "
-              "Run 'hermes tools' and select Piper under TTS.")}
+              "Run 'rabbit tools' and select Piper under TTS.")}
 
 
 def _error_json(message: str) -> str:
@@ -222,7 +220,7 @@ def _select_builtin_engine(provider: str) -> tuple:
     return provider, _error_json(
         "No TTS provider available. Enable Edge TTS with: "
         f"{install_hint('edge-tts')} "
-        "or run 'hermes setup tts' and choose NeuTTS for local synthesis.")
+        "or run 'rabbit setup tts' and choose NeuTTS for local synthesis.")
 
 
 def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str]) -> None:
@@ -277,7 +275,7 @@ def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], pr
 def _session_platform() -> tuple:
     """``(platform, wants_opus)`` — platforms delivering voice bubbles only as Ogg/Opus want Opus."""
     from gateway.session_context import get_session_env
-    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
+    platform = get_session_env("RABBIT_SESSION_PLATFORM", "").lower()
     return platform, platform in OPUS_VOICE_PLATFORMS
 
 
@@ -599,7 +597,7 @@ def _tts_schema_overrides() -> dict:
     the multiplexed gateway serves every profile from one process, so a path baked in at import
     would name the launch profile's home for everyone else (#95685)."""
     params = copy.deepcopy(TTS_SCHEMA["parameters"])
-    params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
+    params["properties"]["output_path"]["description"] = _output_path_description(display_rabbit_home())
     return {"parameters": params}
 
 
@@ -615,7 +613,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": _output_path_description("the profile HERMES_HOME")
+                "description": _output_path_description("the profile RABBIT_HOME")
             },
             "speed": {
                 "type": "number",

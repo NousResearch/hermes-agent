@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const STORAGE_KEY = 'hermes.desktop.videoPlaybackSpeed'
+const STORAGE_KEY = 'rabbit.desktop.videoPlaybackSpeed'
 
 const loadStore = () => import('@/store/video-playback-speed')
 const loadComponent = () => import('./transcript-video')

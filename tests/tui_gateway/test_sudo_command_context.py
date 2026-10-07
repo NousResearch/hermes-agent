@@ -5,7 +5,7 @@ import threading
 
 
 def test_sudo_request_preserves_command_without_leaking_prompt_context(monkeypatch):
-    from hermes_cli import banner
+    from rabbit_cli import banner
 
     # The real server binds callbacks on import; isolate only its process-wide side effects.
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)

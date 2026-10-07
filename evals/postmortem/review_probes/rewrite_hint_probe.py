@@ -8,7 +8,7 @@ import sys, os, pathlib, tempfile, json, time, signal
 from unittest.mock import patch
 root=pathlib.Path(tempfile.mkdtemp(prefix='hint-probe-'))
 sys.path.insert(0, sys.argv[1] if len(sys.argv)>1 else os.getcwd())  # repo root under test
-os.environ['HERMES_HOME']=tempfile.mkdtemp(dir=root)
+os.environ['RABBIT_HOME']=tempfile.mkdtemp(dir=root)
 os.environ['TERMINAL_ENV']='local'
 from tools import file_tools as f
 from tools.file_operations import WriteResult

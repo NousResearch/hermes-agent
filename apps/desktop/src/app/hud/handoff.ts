@@ -116,7 +116,7 @@ export function useHudGoto(navigate: OpenSessionNavigate): void {
   const navigateRef = useRef(navigate)
   navigateRef.current = navigate
 
-  useEffect(() => window.hermesDesktop?.hud?.onGoto?.(id => navigateRef.current(sessionRoute(id))), [])
+  useEffect(() => window.rabbitDesktop?.hud?.onGoto?.(id => navigateRef.current(sessionRoute(id))), [])
 }
 
 /** HUD side: keep main told which session this window is on. */

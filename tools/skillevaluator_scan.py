@@ -68,7 +68,7 @@ class Tier1Report:
 def tier1_advisory_enabled() -> bool:
     """``skills.tier1_advisory`` (default True; safe because the scan is a no-op without the binary)."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         skills_cfg = load_config().get("skills") or {}
         value = skills_cfg.get("tier1_advisory", True) if isinstance(skills_cfg, dict) else True
         return value.strip().lower() not in ("false", "0", "no", "off") if isinstance(value, str) else bool(value)

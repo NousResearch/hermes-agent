@@ -4,8 +4,8 @@ The installer is HEAD's own copy, run the way the documented one-liner runs it (
 stdin at EOF, setup wizard skipped) inside the bwrap sandbox with an empty fake HOME that has
 only a fresh distro's dotfiles. Its git clone is redirected to a local bare clone of this
 checkout (``_install_helpers``); uv comes from the host's warm cache. After the install the
-user's shell resolves ``hermes`` from ``~/.local/bin`` (the installer wires PATH into the
-shell rc), ``hermes --version`` answers from the installed checkout, and a one-shot turn reaches
+user's shell resolves ``rabbit`` from ``~/.local/bin`` (the installer wires PATH into the
+shell rc), ``rabbit --version`` answers from the installed checkout, and a one-shot turn reaches
 the (fake) provider and is persisted.
 
 Re-running the installer on that live install (what users do to "repair" or to update) must be
@@ -52,19 +52,19 @@ def _path_lines(sb: I.Sandbox) -> dict[str, int]:
     return out
 
 
-def _login_shell_hermes(sb: I.Sandbox) -> str:
-    """Resolve `hermes` the way a new login shell would: PATH comes only from the rc files."""
+def _login_shell_rabbit(sb: I.Sandbox) -> str:
+    """Resolve `rabbit` the way a new login shell would: PATH comes only from the rc files."""
     env = dict(sb.env)
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
     bash = shutil.which("bash")
     assert bash is not None, "bash required for install.sh and the login-shell probe"
-    cp = H.run([bash, "-lic", "command -v hermes"], env=env, cwd=sb.root, writable=[sb.root], timeout=60)
+    cp = H.run([bash, "-lic", "command -v rabbit"], env=env, cwd=sb.root, writable=[sb.root], timeout=60)
     assert cp.returncode == 0, H.describe(cp)
     return cp.stdout.strip()
 
 
 def _state(sb: I.Sandbox) -> dict:
-    hh = sb.hermes_home
+    hh = sb.rabbit_home
     return {
         "config": (hh / "config.yaml").read_bytes(),
         "env": (hh / ".env").read_bytes(),
@@ -102,13 +102,13 @@ def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> None:
 
 def _configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
     py = sb.python
-    ver = sb.run([py, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"])
+    ver = sb.run([py, "-c", "from rabbit_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"])
     assert ver.returncode == 0, I.describe(ver)
     version = int(ver.stdout.strip().splitlines()[-1])
-    (sb.hermes_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
-    (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n# my note\n", encoding="utf-8")
-    (sb.hermes_home / "SOUL.md").write_text("You are my own customised agent.\n", encoding="utf-8")
-    skill = sb.hermes_home / "skills" / "my-own-skill"
+    (sb.rabbit_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
+    (sb.rabbit_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n# my note\n", encoding="utf-8")
+    (sb.rabbit_home / "SOUL.md").write_text("You are my own customised agent.\n", encoding="utf-8")
+    skill = sb.rabbit_home / "skills" / "my-own-skill"
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text("---\nname: my-own-skill\ndescription: mine\n---\nDo my thing.\n", encoding="utf-8")
 
@@ -120,7 +120,7 @@ def test_fresh_install_serves_head_and_runs_a_turn(installed, provider):
     assert I.git("status", "--porcelain", "--untracked-files=no", cwd=sb.checkout) == "", "installer dirtied the checkout"
     ver = sb.cli("--version")
     assert ver.returncode == 0 and I.TRACEBACK not in ver.stdout + ver.stderr, I.describe(ver)
-    probe = sb.run([sb.python, "-c", "import hermes_cli, run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
+    probe = sb.run([sb.python, "-c", "import rabbit_cli, run_agent; print(rabbit_cli.__file__); print(run_agent.__file__)"])
     assert probe.returncode == 0, I.describe(probe)
     workspace = Path(sb.python).parent.parent.parent / "workspace"
     for line in probe.stdout.split():
@@ -129,14 +129,14 @@ def test_fresh_install_serves_head_and_runs_a_turn(installed, provider):
         assert imported.read_bytes() == (sb.checkout / imported.relative_to(workspace)).read_bytes(), (
             f"installed PM workspace does not match the checkout: {line}")
     for rel in ("config.yaml", ".env", "SOUL.md"):
-        assert (sb.hermes_home / rel).is_file(), f"installer did not seed ~/.hermes/{rel}"
+        assert (sb.rabbit_home / rel).is_file(), f"installer did not seed ~/.rabbit/{rel}"
     _configure(sb, provider)
     _turn(sb, provider, "first turn on a fresh install")
-    db = I.db_state(sb.hermes_home / "state.db")
+    db = I.db_state(sb.rabbit_home / "state.db")
     assert db["integrity"] == [("ok",)] and len(db["sessions"]) == 1 and db["n_messages"] >= 2, db
     # A new login shell finds the command through the rc files the installer edited.
     assert all(n >= 1 for n in _path_lines(sb).values()), f"PATH not wired into the shell rc: {_path_lines(sb)}"
-    assert _login_shell_hermes(sb) == sb.hermes, "a new shell does not resolve `hermes` to the installed launcher"
+    assert _login_shell_rabbit(sb) == sb.rabbit, "a new shell does not resolve `rabbit` to the installed launcher"
 
 
 def test_rerunning_the_installer_is_idempotent(installed, provider):
@@ -155,7 +155,7 @@ def test_rerunning_the_installer_is_idempotent(installed, provider):
     for key in before:
         assert after[key] == before[key], f"re-running the installer changed the user's {key}"
     _turn(sb, provider, "turn after re-running the installer")
-    db = I.db_state(sb.hermes_home / "state.db")
+    db = I.db_state(sb.rabbit_home / "state.db")
     assert set(before["db"]["sessions"]) < set(db["sessions"]), "earlier session lost or new turn not persisted"
     assert _path_lines(sb) == rc_before, f"PATH line appended again: {rc_before} -> {_path_lines(sb)}"
-    assert _login_shell_hermes(sb) == sb.hermes
+    assert _login_shell_rabbit(sb) == sb.rabbit

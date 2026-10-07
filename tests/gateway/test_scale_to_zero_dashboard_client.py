@@ -8,7 +8,7 @@ and autostart resumed the box. The dashboard runs in a separate process on
 hosted instances, so the signal crosses over as a marker-file mtime.
 
 These tests exercise the REAL seams — the pure helpers with a real temp
-HERMES_HOME, GatewayRunner._scale_to_zero_is_idle's composition, and
+RABBIT_HOME, GatewayRunner._scale_to_zero_is_idle's composition, and
 tui_gateway.ws.handle_ws — rather than stubbing the collection under test
 (the F25 / #84327 lesson: bugs live at the call site, not in the pure predicate).
 """
@@ -25,8 +25,8 @@ from gateway.run import GatewayRunner
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def rabbit_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -45,18 +45,18 @@ def _stat_denying(target):
 # --- pure helpers -----------------------------------------------------------
 
 
-def test_heartbeat_path_lives_under_hermes_home_state(hermes_home):
+def test_heartbeat_path_lives_under_rabbit_home_state(rabbit_home):
     p = s2z.dashboard_client_heartbeat_path()
-    assert p == hermes_home / "state" / "dashboard_clients.heartbeat"
+    assert p == rabbit_home / "state" / "dashboard_clients.heartbeat"
 
 
-def test_last_seen_missing_marker_is_none_not_fail_awake(hermes_home):
+def test_last_seen_missing_marker_is_none_not_fail_awake(rabbit_home):
     # Steady state for a box nobody has the dashboard open on: must read as
     # "no client", otherwise no instance would ever suspend.
     assert s2z.dashboard_client_last_seen() is None
 
 
-def test_touch_creates_state_dir_and_marker(hermes_home):
+def test_touch_creates_state_dir_and_marker(rabbit_home):
     assert s2z.touch_dashboard_client_heartbeat() is True
     p = s2z.dashboard_client_heartbeat_path()
     assert p.exists()
@@ -64,7 +64,7 @@ def test_touch_creates_state_dir_and_marker(hermes_home):
     assert seen is not None and abs(seen - time.time()) < 5
 
 
-def test_last_seen_returns_raw_mtime_without_staleness_cutoff(hermes_home):
+def test_last_seen_returns_raw_mtime_without_staleness_cutoff(rabbit_home):
     # No liveness cutoff here on purpose: is_idle decides recency. A 1h-old
     # marker still reports its mtime; the gateway then finds it outside
     # idle_timeout, same as an old _last_inbound_at.
@@ -75,7 +75,7 @@ def test_last_seen_returns_raw_mtime_without_staleness_cutoff(hermes_home):
     assert s2z.dashboard_client_last_seen(now=mtime + 3600) == mtime
 
 
-def test_last_seen_future_mtime_is_clamped_to_now(hermes_home):
+def test_last_seen_future_mtime_is_clamped_to_now(rabbit_home):
     # A wall-clock step-back can leave the marker in the future; it must not
     # extend the idle window past "now".
     s2z.touch_dashboard_client_heartbeat()
@@ -86,7 +86,7 @@ def test_last_seen_future_mtime_is_clamped_to_now(hermes_home):
     assert s2z.dashboard_client_last_seen(now=now) == now
 
 
-def test_last_seen_unreadable_marker_fails_awake(hermes_home, monkeypatch):
+def test_last_seen_unreadable_marker_fails_awake(rabbit_home, monkeypatch):
     s2z.touch_dashboard_client_heartbeat()
 
     monkeypatch.setattr(s2z.os, "stat", _stat_denying(s2z.dashboard_client_heartbeat_path()))
@@ -95,7 +95,7 @@ def test_last_seen_unreadable_marker_fails_awake(hermes_home, monkeypatch):
     assert s2z.dashboard_client_last_seen(now=now) == now
 
 
-def test_touch_never_raises(hermes_home, monkeypatch):
+def test_touch_never_raises(rabbit_home, monkeypatch):
     monkeypatch.setattr(s2z.os, "utime", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
     assert s2z.touch_dashboard_client_heartbeat() is False
 
@@ -116,18 +116,18 @@ def _runner(monkeypatch, *, last_inbound_at):
     return r
 
 
-def test_idle_without_dashboard_client_unchanged(hermes_home, monkeypatch):
+def test_idle_without_dashboard_client_unchanged(rabbit_home, monkeypatch):
     r = _runner(monkeypatch, last_inbound_at=time.time() - 600)
     assert r._scale_to_zero_is_idle() is True
 
 
-def test_attached_dashboard_client_blocks_idle(hermes_home, monkeypatch):
+def test_attached_dashboard_client_blocks_idle(rabbit_home, monkeypatch):
     r = _runner(monkeypatch, last_inbound_at=time.time() - 600)
     s2z.touch_dashboard_client_heartbeat()
     assert r._scale_to_zero_is_idle() is False
 
 
-def test_client_gets_the_same_idle_grace_as_a_message(hermes_home, monkeypatch):
+def test_client_gets_the_same_idle_grace_as_a_message(rabbit_home, monkeypatch):
     """Last WS frame 100s ago with a 120s idle_timeout => still inside the
     window => NOT idle. This is the 2-minute-after-the-app-closes contract; an
     earlier draft cut the marker off at 45s and suspended ~50s after
@@ -140,7 +140,7 @@ def test_client_gets_the_same_idle_grace_as_a_message(hermes_home, monkeypatch):
     assert r._scale_to_zero_is_idle() is False
 
 
-def test_client_gone_longer_than_idle_timeout_is_idle(hermes_home, monkeypatch):
+def test_client_gone_longer_than_idle_timeout_is_idle(rabbit_home, monkeypatch):
     r = _runner(monkeypatch, last_inbound_at=time.time() - 600)
     s2z.touch_dashboard_client_heartbeat()
     p = s2z.dashboard_client_heartbeat_path()
@@ -149,7 +149,7 @@ def test_client_gone_longer_than_idle_timeout_is_idle(hermes_home, monkeypatch):
     assert r._scale_to_zero_is_idle() is True
 
 
-def test_marker_predating_gateway_inbound_does_not_matter(hermes_home, monkeypatch):
+def test_marker_predating_gateway_inbound_does_not_matter(rabbit_home, monkeypatch):
     # Ancient marker from a client that left hours ago, gateway idle 600s.
     r = _runner(monkeypatch, last_inbound_at=time.time() - 600)
     s2z.touch_dashboard_client_heartbeat()
@@ -159,7 +159,7 @@ def test_marker_predating_gateway_inbound_does_not_matter(hermes_home, monkeypat
     assert r._scale_to_zero_is_idle() is True
 
 
-def test_dashboard_client_seen_recently_extends_inbound_clock(hermes_home, monkeypatch):
+def test_dashboard_client_seen_recently_extends_inbound_clock(rabbit_home, monkeypatch):
     # Marker 30s old: inbound clock moves to 30s ago, which is
     # inside the 120s window => not idle, even though the gateway's own
     # _last_inbound_at is ancient.
@@ -171,7 +171,7 @@ def test_dashboard_client_seen_recently_extends_inbound_clock(hermes_home, monke
     assert r._scale_to_zero_is_idle() is False
 
 
-def test_newer_gateway_inbound_wins_over_older_marker(hermes_home, monkeypatch):
+def test_newer_gateway_inbound_wins_over_older_marker(rabbit_home, monkeypatch):
     r = _runner(monkeypatch, last_inbound_at=time.time() - 5)
     monkeypatch.setattr(r, "_scale_to_zero_idle_timeout_seconds", lambda: 10.0, raising=False)
     s2z.touch_dashboard_client_heartbeat()
@@ -184,7 +184,7 @@ def test_newer_gateway_inbound_wins_over_older_marker(hermes_home, monkeypatch):
     assert time.time() - r._last_inbound_at < 10
 
 
-def test_unreadable_marker_keeps_gateway_awake(hermes_home, monkeypatch):
+def test_unreadable_marker_keeps_gateway_awake(rabbit_home, monkeypatch):
     r = _runner(monkeypatch, last_inbound_at=time.time() - 600)
     s2z.touch_dashboard_client_heartbeat()
     monkeypatch.setattr(s2z.os, "stat", _stat_denying(s2z.dashboard_client_heartbeat_path()))
@@ -194,7 +194,7 @@ def test_unreadable_marker_keeps_gateway_awake(hermes_home, monkeypatch):
 # --- dashboard side: the real handle_ws path touches the marker -------------
 
 
-def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
+def test_handle_ws_connect_touches_marker(rabbit_home, monkeypatch):
     from tui_gateway import server, ws as ws_mod
 
     monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
@@ -224,7 +224,7 @@ def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
     assert seen is not None and abs(seen - time.time()) < 5
 
 
-def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
+def test_handle_ws_inbound_frames_refresh_marker(rabbit_home, monkeypatch):
     from tui_gateway import server, ws as ws_mod
 
     monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
@@ -268,7 +268,7 @@ def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
     assert s2z.dashboard_client_last_seen() is not None
 
 
-def test_note_activity_is_throttled(hermes_home, monkeypatch):
+def test_note_activity_is_throttled(rabbit_home, monkeypatch):
     from tui_gateway import ws as ws_mod
 
     calls = {"n": 0}

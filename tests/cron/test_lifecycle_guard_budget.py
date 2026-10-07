@@ -213,6 +213,6 @@ def test_default_budget_admits_a_wide_benign_wrapper_graph(tmp_path):
     # ...and a lifecycle command hidden behind the 200 benign scripts is still
     # found: the budget bounds work, it does not stop the walk early.
     evil = tmp_path / "evil.sh"
-    evil.write_text("hermes gateway restart\n", encoding="utf-8")
+    evil.write_text("rabbit gateway restart\n", encoding="utf-8")
     hub.write_text(hub.read_text() + f"bash {shlex.quote(str(evil))}\n", encoding="utf-8")
     assert guard(f"bash {shlex.quote(str(hub))}") is True

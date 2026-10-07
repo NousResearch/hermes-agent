@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""One parent-death supervisor per Hermes process, shared by all stdio MCP servers.
+"""One parent-death supervisor per Rabbit process, shared by all stdio MCP servers.
 
 Why this exists
 ---------------
-When Hermes dies without running its cleanup path (SIGKILL, OOM killer, a hard
+When Rabbit dies without running its cleanup path (SIGKILL, OOM killer, a hard
 crash), stdio MCP servers it spawned are reparented to init and keep running
-forever.  macOS has no ``PR_SET_PDEATHSIG``, so something has to outlive Hermes
+forever.  macOS has no ``PR_SET_PDEATHSIG``, so something has to outlive Rabbit
 and reap them.
 
 This module is deliberately standard-library-only and must not import anything
-from ``tools/``: it runs after Hermes may already be dead, and pulling in
+from ``tools/``: it runs after Rabbit may already be dead, and pulling in
 ``mcp_tool`` would drag the whole agent with it. The TERM -> grace -> KILL
 ``killpg`` sweep in ``_reap`` therefore duplicates similar sweeps elsewhere in
 the tree on purpose.
@@ -18,10 +18,10 @@ The predecessor (``mcp_stdio_watchdog.py``) solved this with one CPython
 *per MCP server*, wrapping each server command and polling ``getppid()`` every
 two seconds.  That costs ~10 MB of resident memory per server and detects death
 up to one poll interval late.  This module replaces the whole fleet of pollers
-with a single supervisor per Hermes process:
+with a single supervisor per Rabbit process:
 
-* **Death detection is a blocking read on a pipe.**  Hermes holds the only write
-  end.  When Hermes dies -- by any means, including SIGKILL -- the write end
+* **Death detection is a blocking read on a pipe.**  Rabbit holds the only write
+  end.  When Rabbit dies -- by any means, including SIGKILL -- the write end
   closes and the read returns EOF.  Exact, instant, and free.
 * **Servers are spawned unwrapped.**  The MCP SDK already spawns stdio children
   with ``start_new_session=True``, so each one is its own process-group leader
@@ -36,7 +36,7 @@ Protocol (line-based, on stdin)
 
 On EOF the supervisor SIGTERMs every still-registered process group, waits a
 short grace period, SIGKILLs the survivors, and exits.  A registered group that
-Hermes never unregistered *is* the orphan set, so a clean Hermes shutdown --
+Rabbit never unregistered *is* the orphan set, so a clean Rabbit shutdown --
 which unregisters as it tears each server down -- ends with nothing to kill.
 
 Unparseable lines are ignored rather than fatal: a corrupted byte on the control
@@ -48,11 +48,11 @@ We reap by pgid, so a registration is only as meaningful as the group's
 identity.  A group we deliberately keep registered -- an orphan that teardown
 failed to kill, such as the ``node`` ``mcp-remote`` leaves behind -- can
 eventually exit on its own, after which the kernel is free to hand that pgid to
-an unrelated process owned by the same user.  If Hermes then dies ungracefully
+an unrelated process owned by the same user.  If Rabbit then dies ungracefully
 while the registration is still stale, we would signal a stranger.
 ``_is_safe_target`` cannot catch this: the value is stale, not invalid.
 
-Two things narrow the window.  Hermes prunes registrations whose group has no
+Two things narrow the window.  Rabbit prunes registrations whose group has no
 members left (``_prune_dead_supervised_pgids``) on every registration change,
 and the orphan sweep unregisters whatever it reaps.  Neither closes it -- a
 group can die and its pgid be recycled between two probes -- so the exposure is
@@ -63,7 +63,7 @@ MCP children with a boot-unique env marker and checking that some member still
 carries it before signalling.  That was judged not worth putting a ``ps`` parse
 into the one process whose job is to stay simple enough to always work; it is
 the obvious next step if this class of bug ever actually bites.  Note the same
-exposure already exists in Hermes's own killpg-based orphan cleanup, which this
+exposure already exists in Rabbit's own killpg-based orphan cleanup, which this
 module did not introduce (see upstream issue #88350).
 """
 
@@ -87,12 +87,12 @@ _MAX_LINE_CHARS = 256
 def _is_safe_target(pgid: int, *, own_pgid: int, parent_pgid: int) -> bool:
     """Return True if ``pgid`` is a process group we may signal.
 
-    Defensive only -- Hermes already filters non-MCP children before it
+    Defensive only -- Rabbit already filters non-MCP children before it
     registers anything (see ``_filter_mcp_children`` in ``tools/mcp_tool.py``).
     But this process signals whole process *groups*, so a bad value here is
     unusually expensive: ``killpg(0, ...)`` signals our own group, and pgid 1
     is init.  A caller bug should cost us one unreaped server, never the
-    Hermes process tree or the session.
+    Rabbit process tree or the session.
     """
     if pgid <= 1:
         return False
@@ -144,7 +144,7 @@ def _serve(stream, *, own_pgid: int, parent_pgid: int) -> set[int]:
     Reads are length-capped rather than newline-terminated. Iterating the
     stream instead lets a writer that never sends a newline grow this process
     without bound -- feeding it ``/dev/zero`` reached 15 GB before it was
-    stopped. Nothing in Hermes can produce that today, but this process is the
+    stopped. Nothing in Rabbit can produce that today, but this process is the
     last line of defense against leaked servers, so it must not be the thing
     that dies under memory pressure. A line truncated by the cap fails to parse
     and is skipped; the remainder resyncs at the next newline.
@@ -182,7 +182,7 @@ def main(argv=None) -> int:
         "--parent-pgid",
         type=int,
         required=True,
-        help="Process group of the spawning Hermes process; never signalled.",
+        help="Process group of the spawning Rabbit process; never signalled.",
     )
     args = parser.parse_args(argv)
 

@@ -21,7 +21,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
 
 
 def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from rabbit_cli.cli_commands_mixin import CLICommandsMixin
     from tools.cronjob_job_args import _format_job
 
     with jobs.use_cron_store(tmp_path):

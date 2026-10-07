@@ -13,13 +13,13 @@ from gateway.config import PlatformConfig
 from gateway.platforms._shared import send_error
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
-_FAKE_TOKEN = "hermes-test-bearer-credential-ABCDEFGHIJKLMNOPQRSTUVWX"
+_FAKE_TOKEN = "rabbit-test-bearer-credential-ABCDEFGHIJKLMNOPQRSTUVWX"
 _FAKE_URL_SECRET = "https://hooks.example/send?access_token=sk_live_ABCDEF0123456789"
 
 
 @pytest.fixture(autouse=True)
 def _redaction_on(monkeypatch):
-    # The switch is snapshotted at import; a developer shell with HERMES_REDACT_SECRETS=false must not
+    # The switch is snapshotted at import; a developer shell with RABBIT_REDACT_SECRETS=false must not
     # turn this contract test into a no-op.
     monkeypatch.setattr(_redact, "_REDACT_ENABLED", True)
 
@@ -35,7 +35,7 @@ def test_send_error_redacts_token_and_signed_url():
 @pytest.mark.asyncio
 async def test_ntfy_standalone_failure_is_redacted(monkeypatch):
     ntfy = load_plugin_adapter("ntfy")
-    monkeypatch.setenv("NTFY_TOPIC", "hermes-test")
+    monkeypatch.setenv("NTFY_TOPIC", "rabbit-test")
 
     class _Boom:
         def __init__(self, *a, **k):
@@ -52,7 +52,7 @@ async def test_ntfy_standalone_failure_is_redacted(monkeypatch):
 
     monkeypatch.setattr(ntfy, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(ntfy.httpx, "AsyncClient", _Boom)
-    result = await ntfy._standalone_send(PlatformConfig(enabled=True, extra={}), "hermes-test", "hi")
+    result = await ntfy._standalone_send(PlatformConfig(enabled=True, extra={}), "rabbit-test", "hi")
     assert "error" in result
     assert _FAKE_TOKEN not in result["error"] and "sk_live_ABCDEF0123456789" not in result["error"]
     assert "connect failed" in result["error"]

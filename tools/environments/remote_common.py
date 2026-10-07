@@ -8,25 +8,25 @@ import subprocess
 from typing import Callable, Iterable
 
 from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _is_hermes_internal_secret, _is_provider_env_blocklisted
+from tools.environments.local_env_policy import _is_rabbit_internal_secret, _is_provider_env_blocklisted
 
 
-def load_hermes_env_vars() -> dict[str, str]:
-    """``~/.hermes/.env`` values, or ``{}`` — a broken .env must not fail command execution."""
+def load_rabbit_env_vars() -> dict[str, str]:
+    """``~/.rabbit/.env`` values, or ``{}`` — a broken .env must not fail command execution."""
     try:
-        from hermes_cli.config import load_env
+        from rabbit_cli.config import load_env
         return load_env() or {}
     except Exception:
         return {}
 
 
 def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
-                            hermes_env_loader: Callable[[], dict[str, str]] = load_hermes_env_vars,
+                            rabbit_env_loader: Callable[[], dict[str, str]] = load_rabbit_env_vars,
                             ) -> tuple[dict[str, str], set[str]]:
     """Values to forward into a remote shell plus the scoped names that must be unset there.
 
     Implicit passthrough (skill ``required_environment_variables`` + ``terminal.env_passthrough``)
-    is filtered through the Hermes provider-credential blocklist and the dynamic internal-secret
+    is filtered through the Rabbit provider-credential blocklist and the dynamic internal-secret
     check; ``explicit_forward`` entries (docker_forward_env) are an operator opt-in that bypasses
     both. Each value is the routed profile's secret when multiplex is active; a name the active
     scope lacks is returned in the unset set so a shared sandbox cannot leak another profile's
@@ -43,14 +43,14 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
         passthrough_keys = set(get_all_passthrough())
     except Exception:
         pass
-    implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
+    implicit_forward = {k for k in passthrough_keys if not _is_rabbit_internal_secret(k)}
     forward_keys = set(explicit_forward) | {
         k for k in implicit_forward if not _is_provider_env_blocklisted(k)}
-    hermes_env = hermes_env_loader() if forward_keys else {}
+    rabbit_env = rabbit_env_loader() if forward_keys else {}
     exec_env: dict[str, str] = {}
     unset_names: set[str] = set()
     for key in sorted(forward_keys):
-        value = os.getenv(key) or hermes_env.get(key)
+        value = os.getenv(key) or rabbit_env.get(key)
         if resolve_passthrough_value is not None:
             value = resolve_passthrough_value(key, value)
         if value is not None:

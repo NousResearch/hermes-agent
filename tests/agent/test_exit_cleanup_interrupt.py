@@ -17,7 +17,7 @@ def _mock_runtime_provider(monkeypatch):
     auto-detection (~4s of socket timeouts in hermetic CI). Mock it out
     since these tests don't care about provider resolution — the agent
     is mocked too."""
-    import hermes_cli.runtime_provider as rp
+    import rabbit_cli.runtime_provider as rp
     def _fake_resolve(*args, **kwargs):
         return {
             "provider": "openrouter",
@@ -48,7 +48,7 @@ class TestCronJobCleanup:
             "model": "test/model",
         }
 
-        with patch("hermes_state_registry.acquire", return_value=mock_db), \
+        with patch("rabbit_state_registry.acquire", return_value=mock_db), \
              patch.object(scheduler, "_build_job_prompt", return_value="hello"), \
              patch.object(sched_delivery, "_resolve_origin", return_value=None), \
              patch.object(scheduler, "_resolve_delivery_target", return_value=None), \

@@ -5,16 +5,16 @@ import { expect, test, vi } from 'vitest'
 import notarize, { runCommand } from '../apps/desktop/scripts/notarize.mjs'
 
 const submissionId = '00000000-0000-4000-8000-000000000001'
-const missingTicket = () => Object.assign(new Error('CloudKit query for Hermes.app failed due to "Record not found".\nThe staple and validate action failed! Error 65.'), { code: 65 })
+const missingTicket = () => Object.assign(new Error('CloudKit query for Rabbit.app failed due to "Record not found".\nThe staple and validate action failed! Error 65.'), { code: 65 })
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'hermes-notary-test-'))
-  mkdirSync(path.join(root, 'Hermes.app'))
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rabbit-notary-test-'))
+  mkdirSync(path.join(root, 'Rabbit.app'))
   const key = path.join(root, 'api-key.p8')
   writeFileSync(key, 'test credential path only')
   return {
     root,
-    context: { electronPlatformName: 'darwin', appOutDir: root, packager: { appInfo: { productFilename: 'Hermes' } } },
+    context: { electronPlatformName: 'darwin', appOutDir: root, packager: { appInfo: { productFilename: 'Rabbit' } } },
     environments: [
       { APPLE_NOTARY_PROFILE: 'test-profile' },
       { APPLE_API_KEY: key, APPLE_API_KEY_ID: 'test-key', APPLE_API_ISSUER: 'test-issuer' }
@@ -54,7 +54,7 @@ test('accepted submissions retry only ticket propagation, without resubmitting o
       expect(attempts).toBe(3)
       expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([15000, 30000])
       expect(log).toHaveBeenCalledWith(expect.stringContaining(`${submissionId}: Accepted`))
-      expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
+      expect(existsSync(path.join(f.root, 'Rabbit.zip'))).toBe(false)
     }
   } finally {
     f.cleanup()
@@ -114,7 +114,7 @@ test('HTTP timeouts resume the same submission with notarytool wait and a shrink
       }
       expect(calls.filter(c => c.args[0] === 'stapler')).toHaveLength(1)
       expect(log).toHaveBeenCalledWith(expect.stringContaining(submissionId))
-      expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
+      expect(existsSync(path.join(f.root, 'Rabbit.zip'))).toBe(false)
     }
   } finally { f.cleanup() }
 })
@@ -168,7 +168,7 @@ test('wait recovery requires a known submission and stops at failures or its lim
         expect(sleep).toHaveBeenCalledTimes(scenario === 'sleep-budget' ? 1 : 0)
       }
       expect(calls.filter(c => c[2] === 'log')).toHaveLength(scenario === 'invalid' ? 1 : 0)
-      expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
+      expect(existsSync(path.join(f.root, 'Rabbit.zip'))).toBe(false)
     }
   } finally { f.cleanup() }
 })
@@ -214,7 +214,7 @@ test('rejections, unknown failures and exhausted propagation retries remain buil
         expect(staples).toHaveLength(scenario === 'permanent-staple' ? 1 : 0)
       }
       if (scenario !== 'exhausted') expect(sleep).not.toHaveBeenCalled()
-      expect(existsSync(path.join(f.root, 'Hermes.zip'))).toBe(false)
+      expect(existsSync(path.join(f.root, 'Rabbit.zip'))).toBe(false)
     }
   } finally {
     f.cleanup()

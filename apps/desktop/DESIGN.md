@@ -130,8 +130,8 @@ Reduced motion settles immediately without retaining empty clearance.
 Settings → Appearance → Window layout offers **Minimize to tray**, off by default and
 local to this desktop installation. When enabled, minimizing ordinary windows
 hides them without stopping their work. Close, Alt+F4, and Cmd+Q keep their
-normal behavior. The tray's **Show Hermes** restores hidden windows;
-**Quit Hermes** keeps the ordinary active-work confirmation and teardown.
+normal behavior. The tray's **Show Rabbit** restores hidden windows;
+**Quit Rabbit** keeps the ordinary active-work confirmation and teardown.
 On macOS the tray lives in the menu bar; the Dock icon hides only when no normal
 window remains visible and returns on restore. If the tray is unavailable,
 ordinary minimize/close behavior is retained rather than hiding an unreachable app.

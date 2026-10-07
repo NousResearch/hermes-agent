@@ -9,7 +9,7 @@ commands package the current desktop build; they do not stage a fresh runtime.
 |---|---|---|
 | Windows x64 / ARM64, sideload | Signed per-architecture MSIX packages, combined into a universal `.msixbundle`; `.appinstaller` descriptor | Windows App Installer |
 | Windows x64 / ARM64, Store | Store-identity MSIX packages and a separate Store bundle | Microsoft Store |
-| macOS ARM64 / x64 | Signed, notarized `Hermes.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
+| macOS ARM64 / x64 | Signed, notarized `Rabbit.app` in DMG and ZIP artifacts | `electron-updater` with Squirrel.Mac |
 | Linux x64 / ARM64 | Local builder can produce AppImage | External replacement; Linux desktop release legs are disabled |
 
 The current MSIX manifest requires Windows 11 22H2 (`10.0.22621.0`).
@@ -32,7 +32,7 @@ The bundled payload contains:
 
 `pm/lock.json` owns managed-tool pins. `pyproject.toml` and `uv.lock` own Python
 requirements. Native staging uses `--all-extras`, subject to platform markers,
-minus the extras `[tool.hermes] opt-in-extras` names (installed only when the
+minus the extras `[tool.rabbit] opt-in-extras` names (installed only when the
 user selects them). This is broader than the source installer's extra named `all`.
 
 The backend runs from app resources. Launchers execute the store interpreter
@@ -144,7 +144,7 @@ on each target, then verify signed installers and launchers on their native host
 macOS packaging retains the caller's login `HOME` for keychain import and signing.
 An explicit keychain path does not make Security.framework work under a scratch
 home. Dependency preparation and product compilation still use the isolated home.
-Hermes state and explicit dependency-cache paths remain build-owned during packaging.
+Rabbit state and explicit dependency-cache paths remain build-owned during packaging.
 
 ## Commit-only builds
 
@@ -164,9 +164,9 @@ defaults into the desktop app, for example:
 
 ```sh
 python scripts/release.py --build-commit REV --remote fork --publish \
-  --bundle-env HERMES_GUEST_ONBOARDING=1 \
-  --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test \
-  --bundle-unset HERMES_HOME
+  --bundle-env RABBIT_GUEST_ONBOARDING=1 \
+  --bundle-env RABBIT_DATA_DIR_SUFFIX=magic-test \
+  --bundle-unset RABBIT_HOME
 ```
 
 These defaults run before Electron initializes its paths and are inherited by
@@ -176,18 +176,18 @@ and packaged JavaScript. This option affects desktop bundles, not Termux.
 The suffix is appended literally; include a leading hyphen if desired.
 `--bundle-unset NAME` explicitly clears an inherited value at app launch, even
 if the caller supplied it. Internally it sets the value to an empty string, not
-an absent key. Clearing `HERMES_HOME` also disables the Windows registry fallback:
+an absent key. Clearing `RABBIT_HOME` also disables the Windows registry fallback:
 older installers saved that variable permanently, which otherwise takes priority
 over the test suffix. It does not edit the registry or the existing install.
-For full data-path isolation, also clear `HERMES_DESKTOP_USER_DATA_DIR` if that
+For full data-path isolation, also clear `RABBIT_DESKTOP_USER_DATA_DIR` if that
 machine uses an explicit Electron directory. Ordinary defaults still preserve
-runtime overrides; `--bundle-env HERMES_HOME=` is a default, not a forced clear.
+runtime overrides; `--bundle-env RABBIT_HOME=` is a default, not a forced clear.
 
-For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
+For local commit builds, `RABBIT_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
-`{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
-`HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and `HERMES_SKIP_INTRO`
+`{"RABBIT_HOME":null,"RABBIT_DATA_DIR_SUFFIX":"magic-test"}`. Only
+`RABBIT_HOME`, `RABBIT_DATA_DIR_SUFFIX`, `RABBIT_DESKTOP_USER_DATA_DIR`,
+`RABBIT_SHARED_AUTH_DIR`, `RABBIT_GUEST_ONBOARDING`, and `RABBIT_SKIP_INTRO`
 are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
@@ -274,7 +274,7 @@ bundled Python checker. Its OS-registered App Installer source still owns
 automatic updates.
 
 Store builds use `Windows.Services.Store.StoreContext` to check, download,
-and request installation inside Hermes. The native consent UI attaches to the
+and request installation inside Rabbit. The native consent UI attaches to the
 current desktop window. Download finishes before backend shutdown; the existing
 relaunch waiter is registered before the install request. Unknown checks,
 cancellation and request failures do not count as successful updates. Native
@@ -343,8 +343,8 @@ For an ordinary package of that desktop build, use the workspace's
 replace the complete tagged build described above.
 
 Icons are generated from `assets/nous-girl-*.svg` and `assets/backgrounds/`.
-`node scripts/generate-icons.mjs` renders them with the Hermes runtime Python
-(`HERMES_PYTHON`, else `python` on PATH); Pillow and resvg-py are core
+`node scripts/generate-icons.mjs` renders them with the Rabbit runtime Python
+(`RABBIT_PYTHON`, else `python` on PATH); Pillow and resvg-py are core
 dependencies. Generated PNG/ICO/ICNS files are not source assets.
 
 [Stable release admission](../../docs/stable-releases.md) requires the full
@@ -357,7 +357,7 @@ separate in [PM audit status](../../docs/pm-audit-status.md).
 ## Rehearsing the guided onboarding
 
 From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
-`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
+`env -u NODE_ENV RABBIT_GUEST_ONBOARDING=1 RABBIT_HOME=<tmp>/.rabbit RABBIT_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
 (replace `<tmp>` with that directory). To use the portal stand-in, add
-`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
+`RABBIT_PORTAL_BASE_URL=http://127.0.0.1:8765 RABBIT_ANON_API_SECRET=test-secret RABBIT_SHARED_AUTH_DIR=<tmp>/.rabbit/shared`
 before `npm run dev`. Stop Electron and its dev server after the run.

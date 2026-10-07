@@ -18,9 +18,9 @@ def pm_driver(tmp_path, monkeypatch):
     from pm import paths
     from pm.store import tree_digest
 
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
-    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.delenv("RABBIT_CUA_DRIVER_CMD", raising=False)
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setattr(pm, "ensure", MagicMock(side_effect=AssertionError("status must not install")))
     package, target = pm.get_package("cua-driver"), pm.current_target()
     lock = pm.Lockfile(paths.lockfile_path())

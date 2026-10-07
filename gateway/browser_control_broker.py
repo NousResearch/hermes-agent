@@ -52,7 +52,7 @@ def _extension_control_flag(config: Optional[dict], key: str) -> bool:
     if config is None:
         try:
             # Hot path (every browser tool call): the read-only loader skips load_config()'s deepcopy.
-            from hermes_cli.config import load_config_readonly
+            from rabbit_cli.config import load_config_readonly
             config = load_config_readonly()
         except Exception:
             return False

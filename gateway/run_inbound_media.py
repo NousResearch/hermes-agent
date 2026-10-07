@@ -24,9 +24,9 @@ def rehome_inbound_media(event: MessageEvent) -> None:
     """
     if not event.media_urls:
         return
-    from hermes_constants import get_hermes_home, get_routing_process_hermes_home, hermes_home_key
-    active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
-    if hermes_home_key(active) == hermes_home_key(launch):
+    from rabbit_constants import get_rabbit_home, get_routing_process_rabbit_home, rabbit_home_key
+    active, launch = Path(get_rabbit_home()), Path(get_routing_process_rabbit_home())
+    if rabbit_home_key(active) == rabbit_home_key(launch):
         return
     from tools.credential_files import to_agent_visible_cache_path
     rewritten = list(event.media_urls)

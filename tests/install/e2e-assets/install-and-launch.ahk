@@ -1,11 +1,11 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-; Drive the REAL Hermes-Setup.exe (Tauri bootstrap installer) window:
+; Drive the REAL Rabbit-Setup.exe (Tauri bootstrap installer) window:
 ; click Install, wait for the install to finish, click Launch, and wait for
-; the real Hermes.exe (Electron desktop) window to appear.
+; the real Rabbit.exe (Electron desktop) window to appear.
 ;
-; Adapted from @ethernet8023's e2e/windows/install-hermes-desktop.ahk
+; Adapted from @ethernet8023's e2e/windows/install-rabbit-desktop.ahk
 ; (PR #68183) -- same ImageSearch approach; the install-button template was
 ; re-captured from a live CI frame (the #68183 templates predated the
 ; installer UI restyle to the "[ INSTALL ]" bracket look and never matched).
@@ -27,7 +27,7 @@
 ; Args: [1] log path  [2] setup exe name  [3] bootstrap-installer.log path
 
 logPath := A_Args.Length >= 1 ? A_Args[1] : "ahk.log"
-setupExe := A_Args.Length >= 2 ? A_Args[2] : "Hermes-Setup.exe"
+setupExe := A_Args.Length >= 2 ? A_Args[2] : "Rabbit-Setup.exe"
 bootstrapLog := A_Args.Length >= 3 ? A_Args[3] : ""
 
 Log(text) {
@@ -112,7 +112,7 @@ BootstrapLogContains(needle) {
 }
 
 installerWin := "ahk_exe " setupExe
-appWin := "ahk_exe Hermes.exe"
+appWin := "ahk_exe Rabbit.exe"
 
 ; Button center as a fraction of the window rect (installer is ~full-screen
 ; on the runner). Measured from a live CI frame where the template match
@@ -197,7 +197,7 @@ if launchFound {
     ClickWithMarker(lx, ly)
     Log("FALLBACK: clicked Launch at window-relative position")
 }
-Log("Launch clicked; waiting for the Hermes desktop app window")
+Log("Launch clicked; waiting for the Rabbit desktop app window")
 
 ; WinWait returns 0 on timeout; it does not throw. The old unchecked return
 ; led to WinGetPos throwing "Target window not found." Reuse the bounded
@@ -206,7 +206,7 @@ Log("Launch clicked; waiting for the Hermes desktop app window")
 try {
     appRect := WaitForRealWindow(appWin, 300000)
 } catch {
-    throw Error("Hermes.exe real-sized window did not appear within 300s of clicking Launch")
+    throw Error("Rabbit.exe real-sized window did not appear within 300s of clicking Launch")
 }
 Log(Format("App window appeared at x={1} y={2} w={3} h={4}", appRect.x, appRect.y, appRect.w, appRect.h))
 

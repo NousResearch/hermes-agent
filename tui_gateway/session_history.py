@@ -186,8 +186,8 @@ def _user_image_display_text(content: Any) -> str | None:
     import binascii
     from pathlib import Path
     from fastapi import HTTPException
-    from hermes_cli.web_routers.files import _fs_regular_file
-    from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    from rabbit_cli.web_routers.files import _fs_regular_file
+    from rabbit_cli.web_server import _FS_DATA_URL_MAX_BYTES
     image_parts = content[1:1 + len(paths)]
     if len(image_parts) != len(paths) or len(content) not in (1 + len(paths), 2 + len(paths)):
         return None

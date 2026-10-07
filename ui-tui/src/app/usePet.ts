@@ -1,4 +1,4 @@
-import { useStdout } from '@hermes/ink'
+import { useStdout } from '@rabbit/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
@@ -104,7 +104,7 @@ export interface PetRender {
  * - **cells** (everywhere else): truecolor half-block grids painted by Ink.
  *
  * A steady poll keeps it reactive to config changes made elsewhere (`/pet`, the
- * picker, `hermes pets select`) so adopting/switching/disabling takes effect
+ * picker, `rabbit pets select`) so adopting/switching/disabling takes effect
  * live. Disabled/cached pets use the cheap inline `pet.info.meta` probe; only
  * uncached enabled states request `pet.cells` from the long-handler pool.
  */

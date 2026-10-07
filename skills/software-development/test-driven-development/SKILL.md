@@ -2,11 +2,11 @@
 name: test-driven-development
 description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
 version: 1.1.0
-author: Hermes Agent (adapted from obra/superpowers)
+author: adapted from obra/superpowers
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [testing, tdd, development, quality, red-green-refactor]
     related_skills: [systematic-debugging, subagent-driven-development]
 ---
@@ -299,7 +299,7 @@ Can't check all boxes? You skipped TDD. Start over.
 | Must mock everything | Code too coupled. Use dependency injection. |
 | Test setup huge | Extract helpers. Still complex? Simplify the design. |
 
-## Hermes Agent Integration
+## Rabbit Agent Integration
 
 ### Running Tests
 

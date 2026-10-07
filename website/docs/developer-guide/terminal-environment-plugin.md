@@ -1,10 +1,10 @@
 # Terminal Environment Provider Plugins
 
-Hermes runs shell commands through a pluggable set of **terminal backends**.
+Rabbit runs shell commands through a pluggable set of **terminal backends**.
 The built-in backends (local, Docker, Singularity, Modal, Daytona, Vercel
 Sandbox, SSH) live in the core repo under `tools/environments/`. Third-party
 sandbox vendors integrate as **plugins** instead — a standalone plugin repo
-installed under `~/.hermes/plugins/`, registering a backend the user selects
+installed under `~/.rabbit/plugins/`, registering a backend the user selects
 exactly like a built-in one via `terminal.backend` in `config.yaml`.
 
 This page mirrors the [Browser Provider Plugins](./browser-provider-plugin.md)
@@ -17,9 +17,9 @@ A registered backend automatically participates in every core surface:
 | Surface | Driven by |
 |---|---|
 | Command dispatch (`terminal`, `execute_code`, file tools) | `create_environment()` |
-| `hermes setup` backend picker | `display_name`, `description`, `setup_instructions()`, `post_setup()` |
+| `rabbit setup` backend picker | `display_name`, `description`, `setup_instructions()`, `post_setup()` |
 | Dashboard terminal-backend picker (probe status) | `probe()` |
-| `hermes status` / `hermes doctor` | `doctor_checks()` |
+| `rabbit status` / `rabbit doctor` | `doctor_checks()` |
 | System-prompt environment hints | `is_remote`, `env_description` |
 | Dangerous-command approval skipping | `skip_container_guards` |
 | Container path/cwd handling | `is_container` |
@@ -33,7 +33,7 @@ site instead of a hardcoded list of names.
 
 ## Minimal provider
 
-```python title="~/.hermes/plugins/acmebox/__init__.py"
+```python title="~/.rabbit/plugins/acmebox/__init__.py"
 from agent.terminal_env_provider import TerminalEnvironmentProvider
 
 
@@ -63,7 +63,7 @@ class AcmeBoxProvider(TerminalEnvironmentProvider):
 
     @property
     def cache_path_base(self):
-        return "~/.hermes"    # where synced cache files land, or None
+        return "~/.rabbit"    # where synced cache files land, or None
 
     @property
     def strip_env_keys(self):
@@ -85,7 +85,7 @@ def register(ctx):
     ctx.register_terminal_environment_provider(AcmeBoxProvider())
 ```
 
-```yaml title="~/.hermes/plugins/acmebox/plugin.yaml"
+```yaml title="~/.rabbit/plugins/acmebox/plugin.yaml"
 name: acmebox
 version: 0.1.0
 description: AcmeBox cloud sandbox terminal backend
@@ -95,8 +95,8 @@ kind: backend
 Enable it, select it, run:
 
 ```bash
-hermes plugins enable acmebox
-hermes config set terminal.backend acmebox
+rabbit plugins enable acmebox
+rabbit config set terminal.backend acmebox
 ```
 
 ## Rules

@@ -21,8 +21,8 @@ _PROBE_KEY = "probe-sentinel"
 
 
 class _FakeNativeClient:
-    HERMES_SKIP_TRANSPORT_WRAP = True
-    HERMES_SKIP_ASYNC_WRAP = True
+    RABBIT_SKIP_TRANSPORT_WRAP = True
+    RABBIT_SKIP_ASYNC_WRAP = True
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -59,11 +59,11 @@ def _probe_profile(cls, name: str) -> ProviderProfile:
 def registered(monkeypatch):
     """Register provider profiles for one test on copies of both registries.
 
-    Mirrors the import-time synthesis ``hermes_cli.auth`` performs for plugin ``api_key``
+    Mirrors the import-time synthesis ``rabbit_cli.auth`` performs for plugin ``api_key``
     profiles, which is what routes them into ``_resolve_api_key_branch`` in the first place.
     """
-    import hermes_cli.auth as _auth
-    from hermes_cli.auth_plugin_providers import register_plugin_provider
+    import rabbit_cli.auth as _auth
+    from rabbit_cli.auth_plugin_providers import register_plugin_provider
     from agent import secret_scope as _secret_scope
 
     _providers._discover_providers()

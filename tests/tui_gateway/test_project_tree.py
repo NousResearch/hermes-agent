@@ -198,7 +198,7 @@ def test_user_worktree_under_dotworktrees_is_its_own_lane_not_kanban():
     )
     sessions = [
         _session("/repo", branch="main"),
-        _session("/repo/.worktrees/test-gui-stuff", branch="hermes/test-gui-stuff"),
+        _session("/repo/.worktrees/test-gui-stuff", branch="rabbit/test-gui-stuff"),
     ]
 
     tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
@@ -500,18 +500,18 @@ def test_nested_project_folders_pick_the_deepest_match():
 
 
 def test_junk_root_never_becomes_an_auto_project():
-    # A session whose git root is HERMES_HOME (config/state) must not spawn a
+    # A session whose git root is RABBIT_HOME (config/state) must not spawn a
     # phantom project; it lands in the Home bucket. A real repo alongside it
     # still groups normally.
     resolve = _resolver(
         {
-            "/home/me/.hermes": ("/home/me/.hermes", "/home/me/.hermes"),
+            "/home/me/.rabbit": ("/home/me/.rabbit", "/home/me/.rabbit"),
             "/www/app": ("/www/app", "/www/app"),
         }
     )
-    junk = _session("/home/me/.hermes", branch="main")
+    junk = _session("/home/me/.rabbit", branch="main")
     real = _session("/www/app", branch="main")
-    is_junk = lambda root: root == "/home/me/.hermes"
+    is_junk = lambda root: root == "/home/me/.rabbit"
 
     tree = pt.build_tree([], [junk, real], [], resolve, hydrate=True, is_junk_root=is_junk)
 
@@ -521,7 +521,7 @@ def test_junk_root_never_becomes_an_auto_project():
 
 
 def test_broad_default_non_git_cwd_stays_unscoped():
-    detached = _session("/home/test/.hermes")
+    detached = _session("/home/test/.rabbit")
 
     tree = pt.build_tree(
         [],
@@ -529,7 +529,7 @@ def test_broad_default_non_git_cwd_stays_unscoped():
         [],
         resolve=lambda _cwd: None,
         hydrate=True,
-        is_junk_cwd=lambda path: path in {"/home/test", "/home/test/.hermes"},
+        is_junk_cwd=lambda path: path in {"/home/test", "/home/test/.rabbit"},
     )
 
     assert _real_project_ids(tree) == []
@@ -540,19 +540,19 @@ def test_deleted_sibling_worktree_folds_into_parent_home_checkout():
     # A deleted <repo>-<suffix> worktree leaves its session with an unresolvable
     # cwd and no persisted root. It joins the parent's trunk lane — no dead-path
     # lane, no phantom project.
-    resolve = _resolver({"/www/hermes-agent": ("/www/hermes-agent", "/www/hermes-agent")})
+    resolve = _resolver({"/www/rabbit-agent": ("/www/rabbit-agent", "/www/rabbit-agent")})
     sessions = [
-        _session("/www/hermes-agent", branch="main"),
-        _session("/www/hermes-agent-session-links"),
+        _session("/www/rabbit-agent", branch="main"),
+        _session("/www/rabbit-agent-session-links"),
     ]
 
     tree = pt.build_tree([], sessions, [], resolve, hydrate=True)
     project = tree["projects"][0]
 
-    assert [p["id"] for p in tree["projects"]] == ["/www/hermes-agent"]
-    assert _lane_ids(project) == ["/www/hermes-agent::branch::main"]
+    assert [p["id"] for p in tree["projects"]] == ["/www/rabbit-agent"]
+    assert _lane_ids(project) == ["/www/rabbit-agent::branch::main"]
     main = project["repos"][0]["groups"][0]
-    assert main["isMain"] and main["path"] == "/www/hermes-agent"
+    assert main["isMain"] and main["path"] == "/www/rabbit-agent"
     assert len(main["sessions"]) == 2
 
 

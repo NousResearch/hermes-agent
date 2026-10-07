@@ -50,7 +50,7 @@ class ApiRequestHooksMixin:
 
     @staticmethod
     def _hook_payload_max_chars() -> int:
-        raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
+        raw = os.getenv("RABBIT_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
         try:
             return max(1000, int(raw))
         except (TypeError, ValueError):
@@ -169,7 +169,7 @@ class ApiRequestHooksMixin:
     ) -> None:
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
-            from hermes_cli import lifecycle as _lifecycle
+            from rabbit_cli import lifecycle as _lifecycle
             if not _lifecycle.has_hook("api_request_error"):
                 return
             ended_at = time.time()

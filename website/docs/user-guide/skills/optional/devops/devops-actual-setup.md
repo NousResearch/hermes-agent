@@ -1,23 +1,23 @@
 ---
-title: "Actual Setup — Set up Actual Computer (actual.inc) inference in Hermes"
+title: "Actual Setup — Set up Actual Computer (actual.inc) inference in Rabbit"
 sidebar_label: "Actual Setup"
-description: "Set up Actual Computer (actual.inc) inference in Hermes"
+description: "Set up Actual Computer (actual.inc) inference in Rabbit"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Actual Setup
 
-Set up Actual Computer (actual.inc) inference in Hermes.
+Set up Actual Computer (actual.inc) inference in Rabbit.
 
 ## Skill metadata
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/devops/actual-setup` |
+| Source | Optional — install with `rabbit skills install official/devops/actual-setup` |
 | Path | `optional-skills/devops/actual-setup` |
 | Version | `2.0.0` |
-| Author | shl0ms + Hermes Agent |
+| Author | shl0ms + Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `actual`, `actual-inc`, `provider`, `local-inference`, `relay`, `gguf`, `setup` |
@@ -25,12 +25,12 @@ Set up Actual Computer (actual.inc) inference in Hermes.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Actual Computer Setup Skill
 
-Sets up [actual.inc](https://actual.inc) (Actual Computer) as a Hermes inference
+Sets up [actual.inc](https://actual.inc) (Actual Computer) as a Rabbit inference
 provider. Actual turns the user's own hardware into a private inference cluster
 and exposes an OpenAI-compatible API two ways: a hosted end-to-end-encrypted
 relay at `https://api.actual.inc` (authenticated with an `ac_` key), and a local
@@ -41,15 +41,15 @@ a human in a browser.
 ## When to Use
 
 - User wants to add actual.inc as an inference provider (cloud relay or local).
-- User has an `ac_` key and wants Hermes routed through their Actual cluster.
+- User has an `ac_` key and wants Rabbit routed through their Actual cluster.
 - User wants fully-local, on-device inference via the Actual daemon.
 - Troubleshooting: Actual requests failing with cryptic 400s or empty streams.
 
 ## Prerequisites
 
-- Hermes has **first-class `actual` provider support** (provider id `actual`,
+- Rabbit has **first-class `actual` provider support** (provider id `actual`,
   aliases `actual-computer`, `actualcomputer`, `aci`). Do NOT configure Actual
-  as a `custom_providers` / `providers.actual.*` entry on current Hermes — the
+  as a `custom_providers` / `providers.actual.*` entry on current Rabbit — the
   built-in provider owns the name and handles base-url normalization, the
   Responses transport, and local no-auth automatically.
 - Relay mode: an Actual account and an `ac_` inference key from
@@ -66,19 +66,19 @@ a human in a browser.
 ### Relay / API mode
 
 1. Put the key in `.env` (secrets only — never config.yaml):
-   append `ACTUAL_API_KEY=ac_...` to `~/.hermes/.env`.
+   append `ACTUAL_API_KEY=ac_...` to `~/.rabbit/.env`.
 2. Verify the key and discover models with `terminal`:
    ```bash
    curl -s https://api.actual.inc/v1/models -H "Authorization: Bearer $ACTUAL_API_KEY"
    ```
 3. Select provider + model:
    ```bash
-   hermes config set model.provider actual
-   hermes config set model.default "MODEL_ID_FROM_DISCOVERY"
+   rabbit config set model.provider actual
+   rabbit config set model.default "MODEL_ID_FROM_DISCOVERY"
    ```
 4. Verify end-to-end:
    ```bash
-   hermes chat -Q -q "Reply with exactly: ACTUAL_OK" --provider actual -m MODEL_ID
+   rabbit chat -Q -q "Reply with exactly: ACTUAL_OK" --provider actual -m MODEL_ID
    ```
 
 ### Local mode
@@ -92,16 +92,16 @@ a human in a browser.
    actual models list        # note the INSTALLED name (differs from download id)
    actual models load "qwen2.5-0.5b-instruct-q4_k_m"   # load by installed name
    ```
-3. Point Hermes at the daemon. `ACTUAL_BASE_URL` with a loopback host flips the
+3. Point Rabbit at the daemon. `ACTUAL_BASE_URL` with a loopback host flips the
    built-in provider into local no-auth mode automatically — no key needed:
-   append `ACTUAL_BASE_URL=http://127.0.0.1:8080` to `~/.hermes/.env`, then:
+   append `ACTUAL_BASE_URL=http://127.0.0.1:8080` to `~/.rabbit/.env`, then:
    ```bash
-   hermes config set model.provider actual
-   hermes config set model.default "INSTALLED_MODEL_NAME"
+   rabbit config set model.provider actual
+   rabbit config set model.default "INSTALLED_MODEL_NAME"
    ```
 4. Verify (reduced toolset — see context-window pitfall below):
    ```bash
-   hermes chat -Q -q "Reply with exactly: LOCAL_OK" --provider actual -m INSTALLED_NAME -t file,web
+   rabbit chat -Q -q "Reply with exactly: LOCAL_OK" --provider actual -m INSTALLED_NAME -t file,web
    ```
 
 ## Quick Reference
@@ -119,17 +119,17 @@ a human in a browser.
 
 ## Pitfalls
 
-1. **reasoning_effort trap (handled by Hermes since the first-class provider).**
+1. **reasoning_effort trap (handled by Rabbit since the first-class provider).**
    Actual's SGLang/vLLM backends accept only `none/low/medium/high/max`;
    `xhigh`/`ultra` used to fail with a cryptic
    `Expecting value: line 1 column 1 (char 0)` (a wrapped HTTP 400). The
    built-in provider clamps `xhigh→high` and `ultra→max` on the wire. If a
-   request still 400s this way on an old Hermes, set a per-model cap:
+   request still 400s this way on an old Rabbit, set a per-model cap:
    `agent.reasoning_overrides.<model>: high` in config.yaml.
-2. **Context-window overflow on small local models.** Hermes' default toolset
+2. **Context-window overflow on small local models.** Rabbit' default toolset
    is ~26k tokens of schemas plus a ~9k-token system prompt. A model loaded
    with a 32k context overflows before the first turn, and llama.cpp-family
-   servers emit a bare `data: [DONE]` — Hermes reports
+   servers emit a bare `data: [DONE]` — Rabbit reports
    `Provider returned an empty stream with no finish_reason`. This is NOT an
    SSE bug. Fixes: restrict tools (`-t file,web`), load the model with a
    larger `n_ctx`, or pick a >=64k-context model for the full toolset.
@@ -145,7 +145,7 @@ a human in a browser.
    assuming failure.
 5. **Do not create a custom provider named `actual`.** Older setup guides
    (pre first-class support) wrote `providers.actual.*` config blocks. On
-   current Hermes the built-in provider wins the name; stale custom blocks
+   current Rabbit the built-in provider wins the name; stale custom blocks
    are ignored or conflict. Remove them and use the env vars + model.provider
    flow above.
 
@@ -153,11 +153,11 @@ a human in a browser.
 
 ```bash
 # Relay:
-hermes chat -Q -q "Reply with exactly: ACTUAL_OK" --provider actual -m MODEL
+rabbit chat -Q -q "Reply with exactly: ACTUAL_OK" --provider actual -m MODEL
 # Local (small model — reduced toolset):
-hermes chat -Q -q "Reply with exactly: LOCAL_OK" --provider actual -m MODEL -t file,web
+rabbit chat -Q -q "Reply with exactly: LOCAL_OK" --provider actual -m MODEL -t file,web
 # Provider status (local no-auth shows key_source=local-offline):
-hermes status
+rabbit status
 ```
 
 For other OpenAI-compatible clients (e.g. OpenCode), see

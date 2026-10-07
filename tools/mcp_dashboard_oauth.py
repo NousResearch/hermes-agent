@@ -43,7 +43,7 @@ class DashboardOAuthFlow:
     flow_id: str
     server_name: str
     profile: str | None
-    hermes_home: str
+    rabbit_home: str
     redirect_uri: str
     reconnect_live: bool = False
     created_at: float = field(default_factory=time.time)
@@ -68,7 +68,7 @@ class DashboardOAuthFlow:
         A flow whose EARLIER attempt already ended is re-minted here instead of raising: the MCP server
         task inherits this handle for the whole life of the task, so ``RuntimeError: OAuth flow already
         ended`` escaped the SDK's auth flow on every retry and parked the server ("failed initial
-        connection after 3 attempts") with no way back short of restarting Hermes (#114739). A flow the
+        connection after 3 attempts") with no way back short of restarting Rabbit (#114739). A flow the
         user CANCELLED stays terminal — the retrying worker must not reopen what they abandoned.
         """
         state = parse_qs(urlparse(url).query).get("state", [None])[0]

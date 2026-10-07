@@ -42,7 +42,7 @@ def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> 
     whether they are the owner or a guest, and that they must message again after approval."""
     hours = max(1, CODE_TTL_SECONDS // 3600)
     validity = t("gateway.pairing.validity_hour" if hours == 1 else "gateway.pairing.validity_hours", hours=hours)
-    approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"
+    approve_cmd = f"rabbit {profile_arg}pairing approve {platform_name} {code}"
     return t("gateway.pairing.code_reply", code=code, validity=validity, approve_cmd=approve_cmd)
 
 
@@ -51,7 +51,7 @@ def pairing_rate_limited_reply() -> str:
 
 
 def unauthorized_owner_hint(
-    platform_name: str, user_id: str, user_name: str = "", *, hermes_home: str,
+    platform_name: str, user_id: str, user_name: str = "", *, rabbit_home: str,
 ) -> str:
     """One-line hint for the owner (log + home channel): who was dropped and how to let them in.
     No pairing request is minted for an ignored sender (a configured allowlist means the owner chose
@@ -66,10 +66,10 @@ def unauthorized_owner_hint(
     who = f"{safe_name} ({user_id})" if safe_name else str(user_id)
     env_var = _allowlist_env_for_platform(platform_name)
     allowlist = (
-        t("gateway.unauthorized.owner_hint_env", env_var=env_var, home=hermes_home)
+        t("gateway.unauthorized.owner_hint_env", env_var=env_var, home=rabbit_home)
         if env_var else t("gateway.unauthorized.owner_hint_generic")
     )
-    return t("gateway.unauthorized.owner_notice", platform=platform_name, who=who, allowlist=allowlist, home=hermes_home)
+    return t("gateway.unauthorized.owner_notice", platform=platform_name, who=who, allowlist=allowlist, home=rabbit_home)
 
 
 class UnauthorizedOwnerNotifier:

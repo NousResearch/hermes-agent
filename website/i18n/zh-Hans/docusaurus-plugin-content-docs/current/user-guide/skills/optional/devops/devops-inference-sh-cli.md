@@ -14,7 +14,7 @@ description: "通过 inference 运行 150+ AI 应用"
 
 | | |
 |---|---|
-| 来源 | 可选——使用 `hermes skills install official/devops/inference-sh-cli` 安装 |
+| 来源 | 可选——使用 `rabbit skills install official/devops/inference-sh-cli` 安装 |
 | 路径 | `optional-skills/devops/inference-sh-cli` |
 | 版本 | `1.0.0` |
 | 作者 | okaris |
@@ -25,7 +25,7 @@ description: "通过 inference 运行 150+ AI 应用"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在该 skill 被触发时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在该 skill 被触发时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # inference.sh CLI

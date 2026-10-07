@@ -16,14 +16,14 @@ alternative approach: they break uv venv materialization.)
 
 Layout facts arrive via environment from scripts/build/launchers.py:
 
-  HERMES_MINT_BIN_DIR   absolute output dir (agent-payload/bin)
-  HERMES_MINT_SPECS     JSON list of {"name": exe stem, "module": dotted
+  RABBIT_MINT_BIN_DIR   absolute output dir (agent-payload/bin)
+  RABBIT_MINT_SPECS     JSON list of {"name": exe stem, "module": dotted
                         module, "func": entry function} — mirrors
                         [project.scripts] in pyproject.toml
-  HERMES_MINT_WRAPPER   path of the RENDERED launcher-wrapper.py for THIS
+  RABBIT_MINT_WRAPPER   path of the RENDERED launcher-wrapper.py for THIS
                         entry (substitution is scripts/build/launchers.py's job,
                         one implementation, one test)
-  HERMES_MINT_PYTHON    bin-relative path of the store python, BACKslashes,
+  RABBIT_MINT_PYTHON    bin-relative path of the store python, BACKslashes,
                         e.g. <launcher_dir>\..\tools\<entry>\python.exe —
                         baked into the shebang; the literal <launcher_dir>
                         prefix is resolved by the launcher at run time
@@ -72,7 +72,7 @@ def make_maker(bin_dir, shebang_python, wrapper_text):
 
 def mint_one(bin_dir, shebang_python, wrapper_text, spec):
     """Mint one launcher exe; returns its absolute path. distlib also
-    writes a python-versioned twin (hermes-3.14.exe) — the payload ships
+    writes a python-versioned twin (rabbit-3.14.exe) — the payload ships
     exactly one name per entry, so the twin is removed."""
     maker = make_maker(bin_dir, shebang_python, wrapper_text)
     filenames = maker.make(f"{spec['name']} = {spec['module']}:{spec['func']}")
@@ -87,21 +87,21 @@ def mint_one(bin_dir, shebang_python, wrapper_text, spec):
 
 def main(environ=None):
     environ = os.environ if environ is None else environ
-    bin_dir = environ["HERMES_MINT_BIN_DIR"]
-    specs = json.loads(environ["HERMES_MINT_SPECS"])
-    shebang_python = environ["HERMES_MINT_PYTHON"]
+    bin_dir = environ["RABBIT_MINT_BIN_DIR"]
+    specs = json.loads(environ["RABBIT_MINT_SPECS"])
+    shebang_python = environ["RABBIT_MINT_PYTHON"]
     if not os.path.isabs(bin_dir):
-        raise SystemExit("HERMES_MINT_BIN_DIR must be absolute")
+        raise SystemExit("RABBIT_MINT_BIN_DIR must be absolute")
     if not shebang_python.startswith("<launcher_dir>\\..\\"):
         raise SystemExit(
-            "HERMES_MINT_PYTHON must be <launcher_dir>\\..\\payload-relative "
+            "RABBIT_MINT_PYTHON must be <launcher_dir>\\..\\payload-relative "
             f"(backslashes), got: {shebang_python}"
         )
     os.makedirs(bin_dir, exist_ok=True)
     minted = []
     for spec in specs:
         # utf-8-sig: tolerate a BOM the JS renderer might prepend.
-        with open(environ["HERMES_MINT_WRAPPER"], encoding="utf-8-sig") as f:
+        with open(environ["RABBIT_MINT_WRAPPER"], encoding="utf-8-sig") as f:
             wrapper_text = f.read()
         minted.append(mint_one(bin_dir, shebang_python, wrapper_text, spec))
     return minted

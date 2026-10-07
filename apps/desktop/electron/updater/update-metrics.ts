@@ -1,5 +1,5 @@
 // Shared-metrics report for PACKAGED self-updates (electron-updater, App
-// Installer, Store). Checkout hand-offs run `hermes update`, whose receipt the
+// Installer, Store). Checkout hand-offs run `rabbit update`, whose receipt the
 // backend already counts, so they never reach this module.
 //
 // A packaged apply usually ends with the installer quitting the app, so the
@@ -251,6 +251,6 @@ interface IpcHandleTarget {
 }
 
 export function registerUpdateMetricsIpc(ipc: IpcHandleTarget, recorder: UpdateRunRecorder): void {
-  ipc.handle('hermes:updates:metric:take', (): UpdateRunReport | null => recorder.take())
-  ipc.handle('hermes:updates:metric:ack', (_event: unknown, sent: unknown): void => recorder.ack(sent === true))
+  ipc.handle('rabbit:updates:metric:take', (): UpdateRunReport | null => recorder.take())
+  ipc.handle('rabbit:updates:metric:ack', (_event: unknown, sent: unknown): void => recorder.ack(sent === true))
 }

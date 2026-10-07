@@ -7,13 +7,13 @@ import pytest
 from gateway.platforms.api_server import APIServerAdapter
 from gateway.session_context import clear_session_vars
 from gateway.wake import persist_delegation_delivery
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
 
 @pytest.mark.asyncio
 async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
-    monkeypatch.setenv("HERMES_SESSION_HISTORY_DELIVERY", "1")
+    monkeypatch.setenv("RABBIT_SESSION_HISTORY_DELIVERY", "1")
     for capability in (None, "", "1"):
         kw = dict(chat_id="api-parent", session_id="api-parent")
         import inspect
@@ -69,7 +69,7 @@ async def test_delivery_replay_is_atomic_across_continuation_and_busy_turn(tmp_p
         db.create_session("child", source="api_server", parent_session_id="parent")
         await send(adapters[0])
         assert db.get_messages("child") == []  # old event was already recorded in the lineage
-        from hermes_state_errors import SessionTurnLeaseLostError
+        from rabbit_state_errors import SessionTurnLeaseLostError
         assert db.acquire_session_turn_lease("child", "client-turn", wait_seconds=0)
         later = {**evt, "delegation_id": "later-unit"}
         try:

@@ -21,7 +21,7 @@
  * because eligibility is a fact about the backend's machine.
  */
 
-import { getLocalCatalog, getLocalModelsStatus } from '@/hermes'
+import { getLocalCatalog, getLocalModelsStatus } from '@/rabbit'
 import type { Translations } from '@/i18n/types'
 import { LOCAL_SETUP_TIP_ID, localSetupDue, localSetupEligible } from '@/lib/tips/local-cta'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -62,7 +62,7 @@ export function offerLocalSetupTip(copy: Translations['tips'], openLocalModels: 
     return false
   }
 
-  // Local backends only: on a remote connection (cloud resolves to remote)
+  // Local backends only: on a remote connection
   // the models would run on the far machine, and "stays on your computer"
   // would be promising someone else's computer. Checked before the cache so
   // a re-home mid-session can't serve a stale yes.

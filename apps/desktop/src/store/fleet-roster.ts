@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import type { DesktopAgentRoster } from '@/global'
 
 // The union agent roster — every profile on every registered gateway — as
-// Electron enumerates it over REST/SSH (`hermes:agents:roster`). Bot Mode and
+// Electron enumerates it over REST/SSH (`rabbit:agents:roster`). Bot Mode and
 // the Capabilities scope selector already read it; the Sessions profile rail
 // is its third consumer. Fetched on demand only (mount / focus / registry
 // change), never on a timer: the multi-connection docs rule out periodic
@@ -19,7 +19,7 @@ let inflight: null | Promise<void> = null
 let forcedRefresh: null | Promise<void> = null
 
 export async function refreshFleetRoster(options: { force?: boolean } = {}): Promise<void> {
-  const bridge = window.hermesDesktop?.getAgentRoster
+  const bridge = window.rabbitDesktop?.getAgentRoster
 
   if (!bridge) {
     return

@@ -35,7 +35,7 @@ export interface RelaunchWaiterOptions {
   processId: number
   /** Wall-clock ms the parent process started (PID-reuse guard). */
   processStartTimeMs: number
-  /** The MSIX identity name of this install (e.g. NousResearch.HermesBundled). */
+  /** The MSIX identity name of this install (e.g. Seven0070.RabbitBundled). */
   identityName: string
   /** Absolute path to the waiter script shipped in the app's resources. */
   scriptPath: string
@@ -90,7 +90,7 @@ async function stageRelaunchWaiter(options: RelaunchWaiterOptions): Promise<Wait
   let stageDir: string
 
   try {
-    stageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hermes-relaunch-'))
+    stageDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rabbit-relaunch-'))
   } catch {
     return undefined
   }

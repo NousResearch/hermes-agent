@@ -1,5 +1,5 @@
 {
-  "name": "hermes-tui",
+  "name": "rabbit-tui",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "build": "node ../scripts/build/tui.mjs",
     "i18n:keys": "tsx scripts/i18n-keys.ts",
     "i18n:keys:check": "tsx scripts/i18n-keys.ts --check",
-    "build:ink": "npm run build --prefix packages/hermes-ink",
+    "build:ink": "npm run build --prefix packages/rabbit-ink",
     "visual": "node scripts/visual/run.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ packages/",
@@ -21,8 +21,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@hermes/ink": "file:./packages/hermes-ink",
-    "@hermes/shared": "file:../apps/shared",
+    "@rabbit/ink": "file:./packages/rabbit-ink",
+    "@rabbit/shared": "file:../apps/shared",
     "@nanostores/react": "1.1.0",
     "ink-text-input": "6.0.0",
     "nanostores": "1.4.2",
@@ -32,7 +32,7 @@
   },
   "overrides": {
     "ink-text-input": {
-      "ink": "npm:@hermes/ink@0.0.1"
+      "ink": "npm:@rabbit/ink@0.0.1"
     }
   },
   "devDependencies": {

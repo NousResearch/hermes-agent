@@ -1,4 +1,4 @@
-import type { CronJob } from '@/types/hermes'
+import type { CronJob } from '@/types/rabbit'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
 // the Cron page so the two never drift. (Animation/size live at the call site.)
@@ -28,7 +28,7 @@ export function jobTitle(job: CronJob): string {
   return pick(job.name) || clip(pick(job.prompt)) || clip(pick(job.script)) || job.id || 'Cron job'
 }
 
-// Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.
+// Mirrors rabbit_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.
 export const NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000
 
 // Milliseconds a job's stored next_run_at has sat in the past beyond that grace, or null when

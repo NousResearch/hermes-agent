@@ -82,7 +82,7 @@ describe('registerAppLocale', () => {
     const disposePlugin = registerAppLocale(
       'pl',
       { translations: { common: { save: 'Zachowaj' } } },
-      'plugin:hermes-lang-pl'
+      'plugin:rabbit-lang-pl'
     )
 
     expect(resolveTranslations('pl').common.save).toBe('Zachowaj')
@@ -155,7 +155,7 @@ describe('languages + registry', () => {
 
   it('lists bundled then registered languages by endonym, with registry rtl and source', () => {
     registerAppLocale('pl', { endonym: 'Polski', englishName: 'Polish' }, 'backend')
-    registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:hermes-lang-he')
+    registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:rabbit-lang-he')
 
     const options = languageOptions()
     const ids = options.map(option => option.id)
@@ -168,7 +168,7 @@ describe('languages + registry', () => {
       rtl: false,
       source: 'backend'
     })
-    expect(options.find(option => option.id === 'he')).toMatchObject({ rtl: true, source: 'plugin:hermes-lang-he' })
+    expect(options.find(option => option.id === 'he')).toMatchObject({ rtl: true, source: 'plugin:rabbit-lang-he' })
     expect(options.find(option => option.id === 'ar')?.rtl).toBe(true)
     expect(localeMeta('xx').endonym).toBe('xx')
   })

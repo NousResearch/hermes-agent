@@ -10,12 +10,12 @@ vi.mock("./dashboard-auth-reload", () => ({
 }));
 
 beforeEach(() => {
-  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
+  Object.defineProperty(window, "__RABBIT_SESSION_TOKEN__", {
     configurable: true,
     value: "tok",
     writable: true,
   });
-  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
+  Object.defineProperty(window, "__RABBIT_AUTH_REQUIRED__", {
     configurable: true,
     value: false,
     writable: true,
@@ -56,8 +56,8 @@ describe("fetchJSON error contract", () => {
     const body = {
       detail: {
         error: "state_db_corrupt",
-        message: "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
-        path: "/home/u/.hermes/state.db",
+        message: "state.db corrupt — run `rabbit doctor` (then `rabbit doctor --fix` or `rabbit sessions repair`).",
+        path: "/home/u/.rabbit/state.db",
       },
     };
     vi.stubGlobal(
@@ -80,7 +80,7 @@ describe("fetchJSON error contract", () => {
     expect(err.message).not.toMatch(/^\d{3}/);
   });
 
-  it("turns a network failure into the 'is hermes dashboard running' sentence", async () => {
+  it("turns a network failure into the 'is rabbit dashboard running' sentence", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>(async () => {

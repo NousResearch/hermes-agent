@@ -30,7 +30,7 @@ def _runner(platforms, tmp_path):
 def test_allowlist_warning_requires_an_enabled_messaging_platform(
     monkeypatch, tmp_path, caplog, platforms, expect_warning,
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     for var in list(GatewayRunner._BUILTIN_ALLOWED_USERS_VARS) + list(GatewayRunner._BUILTIN_ALLOW_ALL_VARS):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)

@@ -297,7 +297,7 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
 
     monkeypatch.setattr("httpx.Client", _Client)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "rabbit_cli.runtime_provider.resolve_runtime_provider",
         # /v1 stripped, as anthropic_messages routing leaves it — the hook must not reuse this base_url.
         lambda requested, explicit_base_url=None, explicit_api_key=None: {
             "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_key": "sk-test"},

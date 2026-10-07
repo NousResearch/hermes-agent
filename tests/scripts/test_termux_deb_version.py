@@ -45,7 +45,7 @@ def test_canary_shape_matches_the_stable_shape_on_every_component():
     # scripts/releases/semver.py::is_valid_version gates release handoffs;
     # a canary cut over the newest stable must never be rejected when the
     # stable tag itself is accepted.
-    from hermes_cli.update_channel import _CANARY_TAG_RE
+    from rabbit_cli.update_channel import _CANARY_TAG_RE
     from scripts.releases.semver import is_release_version
 
     assert _CANARY_TAG_RE.fullmatch("v1.9.15+canary.20260916T120000Z")

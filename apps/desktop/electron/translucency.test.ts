@@ -1,5 +1,5 @@
 /**
- * The translucency contract both processes read (`@hermes/shared/translucency`)
+ * The translucency contract both processes read (`@rabbit/shared/translucency`)
  * plus the one piece that needs a BrowserWindow to mean anything: which backing
  * a chat window is born with.
  *

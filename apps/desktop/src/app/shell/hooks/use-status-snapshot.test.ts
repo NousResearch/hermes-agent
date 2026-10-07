@@ -4,7 +4,7 @@ import { createElement, type ReactElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NotificationStack } from '@/components/notifications'
-import { getStatus } from '@/hermes'
+import { getStatus } from '@/rabbit'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
 import { clearNotifications } from '@/store/notifications'
@@ -13,7 +13,7 @@ import { deferred } from '../../../test/deferred'
 
 import { useStatusSnapshot } from './use-status-snapshot'
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getStatus: vi.fn()
 }))
 
@@ -130,8 +130,8 @@ describe('useStatusSnapshot', () => {
     await flushAsync()
 
     expect(getStatus).toHaveBeenCalledOnce()
-    // One refresh round = setup.status + setup.runtime_check + free_tier.status.
-    expect(requestGateway).toHaveBeenCalledTimes(3)
+    // One refresh round = setup.status + setup.runtime_check.
+    expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {
@@ -180,7 +180,7 @@ describe('useStatusSnapshot', () => {
     const requestGatewayMock = vi.fn(
       async (method: string) =>
         (method === 'setup.runtime_check'
-          ? { error: 'No usable credentials found for nous.', ok: false }
+          ? { error: 'No usable credentials found for acme.', ok: false }
           : { provider_configured: true }) as never
     )
 
@@ -192,7 +192,7 @@ describe('useStatusSnapshot', () => {
 
     expect(result.current.inferenceStatus).toMatchObject({
       ready: false,
-      reason: expect.stringContaining('No usable credentials found for nous.'),
+      reason: expect.stringContaining('No usable credentials found for acme.'),
       source: 'runtime_check'
     })
   })
@@ -276,16 +276,16 @@ describe('useStatusSnapshot', () => {
     renderHook(() => useStatusSnapshot('open', requestGateway))
     await flushAsync()
 
-    // Open runs the readiness legs once: setup.status, setup.runtime_check, free_tier.status.
+    // Open runs the readiness legs once: setup.status, setup.runtime_check.
     expect(getStatus).toHaveBeenCalledOnce()
-    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
 
     expect(getStatus).toHaveBeenCalledOnce()
-    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
 
     await act(async () => {
       setup.resolve({ provider_configured: true })
@@ -327,7 +327,6 @@ describe('useStatusSnapshot', () => {
     })
 
     const methods = requestGatewayMock.mock.calls.map(([method]) => method)
-    expect(methods.filter(method => method === 'free_tier.status')).toHaveLength(1)
     expect(methods.filter(method => method === 'setup.runtime_check')).toHaveLength(1)
     expect(methods.filter(method => method === 'setup.status')).toHaveLength(1)
     expect(getStatus).not.toHaveBeenCalled()

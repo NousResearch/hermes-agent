@@ -9,17 +9,17 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:OS -ne 'Windows_NT') { throw 'Dispos
 $Repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $Assets = Join-Path $PSScriptRoot 'e2e-assets'
 if (-not $ManifestUrl) { throw 'ManifestUrl is required for ordinary package updates' }
-$Work = Join-Path $env:RUNNER_TEMP 'hermes-bundled-update'
+$Work = Join-Path $env:RUNNER_TEMP 'rabbit-bundled-update'
 if (Test-Path $Work) { throw "Refusing to reuse $Work" }
 $Proof = Join-Path $Work 'proof'
 New-Item -ItemType Directory -Path $Proof -Force | Out-Null
-$env:HERMES_HOME = Join-Path $Work 'home'
-New-Item -ItemType Directory -Path $env:HERMES_HOME | Out-Null
-$env:HERMES_DESKTOP_USER_DATA_DIR = Join-Path $Work 'electron-user-data'
+$env:RABBIT_HOME = Join-Path $Work 'home'
+New-Item -ItemType Directory -Path $env:RABBIT_HOME | Out-Null
+$env:RABBIT_DESKTOP_USER_DATA_DIR = Join-Path $Work 'electron-user-data'
 $env:HOME = Join-Path $Work 'os-home'
 New-Item -ItemType Directory -Path $env:HOME | Out-Null
 . (Join-Path $Assets 'desktop-smoke-windows.ps1')
-$Node = if ($env:HERMES_E2E_NODE) { $env:HERMES_E2E_NODE } else { (Get-Command node.exe).Source }
+$Node = if ($env:RABBIT_E2E_NODE) { $env:RABBIT_E2E_NODE } else { (Get-Command node.exe).Source }
 function Run-Node([string[]]$Argv) {
     & $Node @Argv
     if ($LASTEXITCODE -ne 0) { throw "Node failed: $($Argv[0])" }
@@ -93,16 +93,16 @@ try {
     $old = Installed $m.old
     # Pin a real OS-registered update source before launching the application.
     $old.package | Select-Object Name, Version, Publisher, Architecture, InstallLocation | ConvertTo-Json | Set-Content (Join-Path $Proof 'old-package.json')
-    $marker = Join-Path $env:HERMES_HOME 'bundle-state-marker'
+    $marker = Join-Path $env:RABBIT_HOME 'bundle-state-marker'
     $witness = [Guid]::NewGuid().ToString()
     Set-Content -LiteralPath $marker -Value $witness
     $python = (Get-Command python.exe).Source
     $verifier = Join-Path $Assets 'verify-plugin-preservation.py'
-    & $python $verifier seed --home $env:HERMES_HOME --external (Join-Path $Work 'external-plugin')
+    & $python $verifier seed --home $env:RABBIT_HOME --external (Join-Path $Work 'external-plugin')
     if ($LASTEXITCODE -ne 0) { throw 'Plugin seed failed' }
-    & $python $verifier snapshot --home $env:HERMES_HOME --out (Join-Path $Work 'plugins-before.json')
+    & $python $verifier snapshot --home $env:RABBIT_HOME --out (Join-Path $Work 'plugins-before.json')
     if ($LASTEXITCODE -ne 0) { throw 'Plugin snapshot failed' }
-    $mock = Start-DesktopJourneyMock $Node $Assets $Work $env:HERMES_HOME $Proof
+    $mock = Start-DesktopJourneyMock $Node $Assets $Work $env:RABBIT_HOME $Proof
     # Keep Playwright's actual OLD window alive across chat and the native UIA
     # trigger. The NEW descriptor is not published until OLD chat has passed.
     $oldChatReady = Join-Path $Proof 'old-chat-ready.json'
@@ -163,7 +163,7 @@ try {
         if (-not $healthy) { Start-Sleep -Seconds 2 }
     } while (-not $healthy -and (Get-Date) -lt $deadline)
     if (-not $healthy) { throw 'New packaged backend never returned HTTP 200 health' }
-    & $python $verifier verify --home $env:HERMES_HOME --snapshot (Join-Path $Work 'plugins-before.json') --report (Join-Path $Proof 'plugin-preservation.json')
+    & $python $verifier verify --home $env:RABBIT_HOME --snapshot (Join-Path $Work 'plugins-before.json') --report (Join-Path $Proof 'plugin-preservation.json')
     if ($LASTEXITCODE -ne 0) { throw 'Plugin preservation failed' }
     if ((Get-Content -Raw $marker).Trim() -cne $witness) { throw 'User-state witness changed' }
     # Record automatic relaunch before ANY driver-owned NEW launch.
@@ -173,8 +173,8 @@ try {
     @{ phase='new'; launch='post-update-launch'; automaticRelaunchProof='relaunch-proof.json' } |
         ConvertTo-Json | Set-Content (Join-Path $Proof 'desktop-chat-new-launch.json')
     Run-Node @((Join-Path $Assets 'desktop-smoke.ts'), '--exe', $new.exe, '--root', $payloadRoot, '--origin', 'bundled',
-        '--home', $env:HERMES_HOME, '--user-data', $env:HERMES_DESKTOP_USER_DATA_DIR, '--out', $Proof,
-        '--phase', 'new', '--expect-commit', $m.new.commit, '--mock-url', $env:HERMES_E2E_MOCK_URL)
+        '--home', $env:RABBIT_HOME, '--user-data', $env:RABBIT_DESKTOP_USER_DATA_DIR, '--out', $Proof,
+        '--phase', 'new', '--expect-commit', $m.new.commit, '--mock-url', $env:RABBIT_E2E_MOCK_URL)
     @{ ok=$true; oldVersion=$m.old.version; newVersion=$m.new.version; oldPid=$oldProcess.ProcessId; oldBirth=$oldProcess.CreationDate; newPid=$newProcess.ProcessId; newBirth=$newProcess.CreationDate; newPath=$newProcess.ExecutablePath; stamp=$new.stamp; automaticRelaunch=$true } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Proof 'acceptance.json')
 } finally {
     if ($mock -and -not $mock.HasExited) { Stop-Process -Id $mock.Id -ErrorAction SilentlyContinue }

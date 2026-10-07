@@ -1,11 +1,11 @@
 name: minimax-search
-repo: https://github.com/pdonizete/hermes-minimax-search
+repo: https://github.com/pdonizete/rabbit-minimax-search
 sha: f2af5191e70269fdf6aee1954ab6888d652c1651
 description: MiniMax web search via the Token Plan API — keyed, no CAPTCHA
 maintainer: pdonizete
 tier: community
 category: web
-docs_url: https://github.com/pdonizete/hermes-minimax-search#readme
+docs_url: https://github.com/pdonizete/rabbit-minimax-search#readme
 version: "1.0.0"
 capabilities:
   provides_tools: []

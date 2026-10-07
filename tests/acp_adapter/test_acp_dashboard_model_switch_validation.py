@@ -15,11 +15,11 @@ import types
 
 import pytest
 
-from hermes_cli.model_switch import ModelSwitchResult
+from rabbit_cli.model_switch import ModelSwitchResult
 
 
 def _acp_agent():
-    from acp_adapter.server import HermesACPAgent
+    from acp_adapter.server import RabbitACPAgent
     made: dict = {}
 
     class _SM:
@@ -30,7 +30,7 @@ def _acp_agent():
         def save_session(self, sid):
             pass
 
-    return HermesACPAgent(session_manager=_SM()), made
+    return RabbitACPAgent(session_manager=_SM()), made
 
 
 def _state(**agent_attrs):
@@ -44,7 +44,7 @@ def _state(**agent_attrs):
 
 def test_acp_and_dashboard_reject_what_switch_model_rejects(monkeypatch):
     rejected = ModelSwitchResult(success=False, error_message="Unknown provider 'notaprovider'.")
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kw: rejected)
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model", lambda **_kw: rejected)
 
     agent, made = _acp_agent()
     state = _state()
@@ -53,7 +53,7 @@ def test_acp_and_dashboard_reject_what_switch_model_rejects(monkeypatch):
     assert made == {} and state.model == "claude-sonnet-5"  # session untouched
 
     from fastapi import HTTPException
-    from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from rabbit_cli.web_server_config import _apply_model_assignment_sync
     with pytest.raises(HTTPException) as exc:
         _apply_model_assignment_sync("main", "notaprovider", "whatever", "", "")
     assert exc.value.status_code == 400 and "Unknown provider" in exc.value.detail
@@ -66,7 +66,7 @@ def test_acp_explicit_provider_prefix_becomes_explicit_provider(monkeypatch):
         seen.update(kw)
         return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider=kw["explicit_provider"])
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model", _switch)
     agent, made = _acp_agent()
     old, new_provider, model = agent._switch_model(_state(), "anthropic:claude-sonnet-5", keep_endpoint=True)
     assert (seen["explicit_provider"], seen["raw_input"]) == ("anthropic", "claude-sonnet-5")
@@ -86,7 +86,7 @@ def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch)
         seen["thread"] = threading.current_thread()
         return ModelSwitchResult(success=True, new_model=kw["raw_input"], target_provider="anthropic")
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model", _switch)
     agent, _made = _acp_agent()
     state = _state()
     agent.session_manager.get_session = lambda sid: state
@@ -109,7 +109,7 @@ def test_acp_set_session_model_rejected_while_turn_running(monkeypatch):
 
     called = {}
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "rabbit_cli.model_switch.switch_model",
         lambda **kw: called.setdefault("hit", kw))
     agent, made = _acp_agent()
     state = _state()
@@ -129,14 +129,14 @@ def test_acp_switch_model_carries_the_live_agent_toolsets_into_the_rebuild(monke
     (``_register_session_mcp_servers``); a rebuild that re-derived them from config.yaml dropped
     every session MCP tool after ``session/set_model`` or ``/model``."""
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "rabbit_cli.model_switch.switch_model",
         lambda **_kw: ModelSwitchResult(success=True, target_provider="anthropic", new_model="claude-sonnet-5"))
 
     agent, made = _acp_agent()
-    agent._switch_model(_state(enabled_toolsets=["hermes-acp", "mcp-demo-search"], disabled_toolsets=["browser"]),
+    agent._switch_model(_state(enabled_toolsets=["rabbit-acp", "mcp-demo-search"], disabled_toolsets=["browser"]),
                         "claude-sonnet-5")
 
-    assert made["enabled_toolsets"] == ["hermes-acp", "mcp-demo-search"]
+    assert made["enabled_toolsets"] == ["rabbit-acp", "mcp-demo-search"]
     assert made["disabled_toolsets"] == ["browser"]
 
 
@@ -148,7 +148,7 @@ def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_un
 
     from acp.exceptions import RequestError
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model",
                         lambda **_kw: ModelSwitchResult(success=False, error_message="`nope` is not a model"))
     agent, _made = _acp_agent()
     state = _state()
@@ -157,7 +157,7 @@ def test_acp_set_session_model_rejection_is_invalid_params_and_leaves_session_un
         asyncio.run(agent.set_session_model("nope", "s1"))
     assert exc.value.code == -32602 and exc.value.data == {"details": "`nope` is not a model"}
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model",
                         lambda **_kw: ModelSwitchResult(success=True, new_model="other", target_provider="anthropic"))
 
     def _boom(**_kw):
@@ -189,7 +189,7 @@ def test_acp_set_session_model_does_not_run_queued_prompts_inside_the_rpc(monkey
 
     from acp.exceptions import RequestError
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+    monkeypatch.setattr("rabbit_cli.model_switch.switch_model",
                         lambda **_kw: ModelSwitchResult(success=False, error_message="`nope` is not a model"))
     agent, _made = _acp_agent()
     state = _state()

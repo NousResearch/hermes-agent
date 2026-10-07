@@ -29,25 +29,25 @@ def _reset_modules(prefixes: tuple[str, ...]):
 
 @pytest.fixture(autouse=True)
 def _restore_tool_modules():
-    original_hermes_home = os.environ.get("HERMES_HOME")
+    original_rabbit_home = os.environ.get("RABBIT_HOME")
     original_modules = {
         name: module
         for name, module in sys.modules.items()
         if name == "tools"
         or name.startswith("tools.")
-        or name == "hermes_cli"
-        or name.startswith("hermes_cli.")
+        or name == "rabbit_cli"
+        or name.startswith("rabbit_cli.")
         or name == "modal"
         or name.startswith("modal.")
     }
     try:
         yield
     finally:
-        if original_hermes_home is None:
-            os.environ.pop("HERMES_HOME", None)
+        if original_rabbit_home is None:
+            os.environ.pop("RABBIT_HOME", None)
         else:
-            os.environ["HERMES_HOME"] = original_hermes_home
-        _reset_modules(("tools", "hermes_cli", "modal"))
+            os.environ["RABBIT_HOME"] = original_rabbit_home
+        _reset_modules(("tools", "rabbit_cli", "modal"))
         sys.modules.update(original_modules)
 
 
@@ -57,13 +57,13 @@ def _install_modal_test_modules(
     fail_on_snapshot_ids: set[str] | None = None,
     snapshot_id: str = "im-fresh",
 ):
-    _reset_modules(("tools", "hermes_cli", "modal"))
+    _reset_modules(("tools", "rabbit_cli", "modal"))
 
-    hermes_cli = types.ModuleType("hermes_cli")
-    hermes_cli.__path__ = [str(REPO_ROOT / "hermes_cli")]  # type: ignore[attr-defined]
-    sys.modules["hermes_cli"] = hermes_cli
-    hermes_home = tmp_path / "hermes-home"
-    os.environ["HERMES_HOME"] = str(hermes_home)
+    rabbit_cli = types.ModuleType("rabbit_cli")
+    rabbit_cli.__path__ = [str(REPO_ROOT / "rabbit_cli")]  # type: ignore[attr-defined]
+    sys.modules["rabbit_cli"] = rabbit_cli
+    rabbit_home = tmp_path / "rabbit-home"
+    os.environ["RABBIT_HOME"] = str(rabbit_home)
 
     tools_package = types.ModuleType("tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
@@ -149,7 +149,7 @@ def _install_modal_test_modules(
             return {"kind": "registry", "image": image}
 
     async def _lookup_aio(_name: str, create_if_missing: bool = False):
-        return types.SimpleNamespace(name="hermes-agent", create_if_missing=create_if_missing)
+        return types.SimpleNamespace(name="rabbit-agent", create_if_missing=create_if_missing)
 
     class _FakeSandboxInstance:
         def __init__(self, image):
@@ -190,7 +190,7 @@ def _install_modal_test_modules(
     )
 
     return {
-        "snapshot_store": hermes_home / "modal_snapshots.json",
+        "snapshot_store": rabbit_home / "modal_snapshots.json",
         "create_calls": create_calls,
         "snapshot_calls": snapshot_calls,
         "from_id_calls": from_id_calls,
@@ -232,7 +232,7 @@ def test_resolve_modal_image_uses_snapshot_ids_and_registry_images(tmp_path):
 
 def test_persistent_cleanup_snapshots_without_expiry(tmp_path, monkeypatch):
     """The SDK default retains a filesystem snapshot for 30 days; an idle persistent
-    sandbox would then silently restart from the base image, so Hermes must opt out."""
+    sandbox would then silently restart from the base image, so Rabbit must opt out."""
     state = _install_modal_test_modules(tmp_path, snapshot_id="im-fresh")
     modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
     monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)

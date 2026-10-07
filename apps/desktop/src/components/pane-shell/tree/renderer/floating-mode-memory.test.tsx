@@ -6,7 +6,7 @@ afterEach(cleanup)
 it.each([false, true])('restores floating geometry and collapse with keep-alive=%s', async keepAlive => {
   window.localStorage.clear()
   vi.resetModules()
-  window.localStorage.setItem('hermes.desktop.floatingPanes.v1', JSON.stringify({ card: { x: 37, y: 71 } }))
+  window.localStorage.setItem('rabbit.desktop.floatingPanes.v1', JSON.stringify({ card: { x: 37, y: 71 } }))
   const { registry } = await import('@/contrib/registry')
   const { setInterfaceMode } = await import('@/store/interface-mode')
   const { FloatingPanes } = await import('./floating-panes')

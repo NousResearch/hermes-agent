@@ -2,7 +2,7 @@
 
 Every MoA turn that runs the reference fan-out (a cache MISS in
 ``MoAChatCompletions.create``) appends one JSON line to
-``<hermes_home>/moa-traces/<session_id>.jsonl``: what every model saw, said, and
+``<rabbit_home>/moa-traces/<session_id>.jsonl``: what every model saw, said, and
 cost. Side-channel only: never enters the ``messages`` table, history or replay
 (references are advisory side-calls whose rows would corrupt role alternation).
 Off by default; when off the only overhead is the config read.
@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _traces_enabled_and_dir() -> Optional[Path]:
     """Trace directory if ``moa.save_traces`` is on, else None. Reads config per
     call (once per cache-MISS turn); ``moa.trace_dir`` overrides the default."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         moa_cfg = (load_config() or {}).get("moa") or {}
     except Exception:  # pragma: no cover - never break a turn over tracing
         return None
@@ -35,7 +35,7 @@ def _traces_enabled_and_dir() -> Optional[Path]:
     override = moa_cfg.get("trace_dir")
     if override:
         return Path(os.path.expandvars(os.path.expanduser(str(override))))
-    return get_hermes_home() / "moa-traces"
+    return get_rabbit_home() / "moa-traces"
 
 
 def _sanitize_session_id(session_id: Optional[str]) -> str:

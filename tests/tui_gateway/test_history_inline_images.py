@@ -51,12 +51,12 @@ def test_history_to_messages_honors_the_switch():
 
 def test_resume_cold_carries_the_switch(tmp_path, monkeypatch):
     """A cold ``session.resume`` with ``inline_images=false`` returns the placeholder projection."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_state.DEFAULT_DB_PATH", home / "state.db")
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr("rabbit_state.DEFAULT_DB_PATH", home / "state.db")
     db = SessionDB(home / "state.db")
     db.create_session("img-chat", source="desktop")
     db.append_messages_batch("img-chat", [{"role": "user", "content": IMAGE_TURN[0]["content"]}])
@@ -87,9 +87,9 @@ def test_resume_cold_carries_the_switch(tmp_path, monkeypatch):
 @pytest.mark.parametrize("inline_images", [True, False])
 def test_resume_live_reattach_carries_the_switch(tmp_path, monkeypatch, inline_images):
     """The live-session fast path projects through ``_live_session_payload`` too."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir(parents=True)
     db = SessionDB(home / "state.db")
     record = {

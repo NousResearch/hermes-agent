@@ -35,8 +35,8 @@ class Agent(StatusOutputMixin):
 
 @pytest.fixture(params=[None, False, True])
 def policy(request, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     config = {} if request.param is None else {"display": {"suppress_warning_notifications": request.param}}
     (tmp_path / "config.yaml").write_text(json.dumps(config))
     return request.param is True
@@ -70,7 +70,7 @@ def test_missing_requirements_keeps_tool_inventory(policy, monkeypatch, capsys):
     agent = Agent()
     agent.quiet_mode = agent.save_trajectories = agent._use_prompt_caching = False
     agent.ephemeral_system_prompt = None
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("rabbit_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: [{"function": {"name": "offline_tool"}}])
     monkeypatch.setattr(model_tools, "check_toolset_requirements", lambda: {"fixture_dependency": False})
     _load_tools(agent, None, None)

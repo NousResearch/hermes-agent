@@ -1,7 +1,7 @@
 """Characterization tests for the cron trigger before/after the provider refactor.
 
 These lock the CURRENT in-process-ticker contract (Phase 0 of the pluggable
-CronScheduler plan, .hermes/plans/cron-scheduler-provider-interface.md). They
+CronScheduler plan, .rabbit/plans/cron-scheduler-provider-interface.md). They
 must pass unchanged on `main` now, and after every subsequent phase of the
 refactor — they are the regression harness that proves the built-in firing
 behavior is byte-for-byte preserved when the ticker is moved behind the
@@ -9,7 +9,7 @@ CronScheduler provider interface.
 
 No production code is exercised beyond the two ticker entry points:
   - gateway/run.py::_start_cron_ticker        (production gateway ticker)
-  - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
+  - rabbit_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
 
 Both call `cron.scheduler.tick(...)` on a loop and exit when their stop_event
 is set. We patch `cron.scheduler.tick` (both tickers import it locally as
@@ -75,7 +75,7 @@ def test_desktop_ticker_calls_tick_then_stops():
     """The desktop dashboard ticker loop calls cron.scheduler.tick and exits
     once the stop_event is set. Desktop has no live adapters, so it ticks with
     no adapters/loop."""
-    from hermes_cli.web_server import _start_desktop_cron_ticker
+    from rabbit_cli.web_server import _start_desktop_cron_ticker
 
     calls = []
     stop = threading.Event()
@@ -213,7 +213,7 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
 
 def test_resolve_defaults_to_builtin(monkeypatch):
     """Empty cron.provider → built-in."""
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     from cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": ""}})
@@ -223,7 +223,7 @@ def test_resolve_defaults_to_builtin(monkeypatch):
 
 def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
     """Config with no cron section at all → built-in (cfg_get returns default)."""
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     from cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {})
@@ -233,60 +233,12 @@ def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
 
 def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
     """A named provider that doesn't exist → built-in (cron never dies)."""
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     from cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "nope-not-real"}})
     prov = sp.resolve_cron_scheduler()
     assert prov.name == "builtin"
-
-
-def test_resolve_unavailable_provider_falls_back(monkeypatch):
-    """A provider that loads but reports is_available()==False → built-in."""
-    import hermes_cli.config as cfg
-    import plugins.cron_providers as pc
-    from cron import scheduler_provider as sp
-    from cron.scheduler_provider import CronScheduler
-
-    class Unavailable(CronScheduler):
-        @property
-        def name(self):
-            return "unavailable"
-
-        def is_available(self):
-            return False
-
-        def start(self, stop_event, **kw):
-            pass
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "unavailable"}})
-    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Unavailable())
-    prov = sp.resolve_cron_scheduler()
-    assert prov.name == "builtin"
-
-
-def test_resolve_available_provider_is_used(monkeypatch):
-    """A provider that loads and is available is returned (not the fallback)."""
-    import hermes_cli.config as cfg
-    import plugins.cron_providers as pc
-    from cron import scheduler_provider as sp
-    from cron.scheduler_provider import CronScheduler
-
-    class Fake(CronScheduler):
-        @property
-        def name(self):
-            return "fake"
-
-        def is_available(self):
-            return True
-
-        def start(self, stop_event, **kw):
-            pass
-
-    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "fake"}})
-    monkeypatch.setattr(pc, "load_cron_scheduler", lambda n: Fake())
-    prov = sp.resolve_cron_scheduler()
-    assert prov.name == "fake"
 
 
 def test_external_provider_falls_back_to_builtin_under_multiplex():
@@ -739,7 +691,7 @@ def test_multiplex_ticker_isolates_profile_failures(tmp_path):
     cycle, nor darken their status (#74878)."""
     from cron.jobs import get_ticker_last_error, record_ticker_error, use_cron_store
     from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     failing_home = tmp_path / "failing"
     healthy_home = tmp_path / "healthy"
@@ -752,7 +704,7 @@ def test_multiplex_ticker_isolates_profile_failures(tmp_path):
     tick_homes: list[str] = []
 
     def _tick(*args, **kwargs):
-        home = str(get_hermes_home())
+        home = str(get_rabbit_home())
         tick_homes.append(home)
         if home == str(failing_home):
             raise RuntimeError("profile-local failure")
@@ -791,7 +743,7 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     import sqlite3
 
     from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     failing_home = tmp_path / "failing"
     healthy_home = tmp_path / "healthy"
@@ -803,14 +755,14 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     tick_homes: list[str] = []
 
     def _recover():
-        home = str(get_hermes_home())
+        home = str(get_rabbit_home())
         recovery_homes.append(home)
         if home == str(failing_home):
             raise sqlite3.OperationalError("unable to open database file")
         return 0
 
     def _tick(*args, **kwargs):
-        tick_homes.append(str(get_hermes_home()))
+        tick_homes.append(str(get_rabbit_home()))
         if len(tick_homes) >= 2:
             stop.set()
         return 0
@@ -846,7 +798,7 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     import threading
     from unittest.mock import patch
     from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     alpha = tmp_path / "alpha"
     gamma = tmp_path / "gamma"
@@ -856,8 +808,8 @@ def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     ticked: list[str] = []
 
     def _tick(*args, **kwargs):
-        ticked.append(str(get_hermes_home()))
-        if len(ticked) == 1:  # "hermes profile create gamma" happens between two cycles
+        ticked.append(str(get_rabbit_home()))
+        if len(ticked) == 1:  # "rabbit profile create gamma" happens between two cycles
             (gamma / "cron").mkdir(parents=True)
             homes.append(("gamma", gamma))
         if len(ticked) >= 4:

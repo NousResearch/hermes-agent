@@ -17,11 +17,11 @@ plugins/model-providers/
 ## How discovery works
 
 `providers/__init__.py._discover_providers()` scans this directory (and
-`$HERMES_HOME/plugins/model-providers/`) the first time anything calls
+`$RABBIT_HOME/plugins/model-providers/`) the first time anything calls
 `get_provider_profile()` or `list_providers()`. Each `__init__.py` is
 imported and expected to call `providers.register_provider(profile)`.
 
-User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override
+User plugins at `$RABBIT_HOME/plugins/model-providers/<name>/` override
 bundled plugins of the same name — last-writer-wins in
 `register_provider()`. Drop a file there to replace a built-in.
 

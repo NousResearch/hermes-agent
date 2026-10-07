@@ -2,7 +2,7 @@
 
 Covers the seam in ``agent.error_classifier.classify_api_error`` (step 0,
 consulted before the built-in pipeline) and the sanitization contract of
-``hermes_cli.plugins.get_plugin_error_classification``.
+``rabbit_cli.plugins.get_plugin_error_classification``.
 
 The fixture error is deliberately synthetic (fake provider, made-up
 message, no status code) so no present or future built-in rule can claim
@@ -10,14 +10,14 @@ it — the earlier OpenRouter tool-use-404 fixture went stale the moment
 core learned that exact phrase.
 
 Mirrors the ``transform_tool_result`` hook tests: patch the symbol the
-call site actually imports (``hermes_cli.plugins.*``) rather than the
+call site actually imports (``rabbit_cli.plugins.*``) rather than the
 consuming module, because the import happens at call time.
 """
 
 import importlib.util
 import logging
 
-import hermes_cli.plugins as plugins_mod
+import rabbit_cli.plugins as plugins_mod
 from agent.error_classifier import FailoverReason, classify_api_error
 
 

@@ -17,7 +17,7 @@ def _install(params):
 
 def _stub_do_install(monkeypatch, verdict, lines):
     """Patch do_install at the module the RPC resolves it from."""
-    import hermes_cli.skills_hub as cli_hub
+    import rabbit_cli.skills_hub as cli_hub
 
     class _Sink:
         def __init__(self):

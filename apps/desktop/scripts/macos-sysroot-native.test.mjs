@@ -33,7 +33,7 @@ function olderInstalledSdk(defaultSdk) {
 }
 
 test.skipIf(process.platform !== 'darwin')('builds both universal helpers under every SDK selection rung', () => {
-  const dir = mkdtempSync(resolve(tmpdir(), 'hermes-sdk-builds-'))
+  const dir = mkdtempSync(resolve(tmpdir(), 'rabbit-sdk-builds-'))
 
   try {
     const sdk = macosSysroot(env) ?? xcrun(['--sdk', 'macosx', '--show-sdk-path'])

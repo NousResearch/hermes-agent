@@ -1,5 +1,5 @@
 """Under ``gateway.multiplex_profiles`` one process serves every profile; each routed turn runs with
-a context-local HERMES_HOME override. Tool-side state resolved once at import, or cached in a
+a context-local RABBIT_HOME override. Tool-side state resolved once at import, or cached in a
 single unkeyed slot, would hand the launch profile's paths/limits to every other profile.
 
 Each test warms the site under profile A, flips the override to profile B with different
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 @pytest.fixture
@@ -23,16 +23,16 @@ def two_profiles(tmp_path, monkeypatch):
             f"file_read_max_chars: {max_bytes}\ntool_output:\n  max_bytes: {max_bytes}\n"
             f"browser:\n  command_timeout: {timeout}\n  snapshot_threshold: {threshold}\n",
             encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(prof_a))
+    monkeypatch.setenv("RABBIT_HOME", str(prof_a))
     return prof_a, prof_b
 
 
 def _under(home, fn):
-    token = set_hermes_home_override(str(home))
+    token = set_rabbit_home_override(str(home))
     try:
         return fn()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):

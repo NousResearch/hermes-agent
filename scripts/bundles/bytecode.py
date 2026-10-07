@@ -21,7 +21,7 @@ stall on first launch. Baking turns that into a warm read:
   scripts/build/launcher_wrapper.py), so imports read the source-
   adjacent baked pycs, which is Python's default multi-root lookup:
   payload modules read theirs; plugin/user modules keep caching beside
-  their own sources under HERMES_HOME.
+  their own sources under RABBIT_HOME.
 
 Coverage is the performance contract: every parseable module under
 the baked roots must have a pyc. Unparseable fixtures (deliberately
@@ -31,12 +31,12 @@ invalid test data) are counted and skipped, not failed.
 import subprocess
 from pathlib import Path
 
-MARKER = ".hermes-baked-pycache"
+MARKER = ".rabbit-baked-pycache"
 
 
 def _import_roots(root: Path) -> list[Path]:
     """The payload's import roots, in launcher order (repo, venv site, PM)."""
-    roots = [root / "hermes-agent"]
+    roots = [root / "rabbit-agent"]
     for source_root in roots + [root / "venv", root / "pm-runtime"]:
         if not source_root.is_dir():
             raise FileNotFoundError(f"missing import root: {source_root}")

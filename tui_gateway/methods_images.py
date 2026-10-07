@@ -23,7 +23,7 @@ def _image_to_data_url(ref: str, cap: int):
             if not is_safe_url(ref):
                 return None
             with create_ssrf_safe_client(timeout=60, follow_redirects=True) as client, \
-                    client.stream("GET", ref, headers={"User-Agent": "hermes-agent"}) as resp:
+                    client.stream("GET", ref, headers={"User-Agent": "rabbit-agent"}) as resp:
                 resp.raise_for_status()
                 if resp.headers.get("content-length") and int(resp.headers["content-length"]) > cap:
                     return None
@@ -68,7 +68,7 @@ def _(rid, params: dict) -> dict:
     if not available:
         return _ok(rid, {
             "available": False, "success": False,
-            "error": "No image generation backend configured (run `hermes tools` to enable one)."})
+            "error": "No image generation backend configured (run `rabbit tools` to enable one)."})
     prompt = str(params.get("prompt") or "").strip()
     if not prompt:
         return _err(rid, 4071, "prompt required")

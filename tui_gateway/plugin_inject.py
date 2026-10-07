@@ -74,7 +74,7 @@ def install_tui_message_injector(manager=None) -> None:
     gets the host, and managers created later pick it up, without touching the
     messaging-gateway slot.
     """
-    from hermes_cli.plugins import get_plugin_manager, publish_tui_message_host
+    from rabbit_cli.plugins import get_plugin_manager, publish_tui_message_host
 
     global _atexit_registered
     if manager is None:
@@ -88,7 +88,7 @@ def install_tui_message_injector(manager=None) -> None:
 
 def clear_tui_message_injector(manager=None) -> None:
     """Drop this process's host. A different owner is left in place."""
-    from hermes_cli.plugins import clear_published_tui_message_host, get_plugin_manager
+    from rabbit_cli.plugins import clear_published_tui_message_host, get_plugin_manager
 
     if manager is None:
         clear_published_tui_message_host(_TUI_INJECT_OWNER)

@@ -8,7 +8,7 @@ approval:
   prompt_smart_deny: "      Choix [o/R] : "
   smart_deny_once_inputs: "o,once,fois"
   smart_deny_deny_inputs: "d,deny,r,refuser"
-  timeout: "      ⏱ Aucune réponse en {waited} — la commande n'a pas été exécutée. Redemandez pour réessayer, ou augmentez la limite : hermes config set approvals.timeout {suggested}"
+  timeout: "      ⏱ Aucune réponse en {waited} — la commande n'a pas été exécutée. Redemandez pour réessayer, ou augmentez la limite : rabbit config set approvals.timeout {suggested}"
   allowed_once: "      ✓ Autorisé une fois"
   allowed_session: "      ✓ Autorisé pour cette session"
   allowed_always: "      ✓ Ajouté à la liste d'autorisation permanente"
@@ -66,7 +66,7 @@ gateway:
     usage_switch_model: "`/model <name>` — changer de modèle"
     usage_switch_provider: "`/model <name> --provider <slug>` — changer de fournisseur"
     usage_persist: "`/model <name> --global` — conserver"
-    err_skew: "Ce gateway exécute le code de {boot_rev}, mais le checkout sur disque est maintenant à {disk_rev}. Changer de modèle risquerait un plantage dû à des modules obsolètes — redémarrez le gateway pour charger le nouveau code : hermes gateway restart"
+    err_skew: "Ce gateway exécute le code de {boot_rev}, mais le checkout sur disque est maintenant à {disk_rev}. Changer de modèle risquerait un plantage dû à des modules obsolètes — redémarrez le gateway pour charger le nouveau code : rabbit gateway restart"
     err_switch_failed: "Le passage au modèle {model} a échoué ({error}) ; le modèle {current} est conservé."
     err_config_not_updated: "config.yaml non mis à jour ({error})"
     err_stale_override: "enregistré dans config.yaml, mais l'ancienne surcharge de session n'a pas été effacée ({error})"
@@ -116,7 +116,7 @@ gateway:
     rerun_hint: |2-
 
       Demandez-moi de la relancer ou d'afficher le journal complet.
-    no_credentials: "❌ La tâche d'arrière-plan n'a pas pu démarrer car aucune connexion à un modèle d'IA n'est configurée. Utilisez /login, ou lancez `hermes setup` sur l'hôte."
+    no_credentials: "❌ La tâche d'arrière-plan n'a pas pu démarrer car aucune connexion à un modèle d'IA n'est configurée. Utilisez /login, ou lancez `rabbit setup` sur l'hôte."
     complete_header: |+
       ✅ Tâche d'arrière-plan terminée
       Prompt : "{preview}"
@@ -176,8 +176,8 @@ gateway:
     turnhold_deferred: "ℹ️ Compression du contexte différée — le résumé est encore en cours de diffusion. Poursuite sans compression pour ce tour."
     failed: "Échec de la compression : {error}"
     hygiene_timeout: "⚠️ Le raccourcissement de l'historique de la conversation a pris trop de temps ; je l'ai donc ignoré et tout conservé tel quel. Lancez /compress pour réessayer ou /new pour repartir de zéro."
-    hygiene_timeout_doctor_hint: " Si cela se reproduit, lancez `hermes doctor` sur l'hôte."
-    hygiene_failed: "⚠️ Le raccourcissement de l'historique de la conversation a échoué ; j'ai donc tout conservé tel quel. Lancez /compress pour réessayer ou /new pour repartir de zéro. Si cela se reproduit, lancez `hermes doctor` sur l'hôte."
+    hygiene_timeout_doctor_hint: " Si cela se reproduit, lancez `rabbit doctor` sur l'hôte."
+    hygiene_failed: "⚠️ Le raccourcissement de l'historique de la conversation a échoué ; j'ai donc tout conservé tel quel. Lancez /compress pour réessayer ou /new pour repartir de zéro. Si cela se reproduit, lancez `rabbit doctor` sur l'hôte."
     codex_nothing: "🗜️ Rien à compacter : cette session tourne sur le runtime app-server de Codex, dont le contexte réside dans un fil géré par Codex qui n'existe que tant que l'agent est actif. Envoyez d'abord un message, puis /compress — ou /reset pour repartir de zéro."
     codex_compacted: "🗜️ Fil app-server Codex compacté (thread/compact). Le miroir de la transcription est volontairement inchangé — c'est désormais l'app-server qui porte le contexte compacté."
     codex_incomplete: "⚠️ La compaction app-server Codex ne s'est pas terminée — le fil est inchangé. Consultez les journaux de l'app-server, relancez /compress, ou /reset pour une session propre."
@@ -185,8 +185,8 @@ gateway:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
     auto_delete: "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
-    share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
+    full_logs_hint: "Pour envoyer les journaux complets, utilisez `rabbit debug share` depuis la CLI."
+    share_hint: "Partagez ces liens avec l'équipe Rabbit pour obtenir de l'aide."
     report_label: "Rapport"
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
@@ -229,7 +229,7 @@ gateway:
     set: "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
     gate_add_admin_only: "⛔ /goal gate add nécessite un admin du gateway explicitement configuré (allow_admin_from pour les messages privés, group_allow_admin_from pour les groupes)."
   help:
-    header: "📖 **Commandes Hermes**\n"
+    header: "📖 **Commandes Rabbit**\n"
     skill_header: "\n⚡ **Commandes de skill** ({count} actives) :"
     more_use_commands: "\n... et {count} de plus. Utilisez `/commands` pour la liste paginée complète."
   insights:
@@ -238,7 +238,7 @@ gateway:
   kanban:
     error_prefix: "⚠ erreur kanban : {error}"
     subscribed_suffix: "(abonné — vous serez notifié lorsque {task_id} se terminera ou sera bloqué)"
-    truncated_suffix: "… (tronqué ; utilisez `hermes kanban …` dans votre terminal pour la sortie complète)"
+    truncated_suffix: "… (tronqué ; utilisez `rabbit kanban …` dans votre terminal pour la sortie complète)"
     no_output: "(aucune sortie)"
     wake:
       completed: "completed"
@@ -270,7 +270,7 @@ gateway:
       failed_n_times: "elle a échoué {count} fois d'affilée"
       kept_failing: "elle n'a cessé d'échouer"
       last_error: " (dernière : {value})"
-      gave_up: "⛔ {head} est maintenant bloquée : {count}{last}. Corrigez la cause, puis `hermes kanban unblock {task_id}` (ou `hermes kanban reassign {task_id}`). Journaux : `hermes kanban log {task_id}`."
+      gave_up: "⛔ {head} est maintenant bloquée : {count}{last}. Corrigez la cause, puis `rabbit kanban unblock {task_id}` (ou `rabbit kanban reassign {task_id}`). Journaux : `rabbit kanban log {task_id}`."
       limit_minutes: "sa limite de {minutes} minutes"
       limit_generic: "sa limite de temps"
       timed_out: "⏱ {head} a dépassé {span} et a été arrêtée ; elle sera réessayée automatiquement."
@@ -360,12 +360,12 @@ gateway:
     tip: "\n✦ Astuce : {tip}"
   restart:
     in_progress: "⏳ Redémarrage du gateway déjà en cours..."
-    restarting: "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."
+    restarting: "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `rabbit gateway restart`."
   resume:
     db_unavailable: "Base de données des sessions indisponible."
     parse_error: "⚠️ Could not parse `/resume` arguments: {error}. Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
     matrix_no_named_sessions: "No named sessions found for this Matrix room. Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
-    matrix_blocked_no_origin: "⚠️ /resume Matrix bloqué : cette session nommée n'a aucun salon d'origine enregistré, Hermes ne la reprendra donc pas par défaut dans le salon actuel. Utilisez `/resume --cross-room {name}` si vous souhaitez volontairement franchir les limites du salon."
+    matrix_blocked_no_origin: "⚠️ /resume Matrix bloqué : cette session nommée n'a aucun salon d'origine enregistré, Rabbit ne la reprendra donc pas par défaut dans le salon actuel. Utilisez `/resume --cross-room {name}` si vous souhaitez volontairement franchir les limites du salon."
     matrix_blocked_other_room: "⚠️ /resume Matrix bloqué : cette session appartient à un autre salon Matrix ({room}). Utilisez `/resume --cross-room {name}` si vous souhaitez volontairement la reprendre ici."
     matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**. Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner: "⚠️ /resume bloqué : '**{name}**' appartient à un autre utilisateur ou à une autre discussion. Vous ne pouvez reprendre que les sessions de cette discussion."
@@ -462,7 +462,7 @@ gateway:
     source_line: "Source : {source} ; les comptes par catégorie sont des estimations locales."
     hint_all: "Utilisez /context all pour les coûts par skill et par ensemble d'outils."
   status:
-    header: "📊 **État de Hermes Gateway**"
+    header: "📊 **État de Rabbit Gateway**"
     matrix_scope_header: "**Portée Matrix :**"
     matrix_scope_room: "  room: {room}"
     matrix_scope_room_id: "  room_id: {room_id}"
@@ -506,21 +506,21 @@ gateway:
     topics_user_disallowed: "Les topics Telegram sont activés, mais les utilisateurs ne peuvent pas en créer.\n\nOuvrez @BotFather → choisissez votre bot → Bot Settings → Threads Settings, puis désactivez 'Disallow users to create new threads'.\n\nPuis envoyez /topic à nouveau."
     enable_failed: "Échec de l'activation du mode topic Telegram : {error}"
     bound_status: "Ce topic est lié à :\nSession : {label}\nID : {session_id}\n\nUtilisez /new pour remplacer ce topic par une nouvelle session.\nPour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
-    thread_ready: "Les topics multi-sessions Telegram sont activés.\n\nCe topic sera utilisé comme session Hermes indépendante. Utilisez /new pour remplacer la session actuelle de ce topic. Pour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
+    thread_ready: "Les topics multi-sessions Telegram sont activés.\n\nCe topic sera utilisé comme session Rabbit indépendante. Utilisez /new pour remplacer la session actuelle de ce topic. Pour un travail parallèle, ouvrez All Messages et envoyez-y un message pour créer un autre topic."
     untitled_session: "Session sans titre"
     restore_step_1: "1. Créez ou ouvrez un topic. Pour en créer un nouveau, ouvrez All Messages et envoyez-y n'importe quel message."
     restore_step_2: "2. Envoyez /topic <session-id> dans ce topic."
-    default_title: "Hermes Chat"
+    default_title: "Rabbit Chat"
     root_lobby: |-
       Ce chat principal est réservé aux commandes système.
 
-      Pour démarrer un nouveau chat Hermes, ouvrez le topic All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour ce message ; chaque topic fonctionne comme une session Hermes indépendante.
+      Pour démarrer un nouveau chat Rabbit, ouvrez le topic All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour ce message ; chaque topic fonctionne comme une session Rabbit indépendante.
     root_new: |-
-      Pour démarrer un nouveau chat Hermes en parallèle, ouvrez le topic All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour celui-ci.
+      Pour démarrer un nouveau chat Rabbit en parallèle, ouvrez le topic All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour celui-ci.
 
-      Chaque topic est une session Hermes indépendante. N'utilisez /new dans un topic existant que si vous voulez remplacer la session actuelle de ce topic.
+      Chaque topic est une session Rabbit indépendante. N'utilisez /new dans un topic existant que si vous voulez remplacer la session actuelle de ce topic.
     new_header: |-
-      Nouvelle session Hermes démarrée dans ce topic.
+      Nouvelle session Rabbit démarrée dans ce topic.
 
       Astuce : pour travailler en parallèle, ouvrez All Messages et envoyez-y un message pour créer un topic séparé plutôt que d'utiliser /new ici. /new remplace la session liée au topic actuel.
     help: |-
@@ -533,17 +533,17 @@ gateway:
         /topic <id>        Dans un topic : restaurer une session précédente par son ID
 
       Fonctionnement :
-      1. Lancez /topic une fois dans ce DM — Hermes vérifie que les Threads
+      1. Lancez /topic une fois dans ce DM — Rabbit vérifie que les Threads
          Settings de BotFather sont activés et bascule en mode multi-session.
       2. Touchez All Messages en haut du bot et envoyez n'importe quel message.
          Telegram crée un nouveau topic pour ce message ; chaque topic est
-         une session Hermes indépendante (historique et contexte vierges).
+         une session Rabbit indépendante (historique et contexte vierges).
       3. Le DM racine devient un salon système — envoyez-y /topic, /status,
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
     system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
+    system_topic_intro: "Topic système pour les commandes et l'état d'Rabbit."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."
@@ -551,9 +551,9 @@ gateway:
     mode_disabled: |-
       Le mode topic multi-session est maintenant OFF pour ce chat.
 
-      Les topics existants dans Telegram ne sont pas supprimés — ils cessent simplement d'être traités comme des sessions indépendantes. Le DM racine redevient un chat Hermes normal. Lancez /topic pour le réactiver plus tard.
+      Les topics existants dans Telegram ne sont pas supprimés — ils cessent simplement d'être traités comme des sessions indépendantes. Le DM racine redevient un chat Rabbit normal. Lancez /topic pour le réactiver plus tard.
     status_enabled: "Les topics multi-sessions Telegram sont activés."
-    status_how_to: "Pour créer un nouveau chat Hermes, ouvrez All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour celui-ci."
+    status_how_to: "Pour créer un nouveau chat Rabbit, ouvrez All Messages en haut de l'interface du bot et envoyez-y n'importe quel message. Telegram créera un nouveau topic pour celui-ci."
     previous_unlinked: "Sessions précédentes non liées :"
     restore_one: "Pour en restaurer une :"
     restore_example: "Exemple : envoyez /topic {session_id} dans un topic."
@@ -567,21 +567,21 @@ gateway:
     restored_last_message: |2-
 
 
-      Dernier message d'Hermes :
+      Dernier message d'Rabbit :
       {text}
   undo:
     nothing: "Rien à annuler."
     removed: "↩️ {turns} tour(s) annulé(s) ({count} message(s)).\nSauvegardé dans : « {preview} »\nCopiez/modifiez le texte ci-dessus et envoyez-le pour relancer à partir d'ici."
     invalid_count: "Nombre invalide « {arg} » — utilisez /undo ou /undo N."
   update:
-    platform_not_messaging: "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `hermes update` depuis le terminal."
+    platform_not_messaging: "✗ /update n'est disponible que depuis les plateformes de messagerie. Exécutez `rabbit update` depuis le terminal."
     not_git_repo: "✗ Pas un dépôt git — impossible de mettre à jour."
-    hermes_cmd_not_found: "✗ Impossible de localiser la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans votre terminal."
+    rabbit_cmd_not_found: "✗ Impossible de localiser la commande `rabbit`. Rabbit est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `rabbit update` manuellement dans votre terminal."
     start_failed: "✗ Échec du démarrage de la mise à jour : {error}"
-    starting: "☤ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
+    starting: "☤ Démarrage de la mise à jour Rabbit… Je diffuserai la progression ici."
     reply_failed: "✗ Échec de l'envoi de la réponse au processus de mise à jour : {error}"
     reply_sent: "✓ `{label}` envoyé au processus de mise à jour."
-    failed_notice: "❌ La mise à jour d'Hermes a échoué ; la version précédente tourne toujours. Lancez `hermes update` sur l'hôte pour voir l'erreur complète, ou réessayez /update plus tard."
+    failed_notice: "❌ La mise à jour d'Rabbit a échoué ; la version précédente tourne toujours. Lancez `rabbit update` sur l'hôte pour voir l'erreur complète, ou réessayez /update plus tard."
     prompt_default: " (par défaut : {default})"
     prompt: |-
       ☤ **La mise à jour a besoin de votre réponse :**
@@ -589,9 +589,9 @@ gateway:
       {prompt}{default_hint}
 
       Répondez `{prefix}approve` (oui) ou `{prefix}deny` (non), ou saisissez directement votre réponse.
-    finished: "✅ Mise à jour d'Hermes terminée."
-    timed_out: "❌ La mise à jour d'Hermes a expiré après 30 minutes."
-    finished_success: "✅ Mise à jour d'Hermes terminée avec succès."
+    finished: "✅ Mise à jour d'Rabbit terminée."
+    timed_out: "❌ La mise à jour d'Rabbit a expiré après 30 minutes."
+    finished_success: "✅ Mise à jour d'Rabbit terminée avec succès."
     last_lines: |-
       {msg}
 
@@ -599,9 +599,9 @@ gateway:
       ```
       {tail}
       ```
-    managed_action: "mettre à jour Hermes Agent"
+    managed_action: "mettre à jour Rabbit Agent"
     not_applicable: |-
-      ✗ `hermes update` ne s'applique pas à cette installation ({method}).
+      ✗ `rabbit update` ne s'applique pas à cette installation ({method}).
       Mettez à jour avec : {command}
   usage:
     rate_limits: "⏱️ **Limites de débit :** {state}"
@@ -642,7 +642,7 @@ gateway:
     mode_new: "⚙️ Progression des outils : **NEW** — affichée lors d'un changement d'outil (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
     mode_all: "⚙️ Progression des outils : **ALL** — chaque appel d'outil est affiché (longueur d'aperçu : `display.tool_preview_length`, par défaut 40)."
     mode_verbose: "⚙️ Progression des outils : **VERBOSE** — chaque appel d'outil avec ses arguments complets."
-    mode_log: "⚙️ Progression des outils : **LOG** — silencieux dans le chat ; les appels d'outils sont écrits dans ~/.hermes/logs/tool_calls.log."
+    mode_log: "⚙️ Progression des outils : **LOG** — silencieux dans le chat ; les appels d'outils sont écrits dans ~/.rabbit/logs/tool_calls.log."
     saved_suffix: "_(enregistré pour **{platform}** — prend effet au prochain message)_"
     save_failed: "_(impossible d'enregistrer dans la configuration : {error})_"
   voice:
@@ -684,13 +684,13 @@ gateway:
     warn_passthrough: "⚠️ {error}"
     unknown_error: "erreur inconnue"
     error_prefix: "Erreur : {error}"
-    history_unreadable: "⚠️ Je ne peux pas lire l'historique de cette conversation pour le moment (vos messages précédents existent mais ne peuvent pas être chargés). Lancez `hermes doctor --fix` sur l'hôte, ou utilisez /new pour repartir de zéro."
+    history_unreadable: "⚠️ Je ne peux pas lire l'historique de cette conversation pour le moment (vos messages précédents existent mais ne peuvent pas être chargés). Lancez `rabbit doctor --fix` sur l'hôte, ou utilisez /new pour repartir de zéro."
     agent_running_retry_later: "L'agent est en cours d'exécution — attendez la fin du tour, puis /{command}."
     none_marker: "(aucun)"
     none_value: "aucun"
     unknown_value: "inconnu"
   exec_approval:
-    header: "Hermes veut exécuter une commande qui nécessite votre accord"
+    header: "Rabbit veut exécuter une commande qui nécessite votre accord"
     reason_label: "Motif du signalement"
     default_reason: "commande dangereuse"
     smart_deny_line: "Smart DENY : la dérogation du propriétaire ne s'applique qu'à cette seule opération."
@@ -741,18 +741,18 @@ gateway:
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-
-      📬 Aucun canal d'accueil n'est défini pour {platform}. Le canal d'accueil est l'endroit où Hermes livre les résultats des tâches cron et les messages inter-plateformes.
+      📬 Aucun canal d'accueil n'est défini pour {platform}. Le canal d'accueil est l'endroit où Rabbit livre les résultats des tâches cron et les messages inter-plateformes.
 
       Tapez {sethome_cmd} pour faire de ce chat votre canal d'accueil, ou ignorez ce message pour passer.
   unauthorized:
-    action_notice: "Ce bot est privé et vous ne figurez pas sur sa liste d'autorisation. Si vous en êtes le propriétaire, lancez `hermes pairing approve {platform} <request-id>` sur l'hôte (`hermes pairing list` affiche l'id)."
+    action_notice: "Ce bot est privé et vous ne figurez pas sur sa liste d'autorisation. Si vous en êtes le propriétaire, lancez `rabbit pairing approve {platform} <request-id>` sur l'hôte (`rabbit pairing list` affiche l'id)."
     admin_only_can_run: "Vous pouvez lancer : "
     admin_only_whoami_hint: ". Utilisez /whoami pour la liste complète."
     admin_only_none: "Aucune commande slash n'est activée pour les non-administrateurs sur cette plateforme. Demandez à un administrateur de vous ajouter à allow_admin_from ou de définir user_allowed_commands."
     admin_only: "⛔ /{command} est réservée aux administrateurs ici. {suffix}"
     owner_hint_env: "ajoutez l'ID à {env_var} dans {home}/.env et redémarrez le gateway"
     owner_hint_generic: "ajoutez l'ID à la liste des utilisateurs autorisés de cette plateforme et redémarrez le gateway"
-    owner_notice: "Message ignoré d'un utilisateur {platform} non reconnu : {who}. Si c'est vous ou une personne de confiance, {allowlist} ; ou définissez `unauthorized_dm_behavior: pair` pour {platform} dans {home}/config.yaml afin que les expéditeurs inconnus reçoivent un code d'appairage que vous pourrez approuver avec `hermes pairing approve {platform} <code>`."
+    owner_notice: "Message ignoré d'un utilisateur {platform} non reconnu : {who}. Si c'est vous ou une personne de confiance, {allowlist} ; ou définissez `unauthorized_dm_behavior: pair` pour {platform} dans {home}/config.yaml afin que les expéditeurs inconnus reçoivent un code d'appairage que vous pourrez approuver avec `rabbit pairing approve {platform} <code>`."
   picker:
     page_info: " ({start}–{end} sur {total})"
   clarify:
@@ -767,17 +767,17 @@ gateway:
     skip_hint: 'Répondez « skip » pour passer cette question.'
   errors:
     rate_limited: "⏱️ Le service de modèle IA limite le débit des requêtes. Patientez un instant, puis utilisez /retry."
-    auth_failed: "⚠️ La connexion au service de modèle IA a échoué. Utilisez /login pour vous reconnecter, ou demandez à la personne qui gère ce bot de lancer `hermes doctor` sur l'hôte."
+    auth_failed: "⚠️ La connexion au service de modèle IA a échoué. Utilisez /login pour vous reconnecter, ou demandez à la personne qui gère ce bot de lancer `rabbit doctor` sur l'hôte."
     bad_request: "⚠️ Le service de modèle IA a rejeté cette requête. Essayez de reformuler votre message, ou utilisez /model pour changer de modèle."
-    connection_interrupted: "⚠️ La connexion au service de modèle IA a été interrompue en cours de requête — c'est généralement passager. Utilisez /retry pour réessayer ; si cela se reproduit, lancez `hermes doctor` sur l'hôte."
-    unreachable: "⚠️ Le service de modèle IA est injoignable pour le moment — le point de terminaison configuré ne tourne pas ou n'est pas accessible. Patientez un instant puis utilisez /retry ; si le problème persiste, lancez `hermes doctor` sur l'hôte."
-    connection_unknown: "⚠️ Hermes n'a pas pu joindre le service de modèle IA (aucun détail supplémentaire fourni par le SDK). Utilisez /retry pour réessayer ; si le problème persiste, lancez `hermes doctor` sur l'hôte."
+    connection_interrupted: "⚠️ La connexion au service de modèle IA a été interrompue en cours de requête — c'est généralement passager. Utilisez /retry pour réessayer ; si cela se reproduit, lancez `rabbit doctor` sur l'hôte."
+    unreachable: "⚠️ Le service de modèle IA est injoignable pour le moment — le point de terminaison configuré ne tourne pas ou n'est pas accessible. Patientez un instant puis utilisez /retry ; si le problème persiste, lancez `rabbit doctor` sur l'hôte."
+    connection_unknown: "⚠️ Rabbit n'a pas pu joindre le service de modèle IA (aucun détail supplémentaire fourni par le SDK). Utilisez /retry pour réessayer ; si le problème persiste, lancez `rabbit doctor` sur l'hôte."
     context_overflow: "⚠️ Cette conversation est devenue trop longue pour que je puisse la lire d'un coup. Utilisez /compress pour raccourcir l'historique, ou /new pour démarrer une nouvelle conversation."
     usage_limit_resets: "⏱️ La limite de consommation du service de modèle IA est atteinte ; elle se réinitialise dans {window}. Utilisez /retry ensuite, ou /model pour changer de modèle."
-    provider_kept_failing: "⚠️ Le service de modèle IA a échoué à répétition. Utilisez /retry pour réessayer, ou /model pour changer de modèle. Les détails sont dans le journal du gateway (`hermes logs`)."
+    provider_kept_failing: "⚠️ Le service de modèle IA a échoué à répétition. Utilisez /retry pour réessayer, ou /model pour changer de modèle. Les détails sont dans le journal du gateway (`rabbit logs`)."
     session_storage_unavailable_disk: "⚠️ Le stockage des sessions était temporairement indisponible ; ce tour a donc été arrêté pour protéger l'historique de votre conversation. Vérifiez l'espace disque disponible, puis renvoyez votre message."
     session_storage_unavailable: "⚠️ Le stockage des sessions était temporairement indisponible ; ce tour a donc été arrêté pour protéger l'historique de votre conversation. Votre message devrait déjà être enregistré — renvoyez-le dans un instant."
-    generic_failed: "⚠️ Une erreur s'est produite et je n'ai pas pu terminer cette réponse. Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`hermes logs`)."
+    generic_failed: "⚠️ Une erreur s'est produite et je n'ai pas pu terminer cette réponse. Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`rabbit logs`)."
     interrupted_before_start: "⚠️ Votre message a été interrompu avant le début du traitement (probablement par un /stop récent). Veuillez le renvoyer."
     processing_incomplete: "traitement incomplet"
     stopped_before_finishing: "⚠️ J'ai dû m'arrêter avant de terminer{reason}. Utilisez /retry pour réessayer, ou /compress si cette conversation est devenue très longue."
@@ -794,28 +794,28 @@ gateway:
     hint_rejected: " Le service de modèle IA a rejeté la requête."
     generic_failed_with_hint: |-
       ⚠️ Une erreur s'est produite et je n'ai pas pu terminer cette réponse.{hint}
-      Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`hermes logs`).
+      Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`rabbit logs`).
     history_unavailable: "⚠️ L'historique de cette session est temporairement indisponible ; ce message n'a donc pas été traité. Demandez à l'opérateur d'inspecter state.db, puis renvoyez-le une fois le problème réglé. N'utilisez /reset que si vous voulez vraiment démarrer une nouvelle conversation."
-    no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `hermes doctor` sur l'hôte."
+    no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `rabbit doctor` sur l'hôte."
   skills:
     disabled: |-
       La skill **{name}** est installée mais désactivée.
-      Activez-la avec : `hermes skills config`
+      Activez-la avec : `rabbit skills config`
     not_installed: |-
       La skill **{name}** est disponible mais pas installée.
-      Installez-la avec : `hermes skills install {install_name}`
+      Installez-la avec : `rabbit skills install {install_name}`
     disabled_for_platform: |-
       La skill **{name}** est désactivée pour {platform}.
-      Activez-la avec : `hermes skills config`
+      Activez-la avec : `rabbit skills config`
     stacked_disabled: |-
       La ou les skills **{names}** de cet appel empilé sont désactivées pour {platform}.
-      Activez-les avec : `hermes skills config`
+      Activez-les avec : `rabbit skills config`
     stacked_load_failed: "Échec du chargement des skills empilées pour /{command}."
     gate_off: "L'approbation des écritures de skills est désactivée (skills.write_approval). Activez-la avec /skills approval on, puis examinez ici les écritures en attente avec /skills pending."
     unknown_subcommand: "Sous-commande /skills inconnue sur cette plateforme. Utilisez : pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Recherche et installation : CLI uniquement.)"
     diff_truncated: |2-
 
-      … (tronqué — diff complet dans ~/.hermes/pending/skills/{pending_id}.json)
+      … (tronqué — diff complet dans ~/.rabbit/pending/skills/{pending_id}.json)
   busy:
     action_restarting: "en cours de redémarrage"
     action_shutting_down: "en cours d'arrêt"
@@ -849,11 +849,11 @@ gateway:
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."
     another_turn_running: "⏳ Un autre tour est encore en cours sur cette session. Pour protéger la transcription, ce message n'a pas été traité. Attendez la fin du tour actif, puis renvoyez-le."
     behavior_queue_short: "mise en file pour le prochain tour"
-    behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Hermes est occupé."
+    behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Rabbit est occupé."
     behavior_steer_short: "orientation de l'exécution en cours (après le prochain appel d'outil)"
     behavior_steer_long: "Les messages seront orientés vers l'exécution en cours (après le prochain appel d'outil)."
     behavior_interrupt_short: "interruption de l'exécution en cours"
-    behavior_interrupt_long: "Les messages interrompront l'exécution en cours pendant que Hermes est occupé."
+    behavior_interrupt_long: "Les messages interrompront l'exécution en cours pendant que Rabbit est occupé."
     status: |-
       **Mode de saisie quand occupé : `{mode}`
       Messages pendant l'occupation : _{behavior}_
@@ -865,9 +865,9 @@ gateway:
       _{behavior}_
   pause:
     resumed: "▶️ Reprise — le nouveau travail est de nouveau accepté."
-    not_paused: "Hermes n'était pas en pause."
+    not_paused: "Rabbit n'était pas en pause."
     reason_suffix: " (raison : {reason})"
-    already_paused: "⏸️ Hermes est déjà en pause{suffix}. Utilisez `/pause off` pour reprendre."
+    already_paused: "⏸️ Rabbit est déjà en pause{suffix}. Utilisez `/pause off` pour reprendre."
     paused: "⏸️ En pause{suffix}. Le nouveau travail cron/kanban/gateway est suspendu ; le travail en cours se termine normalement. Utilisez `/pause off` pour reprendre."
   queue:
     usage: "Usage : /queue <prompt>"
@@ -977,7 +977,7 @@ gateway:
     task_status_complete: "terminé"
     task_status_error: "erreur"
     task_line: "- {title} - {status}"
-    task_card_title: "Hermes travaille"
+    task_card_title: "Rabbit travaille"
   pairing:
     validity_hour: "{hours} heure"
     validity_hours: "{hours} heures"
@@ -991,25 +991,25 @@ gateway:
   shutdown:
     action_shutting_down: "en cours d'arrêt"
     action_restarting: "en cours de redémarrage"
-    cron_interrupted: "⚠️ La tâche planifiée '{job}' a été interrompue car Hermes est {action} ; aucun résultat pour cette exécution. Elle se relancera selon son planning, ou lancez-la maintenant avec `hermes cron run {job}` une fois Hermes de retour."
-    notice_shutdown: "⚠️ Hermes s'arrête — votre tâche en cours va être interrompue. Une fois de retour en ligne, envoyez n'importe quel message et j'essaierai de reprendre là où nous en étions."
-    notice_restart: "⚠️ Hermes redémarre — votre tâche en cours va être interrompue. Envoyez n'importe quel message après le redémarrage et j'essaierai de reprendre là où vous en étiez."
+    cron_interrupted: "⚠️ La tâche planifiée '{job}' a été interrompue car Rabbit est {action} ; aucun résultat pour cette exécution. Elle se relancera selon son planning, ou lancez-la maintenant avec `rabbit cron run {job}` une fois Rabbit de retour."
+    notice_shutdown: "⚠️ Rabbit s'arrête — votre tâche en cours va être interrompue. Une fois de retour en ligne, envoyez n'importe quel message et j'essaierai de reprendre là où nous en étions."
+    notice_restart: "⚠️ Rabbit redémarre — votre tâche en cours va être interrompue. Envoyez n'importe quel message après le redémarrage et j'essaierai de reprendre là où vous en étiez."
   startup:
-    handoff_thread_title: "Hermes — {title}"
+    handoff_thread_title: "Rabbit — {title}"
     restarted: "♻ Gateway redémarré avec succès. Votre session continue."
     free_tier_line: "Inférence : offre gratuite Nous (nous/welcome). Connectez-vous pour en obtenir plus : /login"
-    online: "♻️ Gateway en ligne — Hermes est de retour et prêt."
+    online: "♻️ Gateway en ligne — Rabbit est de retour et prêt."
     db_corrupt: |-
       ⚠️ Corruption détectée dans la base de données des sessions. Les messages risquent de ne pas être persistés. Options de récupération :
-      1. Exécutez `hermes {profile_arg}doctor --fix`
+      1. Exécutez `rabbit {profile_arg}doctor --fix`
       2. Arrêtez le gateway, puis récupérez avec :
-         hermes {profile_arg}sessions recover --source {db_path} --inspect-only
-         (si le résultat indique que c'est récupérable) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db
+         rabbit {profile_arg}sessions recover --source {db_path} --inspect-only
+         (si le résultat indique que c'est récupérable) rabbit {profile_arg}sessions recover --source {db_path} --output recovered-state.db
          — la récupération prend d'abord un instantané du fichier endommagé ; n'exécutez PAS `sqlite3 ... ".recover"` sur le state.db actif, une CLI sqlite3 vulnérable peut l'endommager davantage
       3. Restaurez une sauvegarde depuis {backups_dir}/
-      Exécutez `hermes {profile_arg}doctor` pour des diagnostics anonymisés.
-    db_fts_corrupt: "⚠️ La base de données des sessions a signalé une erreur de corruption limitée à l'index de recherche (FTS5) ; les tables de messages ne sont pas endommagées. Les messages risquent de ne pas être persistés tant qu'elle n'est pas réparée : exécutez `hermes {profile_arg}doctor --fix`, puis redémarrez le gateway. N'exécutez pas d'outils de récupération et ne restaurez pas de sauvegarde à moins que `hermes {profile_arg}doctor` ne confirme des dégâts."
-    db_then_restart: "{action} Puis `hermes {profile_arg}gateway restart`."
+      Exécutez `rabbit {profile_arg}doctor` pour des diagnostics anonymisés.
+    db_fts_corrupt: "⚠️ La base de données des sessions a signalé une erreur de corruption limitée à l'index de recherche (FTS5) ; les tables de messages ne sont pas endommagées. Les messages risquent de ne pas être persistés tant qu'elle n'est pas réparée : exécutez `rabbit {profile_arg}doctor --fix`, puis redémarrez le gateway. N'exécutez pas d'outils de récupération et ne restaurez pas de sauvegarde à moins que `rabbit {profile_arg}doctor` ne confirme des dégâts."
+    db_then_restart: "{action} Puis `rabbit {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Base de données des sessions indisponible — les messages risquent de ne pas être enregistrés et /resume sera vide. Cause : {cause}. {action}"
   whoami:
     scope_dm: "MP"
@@ -1043,7 +1043,7 @@ gateway:
     unknown: "Plateforme inconnue : {name}"
     not_queued_pause: "{name} n'est pas dans la file de nouvelles tentatives (soit connectée, soit non activée)."
     already_paused: "{name} est déjà en pause."
-    paused: "✓ {name} mise en pause. Reprenez avec `/platform resume {name}` ou `hermes gateway restart` pour réinitialiser."
+    paused: "✓ {name} mise en pause. Reprenez avec `/platform resume {name}` ou `rabbit gateway restart` pour réinitialiser."
     not_queued_resume: "{name} n'est pas dans la file de nouvelles tentatives — rien à reprendre."
     already_retrying: "{name} réessaie déjà — aucune reprise nécessaire."
     resumed: "✓ {name} reprise — nouvelle tentative au prochain cycle du watcher."
@@ -1052,7 +1052,7 @@ gateway:
     default_desc: "Charger {count} skills"
     none_plain: |-
       Aucun bundle de skills installé.
-      Créez-en un avec : hermes bundles create <name> --skill <s1> --skill <s2>
+      Créez-en un avec : rabbit bundles create <name> --skill <s1> --skill <s2>
       Répertoire : {dir}
     header_plain: "Bundles de skills ({count} installés) :"
     item_plain: "/{slug} — {desc} ({count} skills)"
@@ -1060,7 +1060,7 @@ gateway:
     none: |-
       Aucun bundle de skills installé.
       Créez-en un sur l'hôte avec :
-        `hermes bundles create <name> --skill <s1> --skill <s2>`
+        `rabbit bundles create <name> --skill <s1> --skill <s2>`
       Répertoire : `{dir}`
     header: "**Bundles de skills** ({count} installés) :"
     item: "• `/{slug}` — {desc} _({count} skills)_"
@@ -1084,7 +1084,7 @@ gateway:
     invalid_prefix: "Heartbeat invalide"
     set: |-
       ♥ Heartbeat défini (toutes les {interval}) : {prompt}
-      Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `hermes cron` pour des planifications durables.
+      Se déclenche comme un tour normal dès que cette session est inactive et que l'intervalle est écoulé. Il ne vit que tant que le gateway tourne — utilisez `rabbit cron` pour des planifications durables.
   refine:
     unavailable: "Refine indisponible (aucune session)."
     nothing_yet: "Rien à affiner pour l'instant — envoyez d'abord un message."
@@ -1182,7 +1182,7 @@ platform:
       [Réponse transformée après la diffusion en continu]
   discord:
     approval:
-      question: "Voulez-vous que Hermes exécute cette commande ?"
+      question: "Voulez-vous que Rabbit exécute cette commande ?"
       requested_command_label: "Commande demandée :"
       confirm_title: "Confirmer"
       already_resolved: "Cette approbation a déjà été traitée~"
@@ -1202,7 +1202,7 @@ platform:
       resolved_cancel: "Annulé"
     prompt:
       truncated_marker: "... [tronqué]"
-      clarify_title: "Hermes a besoin de votre réponse"
+      clarify_title: "Rabbit a besoin de votre réponse"
       clarify_hint_buttons: "Choisissez une option ci-dessous, ou cliquez sur ✏️ Autre pour saisir une réponse personnalisée."
       clarify_hint_text: "Répondez dans ce canal avec votre réponse."
       default_hint: " (par défaut : {default})"
@@ -1251,7 +1251,7 @@ platform:
         description: "Démarrer une nouvelle conversation"
         followup: "Nouvelle conversation démarrée~"
       reset:
-        description: "Réinitialiser votre session Hermes"
+        description: "Réinitialiser votre session Rabbit"
         followup: "Session réinitialisée~"
       model:
         description: "Afficher ou changer le modèle"
@@ -1273,10 +1273,10 @@ platform:
       undo:
         description: "Supprimer le dernier échange"
       status:
-        description: "Afficher l'état de la session Hermes"
+        description: "Afficher l'état de la session Rabbit"
         followup: "État envoyé~"
       stop:
-        description: "Arrêter l'agent Hermes en cours"
+        description: "Arrêter l'agent Rabbit en cours"
         followup: "Arrêt demandé~"
       steer:
         description: "Injecter un message après le prochain appel d'outil (sans interrompre)"
@@ -1298,7 +1298,7 @@ platform:
       insights:
         arg_days: "Nombre de jours à analyser (par défaut : 7)"
       reload_skills:
-        description: "Réanalyser ~/.hermes/skills/ pour détecter les skills ajoutées ou supprimées"
+        description: "Réanalyser ~/.rabbit/skills/ pour détecter les skills ajoutées ou supprimées"
       voice:
         description: "Basculer le mode de réponse vocale"
         arg_mode: "Mode vocal : join, channel, leave, on, tts, off ou status"
@@ -1312,7 +1312,7 @@ platform:
       update:
         followup: "Mise à jour lancée~"
       restart:
-        description: "Redémarrer proprement le gateway Hermes"
+        description: "Redémarrer proprement le gateway Rabbit"
         followup: "Redémarrage demandé~"
       approve:
         arg_scope: "Facultatif : 'all', 'session', 'always', 'all session', 'all always'"
@@ -1320,9 +1320,9 @@ platform:
         description: "Refuser une commande dangereuse en attente"
         arg_scope: "Facultatif : 'all' pour refuser toutes les commandes en attente"
       thread:
-        description: "Créer un nouveau fil et y démarrer une session Hermes"
+        description: "Créer un nouveau fil et y démarrer une session Rabbit"
         arg_name: "Nom du fil"
-        arg_message: "Premier message facultatif à envoyer à Hermes dans le fil"
+        arg_message: "Premier message facultatif à envoyer à Rabbit dans le fil"
         arg_auto_archive: "Archivage automatique en minutes (60, 1440, 4320, 10080)"
         error_unknown: "erreur inconnue"
         failed: "Échec de la création du fil : {error}"
@@ -1345,7 +1345,7 @@ platform:
         arg_question: "La question annexe à traiter sans interrompre"
         followup: "Question annexe envoyée~"
       skill:
-        description: "Exécuter une skill Hermes"
+        description: "Exécuter une skill Rabbit"
         arg_name: "Quelle skill exécuter"
         arg_args: "Arguments facultatifs pour la skill"
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
@@ -1370,10 +1370,10 @@ platform:
         Commande : {command_text}
         Raison : {reason}
     thread:
-      seed_message: "🧵 Fil créé par Hermes : **{name}**"
-      default_name: "Hermes"
-      handoff_seed: "🧵 Passation Hermes : **{name}**"
-      auto_create_failed: "⚠️ Hermes n'a pas pu créer de fil Discord pour ce message, la demande n'a donc pas été traitée. Veuillez réessayer."
+      seed_message: "🧵 Fil créé par Rabbit : **{name}**"
+      default_name: "Rabbit"
+      handoff_seed: "🧵 Passation Rabbit : **{name}**"
+      auto_create_failed: "⚠️ Rabbit n'a pas pu créer de fil Discord pour ce message, la demande n'a donc pas été traitée. Veuillez réessayer."
       auto_create_failed_generic: "La demande n'a pas été traitée. Veuillez réessayer."
     media:
       upload_too_large: "⚠️ Impossible de joindre `{filename}` — {size_mb} Mo dépasse la limite d'envoi Discord de {limit_mb} Mo pour ce canal. Compressez le fichier ou partagez plutôt un lien."
@@ -1473,7 +1473,7 @@ platform:
       error: "❌ erreur {verb} : {error}"
       appended_by: "— {label} par {user}"
     user_fallback: "Utilisateur"
-    install_hint: "Exécutez `hermes setup` pour installer la prise en charge de Telegram."
+    install_hint: "Exécutez `rabbit setup` pour installer la prise en charge de Telegram."
   slack:
     approval:
       fallback_text: "⚠️ Approbation de commande requise : {command}"
@@ -1531,7 +1531,7 @@ platform:
       thinking: "réfléchit..."
       still_working: "toujours en cours… ({elapsed})"
     task_card:
-      title: "Hermes travaille"
+      title: "Rabbit travaille"
     slash:
       reply_truncated: |2-
 
@@ -1539,10 +1539,10 @@ platform:
         _[Réponse tronquée : {count} partie(s) supplémentaire(s) dépassaient la limite des réponses éphémères de Slack.]_
       running: "Exécution de `/{command}`…"
     handoff:
-      seed: ":thread: Passation Hermes — *{name}*"
+      seed: ":thread: Passation Rabbit — *{name}*"
   matrix:
     handoff:
-      default_name: "Session Hermes"
+      default_name: "Session Rabbit"
     media:
       image_download_failed: "Je n'ai pas pu télécharger l'image et l'envoyer sur Matrix. L'URL source n'est pas affichée car elle peut contenir des tokens privés."
     approval:
@@ -1605,7 +1605,7 @@ platform:
       header: "Question"
       question: "❓ {question}"
     typing:
-      thinking: "Hermes réfléchit…"
+      thinking: "Rabbit réfléchit…"
       interrupted: "(interrompu)"
       no_reply: "(aucune réponse)"
     attachment_fallback:
@@ -1692,13 +1692,13 @@ platform:
       size_downgraded: "La taille de {label} ({size_mb} Mo) dépasse la limite de {cap} ; envoyé sous forme de fichier à la place."
   email:
     image_line: "Image : {url}"
-    standalone_subject: "Hermes Agent"
+    standalone_subject: "Rabbit Agent"
   dingtalk:
     emotion:
       thinking: "🤔Réflexion"
       done: "🥳Terminé"
   irc:
-    quit_message: "Hermes Agent s'arrête"
+    quit_message: "Rabbit Agent s'arrête"
     standalone_quit: "livré"
   relay:
     confirm_approve_once: "Approuver une fois"
@@ -1720,7 +1720,7 @@ slash:
   sethome:
     description: "Définir cette conversation comme canal principal"
   update:
-    description: "Mettre à jour Hermes Agent vers la dernière version"
+    description: "Mettre à jour Rabbit Agent vers la dernière version"
   category:
     session: "Session"
     configuration: "Configuration"
@@ -1737,8 +1737,8 @@ slash:
     slack_alias_for: "Alias de /{name} — {description}"
     plugin_default_desc: "Exécuter /{name}"
     plugin_command_desc: "Commande de plugin"
-  hermes:
-    description: "Parler à Hermes ou exécuter une sous-commande"
+  rabbit:
+    description: "Parler à Rabbit ou exécuter une sous-commande"
   start:
     description: "Accuser réception des pings de démarrage de la plateforme sans répondre"
   new:
@@ -1772,7 +1772,7 @@ slash:
   rollback:
     description: "Lister ou restaurer les points de contrôle du système de fichiers (vos modifications manuelles sont conservées ; --all les écrase)"
   snapshot:
-    description: "Créer ou restaurer des instantanés de la configuration et de l'état de Hermes"
+    description: "Créer ou restaurer des instantanés de la configuration et de l'état de Rabbit"
   export:
     description: "Exporter un profil (configuration, skills, thème) vers une archive partageable"
   import:
@@ -1794,7 +1794,7 @@ slash:
   steer:
     description: "Injecter un message après le prochain appel d'outil sans interrompre"
   goal:
-    description: "Définir un objectif permanent sur lequel Hermes travaille au fil des tours jusqu'à l'atteindre"
+    description: "Définir un objectif permanent sur lequel Rabbit travaille au fil des tours jusqu'à l'atteindre"
   heartbeat:
     description: "Définir un prompt récurrent qui relance cette session quand elle est inactive"
   refine:
@@ -1804,7 +1804,7 @@ slash:
   loop:
     description: "Relancer un prompt à intervalle régulier dans cette session"
   plan:
-    description: "Rédiger un plan d'implémentation markdown dans .hermes/plans/ sans rien exécuter"
+    description: "Rédiger un plan d'implémentation markdown dans .rabbit/plans/ sans rien exécuter"
   moa:
     description: "Exécuter un prompt via le preset Mixture of Agents par défaut, puis restaurer votre modèle"
   subgoal:
@@ -1858,9 +1858,9 @@ slash:
   voice:
     description: "Basculer le mode vocal"
   wake:
-    description: "Activer/désactiver l'écoute du mot d'activation 'Hey Hermes'"
+    description: "Activer/désactiver l'écoute du mot d'activation 'Hey Rabbit'"
   busy:
-    description: "Contrôler le comportement des messages pendant que Hermes travaille"
+    description: "Contrôler le comportement des messages pendant que Rabbit travaille"
   tools:
     description: "Gérer les outils : /tools [list|disable|enable] [nom...]"
   toolsets:
@@ -1894,7 +1894,7 @@ slash:
   reload-mcp:
     description: "Recharger les serveurs MCP depuis la configuration"
   reload-skills:
-    description: "Réanalyser ~/.hermes/skills/ pour détecter les skills installées ou supprimées"
+    description: "Réanalyser ~/.rabbit/skills/ pour détecter les skills installées ou supprimées"
   browser:
     description: "Connecter les outils navigateur à votre navigateur Chromium via CDP, ou passer en mode Browser Use"
   plugins:
@@ -1926,7 +1926,7 @@ slash:
   image:
     description: "Joindre un fichier image local à votre prochain prompt"
   version:
-    description: "Afficher la version de Hermes Agent"
+    description: "Afficher la version de Rabbit Agent"
   debug:
     description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
   quit:
@@ -1936,7 +1936,7 @@ cli:
     load_failed: "{label} : {error}"
     load_failed_label: "Facturation indisponible"
     not_logged_in: "Non connecté à Nous Portal."
-    run_portal_then: "Lancez `hermes portal` pour vous connecter, puis {cmd}."
+    run_portal_then: "Lancez `rabbit portal` pour vous connecter, puis {cmd}."
     org_line: "Org : {org}"
     org_line_role: "Org : {org} · {role}"
     bar_plan_label: "abonnement"
@@ -1984,8 +1984,8 @@ cli:
     no_saved_card_add_funds_hint: "Aucune carte enregistrée — « Ajouter des fonds » vous guide pour en ajouter une."
     actions_require_admin: "Les actions de facturation nécessitent un admin ou propriétaire de l'org."
     remote_spending_off_for_org: "Les dépenses à distance sont désactivées pour cette org."
-    killswitch_reason_overview: "Un admin de facturation peut les activer depuis la page Hermes Agent du portail pour ajouter des fonds ici."
-    killswitch_reason_buy: "Un admin de facturation peut les activer depuis la page Hermes Agent du portail avant d'ajouter des fonds."
+    killswitch_reason_overview: "Un admin de facturation peut les activer depuis la page Rabbit Agent du portail pour ajouter des fonds ici."
+    killswitch_reason_buy: "Un admin de facturation peut les activer depuis la page Rabbit Agent du portail avant d'ajouter des fonds."
     add_funds_now_hint: "Ajouter des fonds maintenant — un débit unique, crédité sur votre solde aujourd'hui."
     refill_when_low_amounts: "Recharger quand le solde est bas — débite {reload_to} automatiquement lorsque votre solde passe sous {threshold}."
     refill_when_low_generic: "Recharger quand le solde est bas — débite votre carte automatiquement lorsque votre solde passe sous le montant que vous définissez."
@@ -2025,7 +2025,7 @@ cli:
     confirm_purchase: "Confirmer l'achat"
     total_line: "Total : {amount}"
     portal_card_will_be_charged: "Votre carte enregistrée sur le portail sera débitée."
-    consent_charge: "En confirmant, vous autorisez Nous Research à débiter votre carte."
+    consent_charge: "En confirmant, vous autorisez Sanath Patil à débiter votre carte."
     choice_pay_now: "Payer {amount} maintenant"
     desc_submit_charge: "soumettre le débit"
     desc_manage_card_billing: "gérer votre carte / facturation dans le navigateur"
@@ -2041,13 +2041,13 @@ cli:
     charge_failed_card_declined: "🔴 Votre carte a été refusée. Essayez une autre carte sur le portail."
     charge_failed_generic: "🔴 Le débit n'a pas abouti ({reason})."
     charge_error_no_payment_method: "💳 Aucune carte enregistrée — rechargez et gérez la facturation sur le portail."
-    charge_error_remote_spending_disabled: "Les dépenses à distance sont désactivées pour ce compte — un admin de facturation peut les activer depuis la page Hermes Agent du portail."
+    charge_error_remote_spending_disabled: "Les dépenses à distance sont désactivées pour ce compte — un admin de facturation peut les activer depuis la page Rabbit Agent du portail."
     charge_error_role_required: "L'ajout de fonds nécessite un admin ou propriétaire de l'org. Demandez à un admin, ou gérez sur le portail."
     charge_error_idempotency_conflict: "🔴 Cette clé de débit a déjà été utilisée pour un montant différent. Démarrez une nouvelle recharge."
     revoked_by_admin: "Un admin a stoppé les dépenses de ce terminal."
     revoked_by_you: "Vous avez stoppé les dépenses de ce terminal."
-    revoked_reconnect: "🔴 {who} Reconnectez-vous pour les rétablir — lancez `hermes portal` pour réautoriser."
-    session_logged_out: "🔴 Votre session a été déconnectée. Lancez `hermes portal` pour vous reconnecter."
+    revoked_reconnect: "🔴 {who} Reconnectez-vous pour les rétablir — lancez `rabbit portal` pour réautoriser."
+    session_logged_out: "🔴 Votre session a été déconnectée. Lancez `rabbit portal` pour vous reconnecter."
     monthly_cap_reached_headroom: "🔴 Plafond de dépenses mensuel atteint — ${remaining} de marge restante."
     monthly_cap_reached: "🔴 Plafond de dépenses mensuel atteint."
     try_again_in_min: " (réessayez dans ~{minutes} min)"
@@ -2055,10 +2055,10 @@ cli:
     remote_spending_needs_approval: "🔴 Les Dépenses à distance nécessitent une approbation — lancez /topup pour les autoriser, puis réessayez."
     your_topup: "votre recharge"
     charge_stepup_explain: "Pour débiter depuis ce terminal, autorisez une seule fois les Dépenses à distance. Votre navigateur s'ouvre pour autoriser, puis {amount} reprend directement ici."
-    charge_stepup_noninteractive: "Lancez `hermes portal` et autorisez les Dépenses à distance, puis réessayez."
+    charge_stepup_noninteractive: "Lancez `rabbit portal` et autorisez les Dépenses à distance, puis réessayez."
     charge_stepup_declined: "Aucun débit effectué. Lancez /topup quand vous voudrez autoriser les Dépenses à distance."
     charge_stepup_not_granted: "Impossible d'autoriser les Dépenses à distance — un admin ou propriétaire de l'org doit les approuver. Votre carte n'a pas été débitée."
-    allowed_but_org_off: "Les Dépenses à distance sont autorisées pour ce terminal, mais toujours désactivées pour cette org. Un admin de facturation peut les activer depuis la page Hermes Agent du portail, puis relancez /topup."
+    allowed_but_org_off: "Les Dépenses à distance sont autorisées pour ce terminal, mais toujours désactivées pour cette org. Un admin de facturation peut les activer depuis la page Rabbit Agent du portail, puis relancez /topup."
     allowed_no_card: "Dépenses à distance autorisées — mais aucune carte n'est encore enregistrée."
     topup_on_portal_to_continue: "Rechargez et gérez la facturation sur le portail pour continuer."
     allowed_run_topup: "Dépenses à distance autorisées. Lancez /topup pour continuer."
@@ -2086,7 +2086,7 @@ cli:
     threshold_label: "Quand le solde passe sous"
     reload_to_label: "Recharger le solde jusqu'à"
     reload_must_exceed_threshold: "🔴 Le montant de recharge doit être supérieur au seuil."
-    auto_reload_consent: "En confirmant, vous autorisez Nous Research à débiter {card} chaque fois que votre solde atteint {threshold}. Désactivable à tout moment ici ou sur le portail."
+    auto_reload_consent: "En confirmant, vous autorisez Sanath Patil à débiter {card} chaque fois que votre solde atteint {threshold}. Désactivable à tout moment ici ou sur le portail."
     turn_on_auto_reload_question: "Activer la recharge automatique ?"
     auto_reload_enabled: "✅ Recharge automatique activée : sous {threshold} → recharger jusqu'à {reload_to}."
     auto_reload_disabled: "✅ Recharge automatique désactivée."
@@ -2187,7 +2187,7 @@ cli:
     pending_resumed: "Annulé — vous restez sur votre forfait actuel."
     rerun_to_review: "Relancez /subscription à tout moment pour le consulter."
     stepup_explain: "Pour changer de forfait depuis le terminal, autorisez une fois Remote Spending. Votre navigateur s'ouvre pour l'autorisation, puis votre changement reprend directement ici."
-    stepup_noninteractive: "Exécutez `hermes portal` et autorisez Remote Spending, puis relancez /subscription."
+    stepup_noninteractive: "Exécutez `rabbit portal` et autorisez Remote Spending, puis relancez /subscription."
     stepup_declined: "Aucun changement effectué. Autorisez Remote Spending quand vous serez prêt."
     stepup_not_granted: "Impossible d'autoriser Remote Spending — un administrateur ou propriétaire doit l'approuver pour cette organisation."
     remote_spending_not_allowed_yet: "🟡 Remote Spending n'est pas encore autorisé. Autorisez-le, puis réessayez."
@@ -2214,7 +2214,7 @@ cli:
     usage_switch_provider: "changer de fournisseur"
     usage_refresh: "recharger les listes de modèles en direct"
     choice_switch_anyway: "Changer quand même"
-    desc_switch_anyway: "Utiliser ce modèle pour la session Hermes en cours."
+    desc_switch_anyway: "Utiliser ce modèle pour la session Rabbit en cours."
     choice_cancel: "Annuler"
     desc_keep_current_model: "Conserver le modèle actuel."
     switch_cancelled: "Changement de modèle annulé."
@@ -2374,14 +2374,14 @@ cli:
     images_attached_one: "📎 {count} image jointe"
     images_attached_other: "📎 {count} images jointes"
     command_interrupted: "Commande interrompue."
-    welcome: "Bienvenue dans Hermes Agent ! Tapez votre message ou /help pour les commandes."
+    welcome: "Bienvenue dans Rabbit Agent ! Tapez votre message ou /help pour les commandes."
     activated_skills_label: "Skills activées :"
     redaction_disabled_title: "⚠  La censure des secrets est DÉSACTIVÉE"
-    redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."
+    redaction_disabled_body: "(RABBIT_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."
     stdin_unavailable: |-
       Erreur : stdin (fd 0) n'est pas disponible.
       Cela peut arriver avec certaines installations de Python (p. ex. cPython géré par uv sur macOS).
-      Essayez de réinstaller Python via pyenv ou Homebrew, puis relancez : hermes setup
+      Essayez de réinstaller Python via pyenv ou Homebrew, puis relancez : rabbit setup
     shutting_down: "Arrêt en cours… (finalisation de la session)"
     session_deleted: "✓ Session {session_id} supprimée"
     session_delete_missing: "✗ Session {session_id} introuvable pour la suppression"
@@ -2395,7 +2395,7 @@ cli:
     err_audio_capture: "Le mode vocal nécessite la capture audio."
     err_stt_provider: |-
       Le mode vocal nécessite un fournisseur STT pour la transcription.
-      Exécutez hermes tools et configurez Speech-to-Text, puis redémarrez Hermes.
+      Exécutez rabbit tools et configurez Speech-to-Text, puis redémarrez Rabbit.
     silence_autostop: "Silence détecté, arrêt automatique..."
     hint_continuous: "arrêt auto sur silence | {shortcut} pour arrêter et quitter le mode continu"
     hint_termux: "Capture Termux:API | {shortcut} pour arrêter"
@@ -2434,7 +2434,7 @@ cli:
     wake_listening_hint: "(dites \"{phrase}\" — /wake off pour arrêter)"
     wake_stopped: "Mot d'activation arrêté."
     wake_not_running: "Mot d'activation inactif."
-    wake_profile_hint: "Phrase d'activation pour le profil '{profile}' — exécutez : hermes -p {profile}"
+    wake_profile_hint: "Phrase d'activation pour le profil '{profile}' — exécutez : rabbit -p {profile}"
     wake_detected: "✦ Mot d'activation détecté — écoute en cours..."
     wake_capture_failed: "Échec de la capture après activation : {error}"
     state_listening: "EN ÉCOUTE"
@@ -2449,7 +2449,7 @@ cli:
     label_surface: "  Surface :     {surface}"
     label_new_session: "  Nouvelle session : {value}"
     mic_silent_warning: "⚠ Le microphone ne transmet que du silence — l'écouteur n'entend rien."
-    mic_silent_macos_hint: "Sur macOS : Réglages Système > Confidentialité et sécurité > Microphone — autorisez votre terminal/Hermes, puis /wake off + /wake on."
+    mic_silent_macos_hint: "Sur macOS : Réglages Système > Confidentialité et sécurité > Microphone — autorisez votre terminal/Rabbit, puis /wake off + /wake on."
     wake_enable_hint: "Activez avec /wake on"
     enable_first_hint: "Activez d'abord le mode vocal : /voice on"
     tts_no_provider: "Avertissement : aucun fournisseur TTS disponible. Installez edge-tts ou définissez des clés API."
@@ -2463,7 +2463,7 @@ cli:
   render:
     response_transformed: "[Réponse transformée après la diffusion en continu]"
     banner_tagline: "{name} - Framework d'agent IA"
-    banner_version: "Hermes Agent v{version} ({date})"
+    banner_version: "Rabbit Agent v{version} ({date})"
   subagents:
     cannot_steer_process: "Les processus en arrière-plan ne peuvent pas être orientés ; arrêtez-les ou lisez le journal."
     count_live: "{count} en cours"
@@ -2605,15 +2605,15 @@ cli:
     remaining: "↻ Boucle : {label}."
   plugins:
     none_installed: "Aucun plugin utilisateur installé."
-    install_hint: "Pour en installer un : hermes plugins install owner/repo"
+    install_hint: "Pour en installer un : rabbit plugins install owner/repo"
     drop_dir_hint: "Ou déposez un répertoire de plugin dans {path}"
-    bundled_available: "({count} plugins intégrés disponibles — voir : hermes plugins list)"
+    bundled_available: "({count} plugins intégrés disponibles — voir : rabbit plugins list)"
     user_plugins_header: "Plugins utilisateur ({count}) :"
     count_noun_tools: "outils"
     count_noun_hooks: "hooks"
     count_noun_commands: "commandes"
-    bundled_more: "(+{count} intégrés — voir : hermes plugins list)"
-    enable_disable_hint: "Activer/désactiver : hermes plugins enable/disable <name>"
+    bundled_more: "(+{count} intégrés — voir : rabbit plugins list)"
+    enable_disable_hint: "Activer/désactiver : rabbit plugins enable/disable <name>"
     system_error: "Erreur du système de plugins : {error}"
   queue:
     usage: "Usage : /queue <prompt> | /queue list | /queue edit N <prompt> | /queue rm N | /queue move FROM TO | /queue clear"
@@ -2661,7 +2661,7 @@ cli:
     event_delegation_completed: "délégation en arrière-plan terminée"
     event_process_finished: "processus en arrière-plan terminé"
     event_resumed_interrupted: "tour interrompu repris"
-    session_id_hint: "Utilisez un ID de session d'une exécution CLI précédente (hermes sessions list)."
+    session_id_hint: "Utilisez un ID de session d'une exécution CLI précédente (rabbit sessions list)."
     session_not_found: "Session introuvable : {session_id}"
     compressed_into: "La session {session_id} a été compressée dans {descendant} ; reprise de la session descendante avec votre transcription."
     cannot_resume: "Impossible de reprendre la session : {error}"
@@ -2683,22 +2683,22 @@ cli:
     cooldown_cause_failed_request: "après une requête en échec"
     credential_cooling_down: "L'identifiant {provider} est en période de refroidissement {cause} ; il réintégrera la rotation dans environ {minutes} min."
     sign_in_lost: "connexion perdue"
-    sign_in_was_lost: "La connexion {provider} a été perdue ({reason}) ; exécutez `hermes auth add {provider}` pour vous reconnecter."
+    sign_in_was_lost: "La connexion {provider} a été perdue ({reason}) ; exécutez `rabbit auth add {provider}` pour vous reconnecter."
     provider_resolution_failed: "La résolution du fournisseur a échoué."
     no_api_key_for_provider: "⚠️  Aucune clé API trouvée pour le fournisseur '{provider}'."
     no_provider_configured: "⚠️  Aucun fournisseur d'inférence n'est configuré."
-    run_model_or_setup: "Exécutez 'hermes model' pour choisir un fournisseur, ou 'hermes setup' pour la configuration initiale."
-    empty_base_url: "⚠️  Le résolveur de fournisseur a renvoyé une URL de base vide. Vérifiez la configuration de votre fournisseur ou exécutez : hermes setup"
+    run_model_or_setup: "Exécutez 'rabbit model' pour choisir un fournisseur, ou 'rabbit setup' pour la configuration initiale."
+    empty_base_url: "⚠️  Le résolveur de fournisseur a renvoyé une URL de base vide. Vérifiez la configuration de votre fournisseur ou exécutez : rabbit setup"
     switching_to_fallback: "⚠️  {reason} — bascule vers le fournisseur de secours : {provider} / {model}"
     first_run_no_provider: "☤ Aucun fournisseur d'inférence n'est encore configuré — réglons cela."
     first_run_pick_provider: "Vous allez choisir un fournisseur (Nous Portal OAuth est le plus rapide ; aucune clé API requise) puis un modèle."
     first_run_prompt: "Configurer un fournisseur maintenant ? [Y/n] :"
-    first_run_skipped: "Ignoré. Exécutez 'hermes model' ou 'hermes setup' à tout moment."
-    first_run_cancelled: "Configuration annulée. Exécutez 'hermes model' à tout moment."
+    first_run_skipped: "Ignoré. Exécutez 'rabbit model' ou 'rabbit setup' à tout moment."
+    first_run_cancelled: "Configuration annulée. Exécutez 'rabbit model' à tout moment."
     provider_setup_failed: "⚠️  La configuration du fournisseur a échoué : {error}"
-    run_model_to_retry: "Exécutez 'hermes model' pour réessayer."
+    run_model_to_retry: "Exécutez 'rabbit model' pour réessayer."
     provider_configured: "✓ Fournisseur configuré — vous pouvez commencer à discuter."
-    provider_setup_incomplete: "La configuration du fournisseur n'a pas abouti. Exécutez 'hermes model' pour réessayer."
+    provider_setup_incomplete: "La configuration du fournisseur n'a pas abouti. Exécutez 'rabbit model' pour réessayer."
     tirith_unavailable: "⚠ Le scanner de sécurité tirith est activé mais indisponible — l'analyse des commandes se limitera à la détection par motifs"
     unknown_toolsets: "Avertissement : ensembles d'outils inconnus : {names}"
     stdin_unusable: |2-
@@ -2706,7 +2706,7 @@ cli:
       Erreur : stdin est inutilisable ({error}).
       Cela peut arriver avec certaines installations de Python (p. ex. cPython géré par uv sur macOS)
       où kqueue ne parvient pas à enregistrer le fd 0.
-      Essayez de réinstaller Python via pyenv ou Homebrew, puis relancez : hermes setup
+      Essayez de réinstaller Python via pyenv ou Homebrew, puis relancez : rabbit setup
     warning: "Avertissement : {warning}"
   chat:
     initializing_agent: "Initialisation de l'agent..."
@@ -2749,7 +2749,7 @@ cli:
     yolo_bypass_suffix: " (contournement YOLO actif)"
     ctx_left_prefix: "{percent}% restants · "
     ctx_tokens_used: "{left}{used} / {max} tokens utilisés"
-    status_title: "État de Hermes CLI"
+    status_title: "État de Rabbit CLI"
     label_reasoning: "Raisonnement"
     label_approvals: "Approbations"
     label_context: "Contexte"
@@ -2779,7 +2779,7 @@ cli:
     save_dir_failed: "(x_x) Impossible de créer le répertoire d'enregistrement {path} : {error}"
     format_markdown: "Markdown"
     save_ok: "(^_^)v Conversation enregistrée dans : {path} ({label})"
-    save_resume_hint: "Reprenez la session en cours avec : hermes --resume {session_id}"
+    save_resume_hint: "Reprenez la session en cours avec : rabbit --resume {session_id}"
     save_failed: "(x_x) Échec de l'enregistrement : {error}"
     retry_no_messages: "(._.) Aucun message à réessayer."
     retry_no_user_message: "(._.) Aucun message utilisateur à réessayer."
@@ -2793,7 +2793,7 @@ cli:
     undo_ok_other: "(^_^)b {count} tours annulés ({messages} message(s)). Sauvegardé dans : \"{backup}\""
     undo_remaining: "{count} message(s) restant(s) dans l'historique."
     yolo_state_locked_on: "verrouillé ON"
-    yolo_locked: "⚡ YOLO est {state} pour ce processus (démarré avec --yolo / HERMES_YOLO_MODE). /yolo ne peut pas le désactiver — redémarrez sans le drapeau pour réactiver les approbations."
+    yolo_locked: "⚡ YOLO est {state} pour ce processus (démarré avec --yolo / RABBIT_YOLO_MODE). /yolo ne peut pas le désactiver — redémarrez sans le drapeau pour réactiver les approbations."
     yolo_off: "⚠ Mode YOLO {state} — les commandes dangereuses nécessiteront une approbation."
     yolo_on: "⚡ Mode YOLO {state} — toutes les commandes sont auto-approuvées. À utiliser avec prudence."
     compress_too_short: "(._.) Conversation trop courte pour être compressée (au moins {min} messages requis)."
@@ -2892,9 +2892,9 @@ cli:
       short_queue: "met en file pour le prochain tour"
       short_steer: "oriente l'exécution en cours (après le prochain appel d'outil)"
       short_interrupt: "redirige immédiatement l'exécution en cours"
-      long_queue: "Entrée mettra votre message en file d'attente pendant que Hermes est occupé."
+      long_queue: "Entrée mettra votre message en file d'attente pendant que Rabbit est occupé."
       long_steer: "Entrée orientera votre message dans l'exécution en cours (après le prochain appel d'outil)."
-      long_interrupt: "Entrée redirigera l'exécution en cours pendant que Hermes est occupé ; /stop l'annule toujours."
+      long_interrupt: "Entrée redirigera l'exécution en cours pendant que Rabbit est occupé ; /stop l'annule toujours."
       usage: "Usage : /busy [queue|steer|interrupt|status]"
       status: "Mode de saisie quand occupé : {mode}"
       enter_while_busy: "Entrée quand occupé : {behavior}"
@@ -2967,14 +2967,14 @@ cli:
       stat_hint_session: "lancez /diff session --stat pour un résumé"
       not_enabled: |-
         Les points de contrôle ne sont pas activés, il n'y a donc pas de base de référence pour la session.
-        Activez-les avec : hermes --checkpoints
+        Activez-les avec : rabbit --checkpoints
         Ou dans config.yaml : checkpoints: { enabled: true }
         (Un simple /diff fonctionne toujours — il utilise git directement.)
-      no_session_changes: "Aucune modification — Hermes n'a encore modifié aucun fichier ici."
+      no_session_changes: "Aucune modification — Rabbit n'a encore modifié aucun fichier ici."
     rollback:
       not_enabled: |-
         Les points de contrôle ne sont pas activés.
-        Activez-les avec : hermes --checkpoints
+        Activez-les avec : rabbit --checkpoints
         Ou dans config.yaml : checkpoints: { enabled: true }
       none_here_showing_all: "Aucun point de contrôle pour {cwd} — affichage de tous les répertoires."
       all_directories: "tous les répertoires"
@@ -3010,12 +3010,12 @@ cli:
     export:
       usage: "Usage : /export [profil] [-o sortie.tar.gz]"
       exported: "✓ '{name}' exporté vers {path}"
-      share_hint: "Partagez-le : l'autre utilisateur lance /import ou `hermes profile import <archive>`."
+      share_hint: "Partagez-le : l'autre utilisateur lance /import ou `rabbit profile import <archive>`."
     import:
       usage: "Usage : /import <archive.tar.gz> [--name <nom>]"
       imported: "✓ Profil '{name}' importé dans {path}"
       wrapper_created: "Wrapper créé : {path}"
-      use_it: "Utilisez-le : hermes -p {name}"
+      use_it: "Utilisez-le : rabbit -p {name}"
     stop:
       none_running: "Aucun processus d'arrière-plan en cours."
       stopping: "Arrêt de {count} processus d'arrière-plan..."
@@ -3088,17 +3088,17 @@ cli:
       check_platform: "Vérifiez {platform} — la session peut encore y arriver."
       no_longer_waiting: "Cette CLI n'attend plus. Évitez de poursuivre cette session ici ;"
       retry_when_settled: "si rien n'arrive, réessayez /handoff une fois l'état stabilisé."
-      timed_out: "Délai dépassé en attendant le gateway. `hermes gateway` est-il lancé ?"
+      timed_out: "Délai dépassé en attendant le gateway. `rabbit gateway` est-il lancé ?"
       session_intact: "Votre session CLI est intacte."
     resume:
       usage: "Usage : /resume <numéro|id_ou_titre_de_session>"
-      tip_find_sessions: "Astuce : utilisez /history ou `hermes sessions list` pour trouver des sessions."
+      tip_find_sessions: "Astuce : utilisez /history ou `rabbit sessions list` pour trouver des sessions."
       already_on: "Vous êtes déjà sur cette session."
       resumed_one: "↻ Session {session_id}{title} reprise ({count} message utilisateur, {total} au total)"
       resumed_other: "↻ Session {session_id}{title} reprise ({count} messages utilisateur, {total} au total)"
       resumed_empty: "↻ Session {session_id}{title} reprise — aucun message, nouveau départ."
       not_found: "Session introuvable : {target}"
-      not_found_hint: "Utilisez /sessions ou `hermes sessions list` pour voir les sessions disponibles."
+      not_found_hint: "Utilisez /sessions ou `rabbit sessions list` pour voir les sessions disponibles."
       compressed_redirect: "La session {session_id} a été compressée dans {resolved_id} ; reprise de la session descendante avec votre transcription."
     sessions:
       none_yet: "(._.) Aucune session précédente pour le moment."
@@ -3246,13 +3246,13 @@ cli:
     bundles:
       unavailable: "Sous-système de bundles indisponible : {error}"
       none_installed: "Aucun bundle de skills installé."
-      create_hint: "Créez-en un avec : hermes bundles create <name> --skill <s1> --skill <s2>"
+      create_hint: "Créez-en un avec : rabbit bundles create <name> --skill <s1> --skill <s2>"
       directory: "Répertoire : {dir}"
       title: "Bundles de skills"
       installed_count: "({count} installés) :"
       default_desc: "Charger {count} skills"
       skills_count: "({count} skills)"
-      invoke_hint: "Invoquez un bundle avec /<slug>. Gérez-les avec `hermes bundles`."
+      invoke_hint: "Invoquez un bundle avec /<slug>. Gérez-les avec `rabbit bundles`."
     browser:
       engine_not_in_use: "⚠ browser.engine vaut 'lightpanda' mais il n'est PAS utilisé : {reason}"
       engine_lightpanda: "Moteur : Lightpanda — {reason} (pas de captures d'écran)"
@@ -3317,7 +3317,7 @@ cli:
       prompt_required: "Usage : /heartbeat every <interval> <prompt> — le prompt est obligatoire."
       invalid_label: "Heartbeat invalide"
       set: "♥ Heartbeat défini (toutes les {interval}) : {prompt}"
-      set_note: "Se déclenche comme un tour normal dès que la session est inactive et que l'intervalle est écoulé. /heartbeat pause | resume | clear pour le gérer ; il ne vit que tant que ce processus Hermes tourne — utilisez `hermes cron` pour des planifications durables."
+      set_note: "Se déclenche comme un tour normal dès que la session est inactive et que l'intervalle est écoulé. /heartbeat pause | resume | clear pour le gérer ; il ne vit que tant que ce processus Rabbit tourne — utilisez `rabbit cron` pour des planifications durables."
     refine:
       nothing_yet: "Rien à affiner pour l'instant — envoyez d'abord un message."
       empty: "Rien à affiner pour l'instant — la conversation est vide."
@@ -3373,13 +3373,13 @@ cli:
       usage: "/timestamps [on|off|status]"
       label: "Horodatage des messages"
     update:
-      managed_action: "mettre à jour Hermes Agent"
+      managed_action: "mettre à jour Rabbit Agent"
       choice_update: "Mettre à jour maintenant"
-      choice_update_desc: "quitter la session actuelle et mettre à jour Hermes Agent"
+      choice_update_desc: "quitter la session actuelle et mettre à jour Rabbit Agent"
       choice_cancel: "Annuler"
       choice_cancel_desc: "conserver la session actuelle"
-      title: "☤  Mettre à jour Hermes Agent"
-      detail: "Cela quittera la session actuelle et exécutera `hermes update`."
+      title: "☤  Mettre à jour Rabbit Agent"
+      detail: "Cela quittera la session actuelle et exécutera `rabbit update`."
       cancelled: "🟡 /update annulé."
       launching: "☤ Lancement de la mise à jour..."
     voice:
@@ -3393,16 +3393,16 @@ cli:
   tip_line: "✦ Astuce : {tip}"
   banner:
     context_too_low: "⚠️  La longueur de contexte n'est que de {tokens} tokens — c'est probablement trop peu pour un usage agentique avec des outils."
-    context_minimum: "Hermes a besoin d'au moins {tokens} tokens. Les schémas d'outils et le prompt système occupent un préfixe fixe volumineux."
+    context_minimum: "Rabbit a besoin d'au moins {tokens} tokens. Les schémas d'outils et le prompt système occupent un préfixe fixe volumineux."
     fix_ollama: "Correctif Ollama : OLLAMA_CONTEXT_LENGTH={tokens} ollama serve"
     fix_lm_studio: "Correctif LM Studio : réglez la longueur de contexte dans les paramètres du modèle → rechargez le modèle"
     fix_local_server: "Correctif : démarrez votre serveur avec au moins {tokens_k}K de contexte (llama.cpp : -c {tokens}), ou réglez model.ollama_num_ctx dans config.yaml sur la fenêtre réellement servie"
     fix_config: "Correctif : réglez model.context_length dans config.yaml, ou augmentez le paramètre de contexte de votre serveur"
-    hermes_models_not_agentic: "⚠  Les modèles Nous Research Hermes 3 et 4 ne sont PAS agentiques et ne sont pas conçus pour Hermes Agent."
-    hermes_models_lack_tools: "Ils ne disposent pas des capacités d'appel d'outils requises pour les workflows agentiques. Préférez un modèle agentique (Claude, GPT, Gemini, DeepSeek, etc.)."
-    hermes_models_switch_hint: "Changez avec : /model sonnet  ou  /model gpt5"
+    rabbit_models_not_agentic: "⚠  Les modèles Sanath Patil Hermes 3 et 4 ne sont PAS agentiques et ne sont pas conçus pour Rabbit Agent."
+    rabbit_models_lack_tools: "Ils ne disposent pas des capacités d'appel d'outils requises pour les workflows agentiques. Préférez un modèle agentique (Claude, GPT, Gemini, DeepSeek, etc.)."
+    rabbit_models_switch_hint: "Changez avec : /model sonnet  ou  /model gpt5"
     project_skills_loaded: "◆ {count} skill(s) de projet chargée(s) depuis ce dépôt"
-    project_skills_untrusted: "◆ {count} skill(s) de projet trouvée(s) dans {root} mais non chargée(s) — exécutez `hermes skills trust` pour les activer."
+    project_skills_untrusted: "◆ {count} skill(s) de projet trouvée(s) dans {root} mais non chargée(s) — exécutez `rabbit skills trust` pour les activer."
   command:
     unknown_nothing_sent: "Commande inconnue {command} — rien n'a été envoyé.{hint}"
     did_you_mean_one: "Vouliez-vous dire {suggestion} ?"
@@ -3436,7 +3436,7 @@ cli:
     header: "🧠 Utilisation du contexte — {model}"
     compute_failed: "(._.) Impossible de calculer la répartition du contexte : {error}"
   error:
-    auth: "Votre clé {provider} a été rejetée. Exécutez `hermes model` pour la saisir de nouveau."
+    auth: "Votre clé {provider} a été rejetée. Exécutez `rabbit model` pour la saisir de nouveau."
     billing: "Votre compte {provider} n'a plus de crédit. Rechargez chez le fournisseur, ou exécutez /model pour en changer."
     model_not_found: "'{model}' n'est pas disponible chez {provider}. Exécutez /model pour choisir un modèle valide."
     rate_limit: "Débit limité par {provider} ; patientez une minute ou utilisez /model pour changer."
@@ -3444,15 +3444,15 @@ cli:
     overloaded: "{provider} est surchargé pour le moment. Envoyez /retry dans un instant, ou /model pour changer."
     server_error: "{provider} a rencontré une erreur interne. Envoyez /retry dans un instant, ou /model pour changer."
     timeout: "{provider} n'a pas répondu à temps. Envoyez /retry, ou /model pour changer."
-    unknown: "La requête au modèle a échoué. Exécutez /model pour changer ou `hermes doctor` pour vérifier l'installation."
+    unknown: "La requête au modèle a échoué. Exécutez /model pour changer ou `rabbit doctor` pour vérifier l'installation."
     the_provider: "le fournisseur"
     the_current_model: "le modèle actuel"
     with_details: |-
       {lead}
       Détails : {details}
-    agent_init_failed: "Hermes n'a pas pu établir la connexion au modèle : {error}. Votre message n'a pas été envoyé. Exécutez `hermes doctor` pour vérifier l'installation, ou /model pour choisir un autre fournisseur."
+    agent_init_failed: "Rabbit n'a pas pu établir la connexion au modèle : {error}. Votre message n'a pas été envoyé. Exécutez `rabbit doctor` pour vérifier l'installation, ou /model pour choisir un autre fournisseur."
   gateway:
-    starting: "Démarrage du Hermes Gateway (plateformes de messagerie)..."
+    starting: "Démarrage du Rabbit Gateway (plateformes de messagerie)..."
   gateway_status:
     header: "(✿◠‿◠) État du gateway"
     platform_config_header: "Configuration des plateformes de messagerie :"
@@ -3566,7 +3566,7 @@ cli:
   usage:
     unknown_subcommand: "Sous-commande /usage inconnue : {args}. Essayez /usage ou /usage reset [--force]."
     reset_wrong_provider: "Les réinitialisations de consommation en réserve ne sont disponibles qu'avec le fournisseur openai-codex."
-    reset_switch_hint: "Changez d'abord avec `/model` ou `hermes auth`."
+    reset_switch_hint: "Changez d'abord avec `/model` ou `rabbit auth`."
     checking_reset_credits: "⏳ Vérification des crédits de réinitialisation..."
     codex_timeout: "❌ Délai dépassé en contactant le backend Codex — réessayez dans un instant."
     no_api_calls: "(._.) Aucun appel API effectué dans cette session pour le moment."
@@ -3602,7 +3602,7 @@ cli:
     slash_commands_value: "toutes disponibles"
   worktree:
     shallow_clone_keeping: "⚠ Clone superficiel — impossible de vérifier l'état du push, conservé : {path}"
-    next_session_deepens: "La prochaine session `hermes -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
+    next_session_deepens: "La prochaine session `rabbit -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
     unpushed_keeping: "⚠ Le worktree a des commits non poussés, conservé : {path}"
     uncommitted_keeping: "⚠ Le worktree a des modifications non commitées, conservé : {path}"
     clean_up_manually: "Pour nettoyer manuellement : git worktree remove --force {path}"
@@ -3775,23 +3775,23 @@ explainer:
   persistence:
     compression: "le tour a été arrêté car un autre processus compressait cette session. Votre message devrait déjà être enregistré — renvoyez-le une fois la compression terminée."
     compression_closed: "le tour a été arrêté car cette session a été renouvelée par la compression du contexte et sa continuation en cours n'a pas pu être reprise. Le stockage lui-même est sain — actualisez le client (ou démarrez un nouveau tour) pour qu'il récupère le nouvel identifiant de session, puis renvoyez votre message."
-    turn_lease: "le tour a été arrêté car un autre processus Hermes a pris le contrôle de cette session. Votre réponse n'a pas été enregistrée — attendez que l'autre processus termine, puis renvoyez votre message."
-    session_row_missing: "cette session a été supprimée du stockage alors que la discussion était encore ouverte, et Hermes n'a pas pu la recréer ; ce message n'a donc pas été enregistré. Renvoyez votre message ; si l'échec persiste, lancez `hermes {profile_arg}doctor`."
-    locked: "le tour a été arrêté car le stockage de session était occupé (un autre processus Hermes écrivait dans la base d'état). Votre message devrait déjà être enregistré — renvoyez-le dans un instant."
-    replaced: "le fichier de base de données des sessions a été remplacé pendant que Hermes tournait, ce message n'a donc pas été enregistré (une copie est conservée dans {home}/sessions/). Arrêtez Hermes (`hermes {profile_arg}gateway stop`), lancez `hermes {profile_arg}doctor` — et non `hermes {profile_arg}doctor --fix`, qui réparerait le mauvais fichier sur place — puis redémarrez-le et renvoyez votre message. Les étapes de récupération avancées figurent dans le journal."
-    deleted_wal: "un autre processus Hermes détient encore une ancienne copie du journal d'écriture anticipée (WAL) de la base de données des sessions ; Hermes a donc cessé d'écrire pour préserver le fichier et ce message n'a pas été enregistré (une copie est conservée dans {home}/sessions/). Rien n'est perdu. Quittez tous les processus Hermes de ce profil (application Desktop, `hermes {profile_arg}gateway stop`, tableau de bord, cron), lancez `hermes {profile_arg}doctor` — il indique tout processus qui détient encore le journal — puis redémarrez Hermes et renvoyez votre message. Ne lancez pas `doctor --fix` et ne supprimez aucun fichier state.db tant qu'ils tournent. Guide : {recovery_docs}"
+    turn_lease: "le tour a été arrêté car un autre processus Rabbit a pris le contrôle de cette session. Votre réponse n'a pas été enregistrée — attendez que l'autre processus termine, puis renvoyez votre message."
+    session_row_missing: "cette session a été supprimée du stockage alors que la discussion était encore ouverte, et Rabbit n'a pas pu la recréer ; ce message n'a donc pas été enregistré. Renvoyez votre message ; si l'échec persiste, lancez `rabbit {profile_arg}doctor`."
+    locked: "le tour a été arrêté car le stockage de session était occupé (un autre processus Rabbit écrivait dans la base d'état). Votre message devrait déjà être enregistré — renvoyez-le dans un instant."
+    replaced: "le fichier de base de données des sessions a été remplacé pendant que Rabbit tournait, ce message n'a donc pas été enregistré (une copie est conservée dans {home}/sessions/). Arrêtez Rabbit (`rabbit {profile_arg}gateway stop`), lancez `rabbit {profile_arg}doctor` — et non `rabbit {profile_arg}doctor --fix`, qui réparerait le mauvais fichier sur place — puis redémarrez-le et renvoyez votre message. Les étapes de récupération avancées figurent dans le journal."
+    deleted_wal: "un autre processus Rabbit détient encore une ancienne copie du journal d'écriture anticipée (WAL) de la base de données des sessions ; Rabbit a donc cessé d'écrire pour préserver le fichier et ce message n'a pas été enregistré (une copie est conservée dans {home}/sessions/). Rien n'est perdu. Quittez tous les processus Rabbit de ce profil (application Desktop, `rabbit {profile_arg}gateway stop`, tableau de bord, cron), lancez `rabbit {profile_arg}doctor` — il indique tout processus qui détient encore le journal — puis redémarrez Rabbit et renvoyez votre message. Ne lancez pas `doctor --fix` et ne supprimez aucun fichier state.db tant qu'ils tournent. Guide : {recovery_docs}"
     corrupt: |-
       le tour a été arrêté car la base d'état a signalé une corruption structurelle (la transcription aurait été perdue au redémarrage). Libérer de l'espace disque ne servira à rien. Options de récupération :
-      1. Lancez `hermes {profile_arg}doctor --fix`
+      1. Lancez `rabbit {profile_arg}doctor --fix`
       2. Arrêtez le gateway, puis récupérez avec :
-         hermes {profile_arg}sessions recover --source {db_path} --inspect-only
-         (s'il indique que la récupération est possible) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db
+         rabbit {profile_arg}sessions recover --source {db_path} --inspect-only
+         (s'il indique que la récupération est possible) rabbit {profile_arg}sessions recover --source {db_path} --output recovered-state.db
          — la récupération prend d'abord un instantané du fichier endommagé ; ne lancez PAS `sqlite3 ... \".recover\"` sur le state.db actif, une CLI sqlite3 vulnérable peut l'endommager davantage
       3. Restaurez une sauvegarde depuis {backups_dir}/
       Puis renvoyez votre message.
-    fts_index: "le tour a été arrêté car l'index de recherche des sessions (FTS5) est corrompu et n'a pas pu être détaché ; ce message n'a donc pas été enregistré. Le stockage des messages lui-même n'est pas endommagé : ne lancez pas d'outils de récupération et ne restaurez pas de sauvegarde. Lancez `hermes {profile_arg}doctor --fix` (ou redémarrez Hermes, qui répare l'index à l'ouverture), puis renvoyez votre message."
-    disk: "Hermes n'a pas pu enregistrer cette conversation sur le disque et s'est donc arrêté plutôt que de perdre vos messages. Le disque est probablement plein : libérez de l'espace (ou corrigez les permissions de {home}/state.db), puis renvoyez votre message."
-    default: "Hermes n'a pas pu enregistrer cette conversation et s'est donc arrêté plutôt que de perdre vos messages. Causes possibles : le disque est plein, ou un autre processus Hermes détient la base de données. Fermez les autres fenêtres Hermes, lancez `hermes {profile_arg}doctor` pour vérifier le stockage, puis renvoyez votre message."
+    fts_index: "le tour a été arrêté car l'index de recherche des sessions (FTS5) est corrompu et n'a pas pu être détaché ; ce message n'a donc pas été enregistré. Le stockage des messages lui-même n'est pas endommagé : ne lancez pas d'outils de récupération et ne restaurez pas de sauvegarde. Lancez `rabbit {profile_arg}doctor --fix` (ou redémarrez Rabbit, qui répare l'index à l'ouverture), puis renvoyez votre message."
+    disk: "Rabbit n'a pas pu enregistrer cette conversation sur le disque et s'est donc arrêté plutôt que de perdre vos messages. Le disque est probablement plein : libérez de l'espace (ou corrigez les permissions de {home}/state.db), puis renvoyez votre message."
+    default: "Rabbit n'a pas pu enregistrer cette conversation et s'est donc arrêté plutôt que de perdre vos messages. Causes possibles : le disque est plein, ou un autre processus Rabbit détient la base de données. Fermez les autres fenêtres Rabbit, lancez `rabbit {profile_arg}doctor` pour vérifier le stockage, puis renvoyez votre message."
   file_mutation:
     header: "⚠️ Vérificateur de modifications de fichiers : {count} modification(s) de fichier ont ÉCHOUÉ ce tour, quoi qu'en dise le texte ci-dessus. Lancez `git status` ou `read_file` pour vérifier ce qui a réellement été appliqué."
     entry: "  • `{path}` — [{tool}] {preview}"
@@ -3806,7 +3806,7 @@ tips:
   t004: "/rollback liste les points de contrôle du système de fichiers — restaurez les fichiers modifiés par l'agent à n'importe quel état antérieur."
   t005: "/rollback diff 2 affiche ce qui a changé depuis le point de contrôle 2 sans rien restaurer."
   t006: "/rollback 2 src/file.py restaure un seul fichier depuis un point de contrôle précis."
-  t007: "/title \"mon projet\" nomme votre session — reprenez-la plus tard avec /resume ou hermes -c."
+  t007: "/title \"mon projet\" nomme votre session — reprenez-la plus tard avec /resume ou rabbit -c."
   t008: "/resume reprend là où vous vous étiez arrêté dans une session nommée précédemment."
   t009: "/queue <prompt> met un message en file pour le tour suivant sans interrompre le tour en cours."
   t010: "/undo supprime le dernier échange utilisateur/assistant de la conversation."
@@ -3842,49 +3842,49 @@ tips:
   t040: "Combinez plusieurs références : \"Relis @file:main.py et @file:test.py pour vérifier la cohérence.\""
   t041: "Alt+Enter insère un saut de ligne pour une saisie multiligne. (Windows Terminal intercepte Alt+Enter — utilisez Ctrl+Enter à la place.)"
   t042: "Ctrl+C interrompt l'agent. Appuyez deux fois en moins de 2 secondes pour forcer la sortie."
-  t043: "Ctrl+Z suspend Hermes en arrière-plan — lancez fg dans votre shell pour reprendre."
+  t043: "Ctrl+Z suspend Rabbit en arrière-plan — lancez fg dans votre shell pour reprendre."
   t044: "Tab accepte le texte fantôme de l'auto-suggestion ou complète les commandes slash."
   t045: "Tapez un nouveau message pendant que l'agent travaille pour l'interrompre et le réorienter."
   t046: "Alt+V colle une image depuis votre presse-papiers dans la conversation."
   t047: "Coller 5 lignes ou plus enregistre automatiquement le texte dans un fichier et insère une référence compacte à la place."
-  t048: "hermes -c reprend votre session CLI la plus récente. hermes -c \"nom du projet\" reprend par titre."
-  t049: "hermes -w crée un worktree git isolé — idéal pour les workflows d'agents en parallèle."
-  t050: "hermes -w -q \"Corrige l'issue #42\" combine l'isolation par worktree et une requête ponctuelle."
-  t051: "hermes chat -t web,terminal n'active que certains jeux d'outils pour une session ciblée."
-  t052: "hermes chat -s github-pr-workflow précharge une skill au lancement."
-  t053: "hermes chat -q \"requête\" exécute une seule requête non interactive puis quitte."
-  t054: "hermes chat --max-turns 1000 remplace la limite par défaut de 500 itérations par tour."
-  t055: "hermes chat --checkpoints active des instantanés du système de fichiers avant chaque modification destructive."
-  t056: "hermes --yolo contourne toutes les demandes d'approbation de commandes dangereuses pour toute la session."
-  t057: "hermes chat --source telegram étiquette la session pour la filtrer dans hermes sessions list."
-  t058: "hermes -p work chat s'exécute sous un profil précis sans changer votre profil par défaut."
-  t059: "hermes doctor --fix diagnostique et répare automatiquement les problèmes de configuration et de dépendances."
-  t060: "hermes dump produit un résumé compact de votre installation — parfait pour les rapports de bug."
-  t061: "hermes config set KEY VALUE dirige automatiquement les secrets vers .env et tout le reste vers config.yaml."
-  t062: "hermes config edit ouvre config.yaml dans votre éditeur par défaut."
-  t063: "hermes config check recherche les options de configuration manquantes ou obsolètes."
-  t064: "hermes sessions browse ouvre un sélecteur de sessions interactif avec recherche."
-  t065: "hermes sessions stats affiche le nombre de sessions par plateforme et la taille de la base de données."
-  t066: "hermes sessions prune --older-than 30 nettoie les anciennes sessions."
-  t067: "hermes skills search react --source skills-sh cherche dans l'annuaire public skills.sh."
-  t068: "hermes skills check vérifie si des mises à jour sont disponibles pour les skills installées depuis le hub."
-  t069: "hermes skills tap add myorg/skills-repo ajoute une source de skills GitHub personnalisée."
-  t070: "hermes skills snapshot export setup.json exporte votre configuration de skills pour sauvegarde ou partage."
-  t071: "hermes mcp add github --command npx ajoute des serveurs MCP depuis la ligne de commande."
-  t072: "hermes mcp serve fait tourner Hermes lui-même comme serveur MCP pour d'autres agents."
-  t073: "hermes auth add permet d'ajouter plusieurs clés API pour la rotation d'un pool d'identifiants."
-  t074: "hermes completion bash >> ~/.bashrc active la complétion par Tab pour toutes les commandes et tous les profils."
-  t075: "hermes logs -f suit agent.log en temps réel. --level WARNING --since 1h filtre la sortie."
-  t076: "hermes backup crée une sauvegarde zip de tout votre répertoire personnel Hermes."
-  t077: "hermes profile create coder crée un profil isolé qui devient sa propre commande."
-  t078: "hermes profile create work --clone copie votre configuration et vos clés actuelles dans un nouveau profil."
-  t079: "hermes update synchronise automatiquement les nouvelles skills intégrées vers TOUS les profils."
-  t080: "hermes gateway install installe Hermes comme service système (systemd/launchd)."
-  t081: "hermes memory setup permet de configurer un fournisseur de mémoire externe (Honcho, Mem0, etc.)."
-  t082: "hermes webhook subscribe crée des routes webhook événementielles avec validation HMAC."
-  t083: "Économisez : hermes tools désactive les outils inutilisés, hermes skills config allège les skills."
+  t048: "rabbit -c reprend votre session CLI la plus récente. rabbit -c \"nom du projet\" reprend par titre."
+  t049: "rabbit -w crée un worktree git isolé — idéal pour les workflows d'agents en parallèle."
+  t050: "rabbit -w -q \"Corrige l'issue #42\" combine l'isolation par worktree et une requête ponctuelle."
+  t051: "rabbit chat -t web,terminal n'active que certains jeux d'outils pour une session ciblée."
+  t052: "rabbit chat -s github-pr-workflow précharge une skill au lancement."
+  t053: "rabbit chat -q \"requête\" exécute une seule requête non interactive puis quitte."
+  t054: "rabbit chat --max-turns 1000 remplace la limite par défaut de 500 itérations par tour."
+  t055: "rabbit chat --checkpoints active des instantanés du système de fichiers avant chaque modification destructive."
+  t056: "rabbit --yolo contourne toutes les demandes d'approbation de commandes dangereuses pour toute la session."
+  t057: "rabbit chat --source telegram étiquette la session pour la filtrer dans rabbit sessions list."
+  t058: "rabbit -p work chat s'exécute sous un profil précis sans changer votre profil par défaut."
+  t059: "rabbit doctor --fix diagnostique et répare automatiquement les problèmes de configuration et de dépendances."
+  t060: "rabbit dump produit un résumé compact de votre installation — parfait pour les rapports de bug."
+  t061: "rabbit config set KEY VALUE dirige automatiquement les secrets vers .env et tout le reste vers config.yaml."
+  t062: "rabbit config edit ouvre config.yaml dans votre éditeur par défaut."
+  t063: "rabbit config check recherche les options de configuration manquantes ou obsolètes."
+  t064: "rabbit sessions browse ouvre un sélecteur de sessions interactif avec recherche."
+  t065: "rabbit sessions stats affiche le nombre de sessions par plateforme et la taille de la base de données."
+  t066: "rabbit sessions prune --older-than 30 nettoie les anciennes sessions."
+  t067: "rabbit skills search react --source skills-sh cherche dans l'annuaire public skills.sh."
+  t068: "rabbit skills check vérifie si des mises à jour sont disponibles pour les skills installées depuis le hub."
+  t069: "rabbit skills tap add myorg/skills-repo ajoute une source de skills GitHub personnalisée."
+  t070: "rabbit skills snapshot export setup.json exporte votre configuration de skills pour sauvegarde ou partage."
+  t071: "rabbit mcp add github --command npx ajoute des serveurs MCP depuis la ligne de commande."
+  t072: "rabbit mcp serve fait tourner Rabbit lui-même comme serveur MCP pour d'autres agents."
+  t073: "rabbit auth add permet d'ajouter plusieurs clés API pour la rotation d'un pool d'identifiants."
+  t074: "rabbit completion bash >> ~/.bashrc active la complétion par Tab pour toutes les commandes et tous les profils."
+  t075: "rabbit logs -f suit agent.log en temps réel. --level WARNING --since 1h filtre la sortie."
+  t076: "rabbit backup crée une sauvegarde zip de tout votre répertoire personnel Rabbit."
+  t077: "rabbit profile create coder crée un profil isolé qui devient sa propre commande."
+  t078: "rabbit profile create work --clone copie votre configuration et vos clés actuelles dans un nouveau profil."
+  t079: "rabbit update synchronise automatiquement les nouvelles skills intégrées vers TOUS les profils."
+  t080: "rabbit gateway install installe Rabbit comme service système (systemd/launchd)."
+  t081: "rabbit memory setup permet de configurer un fournisseur de mémoire externe (Honcho, Mem0, etc.)."
+  t082: "rabbit webhook subscribe crée des routes webhook événementielles avec validation HMAC."
+  t083: "Économisez : rabbit tools désactive les outils inutilisés, rabbit skills config allège les skills."
   t084: "/reasoning low ou /reasoning minimal réduit la profondeur de réflexion sous la valeur par défaut (medium) — réponses plus rapides et moins chères."
-  t085: "hermes models route la vision, la compression et les tâches auxiliaires vers des modèles moins chers — réduit le coût des tokens d'arrière-plan de plus de 85 % sans dégrader votre modèle de chat principal."
+  t085: "rabbit models route la vision, la compression et les tâches auxiliaires vers des modèles moins chers — réduit le coût des tokens d'arrière-plan de plus de 85 % sans dégrader votre modèle de chat principal."
   t086: "Définissez display.bell_on_complete: true dans config.yaml pour entendre une sonnerie à la fin des tâches longues."
   t087: "Définissez display.streaming: true pour voir les tokens apparaître en temps réel pendant que le modèle génère."
   t088: "Définissez display.show_reasoning: true pour suivre la chaîne de raisonnement du modèle."
@@ -3898,15 +3898,15 @@ tips:
   t096: "Définissez fallback_model dans config.yaml pour basculer automatiquement vers un fournisseur de secours."
   t097: "Définissez privacy.redact_pii: true pour hacher les identifiants utilisateur et numéros de téléphone avant l'envoi au LLM."
   t098: "Définissez browser.record_sessions: true pour enregistrer automatiquement les sessions navigateur en vidéos WebM."
-  t099: "Définissez worktree: true dans config.yaml pour toujours créer un worktree git (équivalent de hermes -w)."
+  t099: "Définissez worktree: true dans config.yaml pour toujours créer un worktree git (équivalent de rabbit -w)."
   t100: "Définissez security.website_blocklist.enabled: true pour bloquer certains domaines dans les outils web."
   t101: "Définissez cron.wrap_response: false pour livrer la sortie brute de l'agent sans l'en-tête ni le pied de page cron."
-  t102: "HERMES_TIMEZONE remplace le fuseau horaire du serveur par n'importe quel identifiant de fuseau IANA."
+  t102: "RABBIT_TIMEZONE remplace le fuseau horaire du serveur par n'importe quel identifiant de fuseau IANA."
   t103: "La substitution de variables d'environnement fonctionne dans config.yaml : utilisez la syntaxe ${VAR_NAME}."
   t104: "Les commandes rapides dans config.yaml exécutent instantanément des commandes shell sans consommer aucun token."
   t105: "Des personnalités personnalisées peuvent être définies dans config.yaml sous agent.personalities."
   t106: "provider_routing contrôle le tri, la liste blanche et la liste noire des fournisseurs OpenRouter."
-  t107: "execute_code exécute des scripts Python qui appellent les outils Hermes par programmation — les résultats restent hors du contexte."
+  t107: "execute_code exécute des scripts Python qui appellent les outils Rabbit par programmation — les résultats restent hors du contexte."
   t108: "delegate_task lance jusqu'à 10 sous-agents simultanés par défaut (delegation.max_concurrent_children) avec des contextes isolés pour le travail en parallèle."
   t109: "web_extract fonctionne sur les URL de PDF — passez n'importe quel lien PDF et il le convertit en markdown."
   t110: "search_files s'appuie sur ripgrep et est plus rapide que grep — utilisez-le à la place du grep du terminal."
@@ -3927,26 +3927,26 @@ tips:
   t125: "Les processus d'arrière-plan du terminal prennent en charge watch_patterns pour alerter sur des lignes de sortie précises."
   t126: "L'outil terminal prend en charge 6 backends : local, Docker, SSH, Modal, Daytona et Singularity."
   t127: "Chaque profil dispose de sa propre configuration, de ses clés API, de sa mémoire, de ses sessions, de ses skills et de ses tâches cron."
-  t128: "Les noms de profil deviennent des commandes shell — 'hermes profile create coder' crée la commande 'coder'."
-  t129: "hermes profile export coder -o backup.tar.gz crée une archive de profil portable."
+  t128: "Les noms de profil deviennent des commandes shell — 'rabbit profile create coder' crée la commande 'coder'."
+  t129: "rabbit profile export coder -o backup.tar.gz crée une archive de profil portable."
   t130: "Si deux profils partagent par erreur le même token de bot, le second gateway est bloqué avec une erreur explicite."
   t131: "Les sessions génèrent automatiquement un titre descriptif après le premier échange — aucun nommage manuel nécessaire."
   t132: "Les titres de session gèrent la filiation : \"mon projet\" → \"mon projet #2\" → \"mon projet #3\"."
-  t133: "À la sortie, Hermes affiche une commande de reprise avec l'ID de session et des statistiques."
-  t134: "hermes sessions export backup.jsonl exporte toutes les sessions pour sauvegarde ou analyse."
-  t135: "hermes -r SESSION_ID reprend n'importe quelle session passée par son ID."
+  t133: "À la sortie, Rabbit affiche une commande de reprise avec l'ID de session et des statistiques."
+  t134: "rabbit sessions export backup.jsonl exporte toutes les sessions pour sauvegarde ou analyse."
+  t135: "rabbit -r SESSION_ID reprend n'importe quelle session passée par son ID."
   t136: "La mémoire est un instantané figé — les changements n'apparaissent dans le prompt système qu'au démarrage de la session suivante."
   t137: "Les entrées de mémoire sont automatiquement analysées pour détecter les injections de prompt et les tentatives d'exfiltration."
   t138: "L'agent a deux espaces de mémoire : les notes personnelles (~2200 caractères) et le profil utilisateur (~1375 caractères)."
   t139: "Les corrections que vous donnez à l'agent (\"non, fais-le comme ça\") sont souvent enregistrées automatiquement en mémoire."
   t140: "Plus de 80 skills intégrées couvrant github, creative, mlops, productivity, research et bien d'autres."
   t141: "Chaque skill installée devient automatiquement une commande slash — tapez / pour toutes les voir."
-  t142: "hermes skills install official/security/1password installe des skills optionnelles depuis le dépôt."
+  t142: "rabbit skills install official/security/1password installe des skills optionnelles depuis le dépôt."
   t143: "Les skills peuvent être limitées à certains systèmes — certaines ne se chargent que sous macOS ou Linux."
   t144: "skills.external_dirs dans config.yaml permet de charger des skills depuis des répertoires personnalisés."
   t145: "L'agent peut créer ses propres skills comme mémoire procédurale grâce à skill_manage."
-  t146: "/plan écrit un plan d'implémentation en markdown dans .hermes/plans/ sans rien exécuter."
-  t147: "Les tâches cron peuvent embarquer une skill : hermes cron add --skill blogwatcher \"Vérifie les nouveaux articles\"."
+  t146: "/plan écrit un plan d'implémentation en markdown dans .rabbit/plans/ sans rien exécuter."
+  t147: "Les tâches cron peuvent embarquer une skill : rabbit cron add --skill blogwatcher \"Vérifie les nouveaux articles\"."
   t148: "Les cibles de livraison cron incluent telegram, discord, slack, email, sms et plus de 12 autres plateformes."
   t149: "Si une réponse cron commence par [SILENT], la livraison est supprimée — pratique pour les tâches de simple surveillance."
   t150: "Cron accepte les délais relatifs (30m), les intervalles (every 2h), les expressions cron et les horodatages ISO."
@@ -3956,10 +3956,10 @@ tips:
   t154: "/voice on active le mode vocal dans la CLI. Ctrl+B active ou désactive l'enregistrement en appuyer-pour-parler."
   t155: "Le TTS en streaming lit les phrases au fil de leur génération — pas besoin d'attendre la réponse complète."
   t156: "Les messages vocaux sur Telegram, Discord, WhatsApp et Slack sont transcrits automatiquement."
-  t157: "Hermes fonctionne sur 21 plateformes de messagerie : Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, e-mail et plus."
-  t158: "hermes gateway install l'installe comme service système démarré au boot."
+  t157: "Rabbit fonctionne sur 21 plateformes de messagerie : Telegram, Discord, Slack, WhatsApp, Signal, Matrix, IRC, Microsoft Teams, e-mail et plus."
+  t158: "rabbit gateway install l'installe comme service système démarré au boot."
   t159: "DingTalk utilise le Stream Mode — aucun webhook ni URL publique nécessaire."
-  t160: "BlueBubbles apporte iMessage à Hermes via un serveur macOS local."
+  t160: "BlueBubbles apporte iMessage à Rabbit via un serveur macOS local."
   t161: "Les routes webhook prennent en charge la validation HMAC, la limitation de débit et le filtrage d'événements."
   t162: "Le serveur API expose un endpoint compatible OpenAI, utilisable avec Open WebUI et LibreChat."
   t163: "Mode salon vocal Discord : le bot rejoint le salon, transcrit la parole et répond à la voix."
@@ -3971,35 +3971,35 @@ tips:
   t169: "La protection SSRF bloque les réseaux privés, le loopback, les adresses link-local et les adresses de métadonnées cloud."
   t170: "L'analyse pré-exécution Tirith détecte l'usurpation d'URL par homoglyphes et les schémas de type « pipe vers interpréteur »."
   t171: "Les sous-processus MCP reçoivent un environnement filtré — seules les variables système sûres sont transmises."
-  t172: "Les fichiers de contexte (.hermes.md, AGENTS.md) sont analysés contre les injections de prompt avant chargement."
+  t172: "Les fichiers de contexte (.rabbit.md, AGENTS.md) sont analysés contre les injections de prompt avant chargement."
   t173: "command_allowlist dans config.yaml approuve de façon permanente certains motifs de commandes shell."
   t174: "Le contexte se compresse automatiquement quand il atteint le seuil — les souvenirs sont sauvegardés et l'historique résumé."
   t175: "La barre d'état passe au jaune, puis à l'orange, puis au rouge à mesure que le contexte se remplit."
   t176: "SOUL.md est le fichier d'identité principal de l'agent — personnalisez-le pour façonner son comportement."
-  t177: "Hermes charge le contexte du projet depuis .hermes.md, AGENTS.md, CLAUDE.md ou .cursorrules (première correspondance)."
+  t177: "Rabbit charge le contexte du projet depuis .rabbit.md, AGENTS.md, CLAUDE.md ou .cursorrules (première correspondance)."
   t178: "Les fichiers AGENTS.md des sous-répertoires sont découverts progressivement à mesure que l'agent explore les dossiers."
   t179: "Les fichiers de contexte sont plafonnés à 20 000 caractères avec une troncature intelligente début/fin."
   t180: "Cinq fournisseurs de navigateur : Chromium local, Browserbase, Browser Use, Camofox et Firecrawl."
   t181: "Camofox est un navigateur anti-détection — un fork de Firefox avec falsification d'empreinte en C++."
   t182: "browser_navigate renvoie automatiquement un instantané de la page — inutile d'appeler browser_snapshot ensuite."
   t183: "browser_vision avec annotate=true superpose des étiquettes numérotées sur les éléments interactifs."
-  t184: "hermes mcp ouvre un sélecteur interactif de MCP approuvés par Nous, installables en une touche."
-  t185: "hermes mcp catalog liste les serveurs MCP approuvés par Nous fournis avec le dépôt."
-  t186: "hermes mcp install <name> installe une entrée du catalogue, demande les identifiants et vous laisse choisir les outils à activer."
+  t184: "rabbit mcp ouvre un sélecteur interactif de MCP approuvés par Nous, installables en une touche."
+  t185: "rabbit mcp catalog liste les serveurs MCP approuvés par Nous fournis avec le dépôt."
+  t186: "rabbit mcp install <name> installe une entrée du catalogue, demande les identifiants et vous laisse choisir les outils à activer."
   t187: "Les serveurs MCP se configurent dans config.yaml — transports stdio et HTTP pris en charge."
   t188: "Filtrage d'outils par serveur : tools.include met des outils en liste blanche, tools.exclude en liste noire."
-  t189: "Les serveurs MCP génèrent automatiquement des jeux d'outils à l'exécution — hermes tools peut les activer ou désactiver par plateforme."
+  t189: "Les serveurs MCP génèrent automatiquement des jeux d'outils à l'exécution — rabbit tools peut les activer ou désactiver par plateforme."
   t190: "Prise en charge OAuth pour MCP : auth: oauth active l'autorisation via le navigateur avec PKCE."
   t191: "Les points de contrôle n'ont aucun surcoût quand aucun fichier n'est modifié — activés par défaut."
   t192: "Un instantané pré-rollback est enregistré automatiquement pour pouvoir annuler l'annulation."
   t193: "/rollback annule aussi le tour de conversation, si bien que l'agent ne se souvient pas des changements annulés."
-  t194: "Les points de contrôle utilisent des dépôts fantômes dans ~/.hermes/checkpoints/ — le .git de votre projet n'est jamais touché."
+  t194: "Les points de contrôle utilisent des dépôts fantômes dans ~/.rabbit/checkpoints/ — le .git de votre projet n'est jamais touché."
   t195: "batch_runner.py traite des centaines de prompts en parallèle pour générer des données d'entraînement."
-  t196: "hermes chat -Q active le mode silencieux pour un usage programmatique — masque la bannière et le spinner."
+  t196: "rabbit chat -Q active le mode silencieux pour un usage programmatique — masque la bannière et le spinner."
   t197: "L'enregistrement des trajectoires (--save-trajectories) capture les traces complètes d'utilisation des outils pour l'entraînement de modèles."
   t198: "Trois types de plugins : généraux (outils/hooks), fournisseurs de mémoire et moteurs de contexte."
-  t199: "hermes plugins install owner/repo installe des plugins directement depuis GitHub."
-  t200: "Fournisseurs de mémoire externes : OpenViking et Mem0 intégrés ; Honcho, Hindsight et d'autres via hermes plugins install."
+  t199: "rabbit plugins install owner/repo installe des plugins directement depuis GitHub."
+  t200: "Fournisseurs de mémoire externes : OpenViking et Mem0 intégrés ; Honcho, Hindsight et d'autres via rabbit plugins install."
   t201: "Les hooks de plugin incluent pre/post_tool_call, pre/post_llm_call et transform_terminal_output pour normaliser la sortie."
   t202: "Le cache de prompt (Anthropic) réduit les coûts en réutilisant les préfixes de prompt système déjà mis en cache."
   t203: "L'agent génère les titres de session dans un thread d'arrière-plan — aucun impact sur la latence."
@@ -4007,27 +4007,27 @@ tips:
   t205: "Les commandes slash acceptent la correspondance par préfixe : /h renvoie à /help, /mod à /model."
   t206: "Glisser un chemin de fichier dans le terminal joint automatiquement les images ou l'envoie comme contexte."
   t207: ".worktreeinclude à la racine de votre dépôt liste les fichiers ignorés par git à copier dans les worktrees."
-  t208: "hermes acp exécute Hermes comme serveur ACP pour l'intégration à VS Code, Zed et JetBrains."
+  t208: "rabbit acp exécute Rabbit comme serveur ACP pour l'intégration à VS Code, Zed et JetBrains."
   t209: "Fournisseurs personnalisés : enregistrez des endpoints nommés dans config.yaml sous custom_providers."
-  t210: "HERMES_EPHEMERAL_SYSTEM_PROMPT injecte un prompt système qui n'est jamais conservé dans l'historique."
+  t210: "RABBIT_EPHEMERAL_SYSTEM_PROMPT injecte un prompt système qui n'est jamais conservé dans l'historique."
   t211: "credential_pool_strategies prend en charge les rotations fill_first, round_robin, least_used et random."
-  t212: "hermes auth add nous ou hermes auth add openai-codex configure des fournisseurs basés sur OAuth."
+  t212: "rabbit auth add nous ou rabbit auth add openai-codex configure des fournisseurs basés sur OAuth."
   t213: "Le serveur API prend en charge à la fois Chat Completions et l'API Responses avec état côté serveur."
   t214: "tool_preview_length: 0 dans la configuration affiche les chemins de fichiers complets dans le flux d'activité du spinner."
-  t215: "hermes status --deep effectue des vérifications de diagnostic approfondies sur tous les composants."
+  t215: "rabbit status --deep effectue des vérifications de diagnostic approfondies sur tous les composants."
   t216: "Les tâches cron peuvent embarquer un script Python (--script) dont la sortie standard est injectée dans le prompt comme contexte."
-  t217: "Les scripts cron vivent dans ~/.hermes/scripts/ et s'exécutent avant l'agent — parfait pour les pipelines de collecte de données."
+  t217: "Les scripts cron vivent dans ~/.rabbit/scripts/ et s'exécutent avant l'agent — parfait pour les pipelines de collecte de données."
   t218: "prefill_messages_file dans config.yaml injecte des exemples few-shot dans chaque appel API, sans jamais les enregistrer dans l'historique."
-  t219: "SOUL.md remplace entièrement l'identité par défaut de l'agent — réécrivez-le pour faire d'Hermes le vôtre."
+  t219: "SOUL.md remplace entièrement l'identité par défaut de l'agent — réécrivez-le pour faire d'Rabbit le vôtre."
   t220: "SOUL.md est initialisé avec une personnalité par défaut au premier lancement. Modifiez-le pour le personnaliser."
   t221: "/compress <focus topic> consacre 60 à 70 % du budget du résumé à votre sujet et élague agressivement le reste."
   t222: "À partir de la deuxième compression, le compresseur met à jour le résumé précédent au lieu de repartir de zéro."
-  t223: "Avant la réinitialisation d'une session gateway, Hermes sauvegarde automatiquement les faits importants en mémoire, en arrière-plan."
+  t223: "Avant la réinitialisation d'une session gateway, Rabbit sauvegarde automatiquement les faits importants en mémoire, en arrière-plan."
   t224: "network.force_ipv4: true dans config.yaml corrige les blocages sur les serveurs dont l'IPv6 est défaillant — patche socket à la volée."
   t225: "L'outil terminal annote les codes de sortie courants : grep renvoyant 1 = 'Aucune correspondance (pas une erreur)'."
   t226: "Les commandes terminal de premier plan en échec sont relancées jusqu'à 3 fois avec un délai exponentiel (2 s, 4 s, 8 s)."
   t227: "Les commandes sudo simples sont réécrites automatiquement pour recevoir SUDO_PASSWORD depuis .env — aucune saisie interactive nécessaire."
-  t228: "Les helpers d'execute_code exigent des imports explicites : from hermes_tools import json_parse, shell_quote, retry."
+  t228: "Les helpers d'execute_code exigent des imports explicites : from rabbit_tools import json_parse, shell_quote, retry."
   t229: "Les 7 outils sandbox d'execute_code (web_search, terminal, read/write/search/patch) passent par RPC — ils n'entrent jamais dans le contexte."
   t230: "Lire 3 fois ou plus la même région d'un fichier déclenche un avertissement. À partir de 4, c'est bloqué pour éviter les boucles."
   t231: "write_file et patch détectent si un fichier a été modifié de l'extérieur depuis la dernière lecture et signalent qu'il est périmé."
@@ -4042,13 +4042,13 @@ tips:
   t240: "agent.api_max_retries (3 par défaut) contrôle combien de fois l'agent réessaie un appel API échoué avant de remonter l'erreur — baissez-le pour un basculement rapide."
   t241: "Le gateway met en cache les instances AIAgent par session — détruire ce cache casse le cache de prompt Anthropic."
   t242: "N'importe quel site web peut exposer des skills via /.well-known/skills/index.json — le hub de skills les découvre automatiquement."
-  t243: "Le journal d'audit des skills dans ~/.hermes/skills/.hub/audit.log trace chaque installation et suppression."
+  t243: "Le journal d'audit des skills dans ~/.rabbit/skills/.hub/audit.log trace chaque installation et suppression."
   t244: "Les worktrees git obsolètes sont nettoyés automatiquement au démarrage : les arbres propres et entièrement fusionnés sont supprimés ; le travail modifié ou non poussé est toujours préservé."
-  t245: "Les profils délimitent l'état d'Hermes via HERMES_HOME ; les sous-processus d'outils sur l'hôte conservent votre vrai HOME sauf si terminal.home_mode vaut profile."
-  t246: "La variable d'environnement HERMES_HOME_MODE (octal, ex. 0701) définit des permissions de répertoire personnalisées pour la traversée par le serveur web."
-  t247: "Mode conteneur : placez .container-mode dans HERMES_HOME et la CLI hôte s'exécute automatiquement dans le conteneur."
+  t245: "Les profils délimitent l'état d'Rabbit via RABBIT_HOME ; les sous-processus d'outils sur l'hôte conservent votre vrai HOME sauf si terminal.home_mode vaut profile."
+  t246: "La variable d'environnement RABBIT_HOME_MODE (octal, ex. 0701) définit des permissions de répertoire personnalisées pour la traversée par le serveur web."
+  t247: "Mode conteneur : placez .container-mode dans RABBIT_HOME et la CLI hôte s'exécute automatiquement dans le conteneur."
   t248: "Ctrl+C a 5 niveaux de priorité : annuler l'enregistrement → annuler les invites → annuler le sélecteur → interrompre l'agent → quitter."
-  t249: "Chaque interruption pendant une exécution de l'agent est consignée dans ~/.hermes/interrupt_debug.log avec horodatage."
+  t249: "Chaque interruption pendant une exécution de l'agent est consignée dans ~/.rabbit/interrupt_debug.log avec horodatage."
   t250: "BROWSER_CDP_URL connecte les outils navigateur à n'importe quel navigateur de la famille Chromium en cours d'exécution — accepte WebSocket, HTTP ou host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true active l'anti-détection avancée avec un Chromium personnalisé (Scale Plan)."
   t252: "La CLI passe automatiquement en mode compact dans les terminaux de moins de 80 colonnes."
@@ -4066,67 +4066,67 @@ tips:
   t264: "Quand une compression échoue, les tentatives suivantes sont suspendues pendant 10 minutes pour éviter de marteler l'API."
   t265: "Les commandes dangereuses longues (>70 caractères) offrent une option 'view' dans l'invite d'approbation pour voir d'abord le texte complet."
   t266: "La visualisation du niveau audio affiche des barres ▁▂▃▄▅▆▇ pendant l'enregistrement vocal, selon le niveau RMS du micro."
-  t267: "Les noms de profil ne peuvent pas entrer en conflit avec des binaires existants du PATH — 'hermes profile create ls' serait refusé."
-  t268: "hermes profile create backup --clone-all copie tout (configuration, clés, SOUL.md, mémoires, skills, sessions)."
+  t267: "Les noms de profil ne peuvent pas entrer en conflit avec des binaires existants du PATH — 'rabbit profile create ls' serait refusé."
+  t268: "rabbit profile create backup --clone-all copie tout (configuration, clés, SOUL.md, mémoires, skills, sessions)."
   t269: "La touche d'enregistrement vocal est configurable via voice.record_key dans config.yaml — pas seulement Ctrl+B."
   t270: "Les fichiers .cursorrules et .cursor/rules/*.mdc sont détectés et chargés automatiquement comme contexte de projet."
   t271: "Les fichiers de contexte sont contrôlés contre plus de 10 schémas d'injection de prompt — Unicode invisible, « ignore les instructions », tentatives d'exfiltration."
   t272: "GPT-5 et Codex utilisent le rôle 'developer' au lieu de 'system' dans le format des messages."
   t273: "Surcharges auxiliaires par tâche : auxiliary.vision.provider, auxiliary.compression.model, etc. dans config.yaml."
   t274: "Le client auxiliaire traite 'main' comme un alias de fournisseur — il correspond à votre fournisseur et modèle principaux réels."
-  t275: "hermes claw migrate --dry-run prévisualise la migration OpenClaw sans rien écrire."
+  t275: "rabbit claw migrate --dry-run prévisualise la migration OpenClaw sans rien écrire."
   t276: "Les chemins de fichiers collés avec des guillemets ou des espaces échappés sont gérés automatiquement — aucun nettoyage manuel nécessaire."
   t277: "Les commandes slash ne déclenchent jamais le repli des gros collages — /command avec de gros arguments fonctionne correctement."
   t278: "En mode interruption, les commandes slash saisies pendant l'exécution de l'agent contournent la logique d'interruption et s'exécutent immédiatement."
-  t279: "HERMES_DEV=1 contourne la détection du mode conteneur pour le développement local."
-  t280: "Chaque serveur MCP obtient son propre jeu d'outils (mcp-servername) activable indépendamment via hermes tools."
-  t281: "Les marqueurs ${ENV_VAR} des MCP dans la configuration sont résolus au lancement du serveur — y compris les variables de ~/.hermes/.env."
+  t279: "RABBIT_DEV=1 contourne la détection du mode conteneur pour le développement local."
+  t280: "Chaque serveur MCP obtient son propre jeu d'outils (mcp-servername) activable indépendamment via rabbit tools."
+  t281: "Les marqueurs ${ENV_VAR} des MCP dans la configuration sont résolus au lancement du serveur — y compris les variables de ~/.rabbit/.env."
   t282: "Les skills provenant de dépôts de confiance (NousResearch) reçoivent le niveau de sécurité 'trusted' ; les skills communautaires subissent une analyse supplémentaire."
-  t283: "La quarantaine des skills dans ~/.hermes/skills/.hub/quarantine/ conserve les skills en attente de revue de sécurité."
+  t283: "La quarantaine des skills dans ~/.rabbit/skills/.hub/quarantine/ conserve les skills en attente de revue de sécurité."
   t284: "/steer <prompt> injecte une note après le prochain appel d'outil — réorientez la tâche en cours sans l'interrompre."
-  t285: "/goal <text> fixe un objectif permanent en boucle Ralph — Hermes enchaîne les tours automatiquement jusqu'à ce qu'un juge déclare la tâche terminée."
-  t286: "/snapshot create [label] enregistre un instantané complet de la configuration d'Hermes ; /snapshot restore <id> permet d'y revenir plus tard."
+  t285: "/goal <text> fixe un objectif permanent en boucle Ralph — Rabbit enchaîne les tours automatiquement jusqu'à ce qu'un juge déclare la tâche terminée."
+  t286: "/snapshot create [label] enregistre un instantané complet de la configuration d'Rabbit ; /snapshot restore <id> permet d'y revenir plus tard."
   t287: "/copy [N] copie la dernière réponse de l'assistant dans votre presse-papiers, ou la N-ième en partant de la fin avec un nombre."
   t288: "/redraw force un rafraîchissement complet de l'interface, corrigeant les décalages du terminal après un redimensionnement tmux ou des artefacts de sélection à la souris."
   t289: "/agents (alias /tasks) affiche les agents actifs et les tâches d'arrière-plan en cours dans la session actuelle."
   t290: "/footer active ou désactive le pied de page du gateway sur les réponses finales, indiquant le modèle, le % de contexte et le cwd."
-  t291: "/busy queue|steer|interrupt contrôle ce que fait la touche Enter pendant qu'Hermes travaille."
+  t291: "/busy queue|steer|interrupt contrôle ce que fait la touche Enter pendant qu'Rabbit travaille."
   t292: "/topic dans les messages privés Telegram active le mode topics multi-sessions géré par l'utilisateur — /topic <id> restaure des sessions passées en ligne."
   t293: "/approve session|always exécute une commande dangereuse en attente avec la portée de confiance choisie ; /deny la rejette."
   t294: "/restart redémarre proprement le gateway après avoir laissé finir les exécutions actives, puis prévient le demandeur une fois revenu en ligne."
   t295: "/kanban boards switch <slug> change le tableau Kanban multi-projets actif depuis le chat."
-  t296: "/reload recharge ~/.hermes/.env dans la session en cours — prenez en compte de nouvelles clés API sans redémarrer."
+  t296: "/reload recharge ~/.rabbit/.env dans la session en cours — prenez en compte de nouvelles clés API sans redémarrer."
   t297: "cronjob avec no_agent=True exécute un script selon un planning et envoie directement sa sortie standard — zéro token, zéro LLM."
   t298: "Une sortie standard vide d'un script cron signifie un tick silencieux — rien n'est livré, parfait pour les chiens de garde à seuil."
-  t299: "HERMES_CRON_MAX_PARALLEL (4 par défaut) limite le nombre de tâches cron exécutées par tick pour que les rafales ne saturent pas vos clés."
-  t300: "Les hooks du gateway vivent sous ~/.hermes/hooks/<name>/ avec HOOK.yaml + handler.py — le handler doit s'appeler `handle`."
+  t299: "RABBIT_CRON_MAX_PARALLEL (4 par défaut) limite le nombre de tâches cron exécutées par tick pour que les rafales ne saturent pas vos clés."
+  t300: "Les hooks du gateway vivent sous ~/.rabbit/hooks/<name>/ avec HOOK.yaml + handler.py — le handler doit s'appeler `handle`."
   t301: "Les événements de hook incluent gateway:startup, session:start, agent:step et les abonnements génériques command:*."
-  t302: "Déposez une checklist ~/.hermes/BOOT.md et un hook gateway:startup l'exécutera comme agent ponctuel à chaque démarrage."
-  t303: "hermes curator run --dry-run prévisualise ce que le curateur archiverait ou consoliderait sans rien modifier."
-  t304: "hermes curator pin <skill> verrouille une skill contre l'archivage automatique comme contre l'outil skill_manage de l'agent."
-  t305: "hermes curator rollback restaure les skills depuis un instantané pré-exécution — les sauvegardes vivent sous skills/.curator_backups/."
-  t306: "hermes auth reset <provider> [target] efface les temps de repos et les indicateurs d'épuisement d'un pool d'identifiants entier, ou d'un seul identifiant par index, id ou libellé."
+  t302: "Déposez une checklist ~/.rabbit/BOOT.md et un hook gateway:startup l'exécutera comme agent ponctuel à chaque démarrage."
+  t303: "rabbit curator run --dry-run prévisualise ce que le curateur archiverait ou consoliderait sans rien modifier."
+  t304: "rabbit curator pin <skill> verrouille une skill contre l'archivage automatique comme contre l'outil skill_manage de l'agent."
+  t305: "rabbit curator rollback restaure les skills depuis un instantané pré-exécution — les sauvegardes vivent sous skills/.curator_backups/."
+  t306: "rabbit auth reset <provider> [target] efface les temps de repos et les indicateurs d'épuisement d'un pool d'identifiants entier, ou d'un seul identifiant par index, id ou libellé."
   t307: "credential_pool_strategies.<provider>: round_robin fait tourner les clés de façon équitable au lieu du fill_first par défaut."
   t308: "use_gateway: true par outil route web, image, tts ou browser via votre abonnement Nous — aucune clé supplémentaire."
   t309: "provider_routing.data_collection: deny exclut les fournisseurs qui conservent les données sur OpenRouter."
   t310: "provider_routing.require_parameters: true ne route que vers les fournisseurs prenant en charge chaque paramètre de votre requête."
-  t311: "HERMES_TUI_RESUME=1 se rattache automatiquement à la session TUI la plus récente au lancement — pratique après une coupure SSH."
-  t312: "HERMES_TUI_THEME=light|dark|<hex> force le thème de la TUI sur les terminaux qui ne définissent pas COLORFGBG."
+  t311: "RABBIT_TUI_RESUME=1 se rattache automatiquement à la session TUI la plus récente au lancement — pratique après une coupure SSH."
+  t312: "RABBIT_TUI_THEME=light|dark|<hex> force le thème de la TUI sur les terminaux qui ne définissent pas COLORFGBG."
   t313: "Ctrl+G ou Ctrl+X Ctrl+E dans la TUI ouvre le tampon de saisie dans $EDITOR pour les longs prompts multilignes."
   t314: "La TUI affiche le LaTeX en ligne — $E=mc^2$ devient des maths Unicode au lieu de TeX brut."
-  t315: "hermes dashboard lance une interface web locale sur 127.0.0.1:9119 — aucune donnée ne quitte localhost."
-  t316: "hermes dashboard intègre la TUI Hermes complète dans votre navigateur via xterm.js et un PTY WebSocket."
-  t317: "Déposez un YAML dans ~/.hermes/dashboard-themes/ avec deux couleurs de palette pour rhabiller tout le tableau de bord."
-  t318: "Les plugins du tableau de bord se déposent tels quels : manifest.json + bundle JS dans ~/.hermes/dashboard-plugins/ — aucun build npm requis."
+  t315: "rabbit dashboard lance une interface web locale sur 127.0.0.1:9119 — aucune donnée ne quitte localhost."
+  t316: "rabbit dashboard intègre la TUI Rabbit complète dans votre navigateur via xterm.js et un PTY WebSocket."
+  t317: "Déposez un YAML dans ~/.rabbit/dashboard-themes/ avec deux couleurs de palette pour rhabiller tout le tableau de bord."
+  t318: "Les plugins du tableau de bord se déposent tels quels : manifest.json + bundle JS dans ~/.rabbit/dashboard-plugins/ — aucun build npm requis."
   t319: "layoutVariant: cockpit dans un thème du tableau de bord ajoute une barre latérale gauche de 260px que les plugins peuvent remplir via l'emplacement sidebar."
   t320: "display.tool_progress_command: true expose /verbose sur les plateformes de messagerie ; par défaut, il est réservé à la CLI."
-  t321: "HERMES_BACKGROUND_NOTIFICATIONS=result ne vous notifie qu'à la fin des tâches d'arrière-plan (au lieu de concise/all/error/off)."
-  t322: "HERMES_WRITE_SAFE_ROOT restreint write_file/patch à des préfixes de répertoires ; plusieurs chemins via os.pathsep (: ou ;)."
-  t323: "HERMES_IGNORE_RULES désactive l'injection automatique d'AGENTS.md, SOUL.md, .cursorrules, de la mémoire et des skills préchargées."
-  t324: "HERMES_ACCEPT_HOOKS approuve automatiquement les hooks shell inédits déclarés dans config.yaml, sans invite dans le terminal."
+  t321: "RABBIT_BACKGROUND_NOTIFICATIONS=result ne vous notifie qu'à la fin des tâches d'arrière-plan (au lieu de concise/all/error/off)."
+  t322: "RABBIT_WRITE_SAFE_ROOT restreint write_file/patch à des préfixes de répertoires ; plusieurs chemins via os.pathsep (: ou ;)."
+  t323: "RABBIT_IGNORE_RULES désactive l'injection automatique d'AGENTS.md, SOUL.md, .cursorrules, de la mémoire et des skills préchargées."
+  t324: "RABBIT_ACCEPT_HOOKS approuve automatiquement les hooks shell inédits déclarés dans config.yaml, sans invite dans le terminal."
   t325: "auxiliary.goal_judge.model envoie le juge de /goal vers un modèle rapide et peu coûteux pour garder le coût des boucles proche de zéro."
   t326: "Les points de contrôle ignorent les répertoires de plus de 50 000 fichiers pour éviter des opérations git lentes sur les monorepos géants."
-  t327: "tts.provider: piper exécute une TTS locale en 44 langues sur CPU — les voix se téléchargent automatiquement dans ~/.hermes/cache/piper-voices/."
+  t327: "tts.provider: piper exécute une TTS locale en 44 langues sur CPU — les voix se téléchargent automatiquement dans ~/.rabbit/cache/piper-voices/."
   t328: "tts.providers.<name>.type: command branche n'importe quel moteur TTS en ligne de commande grâce aux placeholders {input_path} et {output_path}."
   t329: "API_SERVER_ENABLED=true lance un point de terminaison compatible OpenAI à côté du gateway, pour Open WebUI et LibreChat."
   t330: "GATEWAY_PROXY_URL met en place une configuration scindée : les E/S des plateformes en local, le travail de l'agent délégué à un serveur API distant."
@@ -4143,43 +4143,43 @@ tips:
   t341: "/commands pagine la liste complète des commandes slash et des skills installées — pratique sur les plateformes sans complétion par tabulation."
   t342: "/toolsets liste tous les toolsets disponibles pour savoir ce qu'accepte -t/--toolsets."
   t343: "/voice tts bascule en mode TTS seul — l'agent répond à voix haute mais vous continuez à taper vos prompts."
-  t344: "/reload-skills rescanne ~/.hermes/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
+  t344: "/reload-skills rescanne ~/.rabbit/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
   t345: "/indicator kaomoji|emoji|unicode|ascii choisit le style de l'indicateur d'activité de la TUI affiché pendant les exécutions de l'agent."
   t346: "/debug téléverse un bundle de support (infos système + journaux) et renvoie des liens partageables — fonctionne aussi dans le chat."
-  t347: "hermes -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
-  t348: "hermes chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
-  t349: "hermes chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."
-  t350: "hermes chat --ignore-user-config ignore la configuration utilisateur active — pour des rapports de bug reproductibles et des exécutions en CI."
-  t351: "hermes chat --source tool étiquette les chats programmatiques pour qu'ils n'encombrent pas hermes sessions list."
-  t352: "hermes dump --show-keys inclut des empreintes masquées des clés API pour un débogage plus poussé avec le support."
-  t353: "hermes sessions rename <ID> \"nouveau titre\" renomme n'importe quelle session passée ; hermes sessions delete <ID> en supprime une."
-  t354: "hermes import restaure un zip de sauvegarde Hermes complet ; les exports JSON/JSONL de sessions s'importent depuis la page Sessions du tableau de bord."
-  t355: "hermes fallback gère la chaîne fallback_model de manière interactive — sans modifier config.yaml à la main."
-  t356: "hermes pairing renouvelle le token d'appairage des DM — la première personne qui écrit après le renouvellement obtient l'accès au bot."
-  t357: "hermes setup guide les nouveaux utilisateurs à travers le fournisseur, les clés et le branchement des plateformes en un seul parcours interactif."
-  t358: "hermes status --deep lance le bilan de santé complet de chaque composant ; hermes status seul donne la vue rapide."
-  t359: "HERMES_AGENT_TIMEOUT=0 désactive l'arrêt pour inactivité du gateway sur un agent en cours — utile pour les longues sessions de recherche."
-  t360: "HERMES_ENABLE_PROJECT_PLUGINS=1 charge automatiquement les plugins locaux au dépôt depuis ./.hermes/plugins/ — soumis à une validation de confiance par conception."
-  t361: "HERMES_DISABLE_FILE_STATE_GUARD=1 désactive la protection « fichier modifié depuis votre lecture » sur patch et write_file."
-  t362: "HERMES_ALLOW_PRIVATE_URLS=true autorise les outils web à atteindre localhost et les réseaux privés — désactivé par défaut en mode gateway."
-  t363: "HERMES_OPTIONAL_SKILLS=name1,name2 installe automatiquement des skills supplémentaires du catalogue optionnel au premier lancement de chaque profil."
-  t364: "HERMES_BUNDLED_SKILLS pointe vers une arborescence personnalisée de skills embarquées — utilisé par les paquets Homebrew et Nix."
-  t365: "HERMES_DUMP_REQUEST_STDOUT=1 écrit la charge utile de chaque requête API sur stdout plutôt que dans les fichiers journaux."
-  t366: "HERMES_OAUTH_TRACE=1 journalise (avec masquage) les échanges et renouvellements de tokens OAuth pour déboguer l'authentification des fournisseurs."
-  t367: "HERMES_STREAM_RETRIES (3 par défaut) contrôle le nombre de tentatives de reconnexion en cours de flux lors d'erreurs réseau passagères."
-  t368: "HERMES_GATEWAY_BUSY_ACK_ENABLED=false supprime les accusés de réception ⚡/⏳/⏩ quand un utilisateur écrit à un agent occupé."
-  t369: "HERMES_AGENT_NOTIFY_INTERVAL (180s par défaut) définit la fréquence à laquelle le gateway envoie un point d'avancement sur les tours longs."
-  t370: "HERMES_RESTART_DRAIN_TIMEOUT (900s par défaut) plafonne le temps pendant lequel /restart attend les exécutions en cours avant de forcer."
-  t371: "HERMES_CHECKPOINT_TIMEOUT (30s par défaut) plafonne la création des points de contrôle du système de fichiers — augmentez-le sur les monorepos géants."
+  t347: "rabbit -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
+  t348: "rabbit chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
+  t349: "rabbit chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."
+  t350: "rabbit chat --ignore-user-config ignore la configuration utilisateur active — pour des rapports de bug reproductibles et des exécutions en CI."
+  t351: "rabbit chat --source tool étiquette les chats programmatiques pour qu'ils n'encombrent pas rabbit sessions list."
+  t352: "rabbit dump --show-keys inclut des empreintes masquées des clés API pour un débogage plus poussé avec le support."
+  t353: "rabbit sessions rename <ID> \"nouveau titre\" renomme n'importe quelle session passée ; rabbit sessions delete <ID> en supprime une."
+  t354: "rabbit import restaure un zip de sauvegarde Rabbit complet ; les exports JSON/JSONL de sessions s'importent depuis la page Sessions du tableau de bord."
+  t355: "rabbit fallback gère la chaîne fallback_model de manière interactive — sans modifier config.yaml à la main."
+  t356: "rabbit pairing renouvelle le token d'appairage des DM — la première personne qui écrit après le renouvellement obtient l'accès au bot."
+  t357: "rabbit setup guide les nouveaux utilisateurs à travers le fournisseur, les clés et le branchement des plateformes en un seul parcours interactif."
+  t358: "rabbit status --deep lance le bilan de santé complet de chaque composant ; rabbit status seul donne la vue rapide."
+  t359: "RABBIT_AGENT_TIMEOUT=0 désactive l'arrêt pour inactivité du gateway sur un agent en cours — utile pour les longues sessions de recherche."
+  t360: "RABBIT_ENABLE_PROJECT_PLUGINS=1 charge automatiquement les plugins locaux au dépôt depuis ./.rabbit/plugins/ — soumis à une validation de confiance par conception."
+  t361: "RABBIT_DISABLE_FILE_STATE_GUARD=1 désactive la protection « fichier modifié depuis votre lecture » sur patch et write_file."
+  t362: "RABBIT_ALLOW_PRIVATE_URLS=true autorise les outils web à atteindre localhost et les réseaux privés — désactivé par défaut en mode gateway."
+  t363: "RABBIT_OPTIONAL_SKILLS=name1,name2 installe automatiquement des skills supplémentaires du catalogue optionnel au premier lancement de chaque profil."
+  t364: "RABBIT_BUNDLED_SKILLS pointe vers une arborescence personnalisée de skills embarquées — utilisé par les paquets Homebrew et Nix."
+  t365: "RABBIT_DUMP_REQUEST_STDOUT=1 écrit la charge utile de chaque requête API sur stdout plutôt que dans les fichiers journaux."
+  t366: "RABBIT_OAUTH_TRACE=1 journalise (avec masquage) les échanges et renouvellements de tokens OAuth pour déboguer l'authentification des fournisseurs."
+  t367: "RABBIT_STREAM_RETRIES (3 par défaut) contrôle le nombre de tentatives de reconnexion en cours de flux lors d'erreurs réseau passagères."
+  t368: "RABBIT_GATEWAY_BUSY_ACK_ENABLED=false supprime les accusés de réception ⚡/⏳/⏩ quand un utilisateur écrit à un agent occupé."
+  t369: "RABBIT_AGENT_NOTIFY_INTERVAL (180s par défaut) définit la fréquence à laquelle le gateway envoie un point d'avancement sur les tours longs."
+  t370: "RABBIT_RESTART_DRAIN_TIMEOUT (900s par défaut) plafonne le temps pendant lequel /restart attend les exécutions en cours avant de forcer."
+  t371: "RABBIT_CHECKPOINT_TIMEOUT (30s par défaut) plafonne la création des points de contrôle du système de fichiers — augmentez-le sur les monorepos géants."
   t372: "image_gen.model dans config.yaml choisit le modèle FAL : flux-2/klein, gpt-image-2, nano-banana-pro, et d'autres."
   t373: "image_gen.provider fait passer la génération d'images par un plugin (OpenAI Images, Codex, FAL) au lieu du fournisseur par défaut."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY dirigent l'analyse d'images vers n'importe quel point de terminaison compatible OpenAI."
-  t375: "security.tirith_fail_open: false fait bloquer les commandes par Hermes quand le scanner tirith lui-même tombe en erreur."
+  t375: "security.tirith_fail_open: false fait bloquer les commandes par Rabbit quand le scanner tirith lui-même tombe en erreur."
   t376: "La variable d'environnement TIRITH_FAIL_OPEN remplace la configuration tirith_fail_open — une bascule rapide sans modifier config.yaml."
-  t377: "Les chats --source tool sont exclus de hermes sessions list par défaut — passez --source explicitement pour les voir."
+  t377: "Les chats --source tool sont exclus de rabbit sessions list par défaut — passez --source explicitement pour les voir."
   t378: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
   t379: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
-  t380: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
+  t380: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.rabbit/dashboard-plugins/."
   placeholder:
     p01: "Posez une question, ou tapez / pour les commandes…"
     p02: "Résume le contenu de ce dossier"

@@ -14,10 +14,9 @@ Free keyless meta-search aggregating 70+ engines.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/research/searxng-search` |
+| Source | Optional — install with `rabbit skills install official/research/searxng-search` |
 | Path | `optional-skills/research/searxng-search` |
 | Version | `1.0.1` |
-| Author | hermes-agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `search`, `searxng`, `meta-search`, `self-hosted`, `free`, `fallback` |
@@ -26,7 +25,7 @@ Free keyless meta-search aggregating 70+ engines.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # SearXNG Search

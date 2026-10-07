@@ -148,7 +148,7 @@ def _pinned_guard(name: str) -> Optional[str]:
         from agent.skill_utils import ESSENTIAL_SKILLS
         if name in ESSENTIAL_SKILLS:
             return (
-                f"Skill '{name}' is essential to Hermes (the agent's own "
+                f"Skill '{name}' is essential to Rabbit (the agent's own "
                 f"operating manual referenced by the system prompt) and "
                 f"cannot be deleted. Patches and edits are still allowed.")
     except Exception:
@@ -156,7 +156,7 @@ def _pinned_guard(name: str) -> Optional[str]:
     if _is_pinned(name, "pinned-guard"):
         return (
             f"Skill '{name}' is pinned and cannot be deleted by skill_manage. Ask the user to "
-            f"run `hermes curator unpin {name}` if they want to delete it. Patches and edits "
+            f"run `rabbit curator unpin {name}` if they want to delete it. Patches and edits "
             f"are allowed on pinned skills; only deletion is blocked.")
     return None
 
@@ -171,7 +171,7 @@ def _background_review_write_guard(
     if _is_pinned(name, "pinned skill guard"):
         return _refusal(
             f"{refuse} pinned skill '{name}': pinned skills "
-            f"are off-limits to autonomous maintenance. Ask the user to run `hermes curator "
+            f"are off-limits to autonomous maintenance. Ask the user to run `rabbit curator "
             f"unpin {name}` if they want it changed.")
     try:
         from agent.skill_utils import is_external_skill_path
@@ -201,14 +201,14 @@ def _background_review_write_guard(
         # side effect: a local skill with no telemetry record passed, the successful write called
         # bump_patch() which created a `created_by: null` record, and the very same write was refused from
         # then on. "Allowed exactly once" is not a policy — it is a race with our own bookkeeping. Fail
-        # closed for both shapes; `hermes curator adopt <name>` is the supported way in. See #67140.
+        # closed for both shapes; `rabbit curator adopt <name>` is the supported way in. See #67140.
         if not skill_usage._is_curator_managed_record(usage_rec):
             _detail = (f"created_by={usage_rec.get('created_by')!r}" if isinstance(usage_rec, dict)
                        else "no usage record")
             return _refusal(
                 f"{refuse} skill '{name}': the skill is not "
                 f"curator-managed ({_detail}). User-owned skills are off-limits to autonomous "
-                f"curation. Run `hermes curator adopt {name}` to opt it in.")
+                f"curation. Run `rabbit curator adopt {name}` to opt it in.")
     except Exception:
         logger.warning("owned skill guard lookup failed for %s", name, exc_info=True)
         return _refusal(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize micro-compaction telemetry from Hermes logs.
+"""Summarize micro-compaction telemetry from Rabbit logs.
 
 Reads the content-free JSON lines emitted by
 ``ContextCompressor._emit_micro_compaction_telemetry`` and reports what the
@@ -9,7 +9,7 @@ Usage:
   python scripts/micro_compaction_report.py [LOGFILE ...]
   python scripts/micro_compaction_report.py --per-session
 
-With no LOGFILE, reads ``$HERMES_HOME/logs/agent.log`` (default ~/.hermes).
+With no LOGFILE, reads ``$RABBIT_HOME/logs/agent.log`` (default ~/.rabbit).
 
 What to look at
 ---------------
@@ -44,7 +44,7 @@ BATCH_MARKER = "context compression attempt telemetry: "
 
 
 def default_log() -> Path:
-    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    home = os.environ.get("RABBIT_HOME") or str(Path.home() / ".rabbit")
     return Path(home) / "logs" / "agent.log"
 
 

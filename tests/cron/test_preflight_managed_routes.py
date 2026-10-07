@@ -1,12 +1,12 @@
 """Managed-scope ``gateway.profile_routes`` must reach the satellite cron path (#121212).
 
 The primary gateway reads routes through the layered loader (user file + managed overlay), so
-on a centrally-managed install the routes live only in ``/etc/hermes/config.yaml``. The
+on a centrally-managed install the routes live only in ``/etc/rabbit/config.yaml``. The
 satellite-side helper shared by preflight rescue and delivery-time ``SharedRouteAdapters`` read
 the raw user file alone, false-blocking every routed job and failing delivery closed.
 """
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import pytest
 
 from cron.scheduler_preflight import (
@@ -14,8 +14,8 @@ from cron.scheduler_preflight import (
     _delivery_platform_routed_from_primary_gateway,
     _primary_profile_routes_for_current_home,
 )
-from hermes_cli import managed_scope
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_cli import managed_scope
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 def _routes(*entries):
@@ -34,14 +34,14 @@ def satellite_home(tmp_path, monkeypatch):
     sat_home.mkdir(parents=True)
     managed_dir = tmp_path / "managed"
     managed_dir.mkdir()
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    monkeypatch.setattr("rabbit_constants.get_default_rabbit_root", lambda: root)
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(managed_dir))
     managed_scope.invalidate_managed_cache()
-    token = set_hermes_home_override(str(sat_home))
+    token = set_rabbit_home_override(str(sat_home))
     try:
         yield root, managed_dir
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
         managed_scope.invalidate_managed_cache()
 
 

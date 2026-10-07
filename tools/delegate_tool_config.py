@@ -6,12 +6,12 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
-from hermes_cli.fallback_config import scoped_fallback_chain
+from rabbit_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 # Runtime-provider sentinel for providers that are not natively known; must
-# match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
+# match rabbit_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
@@ -336,7 +336,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
     # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak
     # the Anthropic Messages protocol. Fixes #10213.
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    from rabbit_cli.runtime_provider import _detect_api_mode_for_url
     base_lower = v["base_url"].lower()
     host = base_url_hostname(v["base_url"])
     provider = "custom"
@@ -357,7 +357,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     request_overrides = None
     if v["provider"]:
         try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
+            from rabbit_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
 
@@ -376,21 +376,21 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.provider`` branch: full bundle via the runtime provider system."""
     configured_provider = v["provider"]
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"])
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers: openrouter, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            f"Set the appropriate environment variable or run 'rabbit auth'."
         )
     # A pinned ACP transport command must exist — refuse the spawn loudly rather than letting the child
     # silently fall back to another transport (#80450).
@@ -441,12 +441,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 def _load_config() -> dict:
     """The ``delegation`` config section (read-only — do NOT mutate). Prefers the shared ``load_config_readonly()``
-    (follows HERMES_HOME/profile; no deepcopy, since this runs on every get_definitions() rebuild) over the legacy
-    ``cli.CLI_CONFIG``, which can hide user-set keys — except that ``HERMES_IGNORE_USER_CONFIG=1`` is only honored
+    (follows RABBIT_HOME/profile; no deepcopy, since this runs on every get_definitions() rebuild) over the legacy
+    ``cli.CLI_CONFIG``, which can hide user-set keys — except that ``RABBIT_IGNORE_USER_CONFIG=1`` is only honored
     by the legacy loader, so it stays authoritative when that flag is set."""
-    if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1":
+    if os.environ.get("RABBIT_IGNORE_USER_CONFIG") != "1":
         try:
-            from hermes_cli.config import load_config_readonly
+            from rabbit_cli.config import load_config_readonly
             cfg = load_config_readonly().get("delegation") or {}
             if isinstance(cfg, dict):
                 return cfg
@@ -467,7 +467,6 @@ _ROUTING_FILTER_DEFAULTS = (
     ("provider_require_parameters", False), ("provider_data_collection", ""),
 )
 
-_NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
 def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
@@ -492,7 +491,7 @@ def _resolve_child_runtime(
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
-    or is Nous Portal (dual-wire); a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
+    or dual-wire within one provider; a pinned ``delegation.command`` must exist on PATH or the spawn fails loudly;
     ``override_provider`` clears the parent's ACP transport, fallback chain and OpenRouter routing filters so the
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
@@ -511,20 +510,16 @@ def _resolve_child_runtime(
         effective_provider = getattr(parent_agent, "provider", None)
         effective_base_url, parent_api_key = _inherit_parent_endpoint(parent_agent, parent_agent.base_url, parent_api_key)
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
-    # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
-    # same-provider inheritance would pin the child on the wrong wire — re-derive.
+    # otherwise). A dual-wire provider (anthropic/* → Messages, else chat_completions)
+    # would pin the child on the wrong wire through same-provider inheritance — re-derive.
     # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a different provider than
     # the parent — each provider has its own API surface (e.g. MiniMax uses anthropic_messages, DeepSeek
     # uses chat_completions). Inheriting the parent's mode causes 404 errors when the child routes to the
     # wrong endpoint. Derive the mode from the target provider when it differs. Same-provider inheritance
-    # would pin a child Hermes/Qwen subagent onto the parent's Claude Messages wire (or the reverse).
-    # agent_init honors an explicit api_mode above its nous branch, so re-derive here before construction.
+    # would pin a child Rabbit/Qwen subagent onto the parent's Claude Messages wire (or the reverse).
     _parent_provider = getattr(parent_agent, "provider", None) or ""
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
-    elif (effective_provider or "").strip().lower() in _NOUS_PROVIDERS:
-        from hermes_cli.providers import nous_api_mode
-        effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults
     else:
@@ -570,7 +565,7 @@ def _resolve_child_runtime(
     try:
         delegation_effort = delegation_cfg.get("reasoning_effort")
         if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
+            from rabbit_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is None:
                 logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)

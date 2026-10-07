@@ -22,14 +22,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
-from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
+from rabbit_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ _allowlist_write_lock = threading.Lock()
 
 
 def _home_key() -> str:
-    return str(get_hermes_home().expanduser().resolve())
+    return str(get_rabbit_home().expanduser().resolve())
 
 
 def _forget_home_registrations(registry: Set[tuple], lock: threading.Lock) -> None:
@@ -82,7 +82,7 @@ def _payload_fields(kwargs: Dict[str, Any]) -> Dict[str, Any]:
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
-    from hermes_cli.profiles import get_active_profile_name
+    from rabbit_cli.profiles import get_active_profile_name
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
@@ -144,14 +144,14 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
-    if env_var_enabled("HERMES_SAFE_MODE"):  # hooks are user customizations too — fire zero user-configured code
-        logger.info("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
+    if env_var_enabled("RABBIT_SAFE_MODE"):  # hooks are user customizations too — fire zero user-configured code
+        logger.info("RABBIT_SAFE_MODE=1 — shell-hook registration skipped")
         return []
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
     specs = _parse_hooks_block(cfg.get("hooks"))
     if not specs:
         return []
-    from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
+    from rabbit_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
     manager, home_key, registered = get_plugin_manager(), _home_key(), []
     # Idempotence + allowlist read under the lock; TTY prompt outside it; mutation re-takes the lock and re-checks.
     for spec in specs:
@@ -162,7 +162,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
             already_allowlisted = _is_allowlisted(spec.event, spec.command)
         if not already_allowlisted and not _prompt_and_record(spec.event, spec.command, accept_hooks=effective_accept):
             logger.warning("shell hook for %s (%s) not allowlisted — skipped. Use --accept-hooks / "
-                           "HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.",
+                           "RABBIT_ACCEPT_HOOKS=1 / hooks_auto_accept: true, or approve at the TTY prompt next run.",
                            spec.event, spec.command)
             continue
         with _registered_lock:
@@ -177,7 +177,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]], *, accept_hooks: bool = 
 
 
 def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
-    """Parse config hooks without registering (``hermes hooks list`` / doctor)."""
+    """Parse config hooks without registering (``rabbit hooks list`` / doctor)."""
     return _parse_hooks_block(cfg.get("hooks")) if isinstance(cfg, dict) else []
 
 
@@ -190,13 +190,13 @@ def re_register_config_hooks() -> None:
     startup (they are config-owned, not plugin-owned, so the ledger cannot restore them). Clear the
     idempotence set and re-run ``register_from_config()`` so hooks are wired again (#60036 / PR #60267;
     tracking #64178 — salvaged from PR #64188).
-    Only the idempotence keys for the *current* Hermes home are cleared — ``discover_and_load(force=True)``
+    Only the idempotence keys for the *current* Rabbit home are cleared — ``discover_and_load(force=True)``
     only unloads the manager scoped to that one home, so clearing every home's keys would make a
     force-reload in profile A drop profile B's still-live registration from the ledger and duplicate it on
     B's next registration call (#92682 review).
     """
     _forget_home_registrations(_registered, _registered_lock)
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
     register_from_config(load_config())
 
 
@@ -210,7 +210,7 @@ def reset_for_tests() -> None:
 
 def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
-    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+    from rabbit_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if not isinstance(hooks_cfg, dict):
         return []
     specs: List[ShellHookSpec] = []
@@ -286,7 +286,7 @@ _POPEN_ERRORS = ((FileNotFoundError, "command not found"), (PermissionError, "co
 
 # A hook configured as a bare script path runs on POSIX because the kernel reads its shebang.
 # CreateProcess has no such mechanism and answers WinError 193 ("%1 is not a valid Win32
-# application") for a text file, so every ``command: "~/.hermes/agent-hooks/x.sh"`` example in
+# application") for a text file, so every ``command: "~/.rabbit/agent-hooks/x.sh"`` example in
 # the hooks docs — the canonical shape — fails on Windows while the same config works everywhere
 # else. Map the suffixes that shape uses to their interpreter; unmapped suffixes keep the OS
 # failure so a typo still reads as "command not found" rather than a mystery interpreter error.
@@ -328,7 +328,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
     popen_kwargs: Dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
-    # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
+    # RABBIT_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
     from agent.secret_scope import is_multiplex_active
@@ -400,7 +400,7 @@ def _evaluate_result(
       block instead of silently contributing nothing.
 
     Shared by the live callback path (:func:`_make_callback`) and the CLI
-    test helper (:func:`run_once`) so ``hermes hooks test`` reflects
+    test helper (:func:`run_once`) so ``rabbit hooks test`` reflects
     production behaviour exactly.
     """
     blocking_event = spec.event in _BLOCKING_EVENTS
@@ -458,8 +458,8 @@ def _block_message(primary: Any, secondary: Any) -> str:
     return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
-# pre_tool_call dialects in check order — Hermes ``action`` then Claude-Code ``decision`` — as (verb key,
-# block-message primary, secondary, modify payload key); both translate to the canonical Hermes shape.
+# pre_tool_call dialects in check order — Rabbit ``action`` then Claude-Code ``decision`` — as (verb key,
+# block-message primary, secondary, modify payload key); both translate to the canonical Rabbit shape.
 _PRE_TOOL_DIALECTS = (("action", "message", "reason", "args"), ("decision", "reason", "message", "tool_input"))
 
 
@@ -470,7 +470,7 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for verb, _, _, payload in _PRE_TOOL_DIALECTS:
         if data.get(verb) == "modify" and isinstance(data.get(payload), dict):
             return {"action": "modify", "args": data[payload]}
-    # Hermes-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
+    # Rabbit-only escalation to the human-approval gate (#92553). Claude-Code's ``decision:
     # approve`` means auto-ALLOW, so it is deliberately not mapped onto this.
     if data.get("action") == "approve":
         directive: Dict[str, Any] = {"action": "approve"}
@@ -483,7 +483,7 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    # "continue" (Hermes) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
+    # "continue" (Rabbit) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
     if action in {"continue", "block"} and isinstance(message, str) and message.strip():
@@ -500,7 +500,7 @@ _RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
-    """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
+    """Translate stdout JSON into a Rabbit wire-shape dict, or ``None``."""
     stdout = (stdout or "").strip()
     if not stdout:
         return None
@@ -516,7 +516,7 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
 def allowlist_path() -> Path:
     """Path to the per-user shell-hook allowlist file."""
-    return get_hermes_home() / ALLOWLIST_FILENAME
+    return get_rabbit_home() / ALLOWLIST_FILENAME
 
 
 def load_allowlist() -> Dict[str, Any]:
@@ -540,7 +540,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     except OSError as exc:
         logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
                        "but the next startup will re-prompt (or skip registration on non-TTY runs without "
-                       "--accept-hooks / HERMES_ACCEPT_HOOKS).", p, exc)
+                       "--accept-hooks / RABBIT_ACCEPT_HOOKS).", p, exc)
 
 
 def _is_allowlisted(event: str, command: str) -> bool:
@@ -578,7 +578,7 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
     if not sys.stdin.isatty():
         return False
     print(
-        f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"
+        f"\n⚠ Rabbit is about to register a shell hook that will run a\n  command on your behalf.\n\n"
         f"    Event:   {event}\n    Command: {command}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n  commands you trust."
     )
@@ -620,14 +620,14 @@ def _command_script_path(command: str) -> str:
 
 
 def _resolve_effective_accept(cfg: Dict[str, Any], accept_hooks_arg: bool) -> bool:
-    """Any truthy opt-in channel wins: explicit arg, HERMES_ACCEPT_HOOKS, hooks_auto_accept."""
-    if accept_hooks_arg or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
+    """Any truthy opt-in channel wins: explicit arg, RABBIT_ACCEPT_HOOKS, hooks_auto_accept."""
+    if accept_hooks_arg or os.environ.get("RABBIT_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     return cfg_val if isinstance(cfg_val, bool) else isinstance(cfg_val, str) and cfg_val.strip().lower() in _TRUTHY
 
 
-# --- Introspection (used by `hermes hooks` CLI) ---
+# --- Introspection (used by `rabbit hooks` CLI) ---
 
 def allowlist_entry_for(event: str, command: str) -> Optional[Dict[str, Any]]:
     """Return the allowlist record for this pair, if any."""
@@ -656,7 +656,7 @@ def script_is_executable(command: str) -> bool:
 
 
 def run_once(spec: ShellHookSpec, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Fire one hook with a synthetic payload (``hermes hooks test`` / doctor) through the production path."""
+    """Fire one hook with a synthetic payload (``rabbit hooks test`` / doctor) through the production path."""
     result = _spawn(spec, _serialize_payload(spec.event, kwargs))
     result["parsed"] = _evaluate_result(spec, result)
     return result

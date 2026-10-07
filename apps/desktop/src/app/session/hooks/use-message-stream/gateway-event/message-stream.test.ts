@@ -6,7 +6,7 @@ const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
 
 vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterTurn }))
 
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventName } from '@rabbit/shared'
 
 import { handleMessageStreamEvent } from './message-stream'
 import type { GatewayEventContext } from './types'
@@ -28,7 +28,7 @@ function context(type: GatewayEventName): GatewayEventContext {
       lastCwdInfoSessionRef: { current: null },
       nativeSubagentSessionsRef: { current: new Set() },
       queryClient: {} as GatewayEventContext['deps']['queryClient'],
-      refreshHermesConfig: vi.fn(async () => undefined),
+      refreshRabbitConfig: vi.fn(async () => undefined),
       scheduleSessionsRefresh: vi.fn(),
       sessionInterrupted: vi.fn(() => false),
       sessionStateByRuntimeIdRef: { current: new Map() },

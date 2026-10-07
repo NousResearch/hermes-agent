@@ -83,14 +83,14 @@ export function PetOverlayApp() {
   const setIgnore = (ignore: boolean) => {
     if (ignoreRef.current !== ignore) {
       ignoreRef.current = ignore
-      window.hermesDesktop?.petOverlay?.setIgnoreMouse(ignore)
+      window.rabbitDesktop?.petOverlay?.setIgnoreMouse(ignore)
     }
   }
 
   // Mirror pushed state into the shared atoms so PetSprite/PetBubble just work.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    const off = window.hermesDesktop?.petOverlay?.onState(payload => {
+    const off = window.rabbitDesktop?.petOverlay?.onState(payload => {
       setPetInfo(payload.info)
       $petActivity.set(payload.activity ?? {})
       setBusy(Boolean(payload.busy))
@@ -113,7 +113,7 @@ export function PetOverlayApp() {
 
     // Tell the main renderer we're mounted so it pushes the current frame (the
     // subscribe-time pushes during open() can land before this view exists).
-    window.hermesDesktop?.petOverlay?.control({ type: 'ready' })
+    window.rabbitDesktop?.petOverlay?.control({ type: 'ready' })
 
     return off
   }, [])
@@ -191,7 +191,7 @@ export function PetOverlayApp() {
   useEffect(() => {
     composerOpenRef.current = composerOpen
 
-    window.hermesDesktop?.petOverlay?.setFocusable(composerOpen)
+    window.rabbitDesktop?.petOverlay?.setFocusable(composerOpen)
 
     if (composerOpen) {
       setIgnore(false)
@@ -229,7 +229,7 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
-    window.hermesDesktop?.petOverlay?.setBounds({
+    window.rabbitDesktop?.petOverlay?.setBounds({
       height: drag.height,
       width: drag.width,
       x: e.screenX - drag.offX,
@@ -254,7 +254,7 @@ export function PetOverlayApp() {
 
       // Remember the spot on the desktop (screen coords) so the pet reopens here
       // next time / after a restart.
-      window.hermesDesktop?.petOverlay?.control({
+      window.rabbitDesktop?.petOverlay?.control({
         bounds: { height: drag.height, width: drag.width, x: e.screenX - drag.offX, y: e.screenY - drag.offY },
         type: 'bounds'
       })
@@ -264,7 +264,7 @@ export function PetOverlayApp() {
 
     // Shift-click always pops the pet back in (no double-click ambiguity).
     if (e.shiftKey) {
-      window.hermesDesktop?.petOverlay?.control({ type: 'pop-in' })
+      window.rabbitDesktop?.petOverlay?.control({ type: 'pop-in' })
 
       return
     }
@@ -274,7 +274,7 @@ export function PetOverlayApp() {
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current)
       clickTimerRef.current = undefined
-      window.hermesDesktop?.petOverlay?.control({ type: 'toggle-app' })
+      window.rabbitDesktop?.petOverlay?.control({ type: 'toggle-app' })
 
       return
     }
@@ -289,7 +289,7 @@ export function PetOverlayApp() {
     const text = draft.trim()
 
     if (text) {
-      window.hermesDesktop?.petOverlay?.control({ text, type: 'submit' })
+      window.rabbitDesktop?.petOverlay?.control({ text, type: 'submit' })
     }
 
     setDraft('')
@@ -299,7 +299,7 @@ export function PetOverlayApp() {
   const openApp = () => {
     // Hide the icon immediately; the main renderer also clears the source flag.
     setUnread(false)
-    window.hermesDesktop?.petOverlay?.control({ type: 'open-app' })
+    window.rabbitDesktop?.petOverlay?.control({ type: 'open-app' })
   }
 
   // Alt+wheel over the popped-out pet resizes it. The overlay has no gateway,
@@ -309,7 +309,7 @@ export function PetOverlayApp() {
   const onScale = useCallback((next: number, anchor: PetZoomAnchor) => {
     zoomAnchorRef.current = anchor
     setPetInfo({ ...$petInfo.get(), scale: next })
-    window.hermesDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
+    window.rabbitDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
   }, [])
 
   usePetZoomGesture(petRef, onScale, Boolean(info.enabled && info.spritesheetBase64))
@@ -358,8 +358,8 @@ export function PetOverlayApp() {
       y: Math.round(window.screenY + ay - (ay - (curH - PET_PADDING_BOTTOM)) * ratio - (height - PET_PADDING_BOTTOM))
     }
 
-    window.hermesDesktop?.petOverlay?.setBounds(bounds)
-    window.hermesDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
+    window.rabbitDesktop?.petOverlay?.setBounds(bounds)
+    window.rabbitDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
   }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH])
 
   if (!info.enabled || !info.spritesheetBase64) {
@@ -448,7 +448,7 @@ export function PetOverlayApp() {
               stopPropagation keeps a click from starting a window drag. */}
           {unread && (
             <button
-              aria-label="Open in Hermes"
+              aria-label="Open in Rabbit"
               onClick={openApp}
               onPointerDown={e => e.stopPropagation()}
               onPointerUp={e => e.stopPropagation()}

@@ -18,7 +18,7 @@ export async function reachablePreviewUrl(url: string): Promise<string> {
   }
 
   try {
-    return (await window.hermesDesktop?.reachPreviewUrl?.(url)) || url
+    return (await window.rabbitDesktop?.reachPreviewUrl?.(url)) || url
   } catch {
     // An older Electron main has no such handler; the URL is no worse for it.
     return url

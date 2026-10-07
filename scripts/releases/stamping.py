@@ -28,7 +28,7 @@ def stamp(tree: Path, version: str) -> list[Path]:
     """Rewrite external builder version inputs under ``tree``."""
     written: list[Path] = []
 
-    nix_package = tree / "nix" / "hermes-agent.nix"
+    nix_package = tree / "nix" / "rabbit-agent.nix"
     if _rewrite(
         nix_package,
         r'^  version \? "[^"]+",',

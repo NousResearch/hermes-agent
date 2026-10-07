@@ -51,16 +51,16 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
   }, [bootstrap.status])
 
   const isUpdate = mode === 'update'
-  const title = bootstrap.status === 'completed' ? 'Done' : isUpdate ? 'Updating Hermes' : 'Setting up Hermes Agent'
+  const title = bootstrap.status === 'completed' ? 'Done' : isUpdate ? 'Updating Rabbit' : 'Setting up Rabbit Agent'
 
   const description = isUpdate
-    ? 'Hermes is updating to the latest version — this only takes a moment.'
-    : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
+    ? 'Rabbit is updating to the latest version — this only takes a moment.'
+    : 'This is a one-time setup. The Rabbit installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
 
   const pct = Math.round(progress.fraction * 100)
 
   return (
-    <div className="hermes-fade-in flex h-full flex-col">
+    <div className="rabbit-fade-in flex h-full flex-col">
       {/* Header: brand + title + description, matching the desktop install overlay. */}
       <div className="flex shrink-0 items-start gap-4 px-6 pt-6 pb-4">
         <BrandMark className="size-11" />

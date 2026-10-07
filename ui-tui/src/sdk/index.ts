@@ -67,4 +67,4 @@ export {
   type WidgetRenderCtx
 } from './types.js'
 export { loadUserWidgets, type UserWidgetLoadResult, widgetSdk, type WidgetSdk } from './userWidgets.js'
-export { contrastRatio, mix, relativeLuminance } from '@hermes/shared/color'
+export { contrastRatio, mix, relativeLuminance } from '@rabbit/shared/color'

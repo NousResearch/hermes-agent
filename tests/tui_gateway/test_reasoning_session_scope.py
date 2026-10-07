@@ -55,7 +55,7 @@ class TestSessionInfoReasoningEffort:
         assert info["reasoning_effort_wire"] == ""
 
     def test_wire_level_is_what_the_route_actually_sends(self) -> None:
-        """`ultra` is a Hermes-internal step (#61634): the route clamps it, and the Desktop must be able to
+        """`ultra` is a Rabbit-internal step (#61634): the route clamps it, and the Desktop must be able to
         say so ("ultra sends max on this route") instead of presenting Ultra as a distinct wire level."""
         info = _session_info(_agent({"enabled": True, "effort": "ultra"}))
         assert info["reasoning_effort"] == "ultra"

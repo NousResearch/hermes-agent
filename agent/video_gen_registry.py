@@ -6,7 +6,7 @@ consumed by the ``video_generate`` tool. The active provider is
 fails closed. If unset, the single *available* registered provider is used
 (mirrors ``agent/image_gen_registry.py`` minus its legacy ``fal`` preference)
 so a box with credentials for only one backend auto-selects it; otherwise None
-and the tool points the user at ``hermes tools``.
+and the tool points the user at ``rabbit tools``.
 """
 
 from __future__ import annotations

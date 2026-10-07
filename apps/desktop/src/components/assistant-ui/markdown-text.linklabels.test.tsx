@@ -27,7 +27,7 @@ describe('MarkdownLink authored labels', () => {
   it('prefers the authored inline-code label over a fetched page title', async () => {
     const fetchLinkTitle = vi.fn().mockResolvedValue('Releases · example')
 
-    ;(window as unknown as { hermesDesktop: object }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: object }).rabbitDesktop = {
       fetchLinkTitle,
       openExternal: vi.fn().mockResolvedValue(undefined)
     }
@@ -40,7 +40,7 @@ describe('MarkdownLink authored labels', () => {
       await screen.findByText('v1.0.1')
       expect(fetchLinkTitle).not.toHaveBeenCalled()
     } finally {
-      delete (window as unknown as { hermesDesktop?: object }).hermesDesktop
+      delete (window as unknown as { rabbitDesktop?: object }).rabbitDesktop
     }
   })
 

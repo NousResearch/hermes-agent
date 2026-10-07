@@ -9,11 +9,11 @@ from types import SimpleNamespace as NS
 root = pathlib.Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root)); os.chdir(root)
 for k in list(os.environ):
-    if k.startswith('HERMES_') or k.endswith(('_API_KEY', '_TOKEN')):
+    if k.startswith('RABBIT_') or k.endswith(('_API_KEY', '_TOKEN')):
         os.environ.pop(k, None)
 home = tempfile.TemporaryDirectory(prefix='deadline-probe-')
-os.environ['HERMES_HOME'] = home.name
-os.environ['HERMES_DISABLE_TELEMETRY'] = '1'
+os.environ['RABBIT_HOME'] = home.name
+os.environ['RABBIT_DISABLE_TELEMETRY'] = '1'
 pathlib.Path(home.name, 'config.yaml').write_text('timeouts:\n  tools:\n    sequential_call: 0.3\ndelegation:\n  max_summary_chars: 24000\n', encoding='utf-8')
 # Any accidental provider, metadata, or telemetry request fails closed.
 def no_connect(*args, **kwargs):
@@ -84,7 +84,7 @@ def record(b,raw):
 chat={'prompt_tokens':30000,'completion_tokens':100,'prompt_tokens_details':{'cached_tokens':20000,'cache_write_tokens':5000}}
 anth={'input_tokens':5000,'output_tokens':100,'cache_read_input_tokens':20000,'cache_creation_input_tokens':5000}
 responses={'input_tokens':30000,'output_tokens':100,'input_tokens_details':{'cached_tokens':20000,'cache_write_tokens':5000}}
-cases=[('openai', 'chat_completions',chat),('nous','chat_completions',chat),('openrouter','chat_completions',chat),('anthropic','anthropic_messages',anth),('minimax','anthropic_messages',anth),('minimax-cn','anthropic_messages',anth),('bedrock','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'cache_read_input_tokens':20000,'cache_creation_input_tokens':5000}),('google','chat_completions',chat),('deepseek','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'prompt_cache_hit_tokens':20000}),('moonshot','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'cached_tokens':20000}),('openai-codex','codex_responses',responses),('openai-compat','chat_completions',{'input_tokens':30000,'output_tokens':100})]
+cases=[('openai', 'chat_completions',chat),('openrouter','chat_completions',chat),('anthropic','anthropic_messages',anth),('minimax','anthropic_messages',anth),('minimax-cn','anthropic_messages',anth),('bedrock','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'cache_read_input_tokens':20000,'cache_creation_input_tokens':5000}),('google','chat_completions',chat),('deepseek','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'prompt_cache_hit_tokens':20000}),('moonshot','chat_completions',{'prompt_tokens':30000,'completion_tokens':100,'cached_tokens':20000}),('openai-codex','codex_responses',responses),('openai-compat','chat_completions',{'input_tokens':30000,'output_tokens':100})]
 usage_rows=[]
 for provider,mode,raw in cases:
     b=parent(provider,mode)

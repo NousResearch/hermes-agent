@@ -142,7 +142,7 @@ def test_openai_streamer_forwards_consent_attestation(monkeypatch):
             self.audio.speech.with_streaming_response = _StreamingCreate()
 
     monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("rabbit_cli.config.get_env_value", lambda key, *args: None)
     monkeypatch.setattr("openai.OpenAI", _OpenAI)
 
     section = {"api_key": "k", "consent_attestation": "I have consent"}
@@ -178,7 +178,7 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
             self.audio.speech.with_streaming_response = _StreamingCreate()
 
     monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("rabbit_cli.config.get_env_value", lambda key, *args: None)
     monkeypatch.setattr("openai.OpenAI", _OpenAI)
 
     config = {
@@ -346,7 +346,7 @@ def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch
     from urllib.parse import parse_qs, urlsplit
 
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     home = tmp_path / profile
     home.mkdir()
@@ -368,7 +368,7 @@ def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch
         ws.send(json.dumps({"type": "audio.done"}))
 
     url, server = _fake_xai_server(handler)
-    home_token = set_hermes_home_override(home)
+    home_token = set_rabbit_home_override(home)
     secret_token = set_secret_scope(build_profile_secret_scope(home))
     try:
         section = {"streaming_url": url, "voice_id": "test-voice", "language": "test-language"}
@@ -389,7 +389,7 @@ def test_xai_stream_preserves_profile_and_delivers_before_completion(monkeypatch
     finally:
         first_delivered.set()
         reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+        reset_rabbit_home_override(home_token)
         server.shutdown()
 
 

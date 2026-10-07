@@ -1,8 +1,8 @@
-import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
+import { applyDocumentLocale, isRecord } from '@rabbit/shared/i18n'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getHermesConfigRecord, type HermesConfigRecord, retainConfigReadOrigin, saveHermesConfig } from '@/hermes'
+import { getRabbitConfigRecord, type RabbitConfigRecord, retainConfigReadOrigin, saveRabbitConfig } from '@/rabbit'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -18,37 +18,37 @@ import { $requestedLocale, setRuntimeI18nLocale } from './runtime'
 import type { Locale, Translations } from './types'
 
 export interface I18nConfigClient {
-  getConfig: () => Promise<HermesConfigRecord>
-  saveConfig: (config: HermesConfigRecord) => Promise<{ ok: boolean }>
+  getConfig: () => Promise<RabbitConfigRecord>
+  saveConfig: (config: RabbitConfigRecord) => Promise<{ ok: boolean }>
 }
 
 const defaultConfigClient: I18nConfigClient = {
   getConfig: () => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    if (typeof window === 'undefined' || !window.rabbitDesktop?.api) {
       return Promise.resolve({})
     }
 
     // Merged defaults make an unset language indistinguishable from saved English.
     // Older backends ignore the option and keep returning English as before.
-    return getHermesConfigRecord(undefined, { includeDefaults: false })
+    return getRabbitConfigRecord(undefined, { includeDefaults: false })
   },
   saveConfig: config => {
-    if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    if (typeof window === 'undefined' || !window.rabbitDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    // No explicit scope: saveHermesConfig resolves the record's captured read
+    // No explicit scope: saveRabbitConfig resolves the record's captured read
     // origin itself (resolveConfigWriteScope), and withConfigDisplayLanguage
     // retains that origin onto the derived record.
-    return saveHermesConfig(config, undefined, { preserveLanguage: true })
+    return saveRabbitConfig(config, undefined, { preserveLanguage: true })
   }
 }
 
-export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
+export function getConfigDisplayLanguage(config: RabbitConfigRecord): unknown {
   return isRecord(config.display) ? config.display.language : undefined
 }
 
-export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
+export function withConfigDisplayLanguage(config: RabbitConfigRecord, locale: Locale): RabbitConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
   return retainConfigReadOrigin(
@@ -195,7 +195,7 @@ export function I18nProvider({
 
           // Keep inference unsaved so OS language changes apply on the next boot
           // until the user explicitly picks a language.
-          const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
+          const machineProfile = await window.rabbitDesktop?.getMachineProfile?.().catch(() => null)
 
           if (!cancelled && !userLocaleRef.current) {
             setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))

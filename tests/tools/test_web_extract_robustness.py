@@ -14,9 +14,9 @@ from tools import web_tools_truncate
 
 
 def test_store_full_text_is_bounded(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     # Force the cache dir under the temp home.
-    from hermes_constants import get_hermes_dir  # noqa: F401
+    from rabbit_constants import get_rabbit_dir  # noqa: F401
     huge = "x\n" * (web_tools_truncate.MAX_STORED_TEXT_CHARS)  # > MAX_STORED_TEXT_CHARS chars
     assert len(huge) > web_tools_truncate.MAX_STORED_TEXT_CHARS
     path = web_tools_truncate._store_full_text("https://example.com/big", huge)
@@ -28,7 +28,7 @@ def test_store_full_text_is_bounded(tmp_path, monkeypatch):
 
 
 def test_small_page_not_truncated_no_footer(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     content = "short page\nwith a few lines\n"
     model_text, truncated = web_tools_truncate._truncate_with_footer(
         content, "https://example.com/s", char_limit=15000

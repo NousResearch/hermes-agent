@@ -253,18 +253,18 @@ class TestYamlConfigLoading:
     """Tests for reply_to_mode loaded from config.yaml discord section."""
 
     def _write_config(self, tmp_path, content: str):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
-        return hermes_home
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        (rabbit_home / "config.yaml").write_text(content, encoding="utf-8")
+        return rabbit_home
 
 
     def test_extra_reply_to_mode_off(self, tmp_path, monkeypatch):
         """discord.extra.reply_to_mode is also honoured."""
-        hermes_home = self._write_config(
+        rabbit_home = self._write_config(
             tmp_path, "discord:\n  extra:\n    reply_to_mode: \"off\"\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
 
         load_gateway_config()
@@ -274,11 +274,11 @@ class TestYamlConfigLoading:
 
     def test_top_level_takes_precedence_over_extra(self, tmp_path, monkeypatch):
         """discord.reply_to_mode wins over discord.extra.reply_to_mode."""
-        hermes_home = self._write_config(
+        rabbit_home = self._write_config(
             tmp_path,
             "discord:\n  reply_to_mode: all\n  extra:\n    reply_to_mode: \"off\"\n",
         )
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
 
         load_gateway_config()

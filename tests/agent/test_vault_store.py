@@ -1,5 +1,5 @@
 """``VaultStore._read_all`` must surface every decryptable-but-malformed vault
-file as ``VaultError`` so callers that catch ``VaultError`` (the ``hermes vault``
+file as ``VaultError`` so callers that catch ``VaultError`` (the ``rabbit vault``
 commands, ``vault.*`` RPC handlers) get the designed error path instead of a raw
 traceback. Corruption arrives via partial-write survivors, manual edits of the
 envelope, or format drift."""

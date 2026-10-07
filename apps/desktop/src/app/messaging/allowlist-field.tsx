@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
-import type { MessagingEnvVarInfo } from '@/hermes'
+import type { MessagingEnvVarInfo } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 

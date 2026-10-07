@@ -6,7 +6,7 @@ dialect, and ``ProviderProfile.api_mode`` names it. Every gate between the profi
 the delegation resolver) validated the mode against a closed literal set, so the plugin's mode was
 rewritten to ``chat_completions`` and its transport never selected — no error, prose-only turns.
 
-Both tests drive a REAL plugin discovered from an isolated HERMES_HOME rather than the gates in
+Both tests drive a REAL plugin discovered from an isolated RABBIT_HOME rather than the gates in
 isolation, so they fail if any single gate regresses.
 """
 
@@ -37,23 +37,23 @@ register_provider(ProviderProfile(name="__NAME__", auth_type="api_key", env_vars
 
 @pytest.fixture
 def install_dialect_plugin(tmp_path, monkeypatch):
-    """Write a model-provider plugin (optionally registering its transport) under a temp HERMES_HOME."""
+    """Write a model-provider plugin (optionally registering its transport) under a temp RABBIT_HOME."""
     installed: list[tuple[str, str]] = []
 
     def _install(name: str, mode: str, *, register: bool) -> None:
         env = f"{name.upper().replace('-', '_')}_API_KEY"
-        plugin_dir = tmp_path / "hermes" / "plugins" / "model-providers" / name
+        plugin_dir = tmp_path / "rabbit" / "plugins" / "model-providers" / name
         plugin_dir.mkdir(parents=True, exist_ok=True)
         (plugin_dir / "plugin.yaml").write_text(
             f"name: {name}\nkind: model-provider\nversion: 0.0.1\ndescription: dialect fixture\n", encoding="utf-8")
         source = (_PLUGIN_SOURCE.replace("__ENV__", env).replace("__NAME__", name).replace("__MODE__", mode)
                   .replace("__REGISTER__", "yes" if register else "no"))
         (plugin_dir / "__init__.py").write_text(source, encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "rabbit"))
         monkeypatch.setenv(env, "sk-fixture")
         import providers as _pkg
         _pkg._discovered = False
-        for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
+        for mod in [m for m in sys.modules if m.startswith("_rabbit_user_provider")]:
             del sys.modules[mod]
         installed.append((name, mode))
 
@@ -80,8 +80,8 @@ def _agent_ladder_mode(provider: str, base_url: str, api_mode: str) -> str:
 
 def test_registered_plugin_dialect_reaches_every_gate(install_dialect_plugin):
     """profile.api_mode → determine_api_mode → resolve_runtime_provider → agent ladder → delegation."""
-    from hermes_cli.providers import determine_api_mode
-    from hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
+    from rabbit_cli.providers import determine_api_mode
+    from rabbit_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
     from tools.delegate_tool_config import _direct_endpoint_credentials
 
     install_dialect_plugin("example-dialect", "example_dialect", register=True)
@@ -99,8 +99,8 @@ def test_registered_plugin_dialect_reaches_every_gate(install_dialect_plugin):
 
 def test_unregistered_profile_mode_still_degrades_to_chat_completions(install_dialect_plugin):
     """The sets stay closed: a profile naming a transport nobody registered is not admitted."""
-    from hermes_cli.providers import determine_api_mode
-    from hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
+    from rabbit_cli.providers import determine_api_mode
+    from rabbit_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
 
     install_dialect_plugin("example-bogus", "bogus_mode", register=False)
 

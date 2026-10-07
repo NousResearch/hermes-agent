@@ -1,4 +1,4 @@
-"""Tests for CodexEventProjector — codex item/* events → Hermes messages list.
+"""Tests for CodexEventProjector — codex item/* events → Rabbit messages list.
 
 Drives projection against fixture notifications captured from codex 0.130.0
 plus synthetic ones for item types we couldn't auth-test live."""
@@ -109,7 +109,7 @@ def test_successful_marker_ending_output_survives_persisted_replay(tmp_path):
     from agent.codex_runtime import _persist_projected_messages
     from agent.replay_cleanup import canonicalize_replay_history
     from agent.session_persistence import SessionPersistenceMixin
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     output = "Documentation example:\n[Command interrupted]\n"
     item = {"type": "commandExecution", "id": "child", "command": "cat doc", "cwd": str(tmp_path),
@@ -222,7 +222,7 @@ class TestMcpToolCallProjection:
             "server": "obsidian",
             "tool": "search_notes",
             "status": "completed",
-            "arguments": {"query": "hermes"},
+            "arguments": {"query": "rabbit"},
             "result": {"content": [{"text": "found"}]},
             "error": None,
         }
@@ -251,7 +251,7 @@ class TestWebSearchProjection:
         # refreshed transcript drops the card and shows a raw JSON note instead.
         from agent.codex_runtime import _codex_item_to_args, _codex_item_to_tool_name, _stable_call_id
 
-        item = {"type": "webSearch", "id": "ws-1", "query": "Hermes Agent docs"}
+        item = {"type": "webSearch", "id": "ws-1", "query": "Rabbit Agent docs"}
         result = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}})
 
         assert result.is_tool_iteration is True
@@ -312,7 +312,7 @@ class TestHelpers:
 
 class TestRoleAlternationInvariant:
     """The project must never emit two assistant messages back-to-back from
-    one item — that breaks Hermes' message alternation invariant."""
+    one item — that breaks Rabbit' message alternation invariant."""
 
     @pytest.mark.parametrize(
         "item",

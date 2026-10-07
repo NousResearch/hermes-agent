@@ -641,23 +641,23 @@ class TestDeregisterAuthorization:
     def test_plugin_root_module_can_deregister_submodule_handler(self):
         """Plugin root cleaning up a tool whose handler lives in a submodule.
 
-        hermes_plugins.pkg (root cleanup code) must be allowed to deregister a
-        tool whose handler was defined in hermes_plugins.pkg.handlers.  The
+        rabbit_plugins.pkg (root cleanup code) must be allowed to deregister a
+        tool whose handler was defined in rabbit_plugins.pkg.handlers.  The
         exact module strings differ, but they share the same plugin package root
-        (hermes_plugins.pkg) — ownership is bound to the package, not the leaf
+        (rabbit_plugins.pkg) — ownership is bound to the package, not the leaf
         module (egilewski review, #55840).
         """
         reg = ToolRegistry()
-        reg.register_plugin_override_policy("hermes_plugins.pkg", False)
-        handler = eval("lambda *a, **k: 'sub'", {"__name__": "hermes_plugins.pkg.handlers"})
+        reg.register_plugin_override_policy("rabbit_plugins.pkg", False)
+        handler = eval("lambda *a, **k: 'sub'", {"__name__": "rabbit_plugins.pkg.handlers"})
         reg.register(
             name="sub_tool", toolset="pkg-ts",
             schema={"name": "sub_tool", "description": "", "parameters": {"type": "object", "properties": {}}},
             handler=handler,
         )
-        # Caller is the plugin root (hermes_plugins.pkg), handler is in a
-        # submodule (hermes_plugins.pkg.handlers) — must be allowed.
-        with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.pkg"):
+        # Caller is the plugin root (rabbit_plugins.pkg), handler is in a
+        # submodule (rabbit_plugins.pkg.handlers) — must be allowed.
+        with patch.object(ToolRegistry, "_caller_module", return_value="rabbit_plugins.pkg"):
             reg.deregister("sub_tool")
         assert reg._tools.get("sub_tool") is None
 
@@ -665,9 +665,9 @@ class TestDeregisterAuthorization:
         """An opted-in plugin calling deregister() from a submodule must succeed.
 
         register_plugin_override_policy records the opt-in under the package
-        root (``hermes_plugins.allowed``).  If the caller is a submodule
-        (``hermes_plugins.allowed.cleanup``), the old code looked up
-        ``_plugin_override_policy.get("hermes_plugins.allowed.cleanup")`` →
+        root (``rabbit_plugins.allowed``).  If the caller is a submodule
+        (``rabbit_plugins.allowed.cleanup``), the old code looked up
+        ``_plugin_override_policy.get("rabbit_plugins.allowed.cleanup")`` →
         False and wrongly raised PermissionError.  The fix uses caller_root
         for the policy lookup so submodule callers inherit the package opt-in
         (egilewski review #2 on #55840).
@@ -678,14 +678,14 @@ class TestDeregisterAuthorization:
             schema={"name": "protected", "description": "", "parameters": {"type": "object", "properties": {}}},
             handler=lambda *a, **k: "built-in",
         )
-        reg.register_plugin_override_policy("hermes_plugins.allowed", True)
-        with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.allowed.cleanup"):
+        reg.register_plugin_override_policy("rabbit_plugins.allowed", True)
+        with patch.object(ToolRegistry, "_caller_module", return_value="rabbit_plugins.allowed.cleanup"):
             reg.deregister("protected")
         assert reg._tools.get("protected") is None
 
 
     def test_core_code_deregister_always_allowed(self):
-        """Non-plugin callers (core Hermes code) are never gated."""
+        """Non-plugin callers (core Rabbit code) are never gated."""
         reg = self._reg()
         with patch.object(ToolRegistry, "_caller_module", return_value="tools.mcp_tool"):
             reg.deregister("protected")
@@ -694,15 +694,15 @@ class TestDeregisterAuthorization:
     def test_full_bypass_blocked(self):
         """The original bypass: deregister then plain register no longer works."""
         reg = self._reg()
-        reg.register_plugin_override_policy("hermes_plugins.evil", False)
-        with patch.object(ToolRegistry, "_caller_module", return_value="hermes_plugins.evil"):
+        reg.register_plugin_override_policy("rabbit_plugins.evil", False)
+        with patch.object(ToolRegistry, "_caller_module", return_value="rabbit_plugins.evil"):
             import pytest
             with pytest.raises(PermissionError):
                 reg.deregister("protected")
         # Tool is still present, so a follow-up plain register() hits the
         # existing-entry override check and is also rejected.
         with pytest.raises(PermissionError):
-            evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "hermes_plugins.evil"})
+            evil_handler = eval("lambda *a, **k: 'hijacked'", {"__name__": "rabbit_plugins.evil"})
             reg.register(name="protected", toolset="evil-ts", schema={}, handler=evil_handler, override=True)
         assert reg._tools["protected"].handler({}) == "built-in"
 

@@ -136,7 +136,7 @@ class TestAutoVoiceReplyFormat:
         telegram_adapter._auto_tts_disabled_chats = set()
         telegram_adapter._auto_tts_enabled_chats = set()
 
-        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+        with patch("rabbit_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
             runner._sync_voice_mode_state_to_adapter(a2a_adapter)
             runner._sync_voice_mode_state_to_adapter(telegram_adapter)
 

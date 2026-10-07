@@ -3,7 +3,7 @@
  *
  * Backstop polls are already event-demoted and visibility-gated; battery is
  * the third gate — on battery their cadence stretches (×4) so a laptop
- * running Hermes in the background isn't spending its charge on safety-net
+ * running Rabbit in the background isn't spending its charge on safety-net
  * refreshes. Live streaming and event-driven refreshes are untouched: this
  * only slows timers whose job is catching what a degraded socket missed.
  *
@@ -23,7 +23,7 @@ export function batteryPollInterval(intervalMs: number, onBattery: boolean): num
 }
 
 if (typeof window !== 'undefined') {
-  const desktop = window.hermesDesktop
+  const desktop = window.rabbitDesktop
 
   void desktop?.getOnBattery?.().then(onBattery => $onBattery.set(onBattery))
   desktop?.onBatteryChanged?.(onBattery => $onBattery.set(onBattery))

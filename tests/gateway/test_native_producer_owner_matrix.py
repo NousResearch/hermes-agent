@@ -8,18 +8,18 @@ import pytest
 from gateway.config import GatewayConfig, PlatformConfig
 from gateway.run import GatewayRunner
 from gateway.platforms.base import SendResult
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 @pytest.fixture(params=[None, False, True, "override", "managed", "null"])
 def owners(request, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     root.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     managed = tmp_path / "managed"
     managed.mkdir()
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(managed))
     (root / "config.yaml").write_text('display: {suppress_warning_notifications: true}')
     mode = request.param
     if mode == "managed":
@@ -48,14 +48,14 @@ async def test_slack_upload_failure_owner_scope_keeps_caption_and_result(owners,
     adapter.gateway_runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
     attempts, wire = [], []
     async def upload(**kwargs):
-        attempts.append((get_hermes_home(), kwargs))
+        attempts.append((get_rabbit_home(), kwargs))
         raise RuntimeError("upload rejected")
     client = SimpleNamespace(files_upload_v2=upload)
     adapter._app = SimpleNamespace(client=client)
     adapter._client_for = lambda chat_id, metadata: client
     adapter._dm_target = AsyncMock(return_value="C123")
     async def send(chat_id, content, **kwargs):
-        wire.append((get_hermes_home(), content, kwargs))
+        wire.append((get_rabbit_home(), content, kwargs))
         return SendResult(success=True, message_id="fallback")
     adapter.send = send
     path = tmp_path / "media.bin"
@@ -74,7 +74,7 @@ async def test_slack_upload_failure_owner_scope_keeps_caption_and_result(owners,
         assert "Warning: requested caption" in wire[-1][1]
         assert result.success is not suppressed(name)
         assert result.message_id == (None if suppressed(name) else "fallback")
-        assert get_hermes_home() == root
+        assert get_rabbit_home() == root
     assert "upload rejected" in caplog.text
 
 
@@ -94,10 +94,10 @@ async def test_signal_pacing_owner_scope_keeps_acquisition_and_upload(owners, tm
     adapter._with_target = AsyncMock(side_effect=lambda params, chat: params)
     uploads, warnings = [], []
     async def rpc(method, params, **kwargs):
-        uploads.append((get_hermes_home(), params))
+        uploads.append((get_rabbit_home(), params))
         return {"timestamp": 123}
     async def send(*args, **kwargs):
-        warnings.append(get_hermes_home())
+        warnings.append(get_rabbit_home())
         return SendResult(success=True)
     adapter._rpc, adapter.send = rpc, send
     for name in ("a", "b", "a"):
@@ -112,6 +112,6 @@ async def test_signal_pacing_owner_scope_keeps_acquisition_and_upload(owners, tm
             assert warnings[-1] == root / "profiles" / name
         assert uploads[-1][0] == root / "profiles" / name
         assert uploads[-1][1]["attachments"] == [str(path)]
-        assert get_hermes_home() == root
+        assert get_rabbit_home() == root
     assert scheduler.acquire.await_count == 3
     assert scheduler.report_rpc_duration.await_count == 3

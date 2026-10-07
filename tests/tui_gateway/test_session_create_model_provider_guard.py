@@ -11,11 +11,11 @@ import pytest
 
 @pytest.fixture
 def _create(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("rabbit_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
 
     (tmp_path / "config.yaml").write_text("model:\n  default: claude-opus-5\n  provider: anthropic\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
     monkeypatch.setattr(server, "_profile_home", lambda *a: None)
@@ -48,7 +48,7 @@ def test_session_create_rejects_incoherent_model_provider_pair_before_any_state(
 @pytest.mark.parametrize("params", [
     {"model": "claude-opus-5", "provider": "anthropic"},  # coherent
     {"model": "claude-opus-5-20261001", "provider": "anthropic"},  # same family, not (yet) listed
-    {"model": "gpt-5.5", "provider": "custom:local"},  # custom endpoint: Hermes cannot know its models
+    {"model": "gpt-5.5", "provider": "custom:local"},  # custom endpoint: Rabbit cannot know its models
     {"model": "gpt-5.5", "provider": "openrouter"},  # aggregator
 ])
 def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params):

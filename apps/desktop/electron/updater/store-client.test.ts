@@ -16,7 +16,7 @@ it('the production runner passes modes, full HWND and isolated payload imports',
 
   const strategy = createStoreStrategy({
     python: 'packaged-python.exe',
-    module: 'hermes_cli.windows_store_update',
+    module: 'rabbit_cli.windows_store_update',
     pythonPath: 'payload-core;payload-deps',
     env: { PYTHONHOME: 'foreign', VIRTUAL_ENV: 'foreign', PYTHONPATH: 'foreign' },
     windowHandle: () => handle,
@@ -46,7 +46,7 @@ it('the production runner passes modes, full HWND and isolated payload imports',
   await strategy.apply()
   expect(calls.map(call => call.args)).toEqual(
     ['check', 'download', 'install'].map(mode => [
-      'hermes_cli.windows_store_update',
+      'rabbit_cli.windows_store_update',
       '--mode',
       mode,
       '--hwnd',

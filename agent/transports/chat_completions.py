@@ -30,7 +30,7 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 # (_rename_client_web_search_for_xai): alias the wire declaration and map the alias back in
 # normalize_response. The alias value matches _CODEX_TOOL_SEARCH_ALIAS from the Codex-side fix for the same
 # reserved-name class (#83122) so the two transports stay consistent.
-_XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
+_XAI_TOOL_SEARCH_ALIAS = "rabbit_tool_search"
 
 # Persistence-only / cross-transport message keys that strict OpenAI-compatible
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
@@ -45,7 +45,7 @@ _HIGH_EFFORTS = {"high", "xhigh", "max", "ultra"}
 def _rename_tool_search_bridge_for_xai(tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Alias the client ``tool_search`` declaration for xAI; returns ``(tools, {alias: "tool_search"})``.
 
-    If a real tool already holds ``hermes_tool_search``, the bridge takes a ``_2``/``_3`` suffix.
+    If a real tool already holds ``rabbit_tool_search``, the bridge takes a ``_2``/``_3`` suffix.
     """
     from agent.transports.codex import _alias_reserved_tools
 
@@ -151,9 +151,9 @@ def is_router_timeout_shim(response: Any) -> bool:
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
-    """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
+    """Clamp Rabbit' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
-    Hermes' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents
+    Rabbit' internal effort set extends the wire vocabulary with ``ultra`` (the /reasoning command documents
     none..xhigh|max|ultra). OpenAI- compatible wires — OpenRouter chief among them — accept exactly
     max|xhigh|high|medium|low|minimal|none and reject the extension with HTTP 400 (#89503). Clamp against
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
@@ -163,7 +163,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
+    """Translate Rabbit/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if not isinstance(reasoning_config, dict):
         return None
     normalized_model = (model or "").strip().lower().removeprefix("google/")
@@ -194,7 +194,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
+    # is stricter (low/high). Clamp Rabbit' wider effort set to what each
     # family accepts so we never forward an undocumented level verbatim.
     if normalized_model.startswith("gemini-3"):
         if "flash" in normalized_model:
@@ -267,9 +267,9 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     later turn once the model is switched (#70233). The stored history keeps the field; only the
     wire copy drops it.
 
-    The Nous Portal read the field too (multi-turn reasoning continuity), but it enforces a
+    Managed-portal routes also read the field (multi-turn reasoning continuity) but enforce a
     cumulative replayed-reasoning budget: replaying stored reasoning_details wedges long
-    sessions with a non-retryable 400 (#118182), so the Portal now strips like every other
+    sessions with a non-retryable 400 (#118182), so those routes strip like every other
     route. Stored history keeps the field, so a route that genuinely replays it (OpenRouter,
     #129037) still receives it.
     """
@@ -655,7 +655,7 @@ class ChatCompletionsTransport(ProviderTransport):
         name = getattr(tc_function, "name", None)
         if tc_function is None or name is None:
             return None
-        # Reverse only aliases THIS request emitted; a real ``hermes_tool_search`` tool stays itself.
+        # Reverse only aliases THIS request emitted; a real ``rabbit_tool_search`` tool stays itself.
         alias_map = self._last_wire_aliases
         if alias_map is None:
             name = "tool_search" if name == _XAI_TOOL_SEARCH_ALIAS else name

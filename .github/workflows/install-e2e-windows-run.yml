@@ -6,21 +6,21 @@
 # new job. The driver's phases share state via the workroot, and every leg
 # runs the REAL user surface for its methods:
 #
-#   desktop-installer@latest    the website's Hermes-Setup.exe, downloaded and
+#   desktop-installer@latest    the website's Rabbit-Setup.exe, downloaded and
 #                               run headed, AutoHotkey clicks Install ->
 #                               Launch, the real Electron window must appear.
 #   installer-script            the irm | iex one-liner: the install.ps1
 #                               shipped AT the OLD ref, headless.
 #   installer-script+desktop    the same one-liner with -IncludeDesktop:
-#                               builds Hermes.exe AND registers Start Menu /
+#                               builds Rabbit.exe AND registers Start Menu /
 #                               Desktop shortcuts.
-#   hermes-update               venv hermes.exe update.
+#   rabbit-update               venv rabbit.exe update.
 #   open-app-update             the app's own Update button, app launched
 #                               from the installed exe under Playwright's
 #                               Electron driver (Settings -> About ->
 #                               "Update now"); the production hand-off chain
 #                               runs untouched.
-#   hermes-desktop-app-update   the same button, app launched via `hermes
+#   rabbit-desktop-app-update   the same button, app launched via `rabbit
 #                               desktop`: the driver captures the product's
 #                               own spawn (argv/cwd/env) and re-executes it
 #                               under Playwright.
@@ -50,7 +50,7 @@ on:
         required: true
         type: string
       update-method:
-        description: 'How the install updates to HEAD. Supported: open-app-update (Update button under Playwright, from a desktop-bearing install), hermes-desktop-app-update (same button, app launched via hermes desktop), hermes-update, installer-script, installer-script+desktop, desktop-installer@latest (re-download Hermes-Setup.exe, AHK clicks Install over the existing install).'
+        description: 'How the install updates to HEAD. Supported: open-app-update (Update button under Playwright, from a desktop-bearing install), rabbit-desktop-app-update (same button, app launched via rabbit desktop), rabbit-update, installer-script, installer-script+desktop, desktop-installer@latest (re-download Rabbit-Setup.exe, AHK clicks Install over the existing install).'
         required: true
         type: string
       install-ref:
@@ -76,7 +76,7 @@ on:
         description: 'Bootstrap installer to install OLD with. Default: the latest published one — what a user downloads today.'
         required: false
         type: string
-        default: https://hermes-assets.nousresearch.com/Hermes-Setup.exe
+        default: https://rabbit-assets.nousresearch.com/Rabbit-Setup.exe
       timeout-minutes:
         description: 'Job timeout. The install leg does real toolchain work and the update leg a full Electron rebuild.'
         required: false
@@ -130,7 +130,7 @@ jobs:
         uses: ./.github/actions/e2e-screen-record
         with:
           mode: start
-          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+          output: ${{ runner.temp }}/rabbit-bundled-update-recording.mkv
       - name: Install, update and observe native relaunch
         shell: pwsh
         env:
@@ -145,16 +145,16 @@ jobs:
         uses: ./.github/actions/e2e-screen-record
         with:
           mode: stop
-          output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+          output: ${{ runner.temp }}/rabbit-bundled-update-recording.mkv
       - name: Upload native acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: install-e2e-logs-${{ inputs.leg-id }}-bundle-${{ inputs.bundle-arch }}
           path: |
-            ${{ runner.temp }}/hermes-bundled-update/proof/
-            ${{ runner.temp }}/hermes-bundled-update/home/logs/
-            ${{ runner.temp }}/hermes-bundled-update-recording.mkv
+            ${{ runner.temp }}/rabbit-bundled-update/proof/
+            ${{ runner.temp }}/rabbit-bundled-update/home/logs/
+            ${{ runner.temp }}/rabbit-bundled-update-recording.mkv
           if-no-files-found: error
           retention-days: 14
   e2e:
@@ -170,20 +170,20 @@ jobs:
     if: >-
       (inputs.install-method == 'installer-script'
         || (contains(fromJSON('["installer-script+desktop", "desktop-installer@latest"]'), inputs.install-method) && inputs.tag-has-desktop))
-      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
-        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
+      && (contains(fromJSON('["rabbit-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "rabbit-desktop-app-update", "desktop-installer@latest"]'), inputs.update-method) && inputs.tag-has-desktop)
         || (inputs.update-method == 'open-app-update' && inputs.tag-has-desktop
             && contains(fromJSON('["desktop-installer@latest", "installer-script+desktop"]'), inputs.install-method)))
     runs-on: windows-latest-32-core
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     env:
-      # Sibling of the checkout (D:\a\hermes-agent\hermes-desktop-gui-e2e):
+      # Sibling of the checkout (D:\a\rabbit-agent\rabbit-desktop-gui-e2e):
       # outside the repo so the staged bare clone and the install never
       # collide with the checkout itself. NOTE: ${{ runner.temp }} is NOT
       # available in job-level env (only github/inputs/matrix/needs/
       # secrets/strategy/vars).
-      HERMES_E2E_WORKROOT: ${{ github.workspace }}\..\hermes-desktop-gui-e2e
+      RABBIT_E2E_WORKROOT: ${{ github.workspace }}\..\rabbit-desktop-gui-e2e
 
     steps:
       # Full history: the driver bare-clones this checkout as the repo the
@@ -215,20 +215,20 @@ jobs:
       # The driver therefore runs that turn under e2e-assets/pty-run.py, which uses
       # pywinpty: the same ConPTY spawner the product uses on Windows, pinned to the
       # version pyproject.toml requires. Install it with uv (the toolchain python ships
-      # without pip) out of HERMES_RUNTIME_DIR, which is the tools directory itself and
+      # without pip) out of RABBIT_RUNTIME_DIR, which is the tools directory itself and
       # is not on PATH for workflow steps; the import check proves it landed.
       # py-spy lands beside it: the driver's hang watchdog dumps the stack of
       # every Python process of a stuck install or update before stopping it.
       - name: Install the pseudoconsole runner's dependency
         shell: pwsh
         run: |
-          $uvDir = Get-ChildItem $env:HERMES_RUNTIME_DIR -Filter 'uv-*' -Directory | Select-Object -First 1
-          if (-not $uvDir) { throw "uv not found under $env:HERMES_RUNTIME_DIR" }
-          & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:HERMES_PYTHON --quiet "pywinpty==3.0.5" "py-spy==0.4.2"
+          $uvDir = Get-ChildItem $env:RABBIT_RUNTIME_DIR -Filter 'uv-*' -Directory | Select-Object -First 1
+          if (-not $uvDir) { throw "uv not found under $env:RABBIT_RUNTIME_DIR" }
+          & (Join-Path $uvDir.FullName 'uv.exe') pip install --system --python $env:RABBIT_PYTHON --quiet "pywinpty==3.0.5" "py-spy==0.4.2"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -c "import winpty; print('pty-run dependency ready')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & (Join-Path (Split-Path $env:HERMES_PYTHON) 'py-spy.exe') --version
+          & (Join-Path (Split-Path $env:RABBIT_PYTHON) 'py-spy.exe') --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # One recording mechanism on every OS: the composite action verifies
@@ -241,11 +241,11 @@ jobs:
           mode: start
           output: ${{ github.workspace }}\gui-e2e-proof\recording.mkv
 
-      # Product steps below never see setup-pm's HERMES_RUNTIME_DIR or
-      # HERMES_PYTHON: windows-e2e.ps1 drops both on entry, so the installer,
-      # the app, `hermes update` and every chat turn share the leg's one store
-      # (<HERMES_HOME>\tools), as on a user's machine. setup-pm reaches the
-      # driver's own tooling only through HERMES_PYTHON (and PATH for older
+      # Product steps below never see setup-pm's RABBIT_RUNTIME_DIR or
+      # RABBIT_PYTHON: windows-e2e.ps1 drops both on entry, so the installer,
+      # the app, `rabbit update` and every chat turn share the leg's one store
+      # (<RABBIT_HOME>\tools), as on a user's machine. setup-pm reaches the
+      # driver's own tooling only through RABBIT_PYTHON (and PATH for older
       # installers' uv/ripgrep).
       - name: Stage serve repo (main -> ${{ inputs.install-ref }})
         shell: powershell
@@ -274,7 +274,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path gui-e2e-proof -Force | Out-Null
-          Copy-Item -LiteralPath (Join-Path $env:HERMES_E2E_WORKROOT 'known-failure.json') -Destination gui-e2e-proof/known-failure.json
+          Copy-Item -LiteralPath (Join-Path $env:RABBIT_E2E_WORKROOT 'known-failure.json') -Destination gui-e2e-proof/known-failure.json
 
       - name: Upload known-failure receipt
         if: steps.update.outputs.known_failure != ''
@@ -307,14 +307,14 @@ jobs:
         run: |
           $out = "gui-e2e-proof"
           New-Item -ItemType Directory -Path $out -Force | Out-Null
-          $work = $env:HERMES_E2E_WORKROOT
-          $home_ = Join-Path $work "hermes-home"
+          $work = $env:RABBIT_E2E_WORKROOT
+          $home_ = Join-Path $work "rabbit-home"
           foreach ($pair in @(
             @{ src = (Join-Path $work "proof");                          dst = "proof" },
             @{ src = (Join-Path $work "logs");                           dst = "driver-logs" },
             @{ src = (Join-Path $work "shas.json");                      dst = "shas.json" },
             @{ src = (Join-Path $home_ "logs");                          dst = "logs" },
-            @{ src = (Join-Path $home_ ".hermes-update-result.json");    dst = ".hermes-update-result.json" }
+            @{ src = (Join-Path $home_ ".rabbit-update-result.json");    dst = ".rabbit-update-result.json" }
           )) {
             if (Test-Path $pair.src) { Copy-Item $pair.src (Join-Path $out $pair.dst) -Recurse -Force }
           }

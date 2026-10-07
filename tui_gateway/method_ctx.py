@@ -59,7 +59,7 @@ class HandlerRegistry:
 
     def profile_scoped(self, fn):
         """Drop-in for server.py's ``@_profile_scoped`` (applied at install)."""
-        fn._hermes_profile_scoped = True
+        fn._rabbit_profile_scoped = True
         return fn
 
     def install(self, server) -> None:
@@ -67,7 +67,7 @@ class HandlerRegistry:
         g = vars(server)
         for name, fn in self._pending:
             real = rebind(fn, g)
-            if getattr(fn, "_hermes_profile_scoped", False):
+            if getattr(fn, "_rabbit_profile_scoped", False):
                 real = server._profile_scoped(real)
             server.register_method(name, real)
 
@@ -121,12 +121,12 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
                     setattr(obj, attr, type(val)(rebind(val.__func__, g)))
         prev = g.get(name)
         if isinstance(prev, types.FunctionType) and isinstance(obj, types.FunctionType):
-            owner = getattr(prev, "_hermes_split_module", None)
+            owner = getattr(prev, "_rabbit_split_module", None)
             if owner and owner != mod_name:
                 raise RuntimeError(
                     f"split-module name collision: {mod_name}.{name} would overwrite {owner}.{name}"
                 )
-            obj._hermes_split_module = mod_name
+            obj._rabbit_split_module = mod_name
         setattr(server, name, obj)
     registry = module_globals.get("_registry")
     if isinstance(registry, HandlerRegistry):

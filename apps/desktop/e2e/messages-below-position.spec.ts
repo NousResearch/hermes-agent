@@ -8,7 +8,7 @@ import { resolveElectronBinary } from './electron-binary'
 import { _electron, expect, test } from './test'
 
 test('messages-below reads stay bounded with real content-visibility groups', async ({}, testInfo) => {
-  const temporary = mkdtempSync(path.join(tmpdir(), 'hermes-messages-below-'))
+  const temporary = mkdtempSync(path.join(tmpdir(), 'rabbit-messages-below-'))
   const main = path.join(temporary, 'main.cjs')
   writeFileSync(
     main,

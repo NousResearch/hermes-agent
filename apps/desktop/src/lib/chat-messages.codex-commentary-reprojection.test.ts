@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 describe('public Codex commentary after transcript hydration', () => {
   it('keeps a tool-call preamble in assistant text, not the Thinking disclosure', () => {

@@ -14,10 +14,10 @@ description: "公开记录 OSINT 调查框架 — SEC EDGAR 文件、USAspending
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/research/osint-investigation` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/research/osint-investigation` 安装 |
 | 路径 | `optional-skills/research/osint-investigation` |
 | 版本 | `0.1.0` |
-| 作者 | Hermes Agent（改编自 ShinMegamiBoson/OpenPlanter，MIT 许可）|
+| 作者 | Rabbit Agent（改编自 ShinMegamiBoson/OpenPlanter，MIT 许可）|
 | 平台 | linux, macos, windows |
 | 标签 | `osint`, `investigation`, `public-records`, `sec`, `sanctions`, `corporate-registry`, `property`, `courts`, `due-diligence`, `journalism` |
 | 相关 skill | [`domain-intel`](/user-guide/skills/optional/research/research-domain-intel), [`arxiv`](/user-guide/skills/bundled/research/research-arxiv) |
@@ -25,7 +25,7 @@ description: "公开记录 OSINT 调查框架 — SEC EDGAR 文件、USAspending
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
 :::
 
 # OSINT 调查 — 公开记录交叉核查
@@ -113,7 +113,7 @@ python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
 # ICIJ 离岸泄露 — 首次使用时下载约 70 MB 批量 CSV，
 # 之后在本地搜索。缓存 30 天，存储于
-# $HERMES_OSINT_CACHE/icij/（默认：~/.cache/hermes-osint/icij/）。
+# $RABBIT_OSINT_CACHE/icij/（默认：~/.cache/rabbit-osint/icij/）。
 python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 ```
@@ -141,7 +141,7 @@ python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
     --match host --collapse digest --out data/wayback.csv
 
 # Wikipedia + Wikidata — 叙述性传记 + 结构化事实
-# 设置 HERMES_OSINT_UA=your-app/1.0 (your@email) 以标识自身
+# 设置 RABBIT_OSINT_UA=your-app/1.0 (your@email) 以标识自身
 python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" \
     --out data/wp.csv
 

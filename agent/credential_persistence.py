@@ -1,6 +1,6 @@
 """Credential-pool disk-boundary sanitization: strip raw secrets from *borrowed*
 pool entries before they reach ``auth.json``. Deliberately free of
-``hermes_cli.auth`` imports so the pool model and the auth-store write boundary
+``rabbit_cli.auth`` imports so the pool model and the auth-store write boundary
 share one policy without import cycles."""
 
 from __future__ import annotations
@@ -10,11 +10,11 @@ import re
 from typing import Any, Dict, Mapping
 
 
-# Sources Hermes owns and may persist with secrets.  Any other non-empty,
+# Sources Rabbit owns and may persist with secrets.  Any other non-empty,
 # non-manual source is borrowed/reference-only so new external providers fail
 # closed at the disk boundary.
 _PERSISTABLE_PROVIDER_SOURCES = frozenset({
-    ("anthropic", "hermes_pkce"),
+    ("anthropic", "rabbit_pkce"),
     ("minimax-oauth", "oauth"),
     ("nous", "device_code"),
     ("openai-codex", "device_code"),

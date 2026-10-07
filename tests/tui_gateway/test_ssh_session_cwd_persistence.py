@@ -1,8 +1,8 @@
 """An ssh session's launch directory is a host path: kept in memory, never persisted as its remote workspace.
 
 A resume adopts a stored ssh cwd as the remote workspace, so a persisted launch directory (in the Docker image
-``/opt/hermes``, ``/opt/data`` or ``/opt/data/home``) made every remote terminal and file call ``cd`` into a path that
-only exists on the Hermes host.
+``/opt/rabbit``, ``/opt/data`` or ``/opt/data/home``) made every remote terminal and file call ``cd`` into a path that
+only exists on the Rabbit host.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import contextlib
 import pytest
 
 import tui_gateway.server as server
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 class _ImmediateThread:
@@ -80,8 +80,8 @@ def _hydrate(db, key: str, session: dict) -> dict:
     return session
 
 
-def _hermes_home_subdir(name: str) -> str:
-    path = server.get_hermes_home() / name
+def _rabbit_home_subdir(name: str) -> str:
+    path = server.get_rabbit_home() / name
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
@@ -102,32 +102,32 @@ def test_host_backends_still_persist_the_launch_dir(backend, tmp_path, name):
     assert server._persisted_session_cwd({"source": "tui", "cwd": str(tmp_path)}) == str(tmp_path)
 
 
-def test_hermes_owned_cwd(tmp_path):
-    home = server.get_hermes_home()
-    assert server._is_hermes_owned_cwd(str(home), None)
-    assert server._is_hermes_owned_cwd(_hermes_home_subdir("home"), None)
-    assert server._is_hermes_owned_cwd(str(server.Path(server.__file__).resolve().parent.parent), None)
-    assert not server._is_hermes_owned_cwd("/home/me/proj", None)
-    assert not server._is_hermes_owned_cwd(str(tmp_path), None)
+def test_rabbit_owned_cwd(tmp_path):
+    home = server.get_rabbit_home()
+    assert server._is_rabbit_owned_cwd(str(home), None)
+    assert server._is_rabbit_owned_cwd(_rabbit_home_subdir("home"), None)
+    assert server._is_rabbit_owned_cwd(str(server.Path(server.__file__).resolve().parent.parent), None)
+    assert not server._is_rabbit_owned_cwd("/home/me/proj", None)
+    assert not server._is_rabbit_owned_cwd(str(tmp_path), None)
 
 
-def test_hermes_owned_cwd_includes_the_root_for_a_named_profile():
-    """A named profile's home sits under the Hermes root; the root's launch dirs (``/opt/data``, ``/opt/data/home``)
-    are still Hermes's own."""
-    root = server.get_hermes_home()
+def test_rabbit_owned_cwd_includes_the_root_for_a_named_profile():
+    """A named profile's home sits under the Rabbit root; the root's launch dirs (``/opt/data``, ``/opt/data/home``)
+    are still Rabbit's own."""
+    root = server.get_rabbit_home()
     profile = str(root / "profiles" / "work")
-    assert server._is_hermes_owned_cwd(_hermes_home_subdir("home"), profile)
-    assert server._is_hermes_owned_cwd(str(root), profile)
-    assert server._is_hermes_owned_cwd(profile, profile)
-    assert not server._is_hermes_owned_cwd("/home/me/proj", profile)
+    assert server._is_rabbit_owned_cwd(_rabbit_home_subdir("home"), profile)
+    assert server._is_rabbit_owned_cwd(str(root), profile)
+    assert server._is_rabbit_owned_cwd(profile, profile)
+    assert not server._is_rabbit_owned_cwd("/home/me/proj", profile)
 
 
 def test_named_profile_resume_does_not_adopt_a_root_launch_dir(db):
-    root = server.get_hermes_home()
+    root = server.get_rabbit_home()
     profile = root / "profiles" / "work"
     profile.mkdir(parents=True, exist_ok=True)
     (profile / "config.yaml").write_text("terminal:\n  backend: ssh\n")
-    stale = _hermes_home_subdir("home")
+    stale = _rabbit_home_subdir("home")
     db.create_session("named", source="tui", model="m", cwd=stale)
     session = {"session_key": "named", "source": "tui", "cwd": "~", "profile_home": str(profile)}
     server._sessions["sid-named"] = session
@@ -141,7 +141,7 @@ def test_named_profile_resume_does_not_adopt_a_root_launch_dir(db):
 
 def test_resume_leaves_a_set_aside_row_unchanged(backend, db):
     """With ``terminal.cwd`` set the session falls back to it as explicit; the stored row is still not rewritten."""
-    stale = _hermes_home_subdir("home")
+    stale = _rabbit_home_subdir("home")
     db.create_session("aside", source="tui", model="m", cwd=stale)
     session = _hydrate(db, "aside", {"session_key": "aside", "source": "tui", "cwd": "/remote/default", "explicit_cwd": True})
     assert session["cwd"] == "/remote/default"
@@ -149,9 +149,9 @@ def test_resume_leaves_a_set_aside_row_unchanged(backend, db):
 
 
 @pytest.mark.parametrize("stored", ["~", "~/proj"])
-def test_resume_keeps_a_remote_tilde_cwd_when_home_is_inside_hermes_home(backend, db, monkeypatch, tmp_path, stored):
-    """The Docker image's HOME (``/opt/data/home``) sits inside HERMES_HOME; ``~`` still names the REMOTE home."""
-    monkeypatch.setenv("HOME", _hermes_home_subdir("home"))
+def test_resume_keeps_a_remote_tilde_cwd_when_home_is_inside_rabbit_home(backend, db, monkeypatch, tmp_path, stored):
+    """The Docker image's HOME (``/opt/data/home``) sits inside RABBIT_HOME; ``~`` still names the REMOTE home."""
+    monkeypatch.setenv("HOME", _rabbit_home_subdir("home"))
     db.create_session("tilde", source="tui", model="m", cwd=stored)
     session = _hydrate(db, "tilde", {"session_key": "tilde", "source": "tui", "cwd": str(tmp_path)})
 
@@ -159,9 +159,9 @@ def test_resume_keeps_a_remote_tilde_cwd_when_home_is_inside_hermes_home(backend
     assert session["explicit_cwd"] is True
 
 
-def test_resume_does_not_adopt_a_stored_hermes_home_cwd(backend, db, tmp_path):
+def test_resume_does_not_adopt_a_stored_rabbit_home_cwd(backend, db, tmp_path):
     """The ticket: a row stamped with ``/opt/data/home`` before this rule existed."""
-    stale = _hermes_home_subdir("home")
+    stale = _rabbit_home_subdir("home")
     db.create_session("legacy", source="tui", model="m", cwd=stale)
     session = _hydrate(db, "legacy", {"session_key": "legacy", "source": "tui", "cwd": str(tmp_path)})
 
@@ -189,9 +189,9 @@ def test_resume_without_a_stored_cwd_does_not_persist_the_launch_dir(backend, db
 
 @pytest.mark.parametrize("name", ["local", "docker"])
 def test_host_backends_resume_unchanged(backend, db, tmp_path, name):
-    """Docker installs on the local or docker backend keep adopting a stored cwd under HERMES_HOME."""
+    """Docker installs on the local or docker backend keep adopting a stored cwd under RABBIT_HOME."""
     backend(name)
-    stored = _hermes_home_subdir("home")
+    stored = _rabbit_home_subdir("home")
     db.create_session("host", source="tui", model="m", cwd=stored)
     session = _hydrate(db, "host", {"session_key": "host", "source": "tui", "cwd": str(tmp_path)})
 
@@ -209,7 +209,7 @@ def test_ssh_branch_seed_skips_the_launch_dir(backend, monkeypatch, explicit, ex
     monkeypatch.setattr(server, "_session_db", lambda _record: contextlib.nullcontext(object()))
     monkeypatch.setattr(server, "_branch_title", lambda *_a: "t")
     monkeypatch.setattr(server, "_persist_branch", lambda *_a, cwd, **_k: seen.setdefault("cwd", cwd))
-    record = {"cwd": "/home/me/proj" if explicit else "/opt/hermes", "explicit_cwd": explicit}
+    record = {"cwd": "/home/me/proj" if explicit else "/opt/rabbit", "explicit_cwd": explicit}
 
     server._seed_branch_row(record, "child", "parent", [], "desktop", None)
 
@@ -219,8 +219,8 @@ def test_ssh_branch_seed_skips_the_launch_dir(backend, monkeypatch, explicit, ex
 KEY = "20261003_120000_c0ffee"
 
 
-def test_session_resume_does_not_adopt_a_stored_hermes_home_cwd(backend, resume_db, tmp_path):
-    resume_db.create_session(KEY, source="tui", model="test-model", cwd=_hermes_home_subdir("home"))
+def test_session_resume_does_not_adopt_a_stored_rabbit_home_cwd(backend, resume_db, tmp_path):
+    resume_db.create_session(KEY, source="tui", model="test-model", cwd=_rabbit_home_subdir("home"))
     live = _resume_live(KEY)
 
     assert live["cwd"] == str(tmp_path)
@@ -238,7 +238,7 @@ def test_session_resume_keeps_a_stored_remote_workspace(backend, resume_db):
 @pytest.mark.parametrize("name", ["local", "docker"])
 def test_session_resume_on_host_backends_unchanged(backend, resume_db, name):
     backend(name)
-    stored = _hermes_home_subdir("home")
+    stored = _rabbit_home_subdir("home")
     resume_db.create_session(KEY, source="tui", model="test-model", cwd=stored)
     live = _resume_live(KEY)
 

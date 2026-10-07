@@ -1,7 +1,7 @@
-"""Interactive ``hermes memory setup`` wizard for the OpenViking provider.
+"""Interactive ``rabbit memory setup`` wizard for the OpenViking provider.
 
-Pure UI flow: prompts, menus, and persistence of the chosen connection (Hermes
-``.env`` only, or mirrored to an ``ovcli.conf.<name>`` profile that Hermes then
+Pure UI flow: prompts, menus, and persistence of the chosen connection (Rabbit
+``.env`` only, or mirrored to an ``ovcli.conf.<name>`` profile that Rabbit then
 links). Network validation and file writers live in the package ``__init__`` and
 are looked up there at call time so tests can monkeypatch them on the plugin module.
 """
@@ -247,7 +247,7 @@ def _link_ovcli_profile(*, config: dict, provider_config: dict, env_path: Path, 
         os.environ.pop(key, None)
 
 
-def _save_hermes_only_config(*, config: dict, provider_config: dict, env_path: Path, values: dict) -> None:
+def _save_rabbit_only_config(*, config: dict, provider_config: dict, env_path: Path, values: dict) -> None:
     ov = _ov()
     provider_config["use_ovcli_config"] = False
     provider_config.pop("ovcli_config_path", None)
@@ -274,7 +274,7 @@ def _print_openviking_ready(message: str, path: Optional[Path] = None) -> None:
     _say(message)
     if path is not None:
         _say(f"Config file: {path}")
-    print("  Start a new Hermes session to activate.\n")
+    print("  Start a new Rabbit session to activate.\n")
 
 
 def _run_existing_profile_setup(*, profiles: list, select, cancelled, config: dict, provider_config: dict, env_path: Path) -> bool | object:
@@ -321,8 +321,8 @@ def _mirror_manual_config_to_openviking_store(*, prompt, select, cancelled, valu
             return _SETUP_CANCELLED
         if replace is False:
             continue
-        from hermes_constants import mkdir_under_hermes_home
-        mkdir_under_hermes_home(path.parent)
+        from rabbit_constants import mkdir_under_rabbit_home
+        mkdir_under_rabbit_home(path.parent)
         # atomic_json_write creates the temp file 0600 and os.replace()s it: no
         # half-written config on crash, no chmod-after-write window for the keys.
         ov.atomic_json_write(path, ov._ovcli_data_from_connection_values(values), mode=0o600)
@@ -344,7 +344,7 @@ def _run_create_profile_setup(*, prompt, select, cancelled, config: dict, provid
         return False
 
     save_choice = select("  Save OpenViking config",
-                         [("Keep in Hermes only", "write values only to Hermes .env"),
+                         [("Keep in Rabbit only", "write values only to Rabbit .env"),
                           ("Mirror to OpenViking store", "write ~/.openviking/ovcli.conf.<name> and link it")],
                          default=1, cancel_returns=cancelled)
     if save_choice == cancelled:
@@ -358,17 +358,17 @@ def _run_create_profile_setup(*, prompt, select, cancelled, config: dict, provid
         _print_openviking_ready("Created and linked OpenViking profile.", ovcli_path)
         return True
 
-    _save_hermes_only_config(config=config, provider_config=provider_config, env_path=env_path, values=values)
-    _print_openviking_ready("Connection saved to Hermes .env.")
+    _save_rabbit_only_config(config=config, provider_config=provider_config, env_path=env_path, values=values)
+    _print_openviking_ready("Connection saved to Rabbit .env.")
     return True
 
 
-def run_setup(hermes_home: str, config: dict) -> None:
+def run_setup(rabbit_home: str, config: dict) -> None:
     """Entry point for ``OpenVikingMemoryProvider.post_setup``."""
-    from hermes_cli.config import save_config
-    from hermes_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup, _prompt
+    from rabbit_cli.config import save_config
+    from rabbit_cli.memory_setup import _CANCELLED, _curses_select, _print_cancelled_setup, _prompt
 
-    env_path = Path(hermes_home) / ".env"
+    env_path = Path(rabbit_home) / ".env"
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
     provider_config = config["memory"].get("openviking", {})

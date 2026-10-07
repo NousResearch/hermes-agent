@@ -16,7 +16,7 @@ Original verdict + full numbers: `results/SUMMARY.md` and the PR #97979 body
   control, and a false-discovery distractor. Each task carries fixtures,
   a programmatic grader (0–1 partial credit), and scripted user replies.
 - `worker.py` — one (arm, model, task, rep) cell in an isolated
-  subprocess: temp HERMES_HOME + workspace, hermetic env (only
+  subprocess: temp RABBIT_HOME + workspace, hermetic env (only
   OPENROUTER_API_KEY survives), seeded session DB (targets + decoys),
   deterministic desktop-surface stubs (desktop_ui emitter + agent
   callbacks), computer_use/image_generate stubbed at the registry

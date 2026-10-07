@@ -2,7 +2,7 @@
 
 Runs commands in Vercel cloud sandboxes through the shared ``BaseEnvironment``
 shell contract. With persistence enabled, task-scoped snapshot ids are stored
-under ``HERMES_HOME`` and new sandboxes are restored from them on task reuse.
+under ``RABBIT_HOME`` and new sandboxes are restored from them on task reuse.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE
-from hermes_constants import get_hermes_home
+from rabbit_cli.config_defaults import DEFAULT_VERCEL_IMAGE
+from rabbit_constants import get_rabbit_home
 from tools.environments.base import BaseEnvironment, _load_json_store, _save_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
@@ -41,7 +41,7 @@ _RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
 
 def _ensure_vercel_sdk() -> None:
     """Lazy-install vercel SDK on demand. Idempotent."""
-    # The SDK (>=0.7) ships default-on telemetry; Hermes policy is opt-in only, so disable it
+    # The SDK (>=0.7) ships default-on telemetry; Rabbit policy is opt-in only, so disable it
     # before the SDK is imported. setdefault: an explicit user value is never overridden.
     os.environ.setdefault("VERCEL_TELEMETRY_DISABLED", "1")
     try:
@@ -121,7 +121,7 @@ def _result_parts(result: Any) -> tuple[str, int]:
 
 
 def _snapshot_store() -> Path:
-    return get_hermes_home() / "vercel_sandbox_snapshots.json"
+    return get_rabbit_home() / "vercel_sandbox_snapshots.json"
 
 
 def _load_snapshots() -> dict:
@@ -201,8 +201,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
             raise RuntimeError("Vercel sandbox is not attached")
         return self._sandbox
 
-    def _remote_hermes_dir(self) -> str:
-        return f"{self._remote_home.rstrip('/')}/.hermes"
+    def _remote_rabbit_dir(self) -> str:
+        return f"{self._remote_home.rstrip('/')}/.rabbit"
 
     def _create_sandbox(self) -> Sandbox:
         _ensure_vercel_sdk()
@@ -231,7 +231,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         cwd = self._require_sandbox().sandbox.cwd
         self._workspace_root = cwd if cwd.startswith("/") else DEFAULT_VERCEL_CWD
         self._remote_home = self._detect_remote_home()
-        container_base = self._remote_hermes_dir()
+        container_base = self._remote_rabbit_dir()
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files(container_base),
             upload_fn=lambda host_path, remote_path: self._vercel_bulk_upload([(host_path, remote_path)]),
@@ -330,8 +330,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
             self._run_checked(quoted_rm_command(remote_paths), "delete")
 
     def _vercel_bulk_download(self, dest_tar_path: Path) -> None:
-        archive_member = self._remote_hermes_dir().lstrip("/")
-        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
+        archive_member = self._remote_rabbit_dir().lstrip("/")
+        remote_tar = f"/tmp/.rabbit_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
         sandbox = self._require_sandbox()
         try:
             # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.

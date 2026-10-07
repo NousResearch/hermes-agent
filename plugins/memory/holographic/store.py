@@ -1,4 +1,4 @@
-"""SQLite-backed fact store with entity resolution and trust scoring (single-user Hermes memory plugin)."""
+"""SQLite-backed fact store with entity resolution and trust scoring (single-user Rabbit memory plugin)."""
 
 import os
 import re
@@ -99,8 +99,8 @@ class MemoryStore:
 
     def __init__(self, db_path: "str | Path | None" = None, default_trust: float = 0.5, hrr_dim: int = 1024) -> None:
         if db_path is None:
-            from hermes_constants import get_hermes_home
-            db_path = str(get_hermes_home() / "memory_store.db")
+            from rabbit_constants import get_rabbit_home
+            db_path = str(get_rabbit_home() / "memory_store.db")
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust, self.hrr_dim, self._hrr_available = _clamp_trust(default_trust), hrr_dim, hrr._HAS_NUMPY
@@ -125,11 +125,11 @@ class MemoryStore:
 
     def _init_db(self) -> None:
         """Create schema, enable WAL via the shared fallback helper (NFS/SMB/FUSE degrade gracefully), add hrr_vector to pre-HRR DBs."""
-        from hermes_state_wal import apply_wal_with_fallback
+        from rabbit_state_wal import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
         if "hrr_vector" not in {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}:
-            from hermes_cli.sqlite_util import add_column_if_missing
+            from rabbit_cli.sqlite_util import add_column_if_missing
             add_column_if_missing(self._conn, "facts", "hrr_vector", "hrr_vector BLOB")
         self._conn.commit()
 

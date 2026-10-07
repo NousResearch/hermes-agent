@@ -1,6 +1,6 @@
-# Self-contained Hermes TUI, compiled by the same recipe as npm.
-{ hermesNpmLib, ... }:
-hermesNpmLib.buildNpmPackage {
+# Self-contained Rabbit TUI, compiled by the same recipe as npm.
+{ rabbitNpmLib, ... }:
+rabbitNpmLib.buildNpmPackage {
   dirs = [
     "ui-tui"
     "apps/shared"
@@ -19,8 +19,8 @@ hermesNpmLib.buildNpmPackage {
 
   installPhase = ''
     runHook preInstall
-    mkdir -p $out/lib/hermes-tui
-    cp -r "$TMPDIR/tui-product/." $out/lib/hermes-tui/
+    mkdir -p $out/lib/rabbit-tui
+    cp -r "$TMPDIR/tui-product/." $out/lib/rabbit-tui/
     runHook postInstall
   '';
 }

@@ -88,7 +88,7 @@ def channel_public_base(explicit: str | None = None) -> str:
         if explicit is not None and explicit.rstrip("/") != expected:
             raise ValueError("Disposable channel archive authority mismatch")
         return expected
-    from hermes_cli.release_channels import public_base
+    from rabbit_cli.release_channels import public_base
     if explicit is not None:
         return public_base(explicit)
     if not configured:

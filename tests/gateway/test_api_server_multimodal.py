@@ -102,7 +102,7 @@ class TestChatCompletionsMultimodalHTTP:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={
-                        "model": "hermes-agent",
+                        "model": "rabbit-agent",
                         "messages": [{"role": "user", "content": image_payload}],
                     },
                 )
@@ -128,7 +128,7 @@ class TestResponsesMultimodalHTTP:
                 resp = await cli.post(
                     "/v1/responses",
                     json={
-                        "model": "hermes-agent",
+                        "model": "rabbit-agent",
                         "input": [
                             {
                                 "role": "user",

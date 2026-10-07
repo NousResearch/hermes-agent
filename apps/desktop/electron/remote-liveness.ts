@@ -469,13 +469,13 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
 
     if (!failure.shouldReset) {
       log(
-        `Cached remote Hermes backend failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping connection for retry.`
+        `Cached remote Rabbit backend failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping connection for retry.`
       )
 
       return { ok: true, rebuilt: false }
     }
 
-    log('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    log('Cached remote Rabbit backend failed liveness probe; dropping stale connection.')
     resetConnection()
 
     return { ok: true, rebuilt: true }

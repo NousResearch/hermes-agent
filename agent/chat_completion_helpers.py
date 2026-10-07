@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from rabbit_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from rabbit_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
@@ -442,13 +442,13 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
 def _bound_openai_codex_stale_timeout(stale_timeout: float, est_tokens: int) -> float:
     """Apply the openai-codex stale bounds: raise to ``openai_codex_stale_timeout_floor``
     so healthy gateway-scale requests aren't aborted mid-prefill, then clamp to the flat
-    HERMES_CODEX_HARD_TIMEOUT_SECONDS ceiling (#64507, default 1500s — above the max
+    RABBIT_CODEX_HARD_TIMEOUT_SECONDS ceiling (#64507, default 1500s — above the max
     floor, a backstop for a request that emits SOME events then wedges; 0 disables).
     Shared by the worker watchdogs and the inline cron path (#69734)."""
     floor = openai_codex_stale_timeout_floor(est_tokens)
     if floor:
         stale_timeout = max(stale_timeout, floor)
-    hard_timeout = env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    hard_timeout = env_float("RABBIT_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
     return min(stale_timeout, hard_timeout) if hard_timeout > 0 else stale_timeout
 
 
@@ -477,8 +477,8 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
         "data_collection": agent.provider_data_collection}
     per_model = {}
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config_readonly
-        from hermes_constants import resolve_per_model_provider_routing
+        from rabbit_cli.config import load_config_readonly
+        from rabbit_constants import resolve_per_model_provider_routing
         _pr = load_config_readonly().get("provider_routing")
         per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
@@ -496,23 +496,6 @@ def _prompt_cache_scope_for_agent(agent) -> "str | None":
     except Exception:
         logger.debug("prompt-cache scope resolution failed", exc_info=True)
         return None
-
-
-def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> dict:
-    """Merge Portal ``tags`` / ``session_id`` onto an Anthropic Messages kwargs dict.
-    The Nous profile is only consulted by the OpenAI-wire transport; ``session_id``
-    only — never ``provider_preferences`` (an OpenAI-wire routing object)."""
-    if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
-        return anthropic_kwargs
-    try:
-        from providers import get_provider_profile
-        nous_profile = get_provider_profile("nous")
-        if nous_profile is not None:
-            anthropic_kwargs.setdefault("extra_body", {}).update(
-                nous_profile.build_extra_body(session_id=getattr(agent, "session_id", None)))
-    except Exception as exc:  # noqa: BLE001 — never block a turn on tagging
-        logger.debug("Nous Portal extra_body merge failed: %s", exc)
-    return anthropic_kwargs
 
 
 def _estimate_chunk_bytes(chunk: Any) -> int:
@@ -609,7 +592,7 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
 def _check_stale_giveup(agent) -> None:
     """Raise immediately when the consecutive-stale streak is past the
     give-up threshold — no network attempt, no stale-timeout wait."""
-    _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
+    _giveup = env_int("RABBIT_STREAM_STALE_GIVEUP", 5)
     _streak = _stale_streak(agent)
     if _giveup > 0 and _streak >= _giveup:
         raise RuntimeError(
@@ -620,31 +603,31 @@ def _check_stale_giveup(agent) -> None:
 
 
 def _stream_env_stale_base() -> "tuple[float, bool]":
-    """(HERMES_STREAM_STALE_TIMEOUT or the implicit 180s, explicit) — like
+    """(RABBIT_STREAM_STALE_TIMEOUT or the implicit 180s, explicit) — like
     ``AIAgent._resolved_api_call_stale_timeout_base``; an explicit env value is the
     user's deadline, so it is never capped to the run budget."""
-    return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
+    return env_float("RABBIT_STREAM_STALE_TIMEOUT", 180.0), "RABBIT_STREAM_STALE_TIMEOUT" in os.environ
 
 
 def _configured_stale_base(agent) -> float:
-    """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
+    """Per-provider ``stale_timeout_seconds`` config, else RABBIT_STREAM_STALE_TIMEOUT (180s)."""
     cfg = get_provider_stale_timeout(agent.provider, agent.model)
     return cfg if cfg is not None else _stream_env_stale_base()[0]
 
 
 def _local_stream_stale_timeout_default() -> float:
     """Local-provider stale ceiling: ``agent.local_stream_stale_timeout`` (900s) or
-    HERMES_LOCAL_STREAM_STALE_TIMEOUT. Shared by the stream stale detector and the
+    RABBIT_LOCAL_STREAM_STALE_TIMEOUT. Shared by the stream stale detector and the
     Responses first-event watchdog so both give a local server the same prefill grace."""
     local_default = 900.0
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         cfg = load_config_readonly()  # read-only consumer — no deepcopy
         agent_cfg = cfg.get("agent") if isinstance(cfg, dict) else None
         value = agent_cfg.get("local_stream_stale_timeout") if isinstance(agent_cfg, dict) else None
         if isinstance(value, (int, float)):
             local_default = float(value)
-    return env_float("HERMES_LOCAL_STREAM_STALE_TIMEOUT", local_default)
+    return env_float("RABBIT_LOCAL_STREAM_STALE_TIMEOUT", local_default)
 
 
 def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
@@ -730,7 +713,7 @@ def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
 
 
 def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=None):
-    """Pop the Hermes routing keys and call ``converse`` / ``converse_stream`` (boto3
+    """Pop the Rabbit routing keys and call ``converse`` / ``converse_stream`` (boto3
     directly) with the shared recovery: a cachePoint rejection (Nova: toolConfig.tools,
     #97281) drops the marker and resends once inside the same attempt; a streaming IAM
     denial hands off to ``on_stream_denied(client, kwargs, exc)``; a stale connection
@@ -841,8 +824,8 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         if not base:
             return None
         from urllib.parse import urlparse
-        from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
-        from hermes_cli.local_runtime.supervisor import state_path
+        from rabbit_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
+        from rabbit_cli.local_runtime.supervisor import state_path
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
         if not managed or urlparse(base).netloc.lower() != managed:
@@ -1203,10 +1186,10 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     event remains transport activity). Only the implicit official OpenAI Codex policy
     for large contexts defers arming until progress; small requests, compatible backends,
     and explicit overrides retain the legacy first-event semantics. Tunables:
-    HERMES_CODEX_TTFB_TIMEOUT_SECONDS,
-    HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each),
-    HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS / HERMES_CODEX_TTFB_STRICT,
-    HERMES_CODEX_TTFB_MAX_SECONDS (opt-in ceiling, default 0 = none), HERMES_CODEX_HARD_TIMEOUT_SECONDS.
+    RABBIT_CODEX_TTFB_TIMEOUT_SECONDS,
+    RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each),
+    RABBIT_CODEX_TTFB_DISABLE_ABOVE_TOKENS / RABBIT_CODEX_TTFB_STRICT,
+    RABBIT_CODEX_TTFB_MAX_SECONDS (opt-in ceiling, default 0 = none), RABBIT_CODEX_HARD_TIMEOUT_SECONDS.
     """
     # The effort floor on the STALE timeout lives inside _compute_non_stream_stale_timeout so the
     # run-budget cap still bounds it; here the floor only raises the TTFB/idle implicit defaults.
@@ -1231,26 +1214,26 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
     ttfb_enabled = codex
-    ttfb_explicit = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
-    ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
+    ttfb_explicit = env_float("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
+    ttfb_timeout = env_float("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
     elif codex and not local:
         # Large requests legitimately spend tens of seconds in admission/prefill before the
         # first SSE event: scale the cutoff up to the idle default unless TTFB_STRICT is set.
-        disable_above = env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
-        strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+        disable_above = env_float("RABBIT_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
+        strict = os.environ.get("RABBIT_CODEX_TTFB_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
         if not strict and disable_above > 0 and est_tokens >= disable_above and ttfb_timeout < idle_default:
             logger.info("Scaling codex-responses no-event TTFB watchdog from %.0fs to %.0fs "
                 "for large request (context=~%s tokens >= %.0f). "
-                "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
+                "Set RABBIT_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
             ttfb_timeout = idle_default
         # Opt-in ceiling (0 = off): a 120s default here silently undid the scale-up above (#91621).
-        ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
+        ttfb_cap = env_float("RABBIT_CODEX_TTFB_MAX_SECONDS", 0.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
             logger.info("Capping codex-responses no-event TTFB timeout from %.0fs to %.0fs "
-                "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
+                "(context=~%s tokens) per RABBIT_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
     elif not ttfb_explicit and local:
@@ -1260,7 +1243,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         local_ceiling = _local_stream_stale_timeout_default()
         if local_ceiling > ttfb_timeout:
             logger.info("Local provider detected (%s) — no-event TTFB watchdog raised from %.0fs to %.0fs "
-                "(agent.local_stream_stale_timeout); set HERMES_CODEX_TTFB_TIMEOUT_SECONDS for an explicit cutoff.",
+                "(agent.local_stream_stale_timeout); set RABBIT_CODEX_TTFB_TIMEOUT_SECONDS for an explicit cutoff.",
                 base_url, ttfb_timeout, local_ceiling)
             ttfb_timeout = local_ceiling
     if ttfb_enabled and not ttfb_explicit:
@@ -1270,8 +1253,8 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # An operator-set idle timeout keeps first-event semantics; only the implicit
     # default defers arming until model progress. Sentinel: env_float returns the
     # default for unset AND unparseable values, so both count as implicit.
-    idle_explicit = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
-    idle_timeout = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
+    idle_explicit = env_float("RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
+    idle_timeout = env_float("RABBIT_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
     progress_gated = codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
@@ -1420,9 +1403,7 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
         drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
-    # Portal reads ``tags`` / ``session_id`` on its Messages route too, but the profile hook
-    # is only consulted by the OpenAI-wire transport — merge here to keep sticky routing.
-    return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+    return anthropic_kwargs
 
 
 def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
@@ -1488,7 +1469,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
 
     _prefs = _provider_preferences_for_agent(agent)
 
-    _qwen_meta = {"sessionId": agent.session_id or "hermes", "promptId": str(uuid.uuid4())} if _is_qwen else None
+    _qwen_meta = {"sessionId": agent.session_id or "rabbit", "promptId": str(uuid.uuid4())} if _is_qwen else None
     _profile = None
     with contextlib.suppress(Exception):
         from providers import get_provider_profile
@@ -1515,7 +1496,6 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
         **_common,
         model_lower=(agent.model or "").lower(),
         is_openrouter=_is_or,
-        is_nous=base_url_host_matches(_host, "nousresearch.com"),
         is_qwen_portal=_is_qwen,
         is_github_models=_is_gh,
         is_nvidia_nim=base_url_host_matches(_host, "integrate.api.nvidia.com"),
@@ -1609,7 +1589,7 @@ def _assistant_content_for_storage(agent, assistant_message):
     # Sanitize surrogates (Kimi/GLM via Ollama emit code points that crash json.dumps),
     # strip inline <think> tags at the storage boundary (they leaked to platforms and
     # polluted titles), then redact inlined credentials before the message enters
-    # history / state.db / gateway delivery (no-op with HERMES_REDACT_SECRETS off).
+    # history / state.db / gateway delivery (no-op with RABBIT_REDACT_SECRETS off).
     content = _sanitize_surrogates(flatten_message_text(getattr(assistant_message, "content", None)))
     if isinstance(content, str) and content:
         content = agent._strip_think_blocks(content).strip()
@@ -1785,19 +1765,6 @@ def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
             str(fb.get("base_url") or "").strip().rstrip("/"))
 
 
-def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason for fallback entries known to be unusable locally."""
-    if (fb.get("provider") or "").strip().lower() != "nous":
-        return None
-    try:
-        from hermes_cli.auth import get_provider_auth_state
-        state = get_provider_auth_state("nous") or {}
-    except Exception as exc:
-        return f"nous_auth_unreadable:{type(exc).__name__}"
-    has_token = any(isinstance(t, str) and t.strip() for t in (state.get("access_token"), state.get("refresh_token")))
-    return None if has_token else "nous_token_missing"
-
-
 _FALLBACK_REASON_LABELS = {
     FailoverReason.auth: "authentication failed",
     FailoverReason.auth_permanent: "authentication permanently failed",
@@ -1835,7 +1802,7 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
 def _is_anthropic_wire_url(url: str) -> bool:
     """Same Messages-only host match as determine_api_mode() / _detect_api_mode_for_url(): api.anthropic.com,
     a /anthropic suffix, or Kimi Code's api.kimi.com/coding (its /chat/completions 404s — #77256)."""
-    from hermes_cli.providers import host_mandated_api_mode
+    from rabbit_cli.providers import host_mandated_api_mode
     return host_mandated_api_mode(url) == "anthropic_messages"
 
 
@@ -1844,7 +1811,7 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
     rewrites a dual-surface /anthropic base to /v1, losing the Anthropic wire signal. An explicit
     ``api_mode`` always wins (even "chat_completions") and suppresses later re-detection;
     ``provider: anthropic`` without a base_url still resolves to anthropic_messages."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider, _parse_api_mode
+    from rabbit_cli.runtime_provider import _get_named_custom_provider, _parse_api_mode
     # Entries accept the same ``api_mode`` / ``transport`` spellings as ``providers.<name>``.
     explicit = _parse_api_mode(fb.get("api_mode") or fb.get("transport"))
     if explicit:
@@ -1867,18 +1834,14 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
         return "codex_responses"
-    from hermes_cli.models import opencode_model_api_mode
-    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    from rabbit_cli.models import opencode_model_api_mode
+    from rabbit_cli.runtime_provider_custom import _opencode_family_for_custom
     opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
     if opencode_family is not None:
         # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
         # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
         # already re-derives per model — the fallback wire must agree (#102148).
         return opencode_model_api_mode(opencode_family, fb_model)
-    if fb_provider in {"nous", "nous-portal", "nousresearch"}:
-        # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
-        from hermes_cli.providers import nous_api_mode
-        return nous_api_mode(fb_model)
     if _is_anthropic_wire_url(fb_base_url):
         # Named custom providers (cron-anthropic) resolve base_url from config; the hint pass never saw it.
         return "anthropic_messages"
@@ -1922,9 +1885,9 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     if reason != FailoverReason.billing:
         logger.info("Fallback activated: %s → %s (%s)", old_model, fb_model, fb_provider)
         return
-    from hermes_constants import get_hermes_home, profile_name_for_home
-    profile = profile_name_for_home(get_hermes_home()) or "default"
-    remedy = "hermes model" if profile == "default" else f"hermes -p {profile} model"
+    from rabbit_constants import get_rabbit_home, profile_name_for_home
+    profile = profile_name_for_home(get_rabbit_home()) or "default"
+    remedy = "rabbit model" if profile == "default" else f"rabbit -p {profile} model"
     logger.warning(
         "Profile %s: %s via %s refused for billing/credits — using fallback %s via %s. "
         "Top up credits, or run `%s` to pick a model this account can use.",
@@ -1975,11 +1938,6 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
         return True
-    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
-    if local_skip_reason:
-        unavailable.add(fb_key)
-        logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
-        return True
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
@@ -2028,8 +1986,8 @@ def _reresolve_fallback_reasoning_config(agent) -> None:
     try:
         # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
         # because a config load failure must not kill the swap.
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
+        from rabbit_cli.config import load_config
+        from rabbit_constants import resolve_reasoning_config
         agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
         logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
     except Exception as _reasoning_err:
@@ -2095,7 +2053,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
 
         try:
             from agent.auxiliary_client import resolve_provider_client
-            from hermes_cli.fallback_config import resolve_entry_api_key
+            from rabbit_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
@@ -2124,13 +2082,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 fb_base_url, fb_api_mode = "moa://local", "chat_completions"
             else:
                 try:
-                    from hermes_cli.model_normalize import normalize_model_for_provider
+                    from rabbit_cli.model_normalize import normalize_model_for_provider
                     fb_model = normalize_model_for_provider(fb_model, fb_provider)
                 except Exception as _norm_err:
                     logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
                 fb_base_url = str(fb_client.base_url)
-                from hermes_cli.providers import is_actual_route
+                from rabbit_cli.providers import is_actual_route
                 if is_actual_route(fb_provider, fb_base_url):
                     fb_api_mode = "chat_completions"
                 elif not fb_api_mode_explicit and fb_api_mode == "chat_completions":
@@ -2183,7 +2141,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._provider_fallback_active = True
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
-            from hermes_cli.observability.shared_metrics_events import record_fallback
+            from rabbit_cli.observability.shared_metrics_events import record_fallback
             record_fallback(from_provider=old_provider, to_provider=fb_provider, reason=reason)
             # The stale-call streak measured the OLD provider; carrying it over would
             # short-circuit the fresh fallback before its first stream attempt.
@@ -2193,8 +2151,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
             return True
         except Exception as e:
-            if fb_provider == "nous":
-                unavailable.add(fb_key)
             logger.error("Failed to activate fallback %s: %s", fb_model, e)
             continue  # try next in chain
 
@@ -2239,7 +2195,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # chat.completions.create() directly, bypassing the transport — so mirror that sanitization here:
         # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers, timestamp (preserved on
         # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
-        # every Hermes-internal underscore-prefixed scaffolding key.
+        # every Rabbit-internal underscore-prefixed scaffolding key.
         substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
@@ -2331,7 +2287,6 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
@@ -2367,7 +2322,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
         # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this.
-        # Strict machine-readable mode (hermes chat -Q, oneshot, background review): keep diagnostics out of
+        # Strict machine-readable mode (rabbit chat -Q, oneshot, background review): keep diagnostics out of
         # stdout so wrappers receive only the final assistant content (#93220 class).
         logger.warning(warning)
     else:
@@ -2752,7 +2707,7 @@ class _BedrockStream:
         except Exception as _inval_exc:
             logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
         self.last_event = time.time()
-        # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
+        # Raises RuntimeError past RABBIT_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
         _check_stale_giveup(agent)
         self.result["error"] = TimeoutError(
@@ -3025,14 +2980,14 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _stream_timeouts(self) -> tuple[float, float, float]:
         """``(write, read, connect/pool)`` socket timeouts. Per-provider
-        ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
-        HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
+        ``request_timeout_seconds`` wins over RABBIT_API_TIMEOUT (1800s) and
+        RABBIT_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
         inference: 30s, or capped at 60s when configured."""
         cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
-        base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
+        base = cfg if cfg is not None else env_float("RABBIT_API_TIMEOUT", 1800.0)
         if cfg is not None:
             return base, cfg, min(base, 60.0)
-        read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
+        read = env_float("RABBIT_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             read = base  # local providers prefill for minutes
@@ -3060,7 +3015,7 @@ class _StreamingCall(StreamingWaitMonitor):
             body = _provider_error_body(
                 {"code": _err_type or "provider_in_stream_error", "message": str(_err_msg or chunk)}, _status)
             raise ProviderStreamError(status_code=_status, body=body, raw_text=f"{_err_type}: {_err_msg}")
-        # Nous Portal usage frames (choices=[] + lastOne=true, no [DONE]) are a
+        # Hosted-portal usage frames (choices=[] + lastOne=true, no [DONE]) are a
         # clean terminal, not a drop; relabelled upstreams send 1 / "true".
         # See #90848.
         last_one = getattr(chunk, "lastOne", None)
@@ -3087,8 +3042,6 @@ class _StreamingCall(StreamingWaitMonitor):
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
         self.agent._capture_rate_limits(response)
-        self.agent._capture_credits(response)
-        self.agent._capture_nous_model_switch(response)
         self.agent._stream_diag_capture_response(self.clients.diag, response)
         self.agent._check_openrouter_cache_status(response)
         self._writer_token = claim_stream_writer(self.agent)
@@ -3198,7 +3151,7 @@ class _StreamingCall(StreamingWaitMonitor):
             completed_response_predicate=lambda value: hasattr(value, "choices"),
             metadata=_relay_stream_metadata(self.agent, "chat_completions"), defer_logical_completion=True))
         if self.agent.provider == "moa":
-            # Hermes interrupts the managed stream; Relay alone closes the provider stream.
+            # Rabbit interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
 
         def _close_half_read_stream(reason: str) -> None:
@@ -3849,9 +3802,9 @@ class _StreamingCall(StreamingWaitMonitor):
         return self._call_anthropic(request_client)
 
     def _call(self):
-        _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        _max_stream_retries = env_int("RABBIT_STREAM_RETRIES", 2)
         # The one stream_options compatibility retry (#9705) is not a network retry and must not
-        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # consume the transient budget: on the last attempt (or RABBIT_STREAM_RETRIES=0) the
         # handler returned True and the loop ended with neither a response nor an error set.
         self._compat_retries = 0
         _stream_attempt = -1
@@ -3994,7 +3947,7 @@ class _StreamingCall(StreamingWaitMonitor):
     def _resolve_stale_timeout(self) -> None:
         """Set ``_stream_stale_timeout``. Local endpoints (unless the env is set) get
         long but FINITE patience — 900s / ``agent.local_stream_stale_timeout`` /
-        HERMES_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
+        RABBIT_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
         base = _configured_stale_base(self.agent)

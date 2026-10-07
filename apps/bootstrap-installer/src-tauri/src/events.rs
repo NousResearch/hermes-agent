@@ -209,8 +209,8 @@ mod tests {
             ("\u{1b}[2K\u{1b}[1GCloning repository…", "Cloning repository…"),
             ("down\u{1b}[?25lloading\u{1b}[K", "downloading"),
             // OSC title commands, BEL- and ST-terminated.
-            ("\u{1b}]0;hermes\u{07}Installing Hermes", "Installing Hermes"),
-            ("\u{1b}]2;hermes\u{1b}\\Installing Hermes", "Installing Hermes"),
+            ("\u{1b}]0;rabbit\u{07}Installing Rabbit", "Installing Rabbit"),
+            ("\u{1b}]2;rabbit\u{1b}\\Installing Rabbit", "Installing Rabbit"),
             // \r in-place redraws collapse to the last visible frame.
             ("\r 12%\r 67%\r100%", "100%"),
             ("Resolving dependencies…\r", "Resolving dependencies…"),

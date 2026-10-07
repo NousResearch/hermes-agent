@@ -21,7 +21,7 @@ def _build_adapter(extra=None):
     adapter.config = PlatformConfig(extra=extra or {})
     adapter._bot_open_id = "ou_bot"
     adapter._bot_user_id = ""
-    adapter._bot_name = "Hermes"
+    adapter._bot_name = "Rabbit"
     adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
     adapter._fetch_message_text = AsyncMock(return_value=None)
     adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})

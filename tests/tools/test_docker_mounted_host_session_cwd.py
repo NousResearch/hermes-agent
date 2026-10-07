@@ -49,7 +49,7 @@ def _cd_line(cwd: str) -> str:
         snap_tmp_template="'/tmp/snap.XXXXXX'",
         passthrough_names=(),
         snapshot_ready=False,
-        cwd_marker="__HERMES_CWD__",
+        cwd_marker="__RABBIT_CWD__",
     )
     return next(line for line in script.splitlines() if line.startswith("builtin cd -- "))
 

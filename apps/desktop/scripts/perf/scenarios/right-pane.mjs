@@ -164,7 +164,7 @@ export default {
     await cdp.send('Runtime.enable')
 
     const ready = await cdp.eval(
-      `!!(window.__PERF_DRIVE__?.rightPaneSetup && window.__RIGHT_PANE_PERF__ && window.__HERMES_LAYOUT_TREE__)`
+      `!!(window.__PERF_DRIVE__?.rightPaneSetup && window.__RIGHT_PANE_PERF__ && window.__RABBIT_LAYOUT_TREE__)`
     )
 
     if (!ready) {
@@ -177,7 +177,7 @@ export default {
       setup = await cdp.eval(
         `window.__PERF_DRIVE__.rightPaneSetup(${JSON.stringify({ cwd, terminals: terminalCount })})`
       )
-      await cdp.eval(`window.__HERMES_LAYOUT_TREE__.reveal('files'); window.__HERMES_LAYOUT_TREE__.reveal('terminal')`)
+      await cdp.eval(`window.__RABBIT_LAYOUT_TREE__.reveal('files'); window.__RABBIT_LAYOUT_TREE__.reveal('terminal')`)
       await waitFor(cdp, `!!document.querySelector('[data-project-tree]')`, 'project tree')
       await waitFor(
         cdp,

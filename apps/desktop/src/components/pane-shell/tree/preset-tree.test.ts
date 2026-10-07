@@ -76,7 +76,7 @@ describe('stripPresetLivePanes', () => {
     expect(isPresetExcludedPaneId('preview-tile:undefined')).toBe(true)
     expect(isPresetExcludedPaneId('route-tile:page')).toBe(true)
     expect(isPresetExcludedPaneId('workspace')).toBe(false)
-    expect(isPresetExcludedPaneId('hermes-bots:pane')).toBe(false)
+    expect(isPresetExcludedPaneId('rabbit-bots:pane')).toBe(false)
     expect(isPresetExcludedPaneId('terminal')).toBe(false)
   })
 })

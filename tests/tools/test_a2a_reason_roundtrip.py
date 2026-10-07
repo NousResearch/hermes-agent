@@ -21,9 +21,9 @@ from tools import bot_relay
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    h = tmp_path / ".hermes"
+    h = tmp_path / ".rabbit"
     h.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setenv("RABBIT_HOME", str(h))
     return h
 
 
@@ -75,7 +75,7 @@ def _envelope(home):
         target=target,
         message="ping",
         sender_profile="default",
-        sender_handle="hermes",
+        sender_handle="rabbit",
     )
 
 

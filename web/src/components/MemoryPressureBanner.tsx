@@ -8,7 +8,7 @@ import { useI18n } from "@/i18n";
  * and disk exhaustion.
  *
  * Triggers, worst-first:
- * 1. Disk critical — the HERMES_HOME volume is nearly full. Worst because
+ * 1. Disk critical — the RABBIT_HOME volume is nearly full. Worst because
  *    the failure mode is silent data loss (SQLite writes failing, sessions
  *    and config not persisting), not just a restart (OOF-2/OOF-107).
  * 2. Memory critical — the gateway's heartbeat shows system memory in the

@@ -1,6 +1,6 @@
 """MCP conformance over stdio against a REAL ``mcp`` 2.x server (``mcp_fixture_server.py``).
 
-One ``hermes chat -q`` turn per scenario group; the fake model calls the MCP tools and every
+One ``rabbit chat -q`` turn per scenario group; the fake model calls the MCP tools and every
 assertion reads either what the MCP server RECEIVED on its stdin (teed to a JSONL log) or what the
 next provider request carried back to the model (the tool result the model saw):
 

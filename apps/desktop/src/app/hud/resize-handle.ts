@@ -94,7 +94,7 @@ function releasePointer(state: ResizeState): void {
  * frameless window must not expose a system resize hot-zone, or every drag
  * grows it), so resizing has to be programmatic: the handle reports absolute
  * screen bounds and main flips resizable on for the setBounds call. Same
- * pattern as the pet overlay's wheel-scale (`hermes:pet-overlay:set-bounds`).
+ * pattern as the pet overlay's wheel-scale (`rabbit:pet-overlay:set-bounds`).
  *
  * Each handle preserves its opposite edge, matching ordinary desktop windows
  * and CanvasTTY cards. Deltas are read in SCREEN coordinates, like the composer
@@ -155,7 +155,7 @@ export function useHudResizeHandle(): {
       const dx = event.screenX - state.startX
       const dy = event.screenY - state.startY
 
-      window.hermesDesktop?.hud?.setBounds?.(
+      window.rabbitDesktop?.hud?.setBounds?.(
         hudResizeBounds(
           { x: state.originX, y: state.originY, width: state.originW, height: state.originH },
           state.direction,

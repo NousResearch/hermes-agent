@@ -9,18 +9,18 @@ from contextlib import contextmanager
 from typing import Any
 
 from agent.redact import redact_sensitive_text
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from utils import is_truthy_value
 
 
 @contextmanager
 def _owning_home(home):
-    token = set_hermes_home_override(str(home)) if home is not None else None
+    token = set_rabbit_home_override(str(home)) if home is not None else None
     try:
         yield
     finally:
         if token is not None:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
 
 def visible_commentary(text: str, *, strip_thinking=None) -> str:
@@ -157,7 +157,7 @@ def project_history_commentary(messages: list[dict], *, home: Any = None) -> lis
     ):
         return messages
     with _owning_home(home):
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
 
         try:
             display = load_config().get("display") or {}

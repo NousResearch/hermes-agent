@@ -15,8 +15,8 @@ def render_wrapper(entry: str, repo: str, site: str) -> str:
     for key, value in {"ENTRY_MODULE": module, "ENTRY_FUNC": func, "REPO_REL": repo, "SITE_REL": site}.items():
         if '"' in value or "\n" in value or "__" in value:
             raise ValueError(f"invalid launcher value: {key}")
-        text = text.replace(f"__HERMES_{key}__", value)
-    unresolved = re.search(r"__HERMES_\w+?__", text)
+        text = text.replace(f"__RABBIT_{key}__", value)
+    unresolved = re.search(r"__RABBIT_\w+?__", text)
     if unresolved:
         raise ValueError(f"unresolved launcher placeholder: {unresolved.group()}")
     return text
@@ -36,15 +36,15 @@ def posix_launcher(name: str, entry: str, *, python: str, repo: str, site: str, 
         extra = '''PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PREFIX
 export LD_LIBRARY_PATH="$root/tools/python/data/data/com.termux/files/usr/lib:$root/tools/node/data/data/com.termux/files/usr/lib:$root/tools/ffmpeg/data/data/com.termux/files/usr/lib:$root/runtime-libs/lib:$PREFIX/lib"
-export HERMES_PYTHON_SRC_ROOT="$REPO"
-export HERMES_PYTHON="$PYTHON"
-export HERMES_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
-export HERMES_RUNTIME_DIR="$root/tools"
+export RABBIT_PYTHON_SRC_ROOT="$REPO"
+export RABBIT_PYTHON="$PYTHON"
+export RABBIT_NODE="$root/tools/node/data/data/com.termux/files/usr/bin/node"
+export RABBIT_RUNTIME_DIR="$root/tools"
 export PATH="$root/tools/npm/bin:$root/tools/node/data/data/com.termux/files/usr/bin:$root/tools/ffmpeg/data/data/com.termux/files/usr/bin:$root/tools/ripgrep:$PATH"
 '''
     code = (
         f"import os, site, sys; sys.argv[0]={name!r}; "
-        "site.addsitedir(os.environ['HERMES_SITE']); "
+        "site.addsitedir(os.environ['RABBIT_SITE']); "
         f"from {module} import {func}; sys.exit({func}())"
     )
     return f'''{header}
@@ -61,15 +61,15 @@ root="$(cd "$(dirname "$self")/.." && pwd)"
 PYTHON={shell_path(python)}
 REPO={shell_path(repo)}
 SITE={shell_path(site)}
-[ -x "$PYTHON" ] || {{ printf '%s\\n' 'Bundled interpreter missing; reinstall Hermes.' >&2; exit 2; }}
+[ -x "$PYTHON" ] || {{ printf '%s\\n' 'Bundled interpreter missing; reinstall Rabbit.' >&2; exit 2; }}
 unset PYTHONPATH PYTHONHOME
 export PYTHONPATH="$REPO:$SITE"
 # PYTHONPATH cannot process .pth files (only site.addsitedir() can), and
 # the venv's .pth files are load-bearing (pywin32.pth -> win32\\lib ->
 # `import pywintypes` on Windows bundles; the win32 wrapper mirrors this
 # in launcher_wrapper.py). The -c bootstrap below runs addsitedir() on it.
-export HERMES_SITE="$SITE"
-export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
+export RABBIT_SITE="$SITE"
+export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/rabbit-pycache}}"
 {extra}exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
 '''
 
@@ -83,14 +83,14 @@ def write_launchers(root: Path, entries: dict[str, str], *, python: str,
     windows = target.startswith("win32")
     for name, entry in entries.items():
         if windows:
-            with tempfile.TemporaryDirectory(prefix="hermes-mint-") as temp:
+            with tempfile.TemporaryDirectory(prefix="rabbit-mint-") as temp:
                 wrapper = Path(temp) / "wrapper.py"
                 wrapper.write_text(render_wrapper(entry, f"../{repo}", f"../{site}"), encoding="utf-8")
                 module, func = entry.split(":", 1)
-                env = {**os.environ, "HERMES_MINT_BIN_DIR": str(bindir),
-                       "HERMES_MINT_SPECS": json.dumps([{"name": name, "module": module, "func": func}]),
-                       "HERMES_MINT_WRAPPER": str(wrapper),
-                       "HERMES_MINT_PYTHON": "<launcher_dir>\\..\\" + python.replace("/", "\\")}
+                env = {**os.environ, "RABBIT_MINT_BIN_DIR": str(bindir),
+                       "RABBIT_MINT_SPECS": json.dumps([{"name": name, "module": module, "func": func}]),
+                       "RABBIT_MINT_WRAPPER": str(wrapper),
+                       "RABBIT_MINT_PYTHON": "<launcher_dir>\\..\\" + python.replace("/", "\\")}
                 run([str(root / python), str(Path(__file__).with_name("mint_launchers.py"))], env=env, check=True)
         else:
             script = posix_launcher(name, entry, python=python, repo=repo, site=site, target=target)

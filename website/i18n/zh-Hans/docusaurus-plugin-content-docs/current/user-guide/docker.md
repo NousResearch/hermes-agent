@@ -1,15 +1,15 @@
 ---
 sidebar_position: 7
 title: "Docker"
-description: "在 Docker 中运行 Hermes Agent 以及将 Docker 用作终端后端"
+description: "在 Docker 中运行 Rabbit Agent 以及将 Docker 用作终端后端"
 ---
 
-# Hermes Agent — Docker
+# Rabbit Agent — Docker
 
-Docker 与 Hermes Agent 的交集有两种截然不同的方式：
+Docker 与 Rabbit Agent 的交集有两种截然不同的方式：
 
-1. **在 Docker 中运行 Hermes** — agent 本身在容器内运行（本页的主要内容）
-2. **Docker 作为终端后端** — agent 在宿主机上运行，但将每条命令在单个持久化 Docker 沙箱容器中执行，该容器在工具调用、`/new` 和子 agent 之间保持存活，直至 Hermes 进程结束（参见 [配置 → Docker 后端](./configuration.md#docker-后端)）
+1. **在 Docker 中运行 Rabbit** — agent 本身在容器内运行（本页的主要内容）
+2. **Docker 作为终端后端** — agent 在宿主机上运行，但将每条命令在单个持久化 Docker 沙箱容器中执行，该容器在工具调用、`/new` 和子 agent 之间保持存活，直至 Rabbit 进程结束（参见 [配置 → Docker 后端](./configuration.md#docker-后端)）
 
 本页介绍选项 1。容器将所有用户数据（配置、API 密钥、会话、技能、记忆）存储在从宿主机挂载于 `/opt/data` 的单个目录中。镜像本身是无状态的，可通过拉取新版本进行升级而不会丢失任何配置。
 
@@ -23,20 +23,20 @@ Docker 与 Hermes Agent 的交集有两种截然不同的方式：
 
 镜像流程构建并测试 amd64 和 arm64。稳定发布复用已测试归档，不重新构建。
 主分支推送只更新 `main`，不会提升 `stable` 或 `latest`。
-应用代码位于 `/opt/hermes`，持久数据位于挂载的 `/opt/data`，两者分别管理。
+应用代码位于 `/opt/rabbit`，持久数据位于挂载的 `/opt/data`，两者分别管理。
 
 ## 快速开始
 
-如果这是你第一次运行 Hermes Agent，请在宿主机上创建一个数据目录，并以交互方式启动容器以运行设置向导：
+如果这是你第一次运行 Rabbit Agent，请在宿主机上创建一个数据目录，并以交互方式启动容器以运行设置向导：
 
 ```sh
-mkdir -p ~/.hermes
+mkdir -p ~/.rabbit
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent setup
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit- setup
 ```
 
-这将进入设置向导，向导会提示你输入 API 密钥并将其写入 `~/.hermes/.env`。你只需执行一次。强烈建议此时为 gateway 配置一个聊天系统。
+这将进入设置向导，向导会提示你输入 API 密钥并将其写入 `~/.rabbit/.env`。你只需执行一次。强烈建议此时为 gateway 配置一个聊天系统。
 
 ## 以 gateway 模式运行
 
@@ -44,11 +44,11 @@ docker run -it --rm \
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.rabbit:/opt/data \
   -p 8642:8642 \
-  nousresearch/hermes-agent gateway run
+  seven0070/Rabbit- gateway run
 ```
 
 端口 8642 暴露 gateway 的 [OpenAI 兼容 API 服务器](./features/api-server.md)和健康检查端点。如果你只使用聊天平台（Telegram、Discord 等），该端口是可选的；但如果你希望 dashboard 或外部工具访问 gateway，则必须开放。
@@ -57,67 +57,66 @@ docker run -d \
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.rabbit:/opt/data \
   -p 8642:8642 \
   -e API_SERVER_ENABLED=true \
   -e API_SERVER_HOST=0.0.0.0 \
   -e API_SERVER_KEY="$(openssl rand -hex 32)" \
   -e API_SERVER_CORS_ORIGINS='*' \
-  nousresearch/hermes-agent gateway run
+  seven0070/Rabbit- gateway run
 ```
 
 在面向互联网的机器上开放任何端口都存在安全风险。除非你了解相关风险，否则不应这样做。
 
 ## 运行 dashboard
 
-内置 Web dashboard 在同一容器内作为受 s6-rc 监管的服务与 gateway 并行运行。设置 `HERMES_DASHBOARD=1` 即可拉起它：
+内置 Web dashboard 在同一容器内作为受 s6-rc 监管的服务与 gateway 并行运行。设置 `RABBIT_DASHBOARD=1` 即可拉起它：
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.rabbit:/opt/data \
   -p 8642:8642 \
   -p 9119:9119 \
-  -e HERMES_DASHBOARD=1 \
-  nousresearch/hermes-agent gateway run
+  -e RABBIT_DASHBOARD=1 \
+  seven0070/Rabbit- gateway run
 ```
 
 Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后自动重启。Dashboard 的 stdout/stderr 会直接转发到 `docker logs <container>`；gateway 的主输出现在写入每个 profile 的 s6 日志文件，见下方的 per-profile 日志说明。
 
 | 环境变量 | 描述 | 默认值 |
 |---------------------|-------------|---------|
-| `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以启用受监管的 dashboard 服务 | *（未设置——服务已注册但保持关闭）* |
-| `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `0.0.0.0` |
-| `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
-| `HERMES_DASHBOARD_INSECURE` | **已弃用 / 空操作。** 以前用于绕过鉴权门控；自 2026 年 6 月的安全加固起，它不再禁用鉴权。任何非回环绑定都必须配置鉴权提供方 | *（被忽略——请改为配置提供方）* |
+| `RABBIT_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以启用受监管的 dashboard 服务 | *（未设置——服务已注册但保持关闭）* |
+| `RABBIT_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `0.0.0.0` |
+| `RABBIT_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
+| `RABBIT_DASHBOARD_INSECURE` | **已弃用 / 空操作。** 以前用于绕过鉴权门控；自 2026 年 6 月的安全加固起，它不再禁用鉴权。任何非回环绑定都必须配置鉴权提供方 | *（被忽略——请改为配置提供方）* |
 
-容器内的 dashboard 默认绑定 `0.0.0.0`，否则发布的 `-p 9119:9119` 端口将无法从宿主机访问。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请显式设置 `HERMES_DASHBOARD_HOST=127.0.0.1`。
+容器内的 dashboard 默认绑定 `0.0.0.0`，否则发布的 `-p 9119:9119` 端口将无法从宿主机访问。若你要把它限制在容器回环地址（例如 sidecar / 反向代理拓扑），请显式设置 `RABBIT_DASHBOARD_HOST=127.0.0.1`。
 
 当以下两项同时满足时，dashboard 的鉴权门控会自动启用：
 
 1. 绑定地址为非回环地址，**且**
 2. 注册了一个 `DashboardAuthProvider` 插件。
 
-有三种内置方式可满足第二个条件：
+有两种内置方式可满足第二个条件：
 
-- **用户名/密码** —— 最简单的自托管 / 局域网 / VPN 内部署方式：设置 `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`（以及用于跨重启稳定 session 的 `HERMES_DASHBOARD_BASIC_AUTH_SECRET`）。不适合直接暴露到公网上。
-- **OAuth（Nous Portal）** —— 适合托管/公网部署：设置 `HERMES_DASHBOARD_OAUTH_CLIENT_ID` 后，`dashboard_auth/nous` 提供者会自动激活。
-- **自托管 OIDC** —— 通过标准 OpenID Connect 接入你自己的身份提供商：设置 `HERMES_DASHBOARD_OIDC_ISSUER` + `HERMES_DASHBOARD_OIDC_CLIENT_ID` 后，`dashboard_auth/self_hosted` 提供者会激活。
+- **用户名/密码** —— 最简单的自托管 / 局域网 / VPN 内部署方式：设置 `RABBIT_DASHBOARD_BASIC_AUTH_USERNAME` + `RABBIT_DASHBOARD_BASIC_AUTH_PASSWORD`（以及用于跨重启稳定 session 的 `RABBIT_DASHBOARD_BASIC_AUTH_SECRET`）。不适合直接暴露到公网上。
+- **自托管 OIDC** —— 通过标准 OpenID Connect 接入你自己的身份提供商：设置 `RABBIT_DASHBOARD_OIDC_ISSUER` + `RABBIT_DASHBOARD_OIDC_CLIENT_ID` 后，`dashboard_auth/self_hosted` 提供者会激活。
 
 无论选择哪种，调用方在访问受保护路由前都会先被重定向到登录页。完整说明见 [Web Dashboard → 鉴权](features/web-dashboard.md)。
 
 如果未注册提供者且绑定为非回环地址，dashboard **会在启动时
 失败关闭**，并给出指向缺失环境变量的具体错误信息。现在已不再
 存在以无鉴权方式在公网绑定上提供 dashboard 的“逃生通道”：
-`HERMES_DASHBOARD_INSECURE=1` 现在是一个已弃用的空操作（它会
+`RABBIT_DASHBOARD_INSECURE=1` 现在是一个已弃用的空操作（它会
 打印告警并被忽略）。请改为配置鉴权提供方，或设置
-`HERMES_DASHBOARD_HOST=127.0.0.1` 并通过 SSH 隧道 / Tailscale 访问。
+`RABBIT_DASHBOARD_HOST=127.0.0.1` 并通过 SSH 隧道 / Tailscale 访问。
 
 :::warning 为什么移除了 `--insecure`
-无鉴权的公网 dashboard 是 2026 年 6 月 MCP 配置持久化攻击活动的入口：互联网扫描器访问到暴露的 dashboard（以及 OpenAI API 服务器），诱导 agent 植入 SSH 密钥后门。现在每个非回环绑定都强制启用鉴权门控。对于可信局域网 / homelab 主机，内置的用户名/密码提供方（`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`）是满足该要求的零基础设施方式。
+无鉴权的公网 dashboard 是 2026 年 6 月 MCP 配置持久化攻击活动的入口：互联网扫描器访问到暴露的 dashboard（以及 OpenAI API 服务器），诱导 agent 植入 SSH 密钥后门。现在每个非回环绑定都强制启用鉴权门控。对于可信局域网 / homelab 主机，内置的用户名/密码提供方（`RABBIT_DASHBOARD_BASIC_AUTH_USERNAME` + `_PASSWORD`）是满足该要求的零基础设施方式。
 :::
 
 当独立的 dashboard 容器与宿主机共享 PID 与网络命名空间时（例如 `network_mode: host`，正如仓库自带的 `docker-compose.yml` 中的 `dashboard` 服务那样），**是**支持将 dashboard 作为独立容器运行的。其 gateway 存活检测需要与 gateway 进程共享 PID 命名空间，因此该限制仅适用于在隔离的 bridge 网络容器中、且未共享 PID 命名空间的 dashboard。
@@ -128,29 +127,29 @@ Dashboard 由 s6 监管：若进程崩溃，`s6-supervise` 会在短暂退避后
 
 ```sh
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit-
 ```
 
 或者，如果你已通过 Docker Desktop 等方式在运行中的容器内打开了终端，直接运行：
 
 ```sh
-/opt/hermes/.venv/bin/hermes
+/opt/rabbit/.venv/bin/rabbit
 ```
 
 ## 持久化卷
 
-`/opt/data` 卷是所有 Hermes 状态的唯一数据来源。它映射到宿主机的 `~/.hermes/` 目录，包含：
+`/opt/data` 卷是所有 Rabbit 状态的唯一数据来源。它映射到宿主机的 `~/.rabbit/` 目录，包含：
 
 | 路径 | 内容 |
 |------|----------|
 | `.env` | API 密钥和机密 |
-| `config.yaml` | 所有 Hermes 配置 |
+| `config.yaml` | 所有 Rabbit 配置 |
 | `SOUL.md` | Agent 个性/身份 |
 | `sessions/` | 对话历史 |
 | `memories/` | 持久化记忆存储 |
 | `skills/` | 已安装的技能 |
-| `home/` | Hermes 工具子进程（`git`、`ssh`、`gh`、`npm` 及 skill CLI）的 per-profile HOME |
+| `home/` | Rabbit 工具子进程（`git`、`ssh`、`gh`、`npm` 及 skill CLI）的 per-profile HOME |
 | `cron/` | 定时任务定义 |
 | `hooks/` | 事件 hook |
 | `logs/` | 运行时日志 |
@@ -158,42 +157,42 @@ docker run -it --rm \
 
 ### 不可变安装树
 
-在托管/发布的 Docker 镜像中，`/opt/hermes` 是安装好的应用树。它由 root 拥有，并且对运行时的 `hermes` 用户只读，因此 agent 回合、gateway 会话、dashboard 操作以及普通的 `docker exec hermes hermes ...` 命令都不能原地修改核心源码、打包的 `.venv`、`node_modules` 或 TUI bundle。
+在托管/发布的 Docker 镜像中，`/opt/rabbit` 是安装好的应用树。它由 root 拥有，并且对运行时的 `rabbit` 用户只读，因此 agent 回合、gateway 会话、dashboard 操作以及普通的 `docker exec rabbit rabbit ...` 命令都不能原地修改核心源码、打包的 `.venv`、`node_modules` 或 TUI bundle。
 
-所有可变的 Hermes 状态都应位于 `/opt/data` 下：配置、`.env`、profiles、skills、memories、sessions、logs、dashboard 上传、plugins 以及其他用户管理的文件。官方镜像还会阻止在运行时向不可变的 `/opt/hermes` 树写入 `.pyc` 或执行 Hermes 的懒安装依赖流程。
+所有可变的 Rabbit 状态都应位于 `/opt/data` 下：配置、`.env`、profiles、skills、memories、sessions、logs、dashboard 上传、plugins 以及其他用户管理的文件。官方镜像还会阻止在运行时向不可变的 `/opt/rabbit` 树写入 `.pyc` 或执行 Rabbit 的懒安装依赖流程。
 
-如果运维人员确实需要修复或检查 `/opt/data` 之外的文件，请有意识地使用 root shell。`hermes` shim 默认会把 `docker exec hermes hermes ...` 降回运行时用户；只有在你明确需要 root 语义时，才临时设置 `HERMES_DOCKER_EXEC_AS_ROOT=1`。
+如果运维人员确实需要修复或检查 `/opt/data` 之外的文件，请有意识地使用 root shell。`rabbit` shim 默认会把 `docker exec rabbit rabbit ...` 降回运行时用户；只有在你明确需要 root 语义时，才临时设置 `RABBIT_DOCKER_EXEC_AS_ROOT=1`。
 
 某些 skill CLI 会把凭据写到 `~` 下，因此在官方 Docker 布局里要针对子进程 HOME 初始化，而不是只针对数据卷根目录。例如 [xurl skill](./skills/bundled/social-media/social-media-xurl.md) 会把 OAuth 状态存到 `~/.xurl`；在容器里这对应 `/opt/data/home/.xurl`，因此手动认证时应使用 `HOME=/opt/data/home xurl auth status` 之类的调用。
 
 :::warning
-切勿同时对同一数据目录运行两个 Hermes **gateway** 容器——会话文件和记忆存储不支持并发写入。
+切勿同时对同一数据目录运行两个 Rabbit **gateway** 容器——会话文件和记忆存储不支持并发写入。
 :::
 
 ## 多 profile 支持
 
-Hermes 支持[多个 profile](../reference/profile-commands.md)——独立的 `~/.hermes/` 子目录，让你可以从单个安装运行独立的 agent（不同的 SOUL、skills、memory、sessions、credentials）。**在官方 Docker 镜像内，s6 监管树把每个 profile 当作一等受监管服务**，因此推荐部署方式是：**一个容器承载多个 profile**。
+Rabbit 支持[多个 profile](../reference/profile-commands.md)——独立的 `~/.rabbit/` 子目录，让你可以从单个安装运行独立的 agent（不同的 SOUL、skills、memory、sessions、credentials）。**在官方 Docker 镜像内，s6 监管树把每个 profile 当作一等受监管服务**，因此推荐部署方式是：**一个容器承载多个 profile**。
 
-每个通过 `hermes profile create <name>` 创建的 profile 都会获得：
+每个通过 `rabbit profile create <name>` 创建的 profile 都会获得：
 
 - 一个专用的 s6 服务槽位 `/run/service/gateway-<name>/`，运行时动态注册，无需重建镜像。
 - 崩溃后的自动重启，由 `s6-supervise` 管理退避。
-- 每个 profile 独立的轮转日志：`${HERMES_HOME}/logs/gateways/<name>/current`。
+- 每个 profile 独立的轮转日志：`${RABBIT_HOME}/logs/gateways/<name>/current`。
 - 跨容器重启的状态持久化：启动协调器会读取该 profile 的 `gateway_state.json`，仅在上次记录状态为 `running` 时自动拉起。
 
 容器内生命周期命令与宿主机上一致：
 
 ```sh
 # 创建 profile —— 同时注册 gateway-<name> s6 槽位
-docker exec hermes hermes profile create coder
+docker exec rabbit rabbit profile create coder
 
 # 启停/重启 —— 底层分发给 s6-svc
-docker exec hermes hermes -p coder gateway start
-docker exec hermes hermes -p coder gateway stop
-docker exec hermes hermes -p coder gateway restart
+docker exec rabbit rabbit -p coder gateway start
+docker exec rabbit rabbit -p coder gateway stop
+docker exec rabbit rabbit -p coder gateway restart
 
 # 状态 —— 容器内会显示 `Manager: s6 (container supervisor)`
-docker exec hermes hermes -p coder gateway status
+docker exec rabbit rabbit -p coder gateway status
 ```
 
 若第二个 profile 也要暴露 OpenAI 兼容 API server，请在**该 profile 自己的** `.env` 中设置不同的 `API_SERVER_PORT`，然后重启该 profile 的 gateway；不要把端口放进容器级 `environment:`，否则所有 profile 都会争抢同一个端口。更底层的监管细节见后文的 [Per-profile gateway 监管](#per-profile-gateway-supervision)。
@@ -204,16 +203,16 @@ API 密钥从容器内的 `/opt/data/.env` 读取。你也可以直接传递环�
 
 ```sh
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
+  -v ~/.rabbit:/opt/data \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -e OPENAI_API_KEY="sk-..." \
-  nousresearch/hermes-agent
+  seven0070/Rabbit-
 ```
 
 直接传入的 `-e` 标志会覆盖 `.env` 中的值。这对于不希望将密钥写入磁盘的 CI/CD 或密钥管理器集成非常有用。
 
 :::note 寻找 Docker 作为**终端后端**的说明？
-本页介绍在 Docker 内运行 Hermes 本身。如果你希望 Hermes 在 Docker 沙箱容器内执行 agent 的 `terminal` / `execute_code` 调用（每个 Hermes 进程对应一个持久容器），那是另一个配置块——`terminal.backend: docker` 加上 `terminal.docker_image`、`terminal.docker_volumes`、`terminal.docker_forward_env`、`terminal.docker_run_as_host_user` 和 `terminal.docker_extra_args`。完整配置请参见 [配置 → Docker 后端](configuration.md#docker-后端)。
+本页介绍在 Docker 内运行 Rabbit 本身。如果你希望 Rabbit 在 Docker 沙箱容器内执行 agent 的 `terminal` / `execute_code` 调用（每个 Rabbit 进程对应一个持久容器），那是另一个配置块——`terminal.backend: docker` 加上 `terminal.docker_image`、`terminal.docker_volumes`、`terminal.docker_forward_env`、`terminal.docker_run_as_host_user` 和 `terminal.docker_extra_args`。完整配置请参见 [配置 → Docker 后端](configuration.md#docker-后端)。
 :::
 
 ## Docker Compose 示例
@@ -222,18 +221,18 @@ docker run -it --rm \
 
 ```yaml
 services:
-  hermes:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes
+  rabbit:
+    image: seven0070/Rabbit-:latest
+    container_name: rabbit
     restart: unless-stopped
     command: gateway run
     ports:
       - "8642:8642"   # gateway API
-      - "9119:9119"   # dashboard（仅在 HERMES_DASHBOARD=1 时生效）
+      - "9119:9119"   # dashboard（仅在 RABBIT_DASHBOARD=1 时生效）
     volumes:
-      - ~/.hermes:/opt/data
+      - ~/.rabbit:/opt/data
     environment:
-      - HERMES_DASHBOARD=1
+      - RABBIT_DASHBOARD=1
       # 取消注释以直接转发特定环境变量而非使用 .env 文件：
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -249,7 +248,7 @@ services:
 
 ## 资源限制
 
-Hermes 容器需要适量资源。推荐最低配置：
+Rabbit 容器需要适量资源。推荐最低配置：
 
 | 资源 | 最低 | 推荐 |
 |----------|---------|-------------|
@@ -263,11 +262,11 @@ Hermes 容器需要适量资源。推荐最低配置：
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
   --memory=4g --cpus=2 \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent gateway run
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit- gateway run
 ```
 
 ## Dockerfile 说明 {#what-the-dockerfile-does}
@@ -275,16 +274,16 @@ docker run -d \
 官方镜像基于 Debian 13.4，包含：
 
 
-- 按提交的 `uv.lock` 同步的 Python 3.14 环境，然后无依赖地安装 Hermes 源码。
+- 按提交的 `uv.lock` 同步的 Python 3.14 环境，然后无依赖地安装 Rabbit 源码。
 - 选定的 extras：`all`、`messaging`、`otlp`、`anthropic`、`bedrock`、`azure-identity` 和 `matrix`，不是 `--all-extras`。
 - 从摘要固定的 Node 镜像提供的 Node.js 26 和 npm。
-- PM 固定版本的 uv、完整 Chromium、FFmpeg 和 ripgrep，位于 `/opt/hermes/tools`。
+- PM 固定版本的 uv、完整 Chromium、FFmpeg 和 ripgrep，位于 `/opt/rabbit/tools`。
 - 系统 Git、OpenSSH、Docker CLI 和 Chromium 所需共享库。
 - 预构建的 TUI/dashboard 和 Photon sidecar 依赖，以及 s6-overlay。
 
 Chromium 由 PM 准备，不使用 `npx playwright install`。
-实际可执行路径记录在 `/etc/hermes/agent-browser-executable-path`。
-`PLAYWRIGHT_BROWSERS_PATH` 指向 `/opt/hermes/tools`，不在数据卷内。
+实际可执行路径记录在 `/etc/rabbit/agent-browser-executable-path`。
+`PLAYWRIGHT_BROWSERS_PATH` 指向 `/opt/rabbit/tools`，不在数据卷内。
 
 所有镜像（包括不带 `-desktop` 后缀的标签）都携带完整 Chromium，而不是 Playwright
 更轻量的 headless shell：同一个固定且校验过的浏览器同时服务无头浏览和有界面的
@@ -292,54 +291,54 @@ Bot Screen 会话。代价是镜像体积：完整版比早期镜像附带的 he
 
 可选后端 SDK（Edge TTS、Firecrawl、Exa、平台适配器、插件依赖）在首次使用时安装到
 `/opt/data/installs` 下的 PM 依赖代，容器重建和镜像更新后仍然保留；镜像自带的
-`/opt/hermes/.venv` 永不修改。每次启动时，容器在服务启动前按新镜像的锁文件重新解析
+`/opt/rabbit/.venv` 永不修改。每次启动时，容器在服务启动前按新镜像的锁文件重新解析
 已记录的选择；若失败（例如离线），则使用镜像自带环境启动，并保留已记录的 extras，
 留待下次启动或安装时重建。设置 `security.allow_lazy_installs: false` 可拒绝按需安装。
 旧 `lazy-packages` overlay 不再使用。
 
-构建来源记录在 `/etc/hermes/image-provenance.json`，构建戳记位于 `/opt/hermes/install-stamp.json`。
-没有戳记的本地构建报告未知版本，不猜测提交。`hermes update` 不修改镜像所有的代码，应用更新需替换镜像。
+构建来源记录在 `/etc/rabbit/image-provenance.json`，构建戳记位于 `/opt/rabbit/install-stamp.json`。
+没有戳记的本地构建报告未知版本，不猜测提交。`rabbit update` 不修改镜像所有的代码，应用更新需替换镜像。
 
 入口点是 `docker/entrypoint-dispatch.sh`。正常 Docker/Podman 中它占有 PID 1，转交给 s6 的 `/init`。
 若平台已有 PID-1 init，则直接运行 stage2 和主包装器；命令仍可运行，但没有 s6 监管的 dashboard 或各 profile gateway。
 
 PID-1 路径先准备数据卷和配置，重建各 profile 的 gateway 服务槽，然后运行主命令。
 不要绕过这些入口步骤，否则会失去权限处理和服务监管。
-主程序及受监管服务以 `hermes` 用户运行，避免在 `/opt/data` 中留下 root 所有的文件。
+主程序及受监管服务以 `rabbit` 用户运行，避免在 `/opt/data` 中留下 root 所有的文件。
 
 ### Per-profile gateway 监管 {#per-profile-gateway-supervision}
 
-在容器内，每个通过 `hermes profile create <name>` 创建的 profile 都会自动在 `/run/service/gateway-<name>/` 注册一个受 s6 监管的 gateway 服务。你在宿主机上运行的生命周期命令在此同样适用：
+在容器内，每个通过 `rabbit profile create <name>` 创建的 profile 都会自动在 `/run/service/gateway-<name>/` 注册一个受 s6 监管的 gateway 服务。你在宿主机上运行的生命周期命令在此同样适用：
 
 ```sh
-hermes profile create coder            # 注册 gateway-coder s6 槽
-hermes -p coder gateway start          # s6-svc -u  → 受监管的 gateway
-hermes -p coder gateway stop           # s6-svc -d  → 服务停止
-hermes -p coder gateway restart        # s6-svc -t  → 向 supervisor 发送 SIGTERM
-hermes profile delete coder            # 拆除 s6 槽
+rabbit profile create coder            # 注册 gateway-coder s6 槽
+rabbit -p coder gateway start          # s6-svc -u  → 受监管的 gateway
+rabbit -p coder gateway stop           # s6-svc -d  → 服务停止
+rabbit -p coder gateway restart        # s6-svc -t  → 向 supervisor 发送 SIGTERM
+rabbit profile delete coder            # 拆除 s6 槽
 ```
 
 **相比 pre-s6 镜像的监管优势：**
 
 - Gateway 崩溃后由 `s6-supervise` 在约 1 秒退避后自动重启。
-- Dashboard 崩溃后自动重启（设置 `HERMES_DASHBOARD=1` 以启动）。
-- `docker restart` 保留运行中的 gateway：cont-init 协调器读取 `$HERMES_HOME/profiles/<name>/gateway_state.json`，若上次记录状态为 `running` 则恢复该槽。已停止的 gateway 保持停止状态。
-- 各 profile 的 gateway 日志持久化于 `$HERMES_HOME/logs/gateways/<profile>/current`（由 `s6-log` 轮转），协调器的操作记录在每次启动时追加到 `$HERMES_HOME/logs/container-boot.log`。
+- Dashboard 崩溃后自动重启（设置 `RABBIT_DASHBOARD=1` 以启动）。
+- `docker restart` 保留运行中的 gateway：cont-init 协调器读取 `$RABBIT_HOME/profiles/<name>/gateway_state.json`，若上次记录状态为 `running` 则恢复该槽。已停止的 gateway 保持停止状态。
+- 各 profile 的 gateway 日志持久化于 `$RABBIT_HOME/logs/gateways/<profile>/current`（由 `s6-log` 轮转），协调器的操作记录在每次启动时追加到 `$RABBIT_HOME/logs/container-boot.log`。
 
-在容器内执行 `hermes status` 会显示 `Manager: s6 (container supervisor)`。使用 `/command/s6-svstat /run/service/gateway-<name>` 查看原始 supervisor 状态（注意 `/command/` 仅在监管树进程的 PATH 中；从 `docker exec` 调用时请传入绝对路径）。
+在容器内执行 `rabbit status` 会显示 `Manager: s6 (container supervisor)`。使用 `/command/s6-svstat /run/service/gateway-<name>` 查看原始 supervisor 状态（注意 `/command/` 仅在监管树进程的 PATH 中；从 `docker exec` 调用时请传入绝对路径）。
 
 ## 升级
 
 拉取最新镜像并重建容器。你的数据目录不受影响。
 
 ```sh
-docker pull nousresearch/hermes-agent:latest
-docker rm -f hermes
+docker pull seven0070/Rabbit-:latest
+docker rm -f rabbit
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent gateway run
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit- gateway run
 ```
 
 或使用 Docker Compose：
@@ -351,7 +350,7 @@ docker compose up -d
 
 ## 技能与凭据文件
 
-当使用 Docker 作为执行环境时（不是上述方法，而是 agent 在 Docker 沙箱内运行命令——参见 [配置 → Docker 后端](./configuration.md#docker-后端)），Hermes 为所有工具调用复用单个长期运行的容器，并自动将技能目录（`~/.hermes/skills/`）和技能声明的所有凭据文件以只读卷的形式绑定挂载到该容器中。技能脚本、模板和引用在沙箱内无需手动配置即可使用，由于容器在 Hermes 进程的整个生命周期内持续存在，你安装的任何依赖或写入的文件都会在下次工具调用时保留。
+当使用 Docker 作为执行环境时（不是上述方法，而是 agent 在 Docker 沙箱内运行命令——参见 [配置 → Docker 后端](./configuration.md#docker-后端)），Rabbit 为所有工具调用复用单个长期运行的容器，并自动将技能目录（`~/.rabbit/skills/`）和技能声明的所有凭据文件以只读卷的形式绑定挂载到该容器中。技能脚本、模板和引用在沙箱内无需手动配置即可使用，由于容器在 Rabbit 进程的整个生命周期内持续存在，你安装的任何依赖或写入的文件都会在下次工具调用时保留。
 
 SSH 和 Modal 后端也会进行相同的同步——技能和凭据文件在每次命令执行前通过 rsync 或 Modal mount API 上传。
 
@@ -361,83 +360,83 @@ SSH 和 Modal 后端也会进行相同的同步——技能和凭据文件在每
 
 ### npm 或 Python 工具——使用 `npx` 或 `uvx`
 
-对于发布到 npm 或 PyPI 的任何工具，指示 Hermes 通过 `npx`（npm）或 `uvx`（Python）运行，并将该命令记入其持久记忆。如果工具需要配置文件或凭据，指示其将这些文件放在 `/opt/data` 下（如 `/opt/data/<tool>/config.yaml`）。
+对于发布到 npm 或 PyPI 的任何工具，指示 Rabbit 通过 `npx`（npm）或 `uvx`（Python）运行，并将该命令记入其持久记忆。如果工具需要配置文件或凭据，指示其将这些文件放在 `/opt/data` 下（如 `/opt/data/<tool>/config.yaml`）。
 
 依赖按需获取并在容器生命周期内缓存。写入 `/opt/data` 的配置在容器重启后仍然存在，因为它位于绑定挂载的宿主机目录上。包缓存本身在 `docker rm` 后会重建，但 `npx` 和 `uvx` 会在下次运行工具时透明地重新获取。
 
 ### 其他工具（apt 包、二进制文件）——安装并记住
 
-对于 npm 或 PyPI 之外的工具——`apt` 包、预构建二进制文件、镜像中未包含的语言运行时——指示 Hermes 如何安装（如 `apt-get update && apt-get install -y <package>`），并告知它记住该安装命令。工具在容器剩余生命周期内持续可用，Hermes 在容器重启后下次需要该工具时会重新运行安装命令。
+对于 npm 或 PyPI 之外的工具——`apt` 包、预构建二进制文件、镜像中未包含的语言运行时——指示 Rabbit 如何安装（如 `apt-get update && apt-get install -y <package>`），并告知它记住该安装命令。工具在容器剩余生命周期内持续可用，Rabbit 在容器重启后下次需要该工具时会重新运行安装命令。
 
 这种方式适合安装快速且偶尔使用的工具。对于频繁使用的工具，建议采用下一种方式。
 
 ### 持久安装——构建派生镜像
 
-当工具必须在每次容器启动时立即可用且无需重新安装延迟时，构建一个继承自 `nousresearch/hermes-agent` 并在层中安装该工具的新镜像：
+当工具必须在每次容器启动时立即可用且无需重新安装延迟时，构建一个继承自 `seven0070/Rabbit-` 并在层中安装该工具的新镜像：
 
 ```dockerfile
-FROM nousresearch/hermes-agent:latest
+FROM seven0070/Rabbit-:latest
 
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends <your-package> \
     && rm -rf /var/lib/apt/lists/*
-USER hermes
+USER rabbit
 ```
 
 构建并替换官方镜像使用：
 
 ```sh
-docker build -t my-hermes:latest .
+docker build -t my-rabbit:latest .
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.rabbit:/opt/data \
   -p 8642:8642 \
-  my-hermes:latest gateway run
+  my-rabbit:latest gateway run
 ```
 
-入口点脚本和 `/opt/data` 语义原样继承，本页其余内容仍然适用。拉取更新的上游 `nousresearch/hermes-agent` 时记得重新构建镜像。
+入口点脚本和 `/opt/data` 语义原样继承，本页其余内容仍然适用。拉取更新的上游 `seven0070/Rabbit-` 时记得重新构建镜像。
 
 ### 复杂工具或多服务栈——运行 sidecar 容器
 
-对于自带服务（数据库、Web 服务器、队列、无头浏览器集群）或过于庞大而不适合放在 Hermes 容器内的工具，将其作为独立容器运行在共享 Docker 网络上。Hermes 通过容器名称访问 sidecar，与访问本地推理服务器的方式相同（参见 [连接本地推理服务器](#连接本地推理服务器vllmollama-等)）。
+对于自带服务（数据库、Web 服务器、队列、无头浏览器集群）或过于庞大而不适合放在 Rabbit 容器内的工具，将其作为独立容器运行在共享 Docker 网络上。Rabbit 通过容器名称访问 sidecar，与访问本地推理服务器的方式相同（参见 [连接本地推理服务器](#连接本地推理服务器vllmollama-等)）。
 
 ```yaml
 services:
-  hermes:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes
+  rabbit:
+    image: seven0070/Rabbit-:latest
+    container_name: rabbit
     restart: unless-stopped
     command: gateway run
     ports:
       - "8642:8642"
     volumes:
-      - ~/.hermes:/opt/data
+      - ~/.rabbit:/opt/data
     networks:
-      - hermes-net
+      - rabbit-net
 
   my-tool:
     image: example/my-tool:latest
     container_name: my-tool
     restart: unless-stopped
     networks:
-      - hermes-net
+      - rabbit-net
 
 networks:
-  hermes-net:
+  rabbit-net:
     driver: bridge
 ```
 
-在 Hermes 容器内，sidecar 可通过 `http://my-tool:<port>` 访问（或其提供的任何协议）。这种模式使每个服务的生命周期、资源限制和升级节奏保持独立，避免因单个工具的依赖而使 Hermes 镜像臃肿。
+在 Rabbit 容器内，sidecar 可通过 `http://my-tool:<port>` 访问（或其提供的任何协议）。这种模式使每个服务的生命周期、资源限制和升级节奏保持独立，避免因单个工具的依赖而使 Rabbit 镜像臃肿。
 
 ### 广泛有用的工具——提交 issue 或 pull request
 
-如果某个工具可能对大多数 Hermes Agent 用户有用，考虑将其贡献到上游，而不是在私有派生镜像中维护。在 [hermes-agent 仓库](https://github.com/NousResearch/hermes-agent)提交 issue 或 pull request，描述该工具及其使用场景。被纳入官方镜像的工具惠及所有用户，并避免了维护下游 fork 的开销。
+如果某个工具可能对大多数 Rabbit Agent 用户有用，考虑将其贡献到上游，而不是在私有派生镜像中维护。在 [rabbit-agent 仓库](https://github.com/seven0070/Rabbit-)提交 issue 或 pull request，描述该工具及其使用场景。被纳入官方镜像的工具惠及所有用户，并避免了维护下游 fork 的开销。
 
 ## 连接本地推理服务器（vLLM、Ollama 等）
 
-在 Docker 中运行 Hermes 且推理服务器（vLLM、Ollama、text-generation-inference 等）也在宿主机或另一个容器中运行时，网络配置需要额外注意。
+在 Docker 中运行 Rabbit 且推理服务器（vLLM、Ollama、text-generation-inference 等）也在宿主机或另一个容器中运行时，网络配置需要额外注意。
 
 ### Docker Compose（推荐）
 
@@ -456,31 +455,31 @@ services:
     ports:
       - "8000:8000"
     networks:
-      - hermes-net
+      - rabbit-net
     deploy:
       resources:
         reservations:
           devices:
             - capabilities: [gpu]
 
-  hermes:
-    image: nousresearch/hermes-agent:latest
-    container_name: hermes
+  rabbit:
+    image: seven0070/Rabbit-:latest
+    container_name: rabbit
     restart: unless-stopped
     command: gateway run
     ports:
       - "8642:8642"
     volumes:
-      - ~/.hermes:/opt/data
+      - ~/.rabbit:/opt/data
     networks:
-      - hermes-net
+      - rabbit-net
 
 networks:
-  hermes-net:
+  rabbit-net:
     driver: bridge
 ```
 
-然后在 `~/.hermes/config.yaml` 中，使用**容器名称**作为主机名：
+然后在 `~/.rabbit/config.yaml` 中，使用**容器名称**作为主机名：
 
 ```yaml
 model:
@@ -491,7 +490,7 @@ model:
 ```
 
 :::tip 关键点
-- 使用**容器名称**（`vllm`）作为主机名——而非 `localhost` 或 `127.0.0.1`，它们指向 Hermes 容器本身。
+- 使用**容器名称**（`vllm`）作为主机名——而非 `localhost` 或 `127.0.0.1`，它们指向 Rabbit 容器本身。
 - `model` 值必须与传给 vLLM 的 `--served-model-name` 一致。
 - 将 `api_key` 设为任意非空字符串（vLLM 要求该请求头，但默认不验证其值）。
 - `base_url` 末尾**不要**加斜杠。
@@ -505,10 +504,10 @@ model:
 
 ```sh
 docker run -d \
-  --name hermes \
-  -v ~/.hermes:/opt/data \
+  --name rabbit \
+  -v ~/.rabbit:/opt/data \
   -p 8642:8642 \
-  nousresearch/hermes-agent gateway run
+  seven0070/Rabbit- gateway run
 ```
 
 ```yaml
@@ -524,10 +523,10 @@ model:
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --network host \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent gateway run
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit- gateway run
 ```
 
 ```yaml
@@ -544,15 +543,15 @@ model:
 
 ### 验证连通性
 
-从 Hermes 容器内部确认推理服务器可达：
+从 Rabbit 容器内部确认推理服务器可达：
 
 ```sh
-docker exec hermes curl -s http://vllm:8000/v1/models
+docker exec rabbit curl -s http://vllm:8000/v1/models
 ```
 
 你应该看到列出已服务模型的 JSON 响应。如果失败，请检查：
 
-1. 两个容器是否在同一 Docker 网络上（`docker network inspect hermes-net`）
+1. 两个容器是否在同一 Docker 网络上（`docker network inspect rabbit-net`）
 2. 推理服务器是否监听 `0.0.0.0` 而非 `127.0.0.1`
 3. 端口号是否匹配
 
@@ -572,16 +571,16 @@ model:
 
 ### 容器立即退出
 
-检查日志：`docker logs hermes`。常见原因：
+检查日志：`docker logs rabbit`。常见原因：
 - `.env` 文件缺失或无效——先以交互方式运行以完成设置
 - 开放端口时存在端口冲突
 
 ### "Permission denied" 错误
 
-容器的 stage2 hook 通过 `s6-setuidgid` 在每个受监管的服务内将权限降至非 root 用户 `hermes`（UID 10000）。如果宿主机的 `~/.hermes/` 由不同 UID 拥有，请设置 `HERMES_UID`/`HERMES_GID` 以匹配宿主机用户，或确保数据目录可写：
+容器的 stage2 hook 通过 `s6-setuidgid` 在每个受监管的服务内将权限降至非 root 用户 `rabbit`（UID 10000）。如果宿主机的 `~/.rabbit/` 由不同 UID 拥有，请设置 `RABBIT_UID`/`RABBIT_GID` 以匹配宿主机用户，或确保数据目录可写：
 
 ```sh
-chmod -R 755 ~/.hermes
+chmod -R 755 ~/.rabbit
 ```
 
 ### 浏览器工具无法使用
@@ -590,10 +589,10 @@ Playwright 需要共享内存。在 Docker run 命令中添加 `--shm-size=1g`�
 
 ```sh
 docker run -d \
-  --name hermes \
+  --name rabbit \
   --shm-size=1g \
-  -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent gateway run
+  -v ~/.rabbit:/opt/data \
+  seven0070/Rabbit- gateway run
 ```
 
 ### 网络问题后 gateway 无法重连
@@ -601,13 +600,13 @@ docker run -d \
 `--restart unless-stopped` 标志可处理大多数瞬时故障。如果 gateway 卡住，重启容器：
 
 ```sh
-docker restart hermes
+docker restart rabbit
 ```
 
 ### 检查容器健康状态
 
 ```sh
-docker logs --tail 50 hermes          # 最近日志
-docker run -it --rm nousresearch/hermes-agent:latest version     # 验证版本
-docker stats hermes                    # 资源使用情况
+docker logs --tail 50 rabbit          # 最近日志
+docker run -it --rm seven0070/Rabbit-:latest version     # 验证版本
+docker stats rabbit                    # 资源使用情况
 ```

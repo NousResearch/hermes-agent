@@ -30,7 +30,7 @@ from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
-from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
+from rabbit_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -45,7 +45,7 @@ _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the pri
 
 def _adapter_unavailable_message(platform: Platform, *, retrying: bool = True) -> str:
     """Actionable ``adapter_unavailable`` status text, shared by startup and the reconnect watcher so
-    ``hermes status`` keeps the plugin/deps/credentials hint after the first retry."""
+    ``rabbit status`` keeps the plugin/deps/credentials hint after the first retry."""
     message = (
         f"No adapter available for enabled {platform.value}; check the plugin, dependencies, and credentials."
     )
@@ -154,7 +154,7 @@ class GatewayAdapterLifecycleMixin:
     def _adapter_disconnect_timeout_secs(self) -> float:
         """Return the per-adapter disconnect timeout used during shutdown."""
         from gateway.run import _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
-        override = self._env_timeout_override("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT")
+        override = self._env_timeout_override("RABBIT_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT")
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT if override is None else override
 
     def _platform_connect_timeout_secs(self, platform=None, *, initial: bool = False) -> float:
@@ -169,7 +169,7 @@ class GatewayAdapterLifecycleMixin:
             _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT, _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT,
             _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT,
         )
-        override = self._env_timeout_override("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT")
+        override = self._env_timeout_override("RABBIT_GATEWAY_PLATFORM_CONNECT_TIMEOUT")
         if override is not None:
             return override
         if platform != Platform.TELEGRAM:
@@ -286,7 +286,7 @@ class GatewayAdapterLifecycleMixin:
     def _on_all_adapters_down(self) -> str:
         """Normalized ``GatewayConfig.on_all_adapters_down``: ``"exit"`` (default — a supervising
         service manager restarts the process) or ``"stay_alive"`` (launchers with no supervisor,
-        e.g. the desktop app's direct ``hermes serve`` child, where a failure exit only severs the
+        e.g. the desktop app's direct ``rabbit serve`` child, where a failure exit only severs the
         UI's websockets and drops in-flight assistant messages; #118080)."""
         value = getattr(getattr(self, "config", None), "on_all_adapters_down", None)
         return value if value in ON_ALL_ADAPTERS_DOWN_POLICIES else "exit"
@@ -474,7 +474,7 @@ class GatewayAdapterLifecycleMixin:
         # No create_task kwargs (test doubles mock a narrow signature); Context().run isolates instead.
         task = Context().run(lambda: asyncio.create_task(coro_factory()))
         # PERMANENT watcher: the scale-to-zero idle check ignores it (else busy forever).
-        task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
+        task._rabbit_supervised_watcher = True  # type: ignore[attr-defined]
         self._retain_background_task(task)
         if on_spawn is not None:
             # Record the live handle NOW so external trackers don't point at a dead prior task.
@@ -577,7 +577,7 @@ class GatewayAdapterLifecycleMixin:
                 # ``_process_handoff(row)`` with no second parameter, and a keyword call would TypeError
                 # into the failure branch — turning a passing suite into a silent no-op watcher. Arity is
                 # probed above. It still sees the profile's home and secret scope only because
-                # ``set_hermes_home_override`` and ``set_secret_scope`` are ContextVar-based — ensure_future
+                # ``set_rabbit_home_override`` and ``set_secret_scope`` are ContextVar-based — ensure_future
                 # copies the current Context into the Task. If either seam is ever migrated to a
                 # thread-local or module global, secondary- profile handoffs silently regress to
                 # primary-config delivery (the exact bug fixed in #91217) while still recording
@@ -746,7 +746,7 @@ class GatewayAdapterLifecycleMixin:
         logger.warning(
             "%s has been failing/reconnecting continuously for %.1f hours (%d attempts) — flagging "
             "NEEDS_ATTENTION. Retries continue, but this usually means a permanent problem (revoked "
-            "credentials, missing intents, broken sidecar). Check `hermes status` / `/platform list`.",
+            "credentials, missing intents, broken sidecar). Check `rabbit status` / `/platform list`.",
             status_key or platform.value, queued_for / 3600.0, info.get("attempts", 0),
         )
         self._update_platform_runtime_status(
@@ -949,20 +949,20 @@ class GatewayAdapterLifecycleMixin:
 
     async def _start_secondary_profile_adapters(self) -> int:
         """Bring up adapters for every non-active profile (multiplex only); returns connected count.
-        Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
+        Each profile connects under its own RABBIT_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
             # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
-            # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
+            # ``served_profiles`` would outlive it into this single-profile run and `rabbit -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
                 from gateway.status import publish_runtime_status
                 publish_runtime_status(served_profiles=[])
             return 0
         try:
-            from hermes_cli.profiles import get_active_profile_name, profiles_to_serve, profile_is_parked
+            from rabbit_cli.profiles import get_active_profile_name, profiles_to_serve, profile_is_parked
         except Exception:
             return 0
         if self._multiplex_on():
@@ -1027,7 +1027,7 @@ class GatewayAdapterLifecycleMixin:
 
     def _record_served_profiles(self, active: str, profile_homes) -> None:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
-        than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
+        than "has a connected adapter") for `rabbit status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
             from gateway.status import publish_runtime_status
             from gateway.pairing import PairingStore
@@ -1043,8 +1043,8 @@ class GatewayAdapterLifecycleMixin:
             # its served set in step with the live one (it is republished, never re-claimed).
             from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
             if owns_host_lock(ROLE_GATEWAY):
-                from hermes_constants import get_hermes_home
-                publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
+                from rabbit_constants import get_rabbit_home
+                publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_rabbit_home()))
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
@@ -1056,7 +1056,7 @@ class GatewayAdapterLifecycleMixin:
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from rabbit_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         # A platform that left core for a catalog plugin is installed before discovery below.
@@ -1064,7 +1064,7 @@ class GatewayAdapterLifecycleMixin:
         await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            from rabbit_cli.plugins import discover_plugins, get_plugin_manager
             discover_plugins()
             self._subscribe_plugin_rewire(get_plugin_manager(), profile_name, profile_home)
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -1129,13 +1129,13 @@ class GatewayAdapterLifecycleMixin:
         owner_home = None
         if owner == "default":
             try:
-                from hermes_constants import get_default_hermes_root
-                owner_home = get_default_hermes_root()
+                from rabbit_constants import get_default_rabbit_root
+                owner_home = get_default_rabbit_root()
             except Exception:
                 owner_home = None
         else:
             try:
-                from hermes_cli.profiles import get_profile_dir
+                from rabbit_cli.profiles import get_profile_dir
                 owner_home = get_profile_dir(owner)
             except Exception:
                 owner_home = None
@@ -1185,7 +1185,7 @@ class GatewayAdapterLifecycleMixin:
 
     def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
         """Report unpaired WhatsApp or secondary-only Relay. Log the reason and remedy and stamp a
-        ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
+        ``<profile>:<platform>`` status entry so ``rabbit gateway status --profile X`` and the
         dashboard show *why* the channel is dead instead of nothing at all."""
         noted = getattr(self, "_unserved_secondary_platforms", None)
         if noted is None:
@@ -1195,7 +1195,7 @@ class GatewayAdapterLifecycleMixin:
         noted.add((profile_name, platform))
         pv = platform.value
         if platform is Platform.WHATSAPP:
-            message = f"WhatsApp is not paired; pair it: hermes -p {profile_name} whatsapp"
+            message = f"WhatsApp is not paired; pair it: rabbit -p {profile_name} whatsapp"
             logger.info("[MULTIPLEX] Profile '%s': %s", profile_name, message)
             self._update_platform_runtime_status(
                 f"{profile_name}:{pv}", platform_state="disabled",
@@ -1391,7 +1391,7 @@ class GatewayAdapterLifecycleMixin:
         self._bind_voice_input_callback(adapter)
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.
-        adapter._hermes_profile_name = profile_name
+        adapter._rabbit_profile_name = profile_name
         # A secondary's port-binding adapter never binds: the default profile owns the one shared
         # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
         if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
@@ -1404,8 +1404,8 @@ class GatewayAdapterLifecycleMixin:
         tears down a RETURNED adapter; one whose configure/connect raised is torn down here."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
-        from hermes_cli.profiles import get_profile_dir
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from rabbit_cli.profiles import get_profile_dir
+        from rabbit_cli.env_loader import hydrate_profile_secret_sources
         from gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.
@@ -1600,7 +1600,7 @@ class GatewayAdapterLifecycleMixin:
         profile_map.pop(platform, None)
         # The notification may arrive outside the profile's scope: the row is that profile's.
         if (profile_home := self._routed_profile_home(profile_name)) is not UNRESOLVED_PROFILE_HOME:
-            record_platform_disconnect(adapter, hermes_home=profile_home)
+            record_platform_disconnect(adapter, rabbit_home=profile_home)
         await self._safe_adapter_disconnect(adapter, platform)
         if not self._running:
             return
@@ -1619,7 +1619,7 @@ class GatewayAdapterLifecycleMixin:
         answering it for an unresolvable NAMED profile is what made a secondary's inbound message
         run on the launch profile's credentials.
         """
-        from hermes_cli.profiles import get_profile_dir
+        from rabbit_cli.profiles import get_profile_dir
         try:
             return get_profile_dir(profile_name)
         except Exception:
@@ -1711,8 +1711,8 @@ class GatewayAdapterLifecycleMixin:
     def _make_default_profile_message_handler(self):
         """Scope primary-adapter messages to their routed multiplex profile. Authorization stays
         with the transport profile (a routed profile may have no credential/allowlist)."""
-        from gateway.run import _async_profile_runtime_scope, get_hermes_home
-        default_home = Path(get_hermes_home())
+        from gateway.run import _async_profile_runtime_scope, get_rabbit_home
+        default_home = Path(get_rabbit_home())
 
         async def _handler(event):
             # A rejected route still enters ``_handle_message``, whose ingress gate drops it fail-closed.
@@ -1726,8 +1726,8 @@ class GatewayAdapterLifecycleMixin:
         """Busy-path twin of ``_make_default_profile_message_handler``: busy callbacks bypass the message
         handler, so the routed scope and transport-home authorization must be re-established here or the
         follow-up is authorized in whatever scope is ambient (#103717)."""
-        from gateway.run import _async_profile_runtime_scope, get_hermes_home
-        default_home = Path(get_hermes_home())
+        from gateway.run import _async_profile_runtime_scope, get_rabbit_home
+        default_home = Path(get_rabbit_home())
 
         async def _handler(event, _session_key):
             source = event.source
@@ -1780,7 +1780,7 @@ class GatewayAdapterLifecycleMixin:
         """Authorize and publish one normalized adapter event to plugin hooks."""
         # Observer failures must never break the adapter's update loop.
         with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
-            from hermes_cli.lifecycle import has_hook, invoke_hook
+            from rabbit_cli.lifecycle import has_hook, invoke_hook
             if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
                 invoke_hook("gateway_platform_event", **event)
 
@@ -1798,8 +1798,8 @@ class GatewayAdapterLifecycleMixin:
 
     def _make_default_profile_platform_event_handler(self):
         """Scope primary-transport events to their routed multiplex profile."""
-        from gateway.run import _profile_runtime_scope, get_hermes_home
-        default_home = Path(get_hermes_home())
+        from gateway.run import _profile_runtime_scope, get_rabbit_home
+        default_home = Path(get_rabbit_home())
 
         async def _handler(event, source):
             profile_home = self._admit_primary_source(source, default_home)
@@ -1852,7 +1852,7 @@ class GatewayAdapterLifecycleMixin:
             val = getattr(obj, attr, None)
             if isinstance(val, str) and val.strip():
                 import hashlib
-                return hashlib.sha256(("hermes-mux:" + val.strip()).encode("utf-8")).hexdigest()[:16]
+                return hashlib.sha256(("rabbit-mux:" + val.strip()).encode("utf-8")).hexdigest()[:16]
         return None
 
     def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
@@ -1898,8 +1898,8 @@ class GatewayAdapterLifecycleMixin:
         back to os.environ (the default profile's env) and denies the secondary's own allowlisted
         callers (#120639).
         """
-        from gateway.run import get_hermes_home
-        transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
+        from gateway.run import get_rabbit_home
+        transport_home = Path(get_rabbit_home()) if self._multiplex_on() and profile_name is None else None
         # Resolved once; the scope is entered per call so an ``.env`` allowlist edit reaches the next
         # tap, matching the message path's per-message re-read.
         profile_home = self._routed_profile_home(profile_name) if profile_name else None

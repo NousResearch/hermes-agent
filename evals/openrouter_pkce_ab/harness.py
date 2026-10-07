@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Local A/B harness for `hermes auth add openrouter --type oauth` against a FAKE OpenRouter.
+"""Local A/B harness for `rabbit auth add openrouter --type oauth` against a FAKE OpenRouter.
 
-Runs the REAL entry point (``hermes_cli.auth_commands.auth_add_command``) with a temp HERMES_HOME.
+Runs the REAL entry point (``rabbit_cli.auth_commands.auth_add_command``) with a temp RABBIT_HOME.
 Only the network authority is replaced: ``webbrowser.open`` is swapped for a scripted "browser"
 that follows the auth URL's ``callback_url`` the way openrouter.ai would (redirecting the loopback
 listener with ``?code=``), and ``OPENROUTER_AUTH_KEYS_URL`` points at a local fake code-exchange
@@ -12,9 +12,9 @@ Scenarios (each prints PASS/FAIL, exit code = number of failures):
   wrong_state    browser redirects to a different callback path (forged nonce) → 404, no exchange
   replayed_code  code already consumed at the fake server → 403 → AuthError, nothing persisted
   malformed      exchange returns JSON without "key" → AuthError, nothing persisted
-  api_key_path   `hermes auth add openrouter --api-key` still works with no --type (regression)
+  api_key_path   `rabbit auth add openrouter --api-key` still works with no --type (regression)
 
-Usage: HERMES_PYTHON=<venv python> python3 evals/openrouter_pkce_ab/harness.py [--json OUT]
+Usage: RABBIT_PYTHON=<venv python> python3 evals/openrouter_pkce_ab/harness.py [--json OUT]
 Run against origin/main to see the BEFORE state (every oauth scenario fails with SystemExit
 "not implemented"), then against the salvage branch for AFTER.
 """
@@ -110,24 +110,24 @@ def scripted_browser(fake: FakeOpenRouter, *, tamper_path=False, pre_consume=Fal
 
 
 def run(scenario: str, fake: FakeOpenRouter, home: str) -> dict:
-    os.environ["HERMES_HOME"] = home
+    os.environ["RABBIT_HOME"] = home
     for k in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "SSH_CLIENT", "SSH_TTY"):
         os.environ.pop(k, None)
-    for m in [m for m in sys.modules if m.startswith(("hermes_cli", "agent", "hermes_constants"))]:
+    for m in [m for m in sys.modules if m.startswith(("rabbit_cli", "agent", "rabbit_constants"))]:
         del sys.modules[m]
     fake.mode = "malformed" if scenario == "malformed" else "ok"
     browser = scripted_browser(fake, tamper_path=(scenario == "wrong_state"), pre_consume=(scenario == "replayed_code"))
     outcome = {"scenario": scenario, "exchanges_before": len(fake.exchanges)}
     try:
-        from hermes_cli.auth_commands import auth_add_command
+        from rabbit_cli.auth_commands import auth_add_command
     except Exception as e:  # e.g. the original PR branch's auth.py fails at import time
         outcome.update(result=f"IMPORT FAILURE {type(e).__name__}: {e}", browser_redirect_status=None,
                        exchange_calls=0, pool_entries=[])
         outcome.pop("exchanges_before")
         return outcome
     try:  # BEFORE (origin/main) has no auth_openrouter sibling; the flow itself must then fail.
-        import hermes_cli.auth_openrouter as orm
-        import hermes_cli.auth_device_flow as dfl
+        import rabbit_cli.auth_openrouter as orm
+        import rabbit_cli.auth_device_flow as dfl
         orm.OPENROUTER_AUTH_KEYS_URL = fake.url
         dfl._can_open_graphical_browser = lambda: True
         orm.webbrowser.open = browser

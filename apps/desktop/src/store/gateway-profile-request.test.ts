@@ -11,8 +11,8 @@ const secondaryGateways: Array<{
 
 let connectGate: Promise<void> | null = null
 
-vi.mock('@/hermes', () => ({
-  HermesGateway: class {
+vi.mock('@/rabbit', () => ({
+  RabbitGateway: class {
     connectionState = 'closed'
     connect = vi.fn(async () => {
       if (this.connectionState === 'connecting') {
@@ -65,7 +65,7 @@ const {
 } = await import('./gateway')
 
 function installDesktop(getConnection: ReturnType<typeof vi.fn>): void {
-  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+  ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
     getConnection,
     touchBackend: vi.fn(async () => undefined)
   }
@@ -88,7 +88,7 @@ beforeEach(async () => {
 afterEach(() => {
   closeSecondaryGateways()
   vi.clearAllMocks()
-  delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
 })
 
 describe('requestGatewayForProfile', () => {
@@ -120,7 +120,7 @@ describe('requestGatewayForProfile', () => {
       // The target profile's backend never comes up.
       const getConnection = vi.fn(async (profile: null | string) => {
         if (profile === 'jody') {
-          throw new Error('Failed to connect to Hermes gateway')
+          throw new Error('Failed to connect to Rabbit gateway')
         }
 
         return { port: 4242, token: 'primary-token' }
@@ -164,7 +164,7 @@ describe('requestGatewayForProfile', () => {
       const getConnection = vi.fn(async (profile: null | string) => {
         if (profile === 'jody') {
           if (!jodyUp) {
-            throw new Error('Failed to connect to Hermes gateway')
+            throw new Error('Failed to connect to Rabbit gateway')
           }
 
           return { port: 5151, profile, token: 'secondary-token' }
@@ -314,7 +314,7 @@ describe('requestGatewayForAgent', () => {
     setPrimaryGateway(primary as never, 'default')
     setPrimaryGatewayConnection({ connectionId: 'remote-primary' })
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(),
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
@@ -352,7 +352,7 @@ describe('requestGatewayForAgent', () => {
     setPrimaryGateway(primary as never, 'default')
     setPrimaryGatewayConnection({ connectionId: 'remote-primary' })
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(),
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
@@ -385,7 +385,7 @@ describe('requestGatewayForAgent', () => {
     }))
 
     setPrimaryGateway(primary as never, 'default')
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection,
       getConnectionFor,
       getGatewayWsUrlFor,
@@ -428,7 +428,7 @@ describe('requestGatewayForAgent', () => {
     }))
 
     setPrimaryGateway(primary as never, 'default')
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection,
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -456,7 +456,7 @@ describe('requestGatewayForAgent', () => {
 
     setPrimaryGateway(primary as never, 'default')
     configureGatewayRegistry({ onActiveConnectionInvalidated, onEvent: vi.fn() })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(),
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -485,7 +485,7 @@ describe('requestGatewayForAgent', () => {
 
     setPrimaryGateway(primary as never, 'pinned')
     configureGatewayRegistry({ onActiveConnectionChanged, onActiveConnectionInvalidated, onEvent: vi.fn() })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(),
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -522,7 +522,7 @@ describe('requestGatewayForAgent', () => {
 
     setPrimaryGateway(primary as never, 'default')
     configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async profile => ({ port: 4242, profile })),
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -556,7 +556,7 @@ describe('requestGatewayForAgent', () => {
 
     setPrimaryGateway(primary as never, 'default')
     configureGatewayRegistry({ onActiveConnectionChanged, onEvent: vi.fn() })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async profile => ({ port: 4242, profile })),
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -585,7 +585,7 @@ describe('requestGatewayForAgent', () => {
 
 describe('retainGatewayForAgent (#93602)', () => {
   function installRegistryDesktop() {
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
@@ -670,7 +670,7 @@ describe('attached shared-remote group turns (#96493)', () => {
       sharedRemote: true
     }))
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
@@ -714,7 +714,7 @@ describe('attached shared-remote group turns (#96493)', () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
     setPrimaryGatewayConnection({ connectionId: 'homelab' })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
       getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         connectionId,
@@ -740,7 +740,7 @@ describe('attached shared-remote group turns (#96493)', () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
     setPrimaryGatewayConnection({ connectionId: 'homelab' })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ port: 4242, profile, token: 't' })),
       getConnectionFor: vi.fn(async () => {
         throw new Error('Timed out connecting to profile "voter"')
@@ -757,7 +757,7 @@ describe('attached shared-remote group turns (#96493)', () => {
   })
 
   it('never collapses a pooled LOCAL profile onto the primary when its pool probe fails', async () => {
-    // A local Desktop primary is one `hermes serve --profile <primary>` child;
+    // A local Desktop primary is one `rabbit serve --profile <primary>` child;
     // pooled profiles get their own child. Sending `session.create` with
     // `profile: sean` to the primary still succeeds (profile_home
     // multiplexing), but the lease then belongs to the primary's pid while
@@ -766,7 +766,7 @@ describe('attached shared-remote group turns (#96493)', () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')
     setPrimaryGatewayConnection({ connectionId: 'local', mode: 'local' })
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ mode: 'local', port: 4242, profile, token: 't' })),
       getConnectionFor: vi.fn(async () => {
         throw new Error('Timed out connecting to profile "sean"')
@@ -845,7 +845,7 @@ describe('session-owner calls for a profile on the shared local host backend (#1
       ...descriptorFor(profile)
     }))
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {
       getConnection: vi.fn(async (profile: null | string) => ({ mode: 'local', port: 4242, profile, token: 't' })),
       getConnectionFor,
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
@@ -859,7 +859,7 @@ describe('session-owner calls for a profile on the shared local host backend (#1
   }
 
   it('reuses the primary socket when main says the profile rides the host backend (sharedPrimary)', async () => {
-    // Under multiplex-only (#118246) one local `hermes serve` serves every
+    // Under multiplex-only (#118246) one local `rabbit serve` serves every
     // profile. A registry secondary here is a second WebSocket to the SAME
     // process: the backend joins it to the chat and the renderer processes
     // every event twice (garbled deltas, duplicate interim bubble).

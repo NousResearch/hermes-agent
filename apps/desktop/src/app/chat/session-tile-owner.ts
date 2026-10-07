@@ -1,7 +1,7 @@
 import { knownSessionOwner } from '@/store/session'
 import type { SessionOwnerRoute, SessionOwnerScope } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 /**
  * The owner a session tile routes its own RPCs through — the tile's explicit

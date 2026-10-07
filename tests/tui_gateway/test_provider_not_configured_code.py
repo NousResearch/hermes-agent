@@ -47,7 +47,7 @@ def _run_build(session):
 
 def test_provider_not_configured_is_named_in_the_error_event(monkeypatch, emitted):
     session = _fail_build(monkeypatch, ProviderNotConfiguredError(
-        "No LLM provider configured. Run `hermes model` to select a provider, or run `hermes setup` "
+        "No LLM provider configured. Run `rabbit model` to select a provider, or run `rabbit setup` "
         "for first-time configuration."))
 
     _run_build(session)
@@ -74,7 +74,7 @@ class TestAgentInitRaisesTheNamedError:
 
         from agent.agent_init import _routed_client_kwargs
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         # Nothing resolves and no fallback chain: the end of the ladder.
         monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", lambda *a, **kw: (None, None))
         agent = SimpleNamespace(provider="auto", model="m", base_url=None, api_key=None,
@@ -88,11 +88,11 @@ class TestAgentInitRaisesTheNamedError:
 
         from agent.agent_init import _routed_client_kwargs
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         agent = SimpleNamespace(provider="minimax-oauth", model="m", base_url=None, api_key=None,
                                 _fallback_activated=False, _explicit_provider="minimax-oauth")
 
-        with pytest.raises(ProviderNotConfiguredError, match=r"hermes auth add minimax-oauth"):
+        with pytest.raises(ProviderNotConfiguredError, match=r"rabbit auth add minimax-oauth"):
             _routed_client_kwargs(agent, None, 60)
 
     def test_the_type_is_a_runtime_error(self):

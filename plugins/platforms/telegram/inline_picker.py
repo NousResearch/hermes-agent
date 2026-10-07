@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Telegram inline command picker — searchable access to EVERY command/skill.
 
-The BotCommand menu is capped (100/scope, Hermes uses 60), so inline mode (``@yourbot <query>``, 50 per
+The BotCommand menu is capped (100/scope, Rabbit uses 60), so inline mode (``@yourbot <query>``, 50 per
 page) exposes the rest; tapping a result sends ``/cmd args`` as the user through the normal command path.
 PTB-object-free on purpose: plain dicts keep catalog/filter/pagination unit-testable; the adapter converts
 to ``InlineQueryResultArticle``. Inert until inline mode is enabled via BotFather ``/setinline``.
@@ -33,7 +33,7 @@ def collect_inline_catalog() -> List[Dict[str, str]]:
             catalog.append({"name": name, "description": desc or ""})
 
     try:
-        from hermes_cli.commands_platforms import _collect_gateway_skill_entries, _sanitize_telegram_name, telegram_bot_commands
+        from rabbit_cli.commands_platforms import _collect_gateway_skill_entries, _sanitize_telegram_name, telegram_bot_commands
     except Exception:  # pragma: no cover - defensive
         logger.debug("inline picker: commands registry unavailable", exc_info=True)
         return catalog

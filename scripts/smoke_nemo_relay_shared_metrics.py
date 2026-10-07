@@ -1,4 +1,4 @@
-"""Run a real Hermes CLI turn and validate the Relay shared-metrics output."""
+"""Run a real Rabbit CLI turn and validate the Relay shared-metrics output."""
 
 from __future__ import annotations
 
@@ -27,19 +27,19 @@ SKILL_CANARY = "relay-smoke-private-agent-skill"
 INSTALLED_SKILL_CANARY = "relay-smoke-private-installed-skill"
 
 
-def _resolve_hermes_executable(hermes_repo: Path) -> Path:
+def _resolve_rabbit_executable(rabbit_repo: Path) -> Path:
     for relative_path in (
-        Path(".venv") / "bin" / "hermes",
-        Path(".venv") / "Scripts" / "hermes.exe",
+        Path(".venv") / "bin" / "rabbit",
+        Path(".venv") / "Scripts" / "rabbit.exe",
     ):
-        candidate = hermes_repo / relative_path
+        candidate = rabbit_repo / relative_path
         if candidate.is_file():
             return candidate
-    discovered = shutil.which("hermes")
+    discovered = shutil.which("rabbit")
     if discovered:
         return Path(discovered)
     raise SystemExit(
-        "Hermes executable not found in the repository virtual environment "
+        "Rabbit executable not found in the repository virtual environment "
         "or on PATH"
     )
 
@@ -235,10 +235,10 @@ class _ModelHandler(BaseHTTPRequestHandler):
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--hermes-repo",
+        "--rabbit-repo",
         type=Path,
         default=Path.cwd(),
-        help="Hermes source checkout containing .venv/bin/hermes",
+        help="Rabbit source checkout containing .venv/bin/rabbit",
     )
     parser.add_argument(
         "--relay-python",
@@ -250,7 +250,7 @@ def _arguments() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for the isolated HERMES_HOME and captured output",
+        help="Directory for the isolated RABBIT_HOME and captured output",
     )
     return parser.parse_args()
 
@@ -279,14 +279,14 @@ telemetry:
 
 # One interactive turn (2 model calls, 1 read_file) on the canary custom model: the v5 per-turn,
 # per-conversation rows it must produce, identical in SQLite and in the export. The agent-created
-# skill is Hermes' own work, so it records no feature_adoption row (the exact name sets assert that).
+# skill is Rabbit' own work, so it records no feature_adoption row (the exact name sets assert that).
 V5_EXPECTED_DIMENSIONS = {
-    "hermes.task_cost.count": {
+    "rabbit.task_cost.count": {
         "api_calls_bucket": "2", "model": "custom", "outcome": "completed", "provider": "custom",
         "tokens_bucket": "lt_2k", "tool_calls_bucket": "1",
     },
-    "hermes.tool_output_truncation.count": {"original_size_bucket": "lt_1k", "tool": "read_file", "truncated": "no"},
-    "hermes.tool_enabled_unused.count": {"toolset": "file", "used": "yes"},
+    "rabbit.tool_output_truncation.count": {"original_size_bucket": "lt_1k", "tool": "read_file", "truncated": "no"},
+    "rabbit.tool_enabled_unused.count": {"toolset": "file", "used": "yes"},
 }
 
 
@@ -294,7 +294,7 @@ def _validate_v5_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
     for name, dimensions in V5_EXPECTED_DIMENSIONS.items():
         if [row["dimensions"] for row in rows[name]] != [dimensions] or rows[name][0]["value"] != 1:
             raise AssertionError(f"Unexpected {name}: {rows[name]}")
-    [overhead] = rows["hermes.tool_overhead.count"]  # the file toolset's 4 tools, schema tokens estimated
+    [overhead] = rows["rabbit.tool_overhead.count"]  # the file toolset's 4 tools, schema tokens estimated
     if (
         overhead["value"] != 1
         or overhead["dimensions"]["execution_surface"] != "cli"
@@ -302,6 +302,158 @@ def _validate_v5_rows(rows: dict[str, list[dict[str, Any]]]) -> None:
         or overhead["dimensions"]["tool_schema_tokens_bucket"] in {"0", "unknown"}
     ):
         raise AssertionError(f"Unexpected tool overhead: {overhead}")
+
+
+def _validate_model_and_tool_rows(by_name: dict[str, list[dict[str, Any]]], counters: list[dict[str, Any]]) -> None:
+    # Two primary calls; each lands in whatever TTFT bucket the host's load put it in.
+    models = by_name["rabbit.model_route.count"]
+    expected_model = {
+        "call_role": "primary", "error_class": "none", "model": "custom", "outcome": "success",
+        "provider": "custom",
+    }
+    if (
+        any({k: v for k, v in m["dimensions"].items() if k != "ttft_bucket"} != expected_model for m in models)
+        or sum(m["value"] for m in models) != 2
+        or sum(m["packaged_value"] for m in models) != 2
+    ):
+        raise AssertionError(
+            f"Unexpected model counter: {by_name['rabbit.model_route.count']}"
+        )
+    expected_start = {
+        "name": "rabbit.task_run.started",
+        "dimensions": {
+            "entrypoint": "one_shot",
+            "execution_surface": "cli",
+            "platform": "none",
+        },
+        "value": 1,
+        "packaged_value": 1,
+    }
+    if by_name["rabbit.task_run.started"] != [expected_start]:
+        raise AssertionError(
+            f"Unexpected task start: {by_name['rabbit.task_run.started']}"
+        )
+    [terminal] = by_name["rabbit.task_run.finished"]
+    expected_terminal_dimensions = {
+        "end_reason": "completed",
+        "entrypoint": "one_shot",
+        "execution_surface": "cli",
+        "failure_class": "none",
+        "outcome": "success",
+        "platform": "none",
+        "termination": "none",
+    }
+    if (
+        terminal["dimensions"] != expected_terminal_dimensions
+        or terminal["value"] != 1
+        or terminal["packaged_value"] != 1
+    ):
+        raise AssertionError(f"Unexpected task terminal counter: {terminal}")
+    [duration] = by_name["rabbit.task_run.duration"]
+    if duration["dimensions"] != {
+        "duration_bucket": duration["dimensions"].get("duration_bucket"),
+        "execution_surface": "cli", "outcome": "success", "retry_count_bucket": "0",
+    } or duration["value"] != 1:
+        raise AssertionError(f"Unexpected task duration counter: {duration}")
+    [cost] = by_name["rabbit.task_cost.count"]
+    if (cost["dimensions"]["api_calls_bucket"], cost["dimensions"]["tool_calls_bucket"]) != ("2", "1"):
+        raise AssertionError(f"Unexpected task cost counter: {cost}")
+    if [c["dimensions"] for c in by_name["rabbit.tool.usage.count"]] != [
+        {"error_class": "none", "outcome": "success", "tool_name": "read_file"}
+    ]:
+        raise AssertionError(f"Unexpected tool usage: {by_name['rabbit.tool.usage.count']}")
+    [snapshot] = by_name["rabbit.install.snapshot"]
+    if snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin":
+        raise AssertionError(f"Unexpected install snapshot: {snapshot}")
+    [session] = by_name["rabbit.session.count"]
+    if (session["dimensions"]["turn_count_bucket"], session["dimensions"]["last_outcome"]) != (
+        "1", "success",
+    ):
+        raise AssertionError(f"Unexpected session summary: {session}")
+    tokens = {c["dimensions"]["token_type"]: c["value"] for c in by_name["rabbit.model_tokens.sum"]}
+    if tokens != {"input": 20, "output": 2}:
+        raise AssertionError(f"Unexpected token sums: {by_name['rabbit.model_tokens.sum']}")
+    [quality] = by_name["rabbit.model_tool_quality.count"]
+    if quality["dimensions"] != {"call_role": "primary", "issue": "none", "model": "custom", "provider": "custom"}:
+        raise AssertionError(f"Unexpected tool-call quality: {quality}")
+    [reply] = by_name["rabbit.model_reply_issue.count"]  # both scripted replies are usable
+    if (reply["dimensions"], reply["value"]) != ({"issue": "none", "model": "custom", "provider": "custom"}, 2):
+        raise AssertionError(f"Unexpected model reply issues: {reply}")
+    [peak] = by_name["rabbit.context_peak.count"]
+    if (peak["dimensions"]["provider"], peak["dimensions"]["model"], peak["dimensions"]["limit_hit"]) != (
+        "custom", "custom", "no",
+    ):
+        raise AssertionError(f"Unexpected context peak: {peak}")
+    [startup] = by_name["rabbit.startup.latency"]
+    if startup["dimensions"]["surface"] != "cli":
+        raise AssertionError(f"Unexpected startup latency: {startup}")
+    milestones = {c["dimensions"]["milestone"] for c in by_name["rabbit.install.milestone"]}
+    if not {"first_task_started", "first_task_success", "first_tool_success"} <= milestones:
+        raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
+    [tool] = by_name["rabbit.tool_call.count"]
+    expected_tool_dimensions = {
+        "approval_outcome": "not_required", "outcome": "success", "tool_category": "file",
+    }
+    [latency] = by_name["rabbit.tool_call.latency"]
+    if (
+        tool["dimensions"] != expected_tool_dimensions
+        or latency["dimensions"]["latency_bucket"] == "unknown"
+        or (latency["dimensions"]["retry_count_bucket"], latency["dimensions"]["tool_category"]) != ("unknown", "file")
+        or tool["value"] != 1
+        or tool["packaged_value"] != 1
+    ):
+        raise AssertionError(f"Unexpected tool counter: {tool}")
+    lifecycle = by_name["rabbit.skill.lifecycle.count"]
+    expected_actions = {
+        "archived",
+        "created",
+        "edited",
+        "installed",
+        "patched",
+        "restored",
+        "stale",
+    }
+    if (
+        {counter["dimensions"]["action"] for counter in lifecycle} != expected_actions
+        or any(counter["value"] != 1 for counter in lifecycle)
+        or any(counter["packaged_value"] != 1 for counter in lifecycle)
+    ):
+        raise AssertionError(f"Unexpected skill lifecycle counters: {lifecycle}")
+    loads = by_name["rabbit.skill.load.count"]
+    expected_load_states = {
+        ("first_use", "not_applicable", "1"),
+        ("reused", "no_new_patch", "2"),
+        ("reused", "reused_after_patch", "3_to_5"),
+    }
+    observed_load_states = {
+        (
+            counter["dimensions"]["reuse_state"],
+            counter["dimensions"]["post_patch_state"],
+            counter["dimensions"]["use_count_bucket"],
+        )
+        for counter in loads
+    }
+    if (
+        observed_load_states != expected_load_states
+        or any(counter["value"] != 1 for counter in loads)
+        or any(counter["packaged_value"] != 1 for counter in loads)
+    ):
+        raise AssertionError(f"Unexpected skill load counters: {loads}")
+    _validate_v5_rows(by_name)
+    serialized = json.dumps(counters)
+    for prohibited in (
+        MODEL_CANARY,
+        PROMPT_CANARY,
+        RESPONSE_CANARY,
+        TOOL_CALL_CANARY,
+        TOOL_RESULT_CANARY,
+        SKILL_CANARY,
+        INSTALLED_SKILL_CANARY,
+    ):
+        if prohibited in serialized:
+            raise AssertionError(
+                f"Stored metrics leaked prohibited value: {prohibited!r}"
+            )
 
 
 def _validate_store(database_path: Path) -> list[dict[str, Any]]:
@@ -328,330 +480,52 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     for counter in counters:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
-        "hermes.client.active",
-        "hermes.context_peak.count",
-        "hermes.install.milestone",
-        "hermes.install.snapshot",
-        "hermes.model_reply_issue.count",
-        "hermes.model_route.count",
-        "hermes.model_tokens.sum",
-        "hermes.model_tool_quality.count",
-        "hermes.session.count",
-        "hermes.skill.lifecycle.count",
-        "hermes.skill.load.count",
-        "hermes.startup.latency",
-        "hermes.task_cost.count",
-        "hermes.task_run.duration",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
-        "hermes.tool.usage.count",
-        "hermes.tool_call.count",
-        "hermes.tool_call.latency",
-        "hermes.tool_enabled_unused.count",
-        "hermes.tool_output_truncation.count",
-        "hermes.tool_overhead.count",
+        "rabbit.client.active",
+        "rabbit.context_peak.count",
+        "rabbit.install.milestone",
+        "rabbit.install.snapshot",
+        "rabbit.model_reply_issue.count",
+        "rabbit.model_route.count",
+        "rabbit.model_tokens.sum",
+        "rabbit.model_tool_quality.count",
+        "rabbit.session.count",
+        "rabbit.skill.lifecycle.count",
+        "rabbit.skill.load.count",
+        "rabbit.startup.latency",
+        "rabbit.task_cost.count",
+        "rabbit.task_run.duration",
+        "rabbit.task_run.finished",
+        "rabbit.task_run.started",
+        "rabbit.tool.usage.count",
+        "rabbit.tool_call.count",
+        "rabbit.tool_call.latency",
+        "rabbit.tool_enabled_unused.count",
+        "rabbit.tool_output_truncation.count",
+        "rabbit.tool_overhead.count",
     }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
-    if by_name["hermes.client.active"] != [
+    if by_name["rabbit.client.active"] != [
         {
-            "name": "hermes.client.active",
+            "name": "rabbit.client.active",
             "dimensions": {},
             "value": 1,
             "packaged_value": 1,
         }
     ]:
         raise AssertionError(
-            f"Unexpected client-active counter: {by_name['hermes.client.active']}"
+            f"Unexpected client-active counter: {by_name['rabbit.client.active']}"
         )
-    # Two primary calls; each lands in whatever TTFT bucket the host's load put it in.
-    models = by_name["hermes.model_route.count"]
-    expected_model = {
-        "call_role": "primary", "error_class": "none", "model": "custom", "outcome": "success",
-        "provider": "custom",
-    }
-    if (
-        any({k: v for k, v in m["dimensions"].items() if k != "ttft_bucket"} != expected_model for m in models)
-        or sum(m["value"] for m in models) != 2
-        or sum(m["packaged_value"] for m in models) != 2
-    ):
-        raise AssertionError(
-            f"Unexpected model counter: {by_name['hermes.model_route.count']}"
-        )
-    expected_start = {
-        "name": "hermes.task_run.started",
-        "dimensions": {
-            "entrypoint": "one_shot",
-            "execution_surface": "cli",
-            "platform": "none",
-        },
-        "value": 1,
-        "packaged_value": 1,
-    }
-    if by_name["hermes.task_run.started"] != [expected_start]:
-        raise AssertionError(
-            f"Unexpected task start: {by_name['hermes.task_run.started']}"
-        )
-    [terminal] = by_name["hermes.task_run.finished"]
-    expected_terminal_dimensions = {
-        "end_reason": "completed",
-        "entrypoint": "one_shot",
-        "execution_surface": "cli",
-        "failure_class": "none",
-        "outcome": "success",
-        "platform": "none",
-        "termination": "none",
-    }
-    if (
-        terminal["dimensions"] != expected_terminal_dimensions
-        or terminal["value"] != 1
-        or terminal["packaged_value"] != 1
-    ):
-        raise AssertionError(f"Unexpected task terminal counter: {terminal}")
-    [duration] = by_name["hermes.task_run.duration"]
-    if duration["dimensions"] != {
-        "duration_bucket": duration["dimensions"].get("duration_bucket"),
-        "execution_surface": "cli", "outcome": "success", "retry_count_bucket": "0",
-    } or duration["value"] != 1:
-        raise AssertionError(f"Unexpected task duration counter: {duration}")
-    [cost] = by_name["hermes.task_cost.count"]
-    if (cost["dimensions"]["api_calls_bucket"], cost["dimensions"]["tool_calls_bucket"]) != ("2", "1"):
-        raise AssertionError(f"Unexpected task cost counter: {cost}")
-    if [c["dimensions"] for c in by_name["hermes.tool.usage.count"]] != [
-        {"error_class": "none", "outcome": "success", "tool_name": "read_file"}
-    ]:
-        raise AssertionError(f"Unexpected tool usage: {by_name['hermes.tool.usage.count']}")
-    [snapshot] = by_name["hermes.install.snapshot"]
-    if snapshot["value"] != 1 or snapshot["dimensions"]["memory_provider"] != "builtin":
-        raise AssertionError(f"Unexpected install snapshot: {snapshot}")
-    [session] = by_name["hermes.session.count"]
-    if (session["dimensions"]["turn_count_bucket"], session["dimensions"]["last_outcome"]) != (
-        "1", "success",
-    ):
-        raise AssertionError(f"Unexpected session summary: {session}")
-    tokens = {c["dimensions"]["token_type"]: c["value"] for c in by_name["hermes.model_tokens.sum"]}
-    if tokens != {"input": 20, "output": 2}:
-        raise AssertionError(f"Unexpected token sums: {by_name['hermes.model_tokens.sum']}")
-    [quality] = by_name["hermes.model_tool_quality.count"]
-    if quality["dimensions"] != {"call_role": "primary", "issue": "none", "model": "custom", "provider": "custom"}:
-        raise AssertionError(f"Unexpected tool-call quality: {quality}")
-    [reply] = by_name["hermes.model_reply_issue.count"]  # both scripted replies are usable
-    if (reply["dimensions"], reply["value"]) != ({"issue": "none", "model": "custom", "provider": "custom"}, 2):
-        raise AssertionError(f"Unexpected model reply issues: {reply}")
-    [peak] = by_name["hermes.context_peak.count"]
-    if (peak["dimensions"]["provider"], peak["dimensions"]["model"], peak["dimensions"]["limit_hit"]) != (
-        "custom", "custom", "no",
-    ):
-        raise AssertionError(f"Unexpected context peak: {peak}")
-    [startup] = by_name["hermes.startup.latency"]
-    if startup["dimensions"]["surface"] != "cli":
-        raise AssertionError(f"Unexpected startup latency: {startup}")
-    milestones = {c["dimensions"]["milestone"] for c in by_name["hermes.install.milestone"]}
-    if not {"first_task_started", "first_task_success", "first_tool_success"} <= milestones:
-        raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
-    [tool] = by_name["hermes.tool_call.count"]
-    expected_tool_dimensions = {
-        "approval_outcome": "not_required", "outcome": "success", "tool_category": "file",
-    }
-    [latency] = by_name["hermes.tool_call.latency"]
-    if (
-        tool["dimensions"] != expected_tool_dimensions
-        or latency["dimensions"]["latency_bucket"] == "unknown"
-        or (latency["dimensions"]["retry_count_bucket"], latency["dimensions"]["tool_category"]) != ("unknown", "file")
-        or tool["value"] != 1
-        or tool["packaged_value"] != 1
-    ):
-        raise AssertionError(f"Unexpected tool counter: {tool}")
-    lifecycle = by_name["hermes.skill.lifecycle.count"]
-    expected_actions = {
-        "archived",
-        "created",
-        "edited",
-        "installed",
-        "patched",
-        "restored",
-        "stale",
-    }
-    if (
-        {counter["dimensions"]["action"] for counter in lifecycle} != expected_actions
-        or any(counter["value"] != 1 for counter in lifecycle)
-        or any(counter["packaged_value"] != 1 for counter in lifecycle)
-    ):
-        raise AssertionError(f"Unexpected skill lifecycle counters: {lifecycle}")
-    loads = by_name["hermes.skill.load.count"]
-    expected_load_states = {
-        ("first_use", "not_applicable", "1"),
-        ("reused", "no_new_patch", "2"),
-        ("reused", "reused_after_patch", "3_to_5"),
-    }
-    observed_load_states = {
-        (
-            counter["dimensions"]["reuse_state"],
-            counter["dimensions"]["post_patch_state"],
-            counter["dimensions"]["use_count_bucket"],
-        )
-        for counter in loads
-    }
-    if (
-        observed_load_states != expected_load_states
-        or any(counter["value"] != 1 for counter in loads)
-        or any(counter["packaged_value"] != 1 for counter in loads)
-    ):
-        raise AssertionError(f"Unexpected skill load counters: {loads}")
-    _validate_v5_rows(by_name)
+    _validate_model_and_tool_rows(by_name, counters)
     return counters
-
-
-def _validate_packages(
-    outbox: Path,
-    schema_path: Path,
-) -> tuple[list[Path], list[dict[str, Any]]]:
-    package_paths = sorted(outbox.glob("*.json"))
-    if len(package_paths) != 2:
-        raise AssertionError(
-            f"Expected two delta packages in {outbox}, found {len(package_paths)}"
-        )
-    try:
-        import jsonschema
-    except ImportError as exc:
-        raise RuntimeError(
-            "The Hermes development environment requires jsonschema"
-        ) from exc
-    schema = json.loads(schema_path.read_text(encoding="utf-8-sig"))
-    packages = [
-        json.loads(package_path.read_text(encoding="utf-8-sig"))
-        for package_path in package_paths
-    ]
-    for package in packages:
-        jsonschema.validate(package, schema)
-        if set(package["resource"]) != {
-            "architecture",
-            "hermes_version",
-            "install_method",
-            "os_family",
-        }:
-            raise AssertionError(f"Unexpected client resource: {package['resource']}")
-
-    serialized = json.dumps(packages)
-    for prohibited in (
-        MODEL_CANARY,
-        PROMPT_CANARY,
-        RESPONSE_CANARY,
-        TOOL_CALL_CANARY,
-        TOOL_RESULT_CANARY,
-        SKILL_CANARY,
-        INSTALLED_SKILL_CANARY,
-    ):
-        if prohibited in serialized:
-            raise AssertionError(
-                f"Exported package leaked prohibited value: {prohibited!r}"
-            )
-    metrics: dict[str, list[dict[str, Any]]] = {}
-    for package in packages:
-        for metric in package.get("metrics", []):
-            metrics.setdefault(metric["name"], []).append(metric)
-    if set(metrics) != {
-        "hermes.client.active",
-        "hermes.context_peak.count",
-        "hermes.install.milestone",
-        "hermes.install.snapshot",
-        "hermes.model_reply_issue.count",
-        "hermes.model_route.count",
-        "hermes.model_tokens.sum",
-        "hermes.model_tool_quality.count",
-        "hermes.session.count",
-        "hermes.skill.lifecycle.count",
-        "hermes.skill.load.count",
-        "hermes.startup.latency",
-        "hermes.task_cost.count",
-        "hermes.task_run.duration",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
-        "hermes.tool.usage.count",
-        "hermes.tool_call.count",
-        "hermes.tool_call.latency",
-        "hermes.tool_enabled_unused.count",
-        "hermes.tool_output_truncation.count",
-        "hermes.tool_overhead.count",
-    }:
-        raise AssertionError(
-            f"Unexpected package metrics:\n{json.dumps(metrics, indent=2)}"
-        )
-    if metrics["hermes.client.active"] != [
-        {
-            "name": "hermes.client.active",
-            "type": "counter",
-            "dimensions": {},
-            "value": 1,
-        }
-    ]:
-        raise AssertionError(
-            f"Unexpected client-active metric: {metrics['hermes.client.active']}"
-        )
-    models = metrics["hermes.model_route.count"]
-    if any(
-        {k: v for k, v in m["dimensions"].items() if k != "ttft_bucket"} != {
-            "call_role": "primary", "error_class": "none", "model": "custom", "outcome": "success",
-            "provider": "custom",
-        }
-        for m in models
-    ) or sum(m["value"] for m in models) != 2:
-        raise AssertionError(
-            f"Unexpected model metric: {metrics['hermes.model_route.count']}"
-        )
-    [terminal] = metrics["hermes.task_run.finished"]
-    if terminal["dimensions"] != {
-        "end_reason": "completed",
-        "entrypoint": "one_shot",
-        "execution_surface": "cli",
-        "failure_class": "none",
-        "outcome": "success",
-        "platform": "none",
-        "termination": "none",
-    }:
-        raise AssertionError(f"Unexpected task terminal metric: {terminal}")
-    [tool] = metrics["hermes.tool_call.count"]
-    if (
-        tool["dimensions"]
-        != {"approval_outcome": "not_required", "outcome": "success", "tool_category": "file"}
-        or metrics["hermes.tool_call.latency"][0]["dimensions"]["latency_bucket"] == "unknown"
-    ):
-        raise AssertionError(f"Unexpected tool metric: {tool}")
-    lifecycle = metrics["hermes.skill.lifecycle.count"]
-    if {metric["dimensions"]["action"] for metric in lifecycle} != {
-        "archived",
-        "created",
-        "edited",
-        "installed",
-        "patched",
-        "restored",
-        "stale",
-    }:
-        raise AssertionError(f"Unexpected skill lifecycle metrics: {lifecycle}")
-    loads = metrics["hermes.skill.load.count"]
-    if {
-        (
-            metric["dimensions"]["reuse_state"],
-            metric["dimensions"]["post_patch_state"],
-            metric["dimensions"]["use_count_bucket"],
-        )
-        for metric in loads
-    } != {
-        ("first_use", "not_applicable", "1"),
-        ("reused", "no_new_patch", "2"),
-        ("reused", "reused_after_patch", "3_to_5"),
-    }:
-        raise AssertionError(f"Unexpected skill load metrics: {loads}")
-    _validate_v5_rows(metrics)
-    return package_paths, packages
 
 
 def main() -> int:
     args = _arguments()
-    hermes_repo = args.hermes_repo.resolve()
+    rabbit_repo = args.rabbit_repo.resolve()
     relay_python = args.relay_python.resolve() if args.relay_python else None
-    hermes = _resolve_hermes_executable(hermes_repo)
+    rabbit = _resolve_rabbit_executable(rabbit_repo)
     if relay_python is not None and not any(
         (relay_python / "nemo_relay").glob("_native.*")
     ):
@@ -666,8 +540,8 @@ def main() -> int:
             raise SystemExit(f"Refusing to replace existing output directory: {root}")
         root.mkdir(parents=True)
     else:
-        root = Path(tempfile.mkdtemp(prefix="hermes-relay-shared-metrics-"))
-    home = root / "hermes-home"
+        root = Path(tempfile.mkdtemp(prefix="rabbit-relay-shared-metrics-"))
+    home = root / "rabbit-home"
     workdir = root / "workspace"
     workdir.mkdir()
     (workdir / TOOL_FILE).write_text(TOOL_RESULT_CANARY, encoding="utf-8")
@@ -704,15 +578,15 @@ def main() -> int:
     try:
         _write_config(home, server.server_port)
         env = os.environ.copy()
-        env["HERMES_HOME"] = str(home)
-        python_paths = [str(hermes_repo)]
+        env["RABBIT_HOME"] = str(home)
+        python_paths = [str(rabbit_repo)]
         if relay_python is not None:
             python_paths.append(str(relay_python))
         python_paths.append(env.get("PYTHONPATH", ""))
         env["PYTHONPATH"] = os.pathsep.join(python_paths).rstrip(os.pathsep)
         result = subprocess.run(
             [
-                str(hermes),
+                str(rabbit),
                 "chat",
                 "--query",
                 PROMPT_CANARY,
@@ -738,11 +612,11 @@ def main() -> int:
         server.server_close()
         thread.join(timeout=5)
 
-    (root / "hermes.stdout.txt").write_text(result.stdout, encoding="utf-8")
-    (root / "hermes.stderr.txt").write_text(result.stderr, encoding="utf-8")
+    (root / "rabbit.stdout.txt").write_text(result.stdout, encoding="utf-8")
+    (root / "rabbit.stderr.txt").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise AssertionError(
-            f"Hermes exited with {result.returncode}\n"
+            f"Rabbit exited with {result.returncode}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     if len(_ModelHandler.requests) != 2:
@@ -753,19 +627,19 @@ def main() -> int:
     if request.get("model") != MODEL_CANARY:
         raise AssertionError(f"Unexpected model request: {request.get('model')!r}")
     if PROMPT_CANARY not in json.dumps(request.get("messages", [])):
-        raise AssertionError("Hermes model request did not contain the prompt canary")
+        raise AssertionError("Rabbit model request did not contain the prompt canary")
     follow_up = json.dumps(_ModelHandler.requests[1].get("messages", []))
     if TOOL_CALL_CANARY not in follow_up or TOOL_RESULT_CANARY not in follow_up:
-        raise AssertionError("Hermes did not return the tool result to the model")
+        raise AssertionError("Rabbit did not return the tool result to the model")
     if RESPONSE_CANARY not in result.stdout:
-        raise AssertionError("Hermes did not print the mock model response")
+        raise AssertionError("Rabbit did not print the mock model response")
 
     skill_result = subprocess.run(
         [
             sys.executable,
             "-c",
             "\n".join([
-                "from hermes_cli.observability import relay_shared_metrics",
+                "from rabbit_cli.observability import relay_shared_metrics",
                 "from tools.skill_usage import (",
                 "    STATE_ACTIVE, STATE_ARCHIVED, STATE_STALE, bump_patch,",
                 "    bump_use, record_created, record_installed, set_state,",
@@ -786,9 +660,6 @@ def main() -> int:
                 "runtime = relay_shared_metrics._get_runtime()",
                 "assert runtime is not None",
                 "runtime.shutdown()",
-                # Production leaves same-day deltas pending. Force a package so
-                # this smoke can validate them without waiting for the next day.
-                "runtime.subscriber.store.create_and_export_package()",
             ]),
         ],
         cwd=workdir,
@@ -812,22 +683,14 @@ def main() -> int:
         )
 
     telemetry = home / "telemetry" / "shared_metrics"
+    # Local-only collection: nothing is packaged or uploaded, so the store itself is
+    # what this smoke validates (counters and the no-canary privacy check).
     counters = _validate_store(telemetry / "metrics.sqlite3")
-    package_paths, packages = _validate_packages(
-        telemetry / "outbox",
-        hermes_repo
-        / "hermes_cli"
-        / "observability"
-        / "schemas"
-        / "hermes.shared_metrics.v3.schema.json",
-    )
 
-    print("Hermes -> NeMo Relay shared-metrics smoke test passed")
+    print("Rabbit -> NeMo Relay shared-metrics smoke test passed")
     print(f"Artifact directory: {root}")
     print(f"Model requests: {len(_ModelHandler.requests)}")
     print(f"SQLite counters: {json.dumps(counters, indent=2)}")
-    print(f"Export packages: {', '.join(str(path) for path in package_paths)}")
-    print(json.dumps(packages, indent=2, sort_keys=True))
     return 0
 
 

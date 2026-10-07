@@ -1,8 +1,8 @@
 """Regression tests for the macOS `open` frontmost raise-ladder.
 
 Issue #95261: on macOS, `open <file>` / `open -a <App> <file>` returns exit 0
-and genuinely opens the document, but the window lands BEHIND the Hermes
-desktop window (Hermes is typically maximised), so the user sees nothing happen
+and genuinely opens the document, but the window lands BEHIND the Rabbit
+desktop window (Rabbit is typically maximised), so the user sees nothing happen
 while the agent reports success.
 
 The fix appends a verified raise-ladder after the `open` that brings the opened

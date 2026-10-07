@@ -29,21 +29,8 @@ class TestFirecrawlClientConfig:
         for key in (
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
-            "FIRECRAWL_GATEWAY_URL",
-            "TOOL_GATEWAY_DOMAIN",
-            "TOOL_GATEWAY_SCHEME",
-            "TOOL_GATEWAY_USER_TOKEN",
         ):
             os.environ.pop(key, None)
-        # Enable managed tools by default for these tests — patch both the
-        # tool_backend_helpers definition and the managed_tool_gateway import so the
-        # full firecrawl client init path sees True.
-        self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
-        ]
-        for p in self._managed_patchers:
-            p.start()
 
     def teardown_method(self):
         """Reset client after each test."""
@@ -53,38 +40,17 @@ class TestFirecrawlClientConfig:
         for key in (
             "FIRECRAWL_API_KEY",
             "FIRECRAWL_API_URL",
-            "FIRECRAWL_GATEWAY_URL",
-            "TOOL_GATEWAY_DOMAIN",
-            "TOOL_GATEWAY_SCHEME",
-            "TOOL_GATEWAY_USER_TOKEN",
         ):
             os.environ.pop(key, None)
-        for p in self._managed_patchers:
-            p.stop()
 
     # ── Configuration matrix ─────────────────────────────────────────
 
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
         with patch("plugins.web.firecrawl.provider.Firecrawl"):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                from plugins.web.firecrawl.provider import _get_firecrawl_client
-                with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
-                    _get_firecrawl_client()
-
-    def test_tool_gateway_domain_builds_firecrawl_gateway_origin(self):
-        """Shared gateway domain should derive the Firecrawl vendor hostname."""
-        with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value="nous-token"):
-                with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
-                    result = _get_firecrawl_client()
-                    mock_fc.assert_called_once_with(
-                        api_key="nous-token",
-                        api_url="https://firecrawl-gateway.nousresearch.com",
-                    )
-                    assert result is mock_fc.return_value
-
+            from plugins.web.firecrawl.provider import _get_firecrawl_client
+            with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
+                _get_firecrawl_client()
 
     # ── Singleton caching ────────────────────────────────────────────
 
@@ -111,21 +77,19 @@ class TestFirecrawlClientConfig:
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""}):
             with patch("plugins.web.firecrawl.provider.Firecrawl"):
-                with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
-                    with pytest.raises(ValueError):
-                        _get_firecrawl_client()
+                from plugins.web.firecrawl.provider import _get_firecrawl_client
+                with pytest.raises(ValueError):
+                    _get_firecrawl_client()
 
     def test_explicit_firecrawl_config_without_creds_uses_keyless_client(self):
         """Explicit Firecrawl config should build the keyless cloud client."""
         from plugins.web.firecrawl import provider as firecrawl_provider
 
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                with patch("plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
+            with patch("plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
+                from plugins.web.firecrawl.provider import _get_firecrawl_client
 
-                    result = _get_firecrawl_client()
+                result = _get_firecrawl_client()
 
         assert isinstance(result, firecrawl_provider._KeylessFirecrawlClient)
         assert result.api_url == "https://api.firecrawl.dev"
@@ -225,7 +189,7 @@ class TestBackendSelection:
     """Test suite for _get_backend() backend selection logic.
 
     The backend is configured via config.yaml (web.backend), set by
-    ``hermes tools``.  Falls back to key-based detection for legacy/manual
+    ``rabbit tools``.  Falls back to key-based detection for legacy/manual
     setups.
     """
 
@@ -234,10 +198,6 @@ class TestBackendSelection:
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
     )
@@ -245,18 +205,10 @@ class TestBackendSelection:
     def setup_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
-        ]
-        for p in self._managed_patchers:
-            p.start()
 
     def teardown_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        for p in self._managed_patchers:
-            p.stop()
 
     # ── Config-based selection (web.backend in config.yaml) ───────────
 
@@ -351,7 +303,6 @@ class TestBackendSelection:
         """
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
@@ -374,41 +325,12 @@ class TestBackendSelection:
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "firecrawl"
 
-    def test_nous_backend_maps_to_firecrawl(self):
-        """The managed 'nous' selection is serviced by the firecrawl
-        provider (whose client resolver routes managed)."""
+    def test_stored_unknown_backend_returned_verbatim(self):
+        """A stored backend is returned as-is — no probe, no reroute — so a
+        stale/unknown selection surfaces the vendor's honest error."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "nous"}):
-            assert _get_backend() == "firecrawl"
-
-    def test_managed_gateway_does_not_preempt_explicit_exa(self):
-        """Regression: a Nous OAuth token (managed gateway "ready") must NOT
-        beat an explicitly configured EXA_API_KEY in the fallback path.
-        Free Nous tiers don't include web search, so the user's deliberate
-        Exa setup would fail at runtime with "no subscription" if the
-        gateway pre-empted it."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
-             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
-            assert _get_backend() == "exa"
-
-    def test_managed_gateway_does_not_preempt_explicit_tavily(self):
-        """A Nous OAuth token must not beat an explicit TAVILY_API_KEY."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
-            assert _get_backend() == "tavily"
-
-    def test_managed_gateway_only_falls_through_to_firecrawl(self):
-        """When no explicit-credential backend is configured, a Nous-managed
-        gateway token still selects firecrawl — the convenience path is
-        preserved, just no longer pre-empts."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
-            assert _get_backend() == "firecrawl"
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "acme-search"}):
+            assert _get_backend() == "acme-search"
 
 
 class TestParallelClientConfig:
@@ -472,7 +394,7 @@ class TestParallelClientConfig:
     def test_client_follows_the_key_reload_applies(self):
         """/reload (reload_env) fixing or removing the key reaches the next call: the client built
         with the old key is never handed out again."""
-        from hermes_cli.config import get_env_path, reload_env
+        from rabbit_cli.config import get_env_path, reload_env
         from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
         with patch.dict(os.environ):
             get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
@@ -631,10 +553,6 @@ class TestCheckWebApiKey:
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
     )
@@ -642,9 +560,7 @@ class TestCheckWebApiKey:
     def setup_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        self._managed_patchers = [
-            patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
-            patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
+        self._patchers = [
             # ddgs availability is package-presence driven and the plugin
             # registry can hold an available ddgs provider. Neutralize both
             # fallback surfaces so this class only exercises env-key/gateway
@@ -654,14 +570,14 @@ class TestCheckWebApiKey:
             patch("agent.web_search_registry.get_active_search_provider", return_value=None),
             patch("agent.web_search_registry.get_active_extract_provider", return_value=None),
         ]
-        for p in self._managed_patchers:
+        for p in self._patchers:
             p.start()
 
     def teardown_method(self):
+        for p in self._patchers:
+            p.stop()
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        for p in self._managed_patchers:
-            p.stop()
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
@@ -694,7 +610,7 @@ class TestCheckWebApiKey:
         has_xai_credentials probe -> check_fn -> get_tool_definitions. The web
         toolset must serve zero tools (xai can never be dispatched to), and it
         must light up once a real web key joins."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # isolate auth.json / credential pool
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))  # isolate auth.json / credential pool
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
         for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(k, raising=False)
@@ -714,12 +630,11 @@ class TestCheckWebApiKey:
             assert names == {"web_search", "web_extract"}
 
 
-    def test_configured_firecrawl_backend_accepts_managed_gateway(self):
+    def test_configured_firecrawl_backend_accepts_direct_key(self):
         with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
-            with patch("tools.managed_tool_gateway.peek_nous_access_token", return_value="nous-token"):
-                with patch.dict(os.environ, {"FIRECRAWL_GATEWAY_URL": "http://127.0.0.1:3002"}, clear=False):
-                    from tools.web_tools import check_web_api_key
-                    assert check_web_api_key() is True
+            with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}, clear=False):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
 
     def test_explicit_unavailable_active_provider_is_not_ready(self):
         """#78412: get_active_* may return a configured backend whose
@@ -792,10 +707,6 @@ class TestNonBuiltinProviderAvailability:
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        "FIRECRAWL_GATEWAY_URL",
-        "TOOL_GATEWAY_DOMAIN",
-        "TOOL_GATEWAY_SCHEME",
-        "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
         "TAVILY_API_KEY",
         "SEARXNG_URL",
@@ -847,16 +758,14 @@ class TestNonBuiltinProviderAvailability:
     def test_check_web_api_key_returns_true_for_custom_provider(self):
         """With only a custom provider registered (no built-in creds),
         check_web_api_key() must return True."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
     def test_get_backend_discovers_custom_provider(self):
         """_get_backend() must return the custom provider name when it's
         the only available provider."""
-        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None):
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False):
             from tools.web_tools import _get_backend
             assert _get_backend() == "fake-plugin-prov"
 
@@ -865,7 +774,6 @@ class TestNonBuiltinProviderAvailability:
         """Per-capability selection (_get_extract_backend) must resolve the
         custom provider when configured, instead of dead-ending — issue #32698."""
         with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.managed_tool_gateway.peek_nous_access_token", return_value=None), \
              patch("tools.web_tools._load_web_config",
                    return_value={"extract_backend": "fake-plugin-prov"}):
             from tools.web_tools import _get_extract_backend
@@ -874,9 +782,9 @@ class TestNonBuiltinProviderAvailability:
 
 
 class TestFirecrawlEnvResolution:
-    """Verify Firecrawl reads env values from hermes_cli.config.get_env_value,
+    """Verify Firecrawl reads env values from rabbit_cli.config.get_env_value,
     not just os.getenv.  This catches the regression reported in #40190 where
-    values stored in ~/.hermes/.env were invisible to the provider."""
+    values stored in ~/.rabbit/.env were invisible to the provider."""
 
     def test_direct_config_reads_via_get_env_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """_get_direct_firecrawl_config() must use get_env_value, not os.getenv."""
@@ -886,7 +794,7 @@ class TestFirecrawlEnvResolution:
 
         fake_key = "fc-test-key-from-dotenv"
         with patch(
-            "hermes_cli.config.get_env_value",
+            "rabbit_cli.config.get_env_value",
             side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
@@ -904,7 +812,7 @@ class TestFirecrawlEnvResolution:
 
         fake_url = "https://firecrawl.internal.example.com"
         with patch(
-            "hermes_cli.config.get_env_value",
+            "rabbit_cli.config.get_env_value",
             side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
         ):
             from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
@@ -919,7 +827,7 @@ class TestFirecrawlEnvResolution:
 class TestSiblingProvidersEnvResolution:
     """The same #40190 bug class widened: every keyed web provider must
     resolve its credential through the config-aware lookup (os.environ OR
-    ~/.hermes/.env), not bare os.getenv. Parametrized over the four
+    ~/.rabbit/.env), not bare os.getenv. Parametrized over the four
     providers that previously read only the process environment."""
 
     _CASES = [
@@ -943,7 +851,7 @@ class TestSiblingProvidersEnvResolution:
         assert provider.is_available() is False
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "rabbit_cli.config.get_env_value",
             side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
         ):
             assert provider.is_available() is True, (
@@ -960,7 +868,7 @@ class TestSiblingProvidersEnvResolution:
         mock_response.text = "{}"
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "rabbit_cli.config.get_env_value",
             side_effect=lambda k: "kn-from-dotenv" if k == "KEENABLE_API_KEY" else None,
         ), patch(
             "requests.post", return_value=mock_response
@@ -970,7 +878,7 @@ class TestSiblingProvidersEnvResolution:
             KeenableWebSearchProvider().search("q", limit=2)
             headers = mock_post.call_args.kwargs["headers"]
             assert headers["Authorization"] == "Bearer kn-from-dotenv"
-            assert headers["X-Keenable-Title"] == "hermes-agent"
+            assert headers["X-Keenable-Title"] == "rabbit-agent"
 
     def test_tavily_request_reads_key_via_get_env_value(self, monkeypatch):
         """Keyed Tavily must Bearer-auth with a key that lives only in .env."""
@@ -981,7 +889,7 @@ class TestSiblingProvidersEnvResolution:
         mock_response.text = "{}"
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "rabbit_cli.config.get_env_value",
             side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
         ), patch(
             "plugins.web.tavily.provider.httpx.post", return_value=mock_response
@@ -991,13 +899,13 @@ class TestSiblingProvidersEnvResolution:
             _tavily_request("search", {"query": "q"})
             headers = mock_post.call_args.kwargs["headers"]
             assert headers["Authorization"] == "Bearer tvly-from-dotenv"
-            assert headers["X-Client-Name"] == "hermes-agent"
+            assert headers["X-Client-Name"] == "rabbit-agent"
             assert "X-Tavily-Access-Mode" not in headers
 
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
-        with patch("hermes_cli.config.get_env_value", return_value=None):
+        with patch("rabbit_cli.config.get_env_value", return_value=None):
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""
@@ -1012,7 +920,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
     from agent import web_search_registry as registry
     from plugins.web.xai.provider import XAIWebSearchProvider
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
         monkeypatch.delenv(k, raising=False)

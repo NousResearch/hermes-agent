@@ -1,4 +1,4 @@
-"""Chat-completions reasoning dialects through REAL Hermes processes.
+"""Chat-completions reasoning dialects through REAL Rabbit processes.
 
 * OpenRouter-style ``reasoning_details`` (signed reasoning blocks) must be replayed
   verbatim on the next call of the turn and on the next turn after a restart — to the

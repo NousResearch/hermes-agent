@@ -49,12 +49,12 @@ class TestDiscordToolPreviewFormatting:
         from agent.display import ToolPreview
 
         adapter = _make_discord_adapter()
-        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
-        visible = "https://hermes-agent.nousresearch..."
+        url = "https://github.com/seven0070/Rabbit-/tree/main/website/docs/gateway/discord/tool-progress"
+        visible = "https://rabbit-agent.nousresearch..."
 
         out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
 
-        assert out == f"[hermes-agent.nousresearch...](<{url}>)"
+        assert out == f"[rabbit-agent.nousresearch...](<{url}>)"
 
     def test_truncated_url_label_is_not_a_second_url_target(self):
         from agent.display import ToolPreview
@@ -89,7 +89,7 @@ class TestDiscordToolPreviewFormatting:
         from gateway.stream_events import ToolCallChunk
 
         adapter = _make_discord_adapter()
-        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+        url = "https://github.com/seven0070/Rabbit-/tree/main/website/docs/gateway/discord/tool-progress"
         visible = url[:37] + "..."
 
         out = adapter.format_tool_event(

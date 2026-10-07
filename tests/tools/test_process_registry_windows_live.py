@@ -24,7 +24,7 @@ pytestmark = pytest.mark.platforms("windows")  # live Windows background-executo
 
 @pytest.fixture()
 def registry(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "rabbit-home"))
     import tools.process_registry as pr
 
     reg = pr.ProcessRegistry()
@@ -65,7 +65,7 @@ class TestWindowsSpawnParity:
         behaves exactly as without the identity."""
         import tools.process_registry as pr
 
-        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("_RABBIT_GATEWAY", "1")
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda *, cleanup_stale=False: os.getpid(),

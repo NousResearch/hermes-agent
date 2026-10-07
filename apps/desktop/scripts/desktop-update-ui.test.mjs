@@ -40,7 +40,7 @@ test.each(['done', 'manual', 'error'])('renders %s before acknowledging terminal
     if (url.startsWith('/ack/')) {
       assert.equal(options.method, 'POST')
       assert.equal(document.body.className, status === 'error' ? 'error' : 'done')
-      assert.notEqual(document.getElementById('title').textContent, 'Updating Hermes')
+      assert.notEqual(document.getElementById('title').textContent, 'Updating Rabbit')
       return { ok: true }
     }
     return { ok: true, json: async () => ({ status, receipt, message: 'The updater result' }) }
@@ -48,7 +48,7 @@ test.each(['done', 'manual', 'error'])('renders %s before acknowledging terminal
   document = openPage(fetch)
   await vi.advanceTimersByTimeAsync(1000)
   assert.equal(document.body.className, status === 'error' ? 'error' : 'done')
-  assert.notEqual(document.getElementById('title').textContent, 'Updating Hermes')
+  assert.notEqual(document.getElementById('title').textContent, 'Updating Rabbit')
   assert.deepEqual(requests, ['/progress', `/ack/${receipt}`])
 })
 

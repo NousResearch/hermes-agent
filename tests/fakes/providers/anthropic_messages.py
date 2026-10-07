@@ -292,7 +292,7 @@ def error_envelope(err: ApiError) -> dict[str, Any]:
 
 
 class AnthropicMessagesServer:
-    """Threaded loopback Messages endpoint. ``base_url`` ends in ``/anthropic`` so Hermes'
+    """Threaded loopback Messages endpoint. ``base_url`` ends in ``/anthropic`` so Rabbit'
     native ``anthropic`` provider accepts it as an Anthropic-protocol override."""
 
     def __init__(self, script: list[Response] | Responder | None = None, *, default_text: str = "ok",

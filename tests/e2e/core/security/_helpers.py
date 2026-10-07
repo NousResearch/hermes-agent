@@ -1,7 +1,7 @@
 """Shared harness for the security-boundary E2E suite.
 
-Every scenario runs real Hermes processes (``hermes`` CLI, ``hermes serve``, the gateway,
-``tui_gateway``) with HOME=<tmp>/home and HERMES_HOME=<tmp>/home/.hermes, every credential env var
+Every scenario runs real Rabbit processes (``rabbit`` CLI, ``rabbit serve``, the gateway,
+``tui_gateway``) with HOME=<tmp>/home and RABBIT_HOME=<tmp>/home/.rabbit, every credential env var
 stripped, and the model served by ``tests/fakes/fake_llm_provider.FakeLLMServer``. Assertions read
 the boundary's observable outcome: files on disk, state.db rows, logs, and the next wire request.
 
@@ -40,7 +40,7 @@ def canary(label: str) -> str:
 
 
 _STRIP_SUFFIXES = ("_API_KEY", "_TOKEN", "_BASE_URL", "_SECRET", "_ACCESS_KEY", "_KEY_ID", "_KEY", "_PASSWORD")
-_STRIP_PREFIXES = ("HERMES_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_", "GEMINI",
+_STRIP_PREFIXES = ("RABBIT_", "OPENAI", "ANTHROPIC", "OPENROUTER", "AWS_", "AZURE_", "GOOGLE_", "GEMINI",
                    "PYTEST_", "NOUS_", "XAI_", "LLM_", "CUSTOM_", "TERMINAL_", "API_SERVER_")
 _DROP = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy",
          "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
@@ -53,7 +53,7 @@ def real_user_home() -> Path:
 
 
 def hermetic_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Child env: fake HOME (profile-root anchor) + HERMES_HOME under it, nothing credential-shaped,
+    """Child env: fake HOME (profile-root anchor) + RABBIT_HOME under it, nothing credential-shaped,
     no yolo/approval env inherited from the invoking agent."""
     home = home.resolve()
     assert home != real_user_home(), f"refusing to run a probe against the real HOME: {home}"
@@ -61,29 +61,29 @@ def hermetic_env(home: Path, extra: dict[str, str] | None = None) -> dict[str, s
            if not (k.endswith(_STRIP_SUFFIXES) or k.startswith(_STRIP_PREFIXES)) and k not in _DROP}
     env.update(
         HOME=str(home),
-        HERMES_HOME=str(home / ".hermes"),
+        RABBIT_HOME=str(home / ".rabbit"),
         XDG_STATE_HOME=str(home / ".local" / "state"),
         PYTHONPATH=str(REPO_ROOT),
         NO_COLOR="1",
         TERM="dumb",
         NO_PROXY="127.0.0.1,localhost",
         no_proxy="127.0.0.1,localhost",
-        # the live-DB guard treats $HOME/.hermes/state.db of a pytest descendant as production;
+        # the live-DB guard treats $HOME/.rabbit/state.db of a pytest descendant as production;
         # this HOME is the test's own tmp dir (asserted above).
-        HERMES_STATE_DB_GUARD_BYPASS="1",
-        HERMES_ACCEPT_HOOKS="1",
+        RABBIT_STATE_DB_GUARD_BYPASS="1",
+        RABBIT_ACCEPT_HOOKS="1",
     )
     env.update(extra or {})
     return env
 
 
-def write_home(hermes_home: Path, base_url: str, *, api_key: str, config: str = "",
+def write_home(rabbit_home: Path, base_url: str, *, api_key: str, config: str = "",
                env: dict[str, str] | None = None) -> Path:
     """config.yaml routing the model to the fake provider + .env with the (canary) key.
 
     ``config`` is appended verbatim (YAML top-level sections)."""
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "config.yaml").write_text(
+    rabbit_home.mkdir(parents=True, exist_ok=True)
+    (rabbit_home / "config.yaml").write_text(
         "model:\n"
         "  provider: custom\n"
         f"  base_url: {base_url}\n"
@@ -100,8 +100,8 @@ def write_home(hermes_home: Path, base_url: str, *, api_key: str, config: str = 
         encoding="utf-8",
     )
     lines = {"OPENAI_API_KEY": api_key, **(env or {})}
-    (hermes_home / ".env").write_text("".join(f"{k}={v}\n" for k, v in lines.items()), encoding="utf-8")
-    return hermes_home
+    (rabbit_home / ".env").write_text("".join(f"{k}={v}\n" for k, v in lines.items()), encoding="utf-8")
+    return rabbit_home
 
 
 def free_port() -> int:
@@ -128,11 +128,11 @@ def kill_group(proc: subprocess.Popen, sig: int = signal.SIGKILL) -> None:
         pass
 
 
-def run_hermes(argv: list[str], home: Path, *, timeout: float = 120.0, cwd: Path | None = None,
+def run_rabbit(argv: list[str], home: Path, *, timeout: float = 120.0, cwd: Path | None = None,
                extra_env: dict[str, str] | None = None, stdin: str | None = None) -> subprocess.CompletedProcess:
-    """``python -m hermes_cli.main <argv>`` in its own process group; the group is always reaped."""
+    """``python -m rabbit_cli.main <argv>`` in its own process group; the group is always reaped."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "hermes_cli.main", *argv], cwd=str(cwd or home), env=hermetic_env(home, extra_env),
+        [sys.executable, "-m", "rabbit_cli.main", *argv], cwd=str(cwd or home), env=hermetic_env(home, extra_env),
         stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
@@ -148,7 +148,7 @@ def run_hermes(argv: list[str], home: Path, *, timeout: float = 120.0, cwd: Path
 
 def run_python(code: str, home: Path, *args: str, timeout: float = 120.0,
                extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    """A fresh interpreter importing the worktree's Hermes under the hermetic env."""
+    """A fresh interpreter importing the worktree's Rabbit under the hermetic env."""
     return subprocess.run([sys.executable, "-c", code, *args], cwd=str(home), env=hermetic_env(home, extra_env),
                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 

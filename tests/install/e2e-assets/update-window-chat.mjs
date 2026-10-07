@@ -11,10 +11,10 @@ import { assertBackendOrigin, localBackendProcess, readInstallationCommit } from
  * module launch. The verified identity and listener ownership prove provenance.
  */
 export function assertUpdateWindowBackendOrigin(backend, identity, root, origin) {
-  if (origin === 'source' && fs.realpathSync(identity.hermesRoot) !== fs.realpathSync(root)) {
+  if (origin === 'source' && fs.realpathSync(identity.rabbitRoot) !== fs.realpathSync(root)) {
     throw new Error('OLD update-window chat resolved another source installation');
   }
-  assertBackendOrigin(backend, root, origin, { appReportedRoot: identity.hermesRoot });
+  assertBackendOrigin(backend, root, origin, { appReportedRoot: identity.rabbitRoot });
 }
 
 /**
@@ -51,7 +51,7 @@ export async function runUpdateWindowChat(app, page, options) {
     assertUpdateWindowProcess(running, options);
     await waitForChatReady(page);
     const identity = await readChatIdentity(page);
-    const connection = await page.evaluate(() => window.hermesDesktop.getConnection());
+    const connection = await page.evaluate(() => window.rabbitDesktop.getConnection());
     const base = new URL(connection.baseUrl);
     if (connection.mode !== 'local' || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) {
       throw new Error('OLD update-window chat did not use the local installed backend');

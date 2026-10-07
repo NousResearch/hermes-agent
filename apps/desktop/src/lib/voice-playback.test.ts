@@ -3,7 +3,7 @@
 // and data-URL audio elements — and a settled session must never resume or
 // write stale state into a newer turn.
 
-import type * as SharedTypes from '@hermes/shared'
+import type * as SharedTypes from '@rabbit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $voicePlayback } from '@/store/voice-playback'
@@ -21,7 +21,7 @@ const gateway = vi.hoisted(() => {
   }
 })
 
-vi.mock('@hermes/shared', async importOriginal => {
+vi.mock('@rabbit/shared', async importOriginal => {
   const actual = await importOriginal<typeof SharedTypes>()
 
   return {
@@ -30,7 +30,7 @@ vi.mock('@hermes/shared', async importOriginal => {
   }
 })
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getApiRequestProfile: () => null,
   getApiRequestConnection: () => null,
   speakText: vi.fn(async () => ({
@@ -162,7 +162,7 @@ describe('voice-playback teardown (#91991)', () => {
     vi.stubGlobal('WebSocket', FakeSocket)
     vi.stubGlobal('AudioContext', FakeAudioContext)
     vi.stubGlobal('Audio', FakeAudio)
-    vi.stubGlobal('hermesDesktop', { getConnection: vi.fn(async () => ({ profile: 'test' })) })
+    vi.stubGlobal('rabbitDesktop', { getConnection: vi.fn(async () => ({ profile: 'test' })) })
     $voicePlayback.set({ audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' })
   })
 

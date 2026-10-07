@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopTheme } from '@/themes/types'
-import type { ProfileDesktopOverlay } from '@/types/hermes'
+import type { ProfileDesktopOverlay } from '@/types/rabbit'
 
 // Keep side-effecting transitive imports inert (gateway sockets, REST).
 vi.mock('@/store/gateway', async () => {
@@ -13,7 +13,7 @@ vi.mock('@/store/gateway', async () => {
     openGatewayForProfile: vi.fn(async () => undefined)
   }
 })
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   exportProfileArchive: vi.fn(async () => ({ archive: '/tmp/out.tar.gz', ok: true })),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   importProfileArchive: vi.fn(async () => ({ desktop: null, name: 'imported', ok: true, path: '/tmp/p' })),
@@ -27,7 +27,7 @@ const { $profileColors, setProfileColor } = await import('./profile')
 const { modePref, skinPref } = await import('@/themes/context')
 const { $userThemes } = await import('@/themes/user-themes')
 const { $layoutTree } = await import('@/components/pane-shell/tree/store')
-const { exportProfileArchive } = await import('@/hermes')
+const { exportProfileArchive } = await import('@/rabbit')
 
 // isValidTheme only requires background/foreground/primary at runtime; the
 // static type wants the full palette, hence the cast.

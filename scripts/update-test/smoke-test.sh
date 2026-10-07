@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Smoke test for hermes-update-rehearsal.sh (this directory).
+# Smoke test for rabbit-update-rehearsal.sh (this directory).
 # Builds a synthetic install in a temp tree and drives pre/post/status for real.
 # Runs on macOS/Linux directly, and under git-bash on Windows (native paths).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="$HERE/hermes-update-rehearsal.sh"
+SCRIPT="$HERE/rabbit-update-rehearsal.sh"
 [ -f "$SCRIPT" ] || { echo "missing $SCRIPT"; exit 1; }
 
 echo "--- bash -n ---"
@@ -15,11 +15,11 @@ bash -n "$SCRIPT" && echo "syntax OK" || exit 1
 if command -v cygpath >/dev/null 2>&1; then ROOT="$(cygpath -m "$(mktemp -d)")"; else ROOT="$(mktemp -d)"; fi
 export HOME="$ROOT/home"; mkdir -p "$HOME"
 export GIT_CONFIG_GLOBAL="$ROOT/gitconfig-test"; : > "$GIT_CONFIG_GLOBAL"
-export HERMES_HOME="$ROOT/home/.hermes"
-export HERMES_DESKTOP_USER_DATA_DIR="$ROOT/electron-user-data"
-export HERMES_STOP_LOG="$ROOT/gateway-stop.log"
+export RABBIT_HOME="$ROOT/home/.rabbit"
+export RABBIT_DESKTOP_USER_DATA_DIR="$ROOT/electron-user-data"
+export RABBIT_STOP_LOG="$ROOT/gateway-stop.log"
 
-H="$HERMES_HOME"; INSTALL="$H/hermes-agent"
+H="$RABBIT_HOME"; INSTALL="$H/rabbit-agent"
 
 echo "--- fixture under $ROOT ---"
 mkdir -p "$H/plugins/mnemosyne-wrapper" "$H/photon/sidecar/node_modules" "$H/memories"
@@ -29,7 +29,7 @@ printf '{"wrapper":true}\n'          > "$H/plugins/mnemosyne-wrapper/mnemosyne-w
 printf 'witness\n'                   > "$ROOT/external-mnemosyne/witness.txt"
 ln -sfn "$ROOT/external-mnemosyne"   "$H/plugins/mnemosyne-wrapper/runtime"
 printf 'timezone: utc\n'             > "$H/config.yaml"
-printf 'NOUS_API_KEY=xxx\n'          > "$H/.env"
+printf 'OPENROUTER_API_KEY=xxx\n'          > "$H/.env"
 printf '{"tokens":{}}\n'             > "$H/auth.json"
 printf 'recall\n'                    > "$H/memories/note.md"
 printf 'jobs\n'                      > "$H/cron/jobs.json"
@@ -58,29 +58,29 @@ git -C "$INSTALL" config user.name test
 printf 'print(1)\n' > "$INSTALL/module_name.py"
 git -C "$INSTALL" add -A
 git -C "$INSTALL" -c commit.gpgsign=false commit -qm initial
-git -C "$INSTALL" remote add origin https://github.com/NousResearch/hermes-agent.git
+git -C "$INSTALL" remote add origin https://github.com/seven0070/Rabbit-.git
 HEAD_SHA="$(git -C "$INSTALL" rev-parse HEAD)"
-mkdir -p "$INSTALL/.hermes/bin" "$INSTALL/.hermes-runtime/python"
+mkdir -p "$INSTALL/.rabbit/bin" "$INSTALL/.rabbit-runtime/python"
 # A fake launcher for the backup and profile-scoped gateway stop.
-cat > "$INSTALL/.hermes/bin/hermes" <<'SH'
+cat > "$INSTALL/.rabbit/bin/rabbit" <<'SH'
 #!/bin/sh
 if [ "$1" = backup ] && [ "$2" = -o ]; then printf 'fake-zip\n' > "$3"; exit 0; fi
-if [ "$1" = gateway ] && [ "$2" = stop ]; then printf '%s\n' "$HERMES_HOME" > "$HERMES_STOP_LOG"; exit 0; fi
+if [ "$1" = gateway ] && [ "$2" = stop ]; then printf '%s\n' "$RABBIT_HOME" > "$RABBIT_STOP_LOG"; exit 0; fi
 exit 1
 SH
-chmod +x "$INSTALL/.hermes/bin/hermes"
-printf 'big' > "$INSTALL/.hermes-runtime/python/interpreter.bin"
+chmod +x "$INSTALL/.rabbit/bin/rabbit"
+printf 'big' > "$INSTALL/.rabbit-runtime/python/interpreter.bin"
 mkdir -p "$HOME/.local/bin"
-ln -sfn "$INSTALL/.hermes/bin/hermes" "$HOME/.local/bin/hermes"
+ln -sfn "$INSTALL/.rabbit/bin/rabbit" "$HOME/.local/bin/rabbit"
 SYMLINKS_OK=0
-[ -L "$HOME/.local/bin/hermes" ] && SYMLINKS_OK=1
+[ -L "$HOME/.local/bin/rabbit" ] && SYMLINKS_OK=1
 echo "host symlink support: $SYMLINKS_OK"
 
-mkdir -p "$HERMES_DESKTOP_USER_DATA_DIR/Local Storage/leveldb" "$HERMES_DESKTOP_USER_DATA_DIR/Cache"
-printf '{"window":{}}\n' > "$HERMES_DESKTOP_USER_DATA_DIR/Preferences"
-printf '{"session":"t"}\n' > "$HERMES_DESKTOP_USER_DATA_DIR/connection.json"
-printf 'x' > "$HERMES_DESKTOP_USER_DATA_DIR/Local Storage/leveldb/000001.ldb"
-printf 'junk' > "$HERMES_DESKTOP_USER_DATA_DIR/Cache/data.bin"
+mkdir -p "$RABBIT_DESKTOP_USER_DATA_DIR/Local Storage/leveldb" "$RABBIT_DESKTOP_USER_DATA_DIR/Cache"
+printf '{"window":{}}\n' > "$RABBIT_DESKTOP_USER_DATA_DIR/Preferences"
+printf '{"session":"t"}\n' > "$RABBIT_DESKTOP_USER_DATA_DIR/connection.json"
+printf 'x' > "$RABBIT_DESKTOP_USER_DATA_DIR/Local Storage/leveldb/000001.ldb"
+printf 'junk' > "$RABBIT_DESKTOP_USER_DATA_DIR/Cache/data.bin"
 
 BACKUPS="$ROOT/backups"
 RUN=("$SCRIPT")
@@ -95,15 +95,15 @@ STATUS_BEFORE="$(git -C "$INSTALL" status --porcelain)"
 # A pristine copy of both trees: post is checked against it for exactness.
 mkdir -p "$ROOT/pristine/home" "$ROOT/pristine/userdata"
 cp -a "$H/." "$ROOT/pristine/home/"
-cp -a "$HERMES_DESKTOP_USER_DATA_DIR/." "$ROOT/pristine/userdata/"
+cp -a "$RABBIT_DESKTOP_USER_DATA_DIR/." "$ROOT/pristine/userdata/"
 "${RUN[@]}" pre --source "$INSTALL" --backup-root "$BACKUPS" > "$ROOT/pre.log" 2>&1
 check $? "pre exits 0"
 SNAP="$(ls -1d "$BACKUPS"/*/ | head -1)"; SNAP="${SNAP%/}"
-for f in hermes-backup.zip home manifest.json hermes-home.txt target-sha; do
+for f in rabbit-backup.zip home manifest.json rabbit-home.txt target-sha; do
   [ -e "$SNAP/$f" ]; check $? "backup artifact $f"
 done
-[ -f "$SNAP/home/hermes-agent/.git/config" ]; check $? "whole home: checkout .git in the clone"
-[ -f "$SNAP/home/hermes-agent/.hermes-runtime/python/interpreter.bin" ]; check $? "whole home: PM store in the clone"
+[ -f "$SNAP/home/rabbit-agent/.git/config" ]; check $? "whole home: checkout .git in the clone"
+[ -f "$SNAP/home/rabbit-agent/.rabbit-runtime/python/interpreter.bin" ]; check $? "whole home: PM store in the clone"
 [ -f "$SNAP/home/config.yaml" ]; check $? "whole home: config.yaml in the clone"
 [ ! -e "$SNAP/home/cache" ]; check $? "cache/ left out of the clone"
 [ -f "$SNAP/userdata/Cache/data.bin" ]; check $? "whole userData: nothing filtered out of the clone"
@@ -119,7 +119,7 @@ echo "--- pre points the install at the rehearsal copy ---"
 [ "$(git -C "$INSTALL" config --local --get-regexp 'insteadOf' | wc -l | tr -d ' ')" = 2 ]; check $? "two insteadOf entries written (repo-local)"
 [ -f "$H/.skip_upstream_prompt" ]; check $? "upstream-prompt marker created"
 [ "$(git -C "$INSTALL" remote get-url origin)" = "$INSTALL" ]; check $? "remote get-url resolves to --source"
-git -C "$INSTALL" config --get remote.origin.url | grep -q 'NousResearch'; check $? "config --get remote.origin.url stays official"
+git -C "$INSTALL" config --get remote.origin.url | grep -q 'seven0070'; check $? "config --get remote.origin.url stays official"
 
 echo
 echo "--- pre changed nothing else ---"
@@ -138,34 +138,34 @@ printf 'timezone: changed-by-update\n' > "$H/config.yaml"
 rm "$H/memories/note.md"
 printf 'print(2)\n' > "$INSTALL/added_by_update.py"
 mkdir -p "$H/photon/sidecar/node_modules/newdep"; printf 'x' > "$H/photon/sidecar/node_modules/newdep/index.js"
-printf '{"window":{"changed":true}}\n' > "$HERMES_DESKTOP_USER_DATA_DIR/Preferences"
-printf '{}\n' > "$HERMES_DESKTOP_USER_DATA_DIR/new-after-update.json"
-! diff -r --no-dereference "$ROOT/pristine/home" "$H" >/dev/null 2>&1; check $? "the simulated update changed HERMES_HOME"
+printf '{"window":{"changed":true}}\n' > "$RABBIT_DESKTOP_USER_DATA_DIR/Preferences"
+printf '{}\n' > "$RABBIT_DESKTOP_USER_DATA_DIR/new-after-update.json"
+! diff -r --no-dereference "$ROOT/pristine/home" "$H" >/dev/null 2>&1; check $? "the simulated update changed RABBIT_HOME"
 
 echo
 echo "--- post ---"
 "${RUN[@]}" post --backup-root "$BACKUPS" --yes > "$ROOT/post.log" 2>&1
 check $? "post exits 0"
-[ "$(cat "$HERMES_STOP_LOG" 2>/dev/null)" = "$H" ]; check $? "post stops only this home's gateway"
+[ "$(cat "$RABBIT_STOP_LOG" 2>/dev/null)" = "$H" ]; check $? "post stops only this home's gateway"
 [ -f "$H/config.yaml" ]; check $? "config.yaml restored"
 [ -f "$H/.env" ]; check $? ".env restored"
 [ -f "$H/memories/note.md" ]; check $? "memories restored"
 [ -f "$H/plugins/mnemosyne-wrapper/mnemosyne-wrapper.json" ]; check $? "plugin marker restored"
 [ -f "$H/photon/sidecar/node_modules/.package-lock.json" ]; check $? "photon sidecar marker restored"
-[ -f "$INSTALL/.hermes-runtime/python/interpreter.bin" ]; check $? "PM store restored"
+[ -f "$INSTALL/.rabbit-runtime/python/interpreter.bin" ]; check $? "PM store restored"
 [ -d "$INSTALL/.git" ]; check $? "checkout restored"
 [ "$(git -C "$INSTALL" rev-parse HEAD)" = "$HEAD_SHA" ]; check $? "checkout HEAD restored"
-[ "$(git -C "$INSTALL" config --get remote.origin.url)" = "https://github.com/NousResearch/hermes-agent.git" ]; check $? "origin remote restored"
-[ -f "$HERMES_DESKTOP_USER_DATA_DIR/connection.json" ]; check $? "userData connection.json restored"
+[ "$(git -C "$INSTALL" config --get remote.origin.url)" = "https://github.com/seven0070/Rabbit-.git" ]; check $? "origin remote restored"
+[ -f "$RABBIT_DESKTOP_USER_DATA_DIR/connection.json" ]; check $? "userData connection.json restored"
 [ "$(git -C "$INSTALL" config --local --get-regexp 'insteadOf' 2>/dev/null | wc -l | tr -d ' ')" = 0 ]; check $? "no stale insteadOf left in the checkout"
 [ ! -f "$H/.skip_upstream_prompt" ]; check $? "upstream-prompt marker removed"
-git -C "$INSTALL" remote get-url origin | grep -q 'NousResearch'; check $? "origin resolves officially again"
+git -C "$INSTALL" remote get-url origin | grep -q 'seven0070'; check $? "origin resolves officially again"
 [ -f "$H/cache/scratch/keep.txt" ]; check $? "cache/ left in place"
-[ -f "$SNAP/hermes-backup.zip" ]; check $? "post keeps hermes-backup.zip"
+[ -f "$SNAP/rabbit-backup.zip" ]; check $? "post keeps rabbit-backup.zip"
 [ ! -e "$SNAP/home" ] && [ ! -e "$SNAP/userdata" ]; check $? "post consumed the clones"
 [ ! -e "$SNAP/replaced" ]; check $? "post deleted the post-update trees"
 if [ "$SYMLINKS_OK" = 1 ]; then
-  [ -L "$HOME/.local/bin/hermes" ]; check $? "shim outside the two trees left untouched"
+  [ -L "$HOME/.local/bin/rabbit" ]; check $? "shim outside the two trees left untouched"
 else
   echo "  SKIP user-bin shim symlink (host cannot create symlinks)"
 fi
@@ -173,9 +173,9 @@ fi
 echo
 echo "--- the acceptance criterion: every file identical before/after ---"
 diff -r --no-dereference "$ROOT/pristine/home" "$H" > "$ROOT/home.diff" 2>&1
-check $? "HERMES_HOME identical to before pre"
+check $? "RABBIT_HOME identical to before pre"
 [ -s "$ROOT/home.diff" ] && sed 's/^/    /' "$ROOT/home.diff" | head -30
-diff -r --no-dereference "$ROOT/pristine/userdata" "$HERMES_DESKTOP_USER_DATA_DIR" > "$ROOT/userdata.diff" 2>&1
+diff -r --no-dereference "$ROOT/pristine/userdata" "$RABBIT_DESKTOP_USER_DATA_DIR" > "$ROOT/userdata.diff" 2>&1
 check $? "userData identical to before pre"
 [ -s "$ROOT/userdata.diff" ] && sed 's/^/    /' "$ROOT/userdata.diff" | head -30
 

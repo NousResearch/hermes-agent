@@ -52,8 +52,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def listener(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    (tmp_path / ".rabbit").mkdir()
     _Handler.hits = []
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -118,7 +118,7 @@ def test_remote_fetch_sites_refuse_internal_targets_before_connect(site, listene
     suffix = "/index.xml" if "sitemap" in site else ("/manifest.json" if "manifest" in site else "/img.png")
 
     # Direct loopback target: refused up front, listener never sees a connection.
-    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    monkeypatch.delenv("RABBIT_ALLOW_PRIVATE_URLS", raising=False)
     url_safety._reset_allow_private_cache()
     assert _run(site, base + suffix, monkeypatch, tmp_path) is None
     assert hits == []
@@ -127,12 +127,12 @@ def test_remote_fetch_sites_refuse_internal_targets_before_connect(site, listene
     # (metadata stays blocked even when private URLs are allowed), so nothing is cached.
     if "sitemap" in site:
         return  # <loc> entries are filtered per URL; the redirect case is the shared guarded client's
-    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+    monkeypatch.setenv("RABBIT_ALLOW_PRIVATE_URLS", "1")
     url_safety._reset_allow_private_cache()
     try:
         assert _run(site, base + "/to-metadata" + suffix, monkeypatch, tmp_path) is None
     finally:
-        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        monkeypatch.delenv("RABBIT_ALLOW_PRIVATE_URLS", raising=False)
         url_safety._reset_allow_private_cache()
     assert hits == ["/to-metadata" + suffix]
-    assert not list(Path(tmp_path / ".hermes").rglob("*.png")), "no body may be cached"
+    assert not list(Path(tmp_path / ".rabbit").rglob("*.png")), "no body may be cached"

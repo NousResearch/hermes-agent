@@ -2,7 +2,7 @@ import { type Codec, persistentAtom } from '@/lib/persisted'
 
 export type SessionListDensity = 'compact' | 'comfortable' | 'detailed'
 
-const STORAGE_KEY = 'hermes.desktop.sessionListDensity'
+const STORAGE_KEY = 'rabbit.desktop.sessionListDensity'
 
 // Compact is the pre-density row exactly as it shipped, so existing users see
 // no change until they opt into a denser-information mode themselves (#68119).

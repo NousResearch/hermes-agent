@@ -2,7 +2,7 @@
 
 The Desktop's Models page reaches the same inventory through ``model.options`` /
 ``model.save_key`` that the browser dashboard reaches through the guarded
-``/api/model/options``; a backend kept alive across ``hermes update`` serves stale
+``/api/model/options``; a backend kept alive across ``rabbit update`` serves stale
 ``sys.modules`` and would resolve a post-update model string against them (the
 reporter's ``agent_init_failed``). Both RPCs must answer the same "restart" error
 the gateway's ``/model`` switch already returns, and never reach the payload build.
@@ -24,7 +24,7 @@ def test_stale_model_options_refuses_instead_of_building(tmp_path, monkeypatch):
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
     builds = []
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload",
+    monkeypatch.setattr("rabbit_cli.inventory.build_model_options_payload",
                         Mock(side_effect=lambda *a, **k: builds.append(1)))
 
     resp = _call("model.options")
@@ -40,7 +40,7 @@ def test_stale_model_save_key_refuses_instead_of_writing(tmp_path, monkeypatch):
     import gateway.code_skew as code_skew
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     resp = _call("model.save_key", {"slug": "zai", "api_key": "sk-canary"})
     assert resp.get("error") is not None, resp
@@ -53,12 +53,12 @@ def test_fresh_model_options_builds_payload_unchanged(tmp_path, monkeypatch):
     import gateway.code_skew as code_skew
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_rabbit_home", tmp_path)
     monkeypatch.setattr(server, "_cfg_cache", None)
     monkeypatch.setattr(server, "_cfg_sig", None)
     monkeypatch.setattr(server, "_cfg_path", None)
     expected = {"providers": []}
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload",
+    monkeypatch.setattr("rabbit_cli.inventory.build_model_options_payload",
                         Mock(return_value=expected))
 
     resp = _call("model.options")

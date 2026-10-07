@@ -1,6 +1,6 @@
 /**
- * Parser/validator for the `hermes://mcp/install?name=NAME&config=B64` deep
- * link (the "Add to Hermes" button MCP vendors embed, mirroring Cursor's
+ * Parser/validator for the `rabbit://mcp/install?name=NAME&config=B64` deep
+ * link (the "Add to Rabbit" button MCP vendors embed, mirroring Cursor's
  * `cursor://anysphere.cursor-deeplink/mcp/install` scheme). `config` is
  * base64url-encoded JSON of a single server config object; standard base64 is
  * accepted too.

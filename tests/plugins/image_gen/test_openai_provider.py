@@ -30,8 +30,8 @@ def _fake_response(*, b64=None, url=None, revised_prompt=None):
 
 
 @pytest.fixture(autouse=True)
-def _tmp_hermes_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+def _tmp_rabbit_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     yield tmp_path
 
 
@@ -86,7 +86,7 @@ class TestModelResolution:
 
 
     def test_config_openai_model(self, tmp_path):
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"image_gen": {"openai": {"model": "gpt-image-2-low"}}})
         )
@@ -103,7 +103,7 @@ class TestEndpointConfig:
     #13798); the project header is blanked (#60748); custom endpoints bypass system proxies (#64888)."""
 
     def test_config_base_url_and_key_env_reach_client_and_availability(self, monkeypatch, tmp_path):
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.setenv("IMAGE_GATEWAY_TOKEN", "gateway-token")
@@ -125,7 +125,7 @@ class TestEndpointConfig:
         """A non-catalog ``image_gen.openai.model`` reaches the gateway verbatim as ``model`` and no
         ``quality`` is sent (gateways reject unknown enum values); a stale top-level ``image_gen.model``
         from another provider never passes through (#97928)."""
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         monkeypatch.setenv("OPENAI_API_KEY", "k")
         monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({"image_gen": {
@@ -143,7 +143,7 @@ class TestEndpointConfig:
     def test_named_custom_endpoint_supplies_base_url_and_key(self, monkeypatch, tmp_path):
         """``image_gen.openai.provider: <name>`` inherits that ``providers:`` entry's base_url and
         key_env when ``base_url``/``key_env`` are unset; explicit values still win (#83080)."""
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("MY_GW_KEY", "gw-token")
@@ -166,7 +166,7 @@ class TestEndpointConfig:
         ``generate()`` must hand ``openai.OpenAI`` a client with no ``HTTPProxy`` mount, while a plain
         ``httpx.Client()`` under the same conditions (control) does pick the proxy up (#64888)."""
         import httpx
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
                     "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
@@ -196,11 +196,11 @@ class TestEndpointConfig:
 
 class TestSourceImageLoading:
     def test_load_image_bytes_blocks_credential_store(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        auth_json = hermes_home / "auth.json"
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        auth_json = rabbit_home / "auth.json"
         auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
         with pytest.raises(ValueError, match="credential store"):
             openai_plugin._load_image_bytes(str(auth_json))
@@ -209,9 +209,9 @@ class TestSourceImageLoading:
     def test_load_image_bytes_allows_legit_local_image(self, tmp_path, monkeypatch):
         """Negative control: a legitimate local image path is NOT blocked and
         loads normally — proves the guard doesn't over-fire on everything."""
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         img = tmp_path / "pic.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
 
@@ -262,7 +262,7 @@ class TestGenerate:
     @pytest.mark.parametrize("has_image", [True, False])
     def test_token_usage_reaches_session_accounting(self, provider, has_image):
         """gpt-image bills per token: the Images API ``usage`` block lands as one
-        ``image_generation`` row keyed on the API model, not the Hermes tier label — also
+        ``image_generation`` row keyed on the API model, not the Rabbit tier label — also
         when the billed HTTP 200 carries no image data."""
         from agent import aux_accounting
 
@@ -304,7 +304,7 @@ class TestGenerate:
     def test_selection_reaches_image_request(
         self, provider, monkeypatch, tmp_path, api_model, quality, editing
     ):
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         tier = api_model if quality == "auto" else f"{api_model}-{quality}"
         monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)

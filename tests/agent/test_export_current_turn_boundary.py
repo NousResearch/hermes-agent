@@ -1,7 +1,7 @@
 """The loop exports ``{turn_id, current_turn_user_idx}`` beside the exact ``messages`` it
 addresses, and only when that row is this turn's user message verbatim.
 
-Hosts that settle a transcript by index (hermes-webui) must not guess the current-turn
+Hosts that settle a transcript by index (rabbit-webui) must not guess the current-turn
 row after the loop rewrote history (alternation repair, compaction, post-turn
 micro-compaction): with a repeated prompt a guessed index or a text match relabels the
 historical copy and claims its old answer. The producer therefore proves the coordinate on

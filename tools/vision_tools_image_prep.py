@@ -13,7 +13,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_dir
+from rabbit_constants import get_rabbit_dir
 
 logger = logging.getLogger("tools.vision_tools")
 
@@ -109,7 +109,7 @@ def _supported_media_types() -> frozenset:
     so the set is narrowed there and normalization converts those formats to PNG."""
     try:
         from agent.auxiliary_client import _runtime_main_value as _v
-        from hermes_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
+        from rabbit_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
         if is_managed_provider(str(_v("provider") or ""), str(_v("base_url") or "")):
             return ACCEPTED_IMAGE_MIMES
     except Exception:  # best-effort narrowing only
@@ -308,7 +308,7 @@ def _crop_image_region(
         from PIL import Image
     except ImportError:
         return None, None, (
-            "region cropping requires Pillow (run `hermes pm repair`); "
+            "region cropping requires Pillow (run `rabbit pm repair`); "
             "retry without the region parameter.")
     if not (isinstance(region, (list, tuple)) and len(region) == 4
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in region)):

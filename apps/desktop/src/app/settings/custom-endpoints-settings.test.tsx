@@ -4,7 +4,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
-import type { CustomEndpointsResponse } from '@/types/hermes'
+import type { CustomEndpointsResponse } from '@/types/rabbit'
 
 const getCustomEndpoints = vi.fn()
 const saveCustomEndpoint = vi.fn()
@@ -21,7 +21,7 @@ vi.mock('@/store/profile', () => ({
   profileLabel: (p: { display_name?: string; name: string }) => p.display_name || p.name
 }))
 
-vi.mock('@/hermes', async importOriginal => ({
+vi.mock('@/rabbit', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   activateCustomEndpoint: vi.fn(),
   deleteCustomEndpoint: vi.fn(),

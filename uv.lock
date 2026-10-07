@@ -2340,7 +2340,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hermes-agent"
+name = "rabbit-agent"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
@@ -2689,23 +2689,23 @@ requires-dist = [
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
     { name = "google-cloud-pubsub", marker = "(platform_machine != 'ARM64' and extra == 'google-chat') or (sys_platform != 'win32' and extra == 'google-chat')", specifier = "==2.39.2" },
-    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["uvloop"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["acp"], marker = "extra == 'termux'" },
+    { name = "rabbit-agent", extras = ["cron"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["cron"], marker = "extra == 'termux'" },
+    { name = "rabbit-agent", extras = ["google"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["google"], marker = "extra == 'termux-all'" },
+    { name = "rabbit-agent", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["mcp"], marker = "extra == 'termux'" },
+    { name = "rabbit-agent", extras = ["pty"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
+    { name = "rabbit-agent", extras = ["sms"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
+    { name = "rabbit-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
+    { name = "rabbit-agent", extras = ["uvloop"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["web"], marker = "extra == 'all'" },
+    { name = "rabbit-agent", extras = ["web"], marker = "extra == 'termux-all'" },
+    { name = "rabbit-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
     { name = "httptools", marker = "python_full_version >= '3.14'", specifier = ">=0.6.3,<0.9" },
     { name = "httpx", extras = ["socks"], marker = "python_full_version >= '3.14'", specifier = "==0.28.1" },

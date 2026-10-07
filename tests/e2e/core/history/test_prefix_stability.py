@@ -2,7 +2,7 @@
 
 One durable session is driven for 10+ turns through fresh processes of the real entrypoints that
 can continue it — the ``tui_gateway`` stdio JSON-RPC server (what the TUI/Desktop spawn) and the
-``hermes chat -q --resume`` oneshot CLI — switching process and working directory between turns,
+``rabbit chat -q --resume`` oneshot CLI — switching process and working directory between turns,
 with a parallel tool batch and (gateway journeys) one manual ``session.compress`` on the way.
 
 Invariants over the fake provider's recorded request stream:
@@ -41,7 +41,7 @@ from tests.e2e.core.history._helpers import (
     tools_breaks,
     views,
 )
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_rabbit_home
 
 # A hop is (surface, cwd, turns); a turn is its prompt, "TOOLS:<prompt>" (parallel tool batch
 # first) or "/compress" (gateway only). Every hop is a FRESH process.
@@ -88,15 +88,15 @@ class ToolsArrayDrift(Exception):
 def world(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
-    hermes_home = Path(os.environ["HERMES_HOME"])  # hermetic per-test tmp dir from the conftest
+    rabbit_home = Path(os.environ["RABBIT_HOME"])  # hermetic per-test tmp dir from the conftest
     cwds = {"a": tmp_path / "work-a", "b": tmp_path / "work-b"}
     for d in cwds.values():
         d.mkdir()
     script = Script()
     spawned = Spawned()
     with FakeLLMServer(script) as srv:
-        write_hermes_home(hermes_home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW)
-        yield {"srv": srv, "script": script, "home": home, "hermes_home": hermes_home,
+        write_rabbit_home(rabbit_home, srv.base_url, extra_config=OFFLINE_CONFIG + NO_BACKGROUND_REVIEW)
+        yield {"srv": srv, "script": script, "home": home, "rabbit_home": rabbit_home,
                "cwds": cwds, "spawned": spawned}
         leaked = spawned.reap()
         assert not leaked, f"subprocesses outlived the test: {leaked}"
@@ -119,7 +119,7 @@ def _queue_turn(script: Script, prompt: str) -> str:
 
 def run_journey(world: dict, hops: list[Hop]) -> tuple[str, list[tuple[int, str]], int | None]:
     """Drive the hops; returns (durable sid, [(first request idx, hop label)], compaction idx)."""
-    srv, script, home = world["srv"], world["script"], world["hermes_home"]
+    srv, script, home = world["srv"], world["script"], world["rabbit_home"]
     sid: str | None = None
     openings: list[tuple[int, str]] = []
     compaction_idx: int | None = None
@@ -167,7 +167,7 @@ def run_journey(world: dict, hops: list[Hop]) -> tuple[str, list[tuple[int, str]
 @pytest.mark.parametrize("journey", list(JOURNEYS))
 def test_request_prefix_is_byte_stable_across_processes(world, journey):
     sid, openings, compaction_idx = run_journey(world, JOURNEYS[journey])
-    srv, home = world["srv"], world["hermes_home"]
+    srv, home = world["srv"], world["rabbit_home"]
     main = srv.main_requests()
     assert len(main) >= 10
 

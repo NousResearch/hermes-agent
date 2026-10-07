@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { memo, type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import type { ProfileScope } from '@/hermes'
+import type { ProfileScope } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -20,11 +20,11 @@ import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 // The REAL Skills Hub page (docs site) embedded as a one-click picker — the
 // same trick the Bot Mode agent editor uses. `?embed=picker` hides the docs
 // chrome and adds a "+ Add to this Agent" button per card, which posts
-//   { type: 'hermes-skill-pick', name, identifier, installCmd, source }
+//   { type: 'rabbit-skill-pick', name, identifier, installCmd, source }
 // to the parent window. We validate the origin and route the install through
 // the standard hub action pipeline (background action + tailed log + Skills
 // list invalidation), scoped to the Capabilities profile selector.
-const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
+const HUB_ORIGIN = 'https://github.com/seven0070/Rabbit-'
 const HUB_PICKER_URL = `${HUB_ORIGIN}/docs/skills?embed=picker`
 
 // Hub viewport height: persisted through the shared pane store (same one the
@@ -140,7 +140,7 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
 
       const data = event.data as SkillPickMessage | null
 
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+      if (!data || data.type !== 'rabbit-skill-pick' || !data.name) {
         return
       }
 

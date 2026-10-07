@@ -14,7 +14,7 @@ import pytest
 
 from agent.message_sanitization import normalize_finish_reason
 from agent.transports.chat_completions import ChatCompletionsTransport
-from hermes_constants import PARTIAL_STREAM_STUB_ID
+from rabbit_constants import PARTIAL_STREAM_STUB_ID
 
 
 @pytest.mark.parametrize(
@@ -68,7 +68,7 @@ def test_streaming_capture_folds_uppercase_finish_reason(_mock_close, mock_creat
     mock_client = MagicMock()
     mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stream()
     mock_create.return_value = mock_client
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
 
     agent = AIAgent(api_key="test-key", base_url="https://example.com/v1", model="test/model",
                     quiet_mode=True, skip_context_files=True, skip_memory=True)

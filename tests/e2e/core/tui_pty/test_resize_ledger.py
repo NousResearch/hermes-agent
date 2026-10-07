@@ -2,11 +2,11 @@
 idle and mid-stream, shrinking, growing and dragging — and its content width follows the
 terminal (#96372 history cleared on resize, #35804 content width stuck).
 
-A real ``hermes --tui`` (Node frontend + ``tui_gateway`` child + AIAgent + SessionDB) runs in a
+A real ``rabbit --tui`` (Node frontend + ``tui_gateway`` child + AIAgent + SessionDB) runs in a
 private tmux server against the scripted fake provider. tmux is the terminal: it reflows the grid
 on every ``resize-window`` and keeps the scrollback we read back with ``capture-pane -S -``.
 Both render modes run: the default alternate-screen viewport, and inline mode
-(``HERMES_TUI_INLINE=1``, what the dashboard embeds) where finished turns live in tmux's own
+(``RABBIT_TUI_INLINE=1``, what the dashboard embeds) where finished turns live in tmux's own
 scrollback on a short 30-row pane, so a redraw that re-prints or drops history is visible there.
 
 Each resize step is one cell; a word ledger over the captured text classifies every streamed

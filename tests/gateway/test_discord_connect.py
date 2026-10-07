@@ -99,7 +99,7 @@ class FakeBot:
         self.intents = intents
         self.allowed_mentions = allowed_mentions
         self.application_id = 999
-        self.user = SimpleNamespace(id=999, name="Hermes")
+        self.user = SimpleNamespace(id=999, name="Rabbit")
         self._events = {}
         self.tree = FakeTree()
         self.http = SimpleNamespace(
@@ -411,7 +411,7 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
     desired_same = {
         "name": "status",
-        "description": "Show Hermes session status",
+        "description": "Show Rabbit session status",
         "type": 1,
         "options": [],
         "nsfw": False,
@@ -656,7 +656,7 @@ async def test_safe_sync_recreated_survives_rate_limit_between_mutations():
 @pytest.mark.asyncio
 async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("rabbit_constants.get_rabbit_home", lambda: tmp_path)
 
     class _DesiredCommand:
         def to_dict(self, tree):
@@ -933,7 +933,7 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
             # Only a free loop can set loop_ticked while this wait is in progress.
             return ({}, [("x", "desc", "/x")], 0) if loop_ticked.wait(timeout=1) else ({}, [], 0)
 
-        monkeypatch.setattr("hermes_cli.commands_platforms.discord_skill_commands_by_category", _blocking_scan)
+        monkeypatch.setattr("rabbit_cli.commands_platforms.discord_skill_commands_by_category", _blocking_scan)
         task = asyncio.create_task(run_site())
         await asyncio.to_thread(scan_started.wait, 1)
         loop_ticked.set()

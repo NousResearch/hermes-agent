@@ -80,13 +80,13 @@ def _parent_live_home(parent_agent: Any) -> Optional[Path]:
         logger.debug(
             "delegate_task: parent _session_db.db_path is %r (not a str/Path); "
             "live-transcript home pinning skipped, falling back to ambient "
-            "HERMES_HOME resolve (transcripts may land in a different profile, #91996)",
+            "RABBIT_HOME resolve (transcripts may land in a different profile, #91996)",
             parent_db,
         )
         return None
     logger.warning(
         "delegate_task: parent agent exposes no _session_db; live-transcript "
-        "home pinning skipped, falling back to ambient HERMES_HOME resolve "
+        "home pinning skipped, falling back to ambient RABBIT_HOME resolve "
         "(transcripts may land in a different profile, #91996)"
     )
     return None
@@ -134,7 +134,7 @@ def _open_child_session_db(parent_agent) -> Any:
     if parent_session_db is None:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
-        from hermes_state_registry import acquire
+        from rabbit_state_registry import acquire
         _parent_db_path = getattr(parent_session_db, "db_path", None)
         return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
     return None
@@ -285,7 +285,7 @@ def _build_child_agent(
             # No child close() will ever run: release the dedicated handle here.
             if child_session_db is not None:
                 with _quiet(None):
-                    from hermes_state_registry import release_or_close
+                    from rabbit_state_registry import release_or_close
                     release_or_close(child_session_db)
             raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -321,7 +321,7 @@ def _build_child_agent(
     # saturated — then the subagent_start lifecycle hook.
     _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
     with _quiet("subagent_start hook invocation failed", exc_info=True):
-        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from rabbit_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
             "subagent_start", parent_session_id=parent_sid,
             parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "", parent_subagent_id=parent_subagent_id,
@@ -549,9 +549,9 @@ def delegate_task(
     #
     # The transcripts' profile home is resolved from stable parent-owned
     # state (the parent's per-profile SessionDB path), NOT ambient
-    # get_hermes_dir(): this thread may have crossed a raw threading.Thread
-    # boundary that dropped the session's _HERMES_HOME_OVERRIDE ContextVar,
-    # and process-wide HERMES_HOME is unstable under concurrent
+    # get_rabbit_dir(): this thread may have crossed a raw threading.Thread
+    # boundary that dropped the session's _RABBIT_HOME_OVERRIDE ContextVar,
+    # and process-wide RABBIT_HOME is unstable under concurrent
     # multi-profile workers — either way transcripts could land in the
     # wrong profile (#91996). state.db sits directly under the home, so
     # its parent IS the home; None falls back to today's ambient resolve
@@ -683,7 +683,7 @@ DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     # description / tasks.description are placeholders: the real text is built per get_definitions() call by
     # _build_dynamic_schema_overrides() so the model sees the user's actual max_concurrent_children / max_spawn_depth.
-    # Lazy (not at import) so cli.CLI_CONFIG isn't forced to load before the test conftest redirects HERMES_HOME.
+    # Lazy (not at import) so cli.CLI_CONFIG isn't forced to load before the test conftest redirects RABBIT_HOME.
     "description": (
         "Spawn one or more subagents in isolated contexts. "
         "Description is rebuilt at every get_definitions() call to reflect the user's current delegation limits."

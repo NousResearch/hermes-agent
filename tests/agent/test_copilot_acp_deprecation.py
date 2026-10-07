@@ -60,12 +60,12 @@ class TestGitHubModelsAzureUrl:
 
 
     def test_is_github_models_base_url_recognises_azure(self):
-        from hermes_cli.models import _is_github_models_base_url
+        from rabbit_cli.models import _is_github_models_base_url
 
         assert _is_github_models_base_url("https://models.inference.ai.azure.com")
         assert _is_github_models_base_url("https://models.inference.ai.azure.com/v1/chat")
 
     def test_is_github_models_base_url_still_recognises_github_ai(self):
-        from hermes_cli.models import _is_github_models_base_url
+        from rabbit_cli.models import _is_github_models_base_url
 
         assert _is_github_models_base_url("https://models.github.ai/inference")

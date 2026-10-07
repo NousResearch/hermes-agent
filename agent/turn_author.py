@@ -1,6 +1,6 @@
 """Who wrote the user side of a turn, carried from the dispatcher into the recipient's turn.
 
-The dispatcher sets ``HERMES_TURN_AUTHOR`` on the recipient's one-shot subprocess only. A cached
+The dispatcher sets ``RABBIT_TURN_AUTHOR`` on the recipient's one-shot subprocess only. A cached
 gateway agent sees several authors over its lifetime, so the author is read per turn, never per agent.
 """
 
@@ -12,7 +12,7 @@ import socket
 import unicodedata
 from typing import Any, Dict, Mapping, MutableMapping, Optional
 
-TURN_AUTHOR_ENV = "HERMES_TURN_AUTHOR"
+TURN_AUTHOR_ENV = "RABBIT_TURN_AUTHOR"
 
 _MAX_FIELD_LEN = 200
 
@@ -82,12 +82,12 @@ def parse_turn_author(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 def turn_author_from_env(environ: Mapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
-    """The author the dispatcher placed in ``HERMES_TURN_AUTHOR``, or None."""
+    """The author the dispatcher placed in ``RABBIT_TURN_AUTHOR``, or None."""
     return parse_turn_author(environ.get(TURN_AUTHOR_ENV))
 
 
 def take_turn_author_from_env(environ: MutableMapping[str, str] = os.environ) -> Optional[Dict[str, Any]]:
-    """Read and remove ``HERMES_TURN_AUTHOR`` so subprocesses started during the turn do not inherit it."""
+    """Read and remove ``RABBIT_TURN_AUTHOR`` so subprocesses started during the turn do not inherit it."""
     return parse_turn_author(environ.pop(TURN_AUTHOR_ENV, None))
 
 

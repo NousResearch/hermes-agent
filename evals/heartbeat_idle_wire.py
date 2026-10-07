@@ -1,6 +1,6 @@
 """Wire-contract probe: real poller, SQLite, adapter lifecycle; fake model/transport.
 
-Run from the repo with a clean environment and a temporary HERMES_HOME:
+Run from the repo with a clean environment and a temporary RABBIT_HOME:
   .venv/bin/python evals/heartbeat_idle_wire.py
 Pass --base-poller <path>/run_goals_base.py to compare the old poller. No network.
 """
@@ -21,7 +21,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult  # noqa: E402
 from gateway.platforms.event import MessageEvent  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.session import SessionSource, SessionStore, build_session_key  # noqa: E402
-from hermes_cli import heartbeat  # noqa: E402
+from rabbit_cli import heartbeat  # noqa: E402
 
 
 class WireAdapter(BasePlatformAdapter):
@@ -40,7 +40,7 @@ class WireAdapter(BasePlatformAdapter):
 
 
 async def main(base_poller):
-    assert os.environ.get("HERMES_HOME"), "Use a temporary HERMES_HOME"
+    assert os.environ.get("RABBIT_HOME"), "Use a temporary RABBIT_HOME"
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._run_in_executor_with_context = asyncio.to_thread
@@ -125,7 +125,7 @@ async def main(base_poller):
             print(json.dumps({"phase": "cancelled admission", "claim_refunded": True}))
             runner.config = GatewayConfig()
             runner.session_store = SessionStore(
-                sessions_dir=Path(os.environ["HERMES_HOME"]) / "sessions", config=runner.config)
+                sessions_dir=Path(os.environ["RABBIT_HOME"]) / "sessions", config=runner.config)
             runner.adapters = {Platform.TELEGRAM: adapter}
             runner._profile_adapters = {}
             runner._recover_telegram_topic_thread_id = adapter._topic_recovery_fn

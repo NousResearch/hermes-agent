@@ -24,6 +24,6 @@ export function backendProfileArg(profile: unknown): string | null {
     return null
   }
 
-  // `default` is the RE-legal alias for ~/.hermes itself; every other id is a slug.
+  // `default` is the RE-legal alias for ~/.rabbit itself; every other id is a slug.
   return name === 'default' || PROFILE_ID_ARG_RE.test(name) ? name : null
 }

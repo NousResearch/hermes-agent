@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def two_homes(tmp_path):
 
 
 def _under(home):
-    return set_hermes_home_override(str(home))
+    return set_rabbit_home_override(str(home))
 
 
 def test_browser_exec_cache_key_differs_per_served_profile_and_is_legacy_when_unscoped(two_homes):
@@ -35,13 +35,13 @@ def test_browser_exec_cache_key_differs_per_served_profile_and_is_legacy_when_un
     try:
         key_a = bu._backend_cache_key("t1", "work")
     finally:
-        reset_hermes_home_override(tok)
+        reset_rabbit_home_override(tok)
     tok = _under(b)
     try:
         key_b = bu._backend_cache_key("t1", "work")
         key_b_again = bu._backend_cache_key("t1", "work")
     finally:
-        reset_hermes_home_override(tok)
+        reset_rabbit_home_override(tok)
     assert key_a != key_b and key_b == key_b_again
     assert key_a.startswith("bu-named-work") and key_b.startswith("bu-named-work")
 
@@ -73,7 +73,7 @@ def test_computer_use_backend_not_shared_across_profiles_and_release_finds_it(tw
         backend_a = cu._get_backend("shared")
         assert cu._get_backend("shared") is backend_a
     finally:
-        reset_hermes_home_override(tok)
+        reset_rabbit_home_override(tok)
     tok = _under(b)
     try:
         backend_b = cu._get_backend("shared")
@@ -81,11 +81,11 @@ def test_computer_use_backend_not_shared_across_profiles_and_release_finds_it(tw
         assert cu.release_computer_use_session("shared") is True  # releases B's, not A's
         assert backend_b.stopped and not backend_a.stopped
     finally:
-        reset_hermes_home_override(tok)
+        reset_rabbit_home_override(tok)
     tok = _under(a)
     try:
         assert cu._get_backend("shared") is backend_a  # A's entry survived B's release
     finally:
-        reset_hermes_home_override(tok)
+        reset_rabbit_home_override(tok)
         with cu._backend_lock:
             cu._backends.clear(), cu._backend_call_locks.clear(), cu._backend_permission_modes.clear()

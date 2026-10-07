@@ -12,12 +12,12 @@ import type {
   MemoryProviderConfig,
   MemoryProviderOAuthStatus,
   MemoryStatusResponse
-} from '@/types/hermes'
+} from '@/types/rabbit'
 
 import {
   capabilityScoped,
-  hermesApi,
-  hermesApiAs,
+  rabbitApi,
+  rabbitApiAs,
   type OwnerScope,
   ownerScoped,
   type ProfileScope,
@@ -58,7 +58,7 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
 
 // surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
 export function getMemoryProviderConfig(provider: string, profile?: null | string): Promise<MemoryProviderConfig> {
-  return hermesApi<MemoryProviderConfig>({
+  return rabbitApi<MemoryProviderConfig>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
   })
@@ -69,7 +69,7 @@ export function saveMemoryProviderConfig(
   values: Record<string, string>,
   profile?: null | string
 ): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rabbitApi<{ ok: boolean }>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
@@ -83,7 +83,7 @@ export function startMemoryProviderOAuth(
   provider: string,
   profile?: null | string
 ): Promise<MemoryProviderOAuthStatus> {
-  return hermesApi<MemoryProviderOAuthStatus>({
+  return rabbitApi<MemoryProviderOAuthStatus>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
     method: 'POST'
@@ -94,25 +94,25 @@ export function getMemoryProviderOAuthStatus(
   provider: string,
   profile?: null | string
 ): Promise<MemoryProviderOAuthStatus> {
-  return hermesApi<MemoryProviderOAuthStatus>({
+  return rabbitApi<MemoryProviderOAuthStatus>({
     ...profileScoped(profile),
     path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
   })
 }
 
 // ---------------------------------------------------------------------------
-// Memory data + curator (parity with `hermes memory` / `hermes curator`).
+// Memory data + curator (parity with `rabbit memory` / `rabbit curator`).
 // ---------------------------------------------------------------------------
 
 export function getMemoryStatus(): Promise<MemoryStatusResponse> {
-  return hermesApi<MemoryStatusResponse>({
+  return rabbitApi<MemoryStatusResponse>({
     ...profileScoped(),
     path: '/api/memory'
   })
 }
 
 export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: boolean; deleted: string[] }> {
-  return hermesApi<{ ok: boolean; deleted: string[] }>({
+  return rabbitApi<{ ok: boolean; deleted: string[] }>({
     ...profileScoped(),
     path: '/api/memory/reset',
     method: 'POST',
@@ -121,14 +121,14 @@ export function resetMemory(target: 'all' | 'memory' | 'user'): Promise<{ ok: bo
 }
 
 export function getCuratorStatus(): Promise<CuratorStatusResponse> {
-  return hermesApi<CuratorStatusResponse>({
+  return rabbitApi<CuratorStatusResponse>({
     ...profileScoped(),
     path: '/api/curator'
   })
 }
 
 export function setCuratorPaused(paused: boolean): Promise<{ ok: boolean; paused: boolean }> {
-  return hermesApi<{ ok: boolean; paused: boolean }>({
+  return rabbitApi<{ ok: boolean; paused: boolean }>({
     ...profileScoped(),
     path: '/api/curator/paused',
     method: 'PUT',
@@ -137,7 +137,7 @@ export function setCuratorPaused(paused: boolean): Promise<{ ok: boolean; paused
 }
 
 export function runCurator(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
+  return rabbitApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/curator/run',
     method: 'POST',
@@ -146,17 +146,17 @@ export function runCurator(): Promise<ActionResponse> {
 }
 
 export function restartGateway(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
+  return rabbitApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/gateway/restart',
     method: 'POST'
   })
 }
 
-export function updateHermes(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
+export function updateRabbit(): Promise<ActionResponse> {
+  return rabbitApi<ActionResponse>({
     ...profileScoped(),
-    path: '/api/hermes/update',
+    path: '/api/rabbit/update',
     method: 'POST'
   })
 }
@@ -164,15 +164,15 @@ export function updateHermes(): Promise<ActionResponse> {
 /** Query the connected backend's own update state. In remote mode this is the
  *  authoritative source for the backend's behind-count + "what's changed",
  *  distinct from the Electron client clone's git state. */
-export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
-  return hermesApi<BackendUpdateCheckResponse>({
+export function checkRabbitUpdate(force = false): Promise<BackendUpdateCheckResponse> {
+  return rabbitApi<BackendUpdateCheckResponse>({
     ...profileScoped(),
-    path: `/api/hermes/update/check${force ? '?force=true' : ''}`
+    path: `/api/rabbit/update/check${force ? '?force=true' : ''}`
   })
 }
 
 export function getActionStatus(name: string, lines = 200, profile?: ProfileScope): Promise<ActionStatusResponse> {
-  return window.hermesDesktop.api<ActionStatusResponse>({
+  return window.rabbitDesktop.api<ActionStatusResponse>({
     ...capabilityScoped(profile),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
@@ -199,14 +199,14 @@ export function transcribeAudio(
   }
 
   return owner
-    ? hermesApiAs<AudioTranscriptionResponse>(owner, request)
-    : hermesApi<AudioTranscriptionResponse>({ ...profileScoped(), ...request })
+    ? rabbitApiAs<AudioTranscriptionResponse>(owner, request)
+    : rabbitApi<AudioTranscriptionResponse>({ ...profileScoped(), ...request })
 }
 
 // `owner` = the speaking session's (connection, profile) — a Bot's own TTS
 // voice on its own gateway; omitted halves → the active scope.
 export function speakText(text: string, owner?: OwnerScope): Promise<AudioSpeakResponse> {
-  return hermesApi<AudioSpeakResponse>({
+  return rabbitApi<AudioSpeakResponse>({
     ...ownerScoped(owner),
     path: '/api/audio/speak',
     method: 'POST',
@@ -229,7 +229,7 @@ export const AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS = 180_000
  * `lease` names the toggle — `desktop:read-aloud`, `desktop:conversation`.
  */
 export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLeaseResponse> {
-  return hermesApi<AudioTtsLeaseResponse>({
+  return rabbitApi<AudioTtsLeaseResponse>({
     ...profileScoped(),
     path: '/api/audio/tts-lease',
     method: 'POST',
@@ -252,7 +252,7 @@ export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
  * is never re-routed by a later gateway/profile switch.
  */
 export function setSttLease(lease: string, active: boolean, owner: ResolvedOwner): Promise<AudioSttLeaseResponse> {
-  return hermesApiAs<AudioSttLeaseResponse>(owner, {
+  return rabbitApiAs<AudioSttLeaseResponse>(owner, {
     path: '/api/audio/stt-lease',
     method: 'POST',
     body: { active, lease },
@@ -261,7 +261,7 @@ export function setSttLease(lease: string, active: boolean, owner: ResolvedOwner
 }
 
 export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabsVoicesResponse> {
-  return hermesApi<ElevenLabsVoicesResponse>({
+  return rabbitApi<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices',
     ...profileScoped(profile)
   })
@@ -271,15 +271,15 @@ export function getElevenLabsVoices(profile?: null | string): Promise<ElevenLabs
  *  (GitHub is deliberately not an MCP — the github/* skills are the
  *  integration). Backend caches for 5 minutes; `refresh` bypasses. */
 export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; authenticated: boolean }> {
-  return hermesApi<{ available: boolean; authenticated: boolean }>({
+  return rabbitApi<{ available: boolean; authenticated: boolean }>({
     ...profileScoped(),
     path: `/api/git/gh-auth${refresh ? '?refresh=true' : ''}`
   })
 }
 
 // ---------------------------------------------------------------------------
-// Maintenance operations (parity with `hermes doctor` / `hermes security
-// audit` / `hermes backup` / `hermes debug share` and the dashboard System
+// Maintenance operations (parity with `rabbit doctor` / `rabbit security
+// audit` / `rabbit backup` / `rabbit debug share` and the dashboard System
 // page). All except debug share are spawn-based background actions tailed via
 // getActionStatus().
 //
@@ -290,11 +290,11 @@ export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; 
 // ---------------------------------------------------------------------------
 
 export function runDoctor(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({ ...profileScoped(), path: '/api/ops/doctor', method: 'POST', body: {} })
+  return rabbitApi<ActionResponse>({ ...profileScoped(), path: '/api/ops/doctor', method: 'POST', body: {} })
 }
 
 export function runSecurityAudit(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
+  return rabbitApi<ActionResponse>({
     ...profileScoped(),
     path: '/api/ops/security-audit',
     method: 'POST',
@@ -303,7 +303,7 @@ export function runSecurityAudit(): Promise<ActionResponse> {
 }
 
 export function runBackup(): Promise<ActionResponse & { archive?: string }> {
-  return hermesApi<ActionResponse & { archive?: string }>({
+  return rabbitApi<ActionResponse & { archive?: string }>({
     ...profileScoped(),
     path: '/api/ops/backup',
     method: 'POST',
@@ -312,7 +312,7 @@ export function runBackup(): Promise<ActionResponse & { archive?: string }> {
 }
 
 export function runDebugShare(): Promise<DebugShareResponse> {
-  return hermesApi<DebugShareResponse>({
+  return rabbitApi<DebugShareResponse>({
     ...profileScoped(),
     path: '/api/ops/debug-share',
     method: 'POST',

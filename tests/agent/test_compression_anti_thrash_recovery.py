@@ -31,7 +31,7 @@ The recovery contract pinned here:
 from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _compressor(threshold_tokens: int = 10_000) -> ContextCompressor:

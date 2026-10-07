@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from agent import auxiliary_client, image_routing, model_metadata
-from hermes_cli import models_local
+from rabbit_cli import models_local
 
 
 @pytest.mark.parametrize("credential,expected", [(lambda: "minted", "minted"), ("static", "static")])
@@ -37,7 +37,7 @@ def test_failed_callable_never_becomes_a_bearer(monkeypatch):
         assert model_metadata._auth_headers(value) == {}
         assert "Authorization" not in models_local._lmstudio_request_headers(value)
 
-    from hermes_cli import models
+    from rabbit_cli import models
     url = "http://localhost:11434/v1"
     configured = {"base_url": url, "api_key": "provider-fallback", "extra_headers": {
         "aUtHoRiZaTiOn": "Bearer configured-fallback", "X-Probe-Fixture": "preserved",

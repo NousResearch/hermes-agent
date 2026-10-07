@@ -1,7 +1,7 @@
-"""codex_app_server wire conformance: real ``hermes chat -q`` against a fake ``codex app-server``.
+"""codex_app_server wire conformance: real ``rabbit chat -q`` against a fake ``codex app-server``.
 
 The fake (``tests/fakes/providers/codex_app_server.py``) speaks newline-delimited JSON-RPC over stdio,
-validates every request/response Hermes sends against the codex-cli 0.147 app-server schema (serde-style
+validates every request/response Rabbit sends against the codex-cli 0.147 app-server schema (serde-style
 ``-32600 Invalid request`` on missing/mistyped fields; unknown fields recorded because the real server
 silently drops them) and records the transcript per app-server PID. Selected via
 ``model.openai_runtime: codex_app_server`` + ``model.codex_bin``.
@@ -36,7 +36,7 @@ KNOWN: dict[str, tuple[str, str]] = {
 }
 
 YOLO = ["--yolo"]
-SEED_MARKER = "Prior conversation from this Hermes session"
+SEED_MARKER = "Prior conversation from this Rabbit session"
 
 SCENARIOS = {
     # a + b: reasoning, a command needing approval, usage, final answer; then --resume in a new process.
@@ -191,7 +191,7 @@ def test_native_compaction_keeps_thread_and_transcript(runs):
     assert [r["params"]["threadId"] for r in run.process_requests(1, "thread/resume")] == [thread_id], \
         "codex-native compaction must not retire the thread"
     assert run.process_requests(1, "thread/start") == []
-    assert run.fake.requests("thread/compact/start") == [], "native mode: Hermes must not compact on top of codex"
+    assert run.fake.requests("thread/compact/start") == [], "native mode: Rabbit must not compact on top of codex"
     rows = _rows(run)
     assert {r["session_id"] for r in messages(run.home)} == {run.session_id}, "session was split"
     texts = [r["content"] for r in rows if r["role"] == "assistant" and r["content"] in ("C-ONE", "C-TWO", "C-THREE")]

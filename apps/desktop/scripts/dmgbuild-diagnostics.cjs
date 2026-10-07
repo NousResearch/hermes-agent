@@ -14,7 +14,7 @@ function wrapDmgbuildExecFile(execFile, write = chunk => process.stderr.write(ch
       !Array.isArray(args) ||
       typeof options !== 'object' ||
       ((options?.env?.CUSTOM_DMGBUILD_PATH || process.env.CUSTOM_DMGBUILD_PATH)?.trim() &&
-        !(options?.env?.HERMES_PREPARED_PACKAGING || process.env.HERMES_PREPARED_PACKAGING))
+        !(options?.env?.RABBIT_PREPARED_PACKAGING || process.env.RABBIT_PREPARED_PACKAGING))
     ) {
       return execFile.apply(this, arguments)
     }

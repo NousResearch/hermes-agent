@@ -14,7 +14,7 @@ home's ``.env`` exactly as a user configures them.
   ``api_server`` platform enabled (loopback, free port, strong key); one
   non-streaming ``POST /v1/chat/completions``.
 
-Both stop through the normal operator path of ``hermes gateway stop``: write the
+Both stop through the normal operator path of ``rabbit gateway stop``: write the
 planned-stop marker for the gateway PID, then SIGTERM (a bare SIGTERM is treated
 as an unexpected kill and exits non-zero on purpose so supervisors revive it).
 """
@@ -49,7 +49,7 @@ PARITY_USER_ID = "424242"
 
 
 def _append_env(ph: ParityHome, values: dict[str, str]) -> None:
-    path = ph.hermes_home / ".env"
+    path = ph.rabbit_home / ".env"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing and not existing.endswith("\n"):
         existing += "\n"
@@ -89,7 +89,7 @@ def _log_tail(proc: subprocess.Popen, n: int = 4000) -> str:
 
 
 def _stop(ph: ParityHome, proc: subprocess.Popen) -> bool:
-    """``hermes gateway stop`` semantics (planned-stop marker for the PID, then SIGTERM),
+    """``rabbit gateway stop`` semantics (planned-stop marker for the PID, then SIGTERM),
     in its worst-case interleaving: the SIGTERM lands only AFTER the gateway's
     planned-stop watcher has already consumed the marker. Any interleaving of the
     CLI's two steps must still be a clean planned exit (exit 0; a non-zero exit
@@ -173,7 +173,7 @@ def drive_gateway(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResul
     finally:
         graceful = _stop(ph, proc)
     return DriveResult(
-        final_text=_collect_delivered(events), toolset="hermes-telegram", cwd_channel="terminal.cwd",
+        final_text=_collect_delivered(events), toolset="rabbit-telegram", cwd_channel="terminal.cwd",
         graceful_exit=graceful,
         extra={"outcome": outcome, "exit_code": proc.returncode, "events": events,
                "stderr_log": str(proc._parity_log_path)},  # type: ignore[attr-defined]
@@ -230,10 +230,10 @@ def _await_own_api_server(proc: subprocess.Popen, base: str, key: str) -> bool:
 def drive_api_server(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
     ph.pin_terminal_cwd()
     key = secrets.token_hex(32)
-    env_before = (ph.hermes_home / ".env").read_text(encoding="utf-8") if (ph.hermes_home / ".env").exists() else ""
+    env_before = (ph.rabbit_home / ".env").read_text(encoding="utf-8") if (ph.rabbit_home / ".env").exists() else ""
     for _attempt in range(PORT_ATTEMPTS):
         port = _free_loopback_port()
-        (ph.hermes_home / ".env").write_text(env_before, encoding="utf-8")
+        (ph.rabbit_home / ".env").write_text(env_before, encoding="utf-8")
         _append_env(ph, {"API_SERVER_ENABLED": "true", "API_SERVER_KEY": key,
                          "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port)})
         proc = _spawn(ph, [sys.executable, "-m", "gateway.run"], "api_server.stderr.log")
@@ -254,7 +254,7 @@ def drive_api_server(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveRe
     try:
         status, raw = _http(
             "POST", f"{base}/v1/chat/completions", key=key, timeout=TURN_TIMEOUT,
-            body={"model": "hermes-agent", "messages": [{"role": "user", "content": prompt}],
+            body={"model": "rabbit-agent", "messages": [{"role": "user", "content": prompt}],
                   "stream": False},
         )
         payload = json.loads(raw) if raw.strip().startswith("{") else {"raw": raw}
@@ -264,7 +264,7 @@ def drive_api_server(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveRe
     choices = payload.get("choices") or [{}]
     text = (choices[0].get("message") or {}).get("content")
     return DriveResult(
-        final_text=text, toolset="hermes-api-server", cwd_channel="terminal.cwd", graceful_exit=graceful,
+        final_text=text, toolset="rabbit-api-server", cwd_channel="terminal.cwd", graceful_exit=graceful,
         extra={"http_status": status, "exit_code": proc.returncode,
                "stderr_log": str(proc._parity_log_path)},  # type: ignore[attr-defined]
     )

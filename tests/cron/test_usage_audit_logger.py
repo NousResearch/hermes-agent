@@ -6,7 +6,7 @@ Covers:
 - writer exception is swallowed (json.dumps raises) — call must return cleanly
 - file path is created if parent dir is missing
 - timestamp format is RFC3339 UTC with millisecond precision and 'Z' suffix
-- path resolves through _get_hermes_home() (profile-safe)
+- path resolves through _get_rabbit_home() (profile-safe)
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ from cron import scheduler
 
 
 @pytest.fixture
-def tmp_hermes_home(tmp_path, monkeypatch):
-    """Redirect _get_hermes_home() so the audit logger writes under tmp_path."""
-    fake_home = tmp_path / "home" / ".hermes"
+def tmp_rabbit_home(tmp_path, monkeypatch):
+    """Redirect _get_rabbit_home() so the audit logger writes under tmp_path."""
+    fake_home = tmp_path / "home" / ".rabbit"
     fake_home.mkdir(parents=True)
-    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: fake_home)
+    monkeypatch.setattr(scheduler, "_get_rabbit_home", lambda: fake_home)
     return fake_home
 
 
@@ -35,9 +35,9 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 
 class TestUsageAuditPath:
-    def test_resolves_through_get_hermes_home(self, tmp_hermes_home):
+    def test_resolves_through_get_rabbit_home(self, tmp_rabbit_home):
         p = scheduler._usage_audit_path()
-        assert p == tmp_hermes_home / "cron" / "usage_audit.jsonl"
+        assert p == tmp_rabbit_home / "cron" / "usage_audit.jsonl"
 
 
 
@@ -49,7 +49,7 @@ class TestUtcnowIsoMs:
 
 
 class TestWriteUsageAudit:
-    def test_successful_write_produces_valid_jsonl(self, tmp_hermes_home):
+    def test_successful_write_produces_valid_jsonl(self, tmp_rabbit_home):
         record = {
             "ts": "2026-05-01T04:23:11.123Z",
             "job_id": "bluenode-dispatch-recommend-sweep",
@@ -72,7 +72,7 @@ class TestWriteUsageAudit:
         assert lines[0] == record
 
 
-    def test_writer_exception_swallowed(self, tmp_hermes_home):
+    def test_writer_exception_swallowed(self, tmp_rabbit_home):
         # Force json.dumps to raise — writer must NOT propagate.
         with patch("cron.scheduler.json.dumps", side_effect=RuntimeError("kaboom")):
             scheduler._write_usage_audit({"job_id": "x"})
@@ -80,9 +80,9 @@ class TestWriteUsageAudit:
         # File never created.
         assert not scheduler._usage_audit_path().exists()
 
-    def test_parent_dir_created_if_missing(self, tmp_hermes_home):
+    def test_parent_dir_created_if_missing(self, tmp_rabbit_home):
         # Ensure the cron path does not exist yet.
-        target = tmp_hermes_home / "cron"
+        target = tmp_rabbit_home / "cron"
         assert not target.exists()
 
         scheduler._write_usage_audit({"k": "v"})
@@ -90,14 +90,14 @@ class TestWriteUsageAudit:
         assert target.exists() and target.is_dir()
         assert (target / "usage_audit.jsonl").exists()
 
-    def test_appends_multiple_records(self, tmp_hermes_home):
+    def test_appends_multiple_records(self, tmp_rabbit_home):
         scheduler._write_usage_audit({"i": 1})
         scheduler._write_usage_audit({"i": 2})
         scheduler._write_usage_audit({"i": 3})
         lines = _read_jsonl(scheduler._usage_audit_path())
         assert [r["i"] for r in lines] == [1, 2, 3]
 
-    def test_unicode_preserved_not_escaped(self, tmp_hermes_home):
+    def test_unicode_preserved_not_escaped(self, tmp_rabbit_home):
         # ensure_ascii=False so non-ASCII model names / job names round-trip cleanly.
         scheduler._write_usage_audit({"job_id": "한글", "model": "gemma"})
         text = scheduler._usage_audit_path().read_text(encoding="utf-8")

@@ -46,7 +46,7 @@ def _app_with_fake_turn(adapter, transform, stack):
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     finish = lambda agent, result, session_id, **kw: (result, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
-    stack.enter_context(patch("hermes_cli.lifecycle.invoke_hook", side_effect=invoke_hook))
+    stack.enter_context(patch("rabbit_cli.lifecycle.invoke_hook", side_effect=invoke_hook))
     stack.enter_context(patch.object(
         adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw.get("stream_delta_callback"))))
     stack.enter_context(patch.object(adapter, "_finish_turn_result", side_effect=finish))

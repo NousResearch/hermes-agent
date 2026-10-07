@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -36,9 +36,9 @@ def _fake_completion(text):
 
 @pytest.fixture
 def db_agent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir()
-    db = SessionDB(db_path=tmp_path / ".hermes" / "state.db")
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    (tmp_path / ".rabbit").mkdir()
+    db = SessionDB(db_path=tmp_path / ".rabbit" / "state.db")
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -56,7 +56,7 @@ def db_agent(tmp_path, monkeypatch):
 def test_transformed_reply_is_the_stored_and_replayed_text(db_agent, monkeypatch):
     agent, db = db_agent
     calls = []
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _rewriting_hook(calls))
+    monkeypatch.setattr("rabbit_cli.lifecycle.invoke_hook", _rewriting_hook(calls))
     agent.client.chat.completions.create = _fake_completion("RAW MODEL TEXT")
 
     result = agent.run_conversation("hello")
@@ -79,7 +79,7 @@ def test_recovery_path_tail_row_carries_transformed_text(db_agent, monkeypatch):
 
     agent, _db = db_agent
     calls = []
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _rewriting_hook(calls))
+    monkeypatch.setattr("rabbit_cli.lifecycle.invoke_hook", _rewriting_hook(calls))
     agent._persist_session = lambda *a, **k: None
     agent._current_turn_id = "turn-r"
     messages = [

@@ -7,7 +7,7 @@ from tests.pm._range_server import RangeHandler, dl_server  # noqa: F401
 
 
 def test_tag_endpoint_drives_package_updates_and_preserves_escaped_names(upstream, monkeypatch):
-    from hermes_cli import urllib_security
+    from rabbit_cli import urllib_security
     calls, failures = upstream
     tags = {
         "/-/package/npm/dist-tags": {"latest": "2.3.4", "next": "3.0.0-beta.1"},
@@ -19,7 +19,7 @@ def test_tag_endpoint_drives_package_updates_and_preserves_escaped_names(upstrea
     original = urllib_security.open_credentialed_url
     def open_registry(request, **kwargs):
         assert request.full_url.startswith("https://registry.npmjs.org/")
-        assert request.get_header("User-agent") == "hermes-pm"
+        assert request.get_header("User-agent") == "rabbit-pm"
         return original(request, **kwargs)
     monkeypatch.setattr(urllib_security, "open_credentialed_url", open_registry)
     monkeypatch.setenv("GH_TOKEN", "not-for-npm")

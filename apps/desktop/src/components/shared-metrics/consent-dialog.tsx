@@ -36,10 +36,10 @@ interface SharedMetricsConsentDialogProps {
   requestGateway: SharedMetricsRequester
 }
 
-const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'local', 'off']
+const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['local', 'off']
 
 /**
- * Owner of the one-time shared-metrics question, the Desktop twin of `hermes
+ * Owner of the one-time shared-metrics question, the Desktop twin of `rabbit
  * setup`'s Shared Metrics section. It reads the focused profile's answer once
  * first-run onboarding is out of the way; an unanswered profile gets an OFFER in
  * the composer status stack (`SharedMetricsConsentStrip`), never a modal — a
@@ -65,7 +65,6 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
-    !onboarding.freeTierReady &&
     surfaces.size === 0
 
   const ready = enabled && onboardingSettled

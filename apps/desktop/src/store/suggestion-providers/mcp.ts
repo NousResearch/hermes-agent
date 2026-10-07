@@ -1,19 +1,19 @@
 import { capabilityScoped } from '@/api/client'
-import { addMcpServer, getMcpCatalog, listMcpServers, removeMcpServer } from '@/hermes'
+import { addMcpServer, getMcpCatalog, listMcpServers, removeMcpServer } from '@/rabbit'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import type { McpCatalogEntry } from '@/types/hermes'
+import type { McpCatalogEntry } from '@/types/rabbit'
 
 /**
  * The MCP draft provider — the suggestion bus's founding member (PR #85036).
  *
- * Matches the draft against the Nous-approved MCP catalog's `suggest`
+ * Matches the draft against the MCP catalog's `suggest`
  * metadata (`GET /api/mcp/catalog` — the same reviewed manifests behind
- * `hermes mcp catalog`), by whole-word keyword and pasted-link host suffix,
+ * `rabbit mcp catalog`), by whole-word keyword and pasted-link host suffix,
  * excluding servers already configured. The catalog is the single source of
  * truth for suggestible servers. A suggestion's invoke runs the whole
  * connect: validated config write → browser OAuth → live tool reload, with

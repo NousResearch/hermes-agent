@@ -33,15 +33,15 @@ def _wait_for_frame(out: io.StringIO, predicate, timeout: float = 2.0) -> dict:
 
 
 def test_compute_host_workers_inherit_tui_pool_env(monkeypatch):
-    monkeypatch.delenv("HERMES_TUI_RPC_POOL_WORKERS", raising=False)
-    monkeypatch.delenv("HERMES_COMPUTE_HOST_WORKERS", raising=False)
+    monkeypatch.delenv("RABBIT_TUI_RPC_POOL_WORKERS", raising=False)
+    monkeypatch.delenv("RABBIT_COMPUTE_HOST_WORKERS", raising=False)
     default = _default_workers()
 
-    monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "11")
+    monkeypatch.setenv("RABBIT_TUI_RPC_POOL_WORKERS", "11")
     assert _default_workers() == 11
 
     # Malformed env falls back to the same default as unset.
-    monkeypatch.setenv("HERMES_TUI_RPC_POOL_WORKERS", "not-an-int")
+    monkeypatch.setenv("RABBIT_TUI_RPC_POOL_WORKERS", "not-an-int")
     assert _default_workers() == default
 
 

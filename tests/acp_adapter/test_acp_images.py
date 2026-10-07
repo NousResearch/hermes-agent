@@ -5,7 +5,7 @@ from acp.schema import (
     TextContentBlock,
 )
 
-from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
+from acp_adapter.server import RabbitACPAgent, _content_blocks_to_openai_user_content
 
 def test_acp_image_blocks_convert_to_openai_multimodal_content():
     content = _content_blocks_to_openai_user_content([
@@ -59,7 +59,7 @@ def test_native_drive_path_and_file_uri_refer_to_same_attachment(tmp_path):
 
 @pytest.mark.asyncio
 async def test_initialize_advertises_image_prompt_capability():
-    response = await HermesACPAgent().initialize()
+    response = await RabbitACPAgent().initialize()
 
     assert response.agent_capabilities is not None
     assert response.agent_capabilities.prompt_capabilities is not None

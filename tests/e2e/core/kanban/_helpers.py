@@ -1,5 +1,5 @@
-"""Real-process Kanban board harness: a scratch HOME/HERMES_HOME, the recording fake provider, and
-the real ``hermes kanban`` CLI (dispatcher ticks spawn real ``hermes chat -q`` workers).
+"""Real-process Kanban board harness: a scratch HOME/RABBIT_HOME, the recording fake provider, and
+the real ``rabbit kanban`` CLI (dispatcher ticks spawn real ``rabbit chat -q`` workers).
 
 Nothing below imports the dispatcher: every board mutation goes through a child process and every
 verdict is read back from ``kanban.db`` (tasks / task_runs / task_events rows) or the files on disk.
@@ -23,8 +23,8 @@ PY = sys.executable
 
 # Clocks shrunk through the documented env knobs, never by patching code.
 FAST_ENV = {
-    "HERMES_KANBAN_CRASH_GRACE_SECONDS": "0",
-    "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS": "0",
+    "RABBIT_KANBAN_CRASH_GRACE_SECONDS": "0",
+    "RABBIT_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS": "0",
 }
 
 
@@ -65,9 +65,9 @@ class Board:
 
     def __post_init__(self) -> None:
         self.home = self.root / "home"
-        self.hermes_home = self.home / ".hermes"
-        self.hermes_home.mkdir(parents=True, exist_ok=True)
-        (self.hermes_home / "config.yaml").write_text(
+        self.rabbit_home = self.home / ".rabbit"
+        self.rabbit_home.mkdir(parents=True, exist_ok=True)
+        (self.rabbit_home / "config.yaml").write_text(
             "model:\n"
             "  provider: custom\n"
             f"  base_url: {self.base_url}\n"
@@ -80,35 +80,35 @@ class Board:
             + self.extra_config,
             encoding="utf-8",
         )
-        (self.hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
+        (self.rabbit_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
         # Workers run with cwd=<task workspace>; the wrapper pins THIS checkout on the path.
-        self.hermes_bin = self.root / "hermes-bin"
-        self.hermes_bin.write_text(
+        self.rabbit_bin = self.root / "rabbit-bin"
+        self.rabbit_bin.write_text(
             "#!/bin/sh\n"
-            f"PYTHONPATH={REPO} exec {PY} -m hermes_cli.main \"$@\"\n", encoding="utf-8")
-        self.hermes_bin.chmod(0o755)
+            f"PYTHONPATH={REPO} exec {PY} -m rabbit_cli.main \"$@\"\n", encoding="utf-8")
+        self.rabbit_bin.chmod(0o755)
 
     # env / processes -------------------------------------------------------
     def env(self) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith("HERMES_") and not k.endswith(("_API_KEY", "_TOKEN"))}
+               if not k.startswith("RABBIT_") and not k.endswith(("_API_KEY", "_TOKEN"))}
         env.pop("PYTEST_CURRENT_TEST", None)
         env.update({
-            "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home),
-            "HERMES_BIN": str(self.hermes_bin), "PYTHONPATH": str(REPO),
+            "HOME": str(self.home), "RABBIT_HOME": str(self.rabbit_home),
+            "RABBIT_BIN": str(self.rabbit_bin), "PYTHONPATH": str(REPO),
             "NO_COLOR": "1", "TERM": "dumb",
             # Children keep pytest's PYTEST_VERSION, which arms the live-DB guard against the scratch
             # HOME's own state.db; the whole tree is under ``root`` (asserted below), so let workers
             # open their real session store.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
             **FAST_ENV, **self.env_extra,
         })
-        assert env["HERMES_HOME"].startswith(str(self.root))
+        assert env["RABBIT_HOME"].startswith(str(self.root))
         return env
 
     def cli(self, *args: str, timeout: float = 90.0, check: bool = True) -> subprocess.CompletedProcess:
         proc = subprocess.run(
-            [PY, "-m", "hermes_cli.main", "kanban", *args], cwd=str(self.root), env=self.env(),
+            [PY, "-m", "rabbit_cli.main", "kanban", *args], cwd=str(self.root), env=self.env(),
             capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
         )
         if check and proc.returncode != 0:
@@ -140,7 +140,7 @@ class Board:
     # state readback --------------------------------------------------------
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "kanban.db"
+        return self.rabbit_home / "kanban.db"
 
     def _q(self, sql: str, args: tuple = ()) -> list[dict]:
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=30)
@@ -171,7 +171,7 @@ class Board:
         return [r for r in rows if kind is None or r["kind"] == kind]
 
     def worker_log(self, tid: str) -> str:
-        hits = list(self.hermes_home.rglob(f"{tid}.log"))
+        hits = list(self.rabbit_home.rglob(f"{tid}.log"))
         return hits[0].read_text(encoding="utf-8", errors="replace") if hits else ""
 
     def wait_worker_exit(self, tid: str, pid: int, timeout: float = 90.0) -> None:

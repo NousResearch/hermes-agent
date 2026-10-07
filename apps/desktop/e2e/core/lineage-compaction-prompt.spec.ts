@@ -126,8 +126,8 @@ interface Row {
   role: string
 }
 
-function sessionRows(hermesHome: string, sid: string): Row[] {
-  const db = new DatabaseSync(path.join(hermesHome, 'state.db'), { readOnly: true })
+function sessionRows(rabbitHome: string, sid: string): Row[] {
+  const db = new DatabaseSync(path.join(rabbitHome, 'state.db'), { readOnly: true })
 
   try {
     return db
@@ -168,7 +168,7 @@ test('an acknowledged redirect prompt renders once after in-place compaction ins
   test.setTimeout(180_000)
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('lcp')
-  writeProviderHome(sandbox.hermesHome, provider.url, compressionYaml(250_000))
+  writeProviderHome(sandbox.rabbitHome, provider.url, compressionYaml(250_000))
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
 
@@ -184,7 +184,7 @@ test('an acknowledged redirect prompt renders once after in-place compaction ins
     const calibration = provider.completions.find(c => c.marker === U(0))
     expect(calibration, 'calibration request reached the provider').toBeTruthy()
     const base = Math.ceil(JSON.stringify({ m: calibration!.body.messages, t: calibration!.body.tools }).length / 4)
-    writeProviderHome(sandbox.hermesHome, provider.url, compressionYaml(base + HEADROOM_TOKENS))
+    writeProviderHome(sandbox.rabbitHome, provider.url, compressionYaml(base + HEADROOM_TOKENS))
 
     // ── Scenario session (fresh agent reads the calibrated config).
     await openSession(page, '')
@@ -252,7 +252,7 @@ test('an acknowledged redirect prompt renders once after in-place compaction ins
 
     // ── Preconditions (ordinary): two in-place compactions committed inside the
     // turn; stored history = committed U4, synthetic S1 before it, S2 after it.
-    const agentLog = fs.readFileSync(path.join(sandbox.hermesHome, 'logs', 'agent.log'), 'utf8')
+    const agentLog = fs.readFileSync(path.join(sandbox.rabbitHome, 'logs', 'agent.log'), 'utf8')
 
     const committed = agentLog
       .split('\n')
@@ -273,7 +273,7 @@ test('an acknowledged redirect prompt renders once after in-place compaction ins
       'no un-compacted continuation'
     ).toBe(false)
 
-    const active = sessionRows(sandbox.hermesHome, sid).filter(r => r.active === 1)
+    const active = sessionRows(sandbox.rabbitHome, sid).filter(r => r.active === 1)
     const users = active.filter(r => r.role === 'user')
     const committedU4 = users.filter(r => r.content === `${U(4)} change course`)
     expect(committedU4.length, 'the correction is committed exactly once in active history').toBe(1)
@@ -282,7 +282,7 @@ test('an acknowledged redirect prompt renders once after in-place compaction ins
     const a6 = active.find(r => r.role === 'assistant' && r.content.startsWith(A(6)))
     expect(a6, 'final reply A6 is stored').toBeTruthy()
     expect(committedU4[0].id < s2!.id && s2!.id < a6!.id, 'stored order: U4 < S2 < A6').toBe(true)
-    const all = sessionRows(sandbox.hermesHome, sid)
+    const all = sessionRows(sandbox.rabbitHome, sid)
 
     expect(
       all.some(r => r.role === 'user' && r.content.startsWith(SNAPSHOT) && r.content.includes(U(5))),

@@ -11,8 +11,8 @@ const windowControls = {
   toggleMaximize: vi.fn()
 }
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
-const originalHermesDesktop = desktopWindow.hermesDesktop
+const desktopWindow = window as unknown as { rabbitDesktop?: Window['rabbitDesktop'] }
+const originalRabbitDesktop = desktopWindow.rabbitDesktop
 
 function renderControls(isMaximized = false, path = '/', isFullscreen = false) {
   return render(
@@ -26,16 +26,16 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
 
-  if (originalHermesDesktop) {
-    desktopWindow.hermesDesktop = originalHermesDesktop
+  if (originalRabbitDesktop) {
+    desktopWindow.rabbitDesktop = originalRabbitDesktop
   } else {
-    delete desktopWindow.hermesDesktop
+    delete desktopWindow.rabbitDesktop
   }
 })
 
 describe('WslgWindowControls', () => {
   it('routes minimize, maximize and close through the desktop bridge', () => {
-    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+    desktopWindow.rabbitDesktop = { windowControls } as unknown as Window['rabbitDesktop']
 
     renderControls()
 
@@ -52,7 +52,7 @@ describe('WslgWindowControls', () => {
   })
 
   it('exposes restore semantics while maximized', () => {
-    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+    desktopWindow.rabbitDesktop = { windowControls } as unknown as Window['rabbitDesktop']
 
     renderControls(true)
 
@@ -60,7 +60,7 @@ describe('WslgWindowControls', () => {
   })
 
   it('stays hidden while the BrowserWindow is fullscreen', () => {
-    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+    desktopWindow.rabbitDesktop = { windowControls } as unknown as Window['rabbitDesktop']
 
     renderControls(false, '/', true)
 
@@ -68,7 +68,7 @@ describe('WslgWindowControls', () => {
   })
 
   it('stops pointerdown propagation without cancelling the click', () => {
-    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+    desktopWindow.rabbitDesktop = { windowControls } as unknown as Window['rabbitDesktop']
     renderControls()
     const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
 

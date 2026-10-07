@@ -11,7 +11,7 @@ _VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 
 def _child_env(base_env, native_wayland):
     config = {"computer_use": {"native_wayland": native_wayland}}
-    with patch("hermes_cli.config.load_config", return_value=config):
+    with patch("rabbit_cli.config.load_config", return_value=config):
         return cua_backend.cua_driver_child_env(base_env)
 
 

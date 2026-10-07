@@ -5,7 +5,7 @@
  * unhandled rejections, so the app usually survives — but the reason lands on
  * stderr alone, which is discarded entirely when the app is launched from
  * Finder or the Start menu. Without a record in desktop.log, a main-process
- * fault is invisible in a `hermes debug share` bundle and the user is left
+ * fault is invisible in a `rabbit debug share` bundle and the user is left
  * describing symptoms instead of showing a stack.
  */
 
@@ -37,7 +37,7 @@ export function describeCrashReason(reason: unknown): string {
 }
 
 /** Property stamped on intentional app-transition sentinel errors. */
-const EXPECTED_TRANSITION_FLAG = '__hermesExpectedTransition'
+const EXPECTED_TRANSITION_FLAG = '__rabbitExpectedTransition'
 
 /**
  * Stamp a sentinel Error as an expected, intentional app transition (#119409).

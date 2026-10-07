@@ -46,7 +46,7 @@ def _clean_registry():
     registry._reset_registry_for_tests()
 
 
-def _apply(secrets, cfg_extra=None, home=Path("/tmp/x/.hermes"), env=None):
+def _apply(secrets, cfg_extra=None, home=Path("/tmp/x/.rabbit"), env=None):
     registry.register_source(_FakeBulk(secrets), replace=True)
     cfg = {"fakebulk": {"enabled": True}}
     cfg.update(cfg_extra or {})
@@ -55,7 +55,7 @@ def _apply(secrets, cfg_extra=None, home=Path("/tmp/x/.hermes"), env=None):
     return report, env
 
 
-PROFILE_HOME = Path("/home/u/.hermes/profiles/milla")
+PROFILE_HOME = Path("/home/u/.rabbit/profiles/milla")
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def test_profile_suffixed_var_hydrates_canonical():
 def test_hyphenated_profile_name_matches_underscore_suffix():
     _, env = _apply(
         {"SLACK_APP_TOKEN_MY_BOT": "xapp-1"},
-        home=Path("/home/u/.hermes/profiles/my-bot"),
+        home=Path("/home/u/.rabbit/profiles/my-bot"),
     )
     assert env["SLACK_APP_TOKEN"] == "xapp-1"
 

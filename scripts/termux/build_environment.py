@@ -61,7 +61,7 @@ def main() -> int:
     parser.add_argument("--python", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
-    os.environ["HERMES_RUNTIME_DIR"] = str(root / "tools")
+    os.environ["RABBIT_RUNTIME_DIR"] = str(root / "tools")
     if args.phase == "prepare-tools":
         if args.source_tools is None:
             parser.error("prepare-tools requires --source-tools")

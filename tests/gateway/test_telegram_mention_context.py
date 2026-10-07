@@ -80,15 +80,15 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
             msg = _dm_message("hello")
         elif trigger == "command":
             msg_type = MessageType.COMMAND
-            msg = _group_message("/new@hermes_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
+            msg = _group_message("/new@rabbit_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
         elif trigger == "text_mention":
-            msg = _group_message("Hermes hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
+            msg = _group_message("Rabbit hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
         elif trigger == "mention":
-            text = "😀 @hermes_bot 2"
+            text = "😀 @rabbit_bot 2"
             msg = _group_message(text, entities=[SimpleNamespace(type="mention", offset=3, length=11)])
         elif trigger == "code":
             # Telegram says this is code, not a mention; a reply admits the turn.
-            msg = _group_message("@hermes_bot", reply_to_bot=True, entities=[SimpleNamespace(type="code", offset=0, length=11)])
+            msg = _group_message("@rabbit_bot", reply_to_bot=True, entities=[SimpleNamespace(type="code", offset=0, length=11)])
         else:
             msg = _group_message("wake hello" if trigger == "wake_word" else "hello", reply_to_bot=trigger == "reply")
         if msg.reply_to_message:
@@ -105,12 +105,12 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
 
         assert len(events) == 2
         first, second = events
-        expected_text = {"command": "/new", "mention": "😀 2", "code": "@hermes_bot"}.get(trigger, msg.text)
+        expected_text = {"command": "/new", "mention": "😀 2", "code": "@rabbit_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
         if trigger == "dm":
             assert not first.channel_prompt
         else:
-            assert "@hermes_bot" in first.channel_prompt
+            assert "@rabbit_bot" in first.channel_prompt
         assert first.channel_prompt == second.channel_prompt
         assert _prompt_signature(first) == _prompt_signature(second)
         assert first.source.user_id == "111"

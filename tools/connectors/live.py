@@ -3,14 +3,14 @@ drives operations through here; the tool thread that minted one closes it on set
 
 The profile is part of the key: two multiplexed profiles can carry the same timestamp-based
 session key, and each side (the tool thread under the turn's profile override, the RPC under the
-session's profile scope) resolves it through ``hermes_home_key``."""
+session's profile scope) resolves it through ``rabbit_home_key``."""
 
 from __future__ import annotations
 
 import threading
 from typing import Dict, Optional, Tuple
 
-from hermes_constants import get_process_hermes_home, hermes_home_key
+from rabbit_constants import get_process_rabbit_home, rabbit_home_key
 from tools.connectors.operation import ConnectionOperation
 
 
@@ -27,7 +27,7 @@ _lock = threading.Lock()
 def _profile_key(profile_home: Optional[str]) -> str:
     """A session record names its profile home only for a non-default profile; the tool thread sees
     the same home through its turn override, and the default profile through the process home."""
-    return hermes_home_key(profile_home or get_process_hermes_home())
+    return rabbit_home_key(profile_home or get_process_rabbit_home())
 
 
 def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
@@ -35,7 +35,7 @@ def _key(session_key: str, profile_home: Optional[str]) -> Tuple[str, str]:
 
 
 def open(operation: ConnectionOperation) -> None:  # noqa: A001 - the verb is the API
-    operation.profile_key = hermes_home_key()
+    operation.profile_key = rabbit_home_key()
     key = (operation.profile_key, operation.session_key)
     with _lock:
         existing = _open.get(key)

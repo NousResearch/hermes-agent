@@ -80,7 +80,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
 
 def _room_grant_token(request: "web.Request") -> str:
     scheme, separator, token = str(request.headers.get("Authorization") or "").partition(" ")
-    return token.strip() if separator and scheme.lower() == "hermesroom" else ""
+    return token.strip() if separator and scheme.lower() == "rabbitroom" else ""
 
 
 def _room_grant_secret(self) -> bytes:
@@ -147,7 +147,7 @@ async def _handle_room_member_invitation(
     except Exception as exc:
         return _json_error(_openai_error, str(exc), code="invalid_room_invitation", status=400)
     return web.json_response({
-        "object": "hermes.room_member.invitation", "grant": token, "target_profile": profile,
+        "object": "rabbit.room_member.invitation", "grant": token, "target_profile": profile,
         "catalog": catalog, "expires_at": float(claims["expires_at"]),
         "status_expires_at": float(claims["status_expires_at"])}, status=201)
 
@@ -162,7 +162,7 @@ async def _handle_room_member_capabilities(
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
-        "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
+        "object": "rabbit.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog})
 
 
@@ -201,7 +201,7 @@ async def _handle_room_member_grant_refresh(
     except Exception as exc:
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
-        "object": "hermes.room_member.grant", "grant": token, "expires_at": now + dispatch_ttl,
+        "object": "rabbit.room_member.grant", "grant": token, "expires_at": now + dispatch_ttl,
         "status_expires_at": hard_expiry, "execution_policy": execution_policy})
 
 
@@ -225,4 +225,4 @@ async def _handle_room_member_grant_revoke(
             hosted_rooms.default_db_path(), claims=claims, expires_at=_hard_expiry(claims))
     except Exception:
         return _room_grant_error_response(_openai_error=_openai_error)
-    return web.json_response({"object": "hermes.room_member.grant.revocation", "revoked": True})
+    return web.json_response({"object": "rabbit.room_member.grant.revocation", "revoked": True})

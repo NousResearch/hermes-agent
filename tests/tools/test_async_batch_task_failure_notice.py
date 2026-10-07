@@ -51,7 +51,7 @@ def test_notice_is_not_sent_for_a_finished_batch_and_does_not_dedup_against_the_
 def test_interim_notice_never_claims_or_acknowledges_the_batch_final_row(tmp_path, monkeypatch):
     """Independent-review witness: a busy parent that drained the notice first acknowledged the FINAL
     result's durable row, and the consolidated result was never delivered (nor replayed after restart)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "hh"))
     notice = {"type": "async_delegation", "delegation_id": "deleg_x", "task_failure_notice": True, "results": [{"task_index": 0}]}
     final = {"type": "async_delegation", "delegation_id": "deleg_x", "is_batch": True, "results": []}
     # The notice is a non-durable event: empty token, no row touched.

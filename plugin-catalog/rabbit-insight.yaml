@@ -1,0 +1,16 @@
+name: rabbit-insight
+repo: https://github.com/BrokeSkill/Rabbit-Insight
+sha: 2a1cdd898e1a0573bedd5c8bbedff2d69c74d75a
+subdir: backend-plugin
+description: Selection-definition lookup for Rabbit Desktop. Select any text, get an AI definition with sources in a popup. Renders the definition inline, runnable code aside. Backend is a stateless rabbit insight CLI; panel, providers, and one-click model picking are configurable. Disclosure — definitions are generated with your configured provider keys (the selected term, your format template and optional web-search results are sent to that provider) via a short-lived `rabbit insight` CLI run; no background process remains. When web search is on it also queries your configured searxng instance and fetches result thumbnails from their image hosts, inlining them into the panel; nothing is fetched without a searxng URL.
+maintainer: BrokeSkill
+tier: community
+category: desktop
+version: "1.0.2"
+image: https://raw.githubusercontent.com/BrokeSkill/Rabbit-Insight/2a1cdd898e1a0573bedd5c8bbedff2d69c74d75a/assets/insight-banner-dark.png
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

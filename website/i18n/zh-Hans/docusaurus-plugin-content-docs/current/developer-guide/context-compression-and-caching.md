@@ -1,11 +1,11 @@
 ---
 title: 上下文压缩与缓存
-description: Hermes Agent 如何通过双重压缩系统和 Anthropic prompt 缓存高效管理上下文窗口。
+description: Rabbit Agent 如何通过双重压缩系统和 Anthropic prompt 缓存高效管理上下文窗口。
 ---
 
 # 上下文压缩与缓存
 
-Hermes Agent 使用双重压缩系统和 Anthropic prompt（提示词）缓存，在长对话中高效管理上下文窗口用量。
+Rabbit Agent 使用双重压缩系统和 Anthropic prompt（提示词）缓存，在长对话中高效管理上下文窗口用量。
 
 源文件：`agent/context_engine.py`（ABC）、`agent/context_compressor.py`（默认引擎）、
 `agent/prompt_caching.py`、`gateway/run.py`（会话清理）、`run_agent.py`（搜索 `_compress_context`）
@@ -34,13 +34,13 @@ context:
 
 插件引擎**永远不会自动激活**——用户必须在 `context.engine` 中显式设置插件名称。默认的 `"compressor"` 始终使用内置实现。
 
-通过 `hermes plugins` → Provider Plugins → Context Engine 进行配置，或直接编辑 `config.yaml`。
+通过 `rabbit plugins` → Provider Plugins → Context Engine 进行配置，或直接编辑 `config.yaml`。
 
 关于构建上下文引擎插件，请参阅 [Context Engine 插件](./context-engine-plugin.md)。
 
 ## 双重压缩系统
 
-Hermes 有两个独立运行的压缩层：
+Rabbit 有两个独立运行的压缩层：
 
 ```
                      ┌──────────────────────────┐
@@ -87,7 +87,7 @@ compression:
 auxiliary:
   compression:
     model: null              # Override model for summaries (default: auto-detect)
-    provider: auto           # Provider: "auto", "openrouter", "nous", "main", etc.
+    provider: auto           # Provider: "auto", "openrouter", "main", etc.
     base_url: null           # Custom OpenAI-compatible endpoint
 ```
 
@@ -266,7 +266,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 
 ### 策略：system_and_3
 
-Anthropic 每次请求最多允许 4 个 `cache_control` 断点。Hermes 使用"system_and_3"策略：
+Anthropic 每次请求最多允许 4 个 `cache_control` 断点。Rabbit 使用"system_and_3"策略：
 
 ```
 Breakpoint 1: System prompt           (stable across all turns)

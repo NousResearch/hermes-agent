@@ -52,7 +52,7 @@ def run_tool_round(
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
-    Hermes; a failed canonical append ends the turn rather than running tools from
+    Rabbit; a failed canonical append ends the turn rather than running tools from
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
@@ -125,12 +125,12 @@ def run_tool_round(
         ]
 
     # Persist the tool-call turn before any tool side effects so resume sees the executed
-    # block if a destructive tool restarts Hermes.
+    # block if a destructive tool restarts Rabbit.
     try:
         _tool_turn_persisted = agent._flush_messages_to_session_db(messages, conversation_history)
     except Exception as exc:
         _tool_turn_persisted = False
-        from hermes_state import classify_persistence_error
+        from rabbit_state import classify_persistence_error
         agent._last_persistence_error_cause = classify_persistence_error(exc)
         logger.warning(
             "Incremental tool-call persistence failed before execution "
@@ -161,7 +161,7 @@ def run_tool_round(
             agent.stream_delta_callback(None)
 
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
-    from hermes_cli.observability.shared_metrics_harness import finish_tool_round
+    from rabbit_cli.observability.shared_metrics_harness import finish_tool_round
 
     finish_tool_round(agent)
 
@@ -220,11 +220,11 @@ def run_tool_round(
     # Save session log incrementally (so progress is visible even if interrupted)
     agent._session_messages = messages
     # Touch activity so slow post-tool work plus a slow follow-up API call can't exceed
-    # the gateway inactivity timeout (HERMES_AGENT_TIMEOUT).
+    # the gateway inactivity timeout (RABBIT_AGENT_TIMEOUT).
     # Touch activity before continuing so the gateway's inactivity monitor never sees a stale timestamp
     # between tool completion and the start of the next API call. Without this, a tool-call result (which
     # takes ~0s to process) followed by slow post-tool processing (compression, persist) and a slow
-    # follow-up API call can exceed the gateway inactivity timeout (HERMES_AGENT_TIMEOUT, default 1800s) and
+    # follow-up API call can exceed the gateway inactivity timeout (RABBIT_AGENT_TIMEOUT, default 1800s) and
     # the gateway kills the session before the next activity touch fires (#69559, #69131).
     agent._touch_activity(f"tool results posted, continuing iteration #{api_call_count}")
     return _verdict("continue")

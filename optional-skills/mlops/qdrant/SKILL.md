@@ -7,7 +7,7 @@ license: MIT
 dependencies: [qdrant-client>=1.14.0]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [RAG, Vector Search, Qdrant, Semantic Search, Embeddings, Similarity Search, HNSW, Production, Distributed]
 
 ---

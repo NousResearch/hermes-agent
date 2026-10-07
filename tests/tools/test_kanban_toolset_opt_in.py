@@ -25,10 +25,10 @@ def _names(selection, disabled=None):
 def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monkeypatch):
     """Exercise the real config writer, availability gate, skills gate and handler."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _apply_toolset_change, _get_platform_tools
+    monkeypatch.delenv("RABBIT_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("RABBIT_KANBAN_BOARD", raising=False)
+    from rabbit_cli.config import load_config, save_config
+    from rabbit_cli.tools_config import _apply_toolset_change, _get_platform_tools
     from tools.registry import registry
 
     save_config({"platform_toolsets": {"cli": ["file"], "telegram": ["file"]}})
@@ -42,7 +42,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
     if surface == "http":
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from hermes_cli.web_routers.tools import router
+        from rabbit_cli.web_routers.tools import router
 
         app = FastAPI()
         app.include_router(router)
@@ -71,21 +71,21 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
         assert "file" in selected()
         # A second profile in the same process must not borrow this grant or
         # poison the first profile's cached schema on return.
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
         other_home = tmp_path / "profiles" / "observer"
-        token = set_hermes_home_override(other_home)
+        token = set_rabbit_home_override(other_home)
         try:
             save_config({"platform_toolsets": {"cli": ["file"]}})
             assert not _names(selected())
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         assert _names(selected()) == enabled_names
         from agent.skill_utils import _detect_kanban
         assert _detect_kanban(), "Saved opt-in still hides the Kanban playbook"
         result = json.loads(registry.dispatch("kanban_create", {"title": "opt-in roundtrip", "assignee": "default"}))
         assert result.get("ok"), result
-        from hermes_cli.kanban_db_connect import connect_closing
-        from hermes_cli.kanban_db import get_task
+        from rabbit_cli.kanban_db_connect import connect_closing
+        from rabbit_cli.kanban_db import get_task
         with connect_closing() as conn:
             assert get_task(conn, result["task_id"]).title == "opt-in roundtrip"
         toggle(False)
@@ -101,17 +101,17 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
 @pytest.mark.parametrize("legacy", [False, True])
 def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _get_platform_tools
+    monkeypatch.delenv("RABBIT_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("RABBIT_KANBAN_BOARD", raising=False)
+    from rabbit_cli.config import load_config, save_config
+    from rabbit_cli.tools_config import _get_platform_tools
     from agent.delegation_context import delegated_child_context
 
     save_config({"toolsets": ["kanban"] if legacy else [], "platform_toolsets": {"telegram": ["kanban"]}})
     # The same profile concurrently builds an explicitly opted-in schema and
     # an all/default schema. A platform grant must not become a cached global grant.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        named, broad = list(pool.map(_names, [["kanban"], ["hermes-cli"]]))
+        named, broad = list(pool.map(_names, [["kanban"], ["rabbit-cli"]]))
     assert "kanban_create" in named
     assert bool(broad) is legacy
     assert bool(_names(None)) is legacy
@@ -125,7 +125,7 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     save_config(cfg)
     assert not _names(sorted(_get_platform_tools(load_config(), "cli")))
 
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+    monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_worker")
     worker = _names(["file"])
     assert "kanban_complete" in worker
     assert "kanban_list" not in worker

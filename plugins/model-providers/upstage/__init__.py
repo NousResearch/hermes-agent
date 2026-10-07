@@ -31,7 +31,7 @@ class UpstageProfile(ProviderProfile):
             return {}, {"reasoning_effort": "medium"}  # unset -> reasoning ON for agents
         if reasoning_config.get("enabled") is False:
             return {}, {}  # explicitly disabled -> Solar's own default (minimal = off)
-        # Map Hermes' effort vocabulary onto Solar's accepted set via the shared clamp
+        # Map Rabbit' effort vocabulary onto Solar's accepted set via the shared clamp
         # (agent.reasoning_effort). minimal → omit (Solar's minimal means off); unknown-but-enabled bespoke
         # levels collapse to high rather than silently downgrading (#62650 precedent).
         effort = (reasoning_config.get("effort") or "").strip().lower()

@@ -1,10 +1,10 @@
 """External drain-control marker contract (dashboard → gateway).
 
 No control channel exists into a running gateway, so begin/cancel-drain writes
-(or removes) ``{HERMES_HOME}/.drain_request.json`` and a gateway watcher reacts;
+(or removes) ``{RABBIT_HOME}/.drain_request.json`` and a gateway watcher reacts;
 an ACTIVE marker means ``gateway_state -> "draining"``.  Two lenient staleness
-signals (either suffices): epoch mismatch (HERMES_HOME is a durable volume on
-Hermes Cloud, so a marker survives the restart a drain-gated action ends in and
+signals (either suffices): epoch mismatch (RABBIT_HOME is a durable volume on
+Rabbit Cloud, so a marker survives the restart a drain-gated action ends in and
 would park the fresh gateway in ``draining`` forever) and expiry (same-epoch
 orphan past :data:`DRAIN_REQUEST_MAX_AGE_SECONDS`; re-writing refreshes it).
 Reading never raises: a malformed file reads as ``{}`` — still drain-active
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gateway.memory_status import _parse_iso
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
@@ -57,8 +57,8 @@ def current_instantiation_epoch() -> str:
 
 
 def drain_request_path(home: Optional[Path] = None) -> Path:
-    """Absolute path to the drain-request marker, respecting HERMES_HOME."""
-    return Path(home if home is not None else get_hermes_home()) / _DRAIN_REQUEST_FILENAME
+    """Absolute path to the drain-request marker, respecting RABBIT_HOME."""
+    return Path(home if home is not None else get_rabbit_home()) / _DRAIN_REQUEST_FILENAME
 
 
 def write_drain_request(
@@ -133,7 +133,7 @@ def drain_requested(*, home: Optional[Path] = None) -> bool:
     """True iff an active (present, same-epoch, unexpired) begin-drain marker exists.
 
     A marker whose ``epoch`` does not match the current instantiation epoch is treated as absent: it
-    survived a container/VM restart (HERMES_HOME is a durable Fly volume on Hermes Cloud) and the lifecycle
+    survived a container/VM restart (RABBIT_HOME is a durable Fly volume on Rabbit Cloud) and the lifecycle
     action that triggered the drain has already completed — honouring it would wedge the freshly-restarted
     gateway in ``draining`` (NS-570). A marker whose ``requested_at`` is older than
     :data:`DRAIN_REQUEST_MAX_AGE_SECONDS` is likewise treated as absent: it is a same-epoch orphan whose
@@ -152,7 +152,7 @@ def drain_notification_suppressed(*, home: Optional[Path] = None) -> bool:
 
     "Active" means exactly what :func:`drain_requested` means — a marker present AND stamped with the
     current instantiation epoch AND not past its max-age. A stale (other-epoch) marker that survived a
-    machine restart on the durable HERMES_HOME volume, or an expired same-epoch orphan (#85433), is ignored
+    machine restart on the durable RABBIT_HOME volume, or an expired same-epoch orphan (#85433), is ignored
     here just as it is for drain state (NS-570): we must never let an orphaned marker's flag silence a
     *fresh* gateway's legitimate shutdown broadcast.
     """

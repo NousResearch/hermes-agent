@@ -17,7 +17,7 @@ Review Kanban handoffs and route verified outcomes.
 | Source | Bundled (installed by default) |
 | Path | `skills/devops/sdlc-review` |
 | Version | `1.1.0` |
-| Author | Jakub Wolniewicz (@frizikk) + Hermes Agent |
+| Author | Jakub Wolniewicz (@frizikk) + Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `kanban`, `review`, `quality`, `verification` |
@@ -25,7 +25,7 @@ Review Kanban handoffs and route verified outcomes.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # SDLC Review Skill

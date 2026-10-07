@@ -6,16 +6,16 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.
 
 ### SKILL.md adaptations
 
-| Change | Upstream | Hermes |
+| Change | Upstream | Rabbit |
 |--------|----------|--------|
-| Metadata namespace | `openclaw` | `hermes` (with `tags` + `homepage`) |
+| Metadata namespace | `openclaw` | `rabbit` (with `tags` + `homepage`) |
 | Trigger | Slash commands / CLI flags | Natural language skill matching |
-| User config | EXTEND.md file (project/user/XDG paths) | Removed — not part of Hermes infra |
+| User config | EXTEND.md file (project/user/XDG paths) | Removed — not part of Rabbit infra |
 | User prompts | `AskUserQuestion` (batched) | `clarify` tool (batched, up to 5 questions) |
 | Image generation | baoyu-imagine (Bun/TypeScript, supports `--ref`) | `image_generate` — **prompt-only**, returns a URL; no reference image input; agent must download the URL to the output directory |
 | PDF assembly | `scripts/merge-to-pdf.ts` (Bun + `pdf-lib`) | Removed — the PDF merge step is out of scope for this port; pages are delivered as PNGs only |
 | Platform support | Linux/macOS/Windows/WSL/PowerShell | Linux/macOS only |
-| File operations | Generic instructions | Hermes file tools (`write_file`, `read_file`) |
+| File operations | Generic instructions | Rabbit file tools (`write_file`, `read_file`) |
 
 ### Structural removals
 
@@ -23,7 +23,7 @@ Ported from [JimLiu/baoyu-skills](https://github.com/JimLiu/baoyu-skills) v1.56.
   - `first-time-setup.md` — blocking first-time setup flow for EXTEND.md
   - `preferences-schema.md` — EXTEND.md YAML schema
   - `watermark-guide.md` — watermark config (tied to EXTEND.md)
-- **`scripts/` directory** (removed entirely): upstream's `merge-to-pdf.ts` depended on `pdf-lib`, which is not declared anywhere in the Hermes repo. Rather than add a new dependency, the port drops PDF assembly and delivers per-page PNGs.
+- **`scripts/` directory** (removed entirely): upstream's `merge-to-pdf.ts` depended on `pdf-lib`, which is not declared anywhere in the Rabbit repo. Rather than add a new dependency, the port drops PDF assembly and delivers per-page PNGs.
 - **Workflow Step 8 (Merge to PDF)** removed from `workflow.md`; Step 9 (Completion report) renumbered to Step 8.
 - **Workflow Step 1.1** — "Load Preferences (EXTEND.md)" section removed from `workflow.md`; steps 1.2/1.3 renumbered to 1.1/1.2.
 - **Generic "User Input Tools" and "Image Generation Tools" preambles** — SKILL.md no longer lists fallback rules for multiple possible tools; it references `clarify` and `image_generate` directly.
@@ -72,6 +72,6 @@ diff <(curl -sL https://raw.githubusercontent.com/JimLiu/baoyu-skills/main/skill
      references/art-styles/manga.md
 ```
 
-Art-style, tone, and layout reference files can usually be overwritten directly (they're upstream-verbatim). `SKILL.md`, `references/workflow.md`, `references/partial-workflows.md`, `references/auto-selection.md`, `references/analysis-framework.md`, `references/ohmsha-guide.md`, and `references/presets/*.md` must be manually merged since they contain Hermes-specific adaptations.
+Art-style, tone, and layout reference files can usually be overwritten directly (they're upstream-verbatim). `SKILL.md`, `references/workflow.md`, `references/partial-workflows.md`, `references/auto-selection.md`, `references/analysis-framework.md`, `references/ohmsha-guide.md`, and `references/presets/*.md` must be manually merged since they contain Rabbit-specific adaptations.
 
-If upstream adds a Hermes-compatible PDF merge step (no extra npm deps), restore `scripts/` and reintroduce Step 8 in `workflow.md`.
+If upstream adds a Rabbit-compatible PDF merge step (no extra npm deps), restore `scripts/` and reintroduce Step 8 in `workflow.md`.

@@ -2,7 +2,7 @@
 
 The watchdog covers the pre-event-loop window: armed at process entry
 (before the gateway package imports — the implementation is the stdlib-only
-top-level module ``hermes_startup_watchdog``), disarmed once the gateway's asyncio loop is confirmed
+top-level module ``rabbit_startup_watchdog``), disarmed once the gateway's asyncio loop is confirmed
 live. If neither happens within the deadline — and the process shows no CPU
 progress, so slow-but-alive schema migrations are exempt — it must dump
 diagnostics, record a lifecycle exit, and hard-exit with the service-restart
@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 
-import hermes_startup_watchdog as sw
-from hermes_startup_watchdog import (
+import rabbit_startup_watchdog as sw
+from rabbit_startup_watchdog import (
     SERVICE_RESTART_EXIT_CODE,
     StartupWatchdogHandle,
     arm_startup_watchdog,
@@ -36,8 +36,8 @@ from hermes_startup_watchdog import (
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
-    """Every test gets a fresh singleton and its own HERMES_HOME."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    """Every test gets a fresh singleton and its own RABBIT_HOME."""
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
     monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, raising=False)
     sw._reset_for_tests()

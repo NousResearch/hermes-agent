@@ -1,6 +1,6 @@
 """Per-provider ``session_affinity_header`` (#86241, #104449).
 
-A custom provider entry may name a header that carries Hermes' conversation id so a
+A custom provider entry may name a header that carries Rabbit' conversation id so a
 session-aware proxy can correlate the requests of one agent loop. Off unless configured.
 """
 
@@ -31,7 +31,7 @@ def _providers(with_header: bool):
     entry = {"name": "litellm-lan", "provider_key": "litellm-lan", "base_url": _BASE}
     if with_header:
         entry["session_affinity_header"] = _HEADER
-    return patch("hermes_cli.config.get_compatible_custom_providers", return_value=[entry])
+    return patch("rabbit_cli.config.get_compatible_custom_providers", return_value=[entry])
 
 
 def _aux_headers(session_id):

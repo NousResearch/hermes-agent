@@ -25,7 +25,7 @@ description: "通过 OpenStreetMap/OSRM 进行地理编码、POI、路线、时�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Maps Skill
@@ -51,12 +51,12 @@ description: "通过 OpenStreetMap/OSRM 进行地理编码、POI、路线、时�
 
 Python 3.8+（仅标准库，无需 pip 安装）。
 
-脚本路径：`~/.hermes/skills/maps/scripts/maps_client.py`
+脚本路径：`~/.rabbit/skills/maps/scripts/maps_client.py`
 
 ## 命令
 
 ```bash
-MAPS=~/.hermes/skills/maps/scripts/maps_client.py
+MAPS=~/.rabbit/skills/maps/scripts/maps_client.py
 ```
 
 ### search — 地理编码地名
@@ -188,9 +188,9 @@ python3 $MAPS nearby 36.17 -115.14 cafe --radius 1500
 ## 验证
 
 ```bash
-python3 ~/.hermes/skills/maps/scripts/maps_client.py search "Statue of Liberty"
+python3 ~/.rabbit/skills/maps/scripts/maps_client.py search "Statue of Liberty"
 # 应返回纬度约 40.689，经度约 -74.044
 
-python3 ~/.hermes/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
+python3 ~/.rabbit/skills/maps/scripts/maps_client.py nearby --near "Times Square" --category restaurant --limit 3
 # 应返回 Times Square 约 500 米范围内的餐厅列表
 ```

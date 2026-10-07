@@ -6,7 +6,7 @@ method = _registry.method
 
 @method("onboarding.ensure_setup_profile")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.setup_profile import ensure_setup_profile
+    from rabbit_cli.setup_profile import ensure_setup_profile
     try:
         setup = ensure_setup_profile()
         if setup.created:
@@ -18,7 +18,7 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.reset_setup_profile")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.setup_profile import find_setup_profile, reset_setup_profile
+    from rabbit_cli.setup_profile import find_setup_profile, reset_setup_profile
     found = find_setup_profile()
     if found is None:
         return _err(rid, 4072, "no setup profile to reset")
@@ -34,10 +34,10 @@ def _clear_setup_sessions(profile_dir) -> None:
     target = Path(profile_dir).resolve()
     with _sessions_lock:
         live = [sid for sid, sess in _sessions.items()
-                if Path(sess.get("profile_home") or _hermes_home).resolve() == target]
+                if Path(sess.get("profile_home") or _rabbit_home).resolve() == target]
     for sid in live:
         _close_session_by_id(sid, end_reason="setup_reset")
-    from hermes_state_registry import acquire, release_or_close
+    from rabbit_state_registry import acquire, release_or_close
     db = acquire(target / "state.db")
     try:
         ids = [row[0] for row in db._read_all("SELECT id FROM sessions")]

@@ -7,7 +7,7 @@ license: MIT
 dependencies: [tokenizers, transformers, datasets]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Tokenization, HuggingFace, BPE, WordPiece, Unigram, Fast Tokenization, Rust, Custom Tokenizer, Alignment Tracking, Production]
 
 ---

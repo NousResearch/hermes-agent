@@ -9,7 +9,7 @@ import pytest
 
 @pytest.mark.no_isolate
 def test_self_probe_revival_runs_with_interactive_oauth_suppressed(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools.mcp_oauth import _is_interactive, force_interactive_oauth

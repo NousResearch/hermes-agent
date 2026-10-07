@@ -6,7 +6,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
 from gateway.profile_routing import parse_profile_routes
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
+from rabbit_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
 
 class RecordingAdapter:
@@ -26,9 +26,9 @@ class RecordingAdapter:
 
 def setup_runner(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(home / "kanban.db"))
+    home = tmp_path / ".rabbit"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(home / "kanban.db"))
     for name in ("yuki", "other"):
         profile = home / "profiles" / name
         profile.mkdir(parents=True)
@@ -136,8 +136,8 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
     good = completion()
     # A tombstoned (deleted) owner profile is no longer served by the multiplexer.
-    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
-    yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
+    from rabbit_constants import clear_named_profile_deleted, mark_named_profile_deleted
+    yuki_home = tmp_path / ".rabbit" / "profiles" / "yuki"
     mark_named_profile_deleted(yuki_home)
     assert not collect(runner)
     clear_named_profile_deleted(yuki_home)
@@ -152,7 +152,7 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 
     # Equal-specificity rules retain configuration order: an unknown parent
     # cannot skip an earlier rule, but a known conflicting parent rules it out.
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "tied-routes.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "tied-routes.db"))
     runner.config.profile_routes = parse_profile_routes([
         dict(platform="discord", guild_id="guild", chat_id="parent", profile="other"),
         dict(platform="discord", guild_id="guild", chat_id="post", profile="yuki"),
@@ -169,10 +169,10 @@ def test_route_denials_leave_events_retryable_at_claim_and_send(tmp_path, monkey
 def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatch):
     from agent.secret_scope import get_secret
     from gateway.run import _profile_runtime_scope
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     runner = setup_runner(tmp_path, monkeypatch)
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     (home / ".env").write_text("KANBAN_TEST_SECRET=primary\n", encoding="utf-8")
     observed = []
 
@@ -180,7 +180,7 @@ def test_kanban_wakes_install_the_destination_runtime_scope(tmp_path, monkeypatc
         async def handle_message(self, event):
             # A real yield catches scopes that mutate process-global state.
             await asyncio.sleep(0)
-            observed.append((event.source.profile, get_secret("KANBAN_TEST_SECRET"), get_hermes_home()))
+            observed.append((event.source.profile, get_secret("KANBAN_TEST_SECRET"), get_rabbit_home()))
             await super().handle_message(event)
 
     for name in ("yuki", "other"):
@@ -208,7 +208,7 @@ def test_removed_profile_never_wakes_under_the_primary_runtime(tmp_path, monkeyp
     task = completion(mode="wake")
     rows = collect(runner)
     assert len(rows) == 1
-    shutil.rmtree(tmp_path / ".hermes" / "profiles" / "yuki")
+    shutil.rmtree(tmp_path / ".rabbit" / "profiles" / "yuki")
     asyncio.run(deliver(runner, rows))
     assert secondary.handled == []
     assert unseen(task)
@@ -257,7 +257,7 @@ def test_pinned_profile_without_this_platform_delivers_via_primary(tmp_path, mon
 
     # An owner stamped with the invoking shell's profile (#76483) instead of the route's
     # is a permanent dead-end and must surface once at WARNING.
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "stamped-owner.db"))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "stamped-owner.db"))
     stamped = completion(profile="default")
     with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
         assert not collect(runner)

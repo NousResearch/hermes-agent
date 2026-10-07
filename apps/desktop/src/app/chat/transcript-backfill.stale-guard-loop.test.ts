@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { messagesIfTranscriptBehind } from '@/lib/stale-transcript-guard'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 /**
  * REGRESSION: the pre-send stale-transcript guard never converges when the

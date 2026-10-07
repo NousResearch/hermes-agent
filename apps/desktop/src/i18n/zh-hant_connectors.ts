@@ -3,7 +3,7 @@ import type { TranslationOverrides } from './define-locale'
 export const zhHantConnectors = {
   sessionImport: {
     title: '從其他應用程式繼續',
-    subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
+    subtitle: '將對話匯入 Rabbit，接著上次的進度繼續。',
     action: '匯入工作階段',
     readingFrom: '讀取自',
     connectedComputer: '已連線的電腦',
@@ -21,17 +21,17 @@ export const zhHantConnectors = {
     more: '載入更多工作階段',
     messages: '則訊息',
     choose: '繼續一段對話',
-    chooseHelp: '選擇工作階段，在匯入 Hermes 前查看歷程記錄。',
+    chooseHelp: '選擇工作階段，在匯入 Rabbit 前查看歷程記錄。',
     previewLoading: '正在開啟預覽',
     previewError: '無法預覽',
     previewHelp: '來源檔案可能已移動或變更。請重新整理清單後重試。',
     previewLimit: '預覽已縮短，方便閱讀。匯入時會複製完整對話。',
     you: '你',
-    snapshot: '此對話已匯入 Hermes。開啟現有副本即可繼續。',
+    snapshot: '此對話已匯入 Rabbit。開啟現有副本即可繼續。',
     copyNotice: '複製對話文字，不變更來源檔案。不包含工具輸出和推理內容。',
     importing: '正在匯入…',
-    open: '在 Hermes 中開啟',
-    continue: '在 Hermes 中繼續',
+    open: '在 Rabbit 中開啟',
+    continue: '在 Rabbit 中繼續',
     importError: '無法匯入此對話。'
   }
 } satisfies Pick<TranslationOverrides, 'sessionImport'>

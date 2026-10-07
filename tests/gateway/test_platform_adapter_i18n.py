@@ -31,14 +31,14 @@ from plugins.platforms.telegram.adapter import TelegramAdapter, _TOAST_LIMIT
 def fake_locale(tmp_path, monkeypatch):
     """Point the catalog loader at a throwaway locales dir with an ``xx`` catalog whose values carry
     HTML metacharacters and exceed every platform cap; ``activate()`` switches the language to it."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     locales = tmp_path / "locales"
     locales.mkdir()
     long_text = "L" * 300
     catalog = {
         "gateway": {"exec_approval": {
-            "header": "Hermes <wants> & runs", "reason_label": "Why <flag>",
+            "header": "Rabbit <wants> & runs", "reason_label": "Why <flag>",
             "smart_deny_line": "Smart & <DENY>: one op only", "action_once": long_text,
             "action_session": "S", "action_always": "A", "action_deny": "D",
         }},
@@ -64,11 +64,11 @@ def fake_locale(tmp_path, monkeypatch):
     i18n.reset_language_cache()
 
     def activate(lang: str = "xx"):
-        monkeypatch.setenv("HERMES_LANGUAGE", lang)
+        monkeypatch.setenv("RABBIT_LANGUAGE", lang)
         i18n.reset_language_cache()
 
     yield activate
-    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    monkeypatch.delenv("RABBIT_LANGUAGE", raising=False)
     i18n.reset_language_cache()
 
 
@@ -92,7 +92,7 @@ def test_unauthorized_notice_is_resolved_per_call_not_at_import(module):
 def test_telegram_card_escapes_translated_text_before_html_wrapping(fake_locale):
     fake_locale()
     adapter = TelegramAdapter.__new__(TelegramAdapter)
-    assert adapter._EA_HEADER == "⚠️ <b>Hermes &lt;wants&gt; &amp; runs</b>\n\n"
+    assert adapter._EA_HEADER == "⚠️ <b>Rabbit &lt;wants&gt; &amp; runs</b>\n\n"
     assert adapter._EA_REASON_LABEL == "Why &lt;flag&gt;: "
     assert adapter._EA_SMART_DENY_LINE == "\n\n<b>Smart &amp; &lt;DENY&gt;:</b> one op only"
 
@@ -163,7 +163,7 @@ def test_discord_native_slash_text_respects_100_char_cap(fake_locale):
 def test_discord_card_uses_shared_contract_and_platform_copy(fake_locale):
     fake_locale()
     adapter = DiscordAdapter.__new__(DiscordAdapter)
-    assert adapter._EA_HEADER == "⚠️ **Hermes <wants> & runs**\n\nQ?\n\n**Cmd:**\n"
+    assert adapter._EA_HEADER == "⚠️ **Rabbit <wants> & runs**\n\nQ?\n\n**Cmd:**\n"
     assert adapter._EA_REASON_LABEL == "**Why <flag>:** "
     assert adapter._EA_SMART_DENY_LINE == "\n\n**Smart & <DENY>:** one op only"
 

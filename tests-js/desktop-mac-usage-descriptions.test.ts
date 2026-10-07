@@ -4,7 +4,7 @@
  * (`apps/desktop/electron-builder.config.cjs -> mac.extendInfo`) must pin every
  * `NS*UsageDescription` key the renderer relies on.
  *
- * Each entry is a key/value pair that lands in the packaged Hermes.app's
+ * Each entry is a key/value pair that lands in the packaged Rabbit.app's
  * Info.plist via electron-builder's `extendInfo` merge. Missing or mis-stated
  * keys cause macOS to either silently deny the related API or surface a
  * mysteriously-worded system permission prompt at runtime (TCC's
@@ -13,7 +13,7 @@
  * The Desktop renderer initializes Chromium's audio stack on user gesture
  * (completion chimes, TTS playback, voice mode). On macOS 26+, that init can
  * register the helper with the media subsystem and surface as a
- * "Hermes wants to access Music" prompt unless the Info.plist disclaims it
+ * "Rabbit wants to access Music" prompt unless the Info.plist disclaims it
  * explicitly. This test pins every usage-description string the desktop
  * currently relies on so accidental drops break CI instead of breaking users.
  *
@@ -36,7 +36,7 @@
  * called at runtime, but the Info.plist doesn't declare the corresponding
  * `NS*UsageDescription` key, so the system prompt is either silent (with a
  * generic "denied" error to the agent) or worded in a way that confuses the
- * user ("Hermes wants to access Music" when Hermes never touches the Music
+ * user ("Rabbit wants to access Music" when Rabbit never touches the Music
  * library). The closed-PR family (#59486 / its duplicates #59833, #59915,
  * #59950, #60013 for Contacts; #39854 for Calendar; #64582 for Reminders)
  * established that the right fix shape is: add the key + pin it in a test.

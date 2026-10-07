@@ -5,7 +5,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { Check, CheckCircle2, Cpu, Download, Eject, Loader2, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { runningDownloadFor } from '@/store/local-runtime-jobs'
-import type { LocalCatalogModel, LocalModelPlacement, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalModelPlacement, LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
 import { downloadStatusText, LocalModelDownloadActions, ProgressBar } from './local-model-download-progress'
 import {

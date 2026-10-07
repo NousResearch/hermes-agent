@@ -61,7 +61,7 @@ MEET_JOIN_SCHEMA = _schema(
               "description": ("transcribe (default): listen-only, scrape captions. "
                               "realtime: also enable agent speech via meet_say "
                               "(requires OpenAI Realtime key + platform audio bridge).")},
-     "guest_name": _str("Display name to use when joining as guest. Defaults to 'Hermes Agent'."),
+     "guest_name": _str("Display name to use when joining as guest. Defaults to 'Rabbit Agent'."),
      "duration": _str("Optional max duration before auto-leave (e.g. '30m', "
                       "'2h', '90s'). Omit to stay until meet_leave is called."),
      "headed": {"type": "boolean",
@@ -69,7 +69,7 @@ MEET_JOIN_SCHEMA = _schema(
      "node": _str("Name of a registered remote node to run the bot on (useful when the gateway "
                   "runs on a headless Linux box but the user's Chrome with a signed-in Google "
                   "profile lives on their Mac). Pass 'auto' to use the single registered node. "
-                  "Default: run locally. Nodes are approved via `hermes meet node approve`.")},
+                  "Default: run locally. Nodes are approved via `rabbit meet node approve`.")},
     required=["url"])
 
 MEET_STATUS_SCHEMA = _schema(
@@ -121,7 +121,7 @@ def _dispatch(node: Optional[str], op: str, remote, local) -> str:
     client, node_name = resolve_node(node)
     if client is None:
         return _err(f"no registered meet node matches {node!r} — "
-                    "run `hermes meet node approve <name> <url> <token>` first")
+                    "run `rabbit meet node approve <name> <url> <token>` first")
     try:
         res = remote(client)
     except Exception as e:
@@ -137,7 +137,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     if mode not in {"transcribe", "realtime"}:
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
     common: Dict[str, Any] = dict(
-        url=url, guest_name=str(args.get("guest_name") or "Hermes Agent"),
+        url=url, guest_name=str(args.get("guest_name") or "Rabbit Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
         headed=bool(args.get("headed", False)), mode=mode)
 
@@ -145,7 +145,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         if not check_meet_requirements():
             return {"ok": False, "error": (
                 "google_meet plugin prerequisites missing — install with "
-                "`hermes meet install`. Plugin is supported on Linux and macOS only.")}
+                "`rabbit meet install`. Plugin is supported on Linux and macOS only.")}
         return pm.start(**common)
 
     return _dispatch(args.get("node"), "start_bot", lambda c: c.start_bot(**common), _local)

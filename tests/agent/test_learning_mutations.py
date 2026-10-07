@@ -1,7 +1,7 @@
 """Behavior contracts for journey node edit/delete (agent.learning_mutations).
 
 Exercises the real on-disk resolution (skills dir + MEMORY.md/USER.md chunking)
-against a temp HERMES_HOME, never mocks — the id→file mapping is the whole point.
+against a temp RABBIT_HOME, never mocks — the id→file mapping is the whole point.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import threading
 import pytest
 
 from agent import learning_mutations as lm
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 _SKILL = """---
 name: my-skill
@@ -26,7 +26,7 @@ Body.
 
 @pytest.fixture
 def home():
-    base = get_hermes_home()
+    base = get_rabbit_home()
     (base / "memories").mkdir(parents=True, exist_ok=True)
     (base / "memories" / "MEMORY.md").write_text("alpha note\nline two\n§\nbeta note", encoding="utf-8")
     (base / "memories" / "USER.md").write_text("user profile note", encoding="utf-8")
@@ -39,7 +39,7 @@ def home():
 def test_parse_node_kind():
     assert lm.parse_node_kind("memory:memory:0") == "memory"
     assert lm.parse_node_kind("memory:profile:3") == "memory"
-    assert lm.parse_node_kind("debugging-hermes") == "skill"
+    assert lm.parse_node_kind("debugging-rabbit") == "skill"
 
 
 

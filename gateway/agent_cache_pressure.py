@@ -178,7 +178,7 @@ def read_anon_rss_mb() -> Optional[int]:
     if charged:
         return charged // _BYTES_PER_MB
     try:
-        from hermes_cli.mem_trim import collect_memory_snapshot
+        from rabbit_cli.mem_trim import collect_memory_snapshot
 
         snapshot = collect_memory_snapshot()
         for key in ("rss_anon_kib", "rss_kib"):

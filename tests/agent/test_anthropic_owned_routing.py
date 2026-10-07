@@ -14,14 +14,14 @@ from agent import auxiliary_client as aux
 def _seed(tmp_path, monkeypatch):
     monkeypatch.setattr(ac.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ac, "_first_env", lambda *names: "")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     borrowed = tmp_path / ".claude" / ".credentials.json"
     borrowed.parent.mkdir()
     borrowed.write_text(json.dumps({"claudeAiOauth": {
         "accessToken": "borrowed-token", "refreshToken": "borrowed-refresh", "expiresAt": 1,
     }}))
     (tmp_path / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [{
-        "id": "owned", "source": "manual:hermes_pkce", "auth_type": "oauth",
+        "id": "owned", "source": "manual:rabbit_pkce", "auth_type": "oauth",
         "access_token": "owned-token", "refresh_token": "owned-refresh",
         "expires_at": int(time.time()*1000)+3600000, "priority": 0,
     }]}}))
@@ -54,7 +54,7 @@ def test_auxiliary_owned_refresh_does_not_spend_borrowed_rotation(tmp_path, monk
     route = SimpleNamespace(client=SimpleNamespace(api_key="owned-token"), task="compression", tag="",
         resolved_provider="anthropic", base_info="https://api.anthropic.com", resolved_model="fixture",
         final_model="fixture", main_runtime=None)
-    retry = aux._ladder_credential_rungs(error, route, {}, False)
+    retry = aux._ladder_credential_rungs(error, route, {})
     assert next(retry).kind == "retry_same_provider"
     retry.close()
     assert borrowed.read_bytes() == before

@@ -6,7 +6,7 @@ runners). Providers register via :meth:`PluginContext.register_terminal_environm
 / ``terminal.backend`` value that is not a built-in (built-ins stay in ``tools/environments/``;
 third-party sandbox vendors do NOT have to live in core). :meth:`create_environment` returns
 any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factory stamps
-``_hermes_backend_name`` on the result so file-path resolution can identify plugin backends.
+``_rabbit_backend_name`` on the result so file-path resolution can identify plugin backends.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ class TerminalEnvironmentProvider(ProviderBase):
       passed through, host-looking cwds sanitized, file tools use container path resolution.
     * ``skip_container_guards`` — sandbox disposable enough to skip dangerous-command approval
       prompts. Defaults to ``is_container``; backends that can mount host paths override to False.
-    * ``cache_path_base`` — where auto-synced ``~/.hermes/cache`` files land inside the backend
-      (``"~/.hermes"``, ``"/root/.hermes"``), or ``None`` when host paths remain correct.
+    * ``cache_path_base`` — where auto-synced ``~/.rabbit/cache`` files land inside the backend
+      (``"~/.rabbit"``, ``"/root/.rabbit"``), or ``None`` when host paths remain correct.
     * ``strip_env_keys`` — vendor credential env vars, stripped from every subprocess the agent
       spawns so a model-authored command can never read them.
     * ``session_isolated_when_nonpersistent`` — non-persistent mode gives each session its own
@@ -79,14 +79,14 @@ class TerminalEnvironmentProvider(ProviderBase):
         return ("ready", "") if self.is_available() else ("needs_setup", f"{self.display_name} is not configured.")
 
     def setup_instructions(self) -> List[str]:
-        """Lines printed by ``hermes setup`` after selection (the wizard persists ``terminal.backend`` itself)."""
+        """Lines printed by ``rabbit setup`` after selection (the wizard persists ``terminal.backend`` itself)."""
         return []
 
     def post_setup(self) -> None:
-        """Optional interactive hook run by ``hermes setup`` after selection (prompt for tokens, install SDKs)."""
+        """Optional interactive hook run by ``rabbit setup`` after selection (prompt for tokens, install SDKs)."""
 
     def doctor_checks(self) -> List[Tuple[bool, str, str]]:
-        """``hermes doctor`` rows ``(ok, label, detail)``; default reflects :meth:`is_available`."""
+        """``rabbit doctor`` rows ``(ok, label, detail)``; default reflects :meth:`is_available`."""
         try:
             ok = bool(self.is_available())
         except Exception:

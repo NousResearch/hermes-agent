@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
-const KEY = 'hermes.desktop.chat-text-scale.v1'
+const KEY = 'rabbit.desktop.chat-text-scale.v1'
 const DEFAULT_CHAT_TEXT_SCALE = 110
 
 export const CHAT_TEXT_SCALE_PRESETS = [90, 100, 110, 125, 150, 175] as const

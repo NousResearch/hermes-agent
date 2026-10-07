@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/pagination'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listAllProfileSessions } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/rabbit'
 import { type Translations, useI18n } from '@/i18n'
 import { resolveBrandIcon } from '@/lib/brand-icon'
 import {
@@ -289,8 +289,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           return
         }
 
-        if (window.hermesDesktop?.openExternal) {
-          await window.hermesDesktop.openExternal(href)
+        if (window.rabbitDesktop?.openExternal) {
+          await window.rabbitDesktop.openExternal(href)
         } else {
           window.open(href, '_blank', 'noopener,noreferrer')
         }

@@ -11,7 +11,7 @@ it.each(['not-a-git-checkout', 'update-root-steward-owned-git-tree', 'fetch-fail
 
     const deps: CheckoutStrategyDeps = {
       readSourceUpdate: vi.fn(async (): Promise<SourceUpdate> => status),
-      hermesHome: 'home',
+      rabbitHome: 'home',
       isWindows: process.platform === 'win32',
       isMac: process.platform === 'darwin',
       defaultUpdateBranch: 'main',
@@ -21,7 +21,7 @@ it.each(['not-a-git-checkout', 'update-root-steward-owned-git-tree', 'fetch-fail
       remoteGatewayActive: (): boolean => false,
       emitUpdateProgress: vi.fn(),
       rememberLog: vi.fn(),
-      startHermes: vi.fn(async (): Promise<void> => {}),
+      startRabbit: vi.fn(async (): Promise<void> => {}),
       stopBackendsForUpdate: vi.fn(async (): Promise<void> => {}),
       repairMacUpdaterHelper: vi.fn(),
       preflightStateDb: vi.fn(),

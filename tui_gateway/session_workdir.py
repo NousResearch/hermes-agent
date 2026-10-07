@@ -99,7 +99,7 @@ def _policy_backend(policy: dict) -> str:
 
 def _bound_terminal_backend(profile_home) -> str:
     """Terminal backend of the profile a session/RPC is bound to. A named profile reads ITS policy: at
-    ``session.create`` the multiplex gateway has not rebound HERMES_HOME yet, so ``_effective_terminal_backend()``
+    ``session.create`` the multiplex gateway has not rebound RABBIT_HOME yet, so ``_effective_terminal_backend()``
     would report the LAUNCH profile's backend, which must never leak into a named one."""
     return _policy_backend(_profile_terminal_policy(profile_home)) if profile_home else _effective_terminal_backend()
 
@@ -124,7 +124,7 @@ def _declared_remote_profile_cwd(profile_home) -> str | None:
 def _is_remote_cwd_shape(raw: str) -> bool:
     """An ssh working directory the remote shell can resolve: ``~``, ``~/…`` or absolute (a relative one would be
     stored and git-probed relative to the gateway's own cwd)."""
-    from hermes_cli.config import _is_ssh_remote_tilde_cwd
+    from rabbit_cli.config import _is_ssh_remote_tilde_cwd
 
     return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
 
@@ -232,29 +232,29 @@ def _is_remote_launch_cwd(session: dict | None) -> bool:
     return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
 
 
-def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
-    """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
+def _is_rabbit_owned_cwd(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` is inside Rabbit's own host tree: the Rabbit root (``/opt/data`` and its ``/opt/data/home``
     subprocess home in the Docker image, which also holds every named profile) or the install tree
-    (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
+    (``/opt/rabbit``). A ``~`` path is the remote's home, never this host's."""
     from agent.runtime_cwd import _is_install_tree
-    from hermes_constants import get_default_hermes_root
+    from rabbit_constants import get_default_rabbit_root
 
     if not os.path.isabs(cwd):
         return False
     try:
         path = Path(cwd).resolve()
-        home = Path(profile_home or get_hermes_home()).expanduser()
-        roots = {home.resolve(), get_default_hermes_root(home=home).resolve()}
+        home = Path(profile_home or get_rabbit_home()).expanduser()
+        roots = {home.resolve(), get_default_rabbit_root(home=home).resolve()}
     except (OSError, RuntimeError):
         return False
     return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
 
 
 def _resumable_stored_cwd(cwd, profile_home) -> str:
-    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
+    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Rabbit's
     own host tree (a host launch directory, never a remote workspace)."""
     cwd = str(cwd or "")
-    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+    if cwd and _cwd_is_remote(profile_home) and _is_rabbit_owned_cwd(cwd, profile_home):
         return ""
     return cwd
 
@@ -284,7 +284,7 @@ def _heal_dead_cwd(cwd: str) -> str:
 def _session_is_local_backend(session: dict | None) -> bool:
     """Whether THIS session's cwd can be stat'ed / git-probed here. A session bound to a named ssh profile never can,
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
-    (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
+    (``rabbit -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
     heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
     if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) != "local":
         return False
@@ -393,12 +393,12 @@ def _register_session_cwd(session: dict | None) -> None:
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
-        import hermes_constants as hc
+        import rabbit_constants as hc
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
-            if profile_home and hc.hermes_home_key(hc.get_hermes_home()) != hc.hermes_home_key(profile_home):
-                stack.callback(hc.reset_hermes_home_override, hc.set_hermes_home_override(str(profile_home)))
+            if profile_home and hc.rabbit_home_key(hc.get_rabbit_home()) != hc.rabbit_home_key(profile_home):
+                stack.callback(hc.reset_rabbit_home_override, hc.set_rabbit_home_override(str(profile_home)))
             register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
 
 
@@ -415,7 +415,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     # ``custom:<name>`` identity (matches _runtime_model_config).
     if str(model_config.get("provider") or "").strip().lower() == "custom":
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
+            from rabbit_cli.runtime_provider import canonical_custom_identity
             healed = canonical_custom_identity(
                 base_url=model_config.get("base_url") or None, model=model_config.get("model") or row_model or None)
             if healed:
@@ -522,7 +522,7 @@ def _schedule_row_git_meta(session: dict, key: str, db) -> None:
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
     """Re-raise a disk-full write error (the caller must surface it); debug-log the rest."""
-    from hermes_state_errors import is_disk_full_error
+    from rabbit_state_errors import is_disk_full_error
     if is_disk_full_error(exc):
         raise exc
     logger.debug(log_msg, exc_info=True)
@@ -701,7 +701,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     db, close_db = None, False
     if profile_home := session.get("profile_home"):
         try:
-            from hermes_state_registry import acquire
+            from rabbit_state_registry import acquire
             db, close_db = acquire(Path(profile_home) / "state.db"), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
@@ -713,7 +713,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     finally:
         if close_db and db is not None:
             with contextlib.suppress(Exception):
-                from hermes_state_registry import release_or_close
+                from rabbit_state_registry import release_or_close
                 release_or_close(db)
 
 
@@ -817,7 +817,7 @@ def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=No
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    from hermes_constants import translate_cwd_for_wsl_backend
+    from rabbit_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
     # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted

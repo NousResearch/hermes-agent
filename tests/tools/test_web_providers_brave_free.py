@@ -129,7 +129,6 @@ class TestBraveFreeBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("EXA_API_KEY", "exa_test")
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "exa"
 
     def test_check_web_api_key_true_when_brave_free_configured(self, monkeypatch):
@@ -160,7 +159,6 @@ class TestBraveFreeSearchOnlyErrors:
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:
             return True
 

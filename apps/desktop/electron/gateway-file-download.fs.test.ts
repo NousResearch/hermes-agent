@@ -20,7 +20,7 @@ import { fsPumpDeps, pumpStreamToFile, writeBufferToFile } from './gateway-file-
 let dir = ''
 
 beforeEach(async () => {
-  dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hermes-download-fs-'))
+  dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rabbit-download-fs-'))
 })
 
 afterEach(async () => {
@@ -94,7 +94,7 @@ test('a download into a name with no existing file that fails leaves nothing beh
 // remain untouched and no rename occurred.
 test('a pre-open EEXIST collision leaves the seeded temp file and the destination untouched', async () => {
   const dest = path.join(dir, 'report.bin')
-  const pinnedTemp = path.join(dir, '.hermes-download-pinned.part')
+  const pinnedTemp = path.join(dir, '.rabbit-download-pinned.part')
   const seeded = Buffer.from('SOMEONE ELSES BYTES')
   const original = Buffer.from('OLD CONTENT')
 
@@ -111,7 +111,7 @@ test('a pre-open EEXIST collision leaves the seeded temp file and the destinatio
 
   assert.ok(seeded.equals(await fs.promises.readFile(pinnedTemp)), 'the colliding file must not be unlinked')
   assert.ok(original.equals(await fs.promises.readFile(dest)), 'destination must not be renamed over')
-  assert.deepEqual(await listing(), ['.hermes-download-pinned.part', 'report.bin'])
+  assert.deepEqual(await listing(), ['.rabbit-download-pinned.part', 'report.bin'])
 })
 
 test('a failed final rename removes the owned temp file and leaves the destination as it was', async () => {

@@ -20,7 +20,7 @@ export interface PluginOutcome {
   tools: string[]
 }
 
-export const ANSWERS_KEY = 'hermes-onboarding-wizard-answers-v1'
+export const ANSWERS_KEY = 'rabbit-onboarding-wizard-answers-v1'
 
 export const DEFAULT_ANSWERS: OnboardingAnswers = {
   accent: null,

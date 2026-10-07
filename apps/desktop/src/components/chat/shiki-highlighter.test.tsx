@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 // attributed to whichever sibling test file the worker is running (#94415).
 const { chunkError } = vi.hoisted(() => ({
   chunkError: new Error(
-    'Failed to fetch dynamically imported module: file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/assets/shiki-block-Dcm1B2nM.js'
+    'Failed to fetch dynamically imported module: file:///Applications/Rabbit.app/Contents/Resources/app.asar.unpacked/dist/assets/shiki-block-Dcm1B2nM.js'
   )
 }))
 
@@ -99,7 +99,7 @@ describe('a reply survives a failed shiki-block chunk load (#95995)', () => {
     } finally {
       spy.mockRestore()
       chunkError.message =
-        'Failed to fetch dynamically imported module: file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/assets/shiki-block-Dcm1B2nM.js'
+        'Failed to fetch dynamically imported module: file:///Applications/Rabbit.app/Contents/Resources/app.asar.unpacked/dist/assets/shiki-block-Dcm1B2nM.js'
     }
   })
 })

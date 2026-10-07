@@ -184,14 +184,14 @@
      spread that grows with the blur so each layer is pulled horizontally inward
      — the shadow pools below the panel instead of bleeding out every side.
      Layered (contact → ambient) for a smooth, natural falloff. */
-  --shadow-nous:
+  --shadow-rabbit:
     0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 7%, transparent),
     0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #000 6%, transparent),
     0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #000 6%, transparent),
     0 2.25rem 3rem -1.75rem color-mix(in srgb, #000 0%, transparent);
-  /* Hairline border paired with --shadow-nous on borderless overlays.
+  /* Hairline border paired with --shadow-rabbit on borderless overlays.
      currentColor resolves per-element, so it adapts to text color/theme. */
-  --stroke-nous: color-mix(in srgb, currentColor 3%, transparent);
+  --stroke-rabbit: color-mix(in srgb, currentColor 3%, transparent);
   --shadow-lg:
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
@@ -652,7 +652,7 @@
      pinned back to the opaque chrome mix: xterm resolves its surface var to a
      concrete color for its canvas (see right-sidebar/terminal/selection.ts),
      which does not composite page alpha. */
-  :root[data-hermes-glass] {
+  :root[data-rabbit-glass] {
     background-color: transparent !important;
     --ui-chat-surface-background: transparent;
     --ui-sidebar-surface-background: transparent;
@@ -660,7 +660,7 @@
     --ui-terminal-surface-background: var(--ui-bg-chrome);
   }
 
-  :root[data-hermes-glass] body {
+  :root[data-rabbit-glass] body {
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
@@ -672,7 +672,7 @@
      no smear across the seam; RTL mirrors via html[dir='rtl']. The content
      column's own surfaces stay transparent (they'd double-paint the tint
      otherwise) — the body backdrop alone restores the opaque look. */
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body {
+  :root[data-rabbit-glass][data-rabbit-glass-scope='sidebar'] body {
     background: linear-gradient(
       to right,
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
@@ -681,7 +681,7 @@
     );
   }
 
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'][dir='rtl'] body {
+  :root[data-rabbit-glass][data-rabbit-glass-scope='sidebar'][dir='rtl'] body {
     background: linear-gradient(
       to left,
       color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent)
@@ -695,8 +695,8 @@
      surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /
      bg-background), which cascade-layer above these base rules — hence the
      !important. Clearing them makes <body> the window's only field paint. */
-  :root[data-hermes-glass] [data-contrib-shell],
-  :root[data-hermes-glass] [data-slot='sidebar-wrapper'] {
+  :root[data-rabbit-glass] [data-contrib-shell],
+  :root[data-rabbit-glass] [data-slot='sidebar-wrapper'] {
     background-color: transparent !important;
   }
 
@@ -705,7 +705,7 @@
      Anything that paints over its own siblings declares `data-glass-opaque`
      at its call site (the diff gutter, a dragged sidebar row), rather than
      styles.css reaching in by class name. */
-  :root[data-hermes-glass] [data-glass-opaque] {
+  :root[data-rabbit-glass] [data-glass-opaque] {
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
@@ -717,7 +717,7 @@
      more than 94%. The card wears the chat token and its internal nav asides
      wear the sidebar token, so both come back as almost-solid fills and the
      two-tone layout survives. */
-  :root[data-hermes-glass] [data-glass-raised] {
+  :root[data-rabbit-glass] [data-glass-raised] {
     --ui-chat-surface-background: color-mix(
       in srgb,
       var(--ui-bg-chrome) max(94%, var(--translucency-glass-keep, 100%)),
@@ -737,7 +737,7 @@
      shape: the bar belongs to the opaque content column across the full
      width, and the rail's glass ends at its top edge. Window scope has no
      seam, so the bar stays transparent there. */
-  :root[data-hermes-glass][data-hermes-glass-scope='sidebar'] [data-slot='statusbar'] {
+  :root[data-rabbit-glass][data-rabbit-glass-scope='sidebar'] [data-slot='statusbar'] {
     --ui-sidebar-surface-background: var(--ui-bg-chrome);
   }
 
@@ -750,7 +750,7 @@
      of the desktop. Set on <html> by store/translucency.ts whenever
      mode='clear' and intensity > 0; !important because the utility classes
      live in a later cascade layer. */
-  :root[data-hermes-clear] [data-overlay-surface] {
+  :root[data-rabbit-clear] [data-overlay-surface] {
     background-color: rgb(0 0 0 / 0.55) !important;
     backdrop-filter: blur(0.5rem) !important;
   }
@@ -774,7 +774,7 @@
     transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  :root[data-hermes-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
+  :root[data-rabbit-translucency-peek] [data-overlay-surface]:has([data-translucency-peek-scope]) {
     opacity: 0.08;
     transition: opacity 160ms cubic-bezier(0.32, 0.72, 0, 1);
   }
@@ -1105,7 +1105,7 @@
   display: none;
 }
 
-/* Hermes speaks first here: no user bubble sits above the opening assistant
+/* Rabbit speaks first here: no user bubble sits above the opening assistant
    turn, so the first painted row would press against the pane chrome. The
    utility class on the row pulls the top pad 0.5rem ABOVE the titlebar; give
    the air back, and only in this thread. */
@@ -1234,8 +1234,8 @@
 }
 
 /* Nous Portal hero: slower, blue → orange arc. */
-.arc-border.arc-nous,
-:root.dark .arc-border.arc-nous {
+.arc-border.arc-rabbit,
+:root.dark .arc-border.arc-rabbit {
   --arc-c1: #4f8cff;
   --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
@@ -1251,7 +1251,7 @@
       against the sidebar. With c0 a transparent sentinel and c2 invisible, only
       the bright c1 stop survives each pass, and it repeats along the ring:
       moving dots instead of an arc. Tying c2 to c1 gives each spike a
-      falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
+      falloff. (`arc-rabbit` already overrides c2, so the hero is unaffected.) */
 .arc-border.arc-row,
 :root.dark .arc-border.arc-row {
   --arc-standoff: 0rem;
@@ -1291,7 +1291,7 @@
   animation: decode-cursor 1s step-end infinite;
 }
 /* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
-@keyframes hermes-zone-fade {
+@keyframes rabbit-zone-fade {
   from {
     opacity: 0.001;
   }
@@ -2885,7 +2885,7 @@ button[data-slot='aui_msg-reactions'] svg {
   overflow: hidden !important;
 }
 
-/* The scrollback — the chat BAND, straight from the nous-viz2d chat (which is
+/* The scrollback — the chat BAND, straight from the original viz2d chat (which is
    the reference for this whole surface): a fixed-height smoked strip hugging
    the input, tinted from the theme, with the text simply sitting in it.
 
@@ -2964,7 +2964,7 @@ button[data-slot='aui_msg-reactions'] svg {
    Under Glass the sheet wears the SAME paint the docked thread does:
    `--ui-bg-chrome` kept at `--translucency-glass-keep`, the one number
    store/translucency publishes from the Tint slider (see the
-   `[data-hermes-glass]` block). One painter, one token, one lever — the band
+   `[data-rabbit-glass]` block). One painter, one token, one lever — the band
    reads as the app's thread surface rather than as a HUD-only lookalike that
    drifts the first time either side is touched.
 
@@ -3025,12 +3025,12 @@ button[data-slot='aui_msg-reactions'] svg {
    The band becomes the app's thread surface: the docked window's field mix,
    over the platform material.
 
-   Keyed to `data-hermes-glass-on` — "the user's Glass setting is live" — and
-   NOT to `data-hermes-glass`, which additionally means "this window's field
+   Keyed to `data-rabbit-glass-on` — "the user's Glass setting is live" — and
+   NOT to `data-rabbit-glass`, which additionally means "this window's field
    surfaces may be rewritten" and is false here by design: the HUD is a
    transparent window that owns its own backgrounds (isChatWindow). Two flags,
    because the HUD wants the setting without the rewrite. */
-:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+:root[data-rabbit-glass-on] [data-hud-shell] [data-hud-glass] {
   /* Same dark scrim under Glass. The docked thread's `--ui-bg-chrome` follows
      the theme and goes near-white on a light one, which is the wrong paper for
      this band's white ink — the HUD is over a game, not inside the app. */
@@ -3047,27 +3047,27 @@ button[data-slot='aui_msg-reactions'] svg {
    bar's rounded bottom corners: the sheet's square top corners poked out past
    the bar's silhouette, which is the gap down each side. Narrower than the bar
    means the bar's shape is the widest thing in the HUD and nothing peeks. */
-:root[data-hermes-glass-on] [data-hud-shell] {
+:root[data-rabbit-glass-on] [data-hud-shell] {
   --hud-band-inset: 0.375rem;
 }
 
 /* Radius follows the edge the band hangs from, and this rule has to carry the
-   edge itself: `:root[data-hermes-glass-on] … [data-hud-glass]` outweighs the
+   edge itself: `:root[data-rabbit-glass-on] … [data-hud-glass]` outweighs the
    `[data-hud-edge='top']` flip below (four compound parts against three), so a
    radius set here unqualified wins everywhere and rounds the corners that meet
    the bar while squaring the free ones. */
-:root[data-hermes-glass-on] [data-hud-shell] [data-hud-glass] {
+:root[data-rabbit-glass-on] [data-hud-shell] [data-hud-glass] {
   border-radius: 0.75rem 0.75rem 0 0;
 }
 
-:root[data-hermes-glass-on] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+:root[data-rabbit-glass-on] [data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
   border-radius: 0 0 0.75rem 0.75rem;
 }
 
 /* Engaged, the field steps up the same way the docked thread's does — but
    never below the resting tint, so a high lever cannot make focusing the
    composer paint MORE transparent than glancing at it. */
-:root[data-hermes-glass-on] [data-hud-shell][data-hud-typing] [data-hud-glass] {
+:root[data-rabbit-glass-on] [data-hud-shell][data-hud-typing] [data-hud-glass] {
   background: rgb(12 14 18 / 0.72);
 }
 
@@ -3660,7 +3660,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* The resize frame — hot edges/corners, not buttons. The window is created
    non-resizable (the transparent-frameless Windows drag-growth bug), so this
    is the one sanctioned way to change the HUD's size; it drives
-   `hermes:hud:set-bounds`, which flips resizable on for the call.
+   `rabbit:hud:set-bounds`, which flips resizable on for the call.
 
    CanvasTTY grammar: four edge strips + four larger corner targets, each with
    its native resize cursor and each preserving the opposite edge. Deliberately

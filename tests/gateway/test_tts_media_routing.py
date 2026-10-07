@@ -115,8 +115,8 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
     # auto-accepted by the trust window. (Recency trust is covered separately
     # in test_platform_base.py. The public default flipped to non-strict in
     # 2026-05; this test pins strict on explicitly.)
-    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
-    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    monkeypatch.setenv("RABBIT_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("RABBIT_MEDIA_TRUST_RECENT_FILES", "0")
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -548,7 +548,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
         group_sessions_per_user=False,
         stt_enabled=False,
     )
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(

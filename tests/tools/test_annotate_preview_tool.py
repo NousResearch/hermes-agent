@@ -9,7 +9,7 @@ from tools.registry import registry
 
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
     """Scoped by toolset, not by the backend's env — same as its siblings."""
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("RABBIT_DESKTOP", raising=False)
     entry = registry.get_entry("annotate_preview")
 
     assert entry is not None

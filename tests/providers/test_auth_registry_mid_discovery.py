@@ -1,8 +1,8 @@
-"""Regression tests for #102123: plugins discovered after ``hermes_cli.auth`` is
+"""Regression tests for #102123: plugins discovered after ``rabbit_cli.auth`` is
 first imported must still reach ``PROVIDER_REGISTRY``.
 
-``hermes_cli.auth`` mirrors provider-plugin profiles into ``PROVIDER_REGISTRY``
-when it is imported.  If a plugin's own imports pull ``hermes_cli.auth`` in
+``rabbit_cli.auth`` mirrors provider-plugin profiles into ``PROVIDER_REGISTRY``
+when it is imported.  If a plugin's own imports pull ``rabbit_cli.auth`` in
 while ``providers._discover_providers()`` is still iterating the plugin
 directories, that mirror runs against a partial profile list (the discovery
 guard is already set, so ``list_providers()`` returns whatever has been
@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 import providers
-import hermes_cli.auth as auth_mod
+import rabbit_cli.auth as auth_mod
 from providers.base import ProviderProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,10 +52,10 @@ def _write_plugin(root: Path, name: str, body: str) -> None:
     )
 
 
-def _run_probe(hermes_home: Path, code: str) -> subprocess.CompletedProcess:
+def _run_probe(rabbit_home: Path, code: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
-    env["HERMES_HOME"] = str(hermes_home)
-    env.pop("HERMES_PROFILE", None)
+    env["RABBIT_HOME"] = str(rabbit_home)
+    env.pop("RABBIT_PROFILE", None)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -71,20 +71,20 @@ def _run_probe(hermes_home: Path, code: str) -> subprocess.CompletedProcess:
 
 
 def test_plugins_discovered_after_auth_import_resolve(tmp_path):
-    hermes_home = tmp_path / ".hermes"
-    # Sorted first: a plugin whose imports drag hermes_cli.auth in mid-discovery
+    rabbit_home = tmp_path / ".rabbit"
+    # Sorted first: a plugin whose imports drag rabbit_cli.auth in mid-discovery
     # (any plugin importing agent.credential_pool or similar does this).
     _write_plugin(
-        hermes_home,
+        rabbit_home,
         "aaa-early-probe",
-        "import hermes_cli.auth  # noqa: F401 — simulate a core-importing plugin\n"
+        "import rabbit_cli.auth  # noqa: F401 — simulate a core-importing plugin\n"
         + _PLAIN_PROFILE.format(
             name="aaa-early-probe", alias="aaa-alias", env="AAA_EARLY_PROBE_KEY"
         ),
     )
     # Sorted last: an ordinary plugin discovered after that import.
     _write_plugin(
-        hermes_home,
+        rabbit_home,
         "zzz-late-probe",
         _PLAIN_PROFILE.format(
             name="zzz-late-probe", alias="zzz-alias", env="ZZZ_LATE_PROBE_KEY"
@@ -92,11 +92,11 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
     )
 
     probe = _run_probe(
-        hermes_home,
+        rabbit_home,
         "import providers\n"
         "names = {p.name for p in providers.list_providers()}\n"
         "assert {'aaa-early-probe', 'zzz-late-probe'} <= names, names\n"
-        "from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider\n"
+        "from rabbit_cli.auth import PROVIDER_REGISTRY, resolve_provider\n"
         # Discovery completion must have mirrored the late plugin already;
         # consumers that read PROVIDER_REGISTRY directly rely on this.
         "assert 'zzz-late-probe' in PROVIDER_REGISTRY, sorted(PROVIDER_REGISTRY)\n"
@@ -112,7 +112,7 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
 
 # ---------------------------------------------------------------------------
 # In-process: the sync hook's contract (partial snapshot reconciled, idempotent,
-# never imports hermes_cli.auth on its own).
+# never imports rabbit_cli.auth on its own).
 # ---------------------------------------------------------------------------
 
 EARLY = "probe-102123-early"
@@ -176,7 +176,7 @@ def test_post_discovery_registration_is_mirrored(_isolated_registries, monkeypat
 
 
 def test_user_plugin_alias_repoints_and_display_name_follows(_isolated_registries, monkeypatch, tmp_path):
-    """A $HERMES_HOME plugin owns the aliases it declares and the display name of a same-name row.
+    """A $RABBIT_HOME plugin owns the aliases it declares and the display name of a same-name row.
 
     Ownership split (#116668): ``providers.get_provider_profile`` already followed the user's
     profile for the alias, while the auth registry kept the alias on whichever row got there first

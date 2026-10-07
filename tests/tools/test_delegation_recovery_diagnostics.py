@@ -12,7 +12,7 @@ import pytest
 def test_unfinished_delegation_recovery_keeps_transcript_locator(tmp_path, split, missing_writer):
     repo = str(Path(__file__).resolve().parents[2])
     handle_path = tmp_path / "dispatch.json"
-    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo,
+    env = {**os.environ, "RABBIT_HOME": str(tmp_path), "PYTHONPATH": repo,
            "REPRO_HANDLE": str(handle_path), "REPRO_SPLIT": str(int(split)),
            "REPRO_MISSING": str(int(missing_writer))}
     (tmp_path / 'config.yaml').write_text('delegation:\n  independent_completions: true\n', encoding='utf-8')

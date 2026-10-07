@@ -3,7 +3,7 @@
 // nudges chalk / supports-color before either package is initialized.
 import './lib/forceTruecolor.js'
 
-import type { FrameEvent } from '@hermes/ink'
+import type { FrameEvent } from '@rabbit/ink'
 
 import { setRpcErrorLogSink } from './app/userMessages.js'
 import { DASHBOARD_TUI_MODE, NATIVE_MODE, TERMUX_TUI_MODE } from './config/env.js'
@@ -103,7 +103,7 @@ setupGracefulExit({
     consecutiveDeadStreamErrors = 0
 
     try {
-      process.stderr.write(`hermes-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
+      process.stderr.write(`rabbit-tui lifecycle ${scope}: ${message.slice(0, 2000)}\n`)
     } catch {
       // stderr may be the dead stream itself.
     }
@@ -114,7 +114,7 @@ setupGracefulExit({
     // what tells SIGHUP (terminal/SSH dropped) apart from a real SIGTERM.
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
-    process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
+    process.stderr.write(`rabbit-tui lifecycle: received ${signal}\n`)
   },
   // The dashboard chat tab has no in-page restart path after the PTY child
   // exits. Ignore SIGINT there so Ctrl+C cannot kill the embedded TUI if raw
@@ -133,7 +133,7 @@ const stopMemoryMonitor = startMemoryMonitor({
     )
     resetTerminalModes()
     process.stderr.write(
-      `hermes-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
+      `rabbit-tui lifecycle: memory critical exit heap=${formatBytes(snap.heapUsed)} rss=${formatBytes(snap.rss)}\n`
     )
     process.stderr.write(dumpNotice(snap, dump))
     process.stderr.write(`${messages().chatBits.entry.exitingOom}\n`)
@@ -152,14 +152,14 @@ const stopMemoryMonitor = startMemoryMonitor({
   }
 })
 
-if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
+if (process.env.RABBIT_HEAPDUMP_ON_START === '1') {
   void performHeapDump('manual')
 }
 
 process.on('beforeExit', () => stopMemoryMonitor())
 
 const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
-  import('@hermes/ink'),
+  import('@rabbit/ink'),
   import('./app.js'),
   import('./lib/perfPane.js'),
   import('./lib/fpsStore.js')

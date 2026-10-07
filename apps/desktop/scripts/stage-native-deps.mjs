@@ -45,7 +45,7 @@ function makeExecutable(filePath) {
 //
 // Node's native (non-libuv) rewrite of fs.cpSync/fs.rmSync mishandles
 // non-ASCII Windows paths (observed on v24.11.1 with an accented Windows
-// user name, i.e. a default %LOCALAPPDATA%\hermes home): a recursive
+// user name, i.e. a default %LOCALAPPDATA%\rabbit home): a recursive
 // cpSync fails with EIO "Access is denied" or hard-crashes the process,
 // an overwriting cpSync fails with a bogus errno-0 unlink error, and
 // rmSync silently deletes nothing — leaving a half-staged tree that
@@ -687,8 +687,8 @@ export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
     lines.push(
       `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
         'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
-        'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
-        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
+        'To restore read_window_below: close every Rabbit window and gateway so the extract is not ' +
+        'interrupted again, then run `rabbit desktop --force-build` — it removes the stale dir before npm.'
     )
   }
   return lines.join('\n')

@@ -3,9 +3,9 @@ label: Telegram
 kind: platform
 version: 1.0.0
 description: >
-  Telegram gateway adapter for Hermes Agent.
+  Telegram gateway adapter for Rabbit Agent.
   Connects to Telegram via python-telegram-bot and relays messages between
-  Telegram chats/groups/topics and the Hermes agent. Supports threads/topics,
+  Telegram chats/groups/topics and the Rabbit agent. Supports threads/topics,
   streaming edits, native media, inline keyboards, slash commands, fallback
   network transport (direct-IP failover), notification modes, mention gating,
   and per-user/chat allowlists.

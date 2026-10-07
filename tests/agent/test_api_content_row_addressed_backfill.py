@@ -1,4 +1,4 @@
-"""Row-addressed ``api_content`` backfill (NousResearch/hermes-agent#102194).
+"""Row-addressed ``api_content`` backfill (seven0070/Rabbit-#102194).
 
 The sidecar is stamped by the turn prologue and normally reaches the DB in the
 same INSERT as the clean content (the crash persist runs after the stamp). When
@@ -26,7 +26,7 @@ import pytest
 
 from agent.session_persistence import SessionPersistenceMixin
 from agent.turn_context import _stamp_api_content_sidecar, compose_user_api_content
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
 
@@ -88,7 +88,7 @@ class TestPrologueRowAddressedBackfill:
         agent = _FakeAgent()
         agent._session_db = MagicMock()
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "rabbit_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
@@ -139,7 +139,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
 
             # Now build_turn_context runs
             with patch(
-                "hermes_cli.plugins.invoke_hook",
+                "rabbit_cli.plugins.invoke_hook",
                 return_value=[{"context": "PLUGIN-CTX"}],
             ):
                 ctx = _build(agent)
@@ -172,7 +172,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             assert staged.get("_row_id") is not None
 
             # Worker resumes with API-facing message and clean persist override
-            with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            with patch("rabbit_cli.plugins.invoke_hook", return_value=[]):
                 ctx = _build(
                     agent,
                     user_message=api_text,
@@ -226,7 +226,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
 
             # Prologue backfills Turn 2
             with patch(
-                "hermes_cli.plugins.invoke_hook",
+                "rabbit_cli.plugins.invoke_hook",
                 return_value=[{"context": "TURN-2-CTX"}],
             ):
                 _build(agent, user_message="ok")

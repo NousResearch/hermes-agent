@@ -9,7 +9,7 @@ import { resolveLocalReadPath } from './wsl-path-bridge'
 // so the wiring is exercised in isolation instead of buried in main.ts.
 
 /**
- * hermes-media:// stream handler's `resolveLocalFile` dependency: the protocol
+ * rabbit-media:// stream handler's `resolveLocalFile` dependency: the protocol
  * handler already percent-decoded the request pathname into `filePath`
  * (`parseMediaProtocolTarget` in media-protocol.ts), so this boundary only
  * bridges. Decoding or stripping leading slashes again would turn an absolute
@@ -22,7 +22,7 @@ export function resolveMediaStreamFile(filePath: unknown): string {
 }
 
 /**
- * hermes:readFileDataUrl / hermes:readFileDataUrlForAttach / hermes:readFileText
+ * rabbit:readFileDataUrl / rabbit:readFileDataUrlForAttach / rabbit:readFileText
  * IPC handlers: a renderer-supplied path → a bridged fs path.
  */
 export function resolveIpcFileReadPath(filePath: unknown): string {

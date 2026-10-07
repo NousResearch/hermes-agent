@@ -17,8 +17,8 @@ from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from rabbit_cli.config import DEFAULT_CONFIG, cfg_get
+from rabbit_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -160,7 +160,7 @@ class GatewayAgentCacheMixin:
             return
         override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
-        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        from rabbit_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
             override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
@@ -177,7 +177,7 @@ class GatewayAgentCacheMixin:
                     # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
                     # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
-                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                from rabbit_cli.models import normalize_opencode_base_url, opencode_provider_family
                 if opencode_provider_family(provider) is not None and override.get("base_url"):
                     # api_mode was just re-derived from the target model; a relay URL persisted by an older
                     # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
@@ -246,14 +246,11 @@ class GatewayAgentCacheMixin:
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:
         """True when *agent* running a model other than *config_model* is deliberate: a /model session
-        override names that model, or the Nous gateway moved the session off the ``nous/welcome``
-        alias that *config_model* still carries (``anon_auth.apply_model_switch``)."""
+        override names that model."""
         override = self._session_model_override(session_key)
         if override is not None and override.get("model") == agent.model:
             return True
-        # Exactly the recorded move (alias -> backing): a later fallback onto some other model is
-        # ordinary drift and still evicts.
-        return getattr(agent, "_nous_model_switch", None) == (config_model, agent.model)
+        return False
 
     def _release_running_agent_state(
         self, session_key: str, *, run_generation: Optional[int] = None
@@ -439,7 +436,7 @@ class GatewayAgentCacheMixin:
         with suppress(Exception):
             interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
             if interrupt_event is not None:
-                interrupt_event._hermes_run_generation = int(generation)
+                interrupt_event._rabbit_run_generation = int(generation)
 
     def _interrupt_running_turn(
         self, session_key: str, *, interrupt_reason: str, invalidation_reason: str, tool_reason: str | None = None,
@@ -505,7 +502,7 @@ class GatewayAgentCacheMixin:
             # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
             # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                from rabbit_cli.plugins import invoke_hook as _invoke_hook
 
                 _invoke_hook(
                     "agent_loop_stopped",
@@ -744,8 +741,8 @@ class GatewayAgentCacheMixin:
             from gateway.session import _slack_tools_loaded
             slack_tools = "1" if _slack_tools_loaded() else "0"
         try:
-            from hermes_constants import display_hermes_home
-            home_display = str(display_hermes_home())
+            from rabbit_constants import display_rabbit_home
+            home_display = str(display_rabbit_home())
         except Exception:
             home_display = ""
         key_tuple = (
@@ -826,13 +823,13 @@ class GatewayAgentCacheMixin:
         And the LRU-cap eviction runs inside the REQUESTING turn, whose agent may belong to another
         profile — so "some scope is present" is not enough either. The owner comes from the session
         key: a named profile's home, else the DEFAULT profile (``agent:main:`` keys), which is the
-        root Hermes dir even when the gateway was launched under a named profile. Its scope is
+        root Rabbit dir even when the gateway was launched under a named profile. Its scope is
         entered unless the current one already is the owner's."""
         from agent.secret_scope import current_secret_scope, is_multiplex_active
         scope = nullcontext()
         if is_multiplex_active():
             from gateway.run import _profile_runtime_scope
-            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            from rabbit_constants import get_default_rabbit_root, get_rabbit_home, rabbit_home_key
             owner = None
             store = getattr(self, "session_store", None)
             if session_key and store is not None:
@@ -841,8 +838,8 @@ class GatewayAgentCacheMixin:
                 except Exception:
                     logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
                                    session_key, exc_info=True)
-            owner_home = Path(owner) if owner else get_default_hermes_root()
-            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+            owner_home = Path(owner) if owner else get_default_rabbit_root()
+            if current_secret_scope() is None or rabbit_home_key(get_rabbit_home()) != rabbit_home_key(owner_home):
                 scope = _profile_runtime_scope(owner_home)
         with scope:
             target(*args)
@@ -1006,7 +1003,7 @@ class GatewayAgentCacheMixin:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
             del agent
         with suppress(Exception):
-            from hermes_cli.mem_trim import trim_memory
+            from rabbit_cli.mem_trim import trim_memory
             trim_memory(force=True, reason="agent_cache_pressure")
 
     def _enforce_agent_cache_cap(self) -> None:

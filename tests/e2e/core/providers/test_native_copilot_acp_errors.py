@@ -1,7 +1,7 @@
 """Copilot ACP wire conformance, part 2: ACP error responses and agent crashes.
 
 The agent (``tests/fakes/providers/copilot_acp.py``) answers ``session/prompt`` with JSON-RPC errors from
-the ACP / JSON-RPC 2.0 error space or dies mid-stream. Each row drives one real ``hermes chat -q`` and
+the ACP / JSON-RPC 2.0 error space or dies mid-stream. Each row drives one real ``rabbit chat -q`` and
 asserts the retry semantics the user sees:
 
 * transient failures (``-32603`` internal error, a crash after a partial chunk) are retried with a
@@ -55,8 +55,8 @@ CRASH_STDERR = "fatal: agent segfaulted (fake)"
 
 # Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
 KNOWN: dict[str, tuple[str, str]] = {
-    "auth_remedy": (r"^remedy 'hermes [^']+' is not implemented for copilot-acp: ",
-                    "#121290 copilot-acp auth failure tells the user to run a hermes command that is not implemented"),
+    "auth_remedy": (r"^remedy 'rabbit [^']+' is not implemented for copilot-acp: ",
+                    "#121290 copilot-acp auth failure tells the user to run a rabbit command that is not implemented"),
 }
 
 
@@ -144,16 +144,16 @@ def test_acp_failure_is_retried_per_semantics_and_surfaced_once(outcomes, name):
     wait_until(lambda: not [p for p in pids if _alive(p)], 10.0, f"agent processes {pids} to exit")
 
 
-REMEDY_RE = re.compile(r"`(hermes [^`]+)`")
+REMEDY_RE = re.compile(r"`(rabbit [^`]+)`")
 
 
 def test_auth_failure_remedy_is_an_actionable_command(outcomes):
     """The sign-in remedy printed for an ACP ``Authentication required`` must not be a dead end: any
-    ``hermes ...`` command it names has to be implemented for this provider."""
+    ``rabbit ...`` command it names has to be implemented for this provider."""
     out = outcomes["auth_required_not_retried"]
     assert out.run.returncode != 0 and "Authentication required" in out.run.stdout, out.run.describe()
     for command in REMEDY_RE.findall(out.run.stdout):
-        argv = [sys.executable, "-m", "hermes_cli.main", *command.split()[1:]]
+        argv = [sys.executable, "-m", "rabbit_cli.main", *command.split()[1:]]
         proc = subprocess.run(argv, cwd=out.nh.project, env=out.nh.env(), capture_output=True, text=True,
                               timeout=60, stdin=subprocess.DEVNULL)
         said = (proc.stdout + proc.stderr).lower()

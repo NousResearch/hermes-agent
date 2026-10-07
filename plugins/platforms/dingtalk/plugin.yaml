@@ -3,9 +3,9 @@ label: DingTalk
 kind: platform
 version: 1.0.0
 description: >
-  DingTalk gateway adapter for Hermes Agent.
+  DingTalk gateway adapter for Rabbit Agent.
   Connects to DingTalk via the dingtalk-stream SDK (Stream Mode) and relays
-  messages between DingTalk chats and the Hermes agent. Supports text, images,
+  messages between DingTalk chats and the Rabbit agent. Supports text, images,
   audio, video, rich text, files, group @mention gating, free-response chats,
   and per-user allowlists.
 author: NousResearch

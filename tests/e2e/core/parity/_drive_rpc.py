@@ -2,9 +2,9 @@
 
 * ``drive_tui_gateway`` — ``python -m tui_gateway.entry`` over stdio, exactly how
   the Ink TUI spawns it (launch dir = the user's shell cwd); stops on stdin EOF.
-* ``drive_serve`` — ``hermes serve --host 127.0.0.1 --port 0`` spawned the way the
-  Desktop spawns it (``TERMINAL_CWD`` + ``HERMES_DASHBOARD_SESSION_TOKEN`` +
-  ``HERMES_DESKTOP=1`` env, stdin closed), port read from the READY sentinel on
+* ``drive_serve`` — ``rabbit serve --host 127.0.0.1 --port 0`` spawned the way the
+  Desktop spawns it (``TERMINAL_CWD`` + ``RABBIT_DASHBOARD_SESSION_TOKEN`` +
+  ``RABBIT_DESKTOP=1`` env, stdin closed), port read from the READY sentinel on
   stdout, one turn over the ``/api/ws`` JSON-RPC WebSocket; stops on SIGTERM.
 
 Both speak the same contract (``tui_gateway/contracts``): ``session.create`` →
@@ -27,7 +27,7 @@ from tests.e2e.core.parity._helpers import (
     TURN_TIMEOUT,
     DriveResult,
     ParityHome,
-    hermes_argv,
+    rabbit_argv,
     terminate,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -169,11 +169,11 @@ def drive_tui_gateway(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveR
             graceful = True
         except subprocess.TimeoutExpired:
             terminate(proc)
-    return DriveResult(final_text=text, toolset="hermes-cli", graceful_exit=graceful,
+    return DriveResult(final_text=text, toolset="rabbit-cli", graceful_exit=graceful,
                        extra={"exit_code": proc.returncode, "stderr_tail": cap.stderr[-2000:]})
 
 
-# hermes serve (Desktop backend) ------------------------------------------------------
+# rabbit serve (Desktop backend) ------------------------------------------------------
 
 
 @dataclass
@@ -184,15 +184,15 @@ class ServeProcess:
 
 
 def spawn_serve(ph: ParityHome) -> ServeProcess:
-    """Spawn ``hermes serve`` with the Desktop's argv/env/stdio shape (electron/main.ts)."""
+    """Spawn ``rabbit serve`` with the Desktop's argv/env/stdio shape (electron/main.ts)."""
     token = uuid.uuid4().hex
     env = ph.env({
         "TERMINAL_CWD": str(ph.project),
-        "HERMES_DASHBOARD_SESSION_TOKEN": token,
-        "HERMES_DESKTOP": "1",
+        "RABBIT_DASHBOARD_SESSION_TOKEN": token,
+        "RABBIT_DESKTOP": "1",
     })
     proc = subprocess.Popen(
-        hermes_argv("serve", "--host", "127.0.0.1", "--port", "0"), cwd=ph.home, env=env,
+        rabbit_argv("serve", "--host", "127.0.0.1", "--port", "0"), cwd=ph.home, env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
     )
     return ServeProcess(proc=proc, cap=StreamCapture().start(proc), token=token)
@@ -210,7 +210,7 @@ def first_stdout_line(sp: ServeProcess, timeout: float = READY_TIMEOUT) -> str:
             raise AssertionError(f"serve exited {sp.proc.poll()} before any stdout line\n{sp.cap.stderr[-3000:]}")
         if line:
             return line
-        if "HERMES_BACKEND_READY" in sp.cap.stderr:
+        if "RABBIT_BACKEND_READY" in sp.cap.stderr:
             raise AssertionError(
                 "READY sentinel was written to STDERR; the Desktop only watches stdout "
                 f"(backend-ready.ts):\n{sp.cap.stderr[-1500:]}")
@@ -267,6 +267,6 @@ def drive_serve(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
         # Desktop quit path: SIGTERM, bounded wait.
         code = terminate(sp.proc, timeout=60)
         graceful = code is not None and code in (0, -15, 143)
-    return DriveResult(final_text=text, toolset="hermes-cli", cwd_channel="TERMINAL_CWD + session.create cwd",
+    return DriveResult(final_text=text, toolset="rabbit-cli", cwd_channel="TERMINAL_CWD + session.create cwd",
                        graceful_exit=graceful,
                        extra={"exit_code": sp.proc.returncode, "stderr_tail": sp.cap.stderr[-2000:]})

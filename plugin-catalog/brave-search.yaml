@@ -1,11 +1,11 @@
 name: brave-search
-repo: https://github.com/rabilrbl/hermes-brave-search-plugin
+repo: https://github.com/rabilrbl/rabbit-brave-search-plugin
 sha: 4134cbef910c14c63e6b284b0820b30f3811ab47
-description: Brave Search API tools for live web search inside Hermes
+description: Brave Search API tools for live web search inside Rabbit
 maintainer: rabilrbl
 tier: community
 category: web
-docs_url: https://github.com/rabilrbl/hermes-brave-search-plugin#readme
+docs_url: https://github.com/rabilrbl/rabbit-brave-search-plugin#readme
 capabilities:
   provides_tools:
   - brave_web_search

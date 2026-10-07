@@ -1,12 +1,12 @@
 ---
+author: Nous Research
 name: pdf
 description: "PDF files: create, read, merge, fill, OCR, edit text."
 version: 1.1.0
-author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [pdf, documents, forms, ocr, text-extraction, reportlab, pypdf, pdfplumber, pymupdf, marker]
     category: productivity
     related_skills: [docx, xlsx, powerpoint]

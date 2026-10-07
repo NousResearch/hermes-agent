@@ -1,6 +1,6 @@
 # Egress credential-injection proxy (iron-proxy)
 
-When Hermes runs your agent inside a Docker terminal sandbox, that sandbox normally holds your real upstream API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.). A prompt-injected agent in that sandbox can `cat ~/.config/openrouter/auth.json` or `printenv | grep -i key` and exfiltrate them.
+When Rabbit runs your agent inside a Docker terminal sandbox, that sandbox normally holds your real upstream API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.). A prompt-injected agent in that sandbox can `cat ~/.config/openrouter/auth.json` or `printenv | grep -i key` and exfiltrate them.
 
 The egress proxy fixes this: the sandbox holds opaque **proxy tokens**, never the real keys. All outbound traffic from the sandbox routes through a local [iron-proxy](https://github.com/ironsh/iron-proxy) daemon (Apache-2.0, Go) on the host, which terminates TLS and swaps the proxy token for the real credential before forwarding the request upstream. Compromise the sandbox and the attacker walks away with tokens that only work behind the **configured trusted proxy boundary** — the CA private key and the proxy endpoint integrity are part of that boundary. If traffic can be redirected to attacker-controlled proxy infrastructure (e.g. a stolen CA private key or a hijacked proxy endpoint), the token guarantee no longer holds.
 
@@ -9,15 +9,15 @@ This release wires the egress proxy into the Docker backend only. Modal, Daytona
 ## What it is
 
 - An `iron-proxy` subprocess on the host, with its pinned binary in the PM tool store
-- A local CA at `~/.hermes/proxy/ca.crt` that the sandbox trusts so iron-proxy can MITM TLS and rewrite headers
-- A `proxy.yaml` config at `~/.hermes/proxy/proxy.yaml` listing the upstream hosts you allow and the secrets-transform mapping
+- A local CA at `~/.rabbit/proxy/ca.crt` that the sandbox trusts so iron-proxy can MITM TLS and rewrite headers
+- A `proxy.yaml` config at `~/.rabbit/proxy/proxy.yaml` listing the upstream hosts you allow and the secrets-transform mapping
 - A `mappings.json` recording which proxy token corresponds to which real env var
 
-The sandbox gets `HTTPS_PROXY=http://host.docker.internal:9090`, `HTTP_PROXY=http://host.docker.internal:9091`, and standard provider env vars such as `OPENROUTER_API_KEY` set to opaque proxy tokens. Matching `HERMES_PROXY_TOKEN_<ENV_NAME>` aliases are also exported for diagnostics. Existing provider SDKs read the usual env names, send the proxy token in `Authorization`, and iron-proxy's `secrets` transform substitutes the real value sourced from the host-side daemon environment.
+The sandbox gets `HTTPS_PROXY=http://host.docker.internal:9090`, `HTTP_PROXY=http://host.docker.internal:9091`, and standard provider env vars such as `OPENROUTER_API_KEY` set to opaque proxy tokens. Matching `RABBIT_PROXY_TOKEN_<ENV_NAME>` aliases are also exported for diagnostics. Existing provider SDKs read the usual env names, send the proxy token in `Authorization`, and iron-proxy's `secrets` transform substitutes the real value sourced from the host-side daemon environment.
 
 ## What it is not
 
-- It is **not** the inbound `hermes proxy` command, which is an OAuth aggregator reverse proxy. Different command (`hermes egress`), different direction.
+- It is **not** the inbound `rabbit proxy` command, which is an OAuth aggregator reverse proxy. Different command (`rabbit egress`), different direction.
 - It does **not** sit between your local terminal and providers — only between the sandbox and providers.
 - It does **not** rewrite credentials for in-process LLM calls the host process makes. Those continue to use your `.env` keys directly. The threat model is the *sandbox*, not the host.
 
@@ -25,34 +25,34 @@ The sandbox gets `HTTPS_PROXY=http://host.docker.internal:9090`, `HTTP_PROXY=htt
 
 ```bash
 # 1. Install the iron-proxy binary (pinned version, SHA-256 verified)
-hermes egress install
+rabbit egress install
 
 # 2. Run the wizard: generates CA, mints proxy tokens for every provider key
 #    in your env, writes proxy.yaml.
-hermes egress setup
+rabbit egress setup
 
 # 3. Start the proxy daemon
-hermes egress start
+rabbit egress start
 
 # 4. Check status
-hermes egress status
+rabbit egress status
 ```
 
-`hermes egress setup` discovers provider keys from your environment. If your keys live only in `~/.hermes/.env` (not exported into your shell), setup reads that file automatically — you don't have to `export` them first.
+`rabbit egress setup` discovers provider keys from your environment. If your keys live only in `~/.rabbit/.env` (not exported into your shell), setup reads that file automatically — you don't have to `export` them first.
 
-When you re-run `setup` later (new allowlist host, rotated tokens, switched credential source), it stops the running daemon because its config is held in memory, then **offers to restart it for you** so the change takes effect immediately. On a tty it asks; pass `--restart` to always restart or `--no-restart` to leave it down. To apply changes any other time, `hermes egress restart` is the one-command stop-then-start.
+When you re-run `setup` later (new allowlist host, rotated tokens, switched credential source), it stops the running daemon because its config is held in memory, then **offers to restart it for you** so the change takes effect immediately. On a tty it asks; pass `--restart` to always restart or `--no-restart` to leave it down. To apply changes any other time, `rabbit egress restart` is the one-command stop-then-start.
 
 Once running, the Docker terminal backend automatically:
 
-- Mounts `~/.hermes/proxy/ca.crt` into the sandbox at `/etc/ssl/certs/hermes-egress-ca.crt`
+- Mounts `~/.rabbit/proxy/ca.crt` into the sandbox at `/etc/ssl/certs/rabbit-egress-ca.crt`
 - Sets `HTTPS_PROXY`, `HTTP_PROXY`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS` to make every common HTTP runtime route through the proxy and trust the CA
 - Sets `NODE_OPTIONS=--use-openssl-ca` (appended to whatever you already have in `docker_env.NODE_OPTIONS`) so Node.js routes through the OpenSSL store the other CA-bundle vars control — see [Node.js asymmetric CA caveat](#nodejs-asymmetric-ca-caveat) below for the residual gap
 - Adds `--add-host=host.docker.internal:host-gateway` so the sandbox can reach the host-side proxy on Linux (Docker Desktop handles this automatically on macOS/Windows)
-- Exports the proxy token under the standard provider env name (for example `OPENROUTER_API_KEY`) plus one `HERMES_PROXY_TOKEN_<ENV_NAME>` diagnostic alias per minted mapping
+- Exports the proxy token under the standard provider env name (for example `OPENROUTER_API_KEY`) plus one `RABBIT_PROXY_TOKEN_<ENV_NAME>` diagnostic alias per minted mapping
 
 ## Configuration
 
-The full config lives in `~/.hermes/config.yaml` under the `proxy:` section. Defaults are documented inline; everything is optional.
+The full config lives in `~/.rabbit/config.yaml` under the `proxy:` section. Defaults are documented inline; everything is optional.
 
 ```yaml
 proxy:
@@ -67,7 +67,7 @@ proxy:
   auto_install: true
 
   # Where iron-proxy looks up the real upstream secrets at egress time.
-  #   env       — process env (default). Whatever is in your ~/.hermes/.env
+  #   env       — process env (default). Whatever is in your ~/.rabbit/.env
   #               at proxy-start time is the source of truth.
   #   bitwarden — refetch from Bitwarden Secrets Manager on each proxy
   #               restart. Rotation in the BW web app propagates without
@@ -98,8 +98,8 @@ proxy:
 
   # Extra allowed upstream hosts beyond the bundled defaults.
   # Wildcards (`*.foo.com`) are supported. The defaults cover OpenRouter,
-  # OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, DeepSeek,
-  # and Nous Research.
+  # OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, and
+  # DeepSeek.
   extra_allowed_hosts: []
 ```
 
@@ -111,7 +111,7 @@ api.openai.com          api.anthropic.com
 generativelanguage.googleapis.com
 api.x.ai                api.mistral.ai
 api.groq.com            api.together.xyz
-api.deepseek.com        inference.nousresearch.com
+api.deepseek.com
 ```
 
 If your agent needs an upstream that isn't on the list — a self-hosted inference endpoint, an extra cloud LLM, an MCP server — add it to `proxy.extra_allowed_hosts`. Wildcards are matched against the full hostname (`*.example.com` matches `api.example.com` and `staging.example.com` but not `example.com` itself).
@@ -151,7 +151,7 @@ The `secrets` transform swaps the proxy token wherever it appears in a matched l
 
 | Provider | Env var | Swapped in |
 |---|---|---|
-| OpenRouter, OpenAI, Groq, Together, DeepSeek, Mistral, xAI, Nous | `*_API_KEY` | `Authorization` header |
+| OpenRouter, OpenAI, Groq, Together, DeepSeek, Mistral, xAI | `*_API_KEY` | `Authorization` header |
 | Anthropic native | `ANTHROPIC_API_KEY` | `x-api-key` + `Authorization` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY` | `api-key` + `Authorization` (`*.openai.azure.com`, `*.cognitiveservices.azure.com`, `*.services.ai.azure.com`) |
 | Google AI Studio (Gemini) | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `x-goog-api-key` header or `?key=` query param |
@@ -167,14 +167,14 @@ Auth schemes that involve request signing or SDK-minted OAuth cannot be swapped 
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS Bedrock / SageMaker | SigV4-signed requests |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP Vertex AI | OAuth minted from a service-account file |
 
-These env vars are present on most developer laptops for unrelated tooling (terraform, gcloud, aws CLI, ECR push). They surface as warnings in the wizard and `hermes egress status` but never block the proxy from starting. If you don't use those providers from sandboxes, `unset` the vars to clear the warning.
+These env vars are present on most developer laptops for unrelated tooling (terraform, gcloud, aws CLI, ECR push). They surface as warnings in the wizard and `rabbit egress status` but never block the proxy from starting. If you don't use those providers from sandboxes, `unset` the vars to clear the warning.
 
 ## Bitwarden integration
 
-If you already use Bitwarden Secrets Manager via [`hermes secrets bitwarden setup`](../secrets/bitwarden), the egress proxy can pull real credentials from there instead of `os.environ`:
+If you already use Bitwarden Secrets Manager via [`rabbit secrets bitwarden setup`](../secrets/bitwarden), the egress proxy can pull real credentials from there instead of `os.environ`:
 
 ```bash
-hermes egress setup --from-bitwarden
+rabbit egress setup --from-bitwarden
 ```
 
 This sets `proxy.credential_source: bitwarden` and discovers provider env names from your BW project.
@@ -184,17 +184,17 @@ This sets `proxy.credential_source: bitwarden` and discovers provider env names 
 When `credential_source: bitwarden`, the iron-proxy daemon refetches secrets from BWS via `bws secret list <project_id>` **every time it starts**. So the rotation flow is:
 
 1. Rotate a key in the Bitwarden web app.
-2. `hermes egress stop && hermes egress start` on the host.
+2. `rabbit egress stop && rabbit egress start` on the host.
 3. Sandboxes started after that point swap proxy tokens for the new value.
 
-No `.env` edits. No Hermes restart on the host. The proxy daemon is the only thing that touches the new value — your host process and `os.environ` are untouched.
+No `.env` edits. No Rabbit restart on the host. The proxy daemon is the only thing that touches the new value — your host process and `os.environ` are untouched.
 
 ### Fail-loud at start
 
-When `credential_source: bitwarden`, `hermes egress start` pre-checks at the wizard layer AND `_build_proxy_subprocess_env` re-checks at the daemon layer:
+When `credential_source: bitwarden`, `rabbit egress start` pre-checks at the wizard layer AND `_build_proxy_subprocess_env` re-checks at the daemon layer:
 
-- BWS access token env var is unset → refuse to start with a hint to `unset` and re-run, or `hermes egress setup --no-bitwarden` to switch back to env mode
-- `secrets.bitwarden.project_id` is empty → refuse to start with a hint to run `hermes secrets bitwarden setup`
+- BWS access token env var is unset → refuse to start with a hint to `unset` and re-run, or `rabbit egress setup --no-bitwarden` to switch back to env mode
+- `secrets.bitwarden.project_id` is empty → refuse to start with a hint to run `rabbit secrets bitwarden setup`
 - `bws secret list` returns no values for one or more mapped providers → refuse to start, listing the missing names
 
 This is intentional. Falling back to host env in BW mode reintroduces exactly the staleness bug the BW path is meant to defeat (operator picked BW for the rotation guarantee; silent fallback breaks that guarantee).
@@ -205,90 +205,90 @@ The `proxy.allow_env_fallback: true` config flag opts back in to the legacy "sil
 
 | From | To | Command |
 |---|---|---|
-| env | bitwarden | `hermes egress setup --from-bitwarden` |
-| bitwarden | env | `hermes egress setup --no-bitwarden` |
+| env | bitwarden | `rabbit egress setup --from-bitwarden` |
+| bitwarden | env | `rabbit egress setup --no-bitwarden` |
 
-**Re-running `hermes egress setup` WITHOUT either flag preserves the existing `credential_source`** — the wizard refuses to silently downgrade you back to env. This matters because once you've configured bitwarden mode, the rotation guarantee is what you signed up for; you have to explicitly say "I want env again" to change it.
+**Re-running `rabbit egress setup` WITHOUT either flag preserves the existing `credential_source`** — the wizard refuses to silently downgrade you back to env. This matters because once you've configured bitwarden mode, the rotation guarantee is what you signed up for; you have to explicitly say "I want env again" to change it.
 
 ## Slash commands
 
 The CLI subcommand tree:
 
 ```
-hermes egress install                  # download the pinned iron-proxy binary
-hermes egress install --force          # check and repair the managed copy
+rabbit egress install                  # download the pinned iron-proxy binary
+rabbit egress install --force          # check and repair the managed copy
 
-hermes egress setup                    # interactive wizard
-hermes egress setup --tunnel-port N    # override the tunnel listener port
-hermes egress setup --from-bitwarden   # use BWS as credential source (fail-loud)
-hermes egress setup --no-bitwarden     # explicitly switch back to env mode
-hermes egress setup --rotate-tokens    # mint fresh tokens for every provider
+rabbit egress setup                    # interactive wizard
+rabbit egress setup --tunnel-port N    # override the tunnel listener port
+rabbit egress setup --from-bitwarden   # use BWS as credential source (fail-loud)
+rabbit egress setup --no-bitwarden     # explicitly switch back to env mode
+rabbit egress setup --rotate-tokens    # mint fresh tokens for every provider
                                        #   (default preserves existing)
 
-hermes egress start                    # spawn the managed proxy daemon
-hermes egress stop                     # SIGTERM (then SIGKILL after 5s grace)
-hermes egress restart                  # stop (if running) then start — needed when
+rabbit egress start                    # spawn the managed proxy daemon
+rabbit egress stop                     # SIGTERM (then SIGKILL after 5s grace)
+rabbit egress restart                  # stop (if running) then start — needed when
                                        #   upstream SECRETS change (rotation, new provider)
-hermes egress reload                   # hot-reload the ruleset from proxy.yaml via the
+rabbit egress reload                   # hot-reload the ruleset from proxy.yaml via the
                                        #   management API — no restart, no dropped
                                        #   connections (allowlist / mapping edits)
 
-hermes egress status                   # binary + config + pid + listening state + mappings
-hermes egress status --show-tokens     # print proxy tokens in full
+rabbit egress status                   # binary + config + pid + listening state + mappings
+rabbit egress status --show-tokens     # print proxy tokens in full
                                        #   (default: redacted prefix + suffix only)
 
-hermes egress disable                  # flip proxy.enabled = false
+rabbit egress disable                  # flip proxy.enabled = false
                                        #   (does not stop a running proxy)
 
-hermes egress config                   # print the path to proxy.yaml for debugging
+rabbit egress config                   # print the path to proxy.yaml for debugging
 ```
 
 ### Token rotation
 
-By default, `hermes egress setup` **preserves** proxy tokens for providers that already have them. Adding a new provider mints a fresh token only for the new one; existing tokens are unchanged. This avoids 401-ing running sandboxes when you re-run the wizard.
+By default, `rabbit egress setup` **preserves** proxy tokens for providers that already have them. Adding a new provider mints a fresh token only for the new one; existing tokens are unchanged. This avoids 401-ing running sandboxes when you re-run the wizard.
 
 `--rotate-tokens` rolls every token:
 
 ```bash
-hermes egress setup --rotate-tokens
+rabbit egress setup --rotate-tokens
 ```
 
 When there are existing tokens AND stdin is a tty, the wizard prompts for confirmation:
 
 ```
 ⚠  --rotate-tokens will invalidate proxy tokens in every running
-   Hermes sandbox.  They will start 401-ing against upstreams until restarted.
+   Rabbit sandbox.  They will start 401-ing against upstreams until restarted.
 Type 'rotate' to confirm:
 ```
 
 Non-tty invocations (CI, scripts) skip the prompt — the flag is treated as deliberate. Before any overwrite the current `mappings.json` is copied to a timestamped sibling so manual recovery is possible:
 
 ```
-backup: ~/.hermes/proxy/mappings.json.rotated-20260524T143012
+backup: ~/.rabbit/proxy/mappings.json.rotated-20260524T143012
 ```
 
-`hermes egress setup` stops a running daemon when it rewrites config or token mappings, because the daemon keeps the old YAML in memory. After `--rotate-tokens`:
+`rabbit egress setup` stops a running daemon when it rewrites config or token mappings, because the daemon keeps the old YAML in memory. After `--rotate-tokens`:
 
 ```bash
-hermes egress start
+rabbit egress start
 ```
 
-Containers already running hold the old tokens and will need to be restarted to pick up the new ones. New persistent Docker containers include an egress-posture label, so Hermes will not reuse a pre-egress or pre-rotation container for new sessions.
+Containers already running hold the old tokens and will need to be restarted to pick up the new ones. New persistent Docker containers include an egress-posture label, so Rabbit will not reuse a pre-egress or pre-rotation container for new sessions.
 
 ## State directory layout
 
-PM owns the managed binary. Hermes honors an `iron-proxy` executable on
+PM owns the managed binary. Rabbit honors an `iron-proxy` executable on
 `PATH` before checking PM selection. If neither exists, `auto_install` requests the pinned package, subject
 to PM's lazy-install policy. Explicit installation checks and repairs managed
 entries without forcing a new download of valid files. See
 [PM security tools](../../reference/package-management.md#optional-security-tools) for hash and signature checks.
 
 Daemon configuration, credentials, and logs remain profile-scoped under
-`$HERMES_HOME/proxy/` (`~/.hermes/proxy/` by default):
+`$RABBIT_HOME/proxy/` (`~/.rabbit/proxy/` by default):
 
 | Path | Mode | Purpose |
 |---|---|---|
-| `~/.hermes/proxy/` (dir) | `0o700` | Owned + traversable by you only |
+| `~/.rabbit/proxy/` (dir) | `0o700` | Owned + traversable by you only |
 | `ca.crt` | `0o644` | Public CA cert distributed into sandboxes |
 | `ca.key` | `0o600` | CA signing key — never leaves the host |
 | `proxy.yaml` | `0o600` | iron-proxy config; rewritten every `setup` |
@@ -303,9 +303,9 @@ The CA private key is the most sensitive file. It's created with `0o600` from th
 
 ### Logging on iron-proxy v0.39
 
-On the currently pinned binary version (**v0.39.0**) iron-proxy writes ALL output — daemon-level diagnostics AND per-request records — to **`~/.hermes/proxy/iron-proxy.log`**. v0.39's `config.Log` struct doesn't have a separate `audit_path` field, so we can't route per-request records to a dedicated stream there.
+On the currently pinned binary version (**v0.39.0**) iron-proxy writes ALL output — daemon-level diagnostics AND per-request records — to **`~/.rabbit/proxy/iron-proxy.log`**. v0.39's `config.Log` struct doesn't have a separate `audit_path` field, so we can't route per-request records to a dedicated stream there.
 
-We still pre-create `~/.hermes/proxy/audit.log` at `0o600` with `O_NOFOLLOW` because:
+We still pre-create `~/.rabbit/proxy/audit.log` at `0o600` with `O_NOFOLLOW` because:
 
 1. It reserves the path for the future version bump: when the pinned version moves to one that supports `log.audit_path`, per-request records will start flowing there without operator-side reconfiguration. **Until then the file stays at 0 bytes — do not point monitoring, alerting, or forensics tooling at it yet.** Use `iron-proxy.log` for everything today.
 2. The 0o600-from-first-byte guarantee defends against the upstream-fix-day where v0.40+ creates the file under its default umask if it doesn't already exist.
@@ -332,17 +332,17 @@ Both files are appended to across restarts. Rotate them with logrotate if you ca
                                        │
                                        │ daemon + per-request log (combined on v0.39)
                                        ▼
-                              ~/.hermes/proxy/iron-proxy.log
-                              (~/.hermes/proxy/audit.log reserved for v0.40+ split stream)
+                              ~/.rabbit/proxy/iron-proxy.log
+                              (~/.rabbit/proxy/audit.log reserved for v0.40+ split stream)
 ```
 
-1. Sandbox makes an HTTPS request, e.g. `POST https://openrouter.ai/v1/chat/completions` with `Authorization: Bearer hermes-proxy-openrouter-…` (the proxy token, not the real key).
+1. Sandbox makes an HTTPS request, e.g. `POST https://openrouter.ai/v1/chat/completions` with `Authorization: Bearer rabbit-proxy-openrouter-…` (the proxy token, not the real key).
 2. Because `HTTPS_PROXY` is set, the request goes to iron-proxy as a CONNECT tunnel.
 3. iron-proxy checks the allowlist. `openrouter.ai` is allowed.
 4. iron-proxy mints a leaf cert signed by our CA for `openrouter.ai`, terminates the TLS connection, inspects the request.
 5. The `secrets` transform matches the proxy-token string in the `Authorization` header and substitutes the real `OPENROUTER_API_KEY` value, sourced from iron-proxy's own environment.
 6. Request is re-encrypted and forwarded to OpenRouter.
-7. The request is logged to `~/.hermes/proxy/iron-proxy.log` on v0.39. When the pinned binary version supports the split stream (v0.40+), per-request records will flow to `~/.hermes/proxy/audit.log` and daemon-level diagnostics will stay in `iron-proxy.log`. See [Logging on iron-proxy v0.39](#logging-on-iron-proxy-v039).
+7. The request is logged to `~/.rabbit/proxy/iron-proxy.log` on v0.39. When the pinned binary version supports the split stream (v0.40+), per-request records will flow to `~/.rabbit/proxy/audit.log` and daemon-level diagnostics will stay in `iron-proxy.log`. See [Logging on iron-proxy v0.39](#logging-on-iron-proxy-v039).
 
 A request to a non-allowlisted host (e.g. `https://attacker.example.com/leak?key=...`) is rejected with HTTP 403 before any bytes leave the host. The denial is recorded in `iron-proxy.log` with the upstream host and the source sandbox.
 
@@ -352,7 +352,7 @@ When the Docker backend starts a container with `proxy.enabled: true` and the da
 
 | Arg | Purpose |
 |---|---|
-| `-v ~/.hermes/proxy/ca.crt:/etc/ssl/certs/hermes-egress-ca.crt:ro` | Read-only mount of the CA |
+| `-v ~/.rabbit/proxy/ca.crt:/etc/ssl/certs/rabbit-egress-ca.crt:ro` | Read-only mount of the CA |
 | `-e HTTPS_PROXY=http://host.docker.internal:9090` | Python httpx / curl / go default transport / Node fetch |
 | `-e HTTP_PROXY=http://host.docker.internal:9091` | curl + wget for plain HTTP — the plain-HTTP forward listener lives on `tunnel_port + 1` |
 | `-e NO_PROXY=127.0.0.1,localhost,::1` | Loopback dev servers inside the sandbox bypass the proxy |
@@ -361,9 +361,9 @@ When the Docker backend starts a container with `proxy.enabled: true` and the da
 | `-e CURL_CA_BUNDLE=…ca.crt` | curl — **replaces** the system store |
 | `-e NODE_EXTRA_CA_CERTS=…ca.crt` | Node.js — **adds** to the system store |
 | `-e NODE_OPTIONS="<your value> --use-openssl-ca"` | Node.js — route through OpenSSL store (appended; your `--max-old-space-size` etc. are preserved) |
-| `-e HERMES_EGRESS_PROXY=1` | Sentinel the agent can read to know it's proxy-aware |
+| `-e RABBIT_EGRESS_PROXY=1` | Sentinel the agent can read to know it's proxy-aware |
 | `-e OPENROUTER_API_KEY=<proxy-token>` | Standard provider env names receive proxy tokens so existing SDKs keep working |
-| `-e HERMES_PROXY_TOKEN_<NAME>=…` | Diagnostic alias for each mapping; same value as the standard provider env var |
+| `-e RABBIT_PROXY_TOKEN_<NAME>=…` | Diagnostic alias for each mapping; same value as the standard provider env var |
 | `--add-host=host.docker.internal:host-gateway` | Linux-only; Docker Desktop maps it automatically |
 
 #### Node.js asymmetric CA caveat
@@ -376,7 +376,7 @@ This is a known v1 limitation. Track [github.com/ironsh/iron-proxy/issues](https
 
 ### docker\_env collisions
 
-If you set proxy-controlling env vars in your `docker_env:` config block (rare but possible), Hermes refuses to start the sandbox when `enforce_on_docker: true` is set. This includes both:
+If you set proxy-controlling env vars in your `docker_env:` config block (rare but possible), Rabbit refuses to start the sandbox when `enforce_on_docker: true` is set. This includes both:
 
 - Egress-control vars: `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`
 - Real provider env vars: every name in `mappings.json` (e.g. `OPENROUTER_API_KEY`, `OPENAI_API_KEY`)
@@ -394,17 +394,17 @@ With `enforce_on_docker: false` the same situation surfaces as a warning and you
 
 ## PID and nonce defense
 
-The daemon's pidfile is written with `O_EXCL` + `O_NOFOLLOW` + ownership check. Concurrent `hermes egress start` calls produce one of two outcomes:
+The daemon's pidfile is written with `O_EXCL` + `O_NOFOLLOW` + ownership check. Concurrent `rabbit egress start` calls produce one of two outcomes:
 
-- The existing pidfile points at a live iron-proxy → second start refuses with "another start in progress" + a hint to run `hermes egress stop`
+- The existing pidfile points at a live iron-proxy → second start refuses with "another start in progress" + a hint to run `rabbit egress stop`
 - The existing pidfile is stale (crashed daemon) → second start unlinks it and retries once
 
 Beyond that, every `start_proxy` plants a fresh random nonce in two places:
 
-- `HERMES_IRON_PROXY_NONCE=<nonce>` in the daemon's env
-- `~/.hermes/proxy/iron-proxy.nonce` (0o600 sibling of the pidfile)
+- `RABBIT_IRON_PROXY_NONCE=<nonce>` in the daemon's env
+- `~/.rabbit/proxy/iron-proxy.nonce` (0o600 sibling of the pidfile)
 
-When `hermes egress stop` (or any other `_pid_alive` check) wants to confirm a PID still refers to *our* daemon — not an unrelated process that was assigned the same PID after iron-proxy crashed — it reads `/proc/<pid>/environ` and looks for the nonce. The on-disk copy is what makes this work across CLI invocations (the in-memory `_proxy_nonce` is per-process and resets on every `hermes` invocation).
+When `rabbit egress stop` (or any other `_pid_alive` check) wants to confirm a PID still refers to *our* daemon — not an unrelated process that was assigned the same PID after iron-proxy crashed — it reads `/proc/<pid>/environ` and looks for the nonce. The on-disk copy is what makes this work across CLI invocations (the in-memory `_proxy_nonce` is per-process and resets on every `rabbit` invocation).
 
 If the nonce check fails, the code falls back to matching `argv[0]` basename against `iron-proxy`. `stop_proxy` additionally captures `/proc/<pid>/stat` starttime before SIGTERM and re-verifies after the 5s grace window — if starttime drifted, the PID was recycled mid-wait and SIGKILL is suppressed with a warning.
 
@@ -421,8 +421,8 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 
 **What it does NOT protect against:**
 
-- A compromised host process. If the agent process itself is compromised, real keys in the host's `~/.hermes/.env` are exposed regardless. This is a defense-in-depth feature for *sandbox* compromise, not host compromise.
-- **Loss of the trusted-proxy boundary itself.** The token-swap guarantee assumes the sandbox trusts the mounted CA cert (`/etc/ssl/certs/hermes-egress-ca.crt`) and that traffic actually reaches *our* iron-proxy. If the CA private key is stolen, or sandbox egress is redirected to attacker-controlled proxy infrastructure, an adversary-in-the-middle can present a valid leaf cert and the proxy tokens are no longer a meaningful boundary (cf. [MITRE ATT&CK T1588.004](https://attack.mitre.org/techniques/T1588/004/) — obtained TLS certificate material enabling AiTM). Protect the CA key (it's `0600`, host-only) and the proxy endpoint accordingly.
+- A compromised host process. If the agent process itself is compromised, real keys in the host's `~/.rabbit/.env` are exposed regardless. This is a defense-in-depth feature for *sandbox* compromise, not host compromise.
+- **Loss of the trusted-proxy boundary itself.** The token-swap guarantee assumes the sandbox trusts the mounted CA cert (`/etc/ssl/certs/rabbit-egress-ca.crt`) and that traffic actually reaches *our* iron-proxy. If the CA private key is stolen, or sandbox egress is redirected to attacker-controlled proxy infrastructure, an adversary-in-the-middle can present a valid leaf cert and the proxy tokens are no longer a meaningful boundary (cf. [MITRE ATT&CK T1588.004](https://attack.mitre.org/techniques/T1588/004/) — obtained TLS certificate material enabling AiTM). Protect the CA key (it's `0600`, host-only) and the proxy endpoint accordingly.
 - Sandbox processes that bypass `HTTPS_PROXY` by using a raw socket. The proxy can't intercept what doesn't route to it. Node.js is partially mitigated via `NODE_OPTIONS=--use-openssl-ca` (see caveat above).
 - Credential files explicitly mounted into Docker (`terminal.credential_files` or skill-registered mounts). Egress protects provider env vars; it does not inspect arbitrary mounted files. Do not mount real provider credentials into an enforced egress sandbox.
 - Allowlisted-host data exfiltration. If `api.openai.com` is allowed, an agent could embed exfil data in a request body to that host. The daemon log captures the request happened but doesn't prevent it.
@@ -431,18 +431,18 @@ If the nonce check fails, the code falls back to matching `argv[0]` basename aga
 
 ## Failure modes
 
-- **Binary not installed, `auto_install: true`** — first `hermes egress setup` or `hermes egress start` downloads it. SHA-256 verified against the upstream `checksums.txt`.
+- **Binary not installed, `auto_install: true`** — first `rabbit egress setup` or `rabbit egress start` downloads it. SHA-256 verified against the upstream `checksums.txt`.
 - **Binary not installed, `auto_install: false`** — `start` fails with a clear message pointing to manual install.
 - **`enabled: true` but proxy not running** — with `enforce_on_docker: true` (default), Docker sandbox creation refuses to start with an explanatory error. With `enforce_on_docker: false`, it falls back to direct outbound with real creds and logs a warning.
-- **Port collision** — iron-proxy exits immediately; `hermes egress start` reports the last 20 log lines and fails with non-zero exit.
+- **Port collision** — iron-proxy exits immediately; `rabbit egress start` reports the last 20 log lines and fails with non-zero exit.
 - **Upstream-host denied** — sandbox gets HTTP 403 from the proxy with a body explaining which host wasn't allowed. The agent sees the error and reports it.
 - **Cloud metadata IP (169.254.169.254) requested** — refused by `upstream_deny_cidrs` regardless of allowlist.
 - **`docker_env` collides with a proxy-controlling var (enforce on)** — sandbox creation refuses with the names of the colliding keys.
 - **`docker_forward_env` tries to forward a protected provider key (enforce on)** — sandbox creation refuses; remove the key from `docker_forward_env` or opt out with `proxy.enforce_on_docker: false`.
-- **`docker_extra_args` overrides proxy env/network controls (enforce on)** — sandbox creation refuses; user-supplied `-e HTTPS_PROXY=...`, `--env-file`, or `--network` args run after Hermes' generated args and can bypass egress.
-- **BWS access token missing in `credential_source: bitwarden`** — `hermes egress start` refuses with `--no-bitwarden` as the recovery hint.
+- **`docker_extra_args` overrides proxy env/network controls (enforce on)** — sandbox creation refuses; user-supplied `-e HTTPS_PROXY=...`, `--env-file`, or `--network` args run after Rabbit' generated args and can bypass egress.
+- **BWS access token missing in `credential_source: bitwarden`** — `rabbit egress start` refuses with `--no-bitwarden` as the recovery hint.
 - **iron-proxy doesn't bind within 5 seconds** — process is killed, pidfile unlinked, error names the port + tail of `iron-proxy.log`.
-- **Concurrent `hermes egress start` calls** — second call refuses with "another start in progress" if the first's daemon is up; otherwise the second unlinks the stale pidfile and proceeds.
+- **Concurrent `rabbit egress start` calls** — second call refuses with "another start in progress" if the first's daemon is up; otherwise the second unlinks the stale pidfile and proceeds.
 
 ## Troubleshooting
 
@@ -452,26 +452,26 @@ You enabled `credential_source: bitwarden` but the access-token env var isn't in
 
 ```bash
 export BWS_ACCESS_TOKEN=…   # one-shot
-hermes egress start
+rabbit egress start
 ```
 
-Or move it into `~/.hermes/.env`. Or switch back to env mode:
+Or move it into `~/.rabbit/.env`. Or switch back to env mode:
 
 ```bash
-hermes egress setup --no-bitwarden
+rabbit egress setup --no-bitwarden
 ```
 
 ### "iron-proxy exited immediately"
 
-Look at the last 20 lines of `~/.hermes/proxy/iron-proxy.log`. Common causes:
+Look at the last 20 lines of `~/.rabbit/proxy/iron-proxy.log`. Common causes:
 
 - Port already in use → change `proxy.tunnel_port` or kill whatever else owns 9090
-- Invalid `proxy.yaml` → run `hermes egress setup` to regenerate
-- CA cert / key permissions wrong → `chmod 0o600 ~/.hermes/proxy/ca.key`
+- Invalid `proxy.yaml` → run `rabbit egress setup` to regenerate
+- CA cert / key permissions wrong → `chmod 0o600 ~/.rabbit/proxy/ca.key`
 
 ### "iron-proxy did not bind \<bind-host\>:9090 within 5s"
 
-The daemon started but never bound the listener. Usually means the binary is wedged or doing something expensive at startup. Check `~/.hermes/proxy/iron-proxy.log`. The orphan process is killed automatically and the pidfile cleaned up so you can just retry `hermes egress start`.
+The daemon started but never bound the listener. Usually means the binary is wedged or doing something expensive at startup. Check `~/.rabbit/proxy/iron-proxy.log`. The orphan process is killed automatically and the pidfile cleaned up so you can just retry `rabbit egress start`.
 
 ### Sandbox times out connecting to the proxy (Linux)
 
@@ -482,7 +482,7 @@ docker run --rm --add-host host.docker.internal:host-gateway busybox \
   nc -zv -w 3 host.docker.internal 9090
 ```
 
-If that times out while `hermes egress status` shows `listening`, allow the bridge subnet in your firewall, e.g. for ufw:
+If that times out while `rabbit egress status` shows `listening`, allow the bridge subnet in your firewall, e.g. for ufw:
 
 ```bash
 sudo ufw allow in on docker0 to any port 9090 proto tcp
@@ -502,7 +502,7 @@ proxy:
     - "*.staging.example.com"
 ```
 
-Then `hermes egress setup` (to regenerate `proxy.yaml`) and `hermes egress stop && hermes egress start`.
+Then `rabbit egress setup` (to regenerate `proxy.yaml`) and `rabbit egress stop && rabbit egress start`.
 
 ### Sandbox sees SSL verification errors
 
@@ -510,61 +510,61 @@ Either the CA isn't mounted in the sandbox (rare; the docker backend does this a
 
 ```bash
 # Inside the sandbox:
-cat /etc/ssl/certs/hermes-egress-ca.crt | head -1
+cat /etc/ssl/certs/rabbit-egress-ca.crt | head -1
 # Should print: -----BEGIN CERTIFICATE-----
 env | grep -E "^(REQUESTS|CURL|SSL|NODE).*CA"
-# Should list all four CA-bundle env vars pointing at /etc/ssl/certs/hermes-egress-ca.crt
+# Should list all four CA-bundle env vars pointing at /etc/ssl/certs/rabbit-egress-ca.crt
 ```
 
-If the cert isn't there, check that `proxy.enabled: true` AND `hermes egress status` shows `Listening yes`. If the env vars are missing, the sandbox image might be running an entrypoint that strips them — check your `docker_env` config.
+If the cert isn't there, check that `proxy.enabled: true` AND `rabbit egress status` shows `Listening yes`. If the env vars are missing, the sandbox image might be running an entrypoint that strips them — check your `docker_env` config.
 
 ### Sandbox sees `HTTP 401` from upstreams
 
 Two common causes:
 
-1. **Token-clobber on re-setup.** You ran `hermes egress setup --rotate-tokens` (or rotated tokens some other way) and the running sandboxes still hold the old tokens. Restart the sandboxes.
+1. **Token-clobber on re-setup.** You ran `rabbit egress setup --rotate-tokens` (or rotated tokens some other way) and the running sandboxes still hold the old tokens. Restart the sandboxes.
 2. **Bitwarden refresh failed silently.** Should not happen with the new fail-loud behavior, but if you have `proxy.allow_env_fallback: true` set, the daemon may have started with stale env values. Check the daemon's environment (`/proc/<iron-proxy-pid>/environ`) for the expected `OPENROUTER_API_KEY` etc.
 
 ### "Address in use" after the parent process died
 
-The parent Hermes process died during `hermes egress start` (Ctrl-C during the listening probe, OOM, panic). The new fix-up logic writes the pidfile immediately after `Popen` so the orphan is recoverable:
+The parent Rabbit process died during `rabbit egress start` (Ctrl-C during the listening probe, OOM, panic). The new fix-up logic writes the pidfile immediately after `Popen` so the orphan is recoverable:
 
 ```bash
-hermes egress stop   # finds the orphan via the pidfile, kills it
-hermes egress start
+rabbit egress stop   # finds the orphan via the pidfile, kills it
+rabbit egress start
 ```
 
-If `hermes egress stop` says "iron-proxy was not running" but you can still see the daemon in `ps`, the pidfile got out of sync. Manual recovery:
+If `rabbit egress stop` says "iron-proxy was not running" but you can still see the daemon in `ps`, the pidfile got out of sync. Manual recovery:
 
 ```bash
 pkill -TERM iron-proxy
-rm -f ~/.hermes/proxy/iron-proxy.pid ~/.hermes/proxy/iron-proxy.nonce
-hermes egress start
+rm -f ~/.rabbit/proxy/iron-proxy.pid ~/.rabbit/proxy/iron-proxy.nonce
+rabbit egress start
 ```
 
 ### Inspecting per-request behavior
 
-On the pinned binary version (**v0.39**) both daemon-level events and per-request records land in `~/.hermes/proxy/iron-proxy.log`. The format is line-delimited JSON. Grep for a specific upstream:
+On the pinned binary version (**v0.39**) both daemon-level events and per-request records land in `~/.rabbit/proxy/iron-proxy.log`. The format is line-delimited JSON. Grep for a specific upstream:
 
 ```bash
-grep '"upstream":"openrouter.ai"' ~/.hermes/proxy/iron-proxy.log | tail -20
+grep '"upstream":"openrouter.ai"' ~/.rabbit/proxy/iron-proxy.log | tail -20
 ```
 
 Or watch in real-time:
 
 ```bash
-tail -f ~/.hermes/proxy/iron-proxy.log | jq
+tail -f ~/.rabbit/proxy/iron-proxy.log | jq
 ```
 
-When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-request records will move to `~/.hermes/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
+When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-request records will move to `~/.rabbit/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
 
 ## Limitations (v1)
 
 - Docker backend only. Modal, Daytona, and SSH wiring will follow in separate PRs.
 - Providers with signature-based auth (AWS SigV4, GCP service-account OAuth) bypass the proxy entirely — see [Uncovered providers](#uncovered-providers). Header-token providers (bearer, `x-api-key`, `api-key`, `x-goog-api-key`) are all covered.
 - No native Windows binary upstream. Run on Linux / macOS / WSL.
-- The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `hermes egress rotate-ca`).
-- Re-running setup stops a running daemon after rewriting config or mappings; restart (or `hermes egress reload` for ruleset-only changes) and restart already-running sandboxes after token rotation.
+- The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `rabbit egress rotate-ca`).
+- Re-running setup stops a running daemon after rewriting config or mappings; restart (or `rabbit egress reload` for ruleset-only changes) and restart already-running sandboxes after token rotation.
 - iron-proxy in-memory secret zeroisation is upstream-controlled. Same-uid attackers with `/proc/<pid>/mem` read access can read swapped-in secrets from the daemon's memory.
 - iron-proxy v0.39 only supports a **single bind per daemon** (we bind the docker bridge gateway on Linux, loopback on Docker Desktop) and combines daemon + per-request records into a single log stream. When upstream adds `proxy.http_listens` (plural) and `log.audit_path`, a version bump can wire in multi-bind and the dedicated audit stream.
 
@@ -572,6 +572,6 @@ When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-reque
 
 - Upstream project: [github.com/ironsh/iron-proxy](https://github.com/ironsh/iron-proxy)
 - Upstream docs: [docs.iron.sh](https://docs.iron.sh/)
-- Bitwarden integration: [`hermes secrets bitwarden`](../secrets/bitwarden)
-- Hermes Docker terminal backend: [Docker](../docker)
+- Bitwarden integration: [`rabbit secrets bitwarden`](../secrets/bitwarden)
+- Rabbit Docker terminal backend: [Docker](../docker)
 - Developer / contributor reference: [Egress proxy internals](../../developer-guide/egress-internals)

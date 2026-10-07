@@ -1,7 +1,7 @@
 """Contract: a skill's self-referencing install paths match its own location.
 
 The hub installs ``optional-skills/<category>/<name>`` to
-``$HERMES_HOME/skills/<category>/<name>``, preserving the category path.
+``$RABBIT_HOME/skills/<category>/<name>``, preserving the category path.
 When a skill is moved between categories, the install-path strings embedded
 in its own docs and scripts (joined ``skills/<category>/<name>/...`` and the
 segmented ``Path(...) / "skills" / "<category>" / "<name>"`` form) keep

@@ -14,7 +14,7 @@ Facebook 用于高效相似性搜索和密集向量聚类的库。支持数十�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/faiss` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/faiss` 安装 |
 | 路径 | `optional-skills/mlops/faiss` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ Facebook 用于高效相似性搜索和密集向量聚类的库。支持数十�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # FAISS - 高效相似性搜索

@@ -19,7 +19,7 @@ def test_aux_vision_route_caches_per_provider_model(monkeypatch):
         calls["n"] += 1
         return {"auxiliary": {"vision": {}}}
 
-    monkeypatch.setattr("hermes_cli.config.load_config", fake_load)
+    monkeypatch.setattr("rabbit_cli.config.load_config", fake_load)
     monkeypatch.setattr(
         "tools.computer_use.vision_routing.should_route_capture_to_aux_vision",
         lambda *a, **k: True,

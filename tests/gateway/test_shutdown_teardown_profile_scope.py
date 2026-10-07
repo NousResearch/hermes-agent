@@ -18,7 +18,7 @@ import pytest
 from agent import secret_scope
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 def _runner(profile_homes: dict[str, Path]) -> GatewayRunner:
@@ -43,7 +43,7 @@ def _recording_agent(seen: dict):
 
         def on_session_end(self, messages):
             seen["scope"] = secret_scope.current_secret_scope()
-            seen["home"] = get_hermes_home()
+            seen["home"] = get_rabbit_home()
 
     def shutdown_memory_provider(messages=None):
         _Provider().on_session_end(messages)
@@ -55,11 +55,11 @@ def _recording_agent(seen: dict):
 
 @pytest.mark.asyncio
 async def test_shutdown_teardown_commits_memory_under_the_owning_profile(tmp_path, monkeypatch):
-    default_home = tmp_path / ".hermes"
+    default_home = tmp_path / ".rabbit"
     prof_b = default_home / "profiles" / "b"
     prof_b.mkdir(parents=True)
     (prof_b / ".env").write_text("OPENVIKING_API_KEY=key-of-b\n")
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
     seen: dict = {}
     secret_scope.set_multiplex_active(True)
     try:
@@ -76,7 +76,7 @@ async def test_shutdown_teardown_commits_memory_under_the_owning_profile(tmp_pat
 
 @pytest.mark.asyncio
 async def test_in_turn_teardown_keeps_the_callers_scope(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     seen: dict = {}
     secret_scope.set_multiplex_active(True)
     token = secret_scope.set_secret_scope({"MARKER": "turn-scope"})

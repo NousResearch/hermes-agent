@@ -20,7 +20,7 @@ def test_unavailable_without_emitter():
 def test_routes_event_to_owning_window(monkeypatch):
     monkeypatch.setattr(
         desktop_ui, "get_session_env",
-        lambda name, default="": "win-7" if name == "HERMES_UI_SESSION_ID" else default,
+        lambda name, default="": "win-7" if name == "RABBIT_UI_SESSION_ID" else default,
     )
     seen = []
     desktop_ui.set_emitter(lambda sid, event, payload: seen.append((sid, event, payload)))
@@ -32,12 +32,12 @@ def test_routes_event_to_owning_window(monkeypatch):
 
 def test_session_scoped_event_uses_session_id(monkeypatch):
     """message.reaction (and future session-scoped events) route by
-    HERMES_SESSION_ID, not HERMES_UI_SESSION_ID (#80678)."""
+    RABBIT_SESSION_ID, not RABBIT_UI_SESSION_ID (#80678)."""
     monkeypatch.setattr(
         desktop_ui, "get_session_env",
         lambda name, default="": {
-            "HERMES_UI_SESSION_ID": "win-3",
-            "HERMES_SESSION_ID": "sess-9",
+            "RABBIT_UI_SESSION_ID": "win-3",
+            "RABBIT_SESSION_ID": "sess-9",
         }.get(name, default),
     )
     seen = []
@@ -48,11 +48,11 @@ def test_session_scoped_event_uses_session_id(monkeypatch):
 
 
 def test_session_scoped_falls_back_to_ui_session_id(monkeypatch):
-    """When HERMES_SESSION_ID is empty, fall back to the window id
+    """When RABBIT_SESSION_ID is empty, fall back to the window id
     so legacy sessions without a chat-session env var still work."""
     monkeypatch.setattr(
         desktop_ui, "get_session_env",
-        lambda name, default="": "win-5" if name == "HERMES_UI_SESSION_ID" else default,
+        lambda name, default="": "win-5" if name == "RABBIT_UI_SESSION_ID" else default,
     )
     seen = []
     desktop_ui.set_emitter(lambda sid, event, payload: seen.append((sid, event, payload)))

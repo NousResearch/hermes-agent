@@ -1,7 +1,7 @@
 /**
  * A generic peer window inherits its initial owner, not a permanent New session
  * target. Exercise two real gateways; only inference uses the shared mock.
- * Requires the built desktop and a repo venv (or HERMES_DESKTOP_PYTHON).
+ * Requires the built desktop and a repo venv (or RABBIT_DESKTOP_PYTHON).
  */
 import { type ChildProcess, spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -27,15 +27,15 @@ const REMOTE_TOKEN = 'e2e-peer-disposable-token'
 const REMOTE_PROFILE = 'ai-dev'
 
 function pythonBinary(): string {
-  if (process.env.HERMES_DESKTOP_PYTHON) {
-    return process.env.HERMES_DESKTOP_PYTHON
+  if (process.env.RABBIT_DESKTOP_PYTHON) {
+    return process.env.RABBIT_DESKTOP_PYTHON
   }
 
   const suffix = process.platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']
   const candidate = ['.venv', 'venv'].map(dir => path.join(REPO_ROOT, dir, ...suffix)).find(file => fs.existsSync(file))
 
   if (!candidate) {
-    throw new Error('Create the repo Python venv or set HERMES_DESKTOP_PYTHON before running this spec')
+    throw new Error('Create the repo Python venv or set RABBIT_DESKTOP_PYTHON before running this spec')
   }
 
   return candidate
@@ -61,7 +61,7 @@ function isolatedEnv(sandbox: Sandbox): Record<string, string> {
     fs.mkdirSync(env[key], { recursive: true, mode: 0o700 })
   }
 
-  for (const key of ['HERMES_DESKTOP_USER_DATA_DIR', 'HERMES_DESKTOP_IGNORE_EXISTING', 'HERMES_DESKTOP_HERMES_ROOT', 'HERMES_DESKTOP_APP_NAME', 'HERMES_DESKTOP_SKIP_QUIT_CONFIRM']) {
+  for (const key of ['RABBIT_DESKTOP_USER_DATA_DIR', 'RABBIT_DESKTOP_IGNORE_EXISTING', 'RABBIT_DESKTOP_RABBIT_ROOT', 'RABBIT_DESKTOP_APP_NAME', 'RABBIT_DESKTOP_SKIP_QUIT_CONFIRM']) {
     env[key] = defaults[key]
   }
 
@@ -69,8 +69,8 @@ function isolatedEnv(sandbox: Sandbox): Record<string, string> {
     ...env,
     HOME: sandbox.root,
     USERPROFILE: sandbox.root,
-    HERMES_HOME: sandbox.hermesHome,
-    HERMES_DESKTOP_PYTHON: pythonBinary(),
+    RABBIT_HOME: sandbox.rabbitHome,
+    RABBIT_DESKTOP_PYTHON: pythonBinary(),
     PYTHONPATH: REPO_ROOT,
     // On Linux CI, DISPLAY belongs to Xvfb rather than the host Wayland seat.
     ...(process.platform === 'linux' ? { XDG_SESSION_TYPE: 'x11', ELECTRON_OZONE_PLATFORM_HINT: 'x11' } : {}),
@@ -161,20 +161,20 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
     let desktopLog = ''
 
     try {
-      const remoteProfileHome = path.join(remote.hermesHome, 'profiles', REMOTE_PROFILE)
+      const remoteProfileHome = path.join(remote.rabbitHome, 'profiles', REMOTE_PROFILE)
       fs.mkdirSync(remoteProfileHome, { recursive: true })
 
-      for (const hermesHome of [local.hermesHome, remote.hermesHome, remoteProfileHome]) {
-        writeMockProviderConfig(hermesHome, mock.url)
-        writeEnvFile(hermesHome)
+      for (const rabbitHome of [local.rabbitHome, remote.rabbitHome, remoteProfileHome]) {
+        writeMockProviderConfig(rabbitHome, mock.url)
+        writeEnvFile(rabbitHome)
       }
 
       const port = await freePort()
       const remoteUrl = `http://127.0.0.1:${port}`
-      child = spawn(pythonBinary(), ['-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', String(port), '--skip-build'], {
+      child = spawn(pythonBinary(), ['-m', 'rabbit_cli.main', 'serve', '--host', '127.0.0.1', '--port', String(port), '--skip-build'], {
         cwd: REPO_ROOT,
         detached: process.platform !== 'win32',
-        env: { ...isolatedEnv(remote), HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN },
+        env: { ...isolatedEnv(remote), RABBIT_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       // Fixture setup shares the test budget; a timeout while still awaiting
@@ -197,7 +197,7 @@ const peerTest = test.extend<{ gateways: { app: ElectronApplication; source: Pag
 
         try {
           return (await fetch(`${remoteUrl}/api/status`, {
-            headers: { 'X-Hermes-Session-Token': REMOTE_TOKEN },
+            headers: { 'X-Rabbit-Session-Token': REMOTE_TOKEN },
             signal: AbortSignal.timeout(2_000),
           })).status
         } catch { return 0 }

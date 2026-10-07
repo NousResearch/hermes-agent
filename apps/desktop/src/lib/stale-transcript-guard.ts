@@ -1,5 +1,5 @@
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
+import { getLatestSessionMessages, type ProfileScope } from '@/rabbit'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'

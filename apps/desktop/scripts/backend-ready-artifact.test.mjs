@@ -12,13 +12,13 @@ import {
   resolvePackagedAsarPath
 } from './backend-ready-artifact.mjs'
 
-const CURRENT_SOURCE = 'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
+const CURRENT_SOURCE = 'const re = /RABBIT_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
 // The pre-#55923 matcher: only the legacy token. A packaged bundle carrying
 // this kills a current backend after the port-announcement timeout (#60772).
-const STALE_SOURCE = 'const re = /HERMES_DASHBOARD_READY port=(\\d+)/m\n'
+const STALE_SOURCE = 'const re = /RABBIT_DASHBOARD_READY port=(\\d+)/m\n'
 
 async function packedAppRoot() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-ready-artifact-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'rabbit-ready-artifact-'))
   const resources = path.join(root, 'resources')
   await mkdir(resources, { recursive: true })
   return { root, resources }
@@ -43,8 +43,8 @@ it('resolves the asar path per platform, including the branded macOS bundle', ()
   expect(resolvePackagedAsarPath({
     appOutDir: '/out/mac',
     electronPlatformName: 'darwin',
-    packager: { appInfo: { productFilename: 'Hermes Preview' } }
-  })).toBe(path.join('/out/mac', 'Hermes Preview.app', 'Contents', 'Resources', 'app.asar'))
+    packager: { appInfo: { productFilename: 'Rabbit Preview' } }
+  })).toBe(path.join('/out/mac', 'Rabbit Preview.app', 'Contents', 'Resources', 'app.asar'))
   expect(() => resolvePackagedAsarPath({ electronPlatformName: 'linux' }))
     .toThrow('missing appOutDir')
 })
@@ -66,7 +66,7 @@ it('rejects the stale dashboard-only matcher — the #60772 artifact skew', asyn
   try {
     const asar = await writeAsar(resources, STALE_SOURCE)
     expect(() => assertPackagedBackendReadyArtifact(asar)).toThrow(
-      'does not contain a packaged readiness matcher accepting HERMES_BACKEND_READY and HERMES_DASHBOARD_READY'
+      'does not contain a packaged readiness matcher accepting RABBIT_BACKEND_READY and RABBIT_DASHBOARD_READY'
     )
   } finally {
     await rm(resources, { recursive: true, force: true })

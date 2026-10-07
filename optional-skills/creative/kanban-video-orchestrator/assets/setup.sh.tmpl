@@ -21,11 +21,11 @@ echo "═══ Checking required API keys ═══"
 
 check_key() {
     local var="$1"
-    local kc_account="${2:-hermes}"
+    local kc_account="${2:-rabbit}"
     local kc_service="${3:-$1}"
-    local _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"
-    if grep -q "^${var}=" "$_hermes_env" 2>/dev/null && \
-       [ -n "$(grep "^${var}=" "$_hermes_env" | cut -d= -f2-)" ]; then
+    local _rabbit_env="${RABBIT_HOME:-$HOME/.rabbit}/.env"
+    if grep -q "^${var}=" "$_rabbit_env" 2>/dev/null && \
+       [ -n "$(grep "^${var}=" "$_rabbit_env" | cut -d= -f2-)" ]; then
         echo "  ✓ ${var} (env)"
         return 0
     fi
@@ -34,7 +34,7 @@ check_key() {
         echo "  ✓ ${var} (Keychain ${kc_account}/${kc_service})"
         return 0
     fi
-    echo "  ✗ ${var} not set in ${_hermes_env} or Keychain (${kc_account}/${kc_service})"
+    echo "  ✗ ${var} not set in ${_rabbit_env} or Keychain (${kc_account}/${kc_service})"
     return 1
 }
 
@@ -50,9 +50,9 @@ mkdir -p "$WORKSPACE"/{taste,audio/{voiceover,sfx},assets,scenes,checkpoints,too
 echo "  ✓ $WORKSPACE"
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. Create Hermes profiles
+# 3. Create Rabbit profiles
 # ─────────────────────────────────────────────────────────────────────
-echo "═══ Creating Hermes profiles ═══"
+echo "═══ Creating Rabbit profiles ═══"
 
 {{PROFILE_CREATE_COMMANDS}}
 
@@ -66,7 +66,7 @@ configure_profile() {
     local toolsets_json="$2"     # JSON array string, e.g. '["kanban","terminal","file"]'
     local skills_json="$3"       # JSON array string, e.g. '["ascii-video"]'
     python3 - "$profile" "$toolsets_json" "$skills_json" "$WORKSPACE" <<'PY'
-"""Patch a Hermes profile config.yaml using ruamel.yaml so we don't depend on the
+"""Patch a Rabbit profile config.yaml using ruamel.yaml so we don't depend on the
 exact default-config string format. Validates the patch took effect and exits
 non-zero if anything's off."""
 import json
@@ -88,7 +88,7 @@ profile, toolsets_json, skills_json, workspace = sys.argv[1:5]
 toolsets = json.loads(toolsets_json)
 skills = json.loads(skills_json)
 
-p = os.path.expanduser(f"~/.hermes/profiles/{profile}/config.yaml")
+p = os.path.expanduser(f"~/.rabbit/profiles/{profile}/config.yaml")
 if not os.path.exists(p):
     print(f"  ✗ profile config not found: {p}", file=sys.stderr)
     sys.exit(1)
@@ -103,7 +103,7 @@ cfg["skills"]["always_load"] = skills
 
 # Note: we do NOT touch cfg["approvals"] — that's a security-sensitive
 # setting (manual confirmation of tool calls). Workspace cwd is overridden
-# per-task by `--workspace dir:<path>` on `hermes kanban create`, so we
+# per-task by `--workspace dir:<path>` on `rabbit kanban create`, so we
 # don't need to mutate cfg["terminal"]["cwd"] either.
 
 with open(p, "w") as f:
@@ -159,7 +159,7 @@ TEAM_EOF
 # ─────────────────────────────────────────────────────────────────────
 echo "═══ Firing initial kanban task ═══"
 
-hermes kanban create "Direct production of {{TITLE}}" \
+rabbit kanban create "Direct production of {{TITLE}}" \
     --assignee director \
     --workspace dir:"$WORKSPACE" \
     --tenant "$TENANT" \
@@ -184,8 +184,8 @@ echo ""
 echo "═══ Setup complete ═══"
 echo ""
 echo "Monitor with:"
-echo "  hermes kanban watch --tenant $TENANT"
-echo "  hermes kanban list  --tenant $TENANT"
-echo "  hermes dashboard"
+echo "  rabbit kanban watch --tenant $TENANT"
+echo "  rabbit kanban list  --tenant $TENANT"
+echo "  rabbit dashboard"
 echo ""
 echo "Workspace: $WORKSPACE"

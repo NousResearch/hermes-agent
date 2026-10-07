@@ -1,7 +1,7 @@
 import type { TabStripMode } from '@/components/pane-shell/tree/model'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 
-const TAB_STRIP_DEFAULT_STORAGE_KEY = 'hermes.desktop.tabStripDefault'
+const TAB_STRIP_DEFAULT_STORAGE_KEY = 'rabbit.desktop.tabStripDefault'
 
 /** What a zone does when it has made no choice of its own. */
 export type TabStripDefault = 'auto' | TabStripMode

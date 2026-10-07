@@ -18,7 +18,7 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 def _configure(tmp_path, monkeypatch, setting):
     home = tmp_path / f"home-{setting}"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     display = {} if setting is None else {"suppress_warning_notifications": setting}
     (home / "config.yaml").write_text(json.dumps({"display": display}))
     return home
@@ -46,7 +46,7 @@ async def test_shutdown_notice_to_active_chats_and_home_channel_honors_policy(tm
         assert chats == [], adapter.sent_calls
     else:
         assert sorted(chats) == sorted([source.chat_id, "home-chat"])
-        assert all("Hermes is shutting down" in m for _c, m, _meta in adapter.sent_calls)
+        assert all("Rabbit is shutting down" in m for _c, m, _meta in adapter.sent_calls)
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_in_chat_restart_ack_to_requester_is_never_suppressed(tmp_path, mo
 
     assert len(adapter.sent_calls) == 1
     chat_id, message, metadata = adapter.sent_calls[0]
-    assert chat_id == source.chat_id and "Hermes is restarting" in message
+    assert chat_id == source.chat_id and "Rabbit is restarting" in message
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 

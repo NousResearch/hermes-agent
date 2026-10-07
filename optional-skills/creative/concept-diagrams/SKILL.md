@@ -2,12 +2,12 @@
 name: concept-diagrams
 description: Generate flat, minimal educational SVG visuals as HTML.
 version: 0.1.0
-author: v1k22 (original PR), ported into hermes-agent
+author: v1k22 (original PR), ported into rabbit-agent
 license: MIT
 dependencies: []
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [diagrams, svg, visualization, education, physics, chemistry, engineering]
     related_skills: [architecture-diagram, excalidraw]
 ---

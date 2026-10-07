@@ -8,7 +8,7 @@
 // (`C:\…` parses as protocol `c:`, which the web allowlist must never see).
 // Chat/media links and artifact values arrive at the opener carrying exactly
 // these shapes when the renderer hands a raw path through instead of a
-// canonical `file://` URL (hermes-agent 80946, 84361).
+// canonical `file://` URL (rabbit-agent 80946, 84361).
 
 const LOCAL_FILESYSTEM_PATH_RE = /^(?:\/(?!\/)|\/\/\/|~\/|[a-zA-Z]:[\\/]|\\\\)/
 const PROTOCOL_RELATIVE_RE = /^\/\/[^/\s]/

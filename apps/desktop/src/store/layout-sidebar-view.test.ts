@@ -32,13 +32,13 @@ describe('the sidebar as it ships', () => {
 
     expect($sidebarShowAllSessions.get()).toBe(true)
     expect($sidebarViewCustomized.get()).toBe(true)
-    expect(window.localStorage.getItem('hermes.desktop.sidebarShowAllSessions')).toBe('true')
+    expect(window.localStorage.getItem('rabbit.desktop.sidebarShowAllSessions')).toBe('true')
 
     resetSidebarView()
 
     expect($sidebarShowAllSessions.get()).toBe(false)
     expect($sidebarViewCustomized.get()).toBe(false)
-    expect(window.localStorage.getItem('hermes.desktop.sidebarShowAllSessions')).toBe('false')
+    expect(window.localStorage.getItem('rabbit.desktop.sidebarShowAllSessions')).toBe('false')
   })
 
   it('offers no reset until something actually moves off the defaults', () => {

@@ -2,8 +2,8 @@
 
 from pm import environments as runtime_paths
 from pm.publication import PluginSelection
-from hermes_cli.runtime_state import recover_publication, runtime_lock
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_cli.runtime_state import recover_publication, runtime_lock
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from pm import paths, plugins_state
 
 
@@ -16,10 +16,10 @@ def test_context_home_publication_recovers_from_its_own_process(tmp_path, monkey
     config = context_home / "config.yaml"
     original = b"plugins:\n  enabled: [old]\n"
     config.write_bytes(original)
-    monkeypatch.setenv("HERMES_HOME", str(process_home))
+    monkeypatch.setenv("RABBIT_HOME", str(process_home))
     monkeypatch.setattr(paths, "repo_root", lambda: project)
     process_state = runtime_paths.install_state_dir(project)
-    token = set_hermes_home_override(context_home)
+    token = set_rabbit_home_override(context_home)
     try:
         context_state = runtime_paths.install_state_dir(project)
         assert context_state != process_state
@@ -30,10 +30,10 @@ def test_context_home_publication_recovers_from_its_own_process(tmp_path, monkey
             PluginSelection({"home": str(config.parent), "enabled": ["new"], "disabled": []}).publish(project)
         assert config.read_bytes() != original
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     assert not process_state.exists()
-    monkeypatch.setenv("HERMES_HOME", str(context_home))
+    monkeypatch.setenv("RABBIT_HOME", str(context_home))
     assert runtime_paths.install_state_dir(project) == context_state
     with runtime_lock(project):
         recover_publication(project)
@@ -45,11 +45,11 @@ def test_named_context_profile_shares_its_install_root(tmp_path, monkeypatch):
     home = tmp_path / "home"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     project = tmp_path / "repo"
     state = runtime_paths.install_state_dir(project)
-    token = set_hermes_home_override(profile)
+    token = set_rabbit_home_override(profile)
     try:
         assert runtime_paths.install_state_dir(project) == state
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)

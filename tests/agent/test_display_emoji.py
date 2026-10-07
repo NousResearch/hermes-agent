@@ -45,7 +45,7 @@ class TestSkinConfigToolEmojis:
 
 
     def test_build_skin_config_includes_tool_emojis(self):
-        from hermes_cli.skin_engine import _build_skin_config
+        from rabbit_cli.skin_engine import _build_skin_config
         data = {
             "name": "custom",
             "tool_emojis": {"terminal": "🗡️", "patch": "⚒️"},

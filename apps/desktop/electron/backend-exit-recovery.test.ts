@@ -7,7 +7,7 @@ import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 
 type Child = { pid: number }
 
-// Mirrors main.ts::runHermesStart's exit handler: the slot state the handler
+// Mirrors main.ts::runRabbitStart's exit handler: the slot state the handler
 // reads when the child's exit is classified as stale (#112344).
 function slotState(state: ReturnType<typeof createBackendConnectionState<Child, unknown>>, extra = {}) {
   return {

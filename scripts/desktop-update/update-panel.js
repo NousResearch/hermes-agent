@@ -164,11 +164,11 @@ function run (argv) {
     false
   )
 
-  // Don't allow closing while Hermes is updating.
+  // Don't allow closing while Rabbit is updating.
   const closeButton = win.standardWindowButton($.NSWindowCloseButton)
   closeButton.enabled = false
 
-  win.title = 'Hermes'
+  win.title = 'Rabbit'
   win.center
   win.releasedWhenClosed = false
   win.backgroundColor = bg
@@ -179,9 +179,9 @@ function run (argv) {
   loaderView.imageScaling = $.NSImageScaleProportionallyUpOrDown
   content.addSubview(loaderView)
 
-  const title = wrappedLabel('Updating Hermes', $.NSFont.systemFontOfSize(18), fg,
+  const title = wrappedLabel('Updating Rabbit', $.NSFont.systemFontOfSize(18), fg,
     $.NSMakeRect(0, 178, 280, 26))
-  const line = wrappedLabel('Hermes will open once done.', $.NSFont.systemFontOfSize(12), null,
+  const line = wrappedLabel('Rabbit will open once done.', $.NSFont.systemFontOfSize(12), null,
     $.NSMakeRect(24, 118, 232, 54))
   content.addSubview(title)
   content.addSubview(line)
@@ -238,11 +238,11 @@ function run (argv) {
   loaderView.hidden = true
   title.stringValue = settled === 'error' ? 'Failed to update' : 'Update complete'
   if (settled === 'done') {
-    line.stringValue = 'Opening Hermes…\nYou can close this window.'
+    line.stringValue = 'Opening Rabbit…\nYou can close this window.'
   } else if (settled === 'manual') {
-    line.stringValue = message || 'Reopen Hermes to finish.'
+    line.stringValue = message || 'Reopen Rabbit to finish.'
   } else {
-    line.stringValue = 'Run hermes debug share in a terminal to send a report.'
+    line.stringValue = 'Run rabbit debug share in a terminal to send a report.'
   }
   const glyph = wrappedLabel(settled === 'error' ? '✕' : '✓',
     $.NSFont.systemFontOfSize(44), fg, $.NSMakeRect(0, 226, 280, 80))

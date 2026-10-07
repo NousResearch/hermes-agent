@@ -103,7 +103,7 @@ test('resolveLoginStrategy returns embedded for all-password even without native
 
 test('resolveLoginStrategy returns native for native_pkce gateway with non-password provider', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
-  const providers = [{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }]
+  const providers = [{ name: 'acme', displayName: 'Acme', supportsPassword: false }]
 
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
 })
@@ -113,7 +113,7 @@ test('resolveLoginStrategy returns native for a mixed provider deployment', () =
 
   const providers = [
     { name: 'basic', supportsPassword: true },
-    { name: 'nous', supportsPassword: false }
+    { name: 'acme', supportsPassword: false }
   ]
 
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
@@ -144,7 +144,7 @@ test('buildNativeAuthorizeUrl encodes params and honours a path prefix', () => {
     challenge: 'CHAL',
     redirectUri: 'http://127.0.0.1:51000/callback',
     state: 'STATE',
-    provider: 'nous'
+    provider: 'acme'
   })
 
   const parsed = new URL(url)
@@ -155,11 +155,11 @@ test('buildNativeAuthorizeUrl encodes params and honours a path prefix', () => {
   assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256')
   assert.equal(parsed.searchParams.get('redirect_uri'), 'http://127.0.0.1:51000/callback')
   assert.equal(parsed.searchParams.get('state'), 'STATE')
-  assert.equal(parsed.searchParams.get('provider'), 'nous')
+  assert.equal(parsed.searchParams.get('provider'), 'acme')
 })
 
 test('buildNativeAuthorizeUrl omits provider when not given and preserves prefix', () => {
-  const url = buildNativeAuthorizeUrl('https://gw.example.com/hermes', {
+  const url = buildNativeAuthorizeUrl('https://gw.example.com/rabbit', {
     challenge: 'C',
     redirectUri: 'http://127.0.0.1:1/cb',
     state: 'S'
@@ -167,13 +167,13 @@ test('buildNativeAuthorizeUrl omits provider when not given and preserves prefix
 
   const parsed = new URL(url)
 
-  assert.equal(parsed.pathname, '/hermes/auth/native/authorize')
+  assert.equal(parsed.pathname, '/rabbit/auth/native/authorize')
   assert.equal(parsed.searchParams.get('provider'), null)
 })
 
 test('nativeTokenUrl / nativeRefreshUrl build the right endpoints', () => {
   assert.equal(nativeTokenUrl('https://gw.example.com'), 'https://gw.example.com/auth/native/token')
-  assert.equal(nativeRefreshUrl('https://gw.example.com/hermes'), 'https://gw.example.com/hermes/auth/native/refresh')
+  assert.equal(nativeRefreshUrl('https://gw.example.com/rabbit'), 'https://gw.example.com/rabbit/auth/native/refresh')
 })
 
 // --- loopback callback parsing ---
@@ -207,14 +207,14 @@ test('parseTokenResponse maps a well-formed body', () => {
     refresh_token: 'RT',
     token_type: 'Bearer',
     expires_at: 1893456000,
-    provider: 'nous',
+    provider: 'acme',
     user_id: 'u-1'
   })
 
   assert.equal(t.accessToken, 'AT')
   assert.equal(t.refreshToken, 'RT')
   assert.equal(t.expiresAt, 1893456000)
-  assert.equal(t.provider, 'nous')
+  assert.equal(t.provider, 'acme')
   assert.equal(t.userId, 'u-1')
 })
 
@@ -251,7 +251,7 @@ test('parseTokenResponse cannot read a persisted set (the reload bug #73271)', (
   // parser throws — which is exactly why the stored path must use
   // parseStoredTokenSet instead.
   const persisted = JSON.parse(
-    JSON.stringify({ accessToken: 'AT', refreshToken: 'RT', expiresAt: 1, provider: 'nous', userId: 'u' })
+    JSON.stringify({ accessToken: 'AT', refreshToken: 'RT', expiresAt: 1, provider: 'acme', userId: 'u' })
   )
 
   assert.throws(() => parseTokenResponse(persisted), /missing access_token/i)

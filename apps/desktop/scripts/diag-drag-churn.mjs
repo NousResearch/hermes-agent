@@ -17,7 +17,7 @@ const TURNS = 20
 
 const setup = `
   (() => {
-    const hook = window.__HERMES_SESSION_TILES__
+    const hook = window.__RABBIT_SESSION_TILES__
     if (!hook) return 'no-hook'
     const turn = (sid, i) => ([
       { id: sid + '-u' + i, role: 'user', timestamp: Date.now(),
@@ -48,7 +48,7 @@ const setup = `
   })()
 `
 
-const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
+const reveal = sid => `window.__RABBIT_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 // Drag, recording renders AND atom notifications together.
 const DRAG = `
@@ -93,9 +93,9 @@ const CLEANUP = `
   (() => {
     if (window.__D__) {
       for (const { sid, rid } of window.__D__.ids) {
-        const s = window.__HERMES_SESSION_TILES__.states()
-        window.__HERMES_SESSION_TILES__.publish(rid, { ...s[rid], busy: false, streamId: null })
-        window.__HERMES_SESSION_TILES__.close(sid)
+        const s = window.__RABBIT_SESSION_TILES__.states()
+        window.__RABBIT_SESSION_TILES__.publish(rid, { ...s[rid], busy: false, streamId: null })
+        window.__RABBIT_SESSION_TILES__.close(sid)
       }
       window.__D__ = null
     }

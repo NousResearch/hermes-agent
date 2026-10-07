@@ -11,8 +11,8 @@ from gateway.platforms import weixin as wx
 @pytest.mark.parametrize("setting", [None, False, True])
 @pytest.mark.parametrize("caption", [None, "Warning: requested caption"])
 async def test_real_voice_file_send_filters_only_generated_caption(tmp_path, monkeypatch, setting, caption):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     config = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
     (tmp_path / "config.yaml").write_text(json.dumps(config))
     adapter = wx.WeixinAdapter(PlatformConfig(token="fixture-token", extra={"account_id": "fixture"}))

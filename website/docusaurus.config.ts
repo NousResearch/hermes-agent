@@ -4,15 +4,15 @@ import type * as Preset from '@docusaurus/preset-classic';
 import relativeDocLinks from './src/remark/relativeDocLinks';
 
 const config: Config = {
-  title: 'Hermes Agent',
+  title: 'Rabbit Agent',
   tagline: 'The self-improving AI agent',
   favicon: 'img/favicon.ico',
 
-  url: 'https://hermes-agent.nousresearch.com',
+  url: 'https://github.com/seven0070/Rabbit-',
   baseUrl: '/docs/',
 
   organizationName: 'NousResearch',
-  projectName: 'hermes-agent',
+  projectName: 'rabbit-agent',
 
   onBrokenLinks: 'warn',
 
@@ -58,7 +58,7 @@ const config: Config = {
           {
             // Moved when the Plugins subcategory was created under
             // Developer Guide > Extending (docs restructure, July 2026)
-            from: '/guides/build-a-hermes-plugin',
+            from: '/guides/build-a-rabbit-plugin',
             to: '/developer-guide/plugins',
           },
           {
@@ -83,7 +83,7 @@ const config: Config = {
         docs: {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          editUrl: 'https://github.com/seven0070/Rabbit-/edit/main/website/',
           // Relative `.md` links (readable on GitHub, #114428) must also resolve
           // across the zh-Hans fallback boundary; see src/remark/relativeDocLinks.js.
           beforeDefaultRemarkPlugins: [[relativeDocLinks, {siteDir: __dirname}]],
@@ -97,7 +97,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/hermes-agent-banner.png',
+    image: 'img/rabbit-agent-banner.png',
     // Algolia DocSearch (replaces @easyops-cn/docusaurus-search-local).
     // The local plugin shipped a ~16 MB client-side lunr index that every
     // visitor downloaded and hydrated before their first result; DocSearch
@@ -109,7 +109,7 @@ const config: Config = {
     algolia: {
       appId: '2JLBVEYZN5',
       apiKey: '9629ec26628d1a126535fd5ef408990d',
-      indexName: 'hermes docs',
+      indexName: 'rabbit docs',
       contextualSearch: true,
     },
     colorMode: {
@@ -123,9 +123,9 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Hermes Agent',
+      title: 'Rabbit Agent',
       logo: {
-        alt: 'Hermes Agent',
+        alt: 'Rabbit Agent',
         src: 'img/logo.png',
         srcDark: 'img/logo-dark.png',
       },
@@ -147,7 +147,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com/',
+          href: 'https://github.com/seven0070/Rabbit-/',
           label: 'Download',
           position: 'left',
         },
@@ -156,17 +156,17 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com',
+          href: 'https://github.com/seven0070/Rabbit-',
           label: 'Home',
           position: 'right',
         },
         {
-          href: 'https://github.com/NousResearch/hermes-agent',
+          href: 'https://github.com/seven0070/Rabbit-',
           label: 'GitHub',
           position: 'right',
         },
         {
-          href: 'https://discord.gg/NousResearch',
+          href: 'https://github.com/seven0070/Rabbit-/discussions',
           label: 'Discord',
           position: 'right',
         },
@@ -187,21 +187,21 @@ const config: Config = {
         {
           title: 'Community',
           items: [
-            { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
+            { label: 'Discord', href: 'https://github.com/seven0070/Rabbit-/discussions' },
+            { label: 'GitHub Issues', href: 'https://github.com/seven0070/Rabbit-/issues' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/' },
-            { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
-            { label: 'Nous Research', href: 'https://nousresearch.com' },
+            { label: 'Desktop Download', href: 'https://github.com/seven0070/Rabbit-/' },
+            { label: 'GitHub', href: 'https://github.com/seven0070/Rabbit-' },
+            { label: 'Sanath Patil', href: 'https://github.com/seven0070/Rabbit-' },
           ],
         },
       ],
-      copyright: `Built by <a href="https://nousresearch.com">Nous Research</a> · MIT License · ${new Date().getFullYear()}`,
+      copyright: `Built by <a href="https://github.com/seven0070/Rabbit-">Sanath Patil</a> · MIT License · ${new Date().getFullYear()}`,
     },
     prism: {
       theme: prismThemes.github,

@@ -83,25 +83,6 @@ class TestOpenRouterParity:
 
 
 
-
-
-class TestNousParity:
-    """Nous: product tags, reasoning passthrough (disable included)."""
-
-    def test_tags(self, transport):
-        from agent.portal_tags import nous_portal_tags
-        kw = transport.build_kwargs(
-            model="hermes-3-llama-3.1-405b",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("nous"),
-        )
-        assert kw["extra_body"]["tags"] == nous_portal_tags()
-
-
-
-
-
 class TestQwenParity:
     """Qwen: max_tokens=65536, vl_high_resolution, metadata top-level."""
 

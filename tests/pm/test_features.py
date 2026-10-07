@@ -56,7 +56,7 @@ def test_sync_venv_refuses_outside_frozen_extras(rooted, monkeypatch):
     assert saved["outcome"] == "failed" and saved["exit_code"] != 0
     assert saved["steps"][-1]["ok"] is False
     assert "slack" in saved["steps"][-1]["detail"]
-    assert "hermes pm install" in saved["steps"][-1]["detail"]
+    assert "rabbit pm install" in saved["steps"][-1]["detail"]
 
 
 def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):

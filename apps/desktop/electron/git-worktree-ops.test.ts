@@ -31,7 +31,7 @@ test('parseWorktrees: main checkout + linked worktree', () => {
     '',
     'worktree /repo/.worktrees/feat',
     'HEAD def456',
-    'branch refs/heads/hermes/feat',
+    'branch refs/heads/rabbit/feat',
     ''
   ].join('\n')
 
@@ -41,7 +41,7 @@ test('parseWorktrees: main checkout + linked worktree', () => {
   assert.equal(trees[0].path, '/repo')
   assert.equal(trees[0].branch, 'main')
   assert.equal(trees[1].path, '/repo/.worktrees/feat')
-  assert.equal(trees[1].branch, 'hermes/feat')
+  assert.equal(trees[1].branch, 'rabbit/feat')
 })
 
 test('parseWorktrees: detached + locked flags', () => {
@@ -59,7 +59,7 @@ test('parseWorktrees: empty input', () => {
 })
 
 test('ensureGitRepo: inits a plain dir with a root commit so worktrees branch', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-wt-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-wt-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -79,7 +79,7 @@ test('ensureGitRepo: inits a plain dir with a root commit so worktrees branch', 
 })
 
 test('switchBranch: switches a normal checkout branch', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-switch-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -95,7 +95,7 @@ test('switchBranch: switches a normal checkout branch', async () => {
 })
 
 test('listBranches: lists locals and flags the checked-out branch', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-branches-'))
 
   try {
     await ensureGitRepo('git', dir)
@@ -119,7 +119,7 @@ test('listBranches: lists locals and flags the checked-out branch', async () => 
 })
 
 test('listBranches: flags a free default branch as default, not checked out', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-default-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-branches-default-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -139,7 +139,7 @@ test('listBranches: flags a free default branch as default, not checked out', as
 })
 
 test('listBranches: a branch claimed by a worktree is flagged checked out', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-wt-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-branches-wt-'))
 
   try {
     await ensureGitRepo('git', dir)
@@ -159,7 +159,7 @@ test('listBranches: a branch claimed by a worktree is flagged checked out', asyn
 })
 
 test('listBranches: empty on a non-repo path', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-nonrepo-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-nonrepo-'))
 
   try {
     assert.deepEqual(await listBranches(dir, 'git'), [])
@@ -169,7 +169,7 @@ test('listBranches: empty on a non-repo path', async () => {
 })
 
 test('addWorktree: existingBranch checks the branch out without a new branch', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-convert-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-convert-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -194,7 +194,7 @@ test('addWorktree: existingBranch checks the branch out without a new branch', a
 })
 
 test('addWorktree: existing default branch switches the main checkout, not .worktrees/main', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-convert-default-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-convert-default-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -214,7 +214,7 @@ test('addWorktree: existing default branch switches the main checkout, not .work
 })
 
 test('listBaseBranches: lists local branches and flags the default', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-branches-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-base-branches-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -240,7 +240,7 @@ test('listBaseBranches: lists local branches and flags the default', async () =>
 })
 
 test('listBaseBranches: empty on a non-repo path', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-nonrepo-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-base-nonrepo-'))
 
   try {
     assert.deepEqual(await listBaseBranches(dir, 'git'), [])
@@ -250,7 +250,7 @@ test('listBaseBranches: empty on a non-repo path', async () => {
 })
 
 test('addWorktree: base param branches off a specified local branch', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-add-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-base-add-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
 
   try {
@@ -273,8 +273,8 @@ test('addWorktree: base param branches off a specified local branch', async () =
 test('addWorktree: base origin/main does not set up upstream tracking', async () => {
   // Two repos: a bare "remote" and a clone, so origin/main resolves as a
   // remote-tracking ref — the condition that triggers auto-tracking.
-  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-remote-'))
-  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-clone-'))
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-remote-'))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-clone-'))
   const git = (...args) => execFileSync('git', args, { cwd: cloneDir }).toString().trim()
 
   try {
@@ -285,9 +285,9 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
       '-C',
       remoteDir,
       '-c',
-      'user.email=hermes@localhost',
+      'user.email=rabbit@localhost',
       '-c',
-      'user.name=Hermes',
+      'user.name=Rabbit',
       'commit',
       '--allow-empty',
       '-m',
@@ -326,11 +326,11 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
 // installers made: remote.origin.fetch maps only the tag, so no branch has a
 // tracking ref. The remote has `main` and `feature` one commit past the tag.
 // Returns both paths and the tip. The caller must remove them.
-const IDENT = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
+const IDENT = ['-c', 'user.email=rabbit@localhost', '-c', 'user.name=Rabbit']
 
 function seedNarrowClone(label) {
-  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
-  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-${label}-remote-`))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-${label}-clone-`))
   execFileSync('git', ['init', '-q', '-b', 'main', remoteDir])
   execFileSync('git', ['-C', remoteDir, ...IDENT, 'commit', '-q', '--allow-empty', '-m', 'root'])
   execFileSync('git', ['-C', remoteDir, 'tag', 'v0'])
@@ -485,8 +485,8 @@ test('addWorktree: a glob base is not turned into a fetch of every branch', asyn
 // `branches`, plus a clone of it. Returns both paths. The caller must remove
 // them.
 function seedRemoteAndClone(label, branches) {
-  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-remote-`))
-  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-${label}-clone-`))
+  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-${label}-remote-`))
+  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-${label}-clone-`))
 
   const remoteGit = (...args) =>
     execFileSync('git', ['-C', remoteDir, ...args])
@@ -494,7 +494,7 @@ function seedRemoteAndClone(label, branches) {
       .trim()
 
   execFileSync('git', ['init', '-b', 'main', remoteDir])
-  remoteGit('-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'root')
+  remoteGit('-c', 'user.email=rabbit@localhost', '-c', 'user.name=Rabbit', 'commit', '--allow-empty', '-m', 'root')
 
   for (const branch of branches) {
     remoteGit('branch', branch)
@@ -596,7 +596,7 @@ test('addWorktree: a remote default branch gets its own worktree, not a home swi
 })
 
 test('switchBranch: non-repo dir short-circuits instead of throwing', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sw-'))
 
   try {
     // A plain folder pinned as a project (no .git): its lane label is the
@@ -611,7 +611,7 @@ test('switchBranch: non-repo dir short-circuits instead of throwing', async () =
 })
 
 test('switchBranch: repo dir still validates the branch name and switches', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sw-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sw-'))
 
   try {
     execFileSync('git', ['init', '-b', 'main'], { cwd: dir })

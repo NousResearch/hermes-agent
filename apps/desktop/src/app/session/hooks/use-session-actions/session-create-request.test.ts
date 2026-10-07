@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requestGatewayForAgent = vi.fn()
@@ -16,13 +16,13 @@ const rejection = (field: string, suffix = '') =>
   })
 
 const OUT_OF_SYNC =
-  ' — the client and the Hermes backend are out of sync (different versions); run `hermes update` and restart both'
+  ' — the client and the Rabbit backend are out of sync (different versions); run `rabbit update` and restart both'
 
 const PRE_122899_REJECTION = rejection('cwd_explicit', OUT_OF_SYNC) // v0.21.4 – v0.21.5 wording
 const V0213_REJECTION = rejection('cwd_explicit') // v0.21.3 wording, no out-of-sync suffix
 
 const params = { cols: 96, cwd: '/work/repo', cwd_explicit: true, profile: 'default', source: 'desktop' }
-const route = { connectionId: 'cloud', profile: 'default' }
+const route = { connectionId: 'remote-gw', profile: 'default' }
 
 describe('createGatewaySession', () => {
   beforeEach(() => requestGatewayForAgent.mockReset())
@@ -34,7 +34,7 @@ describe('createGatewaySession', () => {
     await expect(createGatewaySession(route, params, vi.fn())).resolves.toEqual({ session_id: 's1' })
     expect(requestGatewayForAgent).toHaveBeenNthCalledWith(
       2,
-      'cloud',
+      'remote-gw',
       'default',
       'session.create',
       withoutFlag,

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Fat .deb assembly for the Termux hermes-agent bundle (Task 4 of
-# .hermes/plans/2026-08-31_termux-deb.md). Runs AFTER termux_build.sh
+# Fat .deb assembly for the Termux rabbit-agent bundle (Task 4 of
+# .rabbit/plans/2026-08-31_termux-deb.md). Runs AFTER termux_build.sh
 # (wheelhouse) and build_cpython.sh / build_node.sh have populated the
 # payload dir. No opt-out flags: a skipped step is a different artifact.
 #
 # Inputs (all required):
-#   --repo <dir>          hermes-agent checkout (tag must exist; provenance)
+#   --repo <dir>          rabbit-agent checkout (tag must exist; provenance)
 #   --tag <tag>           immutable release tag (vX.Y.Z or vX.Y.Z+canary.<UTC timestamp>)
 #   --payload <dir>       dir containing python/, node/, app/ (git archive of
 #                         the tag) and wheelhouse/ (from termux_build.sh)
-#   --out <dir>           output dir; <out>/hermes-agent_<v>_aarch64.deb lands here
+#   --out <dir>           output dir; <out>/rabbit-agent_<v>_aarch64.deb lands here
 #
 # No opt-out flags: the .deb is ALWAYS installed into a fresh run of the
 # pinned termux-docker image (digest pinned in pm/lock.json) and smoke-tested.
@@ -18,8 +18,8 @@
 #
 # Staged payload layout: python/ and node/ are pm-staged termux .deb
 # trees ($PREFIX-shaped: data/data/com.termux/files/usr/...). The
-# installed layout is $PREFIX/lib/hermes-agent/{tools,app,venv,pm-runtime,bin} with
-# exactly one leak: $PREFIX/bin/hermes -> lib/hermes-agent/bin/hermes.
+# installed layout is $PREFIX/lib/rabbit-agent/{tools,app,venv,pm-runtime,bin} with
+# exactly one leak: $PREFIX/bin/rabbit -> lib/rabbit-agent/bin/rabbit.
 
 set -Eeuo pipefail
 
@@ -86,15 +86,15 @@ PY
     )" || fail "commit version admission failed"
     if [ -n "$RELEASE_COMMIT" ]; then
         DEB_VERSION="$(python3 "$HERE/deb_version.py" "$TAG")" || fail "version derivation failed for tag $TAG"
-        export HERMES_PAYLOAD_TAG="$TAG"
-        unset HERMES_BUILD_COMMIT
+        export RABBIT_PAYLOAD_TAG="$TAG"
+        unset RABBIT_BUILD_COMMIT
     else
         DEB_VERSION="${PY_VERSION}+commit${COMMIT_MODE:0:12}"
-        export HERMES_PAYLOAD_TAG=""
-        export HERMES_BUILD_COMMIT="$COMMIT_MODE"
+        export RABBIT_PAYLOAD_TAG=""
+        export RABBIT_BUILD_COMMIT="$COMMIT_MODE"
     fi
 else
-    unset HERMES_BUILD_COMMIT
+    unset RABBIT_BUILD_COMMIT
     COMMIT="$(git -C "$REPO_ABS" rev-parse --verify "refs/tags/$TAG^{commit}")" \
         || fail "tag $TAG not found in $REPO_ABS"
     PY_VERSION="${TAG#v}"
@@ -110,7 +110,7 @@ PYBIN_REL="data/data/com.termux/files/usr/bin/python3.14"
 NODEBIN_REL="data/data/com.termux/files/usr/bin/node"
 [ -f "$PAYLOAD_ABS/node/$NODEBIN_REL" ] || fail "payload node tree lacks $NODEBIN_REL"
 
-PKG="hermes-agent"
+PKG="rabbit-agent"
 
 # [1] Version derivation: tag mode uses the pure function in deb_version.py
 # (tested separately). Commit mode derives it from pyproject above.
@@ -153,14 +153,14 @@ trap restore_assembly_owner EXIT
 # on-device from birth -- a /payload alias would bake container paths in.
 docker run --rm --platform linux/arm64 \
     --user 1000:1000 --network none \
-    -v "$ASSEMBLY:/data/data/com.termux/files/usr/lib/hermes-agent" \
-    -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/hermes-agent/tools/python" \
-    -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/hermes-agent/tools/node" \
-    -v "$PAYLOAD_ABS/uv:/data/data/com.termux/files/usr/lib/hermes-agent/tools/uv" \
-    -v "$PAYLOAD_ABS/runtime-libs:/data/data/com.termux/files/usr/lib/hermes-agent/runtime-libs" \
-    -v "$PAYLOAD_ABS/wheelhouse:/data/data/com.termux/files/usr/lib/hermes-agent/wheelhouse" \
-    -v "$PAYLOAD_ABS/.work:/data/data/com.termux/files/usr/lib/hermes-agent/.work" \
-    -v "$PAYLOAD_ABS/app:/data/data/com.termux/files/usr/lib/hermes-agent/app:ro" \
+    -v "$ASSEMBLY:/data/data/com.termux/files/usr/lib/rabbit-agent" \
+    -v "$PAYLOAD_ABS/python:/data/data/com.termux/files/usr/lib/rabbit-agent/tools/python" \
+    -v "$PAYLOAD_ABS/node:/data/data/com.termux/files/usr/lib/rabbit-agent/tools/node" \
+    -v "$PAYLOAD_ABS/uv:/data/data/com.termux/files/usr/lib/rabbit-agent/tools/uv" \
+    -v "$PAYLOAD_ABS/runtime-libs:/data/data/com.termux/files/usr/lib/rabbit-agent/runtime-libs" \
+    -v "$PAYLOAD_ABS/wheelhouse:/data/data/com.termux/files/usr/lib/rabbit-agent/wheelhouse" \
+    -v "$PAYLOAD_ABS/.work:/data/data/com.termux/files/usr/lib/rabbit-agent/.work" \
+    -v "$PAYLOAD_ABS/app:/data/data/com.termux/files/usr/lib/rabbit-agent/app:ro" \
     "$IMAGE" bash -c '
         set -euo pipefail
         export PREFIX=/data/data/com.termux/files/usr
@@ -168,16 +168,16 @@ docker run --rm --platform linux/arm64 \
         # The staged binary is dynamically linked against its OWN tree lib;
         # the container linker needs to be told where it lives (same fix as
         # the wheelhouse container half).
-        export LD_LIBRARY_PATH="$PREFIX/lib/hermes-agent/tools/python$PREFIX/lib:$PREFIX/lib/hermes-agent/tools/node$PREFIX/lib:$PREFIX/lib/hermes-agent/runtime-libs/lib:$PREFIX/lib"
+        export LD_LIBRARY_PATH="$PREFIX/lib/rabbit-agent/tools/python$PREFIX/lib:$PREFIX/lib/rabbit-agent/tools/node$PREFIX/lib:$PREFIX/lib/rabbit-agent/runtime-libs/lib:$PREFIX/lib"
         # The staged tree is mounted at its REAL $PREFIX path so the venv
         # recorded absolute paths are correct on-device from birth.
         mkdir -p "$PREFIX" 2>/dev/null || true
-        PY="$PREFIX/lib/hermes-agent/tools/python$PREFIX/bin/python3.14"
-        ROOT="$PREFIX/lib/hermes-agent"
-        export HERMES_RUNTIME_DIR="$ROOT/tools"
+        PY="$PREFIX/lib/rabbit-agent/tools/python$PREFIX/bin/python3.14"
+        ROOT="$PREFIX/lib/rabbit-agent"
+        export RABBIT_RUNTIME_DIR="$ROOT/tools"
         mkdir -p "$PREFIX/tmp"
-        HERMES_HOME="$(mktemp -d "$PREFIX/tmp/hermes-pm-XXXXXX")"
-        export HERMES_HOME
+        RABBIT_HOME="$(mktemp -d "$PREFIX/tmp/rabbit-pm-XXXXXX")"
+        export RABBIT_HOME
         "$PY" "$ROOT/app/scripts/termux/build_environment.py" assemble \
             --root "$ROOT" --python "$PY" --requirements "$ROOT/.work/resolved-reqs.txt"
     ' || fail "venv assembly failed inside the container (offline wheelhouse install)"
@@ -187,18 +187,18 @@ trap - EXIT
 mv "$ASSEMBLY/venv" "$ASSEMBLY/pm-runtime" "$PAYLOAD_ABS/"
 rm -rf "$ASSEMBLY"
 
-# The install-method stamp (code-scoped, next to hermes_cli/): the deb IS
+# The install-method stamp (code-scoped, next to rabbit_cli/): the deb IS
 # the Termux apt distribution, and detect_install_method reads this marker
-# to route hermes update -> pkg upgrade remediation.
+# to route rabbit update -> pkg upgrade remediation.
 printf 'apt\n' > "$PAYLOAD_ABS/app/.install_method"
 
 # The shared stamp writer records the apt-termux update owner.
-# Commit mode exports HERMES_BUILD_COMMIT and leaves the tag empty.
+# Commit mode exports RABBIT_BUILD_COMMIT and leaves the tag empty.
 # 'runtime', not 'bundled': the deb ships a runtime but no Electron app,
 # and 'bundled' readers (data cleanup) go looking for the enclosing app.
 log "Writing app/install-stamp.json"
-HERMES_PAYLOAD_TAG="$TAG" \
-HERMES_DESKTOP_VARIANT=runtime \
+RABBIT_PAYLOAD_TAG="$TAG" \
+RABBIT_DESKTOP_VARIANT=runtime \
 python3 "$REPO_ABS/scripts/write_install_stamp.py" \
     --output "$PAYLOAD_ABS/app/install-stamp.json" \
     --commit "$COMMIT" \
@@ -210,7 +210,7 @@ python3 "$REPO_ABS/scripts/write_install_stamp.py" \
     --source bundle \
     || fail "stamp write failed"
 
-# [5]+[6] Staging dir: DEBIAN/ control + payload under lib/hermes-agent/.
+# [5]+[6] Staging dir: DEBIAN/ control + payload under lib/rabbit-agent/.
 log "Staging the package tree"
 STAGE="$OUT_ABS/.stage-$DEB_VERSION"
 rm -rf "$STAGE"
@@ -219,7 +219,7 @@ rm -rf "$STAGE"
 # at / and only /data/data is writable -- a ./lib staging would make
 # dpkg try to create /lib and fail on the read-only root.
 ROOT_IN_DEB=data/data/com.termux/files/usr
-DEST="$STAGE/$ROOT_IN_DEB/lib/hermes-agent"
+DEST="$STAGE/$ROOT_IN_DEB/lib/rabbit-agent"
 mkdir -p "$STAGE/DEBIAN" "$DEST/tools"
 for tool in python node uv npm ffmpeg ripgrep; do
     cp -a "$PAYLOAD_ABS/$tool" "$DEST/tools/"
@@ -233,8 +233,8 @@ cat > "$STAGE/DEBIAN/control" <<EOF
 Package: $PKG
 Version: $DEB_VERSION
 Architecture: aarch64
-Maintainer: Nous Research
-Description: Hermes Agent CLI for Termux (self-contained bundled python/node/venv)
+Maintainer: Sanath Patil
+Description: Rabbit Agent CLI for Termux (self-contained bundled python/node/venv)
 Installed-Size: $(du -sk "$STAGE/$ROOT_IN_DEB" | cut -f1)
 EOF
 # Self-contained: no Depends line at all. Our python, node and venv ship inside.

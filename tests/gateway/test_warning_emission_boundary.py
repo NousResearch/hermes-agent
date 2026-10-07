@@ -10,8 +10,8 @@ from tests.gateway.test_session_hygiene import HygieneCaptureAdapter
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_emit_warning_preserves_transport_receipt_and_input_metadata(tmp_path, monkeypatch, setting):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     cfg = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
     (tmp_path / "config.yaml").write_text(json.dumps(cfg))
     adapter = HygieneCaptureAdapter()
@@ -31,8 +31,8 @@ async def test_emit_warning_preserves_transport_receipt_and_input_metadata(tmp_p
 
 @pytest.mark.asyncio
 async def test_emit_warning_uses_logical_override_and_does_not_swallow_send_error(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
     (tmp_path / "config.yaml").write_text(json.dumps({"display": {
         "suppress_warning_notifications": True,
         "platforms": {"slack": {"suppress_warning_notifications": False}}}}))

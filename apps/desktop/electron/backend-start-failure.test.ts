@@ -37,7 +37,7 @@ test('never latches a supervisor-owned respawn failure (it has its own bounded c
 })
 
 test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {
-  // Without this the non-latching remote path re-runs startHermes on every
+  // Without this the non-latching remote path re-runs startRabbit on every
   // getConnection/api call, re-emits running:true, and the overlay hides
   // itself — the "Sign in" button flickers away before it can be clicked.
   assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth: true }), true)
@@ -78,7 +78,7 @@ test('a CONFIRMED reauth rejection is never auto-retried (missing capability, no
 })
 
 test('unsigned OAuth latches and is never auto-retried; a bare needsOauthLogin hint still retries', () => {
-  // Production composition in startHermes: isReauth = isReauthRequiredError(error).
+  // Production composition in startRabbit: isReauth = isReauthRequiredError(error).
   // A bare `{ needsOauthLogin: true }` is the IPC-shaped hint, not a confirmed
   // rejection; gatewayTicketFailure tags a confirmed 401/403 with
   // isReauthRequired itself (#95701, see remote-reauth-latch.test.ts).
@@ -190,7 +190,7 @@ test('FIX #72698: a rejected SSH key latches the boot failure and is never auto-
   assert.equal(isRetryableRemoteBootFailure(transient), true)
   assert.equal(shouldLatchSshAuthFailure({ attemptedRemote: false, isReauth: false, isSshAuthFailed: true }), false)
   // A remote lifecycle's filesystem "Permission denied" is not a credential rejection.
-  assert.equal(isSshAuthFailedBootFailure(new Error('mkdir: /opt/hermes: Permission denied')), false)
+  assert.equal(isSshAuthFailedBootFailure(new Error('mkdir: /opt/rabbit: Permission denied')), false)
 })
 
 test('FIX #95701: while a reauth rejection is latched, only re-emits of that failure reach the renderer', () => {
@@ -204,7 +204,7 @@ test('FIX #95701: while a reauth rejection is latched, only re-emits of that fai
   // sibling failure that would flip retryable back on.
   assert.equal(shouldHoldBootProgressForReauth(latched, { error: null }), true)
   assert.equal(shouldHoldBootProgressForReauth(latched, {}), true)
-  assert.equal(shouldHoldBootProgressForReauth(latched, { error: 'Could not reach the remote Hermes gateway' }), true)
+  assert.equal(shouldHoldBootProgressForReauth(latched, { error: 'Could not reach the remote Rabbit gateway' }), true)
 })
 
 test('FIX #95701: with no reauth latch every boot-progress update flows as before', () => {

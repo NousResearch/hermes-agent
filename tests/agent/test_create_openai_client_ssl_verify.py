@@ -9,7 +9,7 @@ import pytest
 from agent.ssl_verify import resolve_httpx_verify
 from run_agent import AIAgent
 
-_CA_ENV_VARS = ("HERMES_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
+_CA_ENV_VARS = ("RABBIT_CA_BUNDLE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "HTTPS_PROXY")
 
 # install_truststore() rebinds ssl.SSLContext to the truststore subclass process-wide;
 # explicit-bundle contexts are deliberately built from the ORIGINAL base class (an

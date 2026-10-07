@@ -63,10 +63,10 @@ describe('transcript tail cache', () => {
   })
 
   it('self-evicts a corrupt entry instead of returning garbage', () => {
-    window.localStorage.setItem('hermes.transcript-tail.v2:sess-bad', '{not json')
+    window.localStorage.setItem('rabbit.transcript-tail.v2:sess-bad', '{not json')
 
     expect(loadTranscriptTail('sess-bad')).toBeNull()
-    expect(window.localStorage.getItem('hermes.transcript-tail.v2:sess-bad')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.transcript-tail.v2:sess-bad')).toBeNull()
   })
 
   it('drops a deleted session and wipes everything on a gateway re-home', () => {
@@ -111,7 +111,7 @@ describe('transcript tail cache', () => {
       savedAt: Date.now()
     }
 
-    window.localStorage.setItem('hermes.transcript-tail.v2:sess-poisoned', JSON.stringify(poisoned))
+    window.localStorage.setItem('rabbit.transcript-tail.v2:sess-poisoned', JSON.stringify(poisoned))
 
     const loaded = loadTranscriptTail('sess-poisoned')
 
@@ -190,8 +190,8 @@ describe('transcript tail cache', () => {
         savedAt: Date.now()
       }
 
-      window.localStorage.setItem('hermes.transcript-tail.v1:sess-legacy', JSON.stringify(stale))
-      window.localStorage.setItem('hermes.transcript-tail.v1-index', JSON.stringify(['sess-legacy']))
+      window.localStorage.setItem('rabbit.transcript-tail.v1:sess-legacy', JSON.stringify(stale))
+      window.localStorage.setItem('rabbit.transcript-tail.v1-index', JSON.stringify(['sess-legacy']))
 
       // Fresh module instance: the sweep runs once per window, and earlier
       // tests in this file have already touched storage.
@@ -202,8 +202,8 @@ describe('transcript tail cache', () => {
 
         expect(fresh.loadTranscriptTail('sess-legacy')).toBeNull()
         expect(fresh.loadTranscriptTail('sess-legacy', { profile: 'ai-energy' })).toBeNull()
-        expect(window.localStorage.getItem('hermes.transcript-tail.v1:sess-legacy')).toBeNull()
-        expect(window.localStorage.getItem('hermes.transcript-tail.v1-index')).toBeNull()
+        expect(window.localStorage.getItem('rabbit.transcript-tail.v1:sess-legacy')).toBeNull()
+        expect(window.localStorage.getItem('rabbit.transcript-tail.v1-index')).toBeNull()
       } finally {
         vi.resetModules()
       }

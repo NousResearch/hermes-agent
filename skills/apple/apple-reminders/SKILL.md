@@ -1,12 +1,12 @@
 ---
+author: Hermes Agent
 name: apple-reminders
 description: "Apple Reminders via remindctl: add, list, complete."
 version: 1.0.0
-author: Hermes Agent
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  rabbit:
     tags: [Reminders, tasks, todo, macOS, Apple]
 prerequisites:
   commands: [remindctl]

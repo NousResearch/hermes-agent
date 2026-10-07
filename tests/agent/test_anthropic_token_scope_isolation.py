@@ -11,7 +11,7 @@ ROOT CAUSE
         line 1226: os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
         line 1245: os.getenv("ANTHROPIC_API_KEY", "")
 
-    Every other credential reader in the resolution chain (hermes_cli/runtime_provider.py
+    Every other credential reader in the resolution chain (rabbit_cli/runtime_provider.py
     _getenv, secret_scope.get_secret) correctly uses the profile-scoped wrapper.
 
 IMPACT

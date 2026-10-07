@@ -23,21 +23,19 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     secureTokenStorage: true,
     remoteTokenPlainText: false,
     remoteUrl: 'https://box:9119',
-    cloudOrg: '',
     sshHost: '',
     sshUser: '',
     sshPort: null,
     sshKeyPath: '',
-    sshRemoteHermesPath: '',
+    sshRemoteRabbitPath: '',
     sshRemoteProfile: '',
     ...overrides
   }
 }
 
 describe('isRemoteConfig', () => {
-  it('true for remote/cloud with a URL, regardless of auth mode or connection', () => {
+  it('true for remote with a URL, regardless of auth mode or connection', () => {
     expect(isRemoteConfig(config({ remoteAuthMode: 'token', remoteOauthConnected: false }))).toBe(true)
-    expect(isRemoteConfig(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(true)
   })
 
   it('recognizes SSH as remote recovery without treating it as OAuth reauth', () => {
@@ -78,14 +76,12 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config({ mode: 'local' }))).toBe(false)
   })
 
-  it('true for a cloud connection with a lapsed session (cloud resolves to remote oauth)', () => {
-    // A 'cloud' connection is a remote oauth backend under the hood (Q6), so a
-    // lapsed cloud session is the same reauth failure as a lapsed remote one.
-    expect(isRemoteReauthFailure(config({ mode: 'cloud' }))).toBe(true)
+  it('true for a remote oauth connection with a lapsed session', () => {
+    expect(isRemoteReauthFailure(config({ mode: 'remote', remoteAuthMode: 'oauth' }))).toBe(true)
   })
 
-  it('false for a connected cloud session', () => {
-    expect(isRemoteReauthFailure(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(false)
+  it('false for a connected remote oauth session', () => {
+    expect(isRemoteReauthFailure(config({ mode: 'remote', remoteAuthMode: 'oauth', remoteOauthConnected: true }))).toBe(false)
   })
 
   it('false for a token (non-gated) remote gateway', () => {
@@ -110,7 +106,7 @@ describe('isRemoteReauthError', () => {
   })
 
   it('ignores non-auth boot errors and nullish', () => {
-    expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
+    expect(isRemoteReauthError('Rabbit background process exited during startup.')).toBe(false)
     expect(isRemoteReauthError(null)).toBe(false)
   })
 })
@@ -120,7 +116,7 @@ describe('shouldApplyPostBootProgressError', () => {
     expect(shouldApplyPostBootProgressError('Your remote gateway session has expired.')).toBe(true)
     expect(
       shouldApplyPostBootProgressError(
-        'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.'
+        'Could not reach the remote Rabbit gateway while refreshing its WebSocket ticket. Try reconnecting.'
       )
     ).toBe(false)
     expect(shouldApplyPostBootProgressError('Lost connection to the gateway')).toBe(false)
@@ -151,20 +147,20 @@ describe('deriveProviderShape', () => {
   })
 
   it('OAuth shape when the provider is a redirect IDP', () => {
-    expect(deriveProviderShape([{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }])).toEqual({
+    expect(deriveProviderShape([{ name: 'acme', displayName: 'Acme OIDC', supportsPassword: false }])).toEqual({
       isPassword: false,
-      providerLabel: 'Nous Research'
+      providerLabel: 'Acme OIDC'
     })
   })
 
   it('mixed deployment keeps generic OAuth copy (not every provider is password)', () => {
     const shape = deriveProviderShape([
       { name: 'basic', displayName: 'Username & Password', supportsPassword: true },
-      { name: 'nous', displayName: 'Nous Research', supportsPassword: false }
+      { name: 'acme', displayName: 'Acme OIDC', supportsPassword: false }
     ])
 
     expect(shape.isPassword).toBe(false)
-    expect(shape.providerLabel).toBe('Username & Password / Nous Research')
+    expect(shape.providerLabel).toBe('Username & Password / Acme OIDC')
   })
 
   it('falls back to name when displayName is empty', () => {

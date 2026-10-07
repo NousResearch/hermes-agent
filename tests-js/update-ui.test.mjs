@@ -39,7 +39,7 @@ function fixture({ details = true, available = true, statusOverride } = {}) {
     }
   })
   const status = statusOverride || { supported: true, behind: available ? 1 : 0 }
-  window.hermesDesktop = { updates: { check: async () => status } }
+  window.rabbitDesktop = { updates: { check: async () => status } }
   const page = {
     getByRole(role, { name }) {
       expect(role).toBe('button')
@@ -100,22 +100,22 @@ test('checks the live Desktop bridge against the staged target before opening Ab
 
 test('test-only source probe pins staged main without changing other Python invocations', () => {
   const root = '/fixture/install'
-  const probe = ['-c', 'from pathlib import Path; import runpy; p = Path("hermes_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry()', '--install-root', root, '--home', '/fixture/home', '--git', '/shim/git', '--force']
+  const probe = ['-c', 'from pathlib import Path; import runpy; p = Path("rabbit_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry()', '--install-root', root, '--home', '/fixture/home', '--git', '/shim/git', '--force']
   const expected = [...probe]
   expected[expected.indexOf('--git') + 1] = '/real/git'
   expected.push('--branch', 'main')
   expect(sourceBranchProbe.branchProbeArgs(probe, root, '/real/git')).toEqual(expected)
-  const managed = ['--run-module', 'hermes_cli.source_check', ...probe.slice(2)]
+  const managed = ['--run-module', 'rabbit_cli.source_check', ...probe.slice(2)]
   expect(sourceBranchProbe.branchProbeArgs(managed, root, '/real/git')).toEqual([
-    '--run-module', 'hermes_cli.source_check', ...expected.slice(2),
+    '--run-module', 'rabbit_cli.source_check', ...expected.slice(2),
   ])
   expect(sourceBranchProbe.branchProbeArgs(probe, '/other/install', '/real/git')).toBe(probe)
   expect(sourceBranchProbe.branchProbeArgs(managed, '/other/install', '/real/git')).toBe(managed)
-  expect(sourceBranchProbe.branchProbeArgs(['-c', 'print("hermes_cli/source_check.py")'], root, '/real/git')).toEqual(['-c', 'print("hermes_cli/source_check.py")'])
-  expect(sourceBranchProbe.branchProbeArgs(['--run-module', 'hermes_cli.config', ...managed.slice(2)], root, '/real/git')).toEqual(['--run-module', 'hermes_cli.config', ...managed.slice(2)])
+  expect(sourceBranchProbe.branchProbeArgs(['-c', 'print("rabbit_cli/source_check.py")'], root, '/real/git')).toEqual(['-c', 'print("rabbit_cli/source_check.py")'])
+  expect(sourceBranchProbe.branchProbeArgs(['--run-module', 'rabbit_cli.config', ...managed.slice(2)], root, '/real/git')).toEqual(['--run-module', 'rabbit_cli.config', ...managed.slice(2)])
   expect(sourceBranchProbe.branchProbeArgs([...probe, '--branch', 'topic'], root, '/real/git')).toEqual([...probe, '--branch', 'topic'])
   expect(sourceBranchProbe.branchProbeArgs(probe, root, '')).toBe(probe)
-  const cmd = ['/d', '/v:off', '/s', '/c', `""C:\\fixture\\hermes.cmd" "--run-module" "hermes_cli.source_check" "--install-root" "${root}" "--home" "/profile with spaces" "--git" "/shim/git" "--force""`]
+  const cmd = ['/d', '/v:off', '/s', '/c', `""C:\\fixture\\rabbit.cmd" "--run-module" "rabbit_cli.source_check" "--install-root" "${root}" "--home" "/profile with spaces" "--git" "/shim/git" "--force""`]
   const rewritten = sourceBranchProbe.branchProbeArgs(cmd, root, '/real/git')
   expect(rewritten.slice(0, 4)).toEqual(cmd.slice(0, 4))
   expect(rewritten[4]).toContain('"--git" "/real/git" "--force" "--branch" "main"')
@@ -125,7 +125,7 @@ test('test-only source probe pins staged main without changing other Python invo
 
 test.skipIf(process.platform === 'win32')('probe Git reaches the staged main even with global Git config isolated', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-staged-git-'))
-  const git = process.env.HERMES_E2E_REAL_GIT || process.env.PATH.split(path.delimiter)
+  const git = process.env.RABBIT_E2E_REAL_GIT || process.env.PATH.split(path.delimiter)
     .map(dir => path.join(dir, process.platform === 'win32' ? 'git.exe' : 'git')).find(file => fs.existsSync(file))
   try {
     const checkout = path.join(root, 'checkout')
@@ -139,30 +139,30 @@ test.skipIf(process.platform === 'win32')('probe Git reaches the staged main eve
     const sha = run(['rev-parse', 'HEAD'])
     run(['clone', '--bare', checkout, bare], root)
     run(['reset', '--hard', base])
-    run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
+    run(['remote', 'add', 'origin', 'https://github.com/seven0070/Rabbit-.git'])
     const cfg = path.join(root, 'gitconfig')
-    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
-    const python = process.env.HERMES_PYTHON || 'python3'
+    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/seven0070/Rabbit-.git'])
+    const python = process.env.RABBIT_PYTHON || 'python3'
     const source = fileURLToPath(new URL('../', import.meta.url))
-    const launcher = path.join(checkout, '.hermes', 'bin', 'hermes')
+    const launcher = path.join(checkout, '.rabbit', 'bin', 'rabbit')
     fs.mkdirSync(path.dirname(launcher), { recursive: true })
     const quote = value => `'${value.replace(/'/g, "'\\''")}'`
-    fs.writeFileSync(launcher, `#!/bin/sh\nif [ "$1" = '--run-module' ]; then shift 2; exec ${quote(python)} -m hermes_cli.source_check "$@"; fi\nprintf '%s\\n' "$@"\n`, { mode: 0o700 })
+    fs.writeFileSync(launcher, `#!/bin/sh\nif [ "$1" = '--run-module' ]; then shift 2; exec ${quote(python)} -m rabbit_cli.source_check "$@"; fi\nprintf '%s\\n' "$@"\n`, { mode: 0o700 })
     const capturedEnv = { ...process.env, GIT_CONFIG_GLOBAL: cfg }
-    const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
+    const launchEnv = { RABBIT_DESKTOP_USER_DATA_DIR: root }
     sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)
     const env = { ...process.env, GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
       PYTHONPATH: source, GIT_ALLOW_PROTOCOL: 'file' }
     const home = path.join(root, 'profile')
     fs.mkdirSync(home)
-    const status = JSON.parse(execFileSync(launcher, ['--run-module', 'hermes_cli.source_check',
+    const status = JSON.parse(execFileSync(launcher, ['--run-module', 'rabbit_cli.source_check',
       '--install-root', checkout, '--home', home, '--git', git, '--force'],
     { cwd: checkout, encoding: 'utf8', env }))
     expect(status).toMatchObject({ supported: true, currentSha: base, branch: 'main', targetSha: sha, updateAvailable: true })
     expect(execFileSync(launcher, ['--version'], { cwd: checkout, env, encoding: 'utf8' }).trim()).toBe('--version')
     const other = path.join(root, 'other-checkout')
     fs.mkdirSync(other)
-    const foreign = JSON.parse(execFileSync(launcher, ['--run-module', 'hermes_cli.source_check',
+    const foreign = JSON.parse(execFileSync(launcher, ['--run-module', 'rabbit_cli.source_check',
       '--install-root', other, '--home', home, '--git', git, '--force'],
     { cwd: checkout, encoding: 'utf8', env }))
     expect(foreign).toMatchObject({ supported: false, reason: 'not-a-git-checkout' })
@@ -187,20 +187,20 @@ test.skipIf(process.platform === 'win32')('historical venv install without a PM 
     const sha = run(['rev-parse', 'HEAD'])
     run(['clone', '--bare', checkout, bare], root)
     run(['reset', '--hard', old])
-    run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
+    run(['remote', 'add', 'origin', 'https://github.com/seven0070/Rabbit-.git'])
     const cfg = path.join(root, 'gitconfig')
-    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
-    const legacy = path.join(checkout, 'venv', 'bin', 'hermes')
+    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/seven0070/Rabbit-.git'])
+    const legacy = path.join(checkout, 'venv', 'bin', 'rabbit')
     fs.mkdirSync(path.dirname(legacy), { recursive: true })
     fs.writeFileSync(legacy, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
-    const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
+    const launchEnv = { RABBIT_DESKTOP_USER_DATA_DIR: root }
     const capturedEnv = { ...process.env, GIT_CONFIG_GLOBAL: cfg }
     sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)
-    expect(fs.existsSync(path.join(checkout, '.hermes', 'bin', 'hermes'))).toBe(false)
-    expect(launchEnv.HERMES_E2E_SOURCE_ROOT).toBe(checkout)
-    expect(launchEnv.HERMES_E2E_SOURCE_URL).toBe(`file://${bare}`)
+    expect(fs.existsSync(path.join(checkout, '.rabbit', 'bin', 'rabbit'))).toBe(false)
+    expect(launchEnv.RABBIT_E2E_SOURCE_ROOT).toBe(checkout)
+    expect(launchEnv.RABBIT_E2E_SOURCE_URL).toBe(`file://${bare}`)
     expect(launchEnv.NODE_OPTIONS).toContain('source-branch-probe.cjs')
-    const launcher = path.join(checkout, '.hermes', 'bin', 'hermes')
+    const launcher = path.join(checkout, '.rabbit', 'bin', 'rabbit')
     fs.mkdirSync(path.dirname(launcher), { recursive: true })
     fs.symlinkSync(path.join(root, 'missing'), launcher)
     expect(() => sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, capturedEnv, launchEnv)).toThrow(/launcher/)
@@ -227,15 +227,15 @@ test.skipIf(process.platform === 'win32')('preloaded historical Desktop Git chec
     run(['-c', 'user.name=Fixture', '-c', 'user.email=e2e@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'staged'])
     const sha = run(['rev-parse', 'HEAD'])
     run(['clone', '--bare', checkout, bare], root)
-    run(['remote', 'add', 'origin', 'https://github.com/NousResearch/hermes-agent.git'])
+    run(['remote', 'add', 'origin', 'https://github.com/seven0070/Rabbit-.git'])
     const cfg = path.join(root, 'gitconfig')
-    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/NousResearch/hermes-agent.git'])
+    run(['config', '--file', cfg, '--add', `url.file://${bare}.insteadOf`, 'https://github.com/seven0070/Rabbit-.git'])
     const shim = path.join(root, 'git')
-    fs.writeFileSync(shim, `#!/bin/sh\nif [ "$1 $2 $3" = "remote get-url origin" ]; then printf '%s\\n' 'https://github.com/NousResearch/hermes-agent.git'; else exec '${git}' "$@"; fi\n`, { mode: 0o700 })
-    const launcher = path.join(checkout, '.hermes', 'bin', 'hermes')
+    fs.writeFileSync(shim, `#!/bin/sh\nif [ "$1 $2 $3" = "remote get-url origin" ]; then printf '%s\\n' 'https://github.com/seven0070/Rabbit-.git'; else exec '${git}' "$@"; fi\n`, { mode: 0o700 })
+    const launcher = path.join(checkout, '.rabbit', 'bin', 'rabbit')
     fs.mkdirSync(path.dirname(launcher), { recursive: true })
     fs.writeFileSync(launcher, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
-    const launchEnv = { HERMES_DESKTOP_USER_DATA_DIR: root }
+    const launchEnv = { RABBIT_DESKTOP_USER_DATA_DIR: root }
     sourceBranchProbe.prepareSourceBranchEnvironment(checkout, sha, git, { ...process.env, GIT_CONFIG_GLOBAL: cfg }, launchEnv)
     const script = 'const {spawn} = require("node:child_process"); const child = spawn(process.argv[1], process.argv.slice(3), {cwd:process.argv[2], env:{...process.env, GIT_CONFIG_GLOBAL:"/dev/null"}}); child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr); child.on("close", code => process.exitCode=code)'
     for (const [args, expected] of [
@@ -256,13 +256,13 @@ test.skipIf(process.platform === 'win32')('preloaded historical Desktop Git chec
 test('preloaded Electron-style execFile transports explicit branch into the checker', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-branch-probe-'))
   try {
-    fs.mkdirSync(path.join(root, 'hermes_cli'))
-    fs.writeFileSync(path.join(root, 'hermes_cli', 'source_check.py'), 'import json, sys\ndef main(): print(json.dumps(sys.argv[1:]))\n')
-    const probe = 'from pathlib import Path; import runpy; p = Path("hermes_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")'
-    const python = process.env.HERMES_PYTHON || 'python3'
+    fs.mkdirSync(path.join(root, 'rabbit_cli'))
+    fs.writeFileSync(path.join(root, 'rabbit_cli', 'source_check.py'), 'import json, sys\ndef main(): print(json.dumps(sys.argv[1:]))\n')
+    const probe = 'from pathlib import Path; import runpy; p = Path("rabbit_cli/source_check.py"); entry = runpy.run_path(str(p)).get("main") if p.is_file() else None; entry() if callable(entry) else print("null")'
+    const python = process.env.RABBIT_PYTHON || 'python3'
     const script = 'const {promisify} = require("node:util"); const {execFile} = require("node:child_process"); promisify(execFile)(process.argv[1], ["-c", process.argv[2], "--install-root", process.argv[3], "--home", process.argv[3], "--git", "fixture-shim", "--force"], {cwd:process.argv[3]}).then(r=>console.log(r.stdout), e=>{console.error(e);process.exitCode=1})'
     const result = spawnSync(process.execPath, ['-e', script, python, probe, root], {
-      encoding: 'utf8', env: { ...process.env, HERMES_E2E_SOURCE_ROOT: root, HERMES_E2E_SOURCE_GIT: '/real/git',
+      encoding: 'utf8', env: { ...process.env, RABBIT_E2E_SOURCE_ROOT: root, RABBIT_E2E_SOURCE_GIT: '/real/git',
         NODE_OPTIONS: `--require=${JSON.stringify(fileURLToPath(new URL('../tests/install/e2e-assets/source-branch-probe.cjs', import.meta.url)))}` },
     })
     expect(result.status, result.stderr).toBe(0)

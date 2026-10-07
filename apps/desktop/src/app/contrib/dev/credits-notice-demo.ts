@@ -8,7 +8,7 @@
 // Installed only under `import.meta.env.DEV` (see contrib/wiring.tsx), so none
 // of this ships in a production build.
 
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 import { registry } from '@/contrib/registry'

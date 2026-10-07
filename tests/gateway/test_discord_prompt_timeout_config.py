@@ -52,9 +52,9 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
 )
 
 def _patch_config(monkeypatch, cfg):
-    """Stub ``hermes_cli.config.read_raw_config`` to return ``cfg``."""
-    import hermes_cli.config
-    monkeypatch.setattr(hermes_cli.config, "read_raw_config", lambda: cfg)
+    """Stub ``rabbit_cli.config.read_raw_config`` to return ``cfg``."""
+    import rabbit_cli.config
+    monkeypatch.setattr(rabbit_cli.config, "read_raw_config", lambda: cfg)
 
 def test_explicit_int_value(monkeypatch):
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 600}})

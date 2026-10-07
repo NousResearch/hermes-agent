@@ -6,7 +6,7 @@ Two authority edges of ``served_profile_child_env`` (review of #111617):
   and no source snapshot, so a name-based strip cannot see it; the child for routed profile B must
   still not carry it when B does not define the same name (``get_secret``'s multiplex contract:
   a scoped miss is *no credential*, never ambient fallback);
-* the Desktop/dashboard backend serves ``?profile=B`` by installing a HERMES_HOME override WITHOUT
+* the Desktop/dashboard backend serves ``?profile=B`` by installing a RABBIT_HOME override WITHOUT
   the gateway-wide multiplex flag — the strip must key on "this task serves a routed home", not on
   that flag; the browser passthrough must not fall through to the launch key on a B miss either.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from agent.secret_scope import UnscopedSecretError, set_multiplex_active
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from tools.environments.local import served_profile_child_env
 
 
@@ -26,13 +26,13 @@ from tools.environments.local import served_profile_child_env
 def homes(tmp_path, monkeypatch):
     """Launch home A (its .env in os.environ) plus an AMBIENT-only OPENAI key A never wrote to a file;
     served home B defines neither."""
-    a = tmp_path / ".hermes"
+    a = tmp_path / ".rabbit"
     b = a / "profiles" / "b"
     b.mkdir(parents=True)
-    (a / ".env").write_text("A_MARKER=a\nHERMES_MODEL=a-model\nFIRECRAWL_API_KEY=a-fc\n", encoding="utf-8")
+    (a / ".env").write_text("A_MARKER=a\nRABBIT_MODEL=a-model\nFIRECRAWL_API_KEY=a-fc\n", encoding="utf-8")
     (b / ".env").write_text("B_MARKER=b\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(a))
-    for key, val in (("A_MARKER", "a"), ("HERMES_MODEL", "a-model"), ("FIRECRAWL_API_KEY", "a-fc"),
+    monkeypatch.setenv("RABBIT_HOME", str(a))
+    for key, val in (("A_MARKER", "a"), ("RABBIT_MODEL", "a-model"), ("FIRECRAWL_API_KEY", "a-fc"),
                      ("OPENAI_API_KEY", "sk-ambient-launch-only")):
         monkeypatch.setenv(key, val)
     monkeypatch.delenv("B_MARKER", raising=False)
@@ -49,7 +49,7 @@ def test_ambient_only_launch_credential_never_reaches_a_routed_child(homes):
     a, b = homes
     set_multiplex_active(True)
     env = served_profile_child_env(target_home=b, inherit_credentials=True)
-    assert env["HERMES_HOME"] == str(b) and env["B_MARKER"] == "b"
+    assert env["RABBIT_HOME"] == str(b) and env["B_MARKER"] == "b"
     assert "OPENAI_API_KEY" not in env and "A_MARKER" not in env and "FIRECRAWL_API_KEY" not in env
     # The raw-environ base used by the relay delivery child is scrubbed the same way.
     env = served_profile_child_env(base=os.environ, target_home=b, inherit_credentials=True)
@@ -61,23 +61,23 @@ def test_ambient_only_launch_credential_never_reaches_a_routed_child(homes):
 
 
 def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monkeypatch):
-    """Desktop/dashboard topology: B served via the HERMES_HOME override only. The slash-worker /
+    """Desktop/dashboard topology: B served via the RABBIT_HOME override only. The slash-worker /
     helper child sees B's env, and the browser passthrough resolves B's (absent) key as no key."""
     from tools.browser_tool import _build_browser_env
 
     a, b = homes
-    token = set_hermes_home_override(str(b))
+    token = set_rabbit_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)
-        assert env["HERMES_HOME"] == str(b) and env["B_MARKER"] == "b"
-        assert "A_MARKER" not in env and "HERMES_MODEL" not in env and "OPENAI_API_KEY" not in env
+        assert env["RABBIT_HOME"] == str(b) and env["B_MARKER"] == "b"
+        assert "A_MARKER" not in env and "RABBIT_MODEL" not in env and "OPENAI_API_KEY" not in env
         browser_env = _build_browser_env()
-        assert "FIRECRAWL_API_KEY" not in browser_env and browser_env["HERMES_HOME"] == str(b)
+        assert "FIRECRAWL_API_KEY" not in browser_env and browser_env["RABBIT_HOME"] == str(b)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     # Control: the launch profile's own browser keeps its key and its settings.
     assert _build_browser_env()["FIRECRAWL_API_KEY"] == "a-fc"
-    assert served_profile_child_env(inherit_credentials=True)["HERMES_MODEL"] == "a-model"
+    assert served_profile_child_env(inherit_credentials=True)["RABBIT_MODEL"] == "a-model"
 
 
 def test_real_child_observes_only_the_routed_profile(homes):
@@ -86,13 +86,13 @@ def test_real_child_observes_only_the_routed_profile(homes):
     import subprocess
 
     a, b = homes
-    token = set_hermes_home_override(str(b))
+    token = set_rabbit_home_override(str(b))
     try:
         env = served_profile_child_env(inherit_credentials=True)
     finally:
-        reset_hermes_home_override(token)
-    probe = "import json,os;print(json.dumps({k:os.environ.get(k) for k in ('HERMES_HOME','A_MARKER','B_MARKER','OPENAI_API_KEY')}))"
+        reset_rabbit_home_override(token)
+    probe = "import json,os;print(json.dumps({k:os.environ.get(k) for k in ('RABBIT_HOME','A_MARKER','B_MARKER','OPENAI_API_KEY')}))"
     out = subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True, text=True, encoding="utf-8", timeout=60)
     seen = json.loads(out.stdout.strip().splitlines()[-1])
-    assert seen == {"HERMES_HOME": str(b), "A_MARKER": None, "B_MARKER": "b", "OPENAI_API_KEY": None}
-    assert Path(seen["HERMES_HOME"]) == b
+    assert seen == {"RABBIT_HOME": str(b), "A_MARKER": None, "B_MARKER": "b", "OPENAI_API_KEY": None}
+    assert Path(seen["RABBIT_HOME"]) == b

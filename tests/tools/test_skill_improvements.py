@@ -40,7 +40,7 @@ class TestFuzzyPatchSkill:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         self.skills_dir = skills_dir
 
     def test_exact_match_still_works(self):

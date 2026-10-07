@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 // Deliberate fixture IPC only; the renderer still uses production gateway/WS code.
-contextBridge.exposeInMainWorld('hermesDesktop', {
+contextBridge.exposeInMainWorld('rabbitDesktop', {
   getConnection: (profile: string) => ipcRenderer.invoke('retirement-fixture:descriptor', profile),
   getConnectionFor: ({ profile }: { profile: string }) => ipcRenderer.invoke('retirement-fixture:descriptor', profile)
 })

@@ -2,7 +2,7 @@
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
-from hermes_cli.heartbeat import (
+from rabbit_cli.heartbeat import (
     HeartbeatManager,
     HeartbeatState,
     load_heartbeat,

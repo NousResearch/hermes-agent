@@ -51,8 +51,8 @@ Discipline:
   them; they usually name the offending parameter or missing asset.
 
 Eager mode (`Enable Tool Search` off) advertises every tool individually.
-Under Hermes that means each tool becomes `mcp_unreal_engine_<tool_name>` at
-session start, and `hermes mcp configure unreal-engine` can prune the list.
+Under Rabbit that means each tool becomes `mcp_unreal_engine_<tool_name>` at
+session start, and `rabbit mcp configure unreal-engine` can prune the list.
 Schema payload grows with every registered toolset, and tool authors are told
 NOT to rely on eager advertising — stay in tool-search mode unless a very
 small fixed surface is wanted.
@@ -236,7 +236,7 @@ Editor Preferences > General > Model Context Protocol:
 | Property | Default | Notes |
 |---|---|---|
 | Auto Start Server | `false` | Turn on for frictionless sessions |
-| Server Port Number | `8000` | Change on conflict; mirror in Hermes config url |
+| Server Port Number | `8000` | Change on conflict; mirror in Rabbit config url |
 | Server URL Path | `/mcp` | Same |
 | Enable Tool Search | `true` | Keep on (see above) |
 
@@ -247,7 +247,7 @@ Console commands (editor console, backtick):
 | `ModelContextProtocol.StartServer [port]` | Start server (optional port override) |
 | `ModelContextProtocol.StopServer` | Stop server, close all sessions |
 | `ModelContextProtocol.RefreshTools` | Re-poll toolset providers — run after authoring/hot-reload/Game-Feature activation |
-| `ModelContextProtocol.GenerateClientConfig <Client\|All>` | Write client config files (ClaudeCode/Cursor/VSCode/Gemini/Codex) — NOT used for Hermes |
+| `ModelContextProtocol.GenerateClientConfig <Client\|All>` | Write client config files (ClaudeCode/Cursor/VSCode/Gemini/Codex) — NOT used for Rabbit |
 
 Command-line flags for launching the editor pre-configured:
 `-ModelContextProtocolStartServer` (force start regardless of preference),
@@ -275,7 +275,7 @@ Console variables:
   advertised tool with schemas and offers form-based invocation — isolates
   "server broken" from "agent calling it wrong".
 - **After Live Coding / authoring:** connected clients can hold stale
-  schemas. `ModelContextProtocol.RefreshTools`, then reconnect (new Hermes
+  schemas. `ModelContextProtocol.RefreshTools`, then reconnect (new Rabbit
   session) if schemas still look stale.
 
 ## Extending the surface: custom toolsets
@@ -328,7 +328,7 @@ Conventions that matter (they generate the schema the agent sees):
   `print()`/stdout go to the UE log, not back over MCP.
 
 After authoring: `ModelContextProtocol.RefreshTools` in the editor console,
-then re-`list_toolsets` from Hermes. Users on Claude Code can scaffold with
+then re-`list_toolsets` from Rabbit. Users on Claude Code can scaffold with
 the `create-toolset` skill from Epic's `unreal-mcp` plugin pack; the
 conventions above still apply.
 

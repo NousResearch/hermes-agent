@@ -260,7 +260,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {_cron_display_name(job)}"
+    thread_name = f"Rabbit — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)
@@ -408,7 +408,7 @@ def _cron_job_origin_log_suffix(job: dict) -> str:
 def _plugin_cron_env_var(platform_name: str) -> str:
     """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from rabbit_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name.lower())
@@ -518,7 +518,7 @@ def _iter_home_target_platforms():
     """Iterate built-in + plugin platform names that expose a home channel."""
     yield from _HOME_TARGET_ENV_VARS
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from rabbit_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
@@ -565,7 +565,7 @@ def cron_delivery_targets() -> list[dict]:
 
     # Bot Chat targets: one per local profile (machine-local; no gateway config or home channel).
     try:
-        from hermes_cli.profiles import list_profile_names
+        from rabbit_cli.profiles import list_profile_names
         for profile_name in list_profile_names():
             targets.append({
                 "id": f"{BOT_CHAT_PLATFORM}:{profile_name}",
@@ -725,13 +725,13 @@ _BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
 
 
 def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) -> subprocess.CompletedProcess:
-    """Run one ``hermes chat -Q`` delivery child; the cap bounds the TURN, not the process (#113608).
+    """Run one ``rabbit chat -Q`` delivery child; the cap bounds the TURN, not the process (#113608).
 
     The booking policy lives with the report contract (``quiet_single_query.run_reported_turn``):
     this lane needs only the outcome, so a child that reported its turn gets the exit grace and is
     then left to its linger; only a turn that never ends is killed.
     """
-    from hermes_cli.quiet_single_query import run_reported_turn
+    from rabbit_cli.quiet_single_query import run_reported_turn
 
     # The scheduler may sit in a directory that no longer exists (a kanban worker whose
     # scratch workspace was reaped): a child inheriting that cwd dies at CLI startup
@@ -739,7 +739,7 @@ def _run_bot_chat_turn(argv: list, env: dict, report_path: str, timeout: float) 
     # Decoding is the runner's platform policy: lossy everywhere (#105582), UTF-8 only on
     # win32 (#115894), the locale codec on POSIX (#66566).
     return run_reported_turn(argv, env=env, report_path=report_path, timeout=timeout,
-                             cwd=env.get("HERMES_HOME") or None)
+                             cwd=env.get("RABBIT_HOME") or None)
 
 
 def _format_failure_streams(result) -> str:
@@ -784,8 +784,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     import json
     import tempfile
     import uuid
-    from hermes_constants import get_hermes_home
-    from hermes_cli.profiles import get_profile_dir
+    from rabbit_constants import get_rabbit_home
+    from rabbit_cli.profiles import get_profile_dir
     from tools.bot_live_delivery import (
         deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
     )
@@ -804,13 +804,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         f"summarize for the chat.]\n\n{content}"
     )
     try:
-        source_home = get_hermes_home().resolve()
+        source_home = get_rabbit_home().resolve()
         from pathlib import Path
         home = (Path(deferred["home"]) if deferred is not None else
                 get_profile_dir(profile) if profile else source_home).resolve()
         for_failure = for_failure or bool((deferred or {}).get("for_failure"))
         from gateway.warning_notifications import warning_notifications_enabled
-        from hermes_cli.config_effective import load_user_config_effective
+        from rabbit_cli.config_effective import load_user_config_effective
         suppress_notification = for_failure and not warning_notifications_enabled(
             BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
@@ -873,22 +873,22 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # Discovery/admission uncertainty must never open a second-writer fallback.
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
-    # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
+    # The running install first (same trust order as gateway.run._resolve_rabbit_bin): the
     # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
-    # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
+    # to whatever `rabbit` PATH names — another install, or a planted one — instead of this one.
     try:
         import importlib.util as _ilu
-        found = _ilu.find_spec("hermes_cli") is not None
+        found = _ilu.find_spec("rabbit_cli") is not None
     except Exception:
         found = False
     if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
+        argv = [sys.executable, "-m", "rabbit_cli.main"]
     else:
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
-                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
-        argv = [hermes_bin]
+        rabbit_bin = shutil.which("rabbit")
+        if not rabbit_bin:
+            return ("Rabbit could not deliver this result to Bot Chat: the `rabbit` command was not found. "
+                    "The result is saved; run `rabbit cron runs` to see it, or `rabbit doctor` if this keeps happening")
+        argv = [rabbit_bin]
 
     def _fail(msg: str, **log_kwargs) -> str:
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
@@ -911,18 +911,18 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                      f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
     if home.parent.name != "profiles":
         argv += ["-p", "default"]
-    if argv[1:3] == ["-m", "hermes_cli.main"]:
-        # served_profile_child_env strips Hermes-owned PYTHONPATH entries; under a store-python
+    if argv[1:3] == ["-m", "rabbit_cli.main"]:
+        # served_profile_child_env strips Rabbit-owned PYTHONPATH entries; under a store-python
         # shim the bare interpreter then cannot import the package find_spec just proved (#122487).
         from pathlib import Path
 
-        from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-        pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+        from cron.scheduler_worker_env import pin_rabbit_tree_on_pythonpath
+        pin_rabbit_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
 
     query_file = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".txt", prefix="hermes-cron-botchat-", delete=False,
+            "w", encoding="utf-8", suffix=".txt", prefix="rabbit-cron-botchat-", delete=False,
         ) as fh:
             fh.write(message)
             query_file = fh.name
@@ -931,7 +931,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
-        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
+        from rabbit_cli.quiet_single_query import TURN_REPORT_FILE_ENV
         report_file = f"{query_file}.turn.json"
         env[TURN_REPORT_FILE_ENV] = report_file
         timeout_s = _get_bot_chat_delivery_timeout()
@@ -942,8 +942,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                 "Job '%s': bot-chat delivery to profile '%s' failed at %s: %s",
                 job_id, profile_label, home, tail)
             return (
-                f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
-                "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
+                f"Rabbit could not deliver this result to Bot Chat (profile '{profile_label}'). "
+                "The result is saved; run `rabbit cron runs` to see it, or `rabbit doctor` if this keeps happening"
                 f". Details: {tail}")
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
@@ -957,7 +957,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             marker = (
                 f"DELIVERY DEGRADED: this alert's bot-chat turn timed out after "
                 f"{timeout_s}s, so the full output could NOT be posted here. Read the "
-                f"complete saved output with `hermes cron runs` (job '{job_id}'). "
+                f"complete saved output with `rabbit cron runs` (job '{job_id}'). "
                 f"Excerpt: {content.strip()[:280]}"
             )
             try:
@@ -975,9 +975,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                     job_id, defer_exc)
         hint = (
             "a short degraded-delivery notice was queued to Bot Chat — posted once the "
-            f"session frees; full output stays saved, run `hermes cron runs` for job '{job_id}'"
+            f"session frees; full output stays saved, run `rabbit cron runs` for job '{job_id}'"
             if marker_queued else
-            "the result is saved; run `hermes cron runs` to see it, or `hermes doctor` "
+            "the result is saved; run `rabbit cron runs` to see it, or `rabbit doctor` "
             "if this keeps happening")
         return _fail(
             f"bot-chat delivery to profile '{profile_label}' timed out "
@@ -988,8 +988,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,
             str(e) or type(e).__name__, exc_info=True)
         return (
-            f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
-            "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
+            f"Rabbit could not deliver this result to Bot Chat (profile '{profile_label}'). "
+            "The result is saved; run `rabbit cron runs` to see it, or `rabbit doctor` if this keeps happening")
     finally:
         if query_file:
             for path in (query_file, f"{query_file}.turn.json"):
@@ -1040,7 +1040,7 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
     if not profile_arg:
         return {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from rabbit_cli.profiles import normalize_profile_name, profile_exists
         canon = normalize_profile_name(profile_arg)
         if not profile_exists(canon):
             logger.warning(
@@ -1990,9 +1990,9 @@ def _deliver_result(
     # Restart-safe workers have no live gateway adapters: hand the send back through a durable
     # queue so the current or replacement gateway performs it with relay/E2EE parity. The execution
     # id is the idempotency key (the queue never retries an uncertain claimed send). Match on THIS
-    # job's own attempt: a worker's script may dispatch another job in-process (`hermes cron run`),
+    # job's own attempt: a worker's script may dispatch another job in-process (`rabbit cron run`),
     # and that nested delivery must not be keyed under the outer execution id.
-    external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
+    external_execution = os.environ.get("_RABBIT_CRON_EXTERNAL_WORKER", "")
     if (external_execution and adapters is None
             and external_execution == str(job.get("execution_id") or "")
             and any(target["platform"] != BOT_CHAT_PLATFORM for target in targets)):
@@ -2020,7 +2020,7 @@ def _deliver_result(
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
-    # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
+    # persisted as ``last_delivery_unverified`` so `rabbit cron list` shows it.
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -2037,7 +2037,7 @@ def _deliver_result(
 
     from gateway.platforms.base import BasePlatformAdapter
     # Bridge media-policy config into the env vars the path validator reads. The gateway does this
-    # at boot; standalone runs (`hermes cron run`) did not, silently dropping files. Idempotent.
+    # at boot; standalone runs (`rabbit cron run`) did not, silently dropping files. Idempotent.
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)

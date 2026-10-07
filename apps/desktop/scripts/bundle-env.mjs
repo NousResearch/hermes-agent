@@ -2,8 +2,8 @@
 // An esbuild define would replace reads, not populate the child process env.
 // Match scripts/releases/bundle_env.py and the channel request decoder.
 const ALLOWED_KEYS = new Set([
-  'HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX', 'HERMES_DESKTOP_USER_DATA_DIR',
-  'HERMES_SHARED_AUTH_DIR', 'HERMES_GUEST_ONBOARDING', 'HERMES_SKIP_INTRO'
+  'RABBIT_HOME', 'RABBIT_DATA_DIR_SUFFIX', 'RABBIT_DESKTOP_USER_DATA_DIR',
+  'RABBIT_SHARED_AUTH_DIR', 'RABBIT_GUEST_ONBOARDING', 'RABBIT_SKIP_INTRO'
 ])
 
 /** Validate a bundle environment object: plain object of identifiers to

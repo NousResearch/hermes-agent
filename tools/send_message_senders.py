@@ -319,7 +319,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
     would post/react with the default bot's identity. A profile with no adapter for the platform
     yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
-    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
+    default bot. Same resolver shape as ``rabbit_cli/platform_actions.py::_resolve_adapter``."""
     try:
         from gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -331,7 +331,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
         resolve = getattr(runner, "_authorization_adapter", None)
         if not callable(resolve):  # bare runner stubs without the authz mixin
             return runner, runner.adapters.get(platform)
-        from hermes_cli.profiles import get_active_profile_name
+        from rabbit_cli.profiles import get_active_profile_name
         return runner, resolve(platform, get_active_profile_name())
     except Exception:
         if lookup_failed_warning:
@@ -344,7 +344,7 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     ``discover`` runs the idempotent plugin scan first."""
     from gateway.platform_registry import platform_registry
     if discover:
-        from hermes_cli.plugins import discover_plugins
+        from rabbit_cli.plugins import discover_plugins
         discover_plugins()
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
@@ -622,7 +622,7 @@ async def _send_qqbot(pconfig, chat_id, message):
     try:
         import httpx
     except ImportError:
-        return _error("QQBot direct send requires httpx. Run: hermes pm repair")
+        return _error("QQBot direct send requires httpx. Run: rabbit pm repair")
 
     # Profile-scoped lookup so a multiplex profile never borrows another's QQ credentials.
     from gateway.config import _getenv

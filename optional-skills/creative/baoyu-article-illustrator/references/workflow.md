@@ -2,7 +2,7 @@
 
 ## Step 1: Detect Reference Images
 
-If the user provides reference images (local path or URL), the goal is to produce **textual descriptions** that can be embedded in prompts — `image_generate` doesn't accept reference-image inputs, and Hermes' text file tools can't read or write binaries.
+If the user provides reference images (local path or URL), the goal is to produce **textual descriptions** that can be embedded in prompts — `image_generate` doesn't accept reference-image inputs, and Rabbit' text file tools can't read or write binaries.
 
 **Tool rules**:
 

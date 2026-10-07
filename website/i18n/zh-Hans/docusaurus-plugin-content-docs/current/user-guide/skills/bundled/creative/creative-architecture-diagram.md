@@ -17,7 +17,7 @@ description: "深色主题 SVG 架构/云/基础设施图表（HTML 格式）"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/creative/architecture-diagram` |
 | 版本 | `1.0.0` |
-| 作者 | Cocoon AI (hello@cocoon-ai.com)，由 Hermes Agent 移植 |
+| 作者 | Cocoon AI (hello@cocoon-ai.com)，由 Rabbit Agent 移植 |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `architecture`, `diagrams`, `SVG`, `HTML`, `visualization`, `infrastructure`, `cloud` |
@@ -26,7 +26,7 @@ description: "深色主题 SVG 架构/云/基础设施图表（HTML 格式）"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Architecture Diagram Skill

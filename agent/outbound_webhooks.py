@@ -3,8 +3,8 @@ pre/post_tool_call, timeout clamped to [1, 60], name) -> notify-only callbacks o
 manager, so every ``invoke_hook()`` site can POST lifecycle events (mirror of
 ``gateway/platforms/webhook.py``).  Fire-and-forget through a bounded queue + one daemon worker,
 so a target can never block a tool call or influence agent flow.  HMAC-SHA256 signed
-(``X-Hermes-Signature-256: sha256=<hex>`` over the raw body) when a secret is configured;
-``HERMES_SAFE_MODE=1`` skips registration; registration is idempotent.
+(``X-Rabbit-Signature-256: sha256=<hex>`` over the raw body) when a secret is configured;
+``RABBIT_SAFE_MODE=1`` skips registration; registration is idempotent.
 """
 
 from __future__ import annotations
@@ -74,13 +74,13 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
     if not isinstance(cfg, dict):
         return []
     from utils import env_var_enabled
-    if env_var_enabled("HERMES_SAFE_MODE"):
-        logger.info("HERMES_SAFE_MODE=1 — outbound webhook registration skipped")
+    if env_var_enabled("RABBIT_SAFE_MODE"):
+        logger.info("RABBIT_SAFE_MODE=1 — outbound webhook registration skipped")
         return []
     targets = iter_configured_targets(cfg)
     if not targets:
         return []
-    from hermes_cli.plugins import get_plugin_manager
+    from rabbit_cli.plugins import get_plugin_manager
     manager = get_plugin_manager()
     home_key = _home_key()
     registered: List[WebhookTarget] = []
@@ -104,7 +104,7 @@ def register_from_config(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
 
 
 def iter_configured_targets(cfg: Optional[Dict[str, Any]]) -> List[WebhookTarget]:
-    """Parse ``hooks.outbound`` without registering anything (``hermes hooks list``)."""
+    """Parse ``hooks.outbound`` without registering anything (``rabbit hooks list``)."""
     if not isinstance(cfg, dict):
         return []
     hooks_cfg = cfg.get("hooks")
@@ -138,7 +138,7 @@ def re_register_config_hooks() -> None:
     the same ``_hooks`` dict that ``PluginManager.discover_and_load(force=True)`` clears via ``unload()``,
     so without this the force-reloaded profile's outbound webhooks go silently inert (#92682 review).
     """
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
     _forget_home_registrations(_registered, _registered_lock)
     register_from_config(load_config())
 
@@ -156,7 +156,7 @@ def reset_for_tests() -> None:
 
 
 def _parse_single_target(index: int, raw: Any) -> Optional[WebhookTarget]:
-    from hermes_cli.plugins import VALID_HOOKS
+    from rabbit_cli.plugins import VALID_HOOKS
 
     def warn(msg: str, *args: Any) -> None:
         logger.warning("hooks.outbound[%d]" + msg, index, *args)
@@ -240,11 +240,11 @@ def _make_callback(event: str, target: WebhookTarget):
 
 def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> bytes:
     """Render the POST body: shell-hooks stdin shape plus delivery metadata.  ``delivery_id``
-    (also the ``X-Hermes-Delivery`` header) and ``timestamp`` live inside the HMAC-signed
+    (also the ``X-Rabbit-Delivery`` header) and ``timestamp`` live inside the HMAC-signed
     body, so they double as replay protection."""
     # Profile resolved at fire time so a multiplexed gateway's receivers can tell which profile emitted.
     # See #92674.
-    from hermes_cli.profiles import get_active_profile_name
+    from rabbit_cli.profiles import get_active_profile_name
     payload = {
         "hook_event_name": event, "profile": get_active_profile_name(), **_payload_fields(kwargs),
         "delivery_id": delivery_id, "timestamp": _utc_now_iso(),
@@ -254,12 +254,12 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any], delivery_id: str) -> 
 
 def _build_delivery(event: str, target: WebhookTarget, body: bytes, delivery_id: str) -> Dict[str, Any]:
     headers = {
-        "Content-Type": "application/json", "User-Agent": "Hermes-Agent-Outbound-Webhook",
-        "X-Hermes-Event": event, "X-Hermes-Delivery": delivery_id,
+        "Content-Type": "application/json", "User-Agent": "Rabbit-Agent-Outbound-Webhook",
+        "X-Rabbit-Event": event, "X-Rabbit-Delivery": delivery_id,
     }
     if target.secret:
         digest = hmac.new(target.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        headers["X-Hermes-Signature-256"] = f"sha256={digest}"
+        headers["X-Rabbit-Signature-256"] = f"sha256={digest}"
     return {"url": target.url, "label": target.label, "event": event, "body": body, "headers": headers, "timeout": target.timeout}
 
 

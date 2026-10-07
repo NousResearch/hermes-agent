@@ -2,7 +2,7 @@
 
 Top-level ``reasoning_effort`` on /v1/chat/completions accepts none|low|medium|
 high|max (``max`` is undocumented but real — ~2.5x more thinking tokens on
-DeepSeek V4); Hermes' ``xhigh`` maps to ``max``.
+DeepSeek V4); Rabbit' ``xhigh`` maps to ``max``.
 """
 
 from typing import Any

@@ -6,8 +6,8 @@ from prompt_toolkit.document import Document
 
 def test_full_descriptions_survive_catalog_and_completion(monkeypatch):
     from agent import skill_commands
-    from hermes_cli import plugins
-    from hermes_cli.commands_completion import SlashCommandCompleter
+    from rabbit_cli import plugins
+    from rabbit_cli.commands_completion import SlashCommandCompleter
     from tui_gateway import server
 
     description = "Read the entire description before selecting a command. " * 8

@@ -2,11 +2,11 @@
 name: pptx-author
 description: Build PowerPoint decks headless with python-pptx.
 version: 1.0.0
-author: Anthropic (adapted by Nous Research)
+author: Anthropic
 license: Apache-2.0
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [powerpoint, pptx, python-pptx, presentation, finance]
     related_skills: [excel-author, powerpoint]
 ---

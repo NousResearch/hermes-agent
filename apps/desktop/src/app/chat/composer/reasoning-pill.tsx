@@ -1,4 +1,4 @@
-import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 

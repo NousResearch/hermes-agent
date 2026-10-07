@@ -18,17 +18,17 @@
  *     is proven from the dependency's installed files, not assumed. The main
  *     entry the archive's own package.json names must be present.
  *  2. Boot to first chat: the PACKAGED binary (release/linux-unpacked/<exe>,
- *     `app.isPackaged` asserted) with a sandboxed HOME/HERMES_HOME and only
+ *     `app.isPackaged` asserted) with a sandboxed HOME/RABBIT_HOME and only
  *     the LLM faked (scripted loopback provider) completes a first turn: the
  *     reply is rendered, persisted (state.db + REST), and passes the core
  *     transcript oracle. The packaged app is pointed at THIS checkout's
- *     Python backend (HERMES_DESKTOP_HERMES_ROOT = repo root, selected PM interpreter), so
+ *     Python backend (RABBIT_DESKTOP_RABBIT_ROOT = repo root, selected PM interpreter), so
  *     this proves the packaged Electron shell + renderer, not a bundled
  *     backend/runtime install.
  *
  * No packaged build: skipped with a reason locally; FAILS when CI is set and
- * HERMES_E2E_REQUIRE_PACKAGED=1 (the CI step that builds the pack sets it).
- * HERMES_E2E_PACKAGED_DIR points the spec at another `*-unpacked` dir (used
+ * RABBIT_E2E_REQUIRE_PACKAGED=1 (the CI step that builds the pack sets it).
+ * RABBIT_E2E_PACKAGED_DIR points the spec at another `*-unpacked` dir (used
  * by the sabotage proofs on a copied release).
  */
 
@@ -83,8 +83,8 @@ const BUILD = JSON.parse(
 
 /** electron-builder's Linux `--dir` output: `linux-unpacked` for x64, `linux-<arch>-unpacked` otherwise. */
 function unpackedDir(): string {
-  if (process.env.HERMES_E2E_PACKAGED_DIR) {
-    return path.resolve(process.env.HERMES_E2E_PACKAGED_DIR)
+  if (process.env.RABBIT_E2E_PACKAGED_DIR) {
+    return path.resolve(process.env.RABBIT_E2E_PACKAGED_DIR)
   }
 
   const out = path.resolve(DESKTOP_ROOT, BUILD.directories?.output ?? 'dist')
@@ -95,7 +95,7 @@ function unpackedDir(): string {
 
 /** electron-builder's Linux executable name: linux.executableName > executableName > lowercased package name. */
 function executableName(): string {
-  return BUILD.linux?.executableName ?? BUILD.executableName ?? 'hermes'
+  return BUILD.linux?.executableName ?? BUILD.executableName ?? 'rabbit'
 }
 
 function asArray(value: string | string[] | undefined): string[] {
@@ -110,7 +110,7 @@ interface PackagedBuild {
   executable: string
 }
 
-/** The packaged build, or skip (local) / throw (CI with HERMES_E2E_REQUIRE_PACKAGED=1). */
+/** The packaged build, or skip (local) / throw (CI with RABBIT_E2E_REQUIRE_PACKAGED=1). */
 function packagedBuildOrSkip(): PackagedBuild {
   test.skip(process.platform !== 'linux', 'packaged smoke covers the Linux electron-builder --dir output only')
   const dir = unpackedDir()
@@ -131,8 +131,8 @@ function packagedBuildOrSkip(): PackagedBuild {
       `no packaged build (missing ${missing.join(', ')}): run ` +
       "'npm run build && npm run builder -- --dir --publish never --linux' in apps/desktop"
 
-    if (process.env.CI && process.env.HERMES_E2E_REQUIRE_PACKAGED === '1') {
-      throw new Error(`HERMES_E2E_REQUIRE_PACKAGED=1 but ${reason}`)
+    if (process.env.CI && process.env.RABBIT_E2E_REQUIRE_PACKAGED === '1') {
+      throw new Error(`RABBIT_E2E_REQUIRE_PACKAGED=1 but ${reason}`)
     }
 
     test.skip(true, reason)
@@ -487,7 +487,7 @@ test('packaged binary boots against a scripted provider and completes a first ch
   const build = packagedBuildOrSkip()
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('packaged')
-  writeProviderHome(sandbox.hermesHome, provider.url)
+  writeProviderHome(sandbox.rabbitHome, provider.url)
   let app: ElectronApplication | undefined
 
   try {

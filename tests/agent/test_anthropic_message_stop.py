@@ -63,7 +63,7 @@ def test_anthropic_eof_before_message_stop_retries_without_delivering_partial_ou
     monkeypatch, dropped_event, expected_callback,
 ):
     """A final SDK snapshot cannot turn an unterminated SSE response into success."""
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "1")
     agent = _agent()
     delivered = []
     agent.stream_delta_callback = delivered.append

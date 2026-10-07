@@ -201,8 +201,8 @@ def test_aux_call_telemetry_records_content_free_phase_timings():
 
 
 def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
-    from hermes_cli.observability import shared_metrics_events
-    from hermes_cli.observability.shared_metrics_fields import compression_fields
+    from rabbit_cli.observability import shared_metrics_events
+    from rabbit_cli.observability.shared_metrics_fields import compression_fields
 
     calls = []
     monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: calls.append(kw))

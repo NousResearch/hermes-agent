@@ -9,8 +9,8 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
 
-from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
-from hermes_constants import display_hermes_home as _display_hermes_home
+from rabbit_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+from rabbit_constants import display_rabbit_home as _display_rabbit_home
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -42,7 +42,7 @@ _profile_scoped = _registry.profile_scoped
 #   keeps running in the background; the in-flight entry is cleared when it
 #   settles, so the next poll starts a fresh probe and never reads a stale one.
 _readiness_pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=max(2, min(4, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))),
+    max_workers=max(2, min(4, env_int("RABBIT_TUI_RPC_POOL_WORKERS", 8))),
     thread_name_prefix="tui-readiness")
 atexit.register(lambda: _readiness_pool.shutdown(wait=False, cancel_futures=True))
 _readiness_lock = threading.Lock()
@@ -57,7 +57,7 @@ _READINESS_SHARE_WAIT_SECONDS = 4.0
 # the grace, so overlapping polls still cannot starve the pool (#65151).
 _READINESS_JOIN_GRACE_SECONDS = 0.5
 # setup.status's probe legitimately blocks on the boot bootstrap's record
-# (free_tier_bootstrap.SETUP_READY_WAIT_SECONDS = 8s): its join budget must
+# the boot readiness wait): its join budget must
 # cover that wait or every boot poll would answer the retryable error.
 _READINESS_STATUS_SHARE_WAIT_SECONDS = 12.0
 # Retryable-transient code for "the probe is still running / outlived its
@@ -88,7 +88,7 @@ def _(rid, params: dict) -> dict:
     with _profile_db(params) as db:
         if db is None:
             return _ok(rid, {"repos": []})
-        from hermes_cli import projects_db as pdb
+        from rabbit_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
             _reconcile_repo_discovery(pdb, conn, policy, _repo_discovery_policy_key(policy))
@@ -104,7 +104,7 @@ def _(rid, params: dict) -> dict:
 @_projects_handler("projects.record_repos")
 def _(rid, params: dict) -> dict:
     """Persist repo roots found by the client's (desktop-side) scan; return the merged list."""
-    from hermes_cli import projects_db as pdb
+    from rabbit_cli import projects_db as pdb
     policy = _repo_discovery_policy()
     policy_key = _repo_discovery_policy_key(policy)
     incoming = params.get("discovery_policy")
@@ -182,7 +182,7 @@ _THINKING_MODES = frozenset({"collapsed", "truncated", "full"})
 
 
 def _cfg_get_provider(params):
-    from hermes_cli.models import list_available_providers, normalize_provider
+    from rabbit_cli.models import list_available_providers, normalize_provider
     model = _resolve_model()
     parts = model.split("/", 1)
     return {"model": model, "provider": normalize_provider(parts[0]) if len(parts) > 1 else "unknown",
@@ -199,7 +199,7 @@ def _cfg_get_project(params):
 
 def _cfg_get_personality(params):
     # EFFECTIVE personality via the single owner — a stale/unknown name must not show as active.
-    from hermes_cli.personality import active_personality_name
+    from rabbit_cli.personality import active_personality_name
     return {"value": active_personality_name(_load_cfg()) or "none"}
 
 
@@ -215,7 +215,7 @@ def _cfg_get_reasoning(params):
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
         if isinstance(raw_effort, dict):  # {enabled, effort} form: render the tier, never str(dict)
-            from hermes_constants import parse_reasoning_effort
+            from rabbit_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(raw_effort) or {}
             raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".
@@ -244,7 +244,7 @@ def _cfg_get_thinking_mode(params):
 
 
 def _cfg_get_mtime(params):
-    cfg_path = _hermes_home / "config.yaml"
+    cfg_path = _rabbit_home / "config.yaml"
     try:
         mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
     except Exception:
@@ -257,7 +257,7 @@ def _cfg_get_mtime(params):
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
-    "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
+    "profile": lambda params: {"home": str(_rabbit_home), "display": _display_rabbit_home()},
     "project": _cfg_get_project,
     "full": lambda params: {"config": _load_cfg()},
     "prompt": lambda params: {"prompt": _load_cfg().get("custom_prompt", "")},
@@ -352,7 +352,7 @@ def _readiness_share(rid, key, run_probe, wait_seconds):
 
 def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
-    optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
+    optional ``profile`` param's RABBIT_HOME + ``.env`` secret scope (ContextVars: concurrent checks
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
     profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
     for the launch profile instead). ``probe_key`` + the profile single-flight the probe, and
@@ -360,7 +360,7 @@ def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
     home = None
     if profile:
-        from hermes_cli import profiles as profiles_mod
+        from rabbit_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
             return _ok(rid, {"ok": False, "profile": params.get("profile"),
                              "error": f"Profile '{profile}' does not exist on this backend."})
@@ -368,7 +368,7 @@ def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
     # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
     # a single-profile process), or the first profile-scoped read inside the resolver
-    # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
+    # (``RABBIT_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
     def run_probe():
         # Applied on the readiness pool thread: ContextVars do not cross threads, and
         # concurrent probes (different profiles) stay isolated exactly as they did when
@@ -383,38 +383,16 @@ def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
 def _(rid, params: dict) -> dict:
     """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
 
-    For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
-    the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
-    the free-tier identity exists (or has been refused) rather than racing the mint. A record that
-    says ``False`` is reconciled with the config files first (``reconcile_record``): a provider
-    added after boot — the Models page, a picker key, ``hermes setup`` from a shell — flips it
-    without a restart. If the record
-    is still missing after the wait, or a named profile is asked about, today's live probe answers.
-    The record's fields ride along additively (``ready``, ``free_tier_account``, ``free_tier_route``,
-    ``other_providers``)."""
+    For the launch profile the call blocks briefly so a client's first poll lands after
+    boot setup has settled. A provider added after boot — the Models page, a picker key,
+    ``rabbit setup`` from a shell — flips the answer without a restart; a named profile is
+    answered by the live probe."""
     try:
-        from hermes_cli.anon_auth import free_tier_route
-        from hermes_cli.main import _has_any_provider_configured
-        from hermes_cli.free_tier_bootstrap import wait_for_record
+        from rabbit_cli.main import _has_any_provider_configured
 
         def probe(profile, scoped):
-            record = None if profile else wait_for_record()
-            if record is None:
-                # ``ready`` = this process's boot bootstrap has settled (a named profile has no
-                # record of its own; the launch record says whether the free tier is minted).
-                # Since one host backend serves every profile (#118246), the desktop's
-                # setup-profile probe lands here, and its kickoff requires ``ready``.
-                launch = wait_for_record() if profile else None
-                return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-                        **({"ready": True, "free_tier_account": launch.free_tier_account,
-                            "free_tier_route": free_tier_route()} if launch is not None else {}),
-                        **scoped}
-            # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
-            # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
-            return {"provider_configured": record.provider_configured, "ready": True,
-                    "free_tier_account": record.free_tier_account, "free_tier_route": record.free_tier_route,
-                    "other_providers": record.other_providers,
-                    "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
+            return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
+                    "ready": True, **scoped}
         return _readiness_check(rid, params, probe, probe_key="status",
                                 wait_seconds=_READINESS_STATUS_SHARE_WAIT_SECONDS)
     except Exception as e:
@@ -433,9 +411,9 @@ def _(rid, params: dict) -> dict:
     fallback masking a failed connection. ``profile`` answers for THAT profile's pin and ``.env``;
     unknown -> ``ok=False``."""
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
-        from hermes_cli.main import _has_any_provider_configured
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.auth import has_usable_secret
+        from rabbit_cli.main import _has_any_provider_configured
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
@@ -462,18 +440,14 @@ def _(rid, params: dict) -> dict:
                         "source": src, "error": error, **scoped}
             if (not provider_configured and provider == "bedrock"
                     and source in {"iam-role", "aws-sdk-default-chain"}):
-                return fail("No Hermes provider is configured.", source)
+                return fail("No Rabbit provider is configured.", source)
             api_key = runtime.get("api_key")
             api_key_text = "" if callable(api_key) else str(api_key or "").strip()
             if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
                 return fail(f"No usable credentials found for {blamed}.", runtime.get("source"))
-            from hermes_cli.anon_auth import route_is_welcome_host
-            # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
-            # on profile state: a paid Nous key beside a free-tier identity must not read as free.
             return {"ok": True, "provider": runtime.get("provider"), "model": model,
                     "source": runtime.get("source"),
-                    "free_tier_route": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
@@ -486,7 +460,7 @@ def _redact_client_text(text: str, cap: int) -> str:
     first line end in [2x, 3x) cap, else a hard 2x-cap cut, so a key cut by the cap
     still gets redacted but an unbounded (even single-line) RPC param cannot make
     the superlinear scrub run on megabytes."""
-    from hermes_cli.debug_redaction import redact_debug_support_text
+    from rabbit_cli.debug_redaction import redact_debug_support_text
 
     cut = text.find("\n", 2 * cap, 3 * cap)
     window = text[: cut + 1] if cut >= 0 else text[: 2 * cap]
@@ -501,42 +475,6 @@ def _safe_client_label(label: str) -> str:
     return safe.lstrip(".").strip()
 
 
-@method("diagnostics.share_nous")
-def _(rid, params: dict) -> dict:
-    """Upload a redacted debug bundle to Nous-internal diagnostics storage — same collection +
-    force-redaction pipeline as ``hermes debug share --nous``; redaction is NOT client-controllable
-    and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
-    upload failures render inline. Optional: ``error_context`` (-> ``error-context.txt``),
-    ``extra_files`` ({label -> text}), ``log_lines`` (default 200); all force-redacted."""
-    # Outside the try: the except path needs it, and agent.redact is a hard dependency.
-    from hermes_cli.debug_redaction import redact_debug_support_text
-
-    try:
-        from hermes_cli.debug import build_nous_bundle, collect_share_bundle
-        from hermes_cli.diagnostics_upload import share_to_nous
-        log_lines = params.get("log_lines")
-        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
-            log_lines = 200
-        bundle = collect_share_bundle(log_lines=log_lines, redact=True)
-        # Redact complete client values before applying their support-upload caps.
-        error_context = params.get("error_context")
-        if isinstance(error_context, str) and error_context.strip():
-            bundle["error-context.txt"] = _redact_client_text(error_context.strip(), 8_000)
-        # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
-        extra_files = params.get("extra_files")
-        for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
-            safe_label = _safe_client_label(label) if isinstance(label, str) else ""
-            if safe_label and isinstance(text, str) and text.strip():
-                bundle[f"client/{safe_label}"] = _redact_client_text(text, 524_288)
-        res = share_to_nous(build_nous_bundle(bundle, redact=True))
-        view_url = res.get("viewUrl") or res.get("view_url")
-        upload_id = res.get("id")
-        if not view_url and not upload_id:  # an upload the user can't reference is useless to support
-            return _ok(rid, {"ok": False, "error": "upload succeeded but returned no view URL or id"})
-        return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
-                         "expires_at": res.get("expiresAt") or res.get("expires_at")})
-    except Exception as e:
-        return _ok(rid, {"ok": False, "error": redact_debug_support_text(e)})
 
 
 def register(server) -> None:

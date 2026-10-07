@@ -37,8 +37,8 @@ class TransientFailAdapter:
 
 @pytest.fixture
 def isolate(tmp_path, monkeypatch):
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr("gateway.dead_targets.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.delivery.get_rabbit_home", lambda: tmp_path)
+    monkeypatch.setattr("gateway.dead_targets.get_rabbit_home", lambda: tmp_path)
     return tmp_path
 
 
@@ -60,7 +60,7 @@ class TestDeadTargetRegistry:
     def test_persists_across_instances(self, isolate):
         reg = DeadTargetRegistry()
         reg.mark_dead("telegram", "999", "deleted group")
-        # New instance reads the same on-disk store under tmp HERMES_HOME.
+        # New instance reads the same on-disk store under tmp RABBIT_HOME.
         reg2 = DeadTargetRegistry()
         assert reg2.is_dead("telegram", "999") is True
 

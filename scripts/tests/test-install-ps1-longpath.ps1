@@ -116,7 +116,7 @@ function Invoke-Normalization {
         LOCALAPPDATA = (Join-Parts @($root, 'AppData', 'Local'))
         APPDATA      = (Join-Parts @($root, 'AppData', 'Roaming'))
         USERPROFILE  = $root
-        HERMES_HOME  = ''
+        RABBIT_HOME  = ''
     }
     foreach ($key in $Environment.Keys) { $env0[$key] = $Environment[$key] }
 
@@ -141,7 +141,7 @@ function Invoke-Normalization {
         # record into this script's error stream, which fails the 5.1 lane even
         # under 'Continue'. Merging with 2>&1 keeps the bytes and produces no
         # error record. The installer's stdout here is a single JSON object and
-        # its diagnostics are all `[hermes] `-prefixed, so the two separate
+        # its diagnostics are all `[rabbit] `-prefixed, so the two separate
         # cleanly on the way back out.
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
@@ -153,8 +153,8 @@ function Invoke-Normalization {
         }
         $exitCode = $LASTEXITCODE
         $raw = @(Get-Content -LiteralPath $outFile -ErrorAction SilentlyContinue)
-        $stderr = ($raw | Where-Object { $_ -like '`[hermes`]*' }) -join "`n"
-        $stdout = ($raw | Where-Object { $_ -notlike '`[hermes`]*' }) -join "`n"
+        $stderr = ($raw | Where-Object { $_ -like '`[rabbit`]*' }) -join "`n"
+        $stdout = ($raw | Where-Object { $_ -notlike '`[rabbit`]*' }) -join "`n"
     } finally {
         foreach ($key in $saved.Keys) {
             if ($null -eq $saved[$key]) {
@@ -190,7 +190,7 @@ function Invoke-Normalization {
         Stdout     = $stdout
         Rewrites   = $rewrites
         InstallDir = $(if ($paths) { $paths.install_dir } else { $null })
-        HermesHome = $(if ($paths) { $paths.hermes_home } else { $null })
+        RabbitHome = $(if ($paths) { $paths.rabbit_home } else { $null })
         LongRoot   = $(if ($paths) { $paths.long_profile_root } else { $null })
     }
 }
@@ -288,7 +288,7 @@ foreach ($name in @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')) {
 # This is the difference between "the build works" and "the installer stops
 # claiming a successful build failed". Composed with literal backslashes
 # because that is how install.ps1 itself builds the default Windows path.
-$expectedInstallDir = "$($longRoot)${sep}AppData${sep}Local" + '\hermes\hermes-agent'
+$expectedInstallDir = "$($longRoot)${sep}AppData${sep}Local" + '\rabbit\rabbit-agent'
 Assert-Equal -Expected $expectedInstallDir -Actual $result.InstallDir -Label "InstallDir is re-derived from the long LOCALAPPDATA"
 
 Write-Host ""
@@ -309,8 +309,8 @@ Write-Host ""
 Write-Host "-- an explicit -InstallDir is normalized, never replaced --"
 
 $result = Invoke-Normalization -Environment @{ TEMP = $shortTemp; TMP = $shortTemp } `
-    -ExtraArgs @('-InstallDir', (Join-Path $shortProfile 'custom-hermes'))
-Assert-Equal -Expected (Join-Path $longRoot 'custom-hermes') -Actual $result.InstallDir -Label "explicit -InstallDir keeps the caller's directory, on the long root"
+    -ExtraArgs @('-InstallDir', (Join-Path $shortProfile 'custom-rabbit'))
+Assert-Equal -Expected (Join-Path $longRoot 'custom-rabbit') -Actual $result.InstallDir -Label "explicit -InstallDir keeps the caller's directory, on the long root"
 
 # --- Summary ---------------------------------------------------------------
 Write-Host ""

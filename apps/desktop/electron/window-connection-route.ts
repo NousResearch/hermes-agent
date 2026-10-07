@@ -50,7 +50,7 @@ export function registrySshScopeForWindowRoute(
  * any window launched from that route, re-asked the same stale question until a
  * restart dropped the in-memory record. Re-point the record at the newly
  * applied primary, keeping the profile the window was viewing: an applied
- * registry source (remote/cloud/ssh) stays registry-scoped to that exact
+ * registry source (remote/ssh) stays registry-scoped to that exact
  * identity, while a This-device apply stays unscoped so the dial follows the
  * freshly written v1 config.
  */

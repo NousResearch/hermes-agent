@@ -7,7 +7,7 @@ import logging
 
 from agent.chat_completion_helpers import _log_fallback_activated
 from agent.error_classifier import FailoverReason, classify_api_error
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 class _StatusError(Exception):
@@ -38,17 +38,17 @@ def test_billing_fallback_warning_names_failing_profile_and_remedy(tmp_path, cap
     never the launch profile; a non-billing switch stays INFO."""
     seen = {}
     for name in ("alpha", "beta"):
-        token = set_hermes_home_override(tmp_path / ".hermes" / "profiles" / name)
+        token = set_rabbit_home_override(tmp_path / ".rabbit" / "profiles" / name)
         try:
             caplog.clear()
             with caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"):
                 _log_fallback_activated(None, FailoverReason.billing, "z-ai/glm-5.2", "nous", "free/model", "nous")
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         seen[name] = warnings[0].getMessage()
-    assert "Profile alpha:" in seen["alpha"] and "hermes -p alpha model" in seen["alpha"]
+    assert "Profile alpha:" in seen["alpha"] and "rabbit -p alpha model" in seen["alpha"]
     assert "Profile beta:" in seen["beta"] and "alpha" not in seen["beta"]
     for text in seen.values():
         assert "z-ai/glm-5.2" in text and "free/model" in text

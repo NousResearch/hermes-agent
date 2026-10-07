@@ -1,6 +1,6 @@
 """Ramp Router (router.com) provider profile: Responses-only LLM gateway (verified live).
 
-``api_mode="codex_responses"`` + the ``api.router.com`` host mandate in ``hermes_cli/providers.py``
+``api_mode="codex_responses"`` + the ``api.router.com`` host mandate in ``rabbit_cli/providers.py``
 keep every path on the native wire. The catalog is account-scoped, so no ``fallback_models``
 (picker uses ``fetch_models()``). Router 400s on ``reasoning.effort`` levels outside a model's
 published vocabulary and on any reasoning field for non-reasoning models, so the efforts map
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.reasoning_effort import EFFORT_LADDER
-from hermes_cli.version_info import get_version_info
+from rabbit_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
@@ -36,7 +36,7 @@ _disk_checked = False
 
 
 class _CacheState:
-    """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""
+    """Efforts cache + once-only flags for one Rabbit home (same names as the module slots)."""
 
     __slots__ = ("_efforts_cache", "_warm_started", "_disk_checked")
 
@@ -55,18 +55,18 @@ _state_by_home: dict[str, _CacheState] = {}
 def _state() -> Any:
     """Holder of ``_efforts_cache``/``_warm_started``/``_disk_checked``: this module when unscoped
     (tests monkeypatch those slots), else the active home's ``_CacheState``."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 
-    if get_hermes_home_override() is None:
+    if get_rabbit_home_override() is None:
         return sys.modules[__name__]
     with _efforts_lock:
-        return _state_by_home.setdefault(hermes_home_key(), _CacheState())
+        return _state_by_home.setdefault(rabbit_home_key(), _CacheState())
 
 
 def _base_url() -> str:
     """Router base URL: profile ``.env`` first (scope-aware), plain os.environ as the fallback."""
     try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
+        from rabbit_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
     except Exception:
         prefer_dotenv = None
     for resolve in filter(None, (prefer_dotenv, os.environ.get)):
@@ -83,7 +83,7 @@ def _resolve_api_key() -> str:
     """Router key (documented var, then alias), preferring dotenv; plain os.environ
     is the fallback when the dotenv resolver is unavailable or raises."""
     try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
+        from rabbit_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
     except Exception:
         prefer_dotenv = None
     for resolve in filter(None, (prefer_dotenv, os.environ.get)):
@@ -138,8 +138,8 @@ def _parse_efforts(items: Any) -> Optional[dict[str, list[str]]]:
 
 def _disk_path() -> Optional[Path]:
     try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / "cache" / "router_catalog.json"
+        from rabbit_constants import get_rabbit_home
+        return get_rabbit_home() / "cache" / "router_catalog.json"
     except Exception:
         return None
 
@@ -192,7 +192,7 @@ def _fetch_catalog_items(*, api_key: str = "", base_url: str = "", timeout: floa
     """Fetch the raw ``/v1/models`` ``data`` array. None on any failure."""
     import urllib.request
 
-    from hermes_cli.urllib_security import open_credentialed_url
+    from rabbit_cli.urllib_security import open_credentialed_url
 
     req = urllib.request.Request((base_url or _base_url()).rstrip("/") + "/models")
     key = api_key or _resolve_api_key()
@@ -294,7 +294,7 @@ router = RouterProfile(
     env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"), base_url=_base_url(),
     auth_type="api_key",
     # Router attributes coding-agent clients by UA prefix; its WAF rejects default UAs.
-    default_headers={"User-Agent": f"Hermes-Agent/{get_version_info().base_version}"},
+    default_headers={"User-Agent": f"Rabbit-Agent/{get_version_info().base_version}"},
     supports_vision=True, default_aux_model="gpt-5.4-mini",
     fallback_models=(),  # account-scoped IDs; the picker uses fetch_models()
 )

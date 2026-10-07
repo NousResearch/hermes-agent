@@ -2,11 +2,11 @@
 name: comps-analysis
 description: Build comparable-company valuation workbooks in Excel.
 version: 1.0.0
-author: Anthropic (adapted by Nous Research)
+author: Anthropic
 license: Apache-2.0
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [finance, valuation, comps, excel, openpyxl, modeling, investment-banking]
     related_skills: [excel-author, pptx-author, dcf-model, lbo-model]
 ---
@@ -647,9 +647,9 @@ The best comp analyses evolve with each iteration. Save templates, learn from fe
 
 ## Data sources — MCP first, web fallback
 
-Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Hermes:
+Many passages below say "use the S&P Kensho MCP / Daloopa MCP / FactSet MCP". Those are commercial financial-data MCPs from the original Cowork plugin context. In Rabbit:
 
-- **If you have any structured financial-data MCP configured** (Hermes supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
+- **If you have any structured financial-data MCP configured** (Rabbit supports MCP — see `native-mcp` skill), prefer it for point-in-time comps, precedent transactions, and filings.
 - **Otherwise**, fall back to:
   - `web_search` / `web_extract` against SEC EDGAR (`https://www.sec.gov/cgi-bin/browse-edgar`) for US filings
   - Company IR pages for press releases, earnings decks

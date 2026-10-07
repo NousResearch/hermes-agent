@@ -408,7 +408,7 @@ class TestMatrixDmDetection:
 # ---------------------------------------------------------------------------
 
 class TestMatrixBangCommandAlias:
-    """Matrix clients may reserve /commands, so Hermes supports !commands."""
+    """Matrix clients may reserve /commands, so Rabbit supports !commands."""
 
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -1132,14 +1132,14 @@ class TestMatrixDeviceIdConfig:
     def test_device_id_in_config_extra(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
-        monkeypatch.setenv("MATRIX_DEVICE_ID", "HERMES_BOT")
+        monkeypatch.setenv("MATRIX_DEVICE_ID", "RABBIT_BOT")
 
         from gateway.config import GatewayConfig, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
 
         mc = config.platforms[Platform.MATRIX]
-        assert mc.extra.get("device_id") == "HERMES_BOT"
+        assert mc.extra.get("device_id") == "RABBIT_BOT"
 
 
 def _sync_error(message, **attrs):
@@ -1649,7 +1649,7 @@ class TestMatrixEncryptedEventHandler:
         # Verify inbound event handlers were registered as sync-awaited
         # callbacks. mautrix only returns waited handler tasks from
         # handle_sync(), so background-only handlers leave _dispatch_sync()
-        # without a completion point for Hermes' Matrix intake.
+        # without a completion point for Rabbit' Matrix intake.
         handler_calls = mock_client.add_event_handler.call_args_list
         waited_types = {
             str(call.args[0])

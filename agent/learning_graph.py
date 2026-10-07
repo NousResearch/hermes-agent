@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 _SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
@@ -37,13 +37,13 @@ class SkillNode:
 
 
 def _fm_field(fm: dict[str, Any], key: str) -> Any:
-    """Top-level ``key`` or ``metadata.hermes.<key>``; tolerant of the string-valued
+    """Top-level ``key`` or ``metadata.rabbit.<key>``; tolerant of the string-valued
     frontmatter that ``parse_frontmatter``'s malformed-YAML fallback produces."""
     if fm.get(key):
         return fm[key]
     meta = fm.get("metadata")
-    hermes = meta.get("hermes") if isinstance(meta, dict) else None
-    return hermes.get(key) if isinstance(hermes, dict) else None
+    rabbit = meta.get("rabbit") if isinstance(meta, dict) else None
+    return rabbit.get(key) if isinstance(rabbit, dict) else None
 
 
 def _related(fm: dict[str, Any]) -> list[str]:
@@ -58,7 +58,7 @@ def _load_usage() -> dict[str, dict[str, Any]]:
         return load_usage()
     except Exception:
         try:
-            return json.loads((get_hermes_home() / "skills" / ".usage.json").read_text(encoding="utf-8-sig"))
+            return json.loads((get_rabbit_home() / "skills" / ".usage.json").read_text(encoding="utf-8-sig"))
         except Exception:
             return {}
 
@@ -163,7 +163,7 @@ def _memory_cards() -> list[dict[str, Any]]:
     entry becomes one card (MEMORY.md cards first, then USER.md)."""
     from tools.memory_tool import MemoryStore
 
-    base = get_hermes_home() / "memories"
+    base = get_rabbit_home() / "memories"
     cards: list[dict[str, Any]] = []
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname
@@ -218,7 +218,7 @@ def _has_learning_signal(node: SkillNode) -> bool:
 def build_learning_graph() -> dict[str, Any]:
     """Full payload for the desktop learning panel: non-base skills with real
     learning signal (agent-created or used) plus memory chunks as graph nodes."""
-    roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_hermes_home() / "skills")]
+    roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_rabbit_home() / "skills")]
     learned_skills = {
         name: node for name, node in build_skill_nodes(roots).items()
         if node.source != "base" and _has_learning_signal(node)

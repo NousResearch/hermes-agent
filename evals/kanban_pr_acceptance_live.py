@@ -10,10 +10,10 @@ import tempfile
 
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root))
-os.environ.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+os.environ.pop('RABBIT_DELEGATED_CHILD_CONTEXT', None)
 import pytest
-from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_connect import connect
+from rabbit_cli import kanban_db as kb
+from rabbit_cli.kanban_db_connect import connect
 import inspect
 
 def create(conn, title):
@@ -27,11 +27,11 @@ def create(conn, title):
     return tid
 
 fixture_root = Path(sys.argv[2]) if len(sys.argv) > 2 else root
-spec = importlib.util.spec_from_file_location('http_fixture', fixture_root / 'tests/hermes_cli/test_kanban_pr_acceptance.py')
+spec = importlib.util.spec_from_file_location('http_fixture', fixture_root / 'tests/rabbit_cli/test_kanban_pr_acceptance.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 patch = pytest.MonkeyPatch()
-with tempfile.TemporaryDirectory(prefix='hermes-pr-live-') as home:
+with tempfile.TemporaryDirectory(prefix='rabbit-pr-live-') as home:
     setup = fixture.github.__wrapped__(Path(home), patch)
     state = next(setup)
     reports = []

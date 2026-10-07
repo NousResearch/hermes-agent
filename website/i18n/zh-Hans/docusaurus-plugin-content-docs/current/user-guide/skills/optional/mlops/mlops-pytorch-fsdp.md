@@ -14,7 +14,7 @@ PyTorch FSDP 全分片数据并行训练专家指导 - 参数分片、混合精�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/pytorch-fsdp` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/pytorch-fsdp` 安装 |
 | 路径 | `optional-skills/mlops/pytorch-fsdp` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ PyTorch FSDP 全分片数据并行训练专家指导 - 参数分片、混合精�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 看到的指令内容。
 :::
 
 # Pytorch-Fsdp Skill

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'

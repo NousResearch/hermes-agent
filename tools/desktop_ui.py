@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Bridge desktop-only tools to Hermes-desktop renderer events.
+"""Bridge desktop-only tools to Rabbit-desktop renderer events.
 
 The desktop ``tui_gateway`` installs an emitter via :func:`set_emitter`; elsewhere it
-stays ``None`` and tools report "desktop only". Routing keys off ``HERMES_UI_SESSION_ID``
+stays ``None`` and tools report "desktop only". Routing keys off ``RABBIT_UI_SESSION_ID``
 so the event lands on the window that owns the turn (the sink is lock-guarded).
 
 Window-level events (``pane.reveal``, ``preview.open``) route by
-``HERMES_UI_SESSION_ID`` — the window/socket that owns the turn.
-Session-scoped events (``message.reaction``) route by ``HERMES_SESSION_ID``
+``RABBIT_UI_SESSION_ID`` — the window/socket that owns the turn.
+Session-scoped events (``message.reaction``) route by ``RABBIT_SESSION_ID``
 so the renderer's gateway-event stream, keyed on the chat session, receives
 the frame on the correct transcript transport (#80678).
 """
@@ -23,7 +23,7 @@ _emit: Optional[Callable[[str, str, dict], None]] = None
 
 # Events that target a specific chat session rather than a window/socket.
 # The renderer's gateway-event stream is keyed on the session id, so
-# routing these through HERMES_UI_SESSION_ID (the window identity) means
+# routing these through RABBIT_UI_SESSION_ID (the window identity) means
 # the frame lands on a stream that doesn't own the transcript and is
 # never painted (#80678).
 _SESSION_SCOPED_EVENTS: FrozenSet[str] = frozenset({"message.reaction"})
@@ -47,7 +47,7 @@ def user_enabled(setting: str, default: bool) -> bool:
     the schema. Unreadable config -> ``default`` so a shipped-on feature does not vanish
     on a transient read error."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         display = load_config_readonly().get("display")
     except Exception:
         return default
@@ -61,11 +61,11 @@ def emit(event: str, payload: dict) -> bool:
     if _emit is None:
         return False
     if event in _SESSION_SCOPED_EVENTS:
-        sid = get_session_env("HERMES_SESSION_ID", "")
+        sid = get_session_env("RABBIT_SESSION_ID", "")
         if not sid:
-            sid = get_session_env("HERMES_UI_SESSION_ID", "")
+            sid = get_session_env("RABBIT_UI_SESSION_ID", "")
     else:
-        sid = get_session_env("HERMES_UI_SESSION_ID", "")
+        sid = get_session_env("RABBIT_UI_SESSION_ID", "")
     _emit(sid, event, payload)
     return True
 

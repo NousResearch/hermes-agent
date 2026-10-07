@@ -19,7 +19,7 @@ import type { ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
  * Quote an executable token when Windows delegates execution to cmd.exe.
  *
  * With `shell: true`, spawn hands the whole command line to cmd.exe, which
- * truncates it at the first unquoted space: `C:\Users\John Doe\...\hermes.cmd
+ * truncates it at the first unquoted space: `C:\Users\John Doe\...\rabbit.cmd
  * --version` runs `C:\Users\John` (#74064). Wrapping the executable in double
  * quotes makes cmd.exe (with its `/s` strip-outer-quotes semantics) treat the
  * path as one token; `command` must contain only the executable path — keep

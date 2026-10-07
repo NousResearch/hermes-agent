@@ -3,7 +3,7 @@ type SshHostState = {
   sshUser: string
   sshPort: number | null
   sshKeyPath: string
-  sshRemoteHermesPath: string
+  sshRemoteRabbitPath: string
 }
 
 type ResolvedSshHost = {
@@ -23,7 +23,7 @@ function selectSshHost<T extends SshHostState>(state: T, host: string): T {
     sshUser: '',
     sshPort: null,
     sshKeyPath: '',
-    sshRemoteHermesPath: ''
+    sshRemoteRabbitPath: ''
   }
 }
 

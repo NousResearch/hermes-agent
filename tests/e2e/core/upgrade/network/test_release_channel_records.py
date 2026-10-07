@@ -1,7 +1,7 @@
 """Release-channel records: the updater follows the stable record exactly, or refuses.
 
 A source install subscribed to ``stable`` resolves its target from the channel record at
-``https://hermes-assets.nousresearch.com/releases/channels/stable.json`` and the build manifest
+``https://rabbit-assets.nousresearch.com/releases/channels/stable.json`` and the build manifest
 it names (digest-pinned). The edge serves those objects (a fake of the R2 bucket, behind the
 TLS-inspecting proxy that is the namespace's only egress) and the git server behind the same
 proxy serves the source. In every cell origin/main has moved past what stable pins, so "the
@@ -27,7 +27,7 @@ from tests.e2e.core.upgrade.network import _seed as S
 
 pytestmark = [
     pytest.mark.platforms("linux"),
-    # Every `hermes update` here targets a throwaway sandboxed install, never the real checkout.
+    # Every `rabbit update` here targets a throwaway sandboxed install, never the real checkout.
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(N.netns_required_reason() is not None, reason=str(N.netns_required_reason())),
@@ -41,7 +41,7 @@ STABLE = "/releases/channels/stable.json"
 @pytest.fixture(scope="module")
 def inst(tmp_path_factory):
     inst = S.seed_install(tmp_path_factory.mktemp("net-channels"))
-    r = inst.hermes("update", "--set-channel", "stable", edge=None, timeout=120)
+    r = inst.rabbit("update", "--set-channel", "stable", edge=None, timeout=120)
     assert r.rc == 0, "could not subscribe the install to stable\n" + r.report(inst)
     return inst
 
@@ -57,7 +57,7 @@ def _release_and_main_tip(inst: S.Installed, tag: str) -> tuple[str, str]:
 def _update(inst: S.Installed, assets: N.App | None = None, **edge_kw) -> S.Result:
     edge = inst.edge(assets=assets, **edge_kw)
     try:
-        return inst.hermes("update", "--yes", edge=edge, timeout=600)
+        return inst.rabbit("update", "--yes", edge=edge, timeout=600)
     finally:
         edge.close()
 
@@ -104,7 +104,7 @@ def _malformed(release: str) -> dict[str, dict[str, bytes]]:
     return {
         "not-json": {STABLE: b"<html>502 Bad Gateway</html>\n"},
         "manifest-digest-mismatch": tampered,
-        "other-repository": S.stable_objects(release, repository="someone-else/hermes-agent"),
+        "other-repository": S.stable_objects(release, repository="someone-else/rabbit-agent"),
     }
 
 

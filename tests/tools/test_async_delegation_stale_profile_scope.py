@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from tools import async_delegation as ad
 from tools.process_registry import process_registry
 
@@ -43,12 +43,12 @@ def test_stale_monitor_force_finalize_updates_origin_profile_ledger(tmp_path, mo
     Normal async workers carry the dispatching ContextVars via
     ``propagate_context_to_thread``.  The single stale-monitor thread does not:
     Python starts it with an empty Context, so a forced finalization must not
-    re-resolve ``get_hermes_home()`` to the process launch profile.
+    re-resolve ``get_rabbit_home()`` to the process launch profile.
     """
     launch_home = tmp_path / "launch"
     profile_home = launch_home / "profiles" / "secondary"
     profile_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setenv("RABBIT_HOME", str(launch_home))
 
     # We drive the production monitor loop ourselves below so the test controls
     # exactly when the record becomes expired.
@@ -62,7 +62,7 @@ def test_stale_monitor_force_finalize_updates_origin_profile_ledger(tmp_path, mo
         gate.wait(timeout=30)
         return {"status": "completed", "summary": "late runner result"}
 
-    token = set_hermes_home_override(profile_home)
+    token = set_rabbit_home_override(profile_home)
     try:
         handle = ad.dispatch_async_delegation(
             goal="profile-owned stalled task",
@@ -76,7 +76,7 @@ def test_stale_monitor_force_finalize_updates_origin_profile_ledger(tmp_path, mo
             progress_fn=lambda: ("frozen", False),
         )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     delegation_id = handle["delegation_id"]
     profile_db = profile_home / "state.db"

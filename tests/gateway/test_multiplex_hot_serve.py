@@ -35,9 +35,9 @@ class _Adapter:
 
 
 def _runner(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     (home / "profiles").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -87,7 +87,7 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
     solo = _mkprofile(home, "solo", "DISCORD_BOT_TOKEN=solo-token\n")
     own_pids = {}
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: own_pids.get(h))
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         adapter = runner._profile_adapters["solo"][Platform.DISCORD]
         (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
@@ -123,7 +123,7 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
 
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
 
         released = threading.Event()
@@ -177,7 +177,7 @@ async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
     del runner._start_one_profile_adapters
     runner._register_config_hooks = lambda *a, **kw: None
     caplog.set_level("INFO")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         assert _served_record(home) == ["default"]
         assert "profile 'worker' is parked (gateway.parked); not served by this gateway" in caplog.text
@@ -194,7 +194,7 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
     from gateway import run_profile_reconcile as verbs
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker", "DISCORD_BOT_TOKEN=worker-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         stop = verbs.unserve_profile_verb(runner)
         start = verbs.serve_profile_verb(runner)
@@ -224,7 +224,7 @@ async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch)
     from gateway import control_socket
     runner, home = _runner(tmp_path, monkeypatch)
     secondary = _mkprofile(home, "worker")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         server = await _start_gateway_start_control_socket(runner)
         assert server is not None
@@ -247,7 +247,7 @@ async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch)
 async def test_created_then_credentialed_profile_is_served_without_restart(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha_dir = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
         assert _served_record(home) == ["default", "alpha"]
@@ -282,7 +282,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         alpha_adapter = runner._profile_adapters["alpha"][Platform.DISCORD]
         gamma_adapter = runner._profile_adapters["gamma"][Platform.DISCORD]
@@ -292,7 +292,7 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
         reconnect = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
         runner._profile_failed_platforms = {"gamma": {Platform.TELEGRAM: reconnect}}
 
-        from hermes_constants import mark_named_profile_deleted
+        from rabbit_constants import mark_named_profile_deleted
         mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
         result = await runner.reconcile_served_profiles()
 
@@ -315,12 +315,12 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
     ``logs/.__agent.lock`` / ``logs/.__errors.lock`` / ``mcp-stderr.log`` (WinError 32)."""
     import logging as _logging
 
-    import hermes_logging
-    from hermes_constants import (
-        hermes_home_key,
+    import rabbit_logging
+    from rabbit_constants import (
+        rabbit_home_key,
         mark_named_profile_deleted,
-        reset_hermes_home_override,
-        set_hermes_home_override,
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
 
     runner, home = _runner(tmp_path, monkeypatch)
@@ -343,23 +343,23 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
         lambda **kw: shutdowns.append(kw.get("scope")),
     )
-    hermes_logging._reset_queued_handlers()  # a prior test's routers would route to stale homes
+    rabbit_logging._reset_queued_handlers()  # a prior test's routers would route to stale homes
     try:
-        hermes_logging.setup_logging(hermes_home=home)
-        assert hermes_logging.enable_profile_log_routing([home, alpha_dir, gamma_dir]) is True
+        rabbit_logging.setup_logging(rabbit_home=home)
+        assert rabbit_logging.enable_profile_log_routing([home, alpha_dir, gamma_dir]) is True
         logger = _logging.getLogger("agent.unserve-handle-release")
         for profile_home in (alpha_dir, gamma_dir):
-            token = set_hermes_home_override(profile_home)
+            token = set_rabbit_home_override(profile_home)
             try:
                 logger.warning("open routed handles for %s", profile_home.name)
             finally:
-                reset_hermes_home_override(token)
-        hermes_logging.flush_log_queue()
+                reset_rabbit_home_override(token)
+        rabbit_logging.flush_log_queue()
         routers = [
-            handler for handler in hermes_logging._queued_file_handlers
-            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+            handler for handler in rabbit_logging._queued_file_handlers
+            if isinstance(handler, rabbit_logging._ProfileRoutingFileHandler)
         ]
-        assert len(routers) == 2  # agent.log and errors.log, as in test_hermes_logging
+        assert len(routers) == 2  # agent.log and errors.log, as in test_rabbit_logging
         assert all(gamma_dir.resolve() in handler._profile_handlers for handler in routers)
         gamma_handlers = [handler._profile_handlers[gamma_dir.resolve()] for handler in routers]
         alpha_handlers = [handler._profile_handlers[alpha_dir.resolve()] for handler in routers]
@@ -367,7 +367,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         # its home — the ``.__agent.lock`` lock handle on Windows, the log stream on POSIX.
         assert all(_holds_open_log_file(handler) for handler in gamma_handlers)
 
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
             await runner._start_secondary_profile_adapters()
             mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
             result = await runner.reconcile_served_profiles()
@@ -375,7 +375,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         assert result["removed"] == ["gamma"]
         # The gateway-side scoped MCP servers (whose children write mcp-stderr.log) are stopped
         # for exactly the deleted profile's scope, never a sibling's.
-        assert shutdowns == [hermes_home_key(gamma_dir)]
+        assert shutdowns == [rabbit_home_key(gamma_dir)]
         # This process's routed log files for the deleted home are closed and forgotten while a
         # still-served sibling keeps its handles.
         assert all(gamma_dir.resolve() not in handler._profile_handlers for handler in routers)
@@ -387,8 +387,8 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
         assert all(_holds_open_log_file(handler) for handler in alpha_handlers)
         assert "open routed handles for alpha" in (alpha_dir / "logs" / "agent.log").read_text()
     finally:
-        hermes_logging._reset_queued_handlers()
-        hermes_logging._logging_initialized = False
+        rabbit_logging._reset_queued_handlers()
+        rabbit_logging._logging_initialized = False
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,7 @@ async def test_transient_start_failure_is_retried_on_next_reconcile(tmp_path, mo
     reconcile retries it. Only the deliberate MultiplexConfigError park is acknowledged."""
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
 
         _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
@@ -473,7 +473,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     runner._connect_initial_adapter_with_timeout = _connect
     runner._after_profiles_added = _noop_added
 
-    import hermes_cli.env_loader as env_loader
+    import rabbit_cli.env_loader as env_loader
     hydrate_calls = []
     real_hydrate = env_loader.hydrate_profile_secret_sources
 
@@ -486,7 +486,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _flaky)
 
     gamma_dir = _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         assert connected == []
         assert "gamma" not in runner._served_profile_signatures
@@ -513,7 +513,7 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         return 1
 
     runner._start_one_profile_adapters = _start
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("rabbit_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         _mkprofile(home, "dupe", "DISCORD_BOT_TOKEN=shared\n")
         await runner.reconcile_served_profiles()

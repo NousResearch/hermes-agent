@@ -80,7 +80,7 @@ def _row_counts(db, sid):
 class TestInPlaceCommitPersistMarker:
     def test_post_commit_persist_does_not_reinsert_compacted_rows(self):
         """In-place commit → persist walk: row counts stay stable (#98450)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from agent.conversation_compression import compress_context
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
@@ -144,7 +144,7 @@ class TestInPlaceCommitPersistMarker:
         via the shared helper (class-of-bug guard, not a change detector:
         asserts the behavioral outcome — dicts stamped after a successful
         archive_and_compact — for the sibling call path)."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from agent.context_compressor import (
             ContextCompressor,
             _DB_PERSISTED_MARKER,

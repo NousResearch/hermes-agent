@@ -11,7 +11,7 @@ gh run view <RUN_ID> --log-failed
 # With curl — download and extract
 curl -sL -H "Authorization: token $GITHUB_TOKEN" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/actions/runs/<RUN_ID>/logs \
-  -o ~/.hermes/cache/scratch/ci-logs.zip && unzip -o ~/.hermes/cache/scratch/ci-logs.zip -d ~/.hermes/cache/scratch/ci-logs
+  -o ~/.rabbit/cache/scratch/ci-logs.zip && unzip -o ~/.rabbit/cache/scratch/ci-logs.zip -d ~/.rabbit/cache/scratch/ci-logs
 ```
 
 ## Common Failure Patterns

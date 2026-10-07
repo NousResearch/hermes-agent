@@ -44,7 +44,7 @@ def _agent_source(
 
     ``row_source``: the row's value if already read (``""`` = read, none; ``None`` = look it
     up). Before the row lands, use the SAME resolver persistence uses, not ``agent.platform``:
-    they diverge under ``HERMES_SESSION_SOURCE`` and the declared scope is memoized at once,
+    they diverge under ``RABBIT_SESSION_SOURCE`` and the declared scope is memoized at once,
     so both sides of a ``/new`` would otherwise hash the same scope.
     """
     if row_source is None and session_id and session_db is not None:

@@ -1,6 +1,6 @@
 // Repo-first discovery: walk bounded roots for Git repositories using only
 // Node's fs APIs. Electron owns this machine-local capability; the renderer
-// supplies the profile-scoped policy from Hermes config.
+// supplies the profile-scoped policy from Rabbit config.
 
 import fs from 'node:fs'
 import os from 'node:os'

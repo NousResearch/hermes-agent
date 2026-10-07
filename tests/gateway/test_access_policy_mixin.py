@@ -63,7 +63,7 @@ def _verdicts(host, name, dm_policy, group_policy):
     return out
 
 
-# Per-host opt-in var (the one ``hermes gateway setup`` writes). Setting only GATEWAY_ALLOW_ALL_USERS
+# Per-host opt-in var (the one ``rabbit gateway setup`` writes). Setting only GATEWAY_ALLOW_ALL_USERS
 # would pass with a host whose prefix is missing — that is exactly how WeCom regressed once.
 PLATFORM_OPT_IN = {"weixin": "WEIXIN_ALLOW_ALL_USERS", "wecom": "WECOM_ALLOW_ALL_USERS",
                    "qqbot": "QQ_ALLOW_ALL_USERS", "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",

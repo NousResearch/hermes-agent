@@ -24,7 +24,7 @@ def _pactl(*args: str, check: bool) -> subprocess.CompletedProcess:
 class AudioBridge:
     """Virtual audio device for Chrome fake-mic input: ``setup()`` before launch, ``teardown()`` after."""
 
-    def __init__(self, name_prefix: str = "hermes_meet") -> None:
+    def __init__(self, name_prefix: str = "rabbit_meet") -> None:
         self._name_prefix = name_prefix
         self._platform: Optional[str] = None
         self._device_name: Optional[str] = None
@@ -69,7 +69,7 @@ class AudioBridge:
         try:
             sink_out = _pactl(
                 "load-module", "module-null-sink", f"sink_name={sink_name}",
-                "sink_properties=device.description=HermesMeetSink", check=True)
+                "sink_properties=device.description=RabbitMeetSink", check=True)
         except FileNotFoundError as exc:
             raise RuntimeError("pactl not found — install PulseAudio/pipewire-pulse") from exc
         except subprocess.CalledProcessError as exc:

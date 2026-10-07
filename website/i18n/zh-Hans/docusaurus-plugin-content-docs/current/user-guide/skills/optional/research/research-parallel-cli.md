@@ -14,10 +14,9 @@ description: "可选的供应商技能，用于 Parallel CLI — 面向 agent �
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/research/parallel-cli` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/research/parallel-cli` 安装 |
 | 路径 | `optional-skills/research/parallel-cli` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Research`, `Web`, `Search`, `Deep-Research`, `Enrichment`, `CLI` |
@@ -26,18 +25,18 @@ description: "可选的供应商技能，用于 Parallel CLI — 面向 agent �
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此技能时加载的完整技能定义。这是 agent 在技能激活时所看到的指令内容。
+以下是 Rabbit 在触发此技能时加载的完整技能定义。这是 agent 在技能激活时所看到的指令内容。
 :::
 
 # Parallel CLI
 
 当用户明确要求使用 Parallel，或终端原生工作流能从 Parallel 的供应商专属技术栈中受益时（包括网络搜索、提取、深度研究、数据丰富、实体发现或监控），请使用 `parallel-cli`。
 
-这是一个可选的第三方工作流，不是 Hermes 的核心能力。
+这是一个可选的第三方工作流，不是 Rabbit 的核心能力。
 
 重要说明：
 - Parallel 是付费服务，提供免费套餐，并非完全免费的本地工具。
-- 它与 Hermes 原生的 `web_search` / `web_extract` 存在功能重叠，因此不要在普通查询中优先使用它。
+- 它与 Rabbit 原生的 `web_search` / `web_extract` 存在功能重叠，因此不要在普通查询中优先使用它。
 - 当用户明确提及 Parallel，或需要 Parallel 特有的数据丰富、FindAll 或监控工作流时，优先使用此技能。
 
 `parallel-cli` 专为 agent 设计：
@@ -55,7 +54,7 @@ description: "可选的供应商技能，用于 Parallel CLI — 面向 agent �
 - 需要可启动并稍后轮询的异步深度研究任务
 - 需要结构化数据丰富、FindAll 实体发现或监控
 
-在未明确要求 Parallel 的情况下进行快速单次查询时，优先使用 Hermes 原生的 `web_search` / `web_extract`。
+在未明确要求 Parallel 的情况下进行快速单次查询时，优先使用 Rabbit 原生的 `web_search` / `web_extract`。
 
 ## 安装
 
@@ -128,7 +127,7 @@ parallel-cli auth
 4. 仅引用 CLI 输出中返回的 URL。
 5. 当后续可能有追问时，将大型 JSON 输出保存到临时文件。
 6. 仅对真正的长时工作流使用后台进程；否则在前台运行。
-7. 除非用户明确要求 Parallel 或需要 Parallel 专属工作流，否则优先使用 Hermes 原生工具。
+7. 除非用户明确要求 Parallel 或需要 Parallel 专属工作流，否则优先使用 Rabbit 原生工具。
 
 ## 快速参考
 
@@ -251,7 +250,7 @@ parallel-cli research run \
   --json
 ```
 
-推荐的 Hermes 工作流：
+推荐的 Rabbit 工作流：
 1. 使用 `--no-wait --json` 启动
 2. 捕获返回的运行/任务 ID
 3. 如果用户希望继续其他工作，继续推进
@@ -344,7 +343,7 @@ parallel-cli monitor create --help
 
 当用户希望对某个页面或来源进行周期性跟踪而非一次性抓取时使用。
 
-## 推荐的 Hermes 使用模式
+## 推荐的 Rabbit 使用模式
 
 ### 快速答案与引用
 1. 运行 `parallel-cli search ... --json`
@@ -407,5 +406,5 @@ parallel-cli config auto-update-check off
 - `login` 可能需要 PTY/浏览器交互。
 - 短时任务优先在前台执行；不要过度使用后台进程。
 - 对于大型结果集，将 JSON 保存到 `/tmp/*.json`，而不是将所有内容塞入上下文。
-- 当 Hermes 原生工具已经足够时，不要静默地选择 Parallel。
+- 当 Rabbit 原生工具已经足够时，不要静默地选择 Parallel。
 - 请记住，这是一个供应商工作流，通常需要账户认证，且超出免费套餐后需要付费使用。

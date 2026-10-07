@@ -15,7 +15,7 @@ const IMAGE_MIME_EXT: Record<string, string> = {
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export interface ChatImageUploadResult {
-  /** Absolute path under HERMES_HOME/images the gateway wrote. */
+  /** Absolute path under RABBIT_HOME/images the gateway wrote. */
   path: string;
   /** Byte size of the uploaded image. */
   bytes: number;
@@ -110,7 +110,7 @@ function fileToDataUrl(file: File): Promise<string> {
 }
 
 /**
- * Upload a browser clipboard/drop image to ``HERMES_HOME/images`` via the
+ * Upload a browser clipboard/drop image to ``RABBIT_HOME/images`` via the
  * dedicated chat upload endpoint and return the absolute gateway path.
  *
  * The dashboard Chat tab is an xterm mirror of a TUI running INSIDE the

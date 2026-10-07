@@ -35,7 +35,7 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
-import { HERMES_API_EXPECTED_404 } from './api-expected-404'
+import { RABBIT_API_EXPECTED_404 } from './api-expected-404'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -75,14 +75,14 @@ import { BackendDialClaims } from './backend-dial-claim'
 import type { HostBackendRecord } from './backend-discovery'
 import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
+import { isReauthRequiredError, waitForRabbitReady } from './backend-health'
 import {
   backendCommandMatches,
   type BackendOwnershipEntry,
   createBackendOwnership,
   createBackendShutdownCoordinator
 } from './backend-ownership'
-import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
+import { canImportRabbitCli, PROBE_TIMEOUT_MS, shouldTrustRabbitOverride, verifyRabbitCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
@@ -123,9 +123,6 @@ import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
-import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
-import { discoverWithTeamFallback } from './cloud-discovery'
-import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { composerImageTimestamp } from './composer-image-name'
 import { writeComposerPaste } from './composer-paste'
@@ -201,7 +198,6 @@ import {
   type SharedRegistryProfileScope,
   shouldDeferLocalEnumeration,
   shouldRetrySshInventory,
-  updateEligibility,
   upsertConnection
 } from './connection-registry'
 import type { RegistryConnection } from './connection-registry'
@@ -214,7 +210,7 @@ import {
   resolveServedDashboardToken
 } from './dashboard-token'
 import { resolveDashboardWebDist } from './dashboard-web-dist'
-import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { resolveDesktopRabbitHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -315,7 +311,7 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { claimHostSpawnGate } from './host-spawn-gate'
-import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
+import { RABBIT_HUB_ORIGIN, isRabbitHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -442,7 +438,6 @@ import {
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
-import { createPortalSession } from './portal-session'
 import {
   createKeepAwake,
   type KeepAwakeMode,
@@ -629,7 +624,7 @@ import {
 import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
-import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
+import { isExternalVenvHolder, isRabbitOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { guardedWatch } from './watch-storm-breaker'
@@ -658,7 +653,7 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
-import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
+import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvRabbitCommand } from './windows-rabbit-path'
 import {
   connectWindowsRemote,
   detectRemotePlatform,
@@ -685,7 +680,7 @@ import {
   buildDisableGpuRelaunchArgs,
   decideWindowsGpuStackCookieLaunch,
   gpuStackCookieFallbackMarker,
-  isHermesDesktopGpuOverrideOff,
+  isRabbitDesktopGpuOverrideOff,
   markerAfterSuccessfulGpuStackCookieBoot,
   readGpuStackCookieMarker,
   shouldRelaunchForRendererStackCookieCrashLoop,
@@ -698,16 +693,16 @@ import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
 const IDENTITY_APP_NAME: string | null = applyDesktopIdentity(app)
-const USER_DATA_OVERRIDE: string | undefined = process.env.HERMES_DESKTOP_USER_DATA_DIR
+const USER_DATA_OVERRIDE: string | undefined = process.env.RABBIT_DESKTOP_USER_DATA_DIR
 
-if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
+if (USER_DATA_OVERRIDE || process.env.RABBIT_DATA_DIR_SUFFIX) {
   const resolvedUserData: string = resolveDesktopUserData(app.getPath('userData'))
   fs.mkdirSync(resolvedUserData, { recursive: true })
   app.setPath('userData', resolvedUserData)
 }
 
-const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
-const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+const DEV_SERVER = process.env.RABBIT_DESKTOP_DEV_SERVER
+const IS_PACKAGED = app.isPackaged || Boolean(process.env.RABBIT_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -739,7 +734,7 @@ const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-pr
 // GPU and never see it. Fall back to software rendering when a remote display
 // is detected; it's rock-steady over the wire and the CPU cost is negligible
 // next to the connection's latency. Must run before app `ready` — these
-// switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
+// switches only apply pre-launch. Override with RABBIT_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
 
@@ -751,14 +746,14 @@ if (REMOTE_DISPLAY_REASON) {
 
   // #97616: disableHardwareAcceleration() alone does NOT stop a GPU child
   // from spawning (it then dies error_code=1002 on AMD/Mesa). For the explicit
-  // HERMES_DESKTOP_DISABLE_GPU override, fully spawn-block it. Remote-display
+  // RABBIT_DESKTOP_DISABLE_GPU override, fully spawn-block it. Remote-display
   // detections keep their long-standing compositing-only behavior.
   if (disableGpuSwitchNeededForReason(REMOTE_DISPLAY_REASON)) {
     app.commandLine.appendSwitch('disable-gpu')
   }
 
   console.log(
-    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+    `[rabbit] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
 
@@ -794,7 +789,7 @@ if (IS_WINDOWS) {
     app.disableHardwareAcceleration()
     app.commandLine.appendSwitch('disable-gpu-compositing')
     console.log(
-      `[hermes] Windows GPU stack-cookie fallback enabled (${gpuStackCookieDecision.reason}); disabling GPU hardware acceleration (0xC0000409 / #108047)`
+      `[rabbit] Windows GPU stack-cookie fallback enabled (${gpuStackCookieDecision.reason}); disabling GPU hardware acceleration (0xC0000409 / #108047)`
     )
   }
 }
@@ -811,14 +806,14 @@ if (DEV_CDP.port) {
   // so a future edit can't widen it by omission.
   app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1')
   console.log(
-    `[hermes] renderer debugging on http://127.0.0.1:${DEV_CDP.port} — anything that can reach it ` +
-      'can run code in the renderer. HERMES_DESKTOP_CDP_PORT=off to disable.'
+    `[rabbit] renderer debugging on http://127.0.0.1:${DEV_CDP.port} — anything that can reach it ` +
+      'can run code in the renderer. RABBIT_DESKTOP_CDP_PORT=off to disable.'
   )
 } else {
   const why = describeDevCdpDecision(DEV_CDP)
 
   if (why) {
-    console.warn(`[hermes] ${why}`)
+    console.warn(`[rabbit] ${why}`)
   }
 }
 
@@ -835,7 +830,7 @@ if (
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
-  console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+  console.log('[rabbit] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
 }
 
 // #40077 / #124255: NVIDIA driver 580.x breaks ANGLE's EGL probing (Invalid
@@ -849,7 +844,7 @@ if (
 // once with SwiftShader. Deliberately NOT disableHardwareAcceleration(): on
 // 580.173.02 + Electron 40 that SIGKILLs the renderer (see the closed #40119).
 // Must run before app `ready` — the switch only applies pre-launch. Override
-// with HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+// with RABBIT_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
 const NVIDIA_PROC_VERSION = (() => {
   try {
     return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
@@ -892,9 +887,9 @@ if (NVIDIA_DRIVER_MAJOR !== null) {
 if (NVIDIA_EGL_FALLBACK.enable) {
   app.commandLine.appendSwitch('use-angle', 'swiftshader')
   console.log(
-    `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
+    `[rabbit] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
       'through SwiftShader. Witnessed GPU-process death probe (#40077, #124255); an app or ' +
-      'driver update re-probes hardware GL once. HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
+      'driver update re-probes hardware GL once. RABBIT_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
   )
 }
 
@@ -927,7 +922,7 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
     }
 
     console.warn(
-      `[hermes] NVIDIA GPU process died (reason=${details?.reason}, exit=${details?.exitCode}); ` +
+      `[rabbit] NVIDIA GPU process died (reason=${details?.reason}, exit=${details?.exitCode}); ` +
         'relaunching once with --use-angle=swiftshader (#40077, #124255)'
     )
 
@@ -937,7 +932,7 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
       })
       void exitAfterBackendShutdown(0)
     } catch (error) {
-      console.error(`[hermes] NVIDIA SwiftShader relaunch failed: ${error?.message || error}`)
+      console.error(`[rabbit] NVIDIA SwiftShader relaunch failed: ${error?.message || error}`)
     }
   })
 }
@@ -947,7 +942,7 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
 // gpu-process, no crash. Bound it: one relaunch into software rendering,
 // then a sticky per-version marker so the next boot goes straight there.
 // Reactive only — healthy Mesa/Wayland stacks keep full acceleration. Must
-// run before app `ready`. Override with HERMES_DESKTOP_DISABLE_GPU
+// run before app `ready`. Override with RABBIT_DESKTOP_DISABLE_GPU
 // (1/true → always software, 0/false → keep GPU on).
 let linuxGpuFallbackActive = false
 let linuxGpuFallbackSticky = false
@@ -981,26 +976,26 @@ if (process.platform === 'linux') {
     app.disableHardwareAcceleration()
     app.commandLine.appendSwitch('disable-gpu-compositing')
     console.log(
-      `[hermes] Linux GPU software fallback enabled (${linuxGpuDecision.reason}); disabling GPU ` +
-        'hardware acceleration after a GPU-child init failure (#124843). HERMES_DESKTOP_DISABLE_GPU=0 to opt out.'
+      `[rabbit] Linux GPU software fallback enabled (${linuxGpuDecision.reason}); disabling GPU ` +
+        'hardware acceleration after a GPU-child init failure (#124843). RABBIT_DESKTOP_DISABLE_GPU=0 to opt out.'
     )
   }
 }
 
 // Linux: point Chromium at the session's keychain backend so safeStorage can
 // encrypt remote gateway tokens (hardening.ts refuses to persist them without
-// it). The value arrives via HERMES_DESKTOP_PASSWORD_STORE, bridged by the
-// `hermes desktop` launcher from detection or `desktop.password_store` in
+// it). The value arrives via RABBIT_DESKTOP_PASSWORD_STORE, bridged by the
+// `rabbit desktop` launcher from detection or `desktop.password_store` in
 // config.yaml. Must run before app `ready` — the switch only applies pre-launch.
 const PASSWORD_STORE = resolveLinuxPasswordStore()
 
 if (PASSWORD_STORE.warning) {
-  console.warn(`[hermes] ${PASSWORD_STORE.warning}`)
+  console.warn(`[rabbit] ${PASSWORD_STORE.warning}`)
 }
 
 if (PASSWORD_STORE.store) {
   app.commandLine.appendSwitch('password-store', PASSWORD_STORE.store)
-  console.log(`[hermes] using password-store backend: ${PASSWORD_STORE.store}`)
+  console.log(`[rabbit] using password-store backend: ${PASSWORD_STORE.store}`)
 }
 
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
@@ -1010,7 +1005,7 @@ if (PASSWORD_STORE.store) {
 // 0x80000003. After enough GPU deaths the browser process FATAL-exits before the
 // UI is usable. Must run before app `ready` so `--no-sandbox` applies to child
 // processes. The sticky marker recovers Start Menu / shortcut launches that
-// never go through `hermes desktop`; it is version-scoped so an app update
+// never go through `rabbit desktop`; it is version-scoped so an app update
 // re-probes the sandbox instead of degrading forever.
 //
 // `windowsSandboxFallbackActive` = this process runs without the Chromium
@@ -1039,15 +1034,15 @@ if (IS_WINDOWS || process.platform === 'linux') {
   // engaged — icacls /T recurses the whole install tree, so healthy launches
   // skip it (the installer already granted the ACE at install time). Repair
   // targets the install dir only: granting AppContainer read on userData would
-  // expose Hermes sessions/config to every packaged app on the machine.
+  // expose Rabbit sessions/config to every packaged app on the machine.
   if (shouldAttemptAclRepair(priorMarker)) {
     const exeDir = path.dirname(process.execPath)
     const acl = grantAllApplicationPackagesAcl(exeDir, { execFileSync })
 
     if (acl.ok) {
-      console.log(`[hermes] granted ALL APPLICATION PACKAGES RX on ${exeDir} (#38216)`)
+      console.log(`[rabbit] granted ALL APPLICATION PACKAGES RX on ${exeDir} (#38216)`)
     } else if (acl.error && acl.error !== 'missing-target-or-exec') {
-      console.warn(`[hermes] AppContainer ACL grant failed on ${exeDir}: ${acl.error}`)
+      console.warn(`[rabbit] AppContainer ACL grant failed on ${exeDir}: ${acl.error}`)
     }
   }
 
@@ -1069,7 +1064,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
     app.commandLine.appendSwitch('no-sandbox')
     process.env.ELECTRON_DISABLE_SANDBOX = '1'
     console.log(
-      `[hermes] sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216, #121954)`
+      `[rabbit] sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216, #121954)`
     )
   }
 
@@ -1104,14 +1099,14 @@ if (IS_WINDOWS || process.platform === 'linux') {
       }
 
       console.warn(
-        `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+        `[rabbit] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
       )
 
       try {
         app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
-        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+        console.error(`[rabbit] --no-sandbox relaunch failed: ${error?.message || error}`)
       }
 
       return
@@ -1141,14 +1136,14 @@ if (IS_WINDOWS || process.platform === 'linux') {
       }
 
       console.warn(
-        `[hermes] Linux GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#121954)`
+        `[rabbit] Linux GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#121954)`
       )
 
       try {
         app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
-        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+        console.error(`[rabbit] --no-sandbox relaunch failed: ${error?.message || error}`)
       }
 
       return
@@ -1169,21 +1164,21 @@ if (IS_WINDOWS || process.platform === 'linux') {
       }
 
       console.warn(
-        `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
+        `[rabbit] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
       )
 
       try {
         app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
-        console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
+        console.error(`[rabbit] --disable-gpu relaunch failed: ${error?.message || error}`)
       }
     }
   })
 }
 
-ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
-ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
+ipcMain.handle('rabbit:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('rabbit:embed-host:origin', () => embedHostOrigin())
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the
@@ -1196,7 +1191,7 @@ ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 // `backgroundThrottling: false` on every chat window) pinned every renderer's
 // `document.visibilityState` to 'visible' forever — which silently turned all
 // the renderer's visibility-gated backstop polls and clock ticks into
-// always-on timers. A completely idle, minimized Hermes burned ~20% CPU
+// always-on timers. A completely idle, minimized Rabbit burned ~20% CPU
 // around the clock. Throttling is now a runtime dial scoped to streaming:
 // see createStreamThrottle() — chat windows are unthrottled while any turn is
 // in flight (so a live answer keeps painting while blurred, occluded, or
@@ -1209,13 +1204,13 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // Runtime identity comes only from the baked artifact stamp. Dev runs have none.
 if (INSTALL_STAMP) {
   console.log(
-    `[hermes] install stamp: ${INSTALL_STAMP.commit ? INSTALL_STAMP.commit.slice(0, 12) : 'no-commit'}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
+    `[rabbit] install stamp: ${INSTALL_STAMP.commit ? INSTALL_STAMP.commit.slice(0, 12) : 'no-commit'}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
   )
 } else if (IS_PACKAGED) {
   // Dev builds without a stamp are normal; packaged builds without one
   // mean the bootstrap won't know what to clone. Surface clearly.
   console.error(
-    '[hermes] WARNING: no install-stamp.json found in packaged build. First-launch bootstrap will not have a pinned ref to install.'
+    '[rabbit] WARNING: no install-stamp.json found in packaged build. First-launch bootstrap will not have a pinned ref to install.'
   )
 }
 
@@ -1235,7 +1230,7 @@ function acquireSingleInstanceLock(): boolean {
   const stalePid = removeStaleSingletonLock(app.getPath('userData'))
 
   if (stalePid !== null) {
-    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+    console.error(`[rabbit] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
 
     return app.requestSingleInstanceLock()
   }
@@ -1246,26 +1241,26 @@ function acquireSingleInstanceLock(): boolean {
 const isPrimaryInstance: boolean = acquireSingleInstanceLock()
 
 if (!isPrimaryInstance) {
-  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
+  console.error('[rabbit] another Rabbit Desktop instance holds the single-instance lock; exiting')
   app.exit(0)
 }
 
-// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// `rabbit desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
 // backend and every other child get the real one (the profile scratch dir) back.
-if (process.env.HERMES_DESKTOP_TMPDIR) {
-  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
-  delete process.env.HERMES_DESKTOP_TMPDIR
+if (process.env.RABBIT_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.RABBIT_DESKTOP_TMPDIR
+  delete process.env.RABBIT_DESKTOP_TMPDIR
 }
 
-const HERMES_HOME: string = resolveDesktopHermesHome({
+const RABBIT_HOME: string = resolveDesktopRabbitHome({
   home: app.getPath('home'),
   directoryExists,
-  readWindowsHome: (): string | null => readWindowsUserEnvVar('HERMES_HOME')
+  readWindowsHome: (): string | null => readWindowsUserEnvVar('RABBIT_HOME')
 })
 
 // #77311: `desktop.electron_flags` and the renderer heap ceiling
 // (`desktop.renderer_max_old_space_mb`) used to reach Chromium only through
-// the `hermes desktop` launcher's argv, so a packaged app opened from its
+// the `rabbit desktop` launcher's argv, so a packaged app opened from its
 // Start-menu / .desktop entry ran with no `--js-flags` at all. Apply them here
 // from config.yaml, before `ready` — Chromium copies `js-flags` to renderer
 // processes only from the browser's pre-launch command line.
@@ -1277,7 +1272,7 @@ let desktopSshPathOverride = ''
   let desktopLaunchYaml: string = ''
 
   try {
-    desktopLaunchYaml = fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8')
+    desktopLaunchYaml = fs.readFileSync(path.join(RABBIT_HOME, 'config.yaml'), 'utf8')
   } catch {
     void 0 // first run: no config yet → Chromium defaults
   }
@@ -1286,12 +1281,12 @@ let desktopSshPathOverride = ''
   desktopSshPathOverride = desktopLaunchConfig.sshPath || ''
 
   // `desktop.renderer_accessibility: false` must reach packaged launches too,
-  // not only the `hermes desktop` launcher's env bridge (#118271).
+  // not only the `rabbit desktop` launcher's env bridge (#118271).
   if (
     desktopLaunchConfig.rendererAccessibility === false &&
-    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY === undefined
+    process.env.RABBIT_DESKTOP_RENDERER_ACCESSIBILITY === undefined
   ) {
-    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = '0'
+    process.env.RABBIT_DESKTOP_RENDERER_ACCESSIBILITY = '0'
   }
 
   for (const planned of planLaunchSwitches(desktopLaunchConfig, process.argv.slice(1))) {
@@ -1302,30 +1297,30 @@ let desktopSshPathOverride = ''
     }
 
     console.log(
-      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
+      `[rabbit] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
     )
   }
 }
 
-// ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
+// ACTIVE_RABBIT_ROOT — the canonical mutable Rabbit install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
 // up with identical layouts and can share one install.
-const ACTIVE_HERMES_ROOT = path.join(HERMES_HOME, 'hermes-agent')
-setNoConsoleGitRoots([!IS_PACKAGED ? SOURCE_REPO_ROOT : null, ACTIVE_HERMES_ROOT])
+const ACTIVE_RABBIT_ROOT = path.join(RABBIT_HOME, 'rabbit-agent')
+setNoConsoleGitRoots([!IS_PACKAGED ? SOURCE_REPO_ROOT : null, ACTIVE_RABBIT_ROOT])
 // VENV_ROOT — venv lives inside the repo, exactly like install.ps1 does it.
-const VENV_ROOT = path.join(ACTIVE_HERMES_ROOT, 'venv')
+const VENV_ROOT = path.join(ACTIVE_RABBIT_ROOT, 'venv')
 // BOOTSTRAP_COMPLETE_MARKER — written by the first-launch bootstrap runner
 // (Phase 1D) after install.ps1 has completed all stages and the user has
 // finished initial configuration. Presence of this marker means the install
 // is in a known-good state and we can skip the bootstrap flow on subsequent
-// boots, going straight to `resolveHermesBackend()`. Missing or stale marker
+// boots, going straight to `resolveRabbitBackend()`. Missing or stale marker
 // means we re-run the bootstrap; install.ps1's stages are idempotent so a
 // re-run on an already-good install just discovers everything in place.
 //
-// We deliberately put the marker INSIDE ACTIVE_HERMES_ROOT (not alongside)
+// We deliberately put the marker INSIDE ACTIVE_RABBIT_ROOT (not alongside)
 // so that deleting the checkout to start fresh also deletes the marker --
 // avoids the confusing "marker exists but checkout is gone" state.
-const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
+const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_RABBIT_ROOT, '.rabbit-bootstrap-complete')
 const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
@@ -1339,24 +1334,24 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
-// active-profile.json records which Hermes profile the desktop launches its
-// local backend as. When set, startHermes() passes `hermes --profile <name>
-// dashboard …`, which deterministically pins HERMES_HOME (see
-// _apply_profile_override in hermes_cli/main.py) and bypasses the sticky
-// ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
+// active-profile.json records which Rabbit profile the desktop launches its
+// local backend as. When set, startRabbit() passes `rabbit --profile <name>
+// dashboard …`, which deterministically pins RABBIT_HOME (see
+// _apply_profile_override in rabbit_cli/main.py) and bypasses the sticky
+// ~/.rabbit/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 
-// Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
+// Mirrors rabbit_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = DESKTOP_PROFILE_NAME_RE
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
-// hermesDesktop.updates.setBranch().
+// rabbitDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
-// desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
-// errors.log, gateway.log produced by hermes_logging.setup_logging — one log
+// desktop.log lives under RABBIT_HOME/logs/ so it sits next to agent.log,
+// errors.log, gateway.log produced by rabbit_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
-const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+const DESKTOP_LOG_PATH = path.join(RABBIT_HOME, 'logs', 'desktop.log')
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
@@ -1385,17 +1380,17 @@ enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
   startCrashReporter: options => crashReporter.start(options)
 })
 
-const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
-const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
+const BOOT_FAKE_MODE = process.env.RABBIT_DESKTOP_BOOT_FAKE === '1'
+const BOOT_FAKE_ERROR = process.env.RABBIT_DESKTOP_BOOT_FAKE_ERROR || ''
 // Automated teardown (Playwright's app.close(), harness scripts) quits with
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
-const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
+const SKIP_QUIT_CONFIRM = process.env.RABBIT_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 // One launch decision must reach both the renderer and every backend spawn.
 const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
-  const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
+  const raw = Number.parseInt(String(process.env.RABBIT_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
 
   if (!Number.isFinite(raw) || raw <= 0) {
     return 650
@@ -1404,7 +1399,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME: string = IDENTITY_APP_NAME || process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const APP_NAME: string = IDENTITY_APP_NAME || process.env.RABBIT_DESKTOP_APP_NAME || 'Rabbit'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1441,7 +1436,7 @@ let rendererTitleBarTheme = null
 // tracks the window's effective appearance and ignores `backgroundColor` —
 // so a dark-themed app on a light-mode Mac flashes a white material on every
 // new window until the renderer covers it. The renderer reports its mode via
-// 'hermes:native-theme' ('dark' | 'light' | 'system'); we pin
+// 'rabbit:native-theme' ('dark' | 'light' | 'system'); we pin
 // nativeTheme.themeSource to it and persist the value so cold launches paint
 // correctly before the renderer has even loaded.
 const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
@@ -1650,7 +1645,7 @@ const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 // WSLg returns false: the RDP host paints nothing for a frameless window and
 // Electron's own overlay drifts its hit-region under RAIL, so the renderer
 // paints its own min/max/close (wslg-window-controls.tsx) over the
-// hermes:window-control IPC channel. See titleBarOverlayOptions.
+// rabbit:window-control IPC channel. See titleBarOverlayOptions.
 function getTitleBarOverlayOptions(win?) {
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
@@ -1811,24 +1806,24 @@ Menu.setApplicationMenu(null)
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
 // AUMID must match the installed Start Menu shortcut's AUMID, which
-// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
+// electron-builder derives from the build `appId` (com.seven0070.rabbit) —
 // keep this string in sync with package.json `build.appId`. macOS/Linux don't
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId(IDENTITY_APP_NAME ? PRODUCT_IDENTITY.appId : 'com.nousresearch.hermes')
+  app.setAppUserModelId(IDENTITY_APP_NAME ? PRODUCT_IDENTITY.appId : 'com.seven0070.rabbit')
 }
 
-// Seed the native About panel with the best-known Hermes version. This is
+// Seed the native About panel with the best-known Rabbit version. This is
 // refreshed on every open via showAboutPanelFresh, so an in-place
-// `hermes update` mid-session is reflected without an app restart; the seed
+// `rabbit update` mid-session is reflected without an app restart; the seed
 // covers the first open and any non-menu invocation path. Never seed empty:
 // an empty applicationVersion falls back to the bundle version, which is the
 // 0.0.0 placeholder on local builds (#124581).
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
   applicationVersion: nativeAboutVersion(appVersionInfo(INSTALL_STAMP, '', app.getVersion())),
-  copyright: 'Copyright © 2026 Nous Research'
+  copyright: 'Copyright © 2026 Sanath Patil'
 })
 
 // Custom scheme for streaming audio/video into the renderer. Local paths read
@@ -1946,16 +1941,16 @@ const backendDialClaims = new BackendDialClaims()
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
 // Primary-slot bookkeeping for the exit supervisor (#112344). `primaryStartsInFlight`
-// counts startHermes() calls that have not settled; `primaryRecoverySuppressed`
+// counts startRabbit() calls that have not settled; `primaryRecoverySuppressed`
 // is set by every intentional invalidate of the slot and cleared by the next
-// startHermes(), so the dying child's stale exit never respawns behind a
+// startRabbit(), so the dying child's stale exit never respawns behind a
 // re-home, a quit, or a latched boot failure.
 let primaryStartsInFlight = 0
 let primaryRecoverySuppressed = false
 const primaryExitRecovery = createBackendExitRecoveryLatch()
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by backendConnectionState +
-// startHermes(); this pool only holds EXTRA profile
+// startRabbit(); this pool only holds EXTRA profile
 // backends spawned lazily when a session belongs to a different profile. A user
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
@@ -1966,7 +1961,7 @@ const profileDeletionGate = new ProfileDeletionGate()
 // exist while a non-primary profile is actively being chatted through.
 // Pool sizing is a device preference (Settings → Advanced → pool rows), not a
 // launch constant: mutable at runtime, persisted in userData, applied live.
-// The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
+// The legacy RABBIT_DESKTOP_POOL_* env vars remain the initial-value fallback
 // for scripted/headless setups; after launch the stored preference wins.
 const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
 
@@ -1983,8 +1978,8 @@ function readPersistedPoolLimits() {
     // setups keep working. Log which source won: a silently-ignored env var
     // here costs a scripted-setup user a debugging session.
     const fromEnv = clampPoolLimits({
-      maxBackends: Number(process.env.HERMES_DESKTOP_POOL_MAX) || undefined,
-      idleMs: Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || undefined
+      maxBackends: Number(process.env.RABBIT_DESKTOP_POOL_MAX) || undefined,
+      idleMs: Number(process.env.RABBIT_DESKTOP_POOL_IDLE_MS) || undefined
     })
 
     if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
@@ -2017,7 +2012,7 @@ function persistPoolLimits(limits) {
 // readPersistedPoolLimits() call below, because that call logs during module
 // evaluation; declaring these later crashed launch with `undefined.push` in
 // the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
-const hermesLog: string[] = []
+const rabbitLog: string[] = []
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
@@ -2074,7 +2069,7 @@ function logPoolSpawnFailure(label: string, error: unknown): void {
     rememberLog(`Profile backend ${label} slot wait timed out (background); retry is backing off`)
   } else {
     rememberLog(
-      `Hermes backend for profile ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`
+      `Rabbit backend for profile ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`
     )
   }
 }
@@ -2138,7 +2133,7 @@ function setPoolLimits(raw) {
 //
 // The window is intentionally MUCH wider than the 60s ping cadence:
 //   * 1 missed ping    = +60s of apparent silence
-//   * WSL2 IPC stall  = the renderer's `hermes:backend:touch` roundtrips
+//   * WSL2 IPC stall  = the renderer's `rabbit:backend:touch` roundtrips
 //                       through 9p; a single brief 9p hiccup can stretch a
 //                       ping to ~30s of observed silence (#95189: gateways
 //                       exited every ~2 min on WSL2 because the previous
@@ -2154,21 +2149,21 @@ function setPoolLimits(raw) {
 //     not when the idle reaper definitively tears a backend down.
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
   120_000,
-  Number(process.env.HERMES_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
+  Number(process.env.RABBIT_DESKTOP_POOL_KEEPALIVE_FRESH_MS) || 4 * 60_000
 )
 
 // Pinned-tier TTL (#105239): the renderer's 60s keepalive (touchPoolBackend)
 // refreshes lastActiveAt for every OPEN chat, so the idle reaper's only clock
 // never fires for the pinned tier — every profile whose chat was ever opened
 // held its ~120 MB serve child until app quit (126 processes / 7.5 GB on the
-// reporter's machine, all parented to Hermes.exe). A keepalive proves the
+// reporter's machine, all parented to Rabbit.exe). A keepalive proves the
 // chat is open, not that anything streamed: retire a local child whose last
 // streamed turn is older than this window. Re-focusing the chat re-ensures it
 // idempotently (ensureBackend/ensureRegistryBackend reuse), and mid-stream
 // safety is unchanged — activeTurn entries are excluded by the retirer.
 const POOL_PINNED_IDLE_MS = Math.max(
   POOL_LIMITS_MIN.idleMs,
-  Number(process.env.HERMES_DESKTOP_POOL_PINNED_IDLE_MS) || 60 * 60_000
+  Number(process.env.RABBIT_DESKTOP_POOL_PINNED_IDLE_MS) || 60 * 60_000
 )
 
 let poolIdleReaper = null
@@ -2183,13 +2178,13 @@ const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
 const rendererReloadTimesRef: { current: number[] } = { current: [] }
 // Latched bootstrap failure: when the first-launch install fails, we hold
-// onto the error so subsequent startHermes() calls (e.g. the renderer's
+// onto the error so subsequent startRabbit() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
 // instead of re-running install.ps1 in a hot loop. Cleared explicitly by
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
 // Latched non-bootstrap backend spawn failure — stops getConnection() from
-// respawning hermes serve backend children in a tight loop while boot is broken.
+// respawning rabbit serve backend children in a tight loop while boot is broken.
 let backendStartFailure = null
 // Latched CONFIRMED remote reauth failure. Remote failures deliberately do not
 // latch via backendStartFailure (they're usually transient and must stay
@@ -2229,8 +2224,7 @@ let nativeThemeListenerInstalled = false
 let bootProgressState = {
   error: null,
   fakeMode: BOOT_FAKE_MODE,
-  isCloudBackendDown: false,
-  message: 'Waiting to start Hermes backend',
+  message: 'Waiting to start Rabbit backend',
   phase: 'idle',
   progress: 0,
   retryable: false,
@@ -2372,10 +2366,10 @@ function rememberLog(chunk) {
   // at the same moment.  Local time, same shape as agent.log/gui.log.
   const stamp = formatLogStamp(new Date())
   const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
-  hermesLog.push(...lines)
+  rabbitLog.push(...lines)
 
-  if (hermesLog.length > 300) {
-    hermesLog.splice(0, hermesLog.length - 300)
+  if (rabbitLog.length > 300) {
+    rabbitLog.splice(0, rabbitLog.length - 300)
   }
 
   desktopLogBuffer += `${lines.join('\n')}\n`
@@ -2515,10 +2509,10 @@ async function openExternalFile(rawUrl: string) {
   }
 }
 
-// The `hermes:openExternal` route for a BARE local filesystem path — a chat
+// The `rabbit:openExternal` route for a BARE local filesystem path — a chat
 // media link, a markdown href, or an artifacts-panel value carrying
 // `C:\…`, `~/…`, `/…` or a UNC path instead of a `file://` URL. `new URL()`
-// cannot express those (hermes-agent 80946): resolve through the same audited
+// cannot express those (rabbit-agent 80946): resolve through the same audited
 // `resolveRequestedPathForIpc` the file route uses, then OPEN with the OS
 // handler and fall back to reveal-in-folder, mirroring openExternalFile's
 // missing-file guard so a dead path reports "File not found" instead of a
@@ -2549,7 +2543,7 @@ async function openLocalFilesystemPath(rawPath: string): Promise<boolean> {
       return true
     }
 
-    // Include the path so "Failed to open path" is diagnosable (hermes-agent
+    // Include the path so "Failed to open path" is diagnosable (rabbit-agent
     // 84361), then reveal: on Windows archive artifacts have no usable
     // association, and the reveal never re-opens so it can't loop (#53170).
     rememberLog(`[file] openPath failed: ${errorMessage}; path=${localPath}; revealing in folder instead`)
@@ -2581,7 +2575,7 @@ function broadcastOpenFailed(url: string, message: string, code?: 'missing-file'
   rememberLog(`[open-failed] ${url}: ${message}`)
 
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('hermes:external-open-failed', { url, message, ...(code ? { code } : {}) })
+    win.webContents.send('rabbit:external-open-failed', { url, message, ...(code ? { code } : {}) })
   }
 }
 
@@ -2604,7 +2598,7 @@ function ensureWslWindowsFonts() {
 
   try {
     const confDir = path.join(app.getPath('home'), '.config', 'fontconfig', 'conf.d')
-    const confPath = path.join(confDir, '99-hermes-wsl-windows-fonts.conf')
+    const confPath = path.join(confDir, '99-rabbit-wsl-windows-fonts.conf')
     let existing = ''
 
     try {
@@ -2657,7 +2651,7 @@ function broadcastBootProgress() {
     return
   }
 
-  webContents.send('hermes:boot-progress', bootProgressState)
+  webContents.send('rabbit:boot-progress', bootProgressState)
 }
 
 // Bootstrap-event broadcast channel + state. The bootstrap runner emits a
@@ -2671,7 +2665,7 @@ function broadcastBootProgress() {
 //   - log:      bounded ring buffer of the last 200 log lines for the
 //               "Show details" affordance in the overlay
 //
-// The snapshot is queryable via the hermes:bootstrap:get IPC handler so a
+// The snapshot is queryable via the rabbit:bootstrap:get IPC handler so a
 // reloaded renderer (e.g. devtools reload during dev) recovers state.
 // Bootstrap log ring: bounded buffer so a long install (npm + playwright
 // downloads can emit thousands of lines) doesn't grow unbounded in memory
@@ -2765,7 +2759,7 @@ function broadcastBootstrapEvent(ev) {
     return
   }
 
-  webContents.send('hermes:bootstrap:event', ev)
+  webContents.send('rabbit:bootstrap:event', ev)
 }
 
 function getBootstrapState() {
@@ -2791,7 +2785,7 @@ function promptFirstRunSetupChoice(backend) {
     type: 'setup-choice',
     active: true,
     platform: backend.platform || process.platform,
-    activeRoot: backend.activeRoot || ACTIVE_HERMES_ROOT,
+    activeRoot: backend.activeRoot || ACTIVE_RABBIT_ROOT,
     local: backend.local || 'none',
     bundled: installShape() === 'bundled'
   })
@@ -2952,12 +2946,12 @@ function directoryExists(filePath) {
 }
 
 // --- in-app update mutual exclusion (#50238) -------------------------------
-// The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
+// The Tauri updater writes RABBIT_HOME/.rabbit-update-in-progress for the whole
 // duration of an `--update` run (see update.rs UpdateMarkerGuard). If the user
 // relaunches the desktop mid-update — because the window vanished with no
 // progress and looks crashed — a fresh instance must NOT spawn its own local
 // backend: that backend re-locks the venv shim, the updater's straggler cleanup
-// (`force_kill_other_hermes`, taskkill /IM hermes.exe) kills it, the launch
+// (`force_kill_other_rabbit`, taskkill /IM rabbit.exe) kills it, the launch
 // fails with the 45s "backend didn't come up" error, and the relaunch/kill
 // cycle loops. Instead the fresh instance parks until the update finishes, then
 // brings the backend up itself (it is the surviving instance — the updater's
@@ -2990,10 +2984,10 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps() {
   return {
-    hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
+    hasLiveMarker: () => Boolean(readLiveUpdateMarker(RABBIT_HOME)),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff,
-    // The latest receipt is cross-process truth: a `hermes update` that failed
+    // The latest receipt is cross-process truth: a `rabbit update` that failed
     // records outcome "failed" even when its marker write/release raced a
     // crash (#122206). Only a TERMINAL failure counts — "running" must keep
     // parking, and "partial" kept the install usable.
@@ -3008,14 +3002,14 @@ function updateGateDeps() {
 // One-shot guard for the automatic bundle-swap relaunch below: the relaunched
 // instance carries this flag so a stamp that still mismatches (unreadable
 // resources, exotic packaging) can never produce a relaunch loop.
-const BUNDLE_SWAP_RELAUNCH_FLAG = '--hermes-bundle-swap-relaunched'
+const BUNDLE_SWAP_RELAUNCH_FLAG = '--rabbit-bundle-swap-relaunched'
 
 // How long the parked instance waits for its own scheduled exit to land before
 // giving up and booting the stale build anyway. Better a torn renderer with a
 // banner than a window that never comes back.
 const BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS = 15_000
 
-// The detached updater swaps the packaged bundle on disk AFTER `hermes update`
+// The detached updater swaps the packaged bundle on disk AFTER `rabbit update`
 // exits (posix.sh mac_swap / windows.ps1). An instance reopened mid-update —
 // the #50238 gesture the gate above exists for — was launched from the
 // PRE-swap bundle, and the updater's `open` leg then merely focuses us (single
@@ -3092,7 +3086,7 @@ async function waitForUpdateToFinish() {
 
       await advanceBootProgress(
         'backend.update-wait',
-        'An update is finishing — Hermes will start automatically when it completes…',
+        'An update is finishing — Rabbit will start automatically when it completes…',
         12
       )
     },
@@ -3107,7 +3101,7 @@ async function waitForUpdateToFinish() {
   // (previously a failed detached update was indistinguishable from
   // "nothing happened").
   try {
-    const result = readAndConsumeHandoffResult(HERMES_HOME)
+    const result = readAndConsumeHandoffResult(RABBIT_HOME)
 
     if (result && result.ok && result.manual) {
       // Update landed but the user must act (reopen/reinstall/sandbox). On
@@ -3116,7 +3110,7 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
       dialog.showMessageBox({
         type: 'warning',
-        title: 'Hermes update',
+        title: 'Rabbit update',
         message: 'The update finished, but needs one more step',
         detail: result.message
       })
@@ -3124,16 +3118,16 @@ async function waitForUpdateToFinish() {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
-      const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
+      const handoffLogPath = path.join(RABBIT_HOME, 'logs', 'desktop-update-handoff.log')
 
       // Async so boot is not blocked behind the dialog; the response handlers
       // reuse the menu's open-updates path (queued until the renderer is ready)
-      // and the same reveal primitive as 'hermes:logs:reveal'.
+      // and the same reveal primitive as 'rabbit:logs:reveal'.
       void dialog
         .showMessageBox({
           type: 'error',
-          title: 'Hermes update',
-          message: "Hermes couldn't finish updating",
+          title: 'Rabbit update',
+          message: "Rabbit couldn't finish updating",
           detail:
             "You're still on the previous version and can keep using it. Try the update again, or open the update log to report the problem.\n\n" +
             `Details: ${result.message}`,
@@ -3170,7 +3164,7 @@ async function waitForUpdateToFinish() {
     // and let the failure dialog above carry the recovery guidance.
     rememberLog('[updates] proceeding with backend start despite the failed update receipt')
   } else if (relaunchIntoSwappedBundle()) {
-    await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
+    await advanceBootProgress('backend.update-restart', 'Restarting Rabbit to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a
     // backend; the failsafe below only runs if the exit somehow does not.
     await new Promise(resolve => setTimeout(resolve, BUNDLE_SWAP_RELAUNCH_FAILSAFE_MS))
@@ -3212,7 +3206,7 @@ function findOnPath(command) {
   // On Windows, try PATHEXT extensions BEFORE the bare (empty-extension) name.
   // A real command must resolve via its .exe/.cmd (Windows command-resolution
   // semantics consult PATHEXT); an extensionless file — e.g. a Git-Bash
-  // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
+  // shell-script shim named `rabbit` — must not shadow `rabbit.cmd`/`rabbit.exe`.
   // The empty entry is kept LAST so callers that already include the extension
   // (py.exe, pwsh.exe, powershell.exe) still resolve.
   const extensions = buildPathExtCandidates(process.env.PATHEXT, IS_WINDOWS)
@@ -3234,13 +3228,13 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
-  return resolveVenvHermesCommand(command, backendArgs, {
+async function unwrapWindowsVenvRabbitCommand(command, backendArgs) {
+  return resolveVenvRabbitCommand(command, backendArgs, {
     isWindows: IS_WINDOWS,
     isCommandScript,
     fileExists,
     directoryExists,
-    canImportHermesCli,
+    canImportRabbitCli,
     getVenvPython,
     buildDesktopBackendEnv,
     resolvePath: (...segments) => path.resolve(...segments),
@@ -3251,12 +3245,12 @@ async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 }
 
 // Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
+// spawns `rabbit serve`; runtimes older than serve only have `dashboard`. We
 // detect support so getBackendArgsForRuntime() can route old runtimes through
 // the legacy `dashboard --no-open` form instead of crashing on an unknown
 // subcommand (would brick every user mid-upgrade — #54568 follow-up).
 // Fast-path / probe / cache strategy: see backend-serve-support.ts header.
-const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
+const backendSupportsServe = createBackendServeSupportResolver(RABBIT_HOME, rememberLog)
 
 // Given a resolved backend whose args target `serve`, return the args the
 // runtime actually understands: unchanged when `serve` is supported, or
@@ -3310,13 +3304,13 @@ function looksLikeDesktopAppBinary(commandPath) {
   )
 }
 
-function isHermesSourceRoot(root) {
-  return directoryExists(root) && fileExists(path.join(root, 'hermes_cli', 'main.py'))
+function isRabbitSourceRoot(root) {
+  return directoryExists(root) && fileExists(path.join(root, 'rabbit_cli', 'main.py'))
 }
 
 async function findPythonForRoot(root: string): Promise<string | null> {
   return resolveSourcePython(root, {
-    override: process.env.HERMES_DESKTOP_PYTHON,
+    override: process.env.RABBIT_DESKTOP_PYTHON,
     isWindows: IS_WINDOWS,
     fileExists
   })
@@ -3349,7 +3343,7 @@ async function findSystemPython() {
   //      miss real Python 3.13 installs (user-reported case).
   //
   // We also restrict ourselves to Python 3.11–3.13. 3.14 is the latest
-  // CPython but several Hermes deps (notably pywinpty's Rust-built
+  // CPython but several Rabbit deps (notably pywinpty's Rust-built
   // windows_x86_64_msvc crate) don't yet publish 3.14 wheels, and
   // `pip install -e .` falls back to source-build, which fails without
   // a Rust toolchain. install.ps1 sidesteps this by pinning to 3.11
@@ -3482,7 +3476,7 @@ function getVenvPython(venvRoot) {
 // This makes "no flashing windows" a property of the one backend launch rather
 // than a flag that has to be remembered at every descendant spawn site. Restoring
 // console python also restores stdout, so the backend announces its port on the
-// normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
+// normal RABBIT_DASHBOARD_READY stdout line and no ready-file side channel is
 // needed.
 
 function makeDashboardReadyFile() {
@@ -3493,7 +3487,7 @@ function makeDashboardReadyFile() {
 }
 
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
-// install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
+// install only has PortableGit under %LOCALAPPDATA%\rabbit\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
 // "Couldn't check for updates". PortableGit first, then UGit's bundled copy
 // (see ./git-binary-candidates), then standard Git-for-Windows locations,
@@ -3619,11 +3613,11 @@ function resolveGhBinary() {
   return _ghBinaryCache
 }
 
-function recentHermesLog() {
-  return hermesLog.slice(-20).join('\n')
+function recentRabbitLog() {
+  return rabbitLog.slice(-20).join('\n')
 }
 
-// ─── Self-update (git-pull against the running backend's hermes root) ──────
+// ─── Self-update (git-pull against the running backend's rabbit root) ──────
 
 function readDesktopUpdateConfig(): { branch: string; branchExplicit: boolean } {
   try {
@@ -3724,16 +3718,16 @@ function writeZoomState(zoomLevel) {
 }
 
 // Match the backend's source resolution but bias toward a real git checkout.
-// Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
-// HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
+// Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_RABBIT_ROOT.
+// RABBIT_DESKTOP_RABBIT_ROOT always wins so devs can pin a worktree.
 function resolveUpdateRoot() {
   const candidates = [
-    process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
-    !IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) ? ACTIVE_HERMES_ROOT : null
+    process.env.RABBIT_DESKTOP_RABBIT_ROOT && path.resolve(process.env.RABBIT_DESKTOP_RABBIT_ROOT),
+    !IS_PACKAGED && isRabbitSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
+    isRabbitSourceRoot(ACTIVE_RABBIT_ROOT) ? ACTIVE_RABBIT_ROOT : null
   ].filter(Boolean)
 
-  return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_HERMES_ROOT
+  return candidates.find(isGitCheckout) || candidates[0] || ACTIVE_RABBIT_ROOT
 }
 
 function emitUpdateProgress(payload) {
@@ -3742,7 +3736,7 @@ function emitUpdateProgress(payload) {
   desktopMetrics.noteUpdateProgress(merged.stage)
 
   for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send('hermes:updates:progress', merged)
+    window.webContents.send('rabbit:updates:progress', merged)
   }
 }
 
@@ -3855,7 +3849,7 @@ function createNativePackagedStrategy(
     const deps: ConstructorParameters<typeof AppInstallerStrategy>[0] = {
       python: payload.storePython,
       // The checker is bundled core code, run with the payload python.
-      module: 'hermes_cli.windows_appinstaller_update',
+      module: 'rabbit_cli.windows_appinstaller_update',
       run: (python, module) =>
         runAppInstallerChecker(python, module, {
           env: { ...process.env, PYTHONPATH: payloadPythonPath(payload) },
@@ -3903,7 +3897,7 @@ function createNativePackagedStrategy(
 
     return createStoreStrategy({
       python: payload.storePython,
-      module: 'hermes_cli.windows_store_update',
+      module: 'rabbit_cli.windows_store_update',
       pythonPath: payloadPythonPath(payload),
       env: process.env,
       windowHandle: () => (BrowserWindow.getFocusedWindow() ?? mainWindow)?.getNativeWindowHandle() ?? null,
@@ -3953,7 +3947,7 @@ function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): Payload
  */
 function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
   return createCheckoutStrategy({
-    hermesHome: HERMES_HOME,
+    rabbitHome: RABBIT_HOME,
     isWindows: IS_WINDOWS,
     isMac: IS_MAC,
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
@@ -3963,7 +3957,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
         python: await findPythonForRoot(updateRoot),
         git: resolveGitBinary(),
         updateRoot,
-        hermesHome: HERMES_HOME,
+        rabbitHome: RABBIT_HOME,
         branchConfigPath: DESKTOP_UPDATE_CONFIG_PATH,
         force: opts.force
       }),
@@ -3973,7 +3967,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
 
     emitUpdateProgress,
     rememberLog,
-    startHermes,
+    startRabbit,
     stopBackendsForUpdate,
     repairMacUpdaterHelper,
     preflightStateDb: async (home: string, log: (message: string) => void): Promise<void> => {
@@ -3984,7 +3978,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       // too (4de06d1dbf7b). An unreadable answer keeps the snapshot.
       if (
         !(await readPreUpdateBackupEnabled(
-          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          resolveRabbitBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
           home
         ))
       ) {
@@ -3998,7 +3992,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       // contract as readSourceUpdate and the hand-off script.
       const managed: boolean = directoryExists(path.join(root, 'pm'))
 
-      const launcher: string | null = managed ? resolveInstallationLauncher(root, IS_WINDOWS, HERMES_HOME) : null
+      const launcher: string | null = managed ? resolveInstallationLauncher(root, IS_WINDOWS, RABBIT_HOME) : null
 
       if (managed && !launcher) {
         const message =
@@ -4012,7 +4006,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
       preflightStateDb({
         python: managed ? null : await findPythonForRoot(root),
         launcher,
-        script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
+        script: path.join(root, 'rabbit_cli', 'backup_sqlite.py'),
         home,
         log
       })
@@ -4031,7 +4025,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
  * source.
  */
 function resolveDesktopFeedBaseUrl(): string {
-  return resolveFeedBaseUrl(readUpdatesFeedBaseFromConfig(path.join(HERMES_HOME, 'config.yaml')))
+  return resolveFeedBaseUrl(readUpdatesFeedBaseFromConfig(path.join(RABBIT_HOME, 'config.yaml')))
 }
 
 /** The updater channel from the baked install stamp ('canary' vs 'stable'). */
@@ -4072,7 +4066,7 @@ async function restoreBundledBackend(): Promise<void> {
   }
 
   backendStartFailure = null
-  await startHermes()
+  await startRabbit()
 }
 
 // Set to true when the desktop is about to quit so a detached swap/install/
@@ -4092,13 +4086,13 @@ let quitPromptOpen = false
 let quitConfirmedWithActiveWork = false
 
 // Resolve the staged updater binary the desktop may hand an update to. On
-// Windows that binary owns ALL repo mutation — running `hermes update` +
+// Windows that binary owns ALL repo mutation — running `rabbit update` +
 // rebuilding the desktop — so the desktop never touches its own bits while
 // running. macOS/Linux stage the same binary but deliberately do not use it;
 // see resolveStagedUpdaterBinary for the policy and for #74836. Returns null
 // whenever no hand-off applies; callers degrade gracefully.
 function resolveUpdaterBinary() {
-  return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
+  return resolveStagedUpdaterBinary(RABBIT_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
 function repairMacUpdaterHelper(updater) {
@@ -4129,13 +4123,13 @@ function repairMacUpdaterHelper(updater) {
   }
 }
 
-// Path to the venv shim whose lock decides whether `hermes update` can write
+// Path to the venv shim whose lock decides whether `rabbit update` can write
 // fresh entry points. On Windows this is the file the running backend
-// `hermes.exe` holds open; on POSIX it's never mandatory-locked.
-function venvHermesShimPath(updateRoot) {
+// `rabbit.exe` holds open; on POSIX it's never mandatory-locked.
+function venvRabbitShimPath(updateRoot) {
   const venvDir = resolveVenvDir(updateRoot)
 
-  return IS_WINDOWS ? path.join(venvDir, 'Scripts', 'hermes.exe') : path.join(venvDir, 'bin', 'hermes')
+  return IS_WINDOWS ? path.join(venvDir, 'Scripts', 'rabbit.exe') : path.join(venvDir, 'bin', 'rabbit')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -4168,10 +4162,10 @@ function isShimLocked(shimPath) {
   }
 }
 
-// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
+// Kill only Rabbit-OWNED venv daemons (the memory plugin's hindsight daemon:
 // exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
 // daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
-// venv files mapped. External holders (a user terminal running `hermes`,
+// venv files mapped. External holders (a user terminal running `rabbit`,
 // unrelated scripts) are NOT killed. The uninstall lock probe refuses a
 // held installation. Selection lives in the pure
 // venv-holder-select module (ordinal path-prefix, no PowerShell -like
@@ -4192,7 +4186,7 @@ function scanWindowsProcesses(): Array<{ ProcessId?: unknown; ExecutablePath?: s
   return Array.isArray(parsed) ? parsed : [parsed]
 }
 
-function killHermesOwnedVenvDaemons(updateRoot) {
+function killRabbitOwnedVenvDaemons(updateRoot) {
   if (!IS_WINDOWS) {
     return
   }
@@ -4202,7 +4196,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
   let holders = []
 
   try {
-    holders = scanWindowsProcesses().filter(p => isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir))
+    holders = scanWindowsProcesses().filter(p => isRabbitOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir))
   } catch {
     // Best-effort: the uninstall lock probe remains the backstop.
     return
@@ -4212,7 +4206,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
     const pid = Number(holder?.ProcessId)
 
     if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
+      rememberLog(`[updates] stopping Rabbit-owned venv daemon (hindsight) PID ${pid} before hand-off`)
 
       try {
         forceKillProcessTree(pid)
@@ -4225,12 +4219,12 @@ function killHermesOwnedVenvDaemons(updateRoot) {
   }
 }
 
-// Kill EXTERNAL Hermes processes that hold this install's venv shim (#62311):
+// Kill EXTERNAL Rabbit processes that hold this install's venv shim (#62311):
 // the gateway Startup item and dashboard Scheduled Task are launched outside
 // this app (Task Scheduler / autostart), so the backend teardown above never
 // sees them — yet they map venv files and made every update hand-off abort
 // with "venv shim still locked". Selection is deliberately narrow
-// (isExternalVenvHolder: exe under venv\Scripts AND unambiguously a Hermes
+// (isExternalVenvHolder: exe under venv\Scripts AND unambiguously a Rabbit
 // program) — unrelated processes that merely mention the install root or use
 // the venv interpreter for their own scripts are never killed; the shim-lock
 // probe still aborts the hand-off for those. Called before the release gate
@@ -4257,7 +4251,7 @@ function killExternalVenvHolders(updateRoot) {
 
     if (Number.isInteger(pid) && pid > 0) {
       rememberLog(
-        `[updates] stopping external Hermes venv holder (autostart gateway/dashboard) PID ${pid} before hand-off`
+        `[updates] stopping external Rabbit venv holder (autostart gateway/dashboard) PID ${pid} before hand-off`
       )
 
       try {
@@ -4270,8 +4264,8 @@ function killExternalVenvHolders(updateRoot) {
 }
 
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
-// only signals the direct child, so on Windows a backend `hermes.exe` that
-// spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
+// only signals the direct child, so on Windows a backend `rabbit.exe` that
+// spawned its own grandchildren (a `rabbit` REPL, a pty terminal session, the
 // gateway) would survive and keep the venv shim locked. taskkill /T /F reaps
 // the whole tree synchronously. The command is not widened: one owned PID,
 // /T /F, nothing else. Failures propagate — close/stop must not discard them.
@@ -4320,8 +4314,8 @@ function holderPidsFromLockFile(lockPath: string): Pick<RuntimeLock, 'holderPids
 }
 
 function collectCloseStopLocks(): RuntimeLock[] {
-  const roots = [HERMES_HOME]
-  const profilesRoot = path.join(HERMES_HOME, 'profiles')
+  const roots = [RABBIT_HOME]
+  const profilesRoot = path.join(RABBIT_HOME, 'profiles')
 
   try {
     for (const name of fs.readdirSync(profilesRoot)) {
@@ -4602,7 +4596,7 @@ const desktopParentStartMarker = createParentStartMarkerResolver({
 })
 
 async function claimBackendChild(
-  child: ChildProcess & { hermesBackendIdentity?: BackendOwnershipEntry },
+  child: ChildProcess & { rabbitBackendIdentity?: BackendOwnershipEntry },
   command: string,
   profile: string,
   nonce: string,
@@ -4619,7 +4613,7 @@ async function claimBackendChild(
   if (decision.action === 'fail') {
     await localBackendLifecycle.stop(child)
     throw new Error(
-      `Hermes backend (PID ${child.pid}) died before its identity could be recorded: ${decision.reason}${outputTail?.describe() ?? ''}`
+      `Rabbit backend (PID ${child.pid}) died before its identity could be recorded: ${decision.reason}${outputTail?.describe() ?? ''}`
     )
   }
 
@@ -4628,7 +4622,7 @@ async function claimBackendChild(
   if (decision.action === 'degrade') {
     startMarker = pidOnlyStartMarker(child.pid)
     rememberLog(
-      `WARNING: process start marker probe failed for live Hermes backend PID ${child.pid}; ` +
+      `WARNING: process start marker probe failed for live Rabbit backend PID ${child.pid}; ` +
         `claiming with PID-only identity instead of stopping it: ${decision.reason}`
     )
   } else {
@@ -4649,19 +4643,19 @@ async function claimBackendChild(
       parentStartMarker: await desktopParentStartMarker()
     })
 
-    child.hermesBackendIdentity = identity
+    child.rabbitBackendIdentity = identity
 
     return identity
   } catch (error) {
     await localBackendLifecycle.stop(child)
     throw new Error(
-      `Could not persist ownership for the Hermes backend: ${error.message}${outputTail?.describe() ?? ''}`
+      `Could not persist ownership for the Rabbit backend: ${error.message}${outputTail?.describe() ?? ''}`
     )
   }
 }
 
 function releaseBackendChild(child) {
-  const identity = child?.hermesBackendIdentity
+  const identity = child?.rabbitBackendIdentity
 
   if (!identity) {
     return
@@ -4694,7 +4688,7 @@ function reapOrphanedBackendsOnce() {
 
 // Stop app-owned Windows backends before replacing application outputs.
 // PM generations can retain live readers. Gateway draining/restart belongs to
-// `hermes update`; neither venv scans nor a second fleet stop belong here.
+// `rabbit update`; neither venv scans nor a second fleet stop belong here.
 async function stopBackendsForUpdate(): Promise<void> {
   if (IS_WINDOWS) {
     await Promise.all([teardownPrimaryBackendAndWait(backendTeardownOptions('reconnect')), stopAllPoolBackends()])
@@ -4708,18 +4702,18 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
     return { unlocked: true }
   }
 
-  const hermesProcess = backendConnectionState.getProcess()
+  const rabbitProcess = backendConnectionState.getProcess()
 
   // Seed the release gate with every PID we are about to signal: the
   // supervised primary backend and all pool backends. The gate waits for
   // these to actually LEAVE the process table, not just for the shim to
-  // unlock — the shim probe only covers venv\Scripts\hermes.exe, but the
-  // backend is `python.exe -m hermes_cli.main serve`, which need not hold
+  // unlock — the shim probe only covers venv\Scripts\rabbit.exe, but the
+  // backend is `python.exe -m rabbit_cli.main serve`, which need not hold
   // the shim at all (#74805 first-attempt race).
   const initialPids = []
 
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-    initialPids.push(hermesProcess.pid)
+  if (rabbitProcess && Number.isInteger(rabbitProcess.pid)) {
+    initialPids.push(rabbitProcess.pid)
   }
 
   for (const entry of backendPool.values()) {
@@ -4733,22 +4727,22 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 
   // Uninstall deletes the whole runtime. Drain separately-running gateways
   // through the CLI, rather than targeting a gateway worker by PID.
-  stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+  stopGatewayBeforeUpdate(venvRabbitShimPath(updateRoot), RABBIT_HOME)
 
-  // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
+  // Reap Rabbit-OWNED venv daemons the tree-kill above cannot reach: the
   // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
   // backend) yet runs off venv\Scripts\pythonw.exe, keeping venv files
   // mapped past the backend teardown (#75477/#75478). Narrowly scoped
   // (venv-holder-select) — external holders are never killed here.
-  killHermesOwnedVenvDaemons(updateRoot)
+  killRabbitOwnedVenvDaemons(updateRoot)
 
-  // External autostart Hermes processes (gateway Startup item, dashboard
+  // External autostart Rabbit processes (gateway Startup item, dashboard
   // Scheduled Task) also hold the venv shim and are invisible to the backend
   // teardown (#62311). Kill them before the gate AND re-scan inside each gate
   // pass, so a respawning holder loses the race instead of the update.
   killExternalVenvHolders(updateRoot)
 
-  const shim = venvHermesShimPath(updateRoot)
+  const shim = venvRabbitShimPath(updateRoot)
 
   const gate = await waitForBackendRelease(
     initialPids,
@@ -4761,10 +4755,10 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
         killExternalVenvHolders(updateRoot)
         const stragglers = []
 
-        const currentHermesProcess = backendConnectionState.getProcess()
+        const currentRabbitProcess = backendConnectionState.getProcess()
 
-        if (currentHermesProcess && Number.isInteger(currentHermesProcess.pid)) {
-          stragglers.push(currentHermesProcess.pid)
+        if (currentRabbitProcess && Number.isInteger(currentRabbitProcess.pid)) {
+          stragglers.push(currentRabbitProcess.pid)
         }
 
         for (const entry of backendPool.values()) {
@@ -4811,8 +4805,8 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
 //
 // The desktop is a pure consumer: it does NOT git pull / pip install / rebuild
 // itself (the old open-coded git dance lived here and drifted from
-// `hermes update`). Instead we spawn the staged Hermes-Setup binary with
-// --update and quit, so it can run `hermes update` (which refuses while we
+// `rabbit update`). Instead we spawn the staged Rabbit-Setup binary with
+// --update and quit, so it can run `rabbit update` (which refuses while we
 // hold the venv shim) and rebuild the desktop with our exe already gone.
 //
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
@@ -4851,7 +4845,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
-  // A bundled install does not own %LOCALAPPDATA%\hermes — the updater
+  // A bundled install does not own %LOCALAPPDATA%\rabbit — the updater
   // would try to heal a tree the app never created. The payload IS the
   // runtime; recovery means reinstalling the app, not spawning the
   // updater. (ensureRuntime's bundled guard also short-circuits before
@@ -4868,7 +4862,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
-  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+  const handoffConflict = updateHandoffConflict(RABBIT_HOME)
 
   if (handoffConflict) {
     // Same hazard as applyUpdates (#75778): a live foreign updater already
@@ -4897,11 +4891,11 @@ async function handOffWindowsBootstrapRecovery(reason) {
   await stopBackendsForUpdate()
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
-    cwd: HERMES_HOME,
+    cwd: RABBIT_HOME,
     env: {
       ...process.env,
-      HERMES_HOME,
-      HERMES_INSTALL_ROOT: updateRoot
+      RABBIT_HOME,
+      RABBIT_INSTALL_ROOT: updateRoot
     },
     detached: true,
     stdio: 'ignore'
@@ -4913,7 +4907,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
   // strand the very recovery meant to heal the install.
   if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-    writeUpdateMarker(HERMES_HOME, child.pid)
+    writeUpdateMarker(RABBIT_HOME, child.pid)
   } else if (Number.isInteger(child.pid)) {
     rememberLog(
       `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
@@ -4967,8 +4961,8 @@ function runningAppBundle() {
 
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
 // (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
-// out, runs `hermes update`, swaps/relaunches the app bundle, and writes
-// .hermes-update-result.json for the relaunched Desktop to surface. It shows
+// out, runs `rabbit update`, swaps/relaunches the app bundle, and writes
+// .rabbit-update-result.json for the relaunched Desktop to surface. It shows
 // its own tiny shim window (or nothing, headless) — this process only needs
 // to leave. Checkouts that predate the script get the manual card once.
 function readJson(filePath) {
@@ -4997,22 +4991,22 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
-// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
+// Marker-independent: is the canonical install at ACTIVE_RABBIT_ROOT actually
 // runnable right now? A complete CLI install (`install.sh --include-desktop`)
 // or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
 // ever having written the bootstrap marker -- so we must be able to recognise
 // "already installed" off the filesystem alone, not just the marker.
 async function isSourceRuntimeUsable(root: string): Promise<boolean> {
-  return (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME })) !== null
+  return (await resolveSourceInstallationBackend(root, [], { rabbitHome: RABBIT_HOME })) !== null
 }
 
 function isActiveRuntimeUsable(): Promise<boolean> {
-  return isSourceRuntimeUsable(ACTIVE_HERMES_ROOT)
+  return isSourceRuntimeUsable(ACTIVE_RABBIT_ROOT)
 }
 
 function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
-  // pinned commit -- users update via the in-app update path or `hermes
+  // pinned commit -- users update via the in-app update path or `rabbit
   // update`, which moves HEAD legitimately. The marker only attests "a
   // desktop-managed bootstrap ran here at least once"; runtime usability is
   // what decides whether we can actually launch.
@@ -5031,11 +5025,11 @@ function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
 }
 
 /** Read the checkout-owned install stamp in the canonical runtime root
- *  (`ACTIVE_HERMES_ROOT/install-stamp.json`), written by the Python
+ *  (`ACTIVE_RABBIT_ROOT/install-stamp.json`), written by the Python
  *  completion tail. Returns null when absent or unreadable. */
 function readCanonicalInstallStamp() {
   try {
-    const raw = fs.readFileSync(path.join(ACTIVE_HERMES_ROOT, 'install-stamp.json'), 'utf8')
+    const raw = fs.readFileSync(path.join(ACTIVE_RABBIT_ROOT, 'install-stamp.json'), 'utf8')
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object' && typeof parsed.source === 'string') {
@@ -5062,7 +5056,7 @@ function writeBootstrapMarker(payload) {
   writeFileAtomic(BOOTSTRAP_COMPLETE_MARKER, JSON.stringify(merged, null, 2) + '\n', 'utf8')
 
   // The checkout's own install stamp is written by the Python completion tail
-  // (hermes_cli/source_completion.py) during the products stage, from the
+  // (rabbit_cli/source_completion.py) during the products stage, from the
   // checkout itself. The desktop never synthesizes it: the checkout is the
   // authority for its runtime identity, and a desktop-written copy would
   // clobber the completion tail's richer provenance.
@@ -5071,7 +5065,7 @@ function writeBootstrapMarker(payload) {
 }
 
 function resolveWebDist() {
-  const override = process.env.HERMES_DESKTOP_WEB_DIST
+  const override = process.env.RABBIT_DESKTOP_WEB_DIST
 
   if (override && directoryExists(path.resolve(override))) {
     return path.resolve(override)
@@ -5096,7 +5090,7 @@ function resolveWebDist() {
     rememberLog(
       `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
         `is not a real directory: ${fallback}. Static routes will 404. ` +
-        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
+        `Ensure dist/** is unpacked (asarUnpack) or set RABBIT_DESKTOP_WEB_DIST.`
     )
   }
 
@@ -5164,7 +5158,7 @@ function resolveRendererIndexWithMissing(): { index: string; missing: string[] }
     rememberLog(
       `[renderer] every renderer bundle is incomplete (${present.join(', ')}). ` +
         `The last update replaced the app while its files were locked. ` +
-        `Repair with: hermes desktop --force-build`
+        `Repair with: rabbit desktop --force-build`
     )
 
     // present[0]'s own list, captured on the first loop iteration — never the
@@ -5178,7 +5172,7 @@ function resolveRendererIndexWithMissing(): { index: string; missing: string[] }
   rememberLog(
     `[renderer] index.html not found — the desktop app was packaged without a ` +
       `renderer bundle. Tried: ${candidates.join(', ')}. ` +
-      `Rebuild with: hermes desktop --force-build`
+      `Rebuild with: rabbit desktop --force-build`
   )
 
   return { index: candidates[0], missing: [] }
@@ -5205,9 +5199,9 @@ function isPackagedInstallPath(dir) {
   })
 }
 
-function resolveHermesCwd() {
+function resolveRabbitCwd() {
   // In a packaged build, `process.cwd()` resolves to the install root (e.g.
-  // `…/win-unpacked` on Windows or `/Applications/Hermes.app/Contents/...`
+  // `…/win-unpacked` on Windows or `/Applications/Rabbit.app/Contents/...`
   // on macOS). Sessions spawned there leave files inside the app bundle
   // and bewilder users when "where did my files go?" is the install dir.
   // The user-configurable default project directory wins over everything,
@@ -5215,7 +5209,7 @@ function resolveHermesCwd() {
   // real directory), then the home dir.
   const candidates = [
     readDefaultProjectDir(),
-    process.env.HERMES_DESKTOP_CWD,
+    process.env.RABBIT_DESKTOP_CWD,
     IS_PACKAGED ? null : process.env.INIT_CWD,
     IS_PACKAGED ? null : process.cwd(),
     !IS_PACKAGED ? SOURCE_REPO_ROOT : null,
@@ -5245,7 +5239,7 @@ function sanitizeWorkspaceCwd(cwd) {
   const trimmed = typeof cwd === 'string' ? cwd.trim() : ''
 
   if (!trimmed || isPackagedInstallPath(trimmed)) {
-    return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
+    return { cwd: resolveRabbitCwd(), sanitized: Boolean(trimmed) }
   }
 
   try {
@@ -5258,7 +5252,7 @@ function sanitizeWorkspaceCwd(cwd) {
     // Fall through to the resolved default.
   }
 
-  return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
+  return { cwd: resolveRabbitCwd(), sanitized: Boolean(trimmed) }
 }
 
 // Persisted "Default project directory" — surfaced as a setting in the
@@ -5305,7 +5299,7 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
-async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
+async function resolveRabbitBackend(backendArgs: string[]): Promise<ResolvedRabbitBackend> {
   const payload = bundledPayload(process.resourcesPath)
 
   if (payload) {
@@ -5318,7 +5312,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
       label: `bundled payload at ${payload.root}`,
       command: payload.shim,
       args: [...backendArgs],
-      env: { ...buildDesktopBackendEnv(), HERMES_RUNTIME_DIR: payload.toolsDir },
+      env: { ...buildDesktopBackendEnv(), RABBIT_RUNTIME_DIR: payload.toolsDir },
       root: payload.repoDir,
       bootstrap: false,
       shell: false,
@@ -5326,12 +5320,12 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
+  // 1. Explicit override -- RABBIT_DESKTOP_RABBIT_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot: string | undefined =
-    process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+    process.env.RABBIT_DESKTOP_RABBIT_ROOT && path.resolve(process.env.RABBIT_DESKTOP_RABBIT_ROOT)
 
-  if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
+  if (overrideRoot && isRabbitSourceRoot(overrideRoot)) {
     const backend: SourceBackend | null = createSourcePythonBackend(
       overrideRoot,
       await findPythonForRoot(overrideRoot),
@@ -5345,9 +5339,9 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
 
   // 2. Development source -- when running `npm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
-  //    installed `hermes` on PATH so local Python edits are actually exercised.
-  //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
-  if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
+  //    installed `rabbit` on PATH so local Python edits are actually exercised.
+  //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isRabbitSourceRoot.)
+  if (!IS_PACKAGED && isRabbitSourceRoot(SOURCE_REPO_ROOT)) {
     const backend: SourceBackend | null = createSourcePythonBackend(
       SOURCE_REPO_ROOT,
       await findPythonForRoot(SOURCE_REPO_ROOT),
@@ -5359,45 +5353,45 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
+  // 3. RABBIT_DESKTOP_RABBIT — an explicit deployment override (used by the
   //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
   //    the only valid runtime there. Resolve it before any mutable install,
   //    which may belong to an older release or a different Python environment.
-  const hermesOverride: string | undefined = process.env.HERMES_DESKTOP_HERMES
-  let hermesCommand: string | null = null
+  const rabbitOverride: string | undefined = process.env.RABBIT_DESKTOP_RABBIT
+  let rabbitCommand: string | null = null
 
-  if (hermesOverride) {
-    const resolvedOverride: string | null = findOnPath(hermesOverride)
+  if (rabbitOverride) {
+    const resolvedOverride: string | null = findOnPath(rabbitOverride)
 
     if (resolvedOverride) {
-      hermesCommand = resolvedOverride
-    } else if (!isWindowsBinaryPathInWsl(hermesOverride, { isWsl: IS_WSL })) {
-      hermesCommand = hermesOverride
+      rabbitCommand = resolvedOverride
+    } else if (!isWindowsBinaryPathInWsl(rabbitOverride, { isWsl: IS_WSL })) {
+      rabbitCommand = rabbitOverride
     } else {
-      rememberLog(`Ignoring Windows Hermes override under WSL: ${hermesOverride}`)
+      rememberLog(`Ignoring Windows Rabbit override under WSL: ${rabbitOverride}`)
     }
 
-    if (hermesCommand) {
-      if (looksLikeDesktopAppBinary(hermesCommand)) {
-        rememberLog(`Ignoring desktop app executable on PATH while resolving Hermes CLI: ${hermesCommand}`)
-        hermesCommand = null
+    if (rabbitCommand) {
+      if (looksLikeDesktopAppBinary(rabbitCommand)) {
+        rememberLog(`Ignoring desktop app executable on PATH while resolving Rabbit CLI: ${rabbitCommand}`)
+        rabbitCommand = null
       } else {
-        const unwrapped: Awaited<ReturnType<typeof unwrapWindowsVenvHermesCommand>> =
-          await unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+        const unwrapped: Awaited<ReturnType<typeof unwrapWindowsVenvRabbitCommand>> =
+          await unwrapWindowsVenvRabbitCommand(rabbitCommand, backendArgs)
 
         if (unwrapped) {
           return unwrapped
         }
 
-        const shellForProbe: boolean = isCommandScript(hermesCommand)
+        const shellForProbe: boolean = isCommandScript(rabbitCommand)
 
         if (
-          shouldTrustHermesOverride(hermesOverride) ||
-          (await verifyHermesCli(hermesCommand, { shell: shellForProbe }))
+          shouldTrustRabbitOverride(rabbitOverride) ||
+          (await verifyRabbitCli(rabbitCommand, { shell: shellForProbe }))
         ) {
           return {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
+            label: `existing Rabbit CLI at ${rabbitCommand}`,
+            command: rabbitCommand,
             args: backendArgs,
             bootstrap: false,
             env: {},
@@ -5408,23 +5402,23 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
         }
 
         rememberLog(
-          `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
+          `Ignoring existing Rabbit CLI at ${rabbitCommand}: --version probe failed; falling through to bootstrap.`
         )
       }
     }
   }
 
-  // 4. ACTIVE_HERMES_ROOT — the canonical install at
-  //    %LOCALAPPDATA%\\hermes\\hermes-agent (Windows) or ~/.hermes/hermes-agent.
+  // 4. ACTIVE_RABBIT_ROOT — the canonical install at
+  //    %LOCALAPPDATA%\\rabbit\\rabbit-agent (Windows) or ~/.rabbit/rabbit-agent.
   //    A valid bootstrap marker proves Desktop finished the first-run install
   //    flow, but marker provenance is NOT the same thing as runtime usability:
   //    the CLI can publish the same installation launcher, and older desktop
   //    builds could leave a healthy install behind without the marker. If the
   //    active runtime is usable, launch it directly; only fall through to
   //    bootstrap when the runtime itself is unusable.
-  //    HERMES_DESKTOP_IGNORE_EXISTING=1 skips this rung (see backend-resolution).
-  const activeBackend: SourceBackend | null = await installedRuntimeGate.resolve(ACTIVE_HERMES_ROOT, () =>
-    resolveSourceInstallationBackend(ACTIVE_HERMES_ROOT, backendArgs, { hermesHome: HERMES_HOME })
+  //    RABBIT_DESKTOP_IGNORE_EXISTING=1 skips this rung (see backend-resolution).
+  const activeBackend: SourceBackend | null = await installedRuntimeGate.resolve(ACTIVE_RABBIT_ROOT, () =>
+    resolveSourceInstallationBackend(ACTIVE_RABBIT_ROOT, backendArgs, { rabbitHome: RABBIT_HOME })
   )
 
   const activeRuntime: ActiveRuntimeState = activeRuntimeState(activeBackend)
@@ -5432,7 +5426,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   if (activeBackend && !bootstrapRepairRequested) {
     if (!activeRuntime.hasValidMarker) {
       rememberLog(
-        `[bootstrap] Active Hermes runtime at ${ACTIVE_HERMES_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
+        `[bootstrap] Active Rabbit runtime at ${ACTIVE_RABBIT_ROOT} is usable but the bootstrap marker is missing or stale; skipping first-run bootstrap.`
       )
     }
 
@@ -5442,27 +5436,27 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   if (bootstrapRepairRequested) {
     rememberLog('[bootstrap] repair requested; bypassing the usable active runtime to re-run the installer')
   } else {
-    // 5. A source install outside ACTIVE_HERMES_ROOT (install.sh --dir, a
-    //    setup-hermes.sh clone), found through the launcher it published at a
+    // 5. A source install outside ACTIVE_RABBIT_ROOT (install.sh --dir, a
+    //    setup-rabbit.sh clone), found through the launcher it published at a
     //    fixed user-bin location: a Finder/Dock launch inherits a PATH without
     //    ~/.local/bin. The reported root is then resolved and probed like any
-    //    installed runtime; HERMES_DESKTOP_IGNORE_EXISTING=1 skips it too.
-    const userInstall: ReturnType<typeof userLauncherInstallRoot> = userLauncherInstallRoot(IS_WINDOWS, HERMES_HOME)
+    //    installed runtime; RABBIT_DESKTOP_IGNORE_EXISTING=1 skips it too.
+    const userInstall: ReturnType<typeof userLauncherInstallRoot> = userLauncherInstallRoot(IS_WINDOWS, RABBIT_HOME)
 
     if (userInstall) {
       const userBackend: SourceBackend | null = await installedRuntimeGate.resolve(userInstall.root, () =>
-        resolveSourceInstallationBackend(userInstall.root, backendArgs, { hermesHome: HERMES_HOME })
+        resolveSourceInstallationBackend(userInstall.root, backendArgs, { rabbitHome: RABBIT_HOME })
       )
 
       if (userBackend) {
-        rememberLog(`[boot] Using Hermes install at ${userInstall.root} (published launcher ${userInstall.launcher})`)
+        rememberLog(`[boot] Using Rabbit install at ${userInstall.root} (published launcher ${userInstall.launcher})`)
 
         return userBackend
       }
 
-      rememberLog(`[bootstrap] Hermes install at ${userInstall.root} (from ${userInstall.launcher}) is not usable`)
+      rememberLog(`[bootstrap] Rabbit install at ${userInstall.root} (from ${userInstall.launcher}) is not usable`)
     } else {
-      rememberLog(`[bootstrap] no usable Hermes install at ${ACTIVE_HERMES_ROOT} and no published user-bin launcher`)
+      rememberLog(`[bootstrap] no usable Rabbit install at ${ACTIVE_RABBIT_ROOT} and no published user-bin launcher`)
     }
   }
 
@@ -5473,19 +5467,19 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   //    explaining what's missing.
   //
   //    We deliberately do NOT throw here -- throwing inside
-  //    resolveHermesBackend was the old "no payload" path and forced the
+  //    resolveRabbitBackend was the old "no payload" path and forced the
   //    user into a dead end. With the bootstrap protocol, "no install yet"
   //    is a recoverable state the GUI can drive through.
   return {
     kind: 'bootstrap-needed',
-    label: 'Hermes Agent not installed yet; bootstrap required',
+    label: 'Rabbit Agent not installed yet; bootstrap required',
     command: null,
     args: backendArgs,
     bootstrap: true,
     env: {},
     shell: false,
     // Hints for the bootstrap runner / UI layer:
-    activeRoot: ACTIVE_HERMES_ROOT,
+    activeRoot: ACTIVE_RABBIT_ROOT,
     installStamp: INSTALL_STAMP, // may be null in dev
     isPackaged: IS_PACKAGED,
     platform: process.platform,
@@ -5493,7 +5487,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
   }
 }
 
-interface ResolvedHermesBackend {
+interface ResolvedRabbitBackend {
   kind: string
   label: string
   command: string | null
@@ -5511,9 +5505,9 @@ interface ResolvedHermesBackend {
 }
 
 async function ensureRuntime(
-  backend: ResolvedHermesBackend,
+  backend: ResolvedRabbitBackend,
   assertStillOwned: () => void
-): Promise<ResolvedHermesBackend> {
+): Promise<ResolvedRabbitBackend> {
   localBackendLifecycle.assertCanStart()
   assertStillOwned()
 
@@ -5523,7 +5517,7 @@ async function ensureRuntime(
     return backend
   }
 
-  // backend.kind === 'bootstrap-needed' means resolveHermesBackend couldn't
+  // backend.kind === 'bootstrap-needed' means resolveRabbitBackend couldn't
   // find anything to spawn. Hand off to the bootstrap runner which drives the
   // platform installer, writes the bootstrap-complete marker on success, then
   // we re-resolve to get the now-installed backend.
@@ -5538,7 +5532,7 @@ async function ensureRuntime(
     rememberLog('[bootstrap] REFUSING installer on a bundled install; payload missing or damaged — reinstall the app')
 
     const bundledError: Error & { isBootstrapFailure?: boolean } = new Error(
-      'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
+      'This app bundles its own Rabbit runtime, but the runtime files are missing or damaged. Reinstall Rabbit Desktop to restore it.'
     )
 
     bundledError.isBootstrapFailure = true
@@ -5547,11 +5541,11 @@ async function ensureRuntime(
   }
 
   if (backend.kind === 'bootstrap-needed') {
-    rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
+    rememberLog('[bootstrap] no Rabbit install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
-        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
+        'Rabbit recovery was handed off to Rabbit Setup. The desktop will restart when recovery completes.'
       )
 
       handoffError.isBootstrapFailure = true
@@ -5588,8 +5582,8 @@ async function ensureRuntime(
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
-      hermesHome: HERMES_HOME,
-      logRoot: path.join(HERMES_HOME, 'logs'),
+      rabbitHome: RABBIT_HOME,
+      logRoot: path.join(RABBIT_HOME, 'logs'),
       abortSignal: bootstrapAbortController.signal,
       onEvent: ev => {
         // Tee every bootstrap event to (a) the desktop log for forensics
@@ -5615,7 +5609,7 @@ async function ensureRuntime(
     bootstrapAbortController = null
 
     if (bootstrapResult.cancelled) {
-      const cancelledError = new Error('Hermes install was cancelled.') as any
+      const cancelledError = new Error('Rabbit install was cancelled.') as any
       cancelledError.isBootstrapFailure = true
       cancelledError.bootstrapCancelled = true
       bootstrapFailure = cancelledError
@@ -5631,9 +5625,9 @@ async function ensureRuntime(
 
       bootstrapError.isBootstrapFailure = true
       bootstrapError.failedStage = bootstrapResult.failedStage || null
-      // Latch the failure so subsequent startHermes() calls return this
+      // Latch the failure so subsequent startRabbit() calls return this
       // same error without re-running install.ps1.  Cleared by the
-      // hermes:bootstrap:reset IPC (renderer's "Reload and retry").
+      // rabbit:bootstrap:reset IPC (renderer's "Reload and retry").
       bootstrapFailure = bootstrapError
       throw bootstrapError
     }
@@ -5642,7 +5636,7 @@ async function ensureRuntime(
 
     // Resolve the newly published launcher after the installer completes.
     return ensureRuntime(
-      await installedRuntimeGate.afterInstall(() => resolveHermesBackend(backend.args)),
+      await installedRuntimeGate.afterInstall(() => resolveRabbitBackend(backend.args)),
       assertStillOwned
     )
   }
@@ -5654,7 +5648,7 @@ async function ensureRuntime(
 // endpoints, e.g. kanban attachments). Hand-rolled because node's http has no
 // FormData and the payload is one file — a dependency would be overkill.
 function multipartBody(upload) {
-  const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
+  const boundary = `----rabbit-${crypto.randomBytes(12).toString('hex')}`
   const filename = String(upload.filename || 'file').replace(/["\r\n]/g, '_')
 
   const body = Buffer.concat([
@@ -5690,7 +5684,7 @@ function fetchJson(url, token, options: any = {}) {
         const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+          reject(new Error(`Unsupported Rabbit backend URL protocol: ${parsed.protocol}`))
 
           return
         }
@@ -5704,7 +5698,7 @@ function fetchJson(url, token, options: any = {}) {
               ...headersForRemoteRequest(url),
               ...(options.headers || {}),
               'Content-Type': contentType,
-              'X-Hermes-Session-Token': token,
+              'X-Rabbit-Session-Token': token,
               // RFC 8252 native flow authenticates the gated gateway with a bearer
               // token instead of the loopback session-token header. When
               // ``options.bearer`` is set we send Authorization: Bearer <token>;
@@ -5766,7 +5760,7 @@ function fetchJson(url, token, options: any = {}) {
 
         req.on('error', reject)
         req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+          req.destroy(new Error(`Timed out connecting to Rabbit backend after ${timeoutMs}ms`))
         })
 
         // From here the request goes on the wire: a later transport error can no
@@ -5787,7 +5781,7 @@ function fetchJson(url, token, options: any = {}) {
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
-  // NO ``X-Hermes-Session-Token`` header — used by the auth-mode probe before
+  // NO ``X-Rabbit-Session-Token`` header — used by the auth-mode probe before
   // any credentials exist, and any time we must not leak a token to an
   // endpoint that doesn't need one.
   return withRetry(
@@ -5809,7 +5803,7 @@ function fetchPublicJson(url, options: any = {}) {
         const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-          reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+          reject(new Error(`Unsupported Rabbit backend URL protocol: ${parsed.protocol}`))
 
           return
         }
@@ -5870,7 +5864,7 @@ function fetchPublicJson(url, options: any = {}) {
 
         req.on('error', reject)
         req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+          req.destroy(new Error(`Timed out connecting to Rabbit backend after ${timeoutMs}ms`))
         })
 
         // Past this point the request is on the wire — see fetchJson.
@@ -6089,7 +6083,7 @@ function decodedPathIfMissing(resolvedPath) {
 
 async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
-  const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
+  const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveRabbitCwd()
 
   // A plain backend target is a WSL/POSIX path; bridge it to a Windows-
   // accessible form before resolving so the existence checks below (and the
@@ -6100,13 +6094,13 @@ async function previewFileTarget(rawTarget, baseDir) {
   })
 
   // Attachment references stored in chat history are frequently HOME-relative
-  // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
-  // ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to the
+  // (e.g. "AppData/Local/rabbit/attachments/foo.xlsx" on Windows, or
+  // ".rabbit/attachments/foo.xlsx" elsewhere) rather than relative to the
   // agent's working directory. The primary resolution above only tries
   // `base` (the working dir), so such a ref never exists there and the
   // preview/download 404s even though the file is present on disk (#115609).
   if (!fileExists(resolved) && !directoryExists(resolved)) {
-    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
+    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), RABBIT_HOME)) {
       if (fileExists(candidate)) {
         resolved = candidate
 
@@ -6269,7 +6263,7 @@ async function watchPreviewFile(owner, rawUrl) {
     },
     onPollChange: emit,
     onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+      console.warn(`[rabbit] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6360,7 +6354,7 @@ function watchDirectory(owner, rawDir) {
     snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
     onPollChange: emit,
     onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+      console.warn(`[rabbit] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6421,7 +6415,7 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
 // an anonymous probe 401s forever against a live session, and it can never
 // see the 404 that identifies a backend predating /api/health (the auth gate
 // answers before the SPA catch-all). `probeIsCredentialed` tells
-// waitForHermesReady how to read a 401 — rejected session vs gated route.
+// waitForRabbitReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   if (authMode === 'oauth') {
     return {
@@ -6450,40 +6444,12 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   return { probeHealth: fetchPublicJson, probeIsCredentialed: false }
 }
 
-// Boot-time readiness for a remote connection object. For a Hermes Cloud agent
-// whose own session cookie has expired, `waitForHermes` ends in the terminal
-// reauth error even though the portal session that can silently re-mint that
-// cookie is still live: the per-agent cascade (`cloudAgentSilentSignIn`) was
-// only ever driven by the settings UI, never by boot, so every relaunch needed
-// a manual "Use gateway" click. Run the cascade once and retry once; anything
-// that is not that exact case surfaces unchanged.
-async function waitForRemoteHermes(remote) {
-  try {
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
-  } catch (error) {
-    if (!shouldAttemptCloudBootCascade(remote, error)) {
-      throw error
-    }
-
-    if (!(await hasLivePortalSession())) {
-      throw error
-    }
-
-    rememberLog('[cloud] boot: agent session rejected but portal session is live, running silent sign-in')
-
-    try {
-      await cloudAgentSilentSignIn(remote.baseUrl)
-    } catch (cascadeError) {
-      rememberLog(`[cloud] boot: silent sign-in did not complete: ${cascadeError?.message || cascadeError}`)
-
-      throw error
-    }
-
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
-  }
+// Boot-time readiness for a remote connection object.
+async function waitForRemoteRabbit(remote) {
+  await waitForRabbit(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 }
 
-async function waitForHermes(
+async function waitForRabbit(
   baseUrl: string,
   token: string | null | undefined,
   signal?: AbortSignal,
@@ -6493,7 +6459,7 @@ async function waitForHermes(
 ): Promise<void> {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
-  return waitForHermesReady(baseUrl, {
+  return waitForRabbitReady(baseUrl, {
     token,
     signal,
     fetchPublicJson,
@@ -6553,7 +6519,7 @@ function sendBackendExit(payload) {
     return
   }
 
-  webContents.send('hermes:backend-exit', payload)
+  webContents.send('rabbit:backend-exit', payload)
 }
 
 function sendClosePreviewRequested() {
@@ -6567,7 +6533,7 @@ function sendClosePreviewRequested() {
     return
   }
 
-  webContents.send('hermes:close-preview-requested')
+  webContents.send('rabbit:close-preview-requested')
 }
 
 /**
@@ -6592,7 +6558,7 @@ function sendPreviewNavCommand(command: 'back' | 'forward' | 'reload') {
     return
   }
 
-  webContents.send('hermes:preview-nav', command)
+  webContents.send('rabbit:preview-nav', command)
 }
 
 /**
@@ -6636,12 +6602,12 @@ function sendOpenFolderRequested() {
     return
   }
 
-  webContents.send('hermes:open-folder-requested')
+  webContents.send('rabbit:open-folder-requested')
 }
 
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
-// signal so the chat composer doesn't stay stuck on "Starting Hermes...".
+// signal so the chat composer doesn't stay stuck on "Starting Rabbit...".
 function sendPowerResume() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -6653,7 +6619,7 @@ function sendPowerResume() {
     return
   }
 
-  webContents.send('hermes:power-resume')
+  webContents.send('rabbit:power-resume')
 }
 
 let powerResumeRegistered = false
@@ -6664,8 +6630,8 @@ let powerResumeRegistered = false
 let onBatteryPower: boolean | null = null
 
 // Renderer-side battery gating seeds from this and stays current via the
-// 'hermes:power-battery' push below.
-ipcMain.handle('hermes:power-battery:get', () => onBatteryPower === true)
+// 'rabbit:power-battery' push below.
+ipcMain.handle('rabbit:power-battery:get', () => onBatteryPower === true)
 
 function broadcastBatteryState(next: boolean) {
   if (onBatteryPower === next) {
@@ -6678,7 +6644,7 @@ function broadcastBatteryState(next: boolean) {
     const { webContents } = win
 
     if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:power-battery', next)
+      webContents.send('rabbit:power-battery', next)
     }
   }
 }
@@ -6727,7 +6693,7 @@ function getAppIconPath() {
 function sendOpenUpdatesRequested() {
   // The renderer mounts its open-updates listener in the same effect pass that
   // signals deep-link readiness. Before that (e.g. a boot-time dialog answered
-  // before the window is up) queue the request; 'hermes:deep-link-ready' flushes it.
+  // before the window is up) queue the request; 'rabbit:deep-link-ready' flushes it.
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingOpenUpdates = true
 
@@ -6740,7 +6706,7 @@ function sendOpenUpdatesRequested() {
     return
   }
 
-  webContents.send('hermes:open-updates')
+  webContents.send('rabbit:open-updates')
 
   // #83998: never pump the Windows foreground from an ambient surface —
   // showInactive + a guarded focus keep the raise from dismissing another
@@ -6774,7 +6740,7 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
     state.isFullscreen = nextIsFullscreen
   }
 
-  webContents.send('hermes:window-state-changed', state)
+  webContents.send('rabbit:window-state-changed', state)
 }
 
 function buildApplicationMenu() {
@@ -6947,7 +6913,7 @@ function installDevToolsShortcut(window) {
       if (decision === 'forward') {
         event.preventDefault()
 
-        window.webContents.send('hermes:f12-shortcut', toF12KeyboardEventPayload(input))
+        window.webContents.send('rabbit:f12-shortcut', toF12KeyboardEventPayload(input))
 
         return
       }
@@ -7184,7 +7150,7 @@ function installContextMenuBridge(window: BrowserWindow) {
     const suggestions = Array.isArray(params.dictionarySuggestions) ? params.dictionarySuggestions : []
 
     if (params.isEditable && params.misspelledWord) {
-      window.webContents.send('hermes:context-menu-spellcheck', {
+      window.webContents.send('rabbit:context-menu-spellcheck', {
         misspelledWord: params.misspelledWord,
         suggestions
       })
@@ -7229,7 +7195,7 @@ function installMediaPermissions() {
   // and every other frame — artifact previews included — stays denied.
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     if ((permission as string) === 'clipboard-sanitized-write') {
-      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
+      callback(isRabbitHubClipboardWrite(focusedFrameOrigin(webContents)))
 
       return
     }
@@ -7246,7 +7212,7 @@ function installMediaPermissions() {
   // the metadata refinement (absent metadata is allowed there too).
   session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
     if ((permission as string) === 'clipboard-sanitized-write') {
-      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
+      return isRabbitHubClipboardWrite(focusedFrameOrigin(webContents))
     }
 
     return isMediaCapturePermission(permission, undefined)
@@ -7280,11 +7246,11 @@ function focusedFrameOrigin(
 }
 
 /** The picker embed URL the hub iframe starts on (both deployments). */
-function isHermesHubPickerUrl(url: string): boolean {
+function isRabbitHubPickerUrl(url: string): boolean {
   try {
     const parsed = new URL(url)
-    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
-    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
+    const isHubOrigin = parsed.origin === RABBIT_HUB_ORIGIN
+    const isPickerPath = parsed.pathname === '/rabbit-agent/docs/skills' || parsed.pathname === '/docs/skills'
 
     return isHubOrigin && isPickerPath
   } catch {
@@ -7326,11 +7292,11 @@ function safeFrameOrigin(frame: { origin?: string } | null | undefined): string 
 // ---------------------------------------------------------------------------
 // OAuth remote-gateway auth.
 //
-// Hosted Hermes gateways gate the dashboard behind an OAuth provider (e.g.
-// Nous Research) instead of a static session token. The auth model is
+// Hosted Rabbit gateways gate the dashboard behind an OAuth provider (e.g.
+// Sanath Patil) instead of a static session token. The auth model is
 // fundamentally different from the token path:
 //
-//   * REST is authed by HttpOnly session cookies (``hermes_session_at``),
+//   * REST is authed by HttpOnly session cookies (``rabbit_session_at``),
 //     established by a browser redirect round-trip (/login → IDP →
 //     /auth/callback sets cookies). We cannot read the HttpOnly cookie value
 //     in JS — instead we let an Electron BrowserWindow complete the round
@@ -7341,9 +7307,9 @@ function safeFrameOrigin(frame: { origin?: string } | null | undefined): string 
 //     ``POST /api/auth/ws-ticket`` (cookie-authed). The legacy ``?token=``
 //     path is unconditionally rejected by gated gateways.
 //   * Nous Portal now issues a 24h ROTATING, reuse-detected refresh token
-//     alongside the ~15-min access token (Portal NAS #293 / hermes #37247).
-//     Both are set as HttpOnly cookies (``hermes_session_at`` ~15 min,
-//     ``hermes_session_rt`` 24h). When the AT cookie lapses but the RT cookie
+//     alongside the ~15-min access token (Portal NAS #293 / rabbit #37247).
+//     Both are set as HttpOnly cookies (``rabbit_session_at`` ~15 min,
+//     ``rabbit_session_rt`` 24h). When the AT cookie lapses but the RT cookie
 //     is still alive, the gateway middleware transparently rotates a fresh AT
 //     on the next authenticated request — so connectivity must NOT be gated on
 //     the AT cookie alone. We probe liveness by actually minting a ws-ticket
@@ -7371,7 +7337,7 @@ function getOauthSession() {
 // cookie auth rides its own partition so two registered gateways can never
 // evict — or be handed — each other's session cookies (Chromium jars ignore
 // the port, so two dashboards on one VPN host used to collide in the shared
-// jar above). The primary / v1 remote / cloud / portal flows keep the legacy
+// jar above). The primary / v1 remote flows keep the legacy
 // shared partition; see oauth-partition.ts for the full rules.
 const oauthSessionsByPartition = new Map()
 
@@ -7417,8 +7383,8 @@ function getOauthSessionForUrl(url, { connectionId = '', pendingAuthMode = '', p
 // cookies.get() on a fresh cold start can resolve BEFORE the jar has finished
 // hydrating from disk and return an empty array — even though the user is
 // signed in. That false-negative used to make hasLiveOauthSession() report
-// "not signed in", which on the initial boot path (startHermes → the renderer's
-// single-shot boot() with no retry) surfaced as the "Hermes couldn't start"
+// "not signed in", which on the initial boot path (startRabbit → the renderer's
+// single-shot boot() with no retry) surfaced as the "Rabbit couldn't start"
 // OAuth overlay that vanishes the instant the user clicks Retry.
 //
 // We force the store to hydrate once, up front: flushStorageData() then a
@@ -7547,7 +7513,7 @@ async function hasLiveOauthSession(baseUrl) {
 
   // Cold-start false-negative guard. A `persist:` partition's cookie store
   // loads lazily, so the FIRST read on a fresh boot can come back empty even
-  // for a signed-in user — the exact race that produced the transient "Hermes
+  // for a signed-in user — the exact race that produced the transient "Rabbit
   // couldn't start / not signed in" overlay that Retry always cleared. Before
   // trusting a negative, force the store to hydrate and re-read a couple of
   // times with a short backoff. A genuinely signed-out user still resolves
@@ -7604,13 +7570,13 @@ async function clearOauthSession(baseUrl) {
 //     portal session in this partition → a silent 302 through
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
+//     prompt.
 function openOauthLoginWindow(
   baseUrl,
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
   return new Promise((resolve, reject) => {
-    // Background roster work may silently renew a Cloud session, but must
+    // Background roster work may silently renew a gateway session, but must
     // never turn an expired saved gateway into a visible login window.
     const hiddenRecovery = background || !canShowInteractiveOauthLogin()
 
@@ -7689,7 +7655,7 @@ function openOauthLoginWindow(
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
+        title: silent ? 'Connecting to Rabbit gateway…' : 'Sign in to Rabbit gateway',
         autoHideMenuBar: true,
         // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
         // well under a second, so the window normally never needs to show. We
@@ -7741,7 +7707,7 @@ function openOauthLoginWindow(
     }
 
     if (hiddenRecovery) {
-      deadlineTimer = setTimeout(() => finish(new Error('Cloud session recovery requires sign-in.')), 12_000)
+      deadlineTimer = setTimeout(() => finish(new Error('Gateway session recovery requires sign-in.')), 12_000)
     }
 
     win.on('closed', () => {
@@ -7781,7 +7747,7 @@ function openOauthLoginWindow(
 // authed REST against a gated gateway, including minting WS tickets.
 //
 // #61457: the partition's Chromium jar is not a reliable cookie source — it can
-// drop the `hermes_session*` cookies (Windows %3A profile folders, lazy
+// drop the `rabbit_session*` cookies (Windows %3A profile folders, lazy
 // hydration, flush races) and `useSessionCookies: true` then intermittently
 // omits the cookie → 401 `no_cookie` right after a successful sign-in. Two
 // mitigations, both keyed by the request's resolved OAuth partition + origin
@@ -7820,7 +7786,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       }
 
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
+        reject(new Error(`Unsupported Rabbit backend URL protocol: ${parsed.protocol}`))
 
         return
       }
@@ -7863,7 +7829,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           // already finished
         }
 
-        reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+        reject(new Error(`Timed out connecting to Rabbit backend after ${timeoutMs}ms`))
       }, timeoutMs)
 
       request.on('response', (res: Electron.IncomingMessage): void => {
@@ -7920,7 +7886,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // involved. Tokens are persisted encrypted at rest via Electron ``safeStorage``
 // (OS keychain) keyed by gateway base URL, and refreshed via
 // ``/auth/native/refresh`` before expiry. This is the desktop half of the
-// feature; the server half lives in hermes_cli/dashboard_auth/native_flow.py.
+// feature; the server half lives in rabbit_cli/dashboard_auth/native_flow.py.
 // ---------------------------------------------------------------------------
 
 // In-memory cache of decrypted native tokens, keyed by normalized base URL.
@@ -8119,32 +8085,9 @@ async function readGatewayFileDataUrl(connection: GatewayFileConnection, request
   return dataUrl
 }
 
-// Recover a Cloud cookie only after a confirmed cookie-auth ticket 401.
-// Each caller still mints its own single-use ticket after the shared recovery.
-const recoverCloudCookieSession = createCloudSessionRecovery({
-  hasNativeSession,
-  onRecovered: baseUrl => rememberLog(`[cloud] saved gateway session recovered for ${hostLabelFromBaseUrl(baseUrl)}`),
-  restoreCookieSession: async baseUrl => {
-    // The saved portal identity is the authority for cookie agent sessions.
-    // Roster polling must never reveal an interactive sign-in window.
-    if (!(await hasLivePortalSession())) {
-      return false
-    }
-
-    if (!(await hasPortalAccessToken()) && !(await renewPortalAccessSilently())) {
-      return false
-    }
-
-    await openOauthLoginWindow(baseUrl, { silent: true, background: true })
-
-    return true
-  }
-})
-
 // Native bearer first (including one forced 401 rotation), OAuth cookie second.
-// Transient ticket POST failures keep their bounded retry before Cloud recovery.
 async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}): Promise<string> {
-  return recoverCloudCookieSession(baseUrl, () =>
+  return (
     withTransientRetries(
       (): Promise<string> =>
         mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers),
@@ -8184,218 +8127,6 @@ async function freshGatewayWsUrl(profile) {
   rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
 
   return connection.wsUrl
-}
-
-// --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
-// Phase 3) ---------------------------------------------------------------
-//
-// The "cloud" connection mode lets a user sign in to the Nous portal ONCE in
-// the OAuth session partition, then (a) discover their hosted agents and (b)
-// connect to any of them with no second interactive sign-in. Both ride the one
-// portal session cookie living in `persist:hermes-remote-oauth`:
-//   - discovery  → GET {portal}/api/agents over the partition-bound net; the
-//     portal session cookie authenticates it (NAS Phase 2.5 accepts the cookie).
-//   - cascade    → opening an agent's own /login in the same partition hits the
-//     portal's silent auto-approve (org member, existing session) and 302s back
-//     with that agent's session cookie — no prompt. Each agent still completes
-//     its own PKCE exchange; SSO removes the human click, not a security check.
-
-// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
-// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
-// so a single override flips every Hermes surface to the same portal.
-const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
-
-function resolvePortalBaseUrl() {
-  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
-
-  return String(raw).trim().replace(/\/+$/, '')
-}
-
-const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
-  createPortalSession({
-    isReady: () => app.isReady(),
-    getOauthSession,
-    resolvePortalBaseUrl,
-    warmOauthCookieStore,
-    createWindow: options => new BrowserWindow(options),
-    rememberLog
-  })
-
-// Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
-// the NAS trimmed-summary endpoint over the partition-bound net, so the portal
-// session cookie is attached automatically (no bearer needed — NAS accepts the
-// cookie). Returns { agents } on success, or { needsOrgSelection: true, orgs }
-// when the user belongs to multiple orgs and hasn't picked one yet (NAS 409
-// org_selection_required). Pass `org` (a slug/id from a prior org list) to
-// scope discovery to that org. Throws a needsCloudLogin-tagged error when no
-// portal session is present.
-async function discoverCloudAgents(org?: string) {
-  const portalBaseUrl = resolvePortalBaseUrl()
-
-  if (!(await hasLivePortalSession())) {
-    const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
-    ) as any
-
-    err.needsCloudLogin = true
-    throw err
-  }
-
-  // Access cookies expire before refresh credentials. Let the portal renew
-  // whichever session this browser currently holds before discovery.
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
-
-  let body
-
-  const fetchAgents = () =>
-    discoverWithTeamFallback(
-      selectedOrg =>
-        fetchJsonViaOauthSession(
-          `${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`,
-          {
-            method: 'GET',
-            timeoutMs: 15_000
-          }
-        ),
-      org
-    )
-
-  try {
-    body = (await fetchAgents()) as any
-  } catch (initialError) {
-    let error = initialError as any
-
-    // A 401 with renewal material still in the jar: attempt ONE bounded silent
-    // renewal and retry, so a lapsed access token doesn't surface as a full
-    // interactive re-login while a 30-day refresh session sits unused. Only a
-    // rejected/failed renewal (or a second 401 on genuinely fresh access)
-    // falls through to needsCloudLogin.
-    if (error && error.statusCode === 401 && (await renewPortalAccessSilently({ force: true }))) {
-      try {
-        body = (await fetchAgents()) as any
-      } catch (retryError) {
-        error = retryError
-      }
-    }
-
-    if (body === undefined) {
-      // A 401 means the portal session lapsed (and silent renewal could not
-      // recover it) — surface it as a re-login, not a generic failure.
-      if (error && error.statusCode === 401) {
-        const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
-        ) as any
-
-        err.needsCloudLogin = true
-        err.cause = error
-        throw err
-      }
-
-      // A 409 means we're a multi-org user who hasn't picked an org. The body
-      // carries the user's org list; surface it so the renderer shows a picker
-      // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
-      // throws on >=400 with err.statusCode + err.message "409: <json body>".)
-      if (error && error.statusCode === 409) {
-        const orgs = parseOrgSelectionError(error)
-
-        if (orgs) {
-          return { needsOrgSelection: true, orgs }
-        }
-      }
-
-      throw error
-    }
-  }
-
-  return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
-}
-
-// Project a NAS response org ({ id, slug, name, isPersonal }) to the trimmed
-// shape the renderer persists, or null when absent/malformed.
-function trimCloudOrg(org) {
-  if (!org || typeof org !== 'object' || typeof org.id !== 'string') {
-    return null
-  }
-
-  return {
-    id: org.id,
-    slug: typeof org.slug === 'string' ? org.slug : null,
-    name: typeof org.name === 'string' ? org.name : org.id,
-    isPersonal: Boolean(org.isPersonal),
-    role: typeof org.role === 'string' ? org.role : 'MEMBER'
-  }
-}
-
-// Extract the org list from a 409 org_selection_required error body. Parse
-// defensively and return null if it isn't the shape we expect (caller then
-// rethrows).
-function parseOrgSelectionError(error) {
-  const parsed = readJsonErrorBody(error)
-
-  if (parsed?.error !== 'org_selection_required' || !Array.isArray(parsed.orgs)) {
-    return null
-  }
-
-  return parsed.orgs
-    .filter(o => o && typeof o === 'object' && typeof o.id === 'string')
-    .map(o => ({
-      id: o.id,
-      slug: typeof o.slug === 'string' ? o.slug : null,
-      name: typeof o.name === 'string' ? o.name : o.id,
-      isPersonal: Boolean(o.isPersonal),
-      role: typeof o.role === 'string' ? o.role : 'MEMBER'
-    }))
-}
-
-// Project NAS's agent rows to the trimmed DTO the renderer consumes.
-function trimCloudAgents(body) {
-  const agents = Array.isArray(body?.agents) ? body.agents : []
-
-  return agents
-    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
-    .map(a => ({
-      id: a.id,
-      name: typeof a.name === 'string' ? a.name : a.id,
-      status: typeof a.status === 'string' ? a.status : 'unknown',
-      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
-      dashboardGatewayState: typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
-    }))
-}
-
-// Silent per-agent sign-in: open the selected agent dashboard's /login in the
-// SAME OAuth partition. Because the user already holds a live portal session
-// there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
-// setting that agent's gateway session cookie WITHOUT a second interactive
-// prompt. Reuses openOauthLoginWindow — the window self-closes the instant the
-// agent's session cookie lands (a silent flow finishes in well under a second;
-// if the portal session were absent it would fall through to an interactive
-// login, which the discovery gate already prevents). Returns once the agent's
-// gateway session cookie is present.
-async function cloudAgentSilentSignIn(dashboardUrl) {
-  const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
-
-  // Pre-req: a live portal session must exist, or this would surface an
-  // interactive prompt rather than a silent cascade. Discovery already gates on
-  // this, but a selection can arrive after the session lapsed.
-  if (!(await hasLivePortalSession())) {
-    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
-    err.needsCloudLogin = true
-    throw err
-  }
-
-  // The cascade rides the portal's auto-approve, which needs the short-lived
-  // access state just like discovery. If only renewal material survived the
-  // restart, mint a fresh access token first so the hidden cascade window
-  // auto-SSOs instead of stalling on an interactive chooser (#73495).
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
-
-  await openOauthLoginWindow(baseUrl, { silent: true })
-
-  return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }
 
 // ---------------------------------------------------------------------------
@@ -8845,18 +8576,19 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
     }
 
     const cleaned: {
-      mode: 'remote' | 'local' | 'cloud'
+      mode: 'remote' | 'local'
       url?: string
       authMode?: string
       token?: object
       headers?: object
-      org?: string
-      name?: string
       remoteProfile?: string
       savedSsh?: object
     } = {
-      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
+      // Removed modes (the deleted 'cloud' connection kind) fall back to a
+      // plain local entry with no inherited remote credentials.
+      mode: entry.mode === 'cloud' ? 'local' : modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
     }
+    const wasCloudEntry = entry.mode === 'cloud'
 
     if (cleaned.mode === 'local') {
       const savedSsh = normalizeSshConfig(entry.savedSsh)
@@ -8868,17 +8600,17 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     const url = String(entry.url || '').trim()
 
-    if (url) {
+    if (url && !wasCloudEntry) {
       cleaned.url = url
     }
 
-    cleaned.authMode = normAuthMode(entry.authMode)
+    cleaned.authMode = wasCloudEntry ? 'token' : normAuthMode(entry.authMode)
 
-    if ((entry as any).token && typeof entry.token === 'object') {
+    if (!wasCloudEntry && (entry as any).token && typeof entry.token === 'object') {
       cleaned.token = entry.token
     }
 
-    // A URL-remote/cloud per-profile override can map its Desktop routing label
+    // A URL-remote per-profile override can map its Desktop routing label
     // onto the backend's profile namespace (same contract as SSH remoteProfile).
     const remoteProfileName = normalizeRemoteProfileName((entry as any).remoteProfile)
 
@@ -8890,22 +8622,6 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if (Object.keys(headers).length > 0) {
       cleaned.headers = headers
-    }
-
-    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
-    // reopen into the same org for a per-profile cloud connection.
-    if (cleaned.mode === 'cloud') {
-      const cloudName = String(entry.name || '').trim()
-
-      if (cloudName) {
-        cleaned.name = cloudName
-      }
-
-      const org = String(entry.org || '').trim()
-
-      if (org) {
-        cleaned.org = org
-      }
     }
 
     out[name] = cleaned
@@ -9040,7 +8756,7 @@ function readDesktopConnectionsRegistry() {
     } catch {
       // Write failed (full disk, read-only userData). Keep the migrated
       // registry in memory so list/save keep working this session instead of
-      // hard-failing every hermes:connections:* call.
+      // hard-failing every rabbit:connections:* call.
       connectionRegistryCache = registry
       connectionRegistryCacheMtime = null
     }
@@ -9184,7 +8900,7 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
 /**
  * Save (create or edit) a registry connection from a renderer payload.
  * Edits merge over the stored entry (mergeConnectionInput) so fields the
- * editor doesn't carry — cloud `org`, ssh `remoteHermesPath`/`remoteProfile` —
+ * editor doesn't carry — ssh `remoteRabbitPath`/`remoteProfile` —
  * survive a rename. Token handling mirrors coerceDesktopConnectionConfig: an
  * incoming plaintext token is encrypted (honoring the same allowPlainTextToken
  * opt-in seam as Settings → Gateway); an absent token field inherits the
@@ -9219,7 +8935,7 @@ async function saveRegistryConnection(input: any = {}) {
   const entry = normalizeConnectionInput(merged, registry)
 
   // Token-auth remotes must actually have a token to be dialable. OAuth and
-  // cloud entries authenticate via cookies/native tokens instead.
+  // oauth entries authenticate via cookies/native tokens instead.
   if (entry.kind === 'remote' && entry.authMode !== 'oauth' && !decryptDesktopSecret(entry.token)) {
     throw new Error('Remote gateway session token is required.')
   }
@@ -9261,7 +8977,7 @@ const desktopProfilePreferences = createDesktopProfilePreferences(DESKTOP_PROFIL
   onDefaultChanged: route => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.webContents.isDestroyed()) {
-        win.webContents.send('hermes:profile:default:changed', route)
+        win.webContents.send('rabbit:profile:default:changed', route)
       }
     }
   }
@@ -9285,9 +9001,9 @@ function writeActiveDesktopProfile(name: string | null): string | null {
 }
 
 // True when the given pid belongs to a running process whose command line
-// contains "hermes", avoiding false positives from stale gateway.pid files
+// contains "rabbit", avoiding false positives from stale gateway.pid files
 // whose PID was recycled by the OS to an unrelated process.
-function isHermesProcess(pid) {
+function isRabbitProcess(pid) {
   try {
     process.kill(pid, 0) // signal 0 = existence check, no signal sent
   } catch {
@@ -9298,7 +9014,7 @@ function isHermesProcess(pid) {
   try {
     const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
 
-    return cmdline.includes('hermes')
+    return cmdline.includes('rabbit')
   } catch {
     // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
     // the full command line, not just the process name.  -o comm= would return
@@ -9307,7 +9023,7 @@ function isHermesProcess(pid) {
       const { execSync } = require('child_process')
       const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
 
-      return out.includes('hermes')
+      return out.includes('rabbit')
     } catch {
       return false
     }
@@ -9316,8 +9032,8 @@ function isHermesProcess(pid) {
 
 // Seed active-profile.json from the best available signal when the file does
 // not yet exist.  Runs exactly once (no-op once the file exists).  Priority:
-//   1. Legacy ~/.hermes/active_profile (explicit CLI choice via hermes profile use)
-//   2. Running gateway (gateway.pid with verified liveness + hermes identity)
+//   1. Legacy ~/.rabbit/active_profile (explicit CLI choice via rabbit profile use)
+//   2. Running gateway (gateway.pid with verified liveness + rabbit identity)
 //   3. state.db heuristics (hybrid recency×size score picks the primary workspace)
 // The stored JSON includes _migrated:true so the renderer can optionally surface
 // a one-time notification that the profile was auto-detected.
@@ -9326,14 +9042,14 @@ function isHermesProcess(pid) {
 // just wires Electron/Node fs into a MigrationDeps bag and delegates.
 function migrateActiveProfileIfMissing() {
   migrateActiveProfileIfMissingPure(DESKTOP_PROFILE_CONFIG_PATH, {
-    legacyActivePath: path.join(HERMES_HOME, 'active_profile'),
-    hermesHome: HERMES_HOME,
-    profilesRoot: path.join(HERMES_HOME, 'profiles'),
+    legacyActivePath: path.join(RABBIT_HOME, 'active_profile'),
+    rabbitHome: RABBIT_HOME,
+    profilesRoot: path.join(RABBIT_HOME, 'profiles'),
     existsSync: p => fs.existsSync(p),
     readFileSync: (p, enc) => fs.readFileSync(p, enc),
     statSync: p => fs.statSync(p),
     readdirSync: (p, opts) => fs.readdirSync(p, opts as { withFileTypes: true }),
-    isHermesProcess,
+    isRabbitProcess,
     now: () => Date.now(),
     writeJson: (target, decision) => {
       // Mirror writeActiveDesktopProfile's atomic-write + parent-dir-create
@@ -9355,7 +9071,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
-  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+  const envOverride = key ? false : Boolean(process.env.RABBIT_DESKTOP_REMOTE_URL)
   const savedMode = key ? scoped?.mode : config.mode
   const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
 
@@ -9363,7 +9079,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const remoteUrl = envOverride ? String(process.env.RABBIT_DESKTOP_REMOTE_URL || '') : String(block.url || '')
   const mode = envOverride ? 'remote' : savedMode === 'ssh' ? 'ssh' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
   // Whether the OS keyring (safeStorage) can encrypt the saved token. When
@@ -9404,9 +9120,6 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteAuthMode: authMode,
     remoteOauthConnected,
     remoteUrl,
-    // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
-    // remote/local. Lets Settings → Gateway reopen into the same org.
-    cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
     // Whether the OS keyring can encrypt a token; drives the plain-text opt-in
@@ -9419,10 +9132,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshUser: (ssh || savedSsh)?.user || '',
     sshPort: (ssh || savedSsh)?.port || null,
     sshKeyPath: (ssh || savedSsh)?.keyPath || '',
-    sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
+    sshRemoteRabbitPath: (ssh || savedSsh)?.remoteRabbitPath || '',
     sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
     // The env override only forces the global/primary connection; a per-profile
-    // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
+    // scope is never overridden by RABBIT_DESKTOP_REMOTE_URL.
     envOverride
   }
 }
@@ -9430,18 +9143,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // Build + validate a `{ url, authMode, token }` remote block. OAuth gateways
 // authenticate via the login-window session cookie (verified at connect time in
 // resolveRemoteBackend), so only token-auth remotes require a saved token.
-// `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
-// under — persisted so Settings can reopen into the same org; omitted from the
-// block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(
-  remoteUrl,
-  authMode,
-  token,
-  org?: string,
-  headers?: object,
-  name?: string,
-  remoteProfile?: string
-) {
+function buildRemoteBlock(remoteUrl, authMode, token, headers?: object, remoteProfile?: string) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
@@ -9451,8 +9153,6 @@ function buildRemoteBlock(
     authMode: string
     token: object
     headers?: object
-    org?: string
-    name?: string
     remoteProfile?: string
   } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
@@ -9464,18 +9164,6 @@ function buildRemoteBlock(
 
   if (Object.keys(remoteHeaders).length > 0) {
     block.headers = remoteHeaders
-  }
-
-  const nameValue = typeof name === 'string' ? name.trim() : ''
-
-  if (nameValue) {
-    block.name = nameValue
-  }
-
-  const orgValue = typeof org === 'string' ? org.trim() : ''
-
-  if (orgValue) {
-    block.org = orgValue
   }
 
   const remoteProfileName = normalizeRemoteProfileName(remoteProfile)
@@ -9490,43 +9178,17 @@ function buildRemoteBlock(
 function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopConnectionConfig(), options: any = {}) {
   const persistToken = options.persistToken !== false
   const key = connectionScopeKey(input.profile)
-  // 'cloud' and 'remote' both persist a remote-shaped block; 'cloud' is
-  // remembered as its own provenance (Q6) and resolves to remote downstream.
-  // Anything else collapses to local.
   const mode = input.mode === 'ssh' ? 'ssh' : modeIsRemoteLike(input.mode) ? input.mode : 'local'
   const remoteLike = modeIsRemoteLike(mode)
 
   // The block being edited: a per-profile entry or the global remote block.
   const rawExistingBlock = key ? existing.profiles?.[key] || {} : existing.remote || {}
-  // Leaving a CLOUD connection unselects it: a cloud block's url/org/token
-  // describe a discovered Hermes Cloud instance, NOT a user-owned remote gateway,
-  // so switching to local or remote must NOT inherit them (otherwise the stale
-  // cloud URL lingers and re-selecting Cloud looks "already connected"). When the
-  // saved block was cloud and the new mode is not cloud, start from an empty
-  // block. (remote↔local toggles still preserve a real remote URL as before.)
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
-  const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
   const leavingSsh = rawExistingBlock.mode === 'ssh' && mode !== 'ssh' && mode !== 'local'
-  const existingBlock = leavingCloud || leavingSsh ? {} : rawExistingBlock
+  const existingBlock = leavingSsh ? {} : rawExistingBlock
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
-  // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
-  // inherit the saved org. A plain 'remote' connection never carries an org
-  // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
-  const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
-
-  // A saved name belongs to this exact gateway, not another instance in the same org.
-  const cloudName =
-    mode === 'cloud'
-      ? String(
-          input.cloudName ??
-            (existingBlock.url && normalizeRemoteBaseUrl(remoteUrl) === normalizeRemoteBaseUrl(existingBlock.url)
-              ? existingBlock.name
-              : '') ??
-            ''
-        ).trim()
-      : ''
 
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
@@ -9563,15 +9225,14 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   if (key) {
-    // Per-profile scope: a remote/cloud entry pins this profile to its own
-    // backend; a local entry clears the override so the profile inherits the
-    // default. The mode tag (remote vs cloud) is preserved on the entry.
+    // Per-profile scope: a remote entry pins this profile to its own backend;
+    // a local entry clears the override so the profile inherits the default.
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName, input.remoteProfile)
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, remoteHeaders, input.remoteProfile)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -9591,7 +9252,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, remoteHeaders)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -9613,7 +9274,7 @@ function buildSshBlock(input: any, existingBlock: any = {}) {
     user: input.sshUser ?? existingBlock.user,
     port: input.sshPort ?? existingBlock.port,
     keyPath: input.sshKeyPath ?? existingBlock.keyPath,
-    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
+    remoteRabbitPath: input.sshRemoteRabbitPath ?? existingBlock.remoteRabbitPath,
     remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
   })
 
@@ -9679,7 +9340,7 @@ async function buildRemoteConnection(
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
+      'Remote Rabbit gateway is selected, but no session token is saved. ' +
         'Open Settings → Gateway and save a token, or switch back to Local.'
     )
   }
@@ -10006,8 +9667,8 @@ function activeSshTerminalTarget(webContentsId?: number) {
   const route = resolveDesktopRemoteRoute({
     config,
     env: {
-      token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-      url: process.env.HERMES_DESKTOP_REMOTE_URL
+      token: process.env.RABBIT_DESKTOP_REMOTE_TOKEN,
+      url: process.env.RABBIT_DESKTOP_REMOTE_URL
     },
     profile,
     registry: readDesktopConnectionsRegistry()
@@ -10069,7 +9730,7 @@ async function resetPreviewReach(webContentsId?: number) {
  * Rewrite a gateway-loopback URL into one this machine can actually load.
  *
  * Returns the URL unchanged when no rewrite is needed or possible — a local
- * backend (the address is already true), a non-loopback host, or a url/cloud
+ * backend (the address is already true), a non-loopback host, or a url
  * remote with no tunnel to borrow. Callers must not treat an unchanged URL as
  * failure; the pane explains an unreachable one on its own.
  */
@@ -10196,8 +9857,8 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
       pid: result.pid,
       spawnNonce: result.spawnNonce,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
-      hermesPath: result.hermesPath,
-      hermesHome: result.hermesHome,
+      rabbitPath: result.rabbitPath,
+      rabbitHome: result.rabbitHome,
       startedAt: result.startedAt,
       creationTimeNs: result.creationTimeNs,
       creationTime: result.creationTime
@@ -10206,7 +9867,7 @@ async function rollbackSshBootstrapResult(ssh, result, profile, sshConfig, bound
     if (result.platform?.os === 'Windows') {
       await terminateOwnedWindowsDashboardForUpdate(
         ssh,
-        { hermesPath: result.hermesPath, hermesHome: result.hermesHome, python: result.pythonPath },
+        { rabbitPath: result.rabbitPath, rabbitHome: result.rabbitHome, python: result.pythonPath },
         expected
       )
     } else if (result.platform?.os === 'Linux' || result.platform?.os === 'Darwin') {
@@ -10296,19 +9957,19 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       managedConnectionUpdateGate.assertCanDial(metadata.registryConnectionId, metadata.managedUpdateCorrelation || '')
     }
 
-    const platform = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+    const platform = await detectRemotePlatform(ssh, sshConfig.remoteRabbitPath || '')
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
       platform,
       profile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
-      remoteHermesPath: sshConfig.remoteHermesPath || '',
+      remoteRabbitPath: sshConfig.remoteRabbitPath || '',
       ownershipId: sshOwnershipKey(profile),
       reuseToken: reuseToken || '',
       forward: (localPort, remotePort) => ssh.forward(localPort, remotePort),
       cancelForward: (localPort, remotePort) => ssh.cancelForward(localPort, remotePort),
       pickLocalPort,
-      waitForHermes: (baseUrl, token) => waitForHermes(baseUrl, token, lease.signal, 'token'),
+      waitForRabbit: (baseUrl, token) => waitForRabbit(baseUrl, token, lease.signal, 'token'),
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
@@ -10372,22 +10033,22 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
         pid: result.pid,
         host: sshConfig.host,
         hostLabel,
-        hermesVersion: result.hermesVersion || '',
+        rabbitVersion: result.rabbitVersion || '',
         remotePlatform: result.platform?.os || '',
         reused: result.reused,
         spawnNonce: result.spawnNonce,
         creationTimeNs: result.creationTimeNs,
         creationTime: result.creationTime,
         startedAt: result.startedAt,
-        hermesPath: result.hermesPath,
-        hermesHome: result.hermesHome,
+        rabbitPath: result.rabbitPath,
+        rabbitHome: result.rabbitHome,
         pythonPath: result.pythonPath,
         remoteProfile: resolveRemoteSshDashboardProfile(sshConfig.remoteProfile, profile),
         registryConnectionId:
           metadata.registryConnectionId ||
           (typeof source === 'string' && source.startsWith('registry:') ? source.slice('registry:'.length) : ''),
         // Never infer primary ownership from a non-composite scope key: legacy
-        // per-profile pools also use bare keys. Only startHermes' explicit call
+        // per-profile pools also use bare keys. Only startRabbit' explicit call
         // site may label a registry-qualified SSH scope as the primary backend.
         primaryRegistryScope: metadata.primaryRegistryScope === true
       })
@@ -10398,7 +10059,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
   sshRememberLog(
     `[ssh] connection ${result.reused ? 'REUSED' : 'spawned'} dashboard: ` +
-      `${result.hermesVersion || 'hermes (version unknown)'} at ${result.hermesPath || '?'}`
+      `${result.rabbitVersion || 'rabbit (version unknown)'} at ${result.rabbitPath || '?'}`
   )
 
   const connection = await buildRemoteConnection(
@@ -10413,13 +10074,13 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
 
   return {
     ...connection,
-    remoteHermesVersion: result.hermesVersion || '',
+    remoteRabbitVersion: result.rabbitVersion || '',
     ssh: {
       effectiveConfigFingerprint: sshConfig.effectiveConfigFingerprint,
       host: sshConfig.host,
       keyPath: sshConfig.keyPath,
       port: sshConfig.port,
-      remoteHermesPath: sshConfig.remoteHermesPath,
+      remoteRabbitPath: sshConfig.remoteRabbitPath,
       remoteProfile: sshConfig.remoteProfile,
       user: sshConfig.user
     }
@@ -10469,7 +10130,7 @@ function persistSshConnectionToken(profile, source, token, registryConnectionId 
 // Resolve the remote backend for a given profile, or null when that profile
 // should run a LOCAL backend. Precedence:
 //   1. explicit per-profile remote override (connection.json `profiles[name]`)
-//   2. env override (HERMES_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
+//   2. env override (RABBIT_DESKTOP_REMOTE_URL/_TOKEN) — applies app-wide
 //   3. global remote (connection.json `mode: 'remote'`)
 // A null/empty profile resolves the env/global remote, so legacy callers and
 // the connection test (which pass no profile) are unchanged.
@@ -10498,8 +10159,8 @@ async function resolveRemoteBackend(
     const currentRoute = resolveDesktopRemoteRoute({
       config: readDesktopConnectionConfig(),
       env: {
-        token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-        url: process.env.HERMES_DESKTOP_REMOTE_URL
+        token: process.env.RABBIT_DESKTOP_REMOTE_TOKEN,
+        url: process.env.RABBIT_DESKTOP_REMOTE_URL
       },
       profile: profileKey,
       registry: readDesktopConnectionsRegistry()
@@ -10535,8 +10196,8 @@ async function resolveRemoteBackend(
     : resolveDesktopRemoteRoute({
         config,
         env: {
-          token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-          url: process.env.HERMES_DESKTOP_REMOTE_URL
+          token: process.env.RABBIT_DESKTOP_REMOTE_TOKEN,
+          url: process.env.RABBIT_DESKTOP_REMOTE_URL
         },
         profile,
         registry
@@ -10576,7 +10237,7 @@ async function resolveRemoteBackend(
       token,
       route.source,
       undefined,
-      route.kind === 'cloud' ? 'cloud' : 'url',
+      'url',
       undefined,
       route.headers
     )
@@ -10600,11 +10261,11 @@ function configuredRemoteProfileNames() {
 }
 
 // True when the app is in app-global remote mode (Settings → "All profiles" →
-// Remote/Cloud, or the env override): a SINGLE remote backend serves every
-// profile via ?profile=. Cloud counts — it resolves to a remote backend (Q6).
+// remote backend, or the env override): a SINGLE remote backend serves every
+// profile via ?profile=.
 // Distinct from per-profile overrides — here there's one host for all.
 function globalRemoteActive() {
-  if (process.env.HERMES_DESKTOP_REMOTE_URL) {
+  if (process.env.RABBIT_DESKTOP_REMOTE_URL) {
     return true
   }
 
@@ -10614,7 +10275,7 @@ function globalRemoteActive() {
     return true
   }
 
-  // Registry-primary transport (#91564/#90316): a registered remote/cloud/ssh
+  // Registry-primary transport (#91564/#90316): a registered remote/ssh
   // gateway promoted to primary via connections.json makes the primary
   // backend remote even while the v1 config.mode still says 'local'. Every
   // consumer of this flag ("one remote host serves every profile") must see
@@ -10631,16 +10292,16 @@ function registryPrimaryIsRemote() {
     const registry = readDesktopConnectionsRegistry()
     const entry = registry.connections.find(c => c.id === registry.primary)
 
-    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'cloud' || entry.kind === 'ssh'))
+    return Boolean(entry && (entry.kind === 'remote' || entry.kind === 'ssh'))
   } catch {
     return false
   }
 }
 
-// True when the PRIMARY profile's backend resolves to a remote/cloud host —
+// True when the PRIMARY profile's backend resolves to a remote host —
 // i.e. resolveRemoteBackend(primaryProfileKey()) would return a descriptor
 // rather than null. Mirrors that function's precedence (per-profile override →
-// env → global) so a startHermes() failure can be classified as remote (never
+// env → global) so a startRabbit() failure can be classified as remote (never
 // latch — transient, must stay retryable) vs local (latch to break install
 // loops) BEFORE the throwing resolve/mint runs.
 function primaryBackendIsRemote() {
@@ -10661,7 +10322,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
 
 async function probeRemoteAuthMode(rawUrl) {
   // Determine how a remote gateway expects callers to authenticate, WITHOUT
-  // sending any credentials. ``/api/status`` is public on every Hermes
+  // sending any credentials. ``/api/status`` is public on every Rabbit
   // gateway (it backs the portal liveness probe) and reports:
   //   auth_required: true  → OAuth gate is engaged (cookie + ws-ticket auth)
   //   auth_required: false → loopback/--insecure: legacy session-token auth
@@ -10694,7 +10355,7 @@ async function probeRemoteAuthMode(rawUrl) {
 
   if (authRequired) {
     // Best-effort: a gated gateway exposes the registered providers so the
-    // button can read "Sign in with Nous Research" instead of a generic
+    // button can read "Sign in with Sanath Patil" instead of a generic
     // label, and so a username/password provider can be distinguished from
     // an OAuth-redirect one (``supports_password``). A failure here doesn't
     // change the auth mode, so swallow it.
@@ -10734,7 +10395,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
       user: input.sshUser,
       port: input.sshPort,
       keyPath: input.sshKeyPath,
-      remoteHermesPath: input.sshRemoteHermesPath
+      remoteRabbitPath: input.sshRemoteRabbitPath
     })
 
     if (!sshConfig) {
@@ -10755,28 +10416,28 @@ async function testDesktopConnectionConfig(input: any = {}) {
       for (;;) {
         try {
           await ssh.open()
-          const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
-          let hermesPath
-          let hermesVersion
+          const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteRabbitPath || '')
+          let rabbitPath
+          let rabbitVersion
           let supported
 
           if (platform.os === 'Windows') {
             const runtime = platform
-            hermesPath = runtime.hermesPath
-            const inspection = await helper(ssh, runtime, 'inspect', [runtime.hermesPath])
-            hermesVersion = inspection.version
+            rabbitPath = runtime.rabbitPath
+            const inspection = await helper(ssh, runtime, 'inspect', [runtime.rabbitPath])
+            rabbitVersion = inspection.version
             supported = inspection.supported
           } else {
-            hermesPath = await remoteLifecycle.locateHermes(ssh, sshConfig.remoteHermesPath || '')
-            hermesVersion = await remoteLifecycle.probeHermesVersion(ssh, hermesPath)
-            supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, hermesPath)
+            rabbitPath = await remoteLifecycle.locateRabbit(ssh, sshConfig.remoteRabbitPath || '')
+            rabbitVersion = await remoteLifecycle.probeRabbitVersion(ssh, rabbitPath)
+            supported = await remoteLifecycle.remoteSupportsSshOwnership(ssh, rabbitPath)
           }
 
           if (!supported) {
             return {
               reachable: false,
               sshError: 'update-required',
-              error: 'Update Hermes on the remote host before connecting with Desktop SSH.'
+              error: 'Update Rabbit on the remote host before connecting with Desktop SSH.'
             }
           }
 
@@ -10785,8 +10446,8 @@ async function testDesktopConnectionConfig(input: any = {}) {
             sshError: null,
             error: null,
             remotePlatform: `${platform.os}/${platform.arch}`,
-            remoteHermesPath: hermesPath,
-            remoteHermesVersion: hermesVersion,
+            remoteRabbitPath: rabbitPath,
+            remoteRabbitVersion: rabbitVersion,
             host: sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
           }
         } catch (error: any) {
@@ -10839,7 +10500,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
       token = decryptDesktopSecret(block.token)
     }
   } else {
-    const remote = (await resolveRemoteBackend(key)) || (await startHermes())
+    const remote = (await resolveRemoteBackend(key)) || (await startRabbit())
     baseUrl = remote.baseUrl
     token = remote.token
     authMode = normAuthMode(remote.authMode)
@@ -10853,7 +10514,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   // connects — a separate transport with separate server-side guards (Host/
   // Origin, ws-ticket/token auth). Validating only the HTTP side produced a
   // false-positive "reachable" while the real boot still failed with "Could not
-  // connect to Hermes gateway". Mirror the renderer's connect here so the test
+  // connect to Rabbit gateway". Mirror the renderer's connect here so the test
   // reflects the full path the app actually uses.
   const wsUrl = await resolveTestWsUrl(baseUrl, authMode, token, {
     mintTicket: url => mintGatewayWsTicket(url, testHeaders)
@@ -10901,11 +10562,11 @@ function resetBootProgressForReconnect() {
 
 // Reset routing and UI state only. Local callers must await physical teardown.
 // Remote revalidation has no local child and can reset this state directly.
-function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
+function resetRabbitConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
-  // The next startHermes() re-reads active-profile.json for its launch profile.
+  // The next startRabbit() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
   invalidatePrimaryConnection()
 
@@ -10924,7 +10585,7 @@ function invalidatePrimaryConnection() {
 
 // Re-home the primary backend: reset connection state, then wait for the live
 // dashboard process to actually exit (SIGKILL after 5s) so the next
-// startHermes() spawns fresh instead of racing the dying one. Shared by the
+// startRabbit() spawns fresh instead of racing the dying one. Shared by the
 // connection-config and profile switch flows.
 async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean } = {}): Promise<void> {
   const stopping = backendConnectionState.stopProcess(localBackendLifecycle.stop)
@@ -10934,7 +10595,7 @@ async function teardownPrimaryBackendAndWait({ soft = false }: { soft?: boolean 
   }
 
   try {
-    resetHermesConnectionState({ soft })
+    resetRabbitConnectionState({ soft })
     await stopping
   } finally {
     if (soft) {
@@ -10954,12 +10615,12 @@ function sendConnectionApplied() {
     return
   }
 
-  webContents.send('hermes:connection:applied')
+  webContents.send('rabbit:connection:applied')
 }
 
 // Registry lifecycle push: a connection was removed or materially edited, so
 // every window must tear down (and, for edits, re-dial) its secondary sockets
-// scoped to that connection. Without this, a removed remote/cloud source keeps
+// scoped to that connection. Without this, a removed remote source keeps
 // its renderer WebSocket open and streaming as a ghost, and an edited one
 // keeps talking to the OLD endpoint until idle-reap.
 function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'removed' | 'saved' | 'updated' }) {
@@ -10967,13 +10628,13 @@ function broadcastConnectionsChanged(payload: { connectionId: string; reason: 'r
     const { webContents } = win
 
     if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:connections:changed', payload)
+      webContents.send('rabbit:connections:changed', payload)
     }
   }
 }
 
 // The profile the primary (window) backend was actually LAUNCHED as. Pinned by
-// startHermes() and cleared when the primary is torn down; while a primary is
+// startRabbit() and cleared when the primary is torn down; while a primary is
 // live this must NOT follow active-profile.json (see primary-profile-pin.ts).
 const primaryProfilePin = new PrimaryProfilePin()
 
@@ -10994,7 +10655,7 @@ function profileRouteOptions(
   return {
     // A desktop profile can be only a client-side routing alias. Keep backend
     // endpoint filters in the target's namespace (e.g. mara → default for a
-    // managed SSH, gris → main-gris for a URL-remote/cloud per-profile host).
+    // managed SSH, gris → main-gris for a URL-remote per-profile host).
     backendProfile: sshOverride?.remoteProfile || urlOverride?.remoteProfile,
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
@@ -11038,7 +10699,7 @@ async function ensureBackend(
   const route = resolveProfileBackendRoute(key, routeOpts)
 
   if (route.backend === 'primary') {
-    const connection = await startHermes()
+    const connection = await startRabbit()
     setWslBridgeProfileState(key, connection.mode !== 'remote')
 
     // A shared backend still owes the caller its profile scope, so renderer-side
@@ -11055,7 +10716,7 @@ async function ensureBackend(
 
   // A backend for this key may still be dying (idle reap, LRU eviction, a
   // just-finished delete). Wait for its bounded exit before reusing or
-  // spawning, so two children never share one profile's HERMES_HOME.
+  // spawning, so two children never share one profile's RABBIT_HOME.
   const stopping = poolStopper.inFlight(key)
 
   if (stopping) {
@@ -11166,7 +10827,7 @@ async function ensureRegistryBackend(
         user: source.user,
         port: source.port,
         keyPath: source.keyPath,
-        remoteHermesPath: source.remoteHermesPath,
+        remoteRabbitPath: source.remoteRabbitPath,
         remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
       })
     }
@@ -11236,7 +10897,7 @@ async function ensureRegistryBackend(
     const rawProfile = String(profile ?? '').trim()
 
     const localProfileExists = rawProfile
-      ? directoryExists(path.join(HERMES_HOME, 'profiles', rawProfile.toLowerCase()))
+      ? directoryExists(path.join(RABBIT_HOME, 'profiles', rawProfile.toLowerCase()))
       : undefined
 
     // Pass the raw profile, not profileKey: profileKey collapses null to
@@ -11446,16 +11107,16 @@ async function connectRegistryBackend(
       profile: profileKey,
       connectionId: source.id,
       // The remote process runs as this profile; the desktop-side profile key
-      // is only the routing label. hermes:api uses it to translate explicit
+      // is only the routing label. rabbit:api uses it to translate explicit
       // self-profile query filters into the backend's namespace.
       remoteProfile: sshConfig.remoteProfile || '',
-      logs: hermesLog.slice(-80),
+      logs: rabbitLog.slice(-80),
       ...getWindowState()
     }
   }
 
-  // remote / cloud: one gateway host serves every profile of that source,
-  // scoped per request — the descriptor carries the profile + connectionId so
+  // remote: one gateway host serves every profile of that source, scoped per
+  // request — the descriptor carries the profile + connectionId so
   // renderer-side WS minting and REST scoping target the right agent.
   const token = source.authMode === 'oauth' ? null : decryptDesktopSecret(source.token)
 
@@ -11465,15 +11126,15 @@ async function connectRegistryBackend(
     token,
     `registry:${source.id}`,
     undefined,
-    source.kind === 'cloud' ? 'cloud' : 'url',
+    'url',
     undefined,
     source.headers
   )
 
-  await waitForRemoteHermes(connection)
+  await waitForRemoteRabbit(connection)
   poolEntry.remoteBaseUrl = connection.baseUrl
 
-  // Remote/cloud backends live on another host too — disable the WSL path
+  // Remote backends live on another host too — disable the WSL path
   // bridge for their profiles for the same reason as the SSH branch above.
   setWslBridgeProfileState(profileKey, false)
 
@@ -11484,7 +11145,7 @@ async function connectRegistryBackend(
     // One host, many profiles: REST paths must carry ?profile= (same contract
     // as the global-remote shared-primary route).
     sharedRemote: true,
-    logs: hermesLog.slice(-80),
+    logs: rabbitLog.slice(-80),
     ...getWindowState()
   }
 }
@@ -11550,7 +11211,7 @@ async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
   backendConnectionState.invalidate()
 
   try {
-    return await startHermes()
+    return await startRabbit()
   } finally {
     if (managedPrimaryRestoreOwners.get(source.id)?.correlationId === correlationId) {
       managedPrimaryRestoreOwners.delete(source.id)
@@ -11567,7 +11228,7 @@ function managedSshConfig(source, profile = '') {
     user: source.user,
     port: source.port,
     keyPath: source.keyPath,
-    remoteHermesPath: source.remoteHermesPath,
+    remoteRabbitPath: source.remoteRabbitPath,
     remoteProfile: source.remoteProfile || (profileKey === 'default' ? '' : profileKey)
   })
 }
@@ -11581,8 +11242,8 @@ async function captureManagedSshScopes(source) {
     resolveDesktopRemoteRoute({
       config,
       env: {
-        token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-        url: process.env.HERMES_DESKTOP_REMOTE_URL
+        token: process.env.RABBIT_DESKTOP_REMOTE_TOKEN,
+        url: process.env.RABBIT_DESKTOP_REMOTE_URL
       },
       profile,
       registry
@@ -11693,7 +11354,7 @@ async function captureManagedSshScopes(source) {
 }
 
 function remoteUpdateTargetFromState(state): RemoteUpdateTarget {
-  if (!state?.ssh || !state?.hermesPath || !state?.hermesHome) {
+  if (!state?.ssh || !state?.rabbitPath || !state?.rabbitHome) {
     throw new Error('The managed SSH scope does not carry a complete remote runtime identity.')
   }
 
@@ -11704,8 +11365,8 @@ function remoteUpdateTargetFromState(state): RemoteUpdateTarget {
   return {
     ssh: state.ssh,
     platform: state.remotePlatform,
-    hermesPath: state.hermesPath,
-    hermesHome: state.hermesHome,
+    rabbitPath: state.rabbitPath,
+    rabbitHome: state.rabbitHome,
     ...(state.pythonPath ? { pythonPath: state.pythonPath } : {})
   }
 }
@@ -11727,29 +11388,29 @@ async function openManagedSshUpdateTransport(
   await ssh.open()
 
   try {
-    const platform: any = await detectRemotePlatform(ssh, config.remoteHermesPath || '')
+    const platform: any = await detectRemotePlatform(ssh, config.remoteRabbitPath || '')
 
     if (platform.os === 'Windows') {
-      const runtime = platform.hermesPath ? platform : await probeWindowsRemote(ssh, config.remoteHermesPath || '')
+      const runtime = platform.rabbitPath ? platform : await probeWindowsRemote(ssh, config.remoteRabbitPath || '')
 
       return {
         close: () => ssh.close(),
         target: {
           ssh,
           platform: 'Windows',
-          hermesPath: runtime.hermesPath,
-          hermesHome: runtime.hermesHome,
+          rabbitPath: runtime.rabbitPath,
+          rabbitHome: runtime.rabbitHome,
           pythonPath: runtime.python
         }
       }
     }
 
-    const hermesPath = await remoteLifecycle.locateHermes(ssh, config.remoteHermesPath || '')
-    const hermesHome = await remoteLifecycle.probeRemoteHermesHome(ssh)
+    const rabbitPath = await remoteLifecycle.locateRabbit(ssh, config.remoteRabbitPath || '')
+    const rabbitHome = await remoteLifecycle.probeRemoteRabbitHome(ssh)
 
     return {
       close: () => ssh.close(),
-      target: { ssh, platform: platform.os, hermesPath, hermesHome }
+      target: { ssh, platform: platform.os, rabbitPath, rabbitHome }
     }
   } catch (error) {
     await ssh.close()
@@ -11778,8 +11439,8 @@ async function drainManagedSshScope(scope) {
       pid: state.pid,
       spawnNonce: state.spawnNonce,
       profile: state.remoteProfile || '',
-      hermesPath: state.hermesPath,
-      hermesHome: state.hermesHome,
+      rabbitPath: state.rabbitPath,
+      rabbitHome: state.rabbitHome,
       startedAt: state.startedAt,
       creationTimeNs: state.creationTimeNs,
       creationTime: state.creationTime
@@ -11788,7 +11449,7 @@ async function drainManagedSshScope(scope) {
     if (state.remotePlatform === 'Windows') {
       await terminateOwnedWindowsDashboardForUpdate(
         state.ssh,
-        { hermesPath: state.hermesPath, hermesHome: state.hermesHome, python: state.pythonPath },
+        { rabbitPath: state.rabbitPath, rabbitHome: state.rabbitHome, python: state.pythonPath },
         expected
       )
     } else if (state.remotePlatform === 'Linux' || state.remotePlatform === 'Darwin') {
@@ -11808,10 +11469,10 @@ async function drainManagedSshScope(scope) {
         // exact token first; only recreate the forward when cancellation was
         // confirmed, avoiding a duplicate-bind attempt that masks recovery.
         if (!forwardClosed) {
-          await waitForHermes(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
+          await waitForRabbit(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
         } else {
           await state.ssh.forward(state.localPort, state.remotePort)
-          await waitForHermes(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
+          await waitForRabbit(`http://127.0.0.1:${state.localPort}`, scope.reuseToken, undefined, 'token')
         }
 
         scope.forwardRestored = true
@@ -12050,7 +11711,7 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 // but only ever evict backends without a live renderer socket (stale beyond the
 // keepalive window). When every backend is actively kept alive we let the pool
 // exceed the soft cap rather than kill a running session. Process-less
-// descriptor entries (remote/cloud registry sources, per-profile remote
+// descriptor entries (remote registry sources, per-profile remote
 // overrides — `entry.process === null`) are excluded from the cap entirely:
 // they hold no local process, so counting them used to let a roster refresh
 // across N registered remote connections LRU-evict a REAL local backend that
@@ -12137,7 +11798,7 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 }
 
 // Spawn an additional dashboard backend pinned to a named profile. Mirrors the
-// local-spawn portion of startHermes() but without the boot-progress UI,
+// local-spawn portion of startRabbit() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
 // `opts.forceLocal` skips remote resolution entirely (the registry 'local'
 // entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
@@ -12180,7 +11841,7 @@ async function runPoolBackendStart(
   profileDeletionGate.assertCanStart(profile)
 
   if (remote) {
-    await waitForRemoteHermes(remote)
+    await waitForRemoteRabbit(remote)
 
     // Recorded on the entry so revalidation can probe this descriptor without
     // awaiting connectionPromise, which may still be pending for a sibling.
@@ -12189,12 +11850,12 @@ async function runPoolBackendStart(
     return {
       ...remote,
       profile,
-      logs: hermesLog.slice(-80),
+      logs: rabbitLog.slice(-80),
       ...getWindowState()
     }
   }
 
-  // Everything below starts a LOCAL `hermes serve` child. Multiplex-only says
+  // Everything below starts a LOCAL `rabbit serve` child. Multiplex-only says
   // the host has exactly one, and routing (resolveProfileBackendRoute case 6)
   // keeps local profiles off this path — this is the backstop that makes the
   // pool spawn path genuinely unreachable rather than merely unused.
@@ -12296,22 +11957,22 @@ async function runPoolBackendStart(
 
   profileDeletionGate.assertCanStart(profile)
 
-  // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
-  // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
+  // --profile wins over the inherited RABBIT_HOME env (see _apply_profile_override
+  // step 3 in rabbit_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
   const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
 
-  const backend = await ensureRuntime(await resolveHermesBackend(backendArgs), () =>
+  const backend = await ensureRuntime(await resolveRabbitBackend(backendArgs), () =>
     assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   )
 
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = await getBackendArgsForRuntime(backend)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
-  const hermesCwd = resolveHermesCwd()
+  const rabbitCwd = resolveRabbitCwd()
 
   const webDist = resolveDashboardWebDist({
-    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    activeRabbitRoot: ACTIVE_RABBIT_ROOT,
     appRoot: APP_ROOT,
     env: process.env
   })
@@ -12324,9 +11985,9 @@ async function runPoolBackendStart(
   // and no exit — the exact undiagnosable burst signature in remote-gateway
   // user bundles (Aug 2026, Dash's report).
   assertLocalProfileCanStart(profile, profileDeletionGate, key =>
-    directoryExists(path.join(HERMES_HOME, 'profiles', key))
+    directoryExists(path.join(RABBIT_HOME, 'profiles', key))
   )
-  rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
+  rememberLog(`Starting Rabbit backend for profile "${profile}" via ${backend.label}`)
 
   const parentStartMarker = await desktopParentStartMarker()
   const backendNonce = crypto.randomBytes(16).toString('hex')
@@ -12337,27 +11998,27 @@ async function runPoolBackendStart(
     windowsShellCommand(backend.command, Boolean(backend.shell)),
     backend.args,
     hiddenWindowsChildOptions({
-      cwd: hermesCwd,
+      cwd: rabbitCwd,
       env: desktopBackendSpawnEnv(
         {
           // Never another profile's dotenv credentials from the Desktop env (#68367).
-          ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }),
-          HERMES_HOME,
+          ...profileBackendParentEnv({ rabbitHome: RABBIT_HOME, profile }),
+          RABBIT_HOME,
           ...backend.env,
           // Pin the gateway's tool/terminal cwd to the same directory we chose for
           // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
           // can still point at the install dir even when spawn cwd is home.
-          TERMINAL_CWD: hermesCwd,
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          TERMINAL_CWD: rabbitCwd,
+          RABBIT_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
+          RABBIT_DESKTOP: '1',
           // Exact parent identity lets the backend self-exit after an unclean
           // Desktop death without mistaking a reused PID for its owner. If the
           // optional marker probe fails, retain legacy PID-only tracking.
           ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+          RABBIT_WEB_DIST: webDist,
+          ...(readyFile ? { RABBIT_DESKTOP_READY_FILE: readyFile } : {})
         },
         GUEST_ONBOARDING
       ),
@@ -12387,22 +12048,22 @@ async function runPoolBackendStart(
   startFailed.catch(() => {})
 
   child.once('error', error => {
-    rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+    rememberLog(`Rabbit backend for profile "${profile}" failed to start: ${error.message}`)
     void teardownFailedLocalBackend(poolKey, entry).catch(cleanupError => {
       rememberLog(
-        `Hermes backend for profile "${profile}" cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+        `Rabbit backend for profile "${profile}" cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
       )
     })
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
-    rememberLog(formatBackendExitLine(`Hermes backend for profile "${profile}" exited`, code, signal, outputTail))
+    rememberLog(formatBackendExitLine(`Rabbit backend for profile "${profile}" exited`, code, signal, outputTail))
     releaseBackendChild(child)
 
     if (!ready) {
       rejectStart?.(
         new Error(
-          `Hermes backend for profile "${profile}" exited before it became ready (${signal || code}).${outputTail.describe()}`
+          `Rabbit backend for profile "${profile}" exited before it became ready (${signal || code}).${outputTail.describe()}`
         )
       )
     }
@@ -12436,7 +12097,7 @@ async function runPoolBackendStart(
   entry.port = port
 
   const baseUrl = `http://127.0.0.1:${port}`
-  await Promise.race([waitForHermes(baseUrl, token), startFailed])
+  await Promise.race([waitForRabbit(baseUrl, token), startFailed])
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   ready = true
 
@@ -12444,7 +12105,7 @@ async function runPoolBackendStart(
 
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
     childAlive,
-    label: `Hermes backend for profile "${profile}"`,
+    label: `Rabbit backend for profile "${profile}"`,
     rememberLog
   })
 
@@ -12466,7 +12127,7 @@ async function runPoolBackendStart(
 
   if (!wsProbe.ok) {
     throw new Error(
-      `Hermes backend for profile "${profile}" is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
+      `Rabbit backend for profile "${profile}" is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
     )
   }
 
@@ -12478,7 +12139,7 @@ async function runPoolBackendStart(
     token: authToken,
     profile,
     wsUrl,
-    logs: hermesLog.slice(-80),
+    logs: rabbitLog.slice(-80),
     ...getWindowState()
   }
 }
@@ -12537,7 +12198,7 @@ function broadcastPoolBackendRetiring(poolKey: string) {
     const { webContents } = win
 
     if (webContents && !webContents.isDestroyed()) {
-      webContents.send('hermes:pool:retiring', { poolKey })
+      webContents.send('rabbit:pool:retiring', { poolKey })
     }
   }
 }
@@ -12570,7 +12231,7 @@ async function stopAllPoolBackends() {
  * root — it is machine-scoped and shared with the surviving gateway and
  * other installs; image locks there are the updater's pause/resume job.
  * Runs after the graceful backend teardown, skips the pids it owned and
- * every live Hermes runtime process, so it is only the net for what
+ * every live Rabbit runtime process, so it is only the net for what
  * detached. Best effort throughout; see package-process-reap.ts.
  */
 function reapInstallRootedStragglers(excludePids: number[]): void {
@@ -12665,7 +12326,7 @@ async function exitAfterBackendShutdown(code) {
 // Returns the profile name whose backend was torn down, or null when the
 // request is not a profile-delete.  The caller uses this to skip ensureBackend
 // for the just-torn-down profile — otherwise ensureBackend respawns a pool
-// backend whose ensure_hermes_home() recreates the deleted profile directory.
+// backend whose ensure_rabbit_home() recreates the deleted profile directory.
 //
 // The routing *decision* (which branch fires, what profile name gets
 // returned) lives in the pure decideProfileDeleteAction() in
@@ -12704,7 +12365,7 @@ async function prepareProfileRenameRequest(request) {
       mainWindow?.reload()
     },
     restartPrimaryBackend: async () => {
-      await startHermes()
+      await startRabbit()
     },
     teardownPoolBackendAndWait,
     teardownPrimaryBackendAndWait,
@@ -12716,7 +12377,7 @@ async function prepareProfileRenameRequest(request) {
 
 // ── Attach-first: one backend per HOST (multiplex-only) ───────────────────
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
-const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
+const ISOLATED_BACKEND = process.env.RABBIT_DESKTOP_ISOLATED_BACKEND === '1'
 const ATTACHED_LIVENESS_POLL_MS = 15_000
 let attachedBackendMonitor: NodeJS.Timeout | null = null
 let hostSpawnReservation: SpawnReservation | null = null
@@ -12751,7 +12412,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
 
   attachedBackendMonitor = setInterval(() => {
-    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {})
+    void waitForRabbit(attached.baseUrl, attached.token, undefined, 'token', {})
       .then(() => resolveServedDashboardToken(attached.baseUrl, attached.token).catch(() => attached.token))
       .then(servedToken => {
         if (isAttachedBackendTokenDrifted({ servedToken, adoptedToken: attached.token })) {
@@ -12762,7 +12423,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
         stopAttachedBackendMonitor()
         rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
         backendConnectionState.invalidate()
-        scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
+        scheduleUnexpectedPrimaryRecovery({ error: 'The Rabbit backend this app attached to exited.', ready: true })
       })
   }, ATTACHED_LIVENESS_POLL_MS)
 
@@ -12771,7 +12432,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
 
 /** Discover and attach to the host's running backend; null means "spawn one". */
 function attachToRunningHostBackend(): Promise<AttachedBackend | null> {
-  const options = { isolated: ISOLATED_BACKEND, ledgerPath: spawnLedgerPath(HERMES_HOME, path.join) }
+  const options = { isolated: ISOLATED_BACKEND, ledgerPath: spawnLedgerPath(RABBIT_HOME, path.join) }
 
   return attachOrReserveSpawn(options, hostBackendAttachDeps(), hostSpawnGateDeps())
     .then(outcome => {
@@ -12812,7 +12473,7 @@ function hostBackendAttachDeps() {
         record,
         {
           home: os.homedir(),
-          lockDir: process.env.HERMES_GATEWAY_LOCK_DIR,
+          lockDir: process.env.RABBIT_GATEWAY_LOCK_DIR,
           platform: process.platform,
           stateHome: process.env.XDG_STATE_HOME
         },
@@ -12827,12 +12488,12 @@ function hostBackendAttachDeps() {
     // port is a dead record (a hard-killed backend leaves both the record and
     // its published token behind), not one still starting.
     waitForReady: (baseUrl: string, token: string) =>
-      waitForHermes(baseUrl, token, undefined, 'token', {}, { alreadyBound: true })
+      waitForRabbit(baseUrl, token, undefined, 'token', {}, { alreadyBound: true })
   }
 }
 
 function hostSpawnGatePath() {
-  return path.join(HERMES_HOME, 'desktop-backend-spawn.json')
+  return path.join(RABBIT_HOME, 'desktop-backend-spawn.json')
 }
 
 function hostSpawnGateDeps() {
@@ -12872,14 +12533,14 @@ function releaseHostSpawnReservation() {
   hostSpawnReservation = null
 }
 
-function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}): Promise<
+function startRabbit({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}): Promise<
   Awaited<ReturnType<typeof backendConnectionState.getPromise>>
 > {
   primaryRecoverySuppressed = false
   primaryStartsInFlight += 1
 
   const start: Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> = localBackendLifecycle.start(
-    () => runHermesStart({ supervisorRecovery })
+    () => runRabbitStart({ supervisorRecovery })
   )
 
   const releaseStart = (): void => {
@@ -12918,7 +12579,7 @@ function reportPrimaryRecoveryCrashLoop(code: number | null, signal: string | nu
   }
 
   const message =
-    'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+    'Rabbit backend keeps crashing right after it restarts; not restarting it again. Relaunch Rabbit Desktop.'
 
   rememberLog(`[supervisor] ${message}`)
   sendBackendExit({ code, signal, error: message })
@@ -12929,7 +12590,7 @@ function reportPrimaryRecoveryCrashLoop(code: number | null, signal: string | nu
 const firstLine = (text: string): string => (text || '').split('\n').find(Boolean) || ''
 
 function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
-  startHermes({ supervisorRecovery: true }).catch(respawnError => {
+  startRabbit({ supervisorRecovery: true }).catch(respawnError => {
     rememberLog(`[supervisor] backend respawn failed: ${firstLine(respawnError.message)}`)
 
     // Terminal boot failures still own their existing recovery UI. Only a
@@ -12943,8 +12604,8 @@ function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
       return
     }
 
-    // releaseStart (startHermes) already ran: same-promise reaction order, so
-    // hasPendingStart is false here. See the ordering contract in startHermes.
+    // releaseStart (startRabbit) already ran: same-promise reaction order, so
+    // hasPendingStart is false here. See the ordering contract in startRabbit.
     if (primaryExitRecovery.retryAfterFailedStart(primaryRecoveryState())) {
       rememberLog('[supervisor] backend respawn failed before ready; retrying within crash-loop budget')
       runPrimaryRecoverySpawn(code, signal)
@@ -12989,14 +12650,14 @@ function scheduleUnexpectedPrimaryRecovery({
  * The terminal boot failure currently latched in this process, if any. These
  * latches are cleared only by an explicit recovery path (reset, repair,
  * apply-config, confirmed sign-in, or the child 'exit' handler), never by a
- * retry, so both the per-request short-circuit in runHermesStart and the
+ * retry, so both the per-request short-circuit in runRabbitStart and the
  * supervisor's respawn refusal must consult the same trio in the same order.
  */
 function latchedBootFailure(): Error | null {
   return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
 }
 
-async function runHermesStart({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}): Promise<
+async function runRabbitStart({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}): Promise<
   Awaited<ReturnType<typeof backendConnectionState.getPromise>>
 > {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
@@ -13005,14 +12666,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // otherwise SIGTERMs the running instance's live backend (#87295).
   if (!isPrimaryInstance) {
     rememberLog('[boot] non-primary instance: skipping backend machinery')
-    throw new Error('Hermes Desktop is already running in another window.')
+    throw new Error('Rabbit Desktop is already running in another window.')
   }
 
   await reapOrphanedBackendsOnce()
   localBackendLifecycle.assertCanStart()
 
   // Latched-failure short-circuit: once bootstrap has failed in this
-  // process, every subsequent startHermes() call re-throws the same error
+  // process, every subsequent startRabbit() call re-throws the same error
   // without re-running install.ps1. This prevents the renderer's
   // ensureGatewayOpen retries (and any other getConnection callers) from
   // restarting a 5-10 minute install loop while the user is still reading
@@ -13023,7 +12684,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // its "Sign in" button clickable, instead of re-driving boot on every retry.
   //
   // Deliberately silent: this runs on every proxied request while a failure is
-  // latched (ensureBackend -> startHermes), so a log line here would flood the
+  // latched (ensureBackend -> startRabbit), so a log line here would flood the
   // bounded rememberLog ring and evict the lines that explain the original
   // failure. The supervisor logs the refusal once in runPrimaryRecoverySpawn.
   const latched = latchedBootFailure()
@@ -13035,7 +12696,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // E2E: simulate a boot failure without breaking the real backend. The boot
   // progresses a few steps, then fails with the given error message.
   if (BOOT_FAKE_ERROR) {
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await advanceBootProgress('backend.resolve', 'Resolving Rabbit backend', 8)
     const error = new Error(BOOT_FAKE_ERROR) as any
     error.isBootstrapFailure = true
     bootstrapFailure = error
@@ -13061,14 +12722,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
   // ONE launch-profile decision for this attempt (#108417): routing pin,
   // --profile argv, and the child env all derive from the same read, so a
-  // hermes:profile:remember landing mid-startup becomes the NEXT boot's
+  // rabbit:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. (The pin below still honors a live primary — but a primary
-  // being live means startHermes never got here.)
+  // being live means startRabbit never got here.)
   const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(readActiveDesktopProfile)
 
   // Pin the routing table to the profile this primary actually boots as; a
-  // later hermes:profile:remember must not retarget requests mid-life.
+  // later rabbit:profile:remember must not retarget requests mid-life.
   primaryProfilePin.pin(primaryProfile)
 
   // Legacy path callers without an explicit profile belong to the primary
@@ -13087,8 +12748,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       // remotes and Apply invalidated this attempt), bail before probing.
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-      await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
+      await advanceBootProgress('backend.remote', `Connecting to remote Rabbit backend at ${remote.baseUrl}`, 24)
+      await waitForRemoteRabbit(remote)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
@@ -13096,16 +12757,16 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       updateBootProgress({
         phase: 'backend.ready',
-        message: 'Remote Hermes backend is ready',
+        message: 'Remote Rabbit backend is ready',
         progress: 94,
         running: true,
         error: null
       })
 
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
+      return createPrimaryRemoteConnection(remote, rabbitLog.slice(-80), getWindowState())
     }
 
-    await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    await advanceBootProgress('backend.resolve', 'Resolving Rabbit backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
@@ -13126,8 +12787,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     const token = crypto.randomBytes(32).toString('base64url')
     // Pin the desktop's chosen profile via the global --profile flag. A launch
-    // override is persisted into active-profile.json before startHermes, so
-    // Hermes.exe --profile <name> and hermes -p <name> desktop both land here.
+    // override is persisted into active-profile.json before startRabbit, so
+    // Rabbit.exe --profile <name> and rabbit -p <name> desktop both land here.
     // Null (no stored preference, no launch flag) keeps the legacy bare serve
     // so the child still follows the sticky active_profile file.
     // `activeProfile` is the SAME decision that pinned routing above — never
@@ -13143,9 +12804,9 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
       prepareLocalBackend: async () => {
-        await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        await advanceBootProgress('backend.runtime', 'Resolving Rabbit runtime', 28)
 
-        return resolveHermesBackend(backendArgs)
+        return resolveRabbitBackend(backendArgs)
       },
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
@@ -13193,7 +12854,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
       updateBootProgress({
         phase: 'backend.ready',
-        message: 'Attached to the running Hermes backend',
+        message: 'Attached to the running Rabbit backend',
         progress: 94,
         running: true,
         error: null
@@ -13208,7 +12869,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         token: attached.token,
         profile: primaryProfile,
         wsUrl: attached.wsUrl,
-        logs: hermesLog.slice(-80),
+        logs: rabbitLog.slice(-80),
         ...getWindowState()
       }
     }
@@ -13222,18 +12883,18 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = await getBackendArgsForRuntime(backend)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
-    const hermesCwd = resolveHermesCwd()
+    const rabbitCwd = resolveRabbitCwd()
 
     const webDist = resolveDashboardWebDist({
-      activeHermesRoot: ACTIVE_HERMES_ROOT,
+      activeRabbitRoot: ACTIVE_RABBIT_ROOT,
       appRoot: APP_ROOT,
       env: process.env
     })
 
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-    await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
-    rememberLog(`Starting Hermes backend via ${backend.label}`)
+    await advanceBootProgress('backend.spawn', `Starting Rabbit backend via ${backend.label}`, 84)
+    rememberLog(`Starting Rabbit backend via ${backend.label}`)
 
     const profile = primaryProfile
     const parentStartMarker = await desktopParentStartMarker()
@@ -13242,36 +12903,36 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
-    const hermesProcess = spawnOwnedBackend(
+    const rabbitProcess = spawnOwnedBackend(
       windowsShellCommand(backend.command, Boolean(backend.shell)),
       backend.args,
       hiddenWindowsChildOptions({
-        cwd: hermesCwd,
+        cwd: rabbitCwd,
         env: desktopBackendSpawnEnv(
           {
             // Never another profile's dotenv credentials from the Desktop env (#68367).
-            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
-            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-            // resolves to the SAME location our resolveHermesHome() picked. Without
-            // this pin, Python falls back to ~/.hermes on every platform — fine on
+            ...profileBackendParentEnv({ rabbitHome: RABBIT_HOME, profile: activeProfile }),
+            // Explicitly pin RABBIT_HOME for the child so Python's get_rabbit_home()
+            // resolves to the SAME location our resolveRabbitHome() picked. Without
+            // this pin, Python falls back to ~/.rabbit on every platform — fine on
             // mac/linux (where our default matches), but on Windows our default is
-            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+            // %LOCALAPPDATA%\rabbit, which differs from C:\Users\<u>\.rabbit.
             // Mismatch would split config / sessions / .env / logs across two
-            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+            // directories. install.ps1 sets RABBIT_HOME via setx; the desktop
             // can't reliably do that, so we set it inline for every spawn.
-            HERMES_HOME,
+            RABBIT_HOME,
             ...backend.env,
-            TERMINAL_CWD: hermesCwd,
-            HERMES_DASHBOARD_SESSION_TOKEN: token,
+            TERMINAL_CWD: rabbitCwd,
+            RABBIT_DASHBOARD_SESSION_TOKEN: token,
             // Marks this dashboard backend as desktop-spawned so it runs the cron
             // scheduler tick loop (the gateway isn't running under the app).
-            HERMES_DESKTOP: '1',
+            RABBIT_DESKTOP: '1',
             // Exact parent identity lets the backend self-exit after an unclean
             // Desktop death without mistaking a reused PID for its owner. If the
             // optional marker probe fails, retain legacy PID-only tracking.
             ...parentIdentityEnv,
-            HERMES_WEB_DIST: webDist,
-            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+            RABBIT_WEB_DIST: webDist,
+            ...(readyFile ? { RABBIT_DESKTOP_READY_FILE: readyFile } : {})
           },
           GUEST_ONBOARDING
         ),
@@ -13285,7 +12946,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // before-ready exit message shown by the boot UI. rememberLog attaches
     // later, after the claim, and would miss anything printed before it.
     const primaryOutputTail = createBackendOutputTail()
-    primaryOutputTail.attach(hermesProcess)
+    primaryOutputTail.attach(rabbitProcess)
 
     // Start watching for the READY announcement BEFORE any await (#60323):
     // claimBackendChild can take seconds (its Windows Get-Process probe cold
@@ -13295,7 +12956,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // window was lost forever — the wait then hit its 90s timeout and a
     // healthy backend was killed (deterministic on Windows, racy on
     // macOS/Linux). The tail-buffer accessor covers any residual gap.
-    const portAnnouncement = waitForDashboardPortAnnouncement(hermesProcess, {
+    const portAnnouncement = waitForDashboardPortAnnouncement(rabbitProcess, {
       bufferedOutput: () => primaryOutputTail.text(),
       describeOutputTail: () => primaryOutputTail.describe(),
       readyFile
@@ -13307,7 +12968,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     const processOwner = await backendConnectionState.claimProcess(
       connectionAttempt,
-      hermesProcess,
+      rabbitProcess,
       (child: ChildProcess): ReturnType<typeof claimBackendChild> =>
         claimBackendChild(
           child,
@@ -13319,13 +12980,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     )
 
     if (!processOwner) {
-      await localBackendLifecycle.stop(hermesProcess)
-      releaseBackendChild(hermesProcess)
-      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+      await localBackendLifecycle.stop(rabbitProcess)
+      releaseBackendChild(rabbitProcess)
+      throw new Error('Rabbit backend start was superseded by a newer connection attempt.')
     }
 
-    hermesProcess.stdout.on('data', rememberLog)
-    hermesProcess.stderr.on('data', rememberLog)
+    rabbitProcess.stdout.on('data', rememberLog)
+    rabbitProcess.stderr.on('data', rememberLog)
     let backendReady = false
     let rejectBackendStart = null
 
@@ -13333,13 +12994,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       rejectBackendStart = reject
     })
 
-    hermesProcess.once('error', error => {
-      releaseBackendChild(hermesProcess)
+    rabbitProcess.once('error', error => {
+      releaseBackendChild(rabbitProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
-        rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
+        rememberLog(`Ignoring stale Rabbit backend error: ${error.message}`)
         scheduleUnexpectedPrimaryRecovery({ error: error.message, ready: backendReady })
-        rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
+        rejectBackendStart?.(new Error('Rabbit backend start was superseded by a newer connection attempt.'))
 
         return
       }
@@ -13349,11 +13010,11 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       // (#108417), and the stale branch above never reaches this clear.
       primaryProfilePin.clear()
 
-      rememberLog(`Hermes backend failed to start: ${error.message}`)
+      rememberLog(`Rabbit backend failed to start: ${error.message}`)
       updateBootProgress(
         {
           error: error.message,
-          message: `Hermes backend failed to start: ${error.message}`,
+          message: `Rabbit backend failed to start: ${error.message}`,
           phase: 'backend.error',
           running: false
         },
@@ -13362,27 +13023,27 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       sendBackendExit({ code: null, signal: null, error: error.message })
       rejectBackendStart?.(error)
     })
-    hermesProcess.once('exit', (code, signal) => {
-      releaseBackendChild(hermesProcess)
+    rabbitProcess.once('exit', (code, signal) => {
+      releaseBackendChild(rabbitProcess)
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
-        rememberLog(formatBackendExitLine('Ignoring stale Hermes backend exit', code, signal, primaryOutputTail))
+        rememberLog(formatBackendExitLine('Ignoring stale Rabbit backend exit', code, signal, primaryOutputTail))
 
         scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })
 
         if (!backendReady) {
-          rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
+          rejectBackendStart?.(new Error('Rabbit backend start was superseded by a newer connection attempt.'))
         }
 
         return
       }
 
-      rememberLog(formatBackendExitLine('Hermes backend exited', code, signal, primaryOutputTail))
+      rememberLog(formatBackendExitLine('Rabbit backend exited', code, signal, primaryOutputTail))
 
       // The current primary child is gone; release its routing pin so the
-      // next startHermes() re-reads active-profile.json instead of re-pinning
+      // next startRabbit() re-reads active-profile.json instead of re-pinning
       // the dead child's profile (#108417). Supervisor respawns go through
-      // startHermes, which makes a fresh decision — a respawn cannot inherit
+      // startRabbit, which makes a fresh decision — a respawn cannot inherit
       // a pin from a process that no longer exists.
       primaryProfilePin.clear()
 
@@ -13391,7 +13052,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       }
 
       if (!backendReady) {
-        const message = `Hermes backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
+        const message = `Rabbit backend exited before it became ready (${signal || code}).${primaryOutputTail.describe()}`
         updateBootProgress(
           {
             error: message,
@@ -13403,13 +13064,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         )
         rejectBackendStart?.(
           new Error(
-            `Hermes backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentHermesLog()}`
+            `Rabbit backend exited before it became ready (${signal || code}). Log: ${DESKTOP_LOG_PATH}\n${recentRabbitLog()}`
           )
         )
       }
     })
 
-    await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
+    await advanceBootProgress('backend.port', 'Waiting for Rabbit backend to launch', 86)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
     // Discover the ephemeral port the child bound to
@@ -13421,9 +13082,9 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     }
 
     const baseUrl = `http://127.0.0.1:${port}`
-    await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
+    await advanceBootProgress('backend.wait', 'Waiting for Rabbit backend to become ready', 90)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
-    await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
+    await Promise.race([waitForRabbit(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
     // The host now has a bound, registered backend: the next launcher will
@@ -13432,7 +13093,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     primaryExitRecovery.reset()
     backendStartFailure = null
 
-    const childAlive = () => hermesProcess.exitCode === null && !hermesProcess.killed
+    const childAlive = () => rabbitProcess.exitCode === null && !rabbitProcess.killed
 
     const authToken = await adoptServedDashboardToken(baseUrl, token, {
       childAlive,
@@ -13454,13 +13115,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     if (!wsProbe.ok) {
       throw new Error(
-        `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
+        `Local Rabbit backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
     }
 
     updateBootProgress({
       phase: 'backend.ready',
-      message: 'Hermes backend is ready. Finalizing desktop startup',
+      message: 'Rabbit backend is ready. Finalizing desktop startup',
       progress: 94,
       running: true,
       error: null
@@ -13481,7 +13142,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       token: authToken,
       profile,
       wsUrl,
-      logs: hermesLog.slice(-80),
+      logs: rabbitLog.slice(-80),
       ...getWindowState()
     }
   })().catch(async error => {
@@ -13507,12 +13168,6 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
     const sshAuthFailed = isSshAuthFailedBootFailure(error)
     const sshClientFailed = isSshClientFailedBootFailure(error)
-
-    // Carry structured Cloud-down metadata through the boot-progress / IPC
-    // boundary when present, so the renderer overlay can key on it rather than
-    // re-classifying the message string. main owns classification; the renderer
-    // only consumes the structured result (#85335).
-    const isCloudBackendDown = Boolean(error && typeof error === 'object' && (error as any).isCloudBackendDown === true)
 
     const statusCode = Number(
       error && typeof error === 'object' && Number.isInteger((error as any).statusCode)
@@ -13565,7 +13220,6 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     updateBootProgress(
       {
         error: message,
-        isCloudBackendDown: isCloudBackendDown || undefined,
         message: `Desktop boot failed: ${message}`,
         phase: 'backend.error',
         // Renderer contract for the self-heal loop (#82679): a transient
@@ -13636,7 +13290,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   installContextMenuBridge(win)
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
-  // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  // links arrive via `rabbit:openExternal`, not here. See window-open-policy.ts.
   // The trusted-hub delegation (window-open-policy.ts, #91612) also never
   // creates a window: it hands http/https/mailto opens from the EXACT hub
   // origin to the audited `openExternalUrl` as a deny side effect.
@@ -13659,11 +13313,11 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
     const frameOrigin = safeFrameOrigin(frame)
 
-    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
+    if (frameOrigin !== RABBIT_HUB_ORIGIN) {
       return
     }
 
-    if (isHermesHubPickerUrl(url)) {
+    if (isRabbitHubPickerUrl(url)) {
       return
     }
 
@@ -13733,14 +13387,14 @@ function installPreviewGuestEscapeHatch() {
 /**
  * Give the preview pane's `<webview>` guests a preload — and ONLY those
  * guests. The pane's webview is the one `webview` tag in the app and it
- * always carries the `persist:hermes-preview` partition, so the partition is
+ * always carries the `persist:rabbit-preview` partition, so the partition is
  * the ownership key: any future webview that does not opt into that partition
  * inherits nothing from this mechanism.
  *
  * The preload (preview-guest-preload-entry.ts) never opens anything itself.
  * It forwards a clicked `_blank` anchor to the host renderer via
  * `sendToHost`, and the pane admits the scheme and routes the URL through the
- * audited `hermes:openExternal` channel. Popup requests themselves stay
+ * audited `rabbit:openExternal` channel. Popup requests themselves stay
  * denied-by-omission: the webview has no `allowpopups`, and the
  * `setWindowOpenHandler` contract (GHSA-9f4c-93c8-jc8g) stays side-effect
  * free.
@@ -13752,7 +13406,7 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      if (params.partition !== 'persist:hermes-preview') {
+      if (params.partition !== 'persist:rabbit-preview') {
         return
       }
 
@@ -13799,7 +13453,7 @@ function focusWindow(win) {
   }
 
   // #83998: show() and focus() both seize the Windows OS foreground,
-  // dismissing other apps' native save/confirm dialogs while Hermes streams
+  // dismissing other apps' native save/confirm dialogs while Rabbit streams
   // in the background. Reveal without activation, and only take the keyboard
   // when the window doesn't already have focus — a redundant focus() still
   // pumps SetForegroundWindow.
@@ -13825,7 +13479,7 @@ function spawnSecondaryWindow({
     height: SESSION_WINDOW_MIN_HEIGHT,
     minWidth: SESSION_WINDOW_MIN_WIDTH,
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'Rabbit',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -13917,7 +13571,7 @@ function notifyBrowserPopoutClosed(tabId) {
 
   for (const other of BrowserWindow.getAllWindows()) {
     if (!other.isDestroyed()) {
-      other.webContents.send('hermes:browser-popout:closed', tabId)
+      other.webContents.send('rabbit:browser-popout:closed', tabId)
     }
   }
 }
@@ -13930,7 +13584,7 @@ function spawnBrowserWindow(tabId) {
     height: BROWSER_WINDOW_HEIGHT,
     minWidth: BROWSER_WINDOW_MIN_WIDTH,
     minHeight: BROWSER_WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'Rabbit',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -14042,7 +13696,7 @@ function createInstanceWindow(
     ...nextInstanceBounds(source),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'Rabbit',
     titleBarStyle: 'hidden',
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
@@ -14123,11 +13777,11 @@ registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
 // hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
-// here so it can leave the app's bounds and stay visible while Hermes is
+// here so it can leave the app's bounds and stay visible while Rabbit is
 // minimized (Codex-style task-completion glance). It carries no gateway
 // connection of its own — the main renderer is the single source of truth and
-// pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
-// it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
+// pushes pet state over IPC (rabbit:pet-overlay:state); the overlay just renders
+// it. Control flows back (pop-in, composer submit) via rabbit:pet-overlay:control.
 let petOverlayWindow = null
 // Set once the app is really exiting (before-quit, or the primary window's
 // close on Windows/Linux where closing it IS quitting). Distinct from
@@ -14171,7 +13825,7 @@ function spawnPetOverlayWindow(bounds) {
     // taskbar/alt-tab entry. On macOS, cmd-tab is app-level and this can make
     // the whole app look like it vanished when the only newly-created visible
     // window is a frameless overlay. Use NSPanel + Mission Control hiding below
-    // instead, leaving the main Hermes app as the Dock/cmd-tab anchor.
+    // instead, leaving the main Rabbit app as the Dock/cmd-tab anchor.
     skipTaskbar: !IS_MAC,
     hasShadow: false,
     alwaysOnTop: true,
@@ -14181,9 +13835,9 @@ function spawnPetOverlayWindow(bounds) {
     hiddenInMissionControl: IS_MAC,
     // Non-activating: the overlay must never become the app's key/main window,
     // or it (a frameless, taskbar-skipping panel) becomes the app's switcher
-    // anchor and the Hermes icon drops out of cmd/alt-tab — especially when the
+    // anchor and the Rabbit icon drops out of cmd/alt-tab — especially when the
     // main window is minimized. We flip this on only while the composer needs
-    // the keyboard (see hermes:pet-overlay:set-focusable).
+    // the keyboard (see rabbit:pet-overlay:set-focusable).
     focusable: false,
     show: false,
     // Fully transparent — the renderer paints only the sprite + bubble.
@@ -14209,7 +13863,7 @@ function spawnPetOverlayWindow(bounds) {
 
   // The overlay is a transparent rectangle; only the sprite pixels should be
   // interactive. The renderer toggles click-through as the cursor enters/
-  // leaves the sprite (hermes:pet-overlay:ignore-mouse), but the window MUST
+  // leaves the sprite (rabbit:pet-overlay:ignore-mouse), but the window MUST
   // start click-through from the main process: if the overlay page is slow to
   // load, blank, or its renderer has died, a mouse-enabled transparent window
   // sits over the desktop eating clicks (the invisible "dead zone" bug). The
@@ -14224,7 +13878,7 @@ function spawnPetOverlayWindow(bounds) {
   try {
     // Electron docs: macOS may transform process type on each
     // setVisibleOnAllWorkspaces() call unless skipTransformProcessType=true,
-    // which briefly hides the Dock/cmd-tab presence. Keep Hermes in the normal
+    // which briefly hides the Dock/cmd-tab presence. Keep Rabbit in the normal
     // ForegroundApplication class so shift-clicking the pet never drops the app
     // out of app switchers.
     win.setVisibleOnAllWorkspaces(
@@ -14261,7 +13915,7 @@ function spawnPetOverlayWindow(bounds) {
     if (
       shouldPopInOnOverlayClosed({ appQuitting, mainWindowAlive: Boolean(mainWindow && !mainWindow.isDestroyed()) })
     ) {
-      mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
+      mainWindow.webContents.send('rabbit:pet-overlay:control', { type: 'pop-in' })
     }
   })
 
@@ -14344,14 +13998,14 @@ function rehomePetOverlay() {
   petOverlayWindow.setBounds(resolved)
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'bounds', bounds: resolved })
+    mainWindow.webContents.send('rabbit:pet-overlay:control', { type: 'bounds', bounds: resolved })
   }
 }
 
 // ── HUD mode ────────────────────────────────────────────────────────────────
 //
 // The chrome-free floating chat: a transparent, frameless, always-on-top
-// window showing only the composer and its scrollback, so Hermes can be driven
+// window showing only the composer and its scrollback, so Rabbit can be driven
 // while the user works in another app.
 //
 // Unlike the pet overlay / quick entry, this is a FULL app renderer with its
@@ -14369,7 +14023,7 @@ const hudWindows = new WeakSet<BrowserWindow>()
 // live main window exists at HUD-open time, visible or not: the HUD hides the
 // app window itself, so a main window minimized or behind another app when
 // the HUD opened still needs a surface back — arming only on `isVisible()`
-// left the user with NO Hermes window after the second toggle (#88513).
+// left the user with NO Rabbit window after the second toggle (#88513).
 let hudRestoreMainWindow = false
 
 // The session the HUD is currently on, reported by its renderer whenever the
@@ -14550,7 +14204,7 @@ function startHudCursorFeed(win: BrowserWindow) {
     }
 
     last = key
-    win.webContents.send('hermes:hud:cursor', point)
+    win.webContents.send('rabbit:hud:cursor', point)
   }, HUD_CURSOR_POLL_MS)
 
   win.on('closed', () => clearInterval(timer))
@@ -14570,7 +14224,7 @@ function startHudGameOverlayFeed(win: BrowserWindow) {
 
   const push = (state: { active: boolean; app: string }) => {
     if (!win.isDestroyed()) {
-      win.webContents.send('hermes:hud:game-overlay', state)
+      win.webContents.send('rabbit:hud:game-overlay', state)
     }
   }
 
@@ -14598,7 +14252,7 @@ function startHudGameOverlayFeed(win: BrowserWindow) {
 
     if (!reported) {
       reported = true
-      console.warn(`[hermes] HUD cannot enumerate windows: ${windows.reason}`)
+      console.warn(`[rabbit] HUD cannot enumerate windows: ${windows.reason}`)
     }
 
     return null
@@ -14667,7 +14321,7 @@ function broadcastHudState(open) {
 
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('hermes:hud:changed', payload)
+      win.webContents.send('rabbit:hud:changed', payload)
     }
   }
 }
@@ -14686,7 +14340,7 @@ function spawnHudWindow(sessionId, profile) {
     // window grows a few px every drag (worse at >100% DPI scaling). The
     // composer drag calls setPosition, which must move the window, not resize
     // it. Resizing is done by the renderer's edge/corner handles through
-    // `hermes:hud:set-bounds`, which flips resizable on for the call — the
+    // `rabbit:hud:set-bounds`, which flips resizable on for the call — the
     // same pattern the pet overlay uses for its wheel-scale.
     resizable: false,
     // macOS AppKit's constrainFrameRect clamps setBounds to the current
@@ -14724,7 +14378,7 @@ function spawnHudWindow(sessionId, profile) {
   win.setHiddenInMissionControl?.(true)
 
   // Linux intentionally starts on ONE virtual desktop. During a renderer
-  // grab, hermes:hud:workspace-transfer temporarily makes the X11 window
+  // grab, rabbit:hud:workspace-transfer temporarily makes the X11 window
   // sticky; releasing it assigns the HUD to KDE's then-current desktop.
 
   // Streaming into a window that is ALWAYS blurred (the user is in another
@@ -14858,7 +14512,7 @@ function openHudWindow(sessionId, profile) {
     // conversation in the HUD", and a plain focus leaves the wrong one there.
     if (sessionId && sessionId !== hudSessionId) {
       hudSessionId = sessionId
-      hudWindow.webContents.send('hermes:hud:goto', sessionId)
+      hudWindow.webContents.send('rabbit:hud:goto', sessionId)
       // Keep every window's idea of where the HUD is pointed in step, so the
       // toggle keeps reading "switch" vs "dismiss" correctly.
       broadcastHudState(true)
@@ -15021,7 +14675,7 @@ function spawnQuickEntryWindow() {
   // renderer already reported a live gateway.
   win.webContents.on('did-finish-load', () => {
     if (!win.isDestroyed() && quickEntryLastState) {
-      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+      win.webContents.send('rabbit:quick-entry:state', quickEntryLastState)
     }
   })
 
@@ -15063,7 +14717,7 @@ function showQuickEntryWindow() {
   quickEntryWindow.show()
   quickEntryWindow.focus()
   // Re-summoned: tell the renderer to clear any stale draft and refocus.
-  quickEntryWindow.webContents.send('hermes:quick-entry:shown')
+  quickEntryWindow.webContents.send('rabbit:quick-entry:shown')
 }
 
 function hideQuickEntryWindow() {
@@ -15127,7 +14781,7 @@ function createWindow() {
     ),
     minWidth: WINDOW_MIN_WIDTH,
     minHeight: WINDOW_MIN_HEIGHT,
-    title: 'Hermes',
+    title: 'Rabbit',
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
     // the top edge — matching the macOS layout where the traffic lights sit
@@ -15280,7 +14934,7 @@ function createWindow() {
               LINUX_GPU_SOFTWARE_ACTIVE ||
               linuxGpuFallbackActive ||
               alreadyHasDisableGpu(process.argv, process.env) ||
-              isHermesDesktopGpuOverrideOff(process.env)
+              isRabbitDesktopGpuOverrideOff(process.env)
 
             const gpuChildPresent = app
               .getAppMetrics()
@@ -15306,7 +14960,7 @@ function createWindow() {
               }
 
               console.warn(
-                '[hermes] Linux: no GPU child after window reveal — GPU init is retrying silently; software fallback engaged for the next launch (#124843)'
+                '[rabbit] Linux: no GPU child after window reveal — GPU init is retrying silently; software fallback engaged for the next launch (#124843)'
               )
             }
           }
@@ -15392,7 +15046,7 @@ function createWindow() {
             windowsGpuStackCookieFallbackActive ||
             alreadyHasDisableGpu(process.argv, process.env),
           relaunchAttempted: windowsGpuStackCookieRelaunchAttempted,
-          gpuOverrideOff: isHermesDesktopGpuOverrideOff(process.env)
+          gpuOverrideOff: isRabbitDesktopGpuOverrideOff(process.env)
         }
 
         if (shouldRelaunchForRendererStackCookieCrashLoop(stackCookieCrashLoop)) {
@@ -15431,7 +15085,7 @@ function createWindow() {
             errorCode: details?.exitCode,
             errorDescription:
               'The desktop renderer crashed repeatedly (Windows STATUS_STACK_BUFFER_OVERRUN / 0xC0000409). GPU fallback could not recover the window.',
-            repairHint: 'hermes desktop --force-build',
+            repairHint: 'rabbit desktop --force-build',
             reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
           })
 
@@ -15488,7 +15142,7 @@ function createWindow() {
           errorCode: details?.errorCode,
           url: details?.url,
           errorDescription: 'The desktop renderer failed to load repeatedly after the update.',
-          repairHint: 'hermes desktop --force-build',
+          repairHint: 'rabbit desktop --force-build',
           reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
       },
@@ -15507,7 +15161,7 @@ function createWindow() {
         const exit = details?.exitCode === undefined ? '' : `, exit code ${String(details.exitCode)}`
         rememberLog(`[renderer:main] renderer terminated while live (reason=${reason}${exit}); surfacing recovery page`)
         void loadRendererLoadErrorPage(mainWindow, {
-          title: 'Hermes desktop UI was terminated',
+          title: 'Rabbit desktop UI was terminated',
           errorDescription:
             `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
             'Your sessions and the background gateway are unaffected — reload to continue.',
@@ -15549,7 +15203,7 @@ function createWindow() {
       errorCode: 'ERR_FILE_NOT_FOUND',
       errorDescription: `The desktop renderer bundle is incomplete after the last update (${tornAssets.length} missing file(s)).`,
       missingAssets: tornAssets,
-      repairHint: 'hermes desktop --force-build',
+      repairHint: 'rabbit desktop --force-build',
       reloadUrl: pathToFileURL(rendererIndex).toString()
     })
   } else {
@@ -15567,7 +15221,7 @@ function createWindow() {
   // shared (backendConnectionState), so the renderer's getConnection() joins
   // this in-flight boot instead of duplicating it; early boot-progress events
   // the renderer misses are recovered by its getBootProgress() pull on mount.
-  const startup = defaultRoute ? connectDesktopProfileRoute(defaultRoute) : startHermes()
+  const startup = defaultRoute ? connectDesktopProfileRoute(defaultRoute) : startRabbit()
   startup.catch(error => rememberLog(error.stack || error.message))
 
   mainWindow.webContents.once('did-finish-load', () => {
@@ -15578,7 +15232,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (event, profile, extra) => {
+ipcMain.handle('rabbit:connection', async (event, profile, extra) => {
   const route = resolveDesktopConnectionRequest(
     profile,
     windowConnectionRoutes.get(event.sender.id),
@@ -15613,12 +15267,12 @@ async function connectDesktopProfileRoute(
   }
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
-  // (and the getWindowState() snapshot startHermes baked into it) outlives
+  // (and the getWindowState() snapshot startRabbit baked into it) outlives
   // reloads, reconnects and sleep/wake, so a reply built only from the cached
   // descriptor overwrites the renderer's live fullscreen flag with the
   // mint-time snapshot. Reading the caller's state HERE keeps registry-scoped,
   // primary-resolved and bare replies consistent with the
-  // hermes:window-state-changed live-push path.
+  // rabbit:window-state-changed live-push path.
   const windowState = liveWindowState(sender, {
     fromWebContents: BrowserWindow.fromWebContents,
     getWindowState,
@@ -15643,7 +15297,7 @@ async function connectDesktopProfileRoute(
 // ensureBackend when the v1 route is local, and forces a genuinely-local
 // child when the v1 global mode is remote (the registry 'local' entry always
 // means this machine) unless the profile is remote-only.
-ipcMain.handle('hermes:connection:for', async (event, payload) => {
+ipcMain.handle('rabbit:connection:for', async (event, payload) => {
   const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
@@ -15682,16 +15336,16 @@ function recordWindowConnectionRoute(sender: Electron.WebContents, route: unknow
   }
 }
 
-ipcMain.on('hermes:connection:active-route', (event, route) => recordWindowConnectionRoute(event.sender, route))
+ipcMain.on('rabbit:connection:active-route', (event, route) => recordWindowConnectionRoute(event.sender, route))
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
 // re-dials the same dead descriptor forever and the composer stays stuck on
-// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
+// "Starting Rabbit…". Before the renderer's backoff loop reconnects, it asks us
 // to confirm the cached PRIMARY backend is still reachable; if a remote one is
 // not, we drop the cache so the next getConnection() rebuilds it. Local backends
 // self-heal via their child 'exit' handler, so we never touch them here.
-ipcMain.handle('hermes:connection:revalidate', async () => {
+ipcMain.handle('rabbit:connection:revalidate', async () => {
   const connectionPromise = backendConnectionState.getPromise()
 
   if (!connectionPromise) {
@@ -15710,7 +15364,7 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,
         probe: (connection, path, options) => fetchJsonForBackend(connection, path, options),
-        resetConnection: () => resetHermesConnectionState({ soft: true }),
+        resetConnection: () => resetRabbitConnectionState({ soft: true }),
         tracker: remoteLiveness
       }),
       revalidatePool()
@@ -15790,7 +15444,7 @@ function revalidateSuspectPoolAfterResume() {
   )
 }
 
-ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
+ipcMain.handle('rabbit:backend:touch', async (_event, profile, options) => {
   touchPoolBackend(profile, options)
 
   return { ok: true }
@@ -15798,8 +15452,8 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile, options) => {
 // Pool sizing (Settings → Advanced): device-local, live-applied. Main is
 // authoritative (it owns the pool and the persisted copy); the returned
 // limits are what actually took effect post-clamp.
-ipcMain.handle('hermes:pool-limits:get', async () => ({ ...poolLimits }))
-ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
+ipcMain.handle('rabbit:pool-limits:get', async () => ({ ...poolLimits }))
+ipcMain.handle('rabbit:pool-limits:set', async (_event, raw) => {
   const next = setPoolLimits({
     maxBackends: typeof raw?.maxBackends === 'number' ? raw.maxBackends : poolLimits.maxBackends,
     idleMs: typeof raw?.idleMs === 'number' ? raw.idleMs : poolLimits.idleMs
@@ -15807,10 +15461,10 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
 
   return { ok: true, limits: next }
 })
-ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
+ipcMain.handle('rabbit:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
 })
-ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
+ipcMain.handle('rabbit:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
   }
@@ -15823,13 +15477,13 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openInstance', async (event, options) => {
+ipcMain.handle('rabbit:window:openInstance', async (event, options) => {
   createInstanceWindow(options, BrowserWindow.fromWebContents(event.sender))
 
   return { ok: true }
 })
 registerWindowControlIpc(ipcMain, sender => BrowserWindow.fromWebContents(sender))
-ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
+ipcMain.handle('rabbit:window:openBrowser', async (_event, tabId) => {
   if (typeof tabId !== 'string' || !tabId.trim()) {
     return { ok: false, error: 'invalid-tab-id' }
   }
@@ -15845,35 +15499,35 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
 // between them over IPC. Destination validation and reply correlation stay
 // renderer-side, so every feature riding this relay still fails closed instead
 // of falling through to whatever window happens to be active later.
-ipcMain.on('hermes:window:relay', (event, payload) => {
+ipcMain.on('rabbit:window:relay', (event, payload) => {
   for (const other of BrowserWindow.getAllWindows()) {
     if (!other.isDestroyed() && other.webContents.id !== event.sender.id) {
-      other.webContents.send('hermes:window:relay', payload)
+      other.webContents.send('rabbit:window:relay', payload)
     }
   }
 })
 
 // Hand a session to the user's OWN terminal emulator, running the TUI against
-// it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
+// it (`rabbit --tui --resume <id>`). Not the in-app terminal pane: the point is
 // to continue the chat in the terminal they already live in.
 //
 // The desktop's runtime is usually a venv Python invoked as
-// `python -m hermes_cli.main`, so we resolve the SAME backend the app itself
+// `python -m rabbit_cli.main`, so we resolve the SAME backend the app itself
 // launches and carry its argv + PYTHONPATH into a launcher script rather than
-// hoping a `hermes` exists on the user's interactive PATH. Resolution only —
+// hoping a `rabbit` exists on the user's interactive PATH. Resolution only —
 // never ensureRuntime(), which would kick off a first-run install from a menu
 // click; an unresolved runtime is reported instead.
-ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
+ipcMain.handle('rabbit:window:openInTerminal', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
   }
 
   try {
     const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
-    const backend = await resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+    const backend = await resolveRabbitBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
 
     if (!backend.command) {
-      return { ok: false, error: 'Hermes is not installed yet' }
+      return { ok: false, error: 'Rabbit is not installed yet' }
     }
 
     const { cwd } = sanitizeWorkspaceCwd(opts?.cwd)
@@ -15882,7 +15536,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
 
     const scriptPath = path.join(
       scriptDir,
-      `hermes-${crypto.randomBytes(6).toString('hex')}${terminalScriptExtension()}`
+      `rabbit-${crypto.randomBytes(6).toString('hex')}${terminalScriptExtension()}`
     )
 
     fs.writeFileSync(
@@ -15891,7 +15545,7 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
         args: backend.args,
         command: backend.command,
         cwd,
-        env: terminalScriptEnv(backend.env, HERMES_HOME)
+        env: terminalScriptEnv(backend.env, RABBIT_HOME)
       }),
       { mode: 0o700 }
     )
@@ -15916,22 +15570,22 @@ ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) =
     return { ok: false, error: error.message }
   }
 })
-ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
-ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
+ipcMain.handle('rabbit:wake-indicator:get', () => wakeIndicatorController.getState())
+ipcMain.on('rabbit:wake-indicator:set', (_event, state) => {
   wakeIndicatorController.setState(state)
 })
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
 // shortcuts and the View menu. Reads and writes target the asking window.
-ipcMain.handle('hermes:zoom:get', event => {
+ipcMain.handle('rabbit:zoom:get', event => {
   const window = BrowserWindow.fromWebContents(event.sender)
 
   const level = window && !window.isDestroyed() ? window.webContents.getZoomLevel() : DEFAULT_ZOOM_LEVEL
 
   return { level, percent: zoomLevelToPercent(level) }
 })
-ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
+ipcMain.on('rabbit:zoom:set-percent', (event, percent) => {
   const window = BrowserWindow.fromWebContents(event.sender)
 
   if (!window || window.isDestroyed()) {
@@ -15962,7 +15616,7 @@ const hudIpc = registerHudIpc({
   }
 })
 
-ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+ipcMain.handle('rabbit:backend:recycle', async (_event, profile) => {
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
@@ -15977,9 +15631,9 @@ ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:bootstrap:reset', async () => {
+ipcMain.handle('rabbit:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
-  // reset connection state so the next startHermes() call restarts the
+  // reset connection state so the next startRabbit() call restarts the
   // full backend flow (including a fresh runBootstrap pass).
   rememberLog('[bootstrap] reset requested by renderer; clearing latched failure')
   await teardownPrimaryBackendAndWait()
@@ -15991,10 +15645,10 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
 
   return { ok: true }
 })
-ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundled?: boolean; error?: string }> => {
+ipcMain.handle('rabbit:bootstrap:repair', async (): Promise<{ ok: boolean; bundled?: boolean; error?: string }> => {
   // A bundled install's payload is immutable and sealed at build time —
   // "repair" would re-run the installer against a separate
-  // %LOCALAPPDATA%\hermes tree the app doesn't own. The only repair for a
+  // %LOCALAPPDATA%\rabbit tree the app doesn't own. The only repair for a
   // damaged bundle is reinstalling the app itself. Refuse without touching
   // bootstrapRepairRequested so a stale renderer can't drive an install.
   if (installShape() === 'bundled') {
@@ -16003,7 +15657,7 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
     return { ok: false, error: 'bundled-immutable' }
   }
 
-  // Forceful repair: force the next startHermes() through the full installer
+  // Forceful repair: force the next startRabbit() through the full installer
   // (refreshing a broken/partial venv) and clear any latched failure + live
   // connection. The renderer reloads afterwards to re-drive the boot flow.
   //
@@ -16041,7 +15695,7 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
   // The guard may decide the install is healthy enough that a restart
   // (without touching the venv) is the right answer. Translate that into
   // the existing flag: if the guard said "soft restart", we skip the
-  // "bypass active runtime" path inside startHermes() and fall through
+  // "bypass active runtime" path inside startRabbit() and fall through
   // to the normal restart branch, which just kills the current child
   // and respawns it against the same venv. See #74874 — this is what
   // breaks the infinite reinstall loop the user hit.
@@ -16054,13 +15708,13 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
 
   return { ok: true }
 })
-ipcMain.handle('hermes:bootstrap:continue-local', async () => {
+ipcMain.handle('rabbit:bootstrap:continue-local', async () => {
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 
   return { ok: true }
 })
-ipcMain.handle('hermes:bootstrap:cancel', async () => {
+ipcMain.handle('rabbit:bootstrap:cancel', async () => {
   // Renderer's Cancel button during first-launch install. Abort the running
   // install script (SIGTERM via the runner's abortSignal). runBootstrap
   // resolves with { cancelled: true }, which surfaces the recovery overlay.
@@ -16076,19 +15730,19 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 
   return { ok: false, cancelled: false }
 })
-ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
-ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
-ipcMain.handle('hermes:local-backend:probe', async () => {
+ipcMain.handle('rabbit:boot-progress:get', async () => bootProgressState)
+ipcMain.handle('rabbit:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('rabbit:local-backend:probe', async () => {
   // Resolution only. ensureRuntime/runBootstrap must not start from a hover
   // or a click that has not confirmed the install.
-  const backend = await resolveHermesBackend([])
+  const backend = await resolveRabbitBackend([])
 
   return { bootstrapNeeded: backend?.kind === 'bootstrap-needed' }
 })
-ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
+ipcMain.handle('rabbit:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
-ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
+ipcMain.handle('rabbit:plugin-profile-routes', async (_event, rawProfileNames) => {
   const fallbackProfileNames = Array.isArray(rawProfileNames)
     ? rawProfileNames
         .filter(name => typeof name === 'string')
@@ -16123,7 +15777,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ]
   }
 
-  // A local enumeration can fail while remote/cloud sources succeed. Preserve
+  // A local enumeration can fail while remote sources succeed. Preserve
   // cached v1 profile names as explicitly-local rows so those valid routes do
   // not disappear and duplicate names remain source-qualified.
   const localSource = registry.connections.find(source => source.kind === 'local')
@@ -16160,8 +15814,8 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     sources: registry.connections
   })
 })
-ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
-ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
+ipcMain.handle('rabbit:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
+ipcMain.handle('rabbit:ssh-config:resolve', async (_event, host) => {
   const value = String(host || '').trim()
 
   if (!value) {
@@ -16201,25 +15855,25 @@ ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
     })
   })
 })
-ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
+ipcMain.handle('rabbit:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 
 // ── Opt-in keychain encryption for stored secrets ───────────────────────────
 // get returns the current policy without touching safeStorage; set flips it
 // and re-encodes every stored secret (see applySecretStorageEncryption).
-ipcMain.handle('hermes:secret-storage:get', async () => ({ on: secretStoragePolicy().on }))
-ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) => applySecretStorageEncryption(on === true))
+ipcMain.handle('rabbit:secret-storage:get', async () => ({ on: secretStoragePolicy().on }))
+ipcMain.handle('rabbit:secret-storage:set', async (_event: any, on: any) => applySecretStorageEncryption(on === true))
 
 // ── v2 connection registry IPC (multi-source) ───────────────────────────────
 // Storage-level CRUD for named agent sources. Routing/pooling consumption of
 // the registry lands separately; these handlers only manage the persisted
 // list, so they are safe to ship ahead of the switchover.
-ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
-ipcMain.handle('hermes:connections:save', async (_event, payload) => {
+ipcMain.handle('rabbit:connections:list', async () => sanitizeConnectionsRegistry())
+ipcMain.handle('rabbit:connections:save', async (_event, payload) => {
   const saved = await saveRegistryConnection(payload)
 
   return { ok: true, connection: saved, registry: sanitizeConnectionsRegistry() }
 })
-ipcMain.handle('hermes:connections:remove', async (_event, id) => {
+ipcMain.handle('rabbit:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
   const registry = removeConnection(readDesktopConnectionsRegistry(), key)
@@ -16231,34 +15885,34 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   // gets `mac-mini` back — with the removed machine's profile list still cached under it.
   evictConnectionCaches(key)
   // And the renderer side: without this push, secondaries scoped to the
-  // removed connection keep their WebSocket open (remote/cloud have no local
+  // removed connection keep their WebSocket open (remote has no local
   // process to kill) and stream ghost events until page reload.
   broadcastConnectionsChanged({ connectionId: key, reason: 'removed' })
   desktopProfilePreferences.connectionRemoved(key)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
-ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
+ipcMain.handle('rabbit:connections:set-primary', async (_event, id) => {
   assertCanMutateManagedPrimaryRouting()
   const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
-ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
+ipcMain.handle('rabbit:connections:set-launch-mode', async (_event, mode) => {
   assertCanMutateManagedPrimaryRouting()
   const registry = setConnectionLaunchMode(readDesktopConnectionsRegistry(), String(mode || ''))
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
-ipcMain.handle('hermes:connections:set-last-used', async (_event, id) => {
+ipcMain.handle('rabbit:connections:set-last-used', async (_event, id) => {
   const registry = setLastUsedConnection(readDesktopConnectionsRegistry(), String(id || ''))
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
-ipcMain.handle('hermes:connections:test', async (_event, id) => {
+ipcMain.handle('rabbit:connections:test', async (_event, id) => {
   const registry = readDesktopConnectionsRegistry()
   const entry = registry.connections.find(c => c.id === String(id || ''))
 
@@ -16275,7 +15929,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
       sshUser: entry.user,
       sshPort: entry.port,
       sshKeyPath: entry.keyPath,
-      sshRemoteHermesPath: entry.remoteHermesPath
+      sshRemoteRabbitPath: entry.remoteRabbitPath
     })
 
     if (result?.reachable) {
@@ -16287,7 +15941,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     return result
   }
 
-  // Remote/cloud/local probe built DIRECTLY from the registry entry. Routing
+  // Remote/local probe built DIRECTLY from the registry entry. Routing
   // through coerceDesktopConnectionConfig would use v1 connection.json as the
   // `existing` base: an entry with a broken/absent token would inherit the v1
   // global remote's token and send it to THIS entry's URL (cross-host
@@ -16300,7 +15954,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
   let testHeaders = {}
 
   if (entry.kind === 'local') {
-    const local = await startHermes()
+    const local = await startRabbit()
     baseUrl = local.baseUrl
     token = local.token
     authMode = normAuthMode(local.authMode)
@@ -16421,7 +16075,7 @@ async function probeSshProfileInventory(connection) {
     user: connection.user,
     port: connection.port,
     keyPath: connection.keyPath,
-    remoteHermesPath: connection.remoteHermesPath
+    remoteRabbitPath: connection.remoteRabbitPath
   })
 
   if (!sshConfig) {
@@ -16435,7 +16089,7 @@ async function probeSshProfileInventory(connection) {
 
   try {
     await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const profiles = await remoteLifecycle.listRemoteRabbitProfiles(ssh)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
@@ -16594,7 +16248,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
                 )
               : undefined
 
-            // The root HERMES_HOME is an agent too; enumerations that omit it
+            // The root RABBIT_HOME is an agent too; enumerations that omit it
             // (older backends list only named profiles) still get a default row.
             if (!profiles.includes('default')) {
               profiles.unshift('default')
@@ -16649,7 +16303,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
   )
 }
 
-ipcMain.handle('hermes:agents:roster', async () => {
+ipcMain.handle('rabbit:agents:roster', async () => {
   const registry = readDesktopConnectionsRegistry()
   const enumerations = await enumerateRegistryAgentSources(registry)
 
@@ -16672,7 +16326,7 @@ ipcMain.handle('hermes:agents:roster', async () => {
 })
 
 // Registry-scoped fresh WS URL: the (connectionId, profile) analogue of
-// hermes:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
+// rabbit:gateway:ws-url. Same single-use-ticket discipline for OAuth sources.
 const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
@@ -16680,7 +16334,7 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   rememberHeaders: rememberRemoteWsHeaders
 })
 
-ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
+ipcMain.handle('rabbit:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
 })
 
@@ -16732,14 +16386,13 @@ async function requestManagedSshUpdate(rawId) {
   return operation
 }
 
-ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
+ipcMain.handle('rabbit:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
-// Fan out `hermes update` to every eligible registered connection at once.
-// Cloud entries are excluded (platform-managed); each dispatch reports
+// Fan out `rabbit update` to every eligible registered connection at once.
 // independently so one dead LAN box can't wedge the batch. Local reuses the
 // app's own update pipeline; Desktop-managed SSH uses the transactional
 // drain/update/restore lifecycle; URL remotes POST their backend updater.
-ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
+ipcMain.handle('rabbit:connections:update-all', async (_event, payload) => {
   const registry = readDesktopConnectionsRegistry()
 
   // Optional renderer-side exclusions: the everything-update flow dispatches
@@ -16758,11 +16411,6 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
     registry.connections.filter(connection => !excludeIds.has(connection.id)),
     async (connection: RegistryConnection) => {
       const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
-      const eligibility = updateEligibility(connection)
-
-      if (!eligibility.eligible) {
-        return { ...base, ok: false, skipped: true, reason: eligibility.reason }
-      }
 
       try {
         if (connection.kind === 'local') {
@@ -16783,7 +16431,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
           ensureRegistryBackend(connection.id, null)
         )
 
-        const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
+        const body: any = await postJsonForBackend(descriptor, '/api/rabbit/update', {}, { timeoutMs: 15_000 })
 
         if (body?.ok === false) {
           // The backend refused (docker/nix/externally-managed installs) —
@@ -16820,7 +16468,7 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 }
 
 // Any-method REST call against a resolved backend descriptor — the descriptor
-// analogue of the hermes:api handler's own auth split: OAuth backends prefer a
+// analogue of the rabbit:api handler's own auth split: OAuth backends prefer a
 // native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
 // partition; token/local descriptors use the static session-token header.
 async function fetchJsonForBackend(
@@ -16860,8 +16508,8 @@ async function fetchJsonForBackend(
   })
 }
 
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
+ipcMain.handle('rabbit:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
+ipcMain.handle('rabbit:connection-config:oauth-login', async (_event, rawUrl, rawOpts) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status
   // for supported auth_flows and /api/auth/providers for provider capabilities:
   //   - all providers support password → always use the embedded login window
@@ -16899,7 +16547,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
   // The draft's intended entry shape (kind/authMode the save will persist).
   // The identity branch in oauth-partition.ts gates the pre-save private jar
   // on it: only a cookie-auth remote draft earns its own jar up front; a
-  // cloud or token draft signs in on the legacy jar — the jar the saved
+  // token draft signs in on the legacy jar — the jar the saved
   // entry reads — so login and read can never disagree. Invalid or missing
   // values fail closed to the legacy jar in the resolver.
   const pendingKind = typeof rawOpts?.kind === 'string' ? rawOpts.kind : ''
@@ -16953,7 +16601,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
 
       nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
-      // startHermes() re-dials instead of replaying the stale rejection.
+      // startRabbit() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
 
       return { ok: true, baseUrl, connected: true, connectionId: loginConnectionId || undefined }
@@ -16997,7 +16645,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl, ra
 
   return { ok: true, baseUrl, connected, connectionId: loginConnectionId || undefined }
 })
-ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
+ipcMain.handle('rabbit:connection-config:oauth-logout', async (_event, rawUrl) => {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
@@ -17015,42 +16663,14 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   return { ok: true, connected }
 })
 
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
-// One portal login in the OAuth partition powers both discovery and the silent
-// per-agent cascade. See the discovery/cascade helpers above.
-ipcMain.handle('hermes:cloud:status', async () => ({
-  portalBaseUrl: resolvePortalBaseUrl(),
-  signedIn: await hasLivePortalSession()
-}))
-ipcMain.handle('hermes:cloud:login', async () => {
-  await openPortalLoginWindow()
-
-  return { ok: true, signedIn: await hasLivePortalSession() }
-})
-ipcMain.handle('hermes:cloud:logout', async () => {
-  await clearOauthSession(resolvePortalBaseUrl())
-
-  return { ok: true, signedIn: await hasLivePortalSession() }
-})
-ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
-  // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
-  // scopes discovery to a chosen org for multi-org users.
-  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
-})
-ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
-  // Silent per-agent sign-in via the shared portal session. Returns the agent's
-  // gateway baseUrl + whether its session cookie landed; the renderer then
-  // saves a cloud-mode connection pointed at this dashboardUrl.
-  return cloudAgentSilentSignIn(dashboardUrl)
-})
-ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
+ipcMain.handle('rabbit:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
-ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+ipcMain.handle('rabbit:connection-config:apply', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
@@ -17124,21 +16744,21 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 
-ipcMain.handle('hermes:profile:default:get', async () => desktopProfilePreferences.getDefault())
-ipcMain.handle('hermes:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
-ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
-// Persistence-only sibling of hermes:profile:set: records the profile the
+ipcMain.handle('rabbit:profile:default:get', async () => desktopProfilePreferences.getDefault())
+ipcMain.handle('rabbit:profile:default:set', async (_event, route) => desktopProfilePreferences.setDefault(route))
+ipcMain.handle('rabbit:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+// Persistence-only sibling of rabbit:profile:set: records the profile the
 // Desktop last used WITHOUT tearing down the backend or reloading the window.
 // An explicit default route wins at launch and is never replaced here.
-ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
+ipcMain.handle('rabbit:profile:remember', async (_event, name) => ({
   profile: writeActiveDesktopProfile(name)
 }))
-ipcMain.handle('hermes:profile:set', async (_event, name) => {
+ipcMain.handle('rabbit:profile:set', async (_event, name) => {
   assertCanMutateManagedPrimaryRouting()
   const next = writeActiveDesktopProfile(name)
 
   // Switching profiles is a backend re-home: relaunch the dashboard under the
-  // new HERMES_HOME. Pool backends keep their own homes, so only the primary
+  // new RABBIT_HOME. Pool backends keep their own homes, so only the primary
   // is torn down.
   await teardownPrimaryBackendAndWait()
   mainWindow?.reload()
@@ -17146,13 +16766,13 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
   return { profile: next }
 })
 
-ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
+ipcMain.on('rabbit:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })
 
 // The host renderer reports which of its Browser guests are off screen (a
 // hidden session's kept-alive page), so focused-guest gestures skip them.
-ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
+ipcMain.on('rabbit:preview-guest-hidden', (event, payload) => {
   notePreviewGuestHidden(
     event.sender,
     electronWebContents.fromId(Number(payload?.webContentsId)),
@@ -17160,7 +16780,7 @@ ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
   )
 })
 
-ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
+ipcMain.on('rabbit:f12ShortcutActive', (event, active) => {
   if (active) {
     f12ShortcutActiveWindows.add(event.sender.id)
   } else {
@@ -17172,7 +16792,7 @@ app.on('web-contents-created', (_event, contents) => {
   contents.once('destroyed', () => f12ShortcutActiveWindows.delete(contents.id))
 })
 
-ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
+ipcMain.handle('rabbit:requestMicrophoneAccess', async () => {
   if (!IS_MAC || typeof systemPreferences.askForMediaAccess !== 'function') {
     return true
   }
@@ -17184,7 +16804,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 // Metadata only (app, title, bounds) — never pixels. On macOS, other apps'
 // window titles are gated behind the Screen Recording permission; pass titles
 // through only when it is ALREADY granted, and never prompt for it here.
-ipcMain.handle('hermes:window:readBelow', async event => {
+ipcMain.handle('rabbit:window:readBelow', async event => {
   const win = BrowserWindow.fromWebContents(event.sender)
 
   if (!win || win.isDestroyed()) {
@@ -17509,7 +17129,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
 // straight from the backend pool, never dialing. SSH sources contribute one
-// backend per pooled (connection, profile) scope; remote/cloud sources are one
+// backend per pooled (connection, profile) scope; remote sources are one
 // shared host (any pooled scope's descriptor serves the cross-profile read).
 // The primary local connection is excluded for the legacy unpinned path — the
 // primary aggregate carries local rows there. A registry-pinned aggregate opts
@@ -17625,13 +17245,13 @@ function isNotFoundApiError(error) {
   return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
 }
 
-async function handleHermesApiRequest(request) {
+async function handleRabbitApiRequest(request) {
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their
   // run sessions included — lives in THAT host's state.db, not any local
   // profile's. Resolve the backend through the registry (same pool the job
   // list and WS traffic use) instead of the legacy profile route; a shared
-  // remote/cloud host serves every profile via ?profile=, so scope the path.
+  // remote host serves every profile via ?profile=, so scope the path.
   // An absent/empty id falls through to the byte-identical v1 route below.
   // Explicit `local` stays registry-pinned so it cannot inherit a v1 remote.
   const registryConnectionId = apiRequestRegistryConnectionId(request)
@@ -17665,13 +17285,13 @@ async function handleHermesApiRequest(request) {
   const spawnPriority = spawnPriorityFrom(request?.priority)
   // After tearing down a backend for profile deletion, route to the primary
   // backend instead of spawning a fresh pool backend.  A freshly spawned
-  // backend calls ensure_hermes_home() which recreates the profile directory,
+  // backend calls ensure_rabbit_home() which recreates the profile directory,
   // defeating the deletion and leaving a zombie process.
   //
   // Local-profile REST calls stay on the primary dashboard and carry ?profile=
   // (or name the profile in the path / PATCH body). A request that MUTATES
   // state the server cannot scope at all retains its pooled backend, whose
-  // HERMES_HOME is then the scope, so a destructive call can never fall
+  // RABBIT_HOME is then the scope, so a destructive call can never fall
   // through to the primary home — `resolveProfileBackendRoute` case 6.
   //
   // A profile rename tears down the old-name backend the same way; for a
@@ -17734,13 +17354,13 @@ function formatApiRequestFailure(
   const path = String(request?.path ?? '(no path)').slice(0, 500)
   const detail = error instanceof Error ? (error.stack ?? error.message) : String(error)
 
-  return `[hermes:api ${method} ${path}] ${detail}`.slice(0, 6000)
+  return `[rabbit:api ${method} ${path}] ${detail}`.slice(0, 6000)
 }
 
-ipcMain.handle('hermes:api', async (_event, request) => {
+ipcMain.handle('rabbit:api', async (_event, request) => {
   // Hold the deletion gate for BOTH profile deletes and renames: a concurrent
   // renderer reconnect entering ensureBackend() mid-mutation would otherwise
-  // respawn the old-name backend and recreate its HERMES_HOME (#45474).
+  // respawn the old-name backend and recreate its RABBIT_HOME (#45474).
   const deletingProfile = profileNameFromDeleteRequest(request)
   const mutatingProfile = deletingProfile || profileRenameFromRequest(request)?.oldName || null
   const registryConnectionId = apiRequestRegistryConnectionId(request)
@@ -17760,14 +17380,14 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     }
 
     if (!mutatingProfile) {
-      return await handleHermesApiRequest(request)
+      return await handleRabbitApiRequest(request)
     }
 
     const releaseProfileDeletion = profileDeletionGate.acquire(mutatingProfile)
 
-    return await handleHermesApiRequest(request).finally(releaseProfileDeletion)
+    return await handleRabbitApiRequest(request).finally(releaseProfileDeletion)
   } catch (error) {
-    // Electron logs "Error occurred in handler for 'hermes:api'" with a full
+    // Electron logs "Error occurred in handler for 'rabbit:api'" with a full
     // stack for EVERY rejected invoke, and there is no opt-out on the handler.
     // Session resolution is a deliberate probe ladder (`resolveStoredSession`:
     // cache → active backend → each other profile) and the renderer already
@@ -17782,7 +17402,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     // contract is unchanged; only Electron's logging is bypassed. Every other
     // failure still rejects and still logs in full.
     if (isNotFoundApiError(error)) {
-      return { [HERMES_API_EXPECTED_404]: String((error as any)?.message ?? error) }
+      return { [RABBIT_API_EXPECTED_404]: String((error as any)?.message ?? error) }
     }
 
     // Persist the failure (full stack) before the rejection crosses to the
@@ -17796,7 +17416,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
 // Speech claims outlive instant cues so throttled peer windows cannot replay a reply.
 const ownsAmbientCue: ReturnType<typeof createAmbientClaimArbiter> = createAmbientClaimArbiter()
-ipcMain.handle('hermes:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown): boolean =>
+ipcMain.handle('rabbit:ambient:claim', (_event: IpcMainInvokeEvent, key: unknown): boolean =>
   ownsAmbientCue(String(key ?? ''))
 )
 
@@ -17835,14 +17455,14 @@ function persistDataUrlReadMaxMb(maxMb) {
   return next
 }
 
-ipcMain.handle('hermes:data-url-read-max:get', () => ({
+ipcMain.handle('rabbit:data-url-read-max:get', () => ({
   maxMb: dataUrlReadMaxMb,
   // Keep the default bytes constant visible for tests / diagnostics.
   defaultMaxMb: DATA_URL_READ_DEFAULT_MAX_MB,
   maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb)
 }))
 
-ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
+ipcMain.handle('rabbit:data-url-read-max:set', (_event, maxMb) => {
   const next = persistDataUrlReadMaxMb(maxMb)
 
   return {
@@ -17852,7 +17472,7 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
   }
 })
 
-ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
+ipcMain.handle('rabbit:readFileDataUrl', async (_event, filePath) => {
   // Backend-reported paths are WSL/POSIX (`/home/...`, `/mnt/c/...`); on a
   // Windows host bridge them to a UNC/drive form, same as directory reads.
   const bridgedPath = resolveIpcFileReadPath(filePath)
@@ -17876,7 +17496,7 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 // Keep a finite cap so Electron + base64 memory stays bounded while archives
 // can exceed the default 16 MiB preview ceiling (and still fit the gateway
 // WebSocket frame limit after base64 expansion).
-ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
+ipcMain.handle('rabbit:readFileDataUrlForAttach', async (_event, filePath) => {
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
   try {
@@ -17894,7 +17514,7 @@ ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
   }
 })
 
-ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
+ipcMain.handle('rabbit:readFileText', async (_event, filePath) => {
   try {
     const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
       maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
@@ -17936,13 +17556,13 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 })
 
 // Runtime desktop plugins load their FULL source through this door.
-// `hermes:readFileText` is the *preview* read and silently truncates at
+// `rabbit:readFileText` is the *preview* read and silently truncates at
 // TEXT_PREVIEW_MAX_BYTES (512 KiB) — for a plugin that means evaluating half a
 // file. Dedicated generous cap, full read, and a hard EFBIG (via maxBytes)
 // instead of truncation when the source exceeds it.
 const PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
 
-ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unknown) => {
+ipcMain.handle('rabbit:readPluginSource', async (_event: unknown, filePath: unknown) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: PLUGIN_SOURCE_MAX_BYTES,
     purpose: 'Plugin source'
@@ -17956,7 +17576,7 @@ ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unkn
   }
 })
 
-ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
+ipcMain.handle('rabbit:selectPaths', async (_event, options: any = {}) => {
   const properties = selectPathsDialogProperties(options || {})
 
   let resolvedDefaultPath
@@ -17989,7 +17609,7 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
-ipcMain.handle('hermes:writeClipboard', (_event, text) => {
+ipcMain.handle('rabbit:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 
   return true
@@ -17997,7 +17617,7 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
 
 // Native save-location picker (profile export etc.) — the write itself happens
 // elsewhere (the backend, for profile archives); this only picks the path.
-ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
+ipcMain.handle('rabbit:selectSavePath', async (_event, options: any = {}) => {
   const result = await dialog.showSaveDialog(mainWindow, {
     title: options?.title || 'Save',
     defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
@@ -18015,15 +17635,15 @@ ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
 // navigator.clipboard.readText() throws "Document is not focused" whenever a
 // portaled overlay has focus, and there's no way to route a read through the
 // canvas. The main process has no such gate.
-ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
+ipcMain.handle('rabbit:readClipboard', () => clipboard.readText())
 
-ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
+ipcMain.handle('rabbit:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('rabbit:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 
 // The custom context menu's edit verbs. They act on the SENDER's focused
 // element, so the renderer restores focus to the editable before invoking.
-ipcMain.handle('hermes:context-menu:edit', (event, command) => {
+ipcMain.handle('rabbit:context-menu:edit', (event, command) => {
   const contents = event.sender
 
   if (command === 'copy') {
@@ -18039,7 +17659,7 @@ ipcMain.handle('hermes:context-menu:edit', (event, command) => {
 
 // Copy the image under the sender's LAST context-menu gesture. Chromium only
 // exposes image bytes through copyImageAt, and only main saw the coordinates.
-ipcMain.handle('hermes:context-menu:copy-image', event => {
+ipcMain.handle('rabbit:context-menu:copy-image', event => {
   const point = lastContextMenuPoint.get(event.sender.id)
 
   if (point) {
@@ -18047,7 +17667,7 @@ ipcMain.handle('hermes:context-menu:copy-image', event => {
   }
 })
 
-ipcMain.handle('hermes:context-menu:spellcheck', (event, action) => {
+ipcMain.handle('rabbit:context-menu:spellcheck', (event, action) => {
   const kind = action?.kind
   const word = String(action?.word || '')
 
@@ -18064,7 +17684,7 @@ ipcMain.handle('hermes:context-menu:spellcheck', (event, action) => {
 
 // Guest dictionary add: the webview TAG exposes replaceMisspelling but no
 // session API, so the renderer names the guest by webContents id.
-ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
+ipcMain.handle('rabbit:context-menu:guest-add-word', (_event, payload) => {
   const word = String(payload?.word || '')
   const guest = electronWebContents.fromId(Number(payload?.webContentsId))
 
@@ -18073,13 +17693,13 @@ ipcMain.handle('hermes:context-menu:guest-add-word', (_event, payload) => {
   }
 })
 
-ipcMain.handle('hermes:capturePreview', async (_event, payload) => {
+ipcMain.handle('rabbit:capturePreview', async (_event, payload) => {
   const guest = electronWebContents.fromId(Number(payload?.webContentsId))
 
   return capturePreviewContents(guest, payload?.rect, payload?.viewport)
 })
 
-ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
+ipcMain.handle('rabbit:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
 
   if (!data) {
@@ -18091,17 +17711,17 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   return writeComposerImage(buffer, payload?.ext || '.png', payload?.name)
 })
 
-ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
+ipcMain.handle('rabbit:savePastedText', async (_event, payload) => {
   const text = typeof payload?.text === 'string' ? payload.text : ''
 
   if (!text) {
     throw new Error('savePastedText: missing text')
   }
 
-  return writeComposerPaste(HERMES_HOME, text)
+  return writeComposerPaste(RABBIT_HOME, text)
 })
 
-ipcMain.handle('hermes:saveClipboardImage', async () => {
+ipcMain.handle('rabbit:saveClipboardImage', async () => {
   const image = clipboard.readImage()
 
   if (image && !image.isEmpty()) {
@@ -18122,15 +17742,15 @@ ipcMain.handle('hermes:saveClipboardImage', async () => {
   return ''
 })
 
-ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
+ipcMain.handle('rabbit:normalizePreviewTarget', (_event, target, baseDir) =>
   normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
 )
 
-ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(event.sender, String(url || '')))
+ipcMain.handle('rabbit:watchPreviewFile', (event, url) => watchPreviewFile(event.sender, String(url || '')))
 
-ipcMain.handle('hermes:watchDirectory', (event, dir) => watchDirectory(event.sender, String(dir || '')))
+ipcMain.handle('rabbit:watchDirectory', (event, dir) => watchDirectory(event.sender, String(dir || '')))
 
-ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
+ipcMain.handle('rabbit:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 
 // Each renderer reports the turns it has in flight; the quit guard reads the
 // merged picture. Keyed by webContents id so a closed window stops counting.
@@ -18176,7 +17796,7 @@ function updateStreamThrottleFromActiveWork() {
   applyKeepAwake(working)
 }
 
-ipcMain.on('hermes:active-work', (event, payload) => {
+ipcMain.on('rabbit:active-work', (event, payload) => {
   const id = event.sender.id
 
   if (!activeWorkByWebContents.has(id)) {
@@ -18202,7 +17822,7 @@ ipcMain.on('hermes:active-work', (event, payload) => {
   updateStreamThrottleFromActiveWork()
 })
 
-ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
+ipcMain.on('rabbit:titlebar-theme', (_event, payload) => {
   if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
     return
   }
@@ -18221,7 +17841,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
-ipcMain.on('hermes:native-theme', (_event, mode) => {
+ipcMain.on('rabbit:native-theme', (_event, mode) => {
   if (!THEME_SOURCES.has(mode)) {
     return
   }
@@ -18282,18 +17902,18 @@ app.on('quit', () => {
 // Answered synchronously so preload can publish the verdict before the
 // renderer's first script — see the note there on why it cannot decide this
 // itself. Registered at module scope, which runs long before any window.
-ipcMain.on('hermes:translucency:support', event => {
+ipcMain.on('rabbit:translucency:support', event => {
   event.returnValue = { glass: GLASS_SUPPORTED, translucency: TRANSLUCENCY_SUPPORTED }
 })
 
 // Feature-flag facts the renderer needs before first paint (same sendSync
 // pattern as translucency). Resolved in feature-flags.ts from the launch
-// argv and the artifact's channel: `--local` (from `hermes desktop --local`
-// or directly on Hermes.exe, a shortcut edit) gates the local-models GUI on
+// argv and the artifact's channel: `--local` (from `rabbit desktop --local`
+// or directly on Rabbit.exe, a shortcut edit) gates the local-models GUI on
 // stable builds, and canary builds get the same surfaces by default. Launch
 // flags survive self-relaunches because collectRelaunchArgs only strips
 // internal flags.
-ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
+ipcMain.on('rabbit:feature-flags', (event: IpcMainEvent): void => {
   event.returnValue = {
     ...resolveFeatureFlags({
       argv: process.argv,
@@ -18303,7 +17923,7 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
   }
 })
 
-ipcMain.on('hermes:translucency', (_event, payload) => {
+ipcMain.on('rabbit:translucency', (_event, payload) => {
   const next = normalizeTranslucency(payload, GLASS_SUPPORTED)
   const previous = translucencyState
 
@@ -18369,7 +17989,7 @@ function applyKeepAwake(working = isAnyTurnInFlight()) {
   keepAwake.set(keepAwakeWanted(keepAwakeMode, working))
 }
 
-ipcMain.on('hermes:keep-awake', (_event, value) => {
+ipcMain.on('rabbit:keep-awake', (_event, value) => {
   // Accepts the mode string, or the boolean the pre-mode toggle sent.
   const mode = parseKeepAwakeMode(value)
 
@@ -18393,7 +18013,7 @@ ipcMain.on('hermes:keep-awake', (_event, value) => {
 // accelerator — so both handlers return the state that ACTUALLY resulted,
 // including `registered: false` + `error: 'taken'` when another app owns the
 // chord. See electron/quick-entry.ts + store/quick-entry.
-ipcMain.handle('hermes:quick-entry:settings:get', async () => {
+ipcMain.handle('rabbit:quick-entry:settings:get', async () => {
   const settings = readQuickEntrySettings()
   const state = quickEntryShortcut.current()
 
@@ -18407,7 +18027,7 @@ ipcMain.handle('hermes:quick-entry:settings:get', async () => {
   }
 })
 
-ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
+ipcMain.handle('rabbit:quick-entry:settings:set', async (_event, patch) => {
   const current = readQuickEntrySettings()
 
   const next = sanitizeQuickEntrySettings({
@@ -18430,7 +18050,7 @@ const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
   // resending a prompt that may already be delivered.
   onLateResult: (correlationId, result) => {
     if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
-      quickEntryWindow.webContents.send('hermes:quick-entry:late-result', { correlationId, result })
+      quickEntryWindow.webContents.send('rabbit:quick-entry:late-result', { correlationId, result })
     }
   },
   onSuccess: () => {
@@ -18449,7 +18069,7 @@ const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
 
 // Main owns the request lifecycle so the capture window can keep text until
 // the primary renderer confirms delivery (#85590).
-ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
+ipcMain.handle('rabbit:quick-entry:submit', (event, payload) => {
   if (!quickEntryWindow || event.sender !== quickEntryWindow.webContents) {
     return { code: 'forbidden', message: 'Quick Entry sender is not authorized.', ok: false, retryable: false }
   }
@@ -18462,20 +18082,20 @@ ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
-    return { code: 'no-primary', message: 'The primary Hermes window is unavailable.', ok: false, retryable: true }
+    return { code: 'no-primary', message: 'The primary Rabbit window is unavailable.', ok: false, retryable: true }
   }
 
   const target =
     typeof payload === 'object' && typeof payload?.target === 'string' && payload.target ? payload.target : 'current'
 
   return quickEntrySubmitRelay.begin(correlationId => {
-    mainWindow.webContents.send('hermes:quick-entry:submit', { correlationId, target, text })
+    mainWindow.webContents.send('rabbit:quick-entry:submit', { correlationId, target, text })
   })
 })
 
 // Main cannot invoke the primary renderer, so the primary returns by id. Stale
 // or duplicate acknowledgements are intentionally ignored (#85590).
-ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
+ipcMain.on('rabbit:quick-entry:ack', (event, payload) => {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
     return
   }
@@ -18486,15 +18106,15 @@ ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
 // Primary renderer → main → quick window: gateway connection state + the
 // recent-session list for the target picker. Cached so a quick window spawned
 // AFTER the last push still boots from truth instead of "disconnected".
-ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
+ipcMain.on('rabbit:quick-entry:state', (_event, payload) => {
   quickEntryLastState = payload ?? null
 
   if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
-    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+    quickEntryWindow.webContents.send('rabbit:quick-entry:state', payload)
   }
 })
 
-ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
+ipcMain.on('rabbit:quick-entry:dismiss', () => hideQuickEntryWindow())
 
 // Disable F12 DevTools: maintained in the main process so a cold launch
 // restores it before any window is shown (applied on ready). The renderer
@@ -18509,7 +18129,7 @@ function readPersistedDisableF12() {
   }
 }
 
-ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
+ipcMain.on('rabbit:devtools:disable-f12', (_event, on) => {
   f12Blocked = Boolean(on)
 
   try {
@@ -18520,7 +18140,7 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   }
 })
 
-ipcMain.handle('hermes:openExternal', async (_event, url) => {
+ipcMain.handle('rabbit:openExternal', async (_event, url) => {
   const result = await openExternalUrl(url)
 
   if (result.ok === false && result.reason === 'invalid') {
@@ -18530,7 +18150,7 @@ ipcMain.handle('hermes:openExternal', async (_event, url) => {
 
 // ── Find-in-page (Ctrl/Cmd+F) ─────────────────────────────────────────────
 // The desktop supports multiple BrowserWindows (one primary plus any
-// per-session secondary windows spawned via `hermes:window:openSession`).
+// per-session secondary windows spawned via `rabbit:window:openSession`).
 // Find must run against the requesting window, not a global — otherwise
 // Cmd+F pressed in a secondary session window would search the primary
 // and the match counter would report matches the user can't see. Resolve
@@ -18557,7 +18177,7 @@ function ensureFoundInPageForwarder(sender: Electron.WebContents): void {
   })
 }
 
-ipcMain.handle('hermes:find-in-page', async (event, query, options) => {
+ipcMain.handle('rabbit:find-in-page', async (event, query, options) => {
   const win = BrowserWindow.fromWebContents(event.sender)
 
   if (!win || win.isDestroyed()) {
@@ -18572,7 +18192,7 @@ ipcMain.handle('hermes:find-in-page', async (event, query, options) => {
   return { count: 0 }
 })
 
-ipcMain.handle('hermes:stop-find-in-page', event => {
+ipcMain.handle('rabbit:stop-find-in-page', event => {
   const win = BrowserWindow.fromWebContents(event.sender)
 
   if (!win || win.isDestroyed()) {
@@ -18584,9 +18204,9 @@ ipcMain.handle('hermes:stop-find-in-page', event => {
 
 // The renderer can't know whether a loopback URL is reachable — only main
 // knows which transport backs this gateway. Ask before loading one.
-ipcMain.handle('hermes:preview:reach', async (event, url) => reachablePreviewUrl(event.sender.id, String(url || '')))
+ipcMain.handle('rabbit:preview:reach', async (event, url) => reachablePreviewUrl(event.sender.id, String(url || '')))
 
-ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
+ipcMain.handle('rabbit:openPreviewInBrowser', async (_event, url) => {
   if (!(await openPreviewInBrowser(url))) {
     throw new Error('Invalid preview URL')
   }
@@ -18594,17 +18214,17 @@ ipcMain.handle('hermes:openPreviewInBrowser', async (_event, url) => {
 
 // User-configurable default project directory. The renderer reads this on
 // settings mount and seeds the value into the picker; writing back persists
-// it via writeDefaultProjectDir so resolveHermesCwd picks it up on the next
+// it via writeDefaultProjectDir so resolveRabbitCwd picks it up on the next
 // session spawn (no app restart needed).
-ipcMain.handle('hermes:setting:defaultProjectDir:get', async () => ({
+ipcMain.handle('rabbit:setting:defaultProjectDir:get', async () => ({
   dir: readDefaultProjectDir(),
   defaultLabel: app.getPath('home'),
-  resolvedCwd: resolveHermesCwd()
+  resolvedCwd: resolveRabbitCwd()
 }))
 
-ipcMain.handle('hermes:workspace:sanitize', async (_event, cwd) => sanitizeWorkspaceCwd(cwd))
+ipcMain.handle('rabbit:workspace:sanitize', async (_event, cwd) => sanitizeWorkspaceCwd(cwd))
 
-ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
+ipcMain.handle('rabbit:setting:defaultProjectDir:set', async (_event, dir) => {
   const next = typeof dir === 'string' && dir.trim() ? dir.trim() : null
 
   if (next) {
@@ -18620,7 +18240,7 @@ ipcMain.handle('hermes:setting:defaultProjectDir:set', async (_event, dir) => {
   return { dir: next }
 })
 
-ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
+ipcMain.handle('rabbit:setting:defaultProjectDir:pick', async () => {
   const result = await dialog.showOpenDialog({
     title: 'Choose default project directory',
     properties: ['openDirectory', 'createDirectory'],
@@ -18634,11 +18254,11 @@ ipcMain.handle('hermes:setting:defaultProjectDir:pick', async () => {
   return { canceled: false, dir: result.filePaths[0] }
 })
 
-ipcMain.handle('hermes:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
+ipcMain.handle('rabbit:fetchLinkTitle', (_event, url) => fetchLinkTitle(url))
 
-ipcMain.handle('hermes:resolveFavicon', (_event, url) => resolveFaviconCached(url))
+ipcMain.handle('rabbit:resolveFavicon', (_event, url) => resolveFaviconCached(url))
 
-ipcMain.handle('hermes:logs:reveal', async () => {
+ipcMain.handle('rabbit:logs:reveal', async () => {
   try {
     await fs.promises.mkdir(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
 
@@ -18654,14 +18274,14 @@ ipcMain.handle('hermes:logs:reveal', async () => {
   }
 })
 
-ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+ipcMain.handle('rabbit:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: rabbitLog.slice(-200) }))
 
 // Renderer error-boundary catches (#79428 defect B): the component stack only
 // exists in renderer memory, so the boundary posts it here and we persist it
 // via the desktop.log pipeline. `on`, not `handle` — the sender may be mid-
 // crash and must not await. Flush immediately: a crashing window can be gone
 // before the debounced flush timer fires.
-ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
+ipcMain.on('rabbit:logs:renderer-error', (_event, report) => {
   const { label, boundary, message, componentStack } = report && typeof report === 'object' ? report : {}
   rememberLog(formatRendererBoundaryReport(label, boundary, message, componentStack))
   flushDesktopLogBufferSync()
@@ -18670,11 +18290,11 @@ ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
 // The preload reads this small, sanitized payload synchronously so the renderer
 // can register the local skin before its first theme paint. It stays independent
 // of the selected gateway, which can be an offline remote primary.
-ipcMain.on('hermes:skin:local', event => {
+ipcMain.on('rabbit:skin:local', event => {
   // The window route is more specific than the global next-launch preference:
   // a peer can be booting another profile while that preference changes.
   event.returnValue = readLocalSkinPayload(
-    HERMES_HOME,
+    RABBIT_HOME,
     windowConnectionRoutes.get(event.sender.id)?.profile,
     primaryProfileKey()
   )
@@ -18684,7 +18304,7 @@ ipcMain.on('hermes:skin:local', event => {
 // so the caller posts the full error here for desktop.log. Fire-and-forget,
 // like renderer-error — the toast must never depend on this round-trip.
 // Clamp: the line is renderer-supplied.
-ipcMain.on('hermes:logs:renderer-line', (_event, line) => {
+ipcMain.on('rabbit:logs:renderer-line', (_event, line) => {
   const text = typeof line === 'string' ? line.slice(0, 6000) : ''
 
   if (!text) {
@@ -18697,7 +18317,7 @@ ipcMain.on('hermes:logs:renderer-line', (_event, line) => {
 
 // Local filesystem + plugin-root IPC (readDir/reveal/rename/trash/…) — see fs-ipc.ts.
 registerFsIpc({
-  hermesHome: HERMES_HOME,
+  rabbitHome: RABBIT_HOME,
   readActiveDesktopProfile,
   expandUserPath,
   resolveRequestedPathForIpc,
@@ -18712,7 +18332,7 @@ registerGitIpc({ resolveGitBinary, resolveGhBinary })
 // mcp-oauth-callback-ipc.ts.
 registerMcpOauthCallbackIpc()
 
-// Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
+// Embedded terminal PTY host (rabbit:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
   isWindows: IS_WINDOWS,
   findOnPath,
@@ -18726,7 +18346,7 @@ const terminalIpc = registerTerminalIpc({
 const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
 ipcMain.handle(
-  'hermes:updates:check',
+  'rabbit:updates:check',
   async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> =>
     checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error): UpdaterStatusWire => ({
       supported: true,
@@ -18737,7 +18357,7 @@ ipcMain.handle(
     }))
 )
 
-ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
+ipcMain.handle('rabbit:updates:apply', async (_event, payload) =>
   applyUpdates().catch(error => ({
     ok: false,
     error: 'apply-failed',
@@ -18745,10 +18365,10 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   }))
 )
 
-ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
+ipcMain.handle('rabbit:updates:branch:get', async () => readDesktopUpdateConfig())
 
 ipcMain.handle(
-  'hermes:updates:branch:set',
+  'rabbit:updates:branch:set',
   async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
     assertSourceUpdateChannel(INSTALL_STAMP)
     const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
@@ -18758,11 +18378,11 @@ ipcMain.handle(
   }
 )
 
-function resolveHermesVersion(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
-  return resolveGatewayVersion(path => handleHermesApiRequest({ ...scope, path, timeoutMs: 5000 }))
+function resolveRabbitVersion(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
+  return resolveGatewayVersion(path => handleRabbitApiRequest({ ...scope, path, timeoutMs: 5000 }))
 }
 
-// Renderer-bundle skew: `hermes update` moves the SOURCE TREE, but the UI
+// Renderer-bundle skew: `rabbit update` moves the SOURCE TREE, but the UI
 // (including bundled plugins like Bot Mode) is compiled into this binary at
 // build time. A terminal-side update — or an in-app update whose bundle-swap
 // leg failed — leaves the new runtime running under an old renderer, so About
@@ -18781,12 +18401,12 @@ async function detectRendererSkew() {
   return checkRendererSkew(resolveUpdateRoot())
 }
 
-// Re-resolve the live Hermes version and push it into the native About panel
-// just before showing it, so an in-place `hermes update` is reflected without
+// Re-resolve the live Rabbit version and push it into the native About panel
+// just before showing it, so an in-place `rabbit update` is reflected without
 // an app restart. macOS only — `showAboutPanel()` is a no-op elsewhere, and the
 // other platforms don't use this menu item.
 function showAboutPanelFresh(): void {
-  void Promise.all([detectRendererSkew(), resolveHermesVersion()]).then(([skew, version]) => {
+  void Promise.all([detectRendererSkew(), resolveRabbitVersion()]).then(([skew, version]) => {
     const info: AppVersionInfo = appVersionInfo(INSTALL_STAMP, version, app.getVersion())
     // The product name already identifies canary and commit builds. Never pass
     // through empty/placeholder: the panel would render the bundle's 0.0.0 (#124581).
@@ -18794,27 +18414,27 @@ function showAboutPanelFresh(): void {
     app.setAboutPanelOptions({
       applicationName: APP_NAME,
       applicationVersion: skew.outOfSync ? `${display} — app build out of date, update the desktop app` : display,
-      copyright: 'Copyright © 2026 Nous Research'
+      copyright: 'Copyright © 2026 Sanath Patil'
     })
     app.showAboutPanel()
   })
 }
 
-ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
-  const [skew, version] = await Promise.all([detectRendererSkew(), resolveHermesVersion(scope)])
+ipcMain.handle('rabbit:version', async (_event, scope?: { connectionId?: string; profile?: string }) => {
+  const [skew, version] = await Promise.all([detectRendererSkew(), resolveRabbitVersion(scope)])
 
   return {
     ...appVersionInfo(INSTALL_STAMP, version, app.getVersion()),
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
-    hermesRoot: resolveUpdateRoot(),
-    hermesHome: HERMES_HOME,
+    rabbitRoot: resolveUpdateRoot(),
+    rabbitHome: RABBIT_HOME,
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind,
     // The install id: sha16 of the canonical install-root path — the key of
     // this install's per-install channel record and its installs/<sha16>/
-    // state folder. Same value `hermes update --install-id` prints; About
+    // state folder. Same value `rabbit update --install-id` prints; About
     // renders it as `sha16 (path)`.
     installId: installIdForRoot(resolveUpdateRoot(), canonicalizeInstallPath),
     // The artifact kind of THIS app plus whether the runtime checkout came
@@ -18826,7 +18446,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
     // Bundled artifacts always run their payload; light artifacts have no
     // runtime and only reach remote backends. External builds classify from
     // the install stamp (git/docker/nix), 'unknown' when it can't be told.
-    hermesRuntime: resolveHermesRuntime(),
+    rabbitRuntime: resolveRabbitRuntime(),
     // True when the bundle on disk is not the one this process loaded — a
     // plain app restart (no rebuild, no installer) clears the skew above.
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
@@ -18836,29 +18456,29 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
   }
 })
 
-// The About page's "Restart Hermes" button (shown when bundleSwapPending):
+// The About page's "Restart Rabbit" button (shown when bundleSwapPending):
 // load the already-swapped bundle without asking the user to quit manually.
 // app.relaunch() re-executes by path, so the fresh process picks up whatever
 // bundle now lives there.
-ipcMain.handle('hermes:app:relaunch', async () => {
+ipcMain.handle('rabbit:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
   app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
 
 /** The latest pm/venv/plugin-operation receipt — the machine-readable
- *  surface every medium reads (CLI: `hermes pm status`). Returned as one
+ *  surface every medium reads (CLI: `rabbit pm status`). Returned as one
  *  parsed JSON object: { kind, outcome, venv_rebuild, plugin_bisect,
  *  plugin_checks, ... } or null when no operation has run yet. The file
- *  lives at <HERMES_HOME>/logs/update_receipts/latest.json — written by
+ *  lives at <RABBIT_HOME>/logs/update_receipts/latest.json — written by
  *  pm syncs (bisect disables, failed rebuilds), plugin update checks,
  *  and (embedded) updates. */
 function readLatestSyncReceipt(): Record<string, unknown> | null {
-  const receiptPath = path.join(HERMES_HOME, 'logs', 'update_receipts', 'latest.json')
+  const receiptPath = path.join(RABBIT_HOME, 'logs', 'update_receipts', 'latest.json')
 
   try {
     const text = fs.readFileSync(receiptPath, 'utf8')
-    // tolerate a BOM (hermes writes plain, but editors touch configs)
+    // tolerate a BOM (rabbit writes plain, but editors touch configs)
     const stripped = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 
     return JSON.parse(stripped)
@@ -18867,7 +18487,7 @@ function readLatestSyncReceipt(): Record<string, unknown> | null {
   }
 }
 
-ipcMain.handle('hermes:sync-status', () => readLatestSyncReceipt())
+ipcMain.handle('rabbit:sync-status', () => readLatestSyncReceipt())
 
 // Python's Path.resolve() equivalent for install-id derivation: realpath when
 // the path exists, plain resolve otherwise. Must stay byte-compatible with
@@ -18883,11 +18503,11 @@ function canonicalizeInstallPath(p: string): string {
 
 /** True when the runtime checkout was created by a bootstrap installer
  *  (install.sh / install.ps1 / the desktop first-launch bootstrap): those all
- *  finish by writing `.hermes-bootstrap-complete` into the checkout root, and
- *  `hermes update` preserves the file, so a manual clone never grows one. A
+ *  finish by writing `.rabbit-bootstrap-complete` into the checkout root, and
+ *  `rabbit update` preserves the file, so a manual clone never grows one. A
  *  missing checkout (sealed bundled payloads, remote backends) is not
  *  installer-created. */
-export function isInstallerCreatedCheckout(root: string | null = ACTIVE_HERMES_ROOT): boolean {
+export function isInstallerCreatedCheckout(root: string | null = ACTIVE_RABBIT_ROOT): boolean {
   if (!root) {
     return false
   }
@@ -18904,7 +18524,7 @@ export function isInstallerCreatedCheckout(root: string | null = ACTIVE_HERMES_R
  *  the canonical-root checkout stamp plus the bootstrap marker, or the app
  *  stamp's `source`, so About's Runtime row names
  *  git/docker/nix/desktop-bootstrap instead of a bare "external". */
-function resolveHermesRuntime() {
+function resolveRabbitRuntime() {
   const stamp = INSTALL_STAMP as InstallStamp | null
 
   if (stamp?.payload === 'light') {
@@ -18948,9 +18568,9 @@ function resolveHermesRuntime() {
 //
 // The renderer's About → Danger Zone surfaces three options that mirror the
 // CLI exactly: GUI only, Lite (keep user data), Full. We ask the agent to do
-// the actual removal via `hermes uninstall …` so the cross-platform PATH /
+// the actual removal via `rabbit uninstall …` so the cross-platform PATH /
 // registry / service / node-symlink cleanup all lives in one place
-// (hermes_cli/uninstall.py + hermes_cli/gui_uninstall.py).
+// (rabbit_cli/uninstall.py + rabbit_cli/gui_uninstall.py).
 //
 // The IPC boundary applies the baked install policy before either callback.
 // Only self-managed installs use the Python summary or the cleanup script.
@@ -18961,8 +18581,8 @@ function uninstallVenvPython(): string {
 
 function fallbackUninstallSummary(): UninstallSummaryDetails {
   return {
-    hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(uninstallVenvPython()),
+    rabbit_home: RABBIT_HOME,
+    agent_installed: isRabbitSourceRoot(ACTIVE_RABBIT_ROOT) && fileExists(uninstallVenvPython()),
     gui_installed: true,
     source_built_artifacts: [],
     packaged_app_paths: [],
@@ -18975,7 +18595,7 @@ function fallbackUninstallSummary(): UninstallSummaryDetails {
 
 async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
   const py: string = uninstallVenvPython()
-  const agentRoot: string = ACTIVE_HERMES_ROOT
+  const agentRoot: string = ACTIVE_RABBIT_ROOT
 
   if (!fileExists(py)) {
     return fallbackUninstallSummary()
@@ -18997,10 +18617,10 @@ async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
     try {
       const child: ChildProcess = spawn(
         py,
-        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
+        ['-m', 'rabbit_cli.main', 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
           cwd: agentRoot,
-          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+          env: { ...process.env, RABBIT_HOME, NO_COLOR: '1' },
           stdio: ['ignore', 'pipe', 'ignore']
         })
       )
@@ -19048,14 +18668,14 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
     return {
       ok: false,
       error: 'agent-missing',
-      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
+      message: `Can't run the uninstaller: no Rabbit agent venv at ${VENV_ROOT}.`
     }
   }
 
   // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
   // running python.exe. On Windows a running .exe is mandatory-locked, so the
   // rmtree must NOT be driven by the venv's own interpreter — use a system
-  // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
+  // Python with PYTHONPATH=<agentRoot> so `import rabbit_cli` resolves from
   // source while the venv is torn down. gui-only doesn't touch the venv, so the
   // venv python is fine there. If no system Python exists (the Windows edge
   // case), fall back to the venv python — gui-only is unaffected; lite/full may
@@ -19068,7 +18688,7 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
 
     if (sysPy) {
       py = sysPy
-      pythonPath = ACTIVE_HERMES_ROOT
+      pythonPath = ACTIVE_RABBIT_ROOT
     } else if (IS_WINDOWS) {
       rememberLog(
         '[uninstall] no system Python found for lite/full on Windows; falling back ' +
@@ -19088,7 +18708,7 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
   // lock would make the script's rmdir half-fail (#37532 for the update path).
   // Reuses the incident-hardened update teardown; no-op on macOS/Linux.
   try {
-    await releaseBackendLock(ACTIVE_HERMES_ROOT, 'uninstall')
+    await releaseBackendLock(ACTIVE_RABBIT_ROOT, 'uninstall')
   } catch (error) {
     rememberLog(`[uninstall] backend teardown errored (continuing): ${error.message}`)
   }
@@ -19097,10 +18717,10 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
     desktopPid: process.pid,
     pythonExe: py,
     pythonPath,
-    agentRoot: ACTIVE_HERMES_ROOT,
+    agentRoot: ACTIVE_RABBIT_ROOT,
     uninstallArgs,
     appPath: removeBundle,
-    hermesHome: HERMES_HOME
+    rabbitHome: RABBIT_HOME
   }
 
   let scriptPath
@@ -19109,12 +18729,12 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
 
   try {
     if (IS_WINDOWS) {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.cmd`)
+      scriptPath = path.join(app.getPath('temp'), `rabbit-uninstall-${Date.now()}.cmd`)
       fs.writeFileSync(scriptPath, buildWindowsCleanupScript(scriptArgs))
       runner = process.env.ComSpec || 'cmd.exe'
       runnerArgs = ['/c', scriptPath]
     } else {
-      scriptPath = path.join(app.getPath('temp'), `hermes-uninstall-${Date.now()}.sh`)
+      scriptPath = path.join(app.getPath('temp'), `rabbit-uninstall-${Date.now()}.sh`)
       fs.writeFileSync(scriptPath, buildPosixCleanupScript(scriptArgs), { mode: 0o755 })
       runner = '/bin/bash'
       runnerArgs = [scriptPath]
@@ -19158,26 +18778,26 @@ registerDesktopUninstallIpc({
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON
 // it contributes. No theme code is executed — we only read JSON from the .vsix.
-ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketplaceThemes(String(id || '')))
+ipcMain.handle('rabbit:vscode-theme:fetch', async (_event, id) => fetchMarketplaceThemes(String(id || '')))
 
 // Search the Marketplace for color-theme extensions (empty query = top installs).
-ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
+ipcMain.handle('rabbit:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 // ---------------------------------------------------------------------------
-// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00,
-// hermes://mcp/install?name=NAME&config=B64 — the vendor "Add to Hermes"
-// button, or hermes://plugin/install?repo=owner/repo). Dev
-// (`HERMES_DESKTOP_DEV_SERVER`) registers hermes-dev:// instead — bare
-// Electron or a stale OS handler often owns hermes:// on dev machines.
+// rabbit:// deep links (e.g. rabbit://blueprint/morning-brief?time=08:00,
+// rabbit://mcp/install?name=NAME&config=B64 — the vendor "Add to Rabbit"
+// button, or rabbit://plugin/install?repo=owner/repo). Dev
+// (`RABBIT_DESKTOP_DEV_SERVER`) registers rabbit-dev:// instead — bare
+// Electron or a stale OS handler often owns rabbit:// on dev machines.
 // Parsing is generic ({kind, name, params}); the renderer routes per kind
 // and anything install-shaped requires explicit user confirmation there.
 // A docs/dashboard "Send to App" button opens this URL; we route it into the
 // running app. Three delivery paths: macOS 'open-url',
 // Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
 // ---------------------------------------------------------------------------
-const HERMES_PROTOCOL = DEV_SERVER ? 'hermes-dev' : 'hermes'
+const RABBIT_PROTOCOL = DEV_SERVER ? 'rabbit-dev' : 'rabbit'
 /** Schemes accepted when parsing inbound URLs (dev accepts both). */
-const DEEPLINK_SCHEMES = DEV_SERVER ? ['hermes-dev', 'hermes'] : ['hermes']
+const DEEPLINK_SCHEMES = DEV_SERVER ? ['rabbit-dev', 'rabbit'] : ['rabbit']
 let _pendingDeepLink = null
 let _rendererReadyForDeepLink = false
 // Set by sendOpenUpdatesRequested() when the renderer cannot hear it yet.
@@ -19214,7 +18834,7 @@ function handleDeepLink(url) {
     return
   }
 
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  // rabbit://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
   const kind = parsed.hostname || ''
   const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
   const params = {}
@@ -19235,7 +18855,7 @@ function handleDeepLink(url) {
     return
   }
 
-  // hermes://close-preview — the out-of-band exit hatch for a preview pane
+  // rabbit://close-preview — the out-of-band exit hatch for a preview pane
   // that fullscreened itself and now owns all input (#97213). Handled here
   // rather than in the renderer because the whole point is to work when the
   // renderer cannot hear anything: exit the fullscreen window and close the
@@ -19274,7 +18894,7 @@ function handleDeepLink(url) {
     // #130810 un-hide a tray-hidden window; #83998 no foreground re-pump.
     activateWindow(mainWindow)
 
-    mainWindow.webContents.send('hermes:deep-link', payload)
+    mainWindow.webContents.send('rabbit:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
     rememberLog(`[deeplink] delivery failed: ${err.message}`)
@@ -19283,7 +18903,7 @@ function handleDeepLink(url) {
 
 // Renderer calls this (via IPC) once it has mounted its deep-link listener, so
 // a link that arrived during boot/install is flushed exactly once.
-ipcMain.handle('hermes:deep-link-ready', () => {
+ipcMain.handle('rabbit:deep-link-ready', () => {
   _rendererReadyForDeepLink = true
 
   if (_pendingOpenUpdates) {
@@ -19295,7 +18915,7 @@ ipcMain.handle('hermes:deep-link-ready', () => {
     const queued = _pendingDeepLink
     _pendingDeepLink = null
     handleDeepLink(
-      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
+      `${RABBIT_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
         (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
     )
   }
@@ -19310,12 +18930,12 @@ function registerDeepLinkProtocol() {
       // relaunch us with the URL. argv[1] is usually "." when launched via
       // `electron .` from apps/desktop — resolve against cwd.
       const entry = path.resolve(process.argv[1])
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [entry])
+      app.setAsDefaultProtocolClient(RABBIT_PROTOCOL, process.execPath, [entry])
     } else {
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+      app.setAsDefaultProtocolClient(RABBIT_PROTOCOL)
     }
 
-    rememberLog(`[deeplink] registered ${HERMES_PROTOCOL}:// handler`)
+    rememberLog(`[deeplink] registered ${RABBIT_PROTOCOL}:// handler`)
   } catch (err) {
     rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
   }
@@ -19332,20 +18952,20 @@ if (preReadyDockSteps.includes('register-deep-link')) {
 }
 
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
-// second-instance argv. Without the lock a second `hermes://` launch spawns a
+// second-instance argv. Without the lock a second `rabbit://` launch spawns a
 // whole new app instead of routing into the running one.
 if (!isPrimaryInstance) {
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
   // plain quit (event.preventDefault + async backend shutdown), and in that
   // window `ready` still fires — the lock-losing instance then runs the full
-  // startup (shortcut registration, createWindow → startHermes), whose
+  // startup (shortcut registration, createWindow → startRabbit), whose
   // reapOrphans() SIGTERMs the running instance's live backend (#87295).
   // app.exit() terminates immediately, before `ready`, so a second launch
   // routes into the running window and never touches backend machinery.
   app.exit(0)
 } else {
   // Cold-start --profile must win over the stored preference before
-  // startHermes() reads active-profile.json. Only the instance that will
+  // startRabbit() reads active-profile.json. Only the instance that will
   // boot writes: a second launch must not retarget the running app. A missing
   // or invalid flag is a no-op, so the stored profile stays.
   try {
@@ -19353,16 +18973,16 @@ if (!isPrimaryInstance) {
       writeActiveDesktopProfile(name)
     })
   } catch (error) {
-    console.error('[hermes] failed to persist --profile launch override:', error)
+    console.error('[rabbit] failed to persist --profile launch override:', error)
   }
 
   app.on('second-instance', (_event, argv) => {
-    // --close-preview: the same escape hatch as hermes://close-preview, for
+    // --close-preview: the same escape hatch as rabbit://close-preview, for
     // environments where spawning a URL is harder than a flag (kiosk launchers,
-    // SSH-started sessions). Checked before deep links so a carried `hermes://`
+    // SSH-started sessions). Checked before deep links so a carried `rabbit://`
     // URL still routes normally when no flag is present.
     if (hasClosePreviewFlag(argv)) {
-      handleDeepLink('hermes://close-preview')
+      handleDeepLink('rabbit://close-preview')
     }
 
     const url = _extractDeepLink(argv)
@@ -19371,7 +18991,7 @@ if (!isPrimaryInstance) {
       handleDeepLink(url)
     }
 
-    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
+    // #130810: a second Start-menu / shortcut / Rabbit.exe launch must never
     // silently exit. Log it so a future silent exit stays diagnosable, then
     // restore a live primary with activation (restore + show + focus), or
     // re-create it when it was destroyed.
@@ -19396,7 +19016,7 @@ app.on('open-url', (event, url) => {
 app.whenReady().then(() => {
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
-  // an OS package swap, consume it here — the renderer toasts "Hermes
+  // an OS package swap, consume it here — the renderer toasts "Rabbit
   // updated to vX.Y.Z" once its bridge is up. Same-version markers (update
   // never landed) are deleted silently.
   const relaunchInfo: ConsumedRelaunch = consumePendingRelaunch(app, app.getVersion())
@@ -19442,7 +19062,7 @@ app.whenReady().then(() => {
   // APIs don't register as screen readers, so Chromium never builds the tree
   // and the composer stays invisible to them. Must run after `ready` (the
   // API's requirement). Opt out with desktop.renderer_accessibility: false
-  // (bridged as HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0); the platform/env
+  // (bridged as RABBIT_DESKTOP_RENDERER_ACCESSIBILITY=0); the platform/env
   // decision lives in the extracted helper.
   enableRendererAccessibility({ appApi: app })
 
@@ -19468,7 +19088,7 @@ app.whenReady().then(() => {
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before
-  // startHermes() finishes resolving the configured backend.
+  // startRabbit() finishes resolving the configured backend.
   const primaryProfile = primaryProfileKey()
 
   setActiveGatewayProfile(primaryProfile)
@@ -19521,7 +19141,7 @@ app.whenReady().then(() => {
     createWindow
   })
 
-  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+  // Win/Linux cold start: the launching rabbit:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
 
   if (_coldStartLink) {
@@ -19571,15 +19191,15 @@ function configureSpellChecker() {
 // A route we can't resolve counts as owned: the lost-work warning is the safe
 // side to be wrong on.
 function quitStopsBackendWork(): boolean {
-  let primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+  let primaryRouteKind: 'remote' | 'ssh' | null
 
   try {
     primaryRouteKind =
       resolveDesktopRemoteRoute({
         config: readDesktopConnectionConfig(),
         env: {
-          token: process.env.HERMES_DESKTOP_REMOTE_TOKEN,
-          url: process.env.HERMES_DESKTOP_REMOTE_URL
+          token: process.env.RABBIT_DESKTOP_REMOTE_TOKEN,
+          url: process.env.RABBIT_DESKTOP_REMOTE_URL
         },
         profile: primaryProfileKey(),
         registry: readDesktopConnectionsRegistry()
@@ -19824,7 +19444,7 @@ app.on('before-quit', event => {
   hudWindow = null
 
   // Same for the Quick Entry composer — and release its global accelerator so a
-  // quitting Hermes never keeps another app's chord hostage.
+  // quitting Rabbit never keeps another app's chord hostage.
   closeQuickEntryWindow()
 
   // Quitting mid-install should stop the installer, not orphan it.

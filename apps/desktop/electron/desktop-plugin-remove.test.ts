@@ -10,7 +10,7 @@ import { PACKAGE_MARKER } from './desktop-plugins-root'
 const homes: string[] = []
 
 function makeRoot(): { home: string; root: string } {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-dp-remove-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-dp-remove-'))
   homes.push(home)
   const root = path.join(home, 'desktop-plugins')
   fs.mkdirSync(root, { recursive: true })

@@ -2,7 +2,7 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { mergeVisibleReorder } from './order'
 
-const PREFIX = 'hermes.desktop.sidebar.gatewayGroups.v1'
+const PREFIX = 'rabbit.desktop.sidebar.gatewayGroups.v1'
 export const $gatewayGroupAliases = persistentAtom(`${PREFIX}.aliases`, {}, Codecs.stringRecord)
 export const $gatewayGroupOrder = persistentAtom(`${PREFIX}.order`, [], Codecs.stringArray)
 export const $gatewayGroupCollapsed = persistentAtom(`${PREFIX}.collapsed`, [], Codecs.stringArray)

@@ -18,7 +18,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
     from dataclasses import asdict
     from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
 
-    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.run._rabbit_home", tmp_path)
     (tmp_path / "config.yaml").write_text(
         f"privacy:\n  redact_pii: {str(redact_pii).lower()}\n", encoding="utf-8",
     )

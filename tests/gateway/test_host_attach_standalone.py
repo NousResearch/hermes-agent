@@ -11,7 +11,7 @@ from gateway import host_attach, host_rendezvous as hr
 
 def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home, monkeypatch, caplog):
     from gateway.run import _log_standalone_profiles_at_boot
-    from hermes_cli import profiles
+    from rabbit_cli import profiles
 
     root, solo = standalone_home
     member = root / "profiles" / "member"
@@ -34,14 +34,14 @@ def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home,
 
 @pytest.fixture
 def standalone_home(tmp_path, monkeypatch):
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     home = root / "profiles" / "solo"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text("gateway:\n  standalone: true\n")
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    from hermes_cli import profiles
-    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    from rabbit_cli import profiles
+    monkeypatch.setattr(profiles, "_get_default_rabbit_home", lambda: root)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
     return root, home
 
@@ -79,7 +79,7 @@ def test_standalone_lock_loser_requires_known_unserved_profile(
                                    ("default", "solo") if served else ("default",),
                                    served_known=known)
     monkeypatch.setattr(host_attach, "host_gateway", lambda **kw: owner)
-    monkeypatch.setattr(run, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(run, "get_rabbit_home", lambda: home)
     monkeypatch.setattr(host_attach, "request_serve_profile", lambda *a, **kw: None)
     hr.ensure_host_state_dir()
     with open(hr.lock_path(hr.ROLE_GATEWAY), "a+") as handle:
@@ -113,10 +113,10 @@ def test_standalone_owner_cannot_hide_a_live_multiplexer(standalone_home, monkey
     monkeypatch.setattr(host_attach, "host_gateway", lambda **kw: owner)
     monkeypatch.setattr(status, "live_gateway_pid_for_home",
                         lambda h: host_pid if Path(h) == host_home else None)
-    identity = {"pid": host_pid, "hermes_home": str(host_home), "profile": host_name,
+    identity = {"pid": host_pid, "rabbit_home": str(host_home), "profile": host_name,
                 "multiplex": True, "served_profiles": ["default", "solo", host_name]}
     monkeypatch.setattr(host_attach, "_identify", lambda h: identity if h == host_home else None)
-    monkeypatch.setattr(run, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(run, "get_rabbit_home", lambda: home)
     hr.ensure_host_state_dir()
     with open(hr.lock_path(hr.ROLE_GATEWAY), "a+") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

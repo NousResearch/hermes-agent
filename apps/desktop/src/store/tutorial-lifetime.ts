@@ -5,7 +5,7 @@ import { setToursEnabled } from '@/store/tours'
 // Desktop-global, like the two Appearance switches: changing profiles is not
 // learning the app again. Read through storage so another window's completed
 // retirement cannot be replayed over a later manual re-enable.
-const KEY = 'hermes.desktop.tutorials.lifetime.v1'
+const KEY = 'rabbit.desktop.tutorials.lifetime.v1'
 const INTRO_PERIOD_MS = 30 * 24 * 60 * 60_000
 
 interface TutorialLifetime {

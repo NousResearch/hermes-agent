@@ -1,8 +1,8 @@
 name: desensitize
-repo: https://github.com/yubingz/hermes-desensitize
+repo: https://github.com/yubingz/rabbit-desensitize
 sha: 4f6697c1e45bb224e40b556372f33794f9326c0f
-subdir: src/hermes_desensitize
-description: "Chinese-context desensitization for Hermes chats. Replaces PII and business-sensitive
+subdir: src/rabbit_desensitize
+description: "Chinese-context desensitization for Rabbit chats. Replaces PII and business-sensitive
   entities — person names, company names, addresses, file paths, and magnitude figures — with
   reversible placeholders before a message reaches the model, then restores them in the reply.
   Two layers: an optional local/OpenAI-compatible LLM for semantic entity judgment, plus a
@@ -23,8 +23,8 @@ description: "Chinese-context desensitization for Hermes chats. Replaces PII and
 maintainer: yubingz
 tier: community
 category: tools
-requires_hermes: ">=0.19"
-docs_url: https://github.com/yubingz/hermes-desensitize#readme
+requires_rabbit: ">=0.19"
+docs_url: https://github.com/yubingz/rabbit-desensitize#readme
 version: "1.4.1"
 readme: true
 platforms: []

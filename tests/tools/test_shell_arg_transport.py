@@ -28,8 +28,8 @@ class _SerializedShell:
 def test_non_path_bytes_survive_real_shell_transport(tmp_path, monkeypatch, serialized):
     home = tmp_path / 'home'
     home.mkdir()
-    monkeypatch.setenv('HERMES_HOME', str(home))
-    monkeypatch.setenv('HERMES_RUNTIME_DIR', str(tmp_path / 'store'))
+    monkeypatch.setenv('RABBIT_HOME', str(home))
+    monkeypatch.setenv('RABBIT_RUNTIME_DIR', str(tmp_path / 'store'))
     monkeypatch.setenv('HOME', str(home))
     env = {**os.environ, 'BASH_ENV': '', 'ENV': ''}
     bash = _find_bash()

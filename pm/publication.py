@@ -61,12 +61,12 @@ def validate_manifest(source: Path) -> dict:
 
 class PluginSelection:
     def __init__(self, selection: dict):
-        from hermes_yaml import roundtrip_yaml
+        from rabbit_yaml import roundtrip_yaml
 
         self.configs = selection_snapshot()
         self.home = Path(selection["home"]).resolve()
         if not self.home.is_relative_to(dependency_home_root().resolve()):
-            raise ValueError("config path is outside Hermes state")
+            raise ValueError("config path is outside Rabbit state")
         self.path = self.home / "config.yaml"
         self.previous = read_bytes_or_none(self.path)
         expected = selection.get("expected_config")
@@ -142,7 +142,7 @@ class StagedPlugin:
     def publish(self, project: Path) -> None:
         import os
         import uuid
-        from hermes_cli.auth import _file_lock
+        from rabbit_cli.auth import _file_lock
         from pm.store import tree_digest
 
         if selection_snapshot() != self.configs:

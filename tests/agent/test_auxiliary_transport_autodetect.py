@@ -92,7 +92,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
         AnthropicAuxiliaryClient,
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     # sk-kimi- prefix triggers /coding endpoint auto-detection
     monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-faketesttoken123")
 

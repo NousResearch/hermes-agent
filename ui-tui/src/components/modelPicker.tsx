@@ -1,8 +1,8 @@
-import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import { fuzzyRank } from '@hermes/shared/fuzzy'
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
-import { modelSearchText } from '@hermes/shared/model-search-text'
-import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
+import { Box, Text, useInput, useStdout } from '@rabbit/ink'
+import { fuzzyRank } from '@rabbit/shared/fuzzy'
+import type { ModelOptionProvider, ModelOptionsResult } from '@rabbit/shared/gateway-events'
+import { modelSearchText } from '@rabbit/shared/model-search-text'
+import { REASONING_EFFORTS } from '@rabbit/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
@@ -343,7 +343,7 @@ export function ModelPicker({
                         authenticated: false,
                         models: [],
                         total_models: 0,
-                        warning: p.key_env ? M.pasteKeyToActivate(p.key_env) : M.runHermesModelToConfigure
+                        warning: p.key_env ? M.pasteKeyToActivate(p.key_env) : M.runRabbitModelToConfigure
                       }
                     : p
                 )
@@ -467,7 +467,7 @@ export function ModelPicker({
             setFilter('')
           }
 
-          // Other auth types: no-op (warning shown tells them to run hermes model)
+          // Other auth types: no-op (warning shown tells them to run rabbit model)
           return
         }
 
@@ -520,7 +520,7 @@ export function ModelPicker({
     }
 
     // Persist-global toggle moved to Ctrl+G so 'g' can be typed into the
-    // filter. With Ctrl held, @hermes/ink reports `ch` as the key name ('g'),
+    // filter. With Ctrl held, @rabbit/ink reports `ch` as the key name ('g'),
     // not the raw control byte (see input-event.ts: input = ctrl ? name : seq).
     if (allowPersistGlobal && key.ctrl && ch === 'g') {
       setPersistGlobal(v => !v)

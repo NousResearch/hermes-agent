@@ -17,11 +17,11 @@ from typing import Any, Callable, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import (
+from rabbit_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
 
-# JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
+# JWKS Cache-Control max-age (portal contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300
 TOKEN_ENDPOINT_TIMEOUT_SEC = 10.0
 JSON_HEADERS = {"Accept": "application/json"}
@@ -33,7 +33,7 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
     """The ``config.yaml`` block at ``path`` as a dict, or ``{}`` — robust to load_config()
     raising (fresh install, malformed YAML), absent keys, or a non-dict value."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from rabbit_cli.config import cfg_get, load_config
 
         cfg = load_config()
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
@@ -104,7 +104,7 @@ def validate_redirect_uri(redirect_uri: str) -> None:
 def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect_uri: str) -> LoginStart:
     """Build the authorization-code + PKCE (S256) redirect and cookie payload. Callers
     validate ``redirect_uri`` first. The auth-route layer expects
-    ``cookie_payload["hermes_session_pkce"]`` as a flat ``state=…;verifier=…`` string
+    ``cookie_payload["rabbit_session_pkce"]`` as a flat ``state=…;verifier=…`` string
     (it prepends ``provider=``)."""
     code_verifier = b64url_no_pad(secrets.token_bytes(64))  # ~86 chars
     state = b64url_no_pad(secrets.token_bytes(32))
@@ -114,7 +114,7 @@ def pkce_login_start(authorize_url: str, *, client_id: str, scope: str, redirect
         "code_challenge_method": "S256"}
     return LoginStart(
         redirect_url=f"{authorize_url}?{urllib.parse.urlencode(params)}",
-        cookie_payload={"hermes_session_pkce": f"state={state};verifier={code_verifier}"})
+        cookie_payload={"rabbit_session_pkce": f"state={state};verifier={code_verifier}"})
 
 
 def parse_json_body(response: httpx.Response) -> Dict[str, Any]:
@@ -186,7 +186,7 @@ def make_jwks_client(jwks_url: str) -> Any:
 
     return PyJWKClient(
         jwks_url, cache_keys=True, lifespan=JWKS_CACHE_SECONDS,
-        headers={"Accept": "application/json", "User-Agent": "HermesAgent/1.0"})
+        headers={"Accept": "application/json", "User-Agent": "RabbitAgent/1.0"})
 
 
 def verify_jwt(
@@ -248,7 +248,7 @@ class NonInteractiveMixin:
 
 class JwtOAuthProvider(DashboardAuthProvider):
     """Authorization-code + PKCE provider whose session token is a JWT we verify ourselves
-    (nous: Portal access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
+    (portal builds: access token; self-hosted: OIDC ID token). Subclasses set ``_client_id`` and
     implement: ``_jwks_uri() -> str``; ``_claims_for(token) -> claims`` (raises
     ``InvalidCodeError`` on expiry/foreign token, ``ProviderError`` otherwise);
     ``_grant(data, *, bad_request_exc, headers=None, previous_refresh_token="") -> Session``;

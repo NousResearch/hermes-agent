@@ -53,7 +53,7 @@ test('the checkout virtualenv is preferred over the flat venv, on both layouts',
 })
 
 test('an explicit developer interpreter wins, and is only honoured when it exists', (): void => {
-  const preferred: string = path.join(path.sep, 'opt', 'hermes', 'bin', 'python')
+  const preferred: string = path.join(path.sep, 'opt', 'rabbit', 'bin', 'python')
   const aged: string = path.join(ROOT, 'venv', 'bin', 'python')
   const { root, fileExists } = checkout(['venv/bin/python'], true)
   const withPreferred = (candidate: string): boolean => candidate === preferred || fileExists(candidate)

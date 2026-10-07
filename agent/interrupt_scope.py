@@ -1,6 +1,6 @@
 """Host-owned cancellation for agents created deep inside synchronous work.
 
-A host that runs a blocking command on a worker thread (Hermes Console) never sees
+A host that runs a blocking command on a worker thread (Rabbit Console) never sees
 the ``AIAgent`` a CLI subcommand forks inside it, so it cannot call ``interrupt()``
 when the user cancels. The host binds an :class:`InterruptScope` around the work;
 every ``run_conversation()`` under that scope registers its agent, and
@@ -18,7 +18,7 @@ from typing import Any, Iterator, Optional
 
 from agent.interrupt_compat import request_hard_interrupt
 
-_ACTIVE_SCOPE: ContextVar[Optional["InterruptScope"]] = ContextVar("hermes_interrupt_scope", default=None)
+_ACTIVE_SCOPE: ContextVar[Optional["InterruptScope"]] = ContextVar("rabbit_interrupt_scope", default=None)
 
 
 _TOOL_REASON_HOST_CANCELLED = "host cancelled the command"

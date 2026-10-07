@@ -10,7 +10,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.relay.adapter import RelayAdapter
 from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from hermes_cli.observability import shared_metrics_gateway as smg
+from rabbit_cli.observability import shared_metrics_gateway as smg
 from tests.gateway.relay.test_relay_adapter import _CaptureTransport, make_desc
 from tests.gateway.test_platform_shared_metrics import rows  # noqa: F401 - fixture
 
@@ -35,12 +35,12 @@ def test_multiplatform_relay_replies_are_labelled_by_the_inbound_platform(rows):
     smg.start_reply_clock(slack.source)
     asyncio.run(relay.send_final_ledgered(slack, "k", "final answer", {}, reply_to=None))
 
-    assert rows("hermes.gateway.reply_latency") == [
+    assert rows("rabbit.gateway.reply_latency") == [
         {"first_response_bucket": "lt_2s", "platform": "discord"},
         {"first_response_bucket": "lt_2s", "platform": "slack"},
     ]
     # Streamed chunks send directly; the final reply is the ledgered, counted delivery.
-    assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "slack"}]
+    assert rows("rabbit.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "slack"}]
 
 
 def test_single_platform_relay_inbound_is_labelled_by_the_connector_platform(rows):
@@ -49,8 +49,8 @@ def test_single_platform_relay_inbound_is_labelled_by_the_connector_platform(row
     event = _inbound(relay, Platform.RELAY, "c9")
     smg.start_reply_clock(event.source)
     asyncio.run(relay.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
-    assert rows("hermes.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "discord"}]
-    assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "discord"}]
+    assert rows("rabbit.gateway.reply_latency") == [{"first_response_bucket": "lt_2s", "platform": "discord"}]
+    assert rows("rabbit.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "discord"}]
 
 
 @pytest.mark.parametrize("chat_platform", [None, RuntimeError("descriptor gone")])
@@ -64,7 +64,7 @@ def test_an_unresolvable_relay_chat_keeps_the_relay_label(rows, chat_platform):
             return chat_platform
 
     smg._record_delivery(_Front(), SimpleNamespace(success=True), chat_id="c1")
-    assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
+    assert rows("rabbit.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
 
 
 def test_an_unstamped_chat_on_a_multiplatform_connector_is_not_labelled_as_its_primary(rows):
@@ -73,11 +73,11 @@ def test_an_unstamped_chat_on_a_multiplatform_connector_is_not_labelled_as_its_p
     event = _inbound(relay, Platform.RELAY, "c7")
     smg.start_reply_clock(event.source)
     asyncio.run(relay.send_final_ledgered(event, "k", "final answer", {}, reply_to=None))
-    assert rows("hermes.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
+    assert rows("rabbit.platform.delivery") == [{"failure_class": "none", "outcome": "sent", "platform": "relay"}]
 
 
 def test_a_relay_stamped_turn_is_a_gateway_message():
-    from hermes_cli.observability.shared_metrics_contract import task_start_fields
+    from rabbit_cli.observability.shared_metrics_contract import task_start_fields
 
     assert task_start_fields({"platform": "relay"}) == {
         "entrypoint": "gateway_message", "execution_surface": "gateway", "platform": "relay"}

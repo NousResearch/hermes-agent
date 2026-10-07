@@ -7,7 +7,7 @@ license: MIT
 dependencies: [lightning, torch, transformers]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [PyTorch Lightning, Training Framework, Distributed Training, DDP, FSDP, DeepSpeed, High-Level API, Callbacks, Best Practices, Scalable]
 
 ---

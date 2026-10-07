@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Bind ``fn`` to the CALLER's contextvars for another thread/executor. Profile isolation
-    is a ContextVar-scoped HERMES_HOME override plus the per-turn secret scope; a worker started
+    is a ContextVar-scoped RABBIT_HOME override plus the per-turn secret scope; a worker started
     with an empty context silently lands on the default profile (or fails closed on secrets)."""
     ctx = contextvars.copy_context()
     return lambda *args, **kwargs: ctx.run(fn, *args, **kwargs)
@@ -103,8 +103,8 @@ class MemoryProvider(ABC):
     def initialize(self, session_id: str, **kwargs) -> None:
         """Initialize once at agent startup (connections, resources, threads).
 
-        kwargs always include ``hermes_home`` (profile-scoped storage; never hardcode
-        ``~/.hermes``) and ``platform``; may include ``agent_context`` ("primary" |
+        kwargs always include ``rabbit_home`` (profile-scoped storage; never hardcode
+        ``~/.rabbit``) and ``platform``; may include ``agent_context`` ("primary" |
         "subagent" | "cron" | "flush" — skip writes for non-primary contexts),
         ``agent_identity``, ``agent_workspace``, ``parent_session_id``, ``user_id``, ``user_id_alt``.
         """
@@ -181,13 +181,13 @@ class MemoryProvider(ABC):
         """PARENT-side observation of a completed delegation (the subagent has no provider session)."""
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        """Setup fields for ``hermes memory setup`` ([] if none): ``key``, ``description``,
+        """Setup fields for ``rabbit memory setup`` ([] if none): ``key``, ``description``,
         optional ``secret`` (goes to .env), ``required``, ``default``, ``choices``, ``type``
         (text | integer | number | boolean), ``minimum``/``maximum``/``step``, ``url``,
         ``env_var`` (explicit secret env var; default auto-generated)."""
         return []
 
-    def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
+    def save_config(self, values: Dict[str, Any], rabbit_home: str) -> None:
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
 
@@ -201,6 +201,6 @@ class MemoryProvider(ABC):
         """
 
     def backup_paths(self) -> List[str]:
-        """Absolute paths of provider state OUTSIDE HERMES_HOME for ``hermes backup``/``import``
+        """Absolute paths of provider state OUTSIDE RABBIT_HOME for ``rabbit backup``/``import``
         (paths outside the home dir are skipped). MUST work without ``initialize()`` or network."""
         return []

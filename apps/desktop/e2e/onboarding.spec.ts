@@ -29,7 +29,7 @@ test.describe('onboarding with no provider configured', () => {
   test('onboarding overlay appears on first boot', async () => {
     fixture = await setupNoProvider()
 
-    // The app should boot (hermes serve starts fine even without a provider),
+    // The app should boot (rabbit serve starts fine even without a provider),
     // but the renderer should show the onboarding overlay because no
     // provider is configured.
     await waitForOnboarding(fixture.page, 90_000)

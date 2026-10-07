@@ -1,7 +1,7 @@
 ---
 sidebar_position: 11
 title: "用 Cron 自动化一切"
-description: "使用 Hermes cron 的真实自动化模式——监控、报告、数据管道与多技能工作流"
+description: "使用 Rabbit cron 的真实自动化模式——监控、报告、数据管道与多技能工作流"
 ---
 
 # 用 Cron 自动化一切
@@ -15,8 +15,8 @@ Cron 任务在全新的 agent 会话中运行，不保留当前对话的任何�
 :::
 
 :::tip 不需要 LLM？你有两种零 token 方案。
-- **循环看门狗**：脚本本身已能生成精确消息（内存告警、磁盘告警、心跳）时，使用 [纯脚本 cron 任务](./cron-script-only.md)。相同的调度器，无需 LLM。你可以在对话中让 Hermes 帮你设置——`cronjob` 工具知道何时选择 `no_agent=True` 并为你编写脚本。
-- **已在运行的脚本发起的一次性通知**（CI 步骤、post-commit hook、部署脚本、外部调度的监控）：使用 [`hermes send`](./pipe-script-output.md) 将 stdout 或文件直接推送到 Telegram / Discord / Slack 等，无需设置 cron 条目。
+- **循环看门狗**：脚本本身已能生成精确消息（内存告警、磁盘告警、心跳）时，使用 [纯脚本 cron 任务](./cron-script-only.md)。相同的调度器，无需 LLM。你可以在对话中让 Rabbit 帮你设置——`cronjob` 工具知道何时选择 `no_agent=True` 并为你编写脚本。
+- **已在运行的脚本发起的一次性通知**（CI 步骤、post-commit hook、部署脚本、外部调度的监控）：使用 [`rabbit send`](./pipe-script-output.md) 将 stdout 或文件直接推送到 Telegram / Discord / Slack 等，无需设置 cron 条目。
 :::
 
 ---
@@ -30,17 +30,17 @@ Cron 任务在全新的 agent 会话中运行，不保留当前对话的任何�
 创建监控脚本：
 
 ```bash
-mkdir -p ~/.hermes/scripts
+mkdir -p ~/.rabbit/scripts
 ```
 
-```python title="~/.hermes/scripts/watch-site.py"
+```python title="~/.rabbit/scripts/watch-site.py"
 import hashlib, json, os, urllib.request
 
 URL = "https://example.com/pricing"
-STATE_FILE = os.path.expanduser("~/.hermes/scripts/.watch-site-state.json")
+STATE_FILE = os.path.expanduser("~/.rabbit/scripts/.watch-site-state.json")
 
 # Fetch current content
-req = urllib.request.Request(URL, headers={"User-Agent": "Hermes-Monitor/1.0"})
+req = urllib.request.Request(URL, headers={"User-Agent": "Rabbit-Monitor/1.0"})
 content = urllib.request.urlopen(req, timeout=30).read().decode()
 current_hash = hashlib.sha256(content.encode()).hexdigest()
 
@@ -67,7 +67,7 @@ else:
 设置 cron 任务：
 
 ```bash
-/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.hermes/scripts/watch-site.py --name "Pricing monitor" --deliver telegram
+/cron add "every 1h" "If the script output says CHANGE DETECTED, summarize what changed on the page and why it might matter. If it says NO_CHANGE, respond with just [SILENT]." --script ~/.rabbit/scripts/watch-site.py --name "Pricing monitor" --deliver telegram
 ```
 
 :::tip `[SILENT]` 技巧
@@ -94,7 +94,7 @@ Keep it under 500 words — highlight only what matters." --name "Weekly AI dige
 通过 CLI：
 
 ```bash
-hermes cron create "0 9 * * 1" \
+rabbit cron create "0 9 * * 1" \
   "Generate a weekly report covering the top AI news, trending ML GitHub repos, and most-discussed HN posts. Format with sections, include links, keep under 500 words." \
   --name "Weekly AI digest" \
   --deliver telegram
@@ -109,14 +109,14 @@ hermes cron create "0 9 * * 1" \
 监控某个仓库的新 issue、PR 或 release。
 
 ```bash
-/cron add "every 6h" "Check the GitHub repository NousResearch/hermes-agent for:
+/cron add "every 6h" "Check the GitHub repository seven0070/Rabbit- for:
 - New issues opened in the last 6 hours
 - New PRs opened or merged in the last 6 hours
 - Any new releases
 
 Use the terminal to run gh commands:
-  gh issue list --repo NousResearch/hermes-agent --state open --json number,title,author,createdAt --limit 10
-  gh pr list --repo NousResearch/hermes-agent --state all --json number,title,author,createdAt,mergedAt --limit 10
+  gh issue list --repo seven0070/Rabbit- --state open --json number,title,author,createdAt --limit 10
+  gh pr list --repo seven0070/Rabbit- --state all --json number,title,author,createdAt,mergedAt --limit 10
 
 Filter to only items from the last 6 hours. If nothing new, respond with [SILENT].
 Otherwise, provide a concise summary of the activity." --name "Repo watcher" --deliver discord
@@ -132,11 +132,11 @@ Otherwise, provide a concise summary of the activity." --name "Repo watcher" --d
 
 定期抓取数据、保存到文件，并随时间检测趋势。此模式将脚本（用于采集）与 agent（用于分析）结合使用。
 
-```python title="~/.hermes/scripts/collect-prices.py"
+```python title="~/.rabbit/scripts/collect-prices.py"
 import json, os, urllib.request
 from datetime import datetime
 
-DATA_DIR = os.path.expanduser("~/.hermes/data/prices")
+DATA_DIR = os.path.expanduser("~/.rabbit/data/prices")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # Fetch current data (example: crypto prices)
@@ -169,7 +169,7 @@ for r in recent[-6:]:
 
 If prices are flat and nothing notable, respond with [SILENT].
 If there's a significant move, explain what happened." \
-  --script ~/.hermes/scripts/collect-prices.py \
+  --script ~/.rabbit/scripts/collect-prices.py \
   --name "Price tracker" \
   --deliver telegram
 ```

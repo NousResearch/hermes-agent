@@ -45,12 +45,12 @@ _METRICS_SDK = (
 )
 # Every gauge the runtime snapshot can emit MUST be listed here or it is silently dropped.
 _OBSERVABLE_METRIC_NAMES = (
-    "hermes.gateway.up", "hermes.gateway.state", "hermes.gateway.active_agents", "hermes.gateway.busy",
-    "hermes.gateway.drainable", "hermes.gateway.restart_requested", "hermes.gateway.background_work",
-    "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
-    "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
-    "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
-    "hermes.cron.jobs.overdue",
+    "rabbit.gateway.up", "rabbit.gateway.state", "rabbit.gateway.active_agents", "rabbit.gateway.busy",
+    "rabbit.gateway.drainable", "rabbit.gateway.restart_requested", "rabbit.gateway.background_work",
+    "rabbit.gateway.background_delegations", "rabbit.platform.up", "rabbit.platform.degraded",
+    "rabbit.cron.scheduler.heartbeat_age_seconds", "rabbit.cron.scheduler.last_success_age_seconds",
+    "rabbit.cron.scheduler.catch_up_occurrences", "rabbit.cron.jobs.enabled", "rabbit.cron.jobs.running",
+    "rabbit.cron.jobs.overdue",
 )
 
 
@@ -96,7 +96,7 @@ class GatewayHealthExportRuntime:
                     item.shutdown()
 
         if closeables:
-            worker = threading.Thread(target=_close, name="hermes-gateway-health-export-shutdown", daemon=True)
+            worker = threading.Thread(target=_close, name="rabbit-gateway-health-export-shutdown", daemon=True)
             worker.start()
             worker.join(timeout=2.0)
         self.streamer = self.log_streamer = self.metric_provider = self.thread = self.stop_event = None
@@ -177,8 +177,8 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
     try:
         base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
         for name, read in (
-            ("hermes.gateway.background_work", _read_background_work_count),
-            ("hermes.gateway.background_delegations", _read_background_delegations_count),
+            ("rabbit.gateway.background_work", _read_background_work_count),
+            ("rabbit.gateway.background_delegations", _read_background_delegations_count),
         ):
             gateway_snapshot.metrics.append(GatewayMetric(name=name, value=read(), attributes=base))
     except Exception as exc:
@@ -210,7 +210,7 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
     resource = sdk["Resource"].create(_runtime_resource_attributes(config, telemetry_scope="gateway_health"))
     provider = sdk["MeterProvider"](metric_readers=[reader], resource=resource)
-    meter = provider.get_meter("hermes.gateway.health")
+    meter = provider.get_meter("rabbit.gateway.health")
     Observation = sdk["Observation"]
 
     def callback(name: str):
@@ -243,7 +243,7 @@ class GatewayDiagnosticLogStreamer(EmitterStreamer):
         self._provider = sdk["LoggerProvider"](resource=resource)
         self._processor = sdk["BatchLogRecordProcessor"](sdk["OTLPLogExporter"](**_exporter_kwargs(config, "logs")))
         self._provider.add_log_record_processor(self._processor)
-        self._logger = self._provider.get_logger("hermes.gateway.diagnostics")
+        self._logger = self._provider.get_logger("rabbit.gateway.diagnostics")
         self._sdk = sdk
         self.exported = 0
 
@@ -289,7 +289,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
         try:
             sdk = otlp_exporter._require_sdk(_METRICS_SDK, auto_install=True)
         except Exception:
-            logger.warning("monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; install 'hermes-agent[otlp]'", exc_info=True)
+            logger.warning("monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; install 'rabbit-agent[otlp]'", exc_info=True)
             return GatewayHealthExportRuntime(enabled=False, reason="otlp_unavailable")
     if metrics_on and sdk is not None:
         try:
@@ -325,7 +325,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
                 while not stop_event.wait(interval):
                     _emit_snapshot_events(config)
 
-            thread = threading.Thread(target=_run, name="hermes-gateway-health-export", daemon=True)
+            thread = threading.Thread(target=_run, name="rabbit-gateway-health-export", daemon=True)
             thread.start()
             runtime.thread = thread
         except Exception:

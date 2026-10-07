@@ -126,7 +126,7 @@ def rig_fixtures(driver_cls: type) -> Tuple[Any, Any]:
         # model.supports_vision: the fake model has no vision metadata, so photos would be routed
         # through vision pre-analysis and no image part could ever reach the model request
         r = _make(tmp_path_factory, "a", {"agent": {"disabled_toolsets": ["file"]}, "model": {"supports_vision": True}},
-                  {"HERMES_GATEWAY_EXTERNAL_SUPERVISOR": "1"})
+                  {"RABBIT_GATEWAY_EXTERNAL_SUPERVISOR": "1"})
         yield r
         _teardown(r)
 

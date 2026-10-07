@@ -58,7 +58,7 @@ def bundles_env(tmp_path, monkeypatch):
     bundles_dir = tmp_path / "skill-bundles"
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setenv("HERMES_BUNDLES_DIR", str(bundles_dir))
+    monkeypatch.setenv("RABBIT_BUNDLES_DIR", str(bundles_dir))
     # Patch SKILLS_DIR so skill loading hits our temp tree.
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)

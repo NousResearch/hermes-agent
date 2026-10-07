@@ -14,7 +14,7 @@ const LAUNCH_ID = randomUUID()
  *  gateway.ready is the launch latency. The backend buckets it and drops it unless the
  *  user opted in; older backends lack the method, so errors are swallowed.
  *  A dashboard Chat tab spawns a TUI per terminal it opens: that is a tab opening, not a
- *  user launching Hermes, so it stays out of the startup distribution. */
+ *  user launching Rabbit, so it stays out of the startup distribution. */
 export function reportStartupLatency(gw: Pick<GatewayClient, 'request'>): void {
   if (reported || DASHBOARD_TUI_MODE) {
     return

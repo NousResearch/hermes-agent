@@ -1,8 +1,8 @@
 """Regression tests: the stdio TUI consults the shared MCP discovery owner.
 
-The stdio ``hermes --tui`` path used to spawn its own discovery thread and
+The stdio ``rabbit --tui`` path used to spawn its own discovery thread and
 ``wait_for_mcp_discovery`` only ever joined that local handle. Now the spawn
-goes through ``hermes_cli.mcp_startup.start_background_mcp_discovery`` (single
+goes through ``rabbit_cli.mcp_startup.start_background_mcp_discovery`` (single
 owner, restart-after-zero-connected semantics), so the entry-side wait must
 fall through to the shared owner when no local thread exists.
 """
@@ -10,8 +10,8 @@ fall through to the shared owner when no local thread exists.
 import threading
 import time
 
-from hermes_cli import mcp_startup
-from hermes_constants import hermes_home_key
+from rabbit_cli import mcp_startup
+from rabbit_constants import rabbit_home_key
 from tui_gateway import entry
 
 
@@ -28,7 +28,7 @@ def test_wait_falls_through_to_shared_owner(monkeypatch):
     )
     thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
     thread.start()
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {hermes_home_key(): thread})
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {rabbit_home_key(): thread})
 
     start = time.monotonic()
     entry.wait_for_mcp_discovery(timeout=2.0)

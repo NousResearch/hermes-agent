@@ -21,9 +21,9 @@ _ITEM_KEYS = frozenset({"kind", "id"})
 SEARCH_LIMIT = 10
 
 NOT_HERE = (
-    "manage_catalog is available only in the Hermes desktop app, where the approval card can be drawn. "
-    "Tell the user to install from a terminal instead: `hermes plugins install <id>` for a plugin, "
-    "`hermes skills install <id>` for a skill."
+    "manage_catalog is available only in the Rabbit desktop app, where the approval card can be drawn. "
+    "Tell the user to install from a terminal instead: `rabbit plugins install <id>` for a plugin, "
+    "`rabbit skills install <id>` for a skill."
 )
 
 NOTE = (
@@ -36,7 +36,7 @@ NOTE = (
 MANAGE_CATALOG_SCHEMA = {
     "name": "manage_catalog",
     "description": (
-        "Find and install Hermes catalog plugins and hub skills for the user. 'search' lists matches "
+        "Find and install Rabbit catalog plugins and hub skills for the user. 'search' lists matches "
         "(id, kind, display, tier, platforms, installed) and changes nothing. 'install' shows the user "
         "one approval card with a row per item and blocks until every row is installed, skipped, or "
         "the card is closed; the host installs each approved row into the user's default profile at "
@@ -157,8 +157,8 @@ def search(query: str, kind: Optional[str], *, installer: Any = None) -> Dict[st
 
 
 def _plugin_rows(query: str) -> List[Dict[str, Any]]:
-    from hermes_cli.plugin_catalog import filter_entries, load_catalog_live
-    from hermes_cli.plugins_cmd import PluginOperationError, _read_install_metadata
+    from rabbit_cli.plugin_catalog import filter_entries, load_catalog_live
+    from rabbit_cli.plugins_cmd import PluginOperationError, _read_install_metadata
     from tools.connectors.catalog import _display
 
     try:

@@ -9,16 +9,16 @@ import time
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from tools import async_delegation as ad
 
 
 @pytest.fixture(autouse=True)
 def home(tmp_path):
     ad._reset_for_tests()
-    token = set_hermes_home_override(str(tmp_path))
+    token = set_rabbit_home_override(str(tmp_path))
     yield tmp_path
-    reset_hermes_home_override(token)
+    reset_rabbit_home_override(token)
     ad._reset_for_tests()
 
 

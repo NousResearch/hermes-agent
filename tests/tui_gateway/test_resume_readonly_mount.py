@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 
 
@@ -43,7 +43,7 @@ def _finalized_db(tmp_path, *, ended_reason="agent_close"):
 def _mount(monkeypatch, db, home, tmp_path, *, defer_history=False):
     events = []
     built = threading.Event()
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **kwargs: db)
+    monkeypatch.setattr("rabbit_state_registry.acquire", lambda db_path=None, **kwargs: db)
     monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))

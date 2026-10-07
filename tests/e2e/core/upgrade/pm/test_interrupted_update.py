@@ -1,6 +1,6 @@
 """Interrupted dependency updates recover (PM lifecycle, failure class 2).
 
-``hermes update`` on a release that changes the dependency set runs a PM transaction: it arms the
+``rabbit update`` on a release that changes the dependency set runs a PM transaction: it arms the
 ``source-completion-pending`` marker, stages a NEW generation under
 ``installs/<key>/environments/`` (download + ``uv sync``), publishes it by rewriting facts.json,
 then runs the source-update tail (launchers, TUI/web builds) and clears the marker.
@@ -14,7 +14,7 @@ boundary, observed from outside through the files PM itself writes:
 (The gateway relaunch hand-off after an update is lane ``handoff``'s suite.)
 
 The user-visible contract after the kill, as a user retries later (no lazy-install override, so
-the real launch path runs): the very next ``hermes`` works and reaches the provider; ``hermes
+the real launch path runs): the very next ``rabbit`` works and reaches the provider; ``rabbit
 update`` exits 0 at the target commit and leaves no pending marker; the launch after that does
 not re-run the completion again (a marker that loops forever is #123933's failure), and a
 half-built generation is never the one selected.
@@ -62,7 +62,7 @@ def home(tmp_path_factory, provider):
 
 def _retry(sb: I.Sandbox, *args: str, timeout: float = P.UPDATE_TIMEOUT) -> subprocess.CompletedProcess:
     """A later retry by the user: a fresh process whose pid is never the dead updater's."""
-    return P.run_env(sb, [*_RETRY_PREFIX, sb.hermes, *args], P.lazy_env(sb), timeout=timeout)
+    return P.run_env(sb, [*_RETRY_PREFIX, sb.rabbit, *args], P.lazy_env(sb), timeout=timeout)
 
 
 def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> subprocess.CompletedProcess:
@@ -71,7 +71,7 @@ def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> subprocess.Com
     new = provider.main_requests()[n:]
     assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, P.diagnostics(sb, cp)
     assert len(new) == 1 and marker in json.dumps(new[0]["messages"]), (
-        f"`hermes -z` did not reach the provider exactly once ({len(new)} requests)\n" + P.diagnostics(sb, cp))
+        f"`rabbit -z` did not reach the provider exactly once ({len(new)} requests)\n" + P.diagnostics(sb, cp))
     return cp
 
 
@@ -93,7 +93,7 @@ def _kill_update_at(sb: I.Sandbox, phase: str) -> dict:
 
     with log.open("w") as out:
         proc = subprocess.Popen(
-            H.sandbox_argv([*_KILLED_RUN_PREFIX, sb.hermes, "update", "--yes", "--branch", "main"], writable=[sb.root]),
+            H.sandbox_argv([*_KILLED_RUN_PREFIX, sb.rabbit, "update", "--yes", "--branch", "main"], writable=[sb.root]),
             env=P.lazy_env(sb), cwd=str(sb.root), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
             text=True, start_new_session=True)
         try:
@@ -123,10 +123,10 @@ def test_sigkill_mid_dependency_update_recovers(home, provider, phase):
     # The user re-runs the update: it converges at the target and owes nothing.
     again = _retry(sb, "update", "--yes", "--branch", "main")
     assert again.returncode == 0 and I.TRACEBACK not in again.stdout + again.stderr, (
-        f"`hermes update` after a kill at {phase} failed\n" + P.diagnostics(sb, first, again))
+        f"`rabbit update` after a kill at {phase} failed\n" + P.diagnostics(sb, first, again))
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == target, P.diagnostics(sb, again)
     assert not P.pending_marker(sb).exists(), (
-        f"`hermes update` exited 0 after a kill at {phase} but left source-completion-pending behind\n"
+        f"`rabbit update` exited 0 after a kill at {phase} but left source-completion-pending behind\n"
         + P.diagnostics(sb, first, again))
     selected = P.selected_generation(sb)
     if phase == "stage":

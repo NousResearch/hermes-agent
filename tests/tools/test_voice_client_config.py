@@ -1,6 +1,6 @@
 """E2E tests for tools.voice_client_config — the /api/audio/voice-config resolver.
 
-Real config files in a temp HERMES_HOME, real resolution chains (no mocked
+Real config files in a temp RABBIT_HOME, real resolution chains (no mocked
 resolvers): what the endpoint hands the desktop must be exactly what the
 gateway's own relay endpoints would resolve for the same profile.
 """
@@ -9,20 +9,20 @@ import importlib
 import sys
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 @pytest.fixture()
 def voice_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME + reloaded config modules; yields a config writer."""
-    home = tmp_path / ".hermes"
+    """Isolated RABBIT_HOME + reloaded config modules; yields a config writer."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     # Hermetic: no ambient provider keys may leak into resolution.
     for var in (
         "GROQ_API_KEY", "OPENAI_API_KEY", "VOICE_TOOLS_OPENAI_KEY",
         "MISTRAL_API_KEY", "XAI_API_KEY", "ELEVENLABS_API_KEY",
-        "DEEPINFRA_API_KEY", "HERMES_LOCAL_STT_LANGUAGE",
+        "DEEPINFRA_API_KEY", "RABBIT_LOCAL_STT_LANGUAGE",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -32,7 +32,7 @@ def voice_home(tmp_path, monkeypatch):
         # sees ITS config, not the previous test's.
         for name in list(sys.modules):
             if name in {
-                "hermes_cli.config",
+                "rabbit_cli.config",
                 "tools.transcription_tools",
                 "tools.tts_tool",
                 "tools.voice_client_config",

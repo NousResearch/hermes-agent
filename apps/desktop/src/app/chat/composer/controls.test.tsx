@@ -78,7 +78,7 @@ describe('HUD mode', () => {
     fireEvent.pointerEnter(mic.parentElement!)
 
     expect(await screen.findByLabelText('Read replies aloud')).toBeTruthy()
-    expect(screen.getByLabelText('Wake word "hey hermes"')).toBeTruthy()
+    expect(screen.getByLabelText('Wake word "hey rabbit"')).toBeTruthy()
     expect(screen.queryByLabelText('Exit HUD mode')).toBeNull()
     expect(screen.queryByLabelText('Reset HUD size and position')).toBeNull()
     // No folded menu trigger — the fan's group shares the "Voice" name.
@@ -176,18 +176,18 @@ describe('wake-word ear visibility', () => {
   const findEar = async () => {
     fireEvent.pointerEnter(screen.getByLabelText('Voice dictation').parentElement!)
 
-    return screen.findByLabelText('Wake word "hey hermes"')
+    return screen.findByLabelText('Wake word "hey rabbit"')
   }
 
   it('stays reachable during a busy agent turn', async () => {
-    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey rabbit' })
     renderControls({ busy: true, busyAction: 'stop' })
 
     expect((await findEar()).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('stays reachable (enabled in config) even when a start was refused', async () => {
-    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey rabbit' })
     // Transient refusal marks available false but enabled keeps it mounted.
     applyWakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false })
     renderControls()
@@ -196,8 +196,8 @@ describe('wake-word ear visibility', () => {
   })
 
   it('stays reachable (never hides) even when unavailable and not enabled', async () => {
-    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey hermes' })
-    applyWakeStartResult({ hint: 'run `hermes tools` (Voice section)', reason: 'unavailable', started: false })
+    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey rabbit' })
+    applyWakeStartResult({ hint: 'run `rabbit tools` (Voice section)', reason: 'unavailable', started: false })
     renderControls()
 
     // The ear ALWAYS shows so the user can click to enable; a refused start
@@ -206,7 +206,7 @@ describe('wake-word ear visibility', () => {
   })
 
   it('shows a disabled paused ear inside the voice-conversation pill', () => {
-    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey rabbit' })
     renderControls({
       conversation: {
         active: true,
@@ -220,7 +220,7 @@ describe('wake-word ear visibility', () => {
       }
     })
 
-    const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
+    const ear = screen.getByLabelText('Wake word: "hey rabbit" — paused during voice chat')
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
 })

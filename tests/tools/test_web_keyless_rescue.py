@@ -54,8 +54,8 @@ class _RaisingProvider(_KeyedBoomProvider):
         raise RuntimeError("connection reset by peer")
 
 
-class _GatewayFirecrawlBoomProvider(_KeyedBoomProvider):
-    """Managed-gateway Firecrawl double with no direct provider key."""
+class _SelfHostedFirecrawlBoomProvider(_KeyedBoomProvider):
+    """Self-hosted Firecrawl double (FIRECRAWL_API_URL set) with no direct provider key."""
 
     name = "firecrawl"
     display_name = "Firecrawl"
@@ -90,23 +90,23 @@ class TestEligibility:
         )
         assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
 
-    def test_gateway_selected_ring_vendor_is_eligible_without_direct_key(self, monkeypatch):
-        # The persisted Nous route uses its subscriber token, not the keyless ring — eligible.
+    def test_self_hosted_ring_vendor_is_eligible_without_direct_key(self, monkeypatch):
+        # A self-hosted Firecrawl (FIRECRAWL_API_URL) bypasses the keyless ring — eligible.
         # The same keyless Firecrawl selected directly DID walk the ring — not eligible.
         monkeypatch.setattr(
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
-        monkeypatch.setattr("plugins.web.firecrawl.provider._env", lambda name: "")
-        monkeypatch.setattr("plugins.web.firecrawl.provider._is_tool_gateway_ready", lambda: True)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+            "plugins.web.firecrawl.provider._env",
+            lambda name: "http://localhost:3002" if name == "FIRECRAWL_API_URL" else "",
         )
-        assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is True
+        assert web_tools_rescue._rescue_eligible(_SelfHostedFirecrawlBoomProvider()) is True
+        monkeypatch.setattr("plugins.web.firecrawl.provider._env", lambda name: "")
         monkeypatch.setattr(
             "tools.tool_backend_helpers.read_selection", lambda kind: "firecrawl"
         )
         monkeypatch.setattr("plugins.web.keyless_mcp._web_config_selects", lambda name: name == "firecrawl")
-        assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is False
+        assert web_tools_rescue._rescue_eligible(_SelfHostedFirecrawlBoomProvider()) is False
 
     def test_non_ring_backend_is_eligible(self):
         class _SearxProvider(_KeyedBoomProvider):
@@ -155,18 +155,19 @@ class TestSearchRescue:
         assert out["success"] is True
         assert "connection reset" in out["data"]["backend_error"]
 
-    def test_gateway_selected_firecrawl_failure_is_rescued(self, monkeypatch):
+    def test_self_hosted_firecrawl_failure_is_rescued(self, monkeypatch):
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setattr(
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.read_selection", lambda kind: "nous"
+            "plugins.web.firecrawl.provider._env",
+            lambda name: "http://localhost:3002" if name == "FIRECRAWL_API_URL" else "",
         )
         with patch.object(
             keyless_mcp, "search_with_failover", return_value=_ring_ok()
         ) as ring:
-            out = self._dispatch(monkeypatch, _GatewayFirecrawlBoomProvider())
+            out = self._dispatch(monkeypatch, _SelfHostedFirecrawlBoomProvider())
         assert out["success"] is True
         assert out["data"]["rescued_from"] == "firecrawl"
         ring.assert_called_once()

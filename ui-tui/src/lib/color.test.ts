@@ -1,4 +1,4 @@
-import { contrastRatio, relativeLuminance } from '@hermes/shared/color'
+import { contrastRatio, relativeLuminance } from '@rabbit/shared/color'
 import { describe, expect, it } from 'vitest'
 
 import { color } from './color.js'

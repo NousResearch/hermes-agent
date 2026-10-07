@@ -1,11 +1,11 @@
 ---
 title: "CLI Symbols Glossary"
-description: "What every symbol in the Hermes terminal UI means — transcript markers, status-bar badges, overlay glyphs, and approval prompts."
+description: "What every symbol in the Rabbit terminal UI means — transcript markers, status-bar badges, overlay glyphs, and approval prompts."
 ---
 
 # CLI Symbols Glossary
 
-The Hermes terminal interfaces speak a compact visual language: dots, chevrons, braille spinners, and status glyphs. This page is the decoder ring. It covers the [TUI](../user-guide/tui.md) (where most of these render) and notes the pieces shared with the [Classic CLI](../user-guide/cli.md).
+The Rabbit terminal interfaces speak a compact visual language: dots, chevrons, braille spinners, and status glyphs. This page is the decoder ring. It covers the [TUI](../user-guide/tui.md) (where most of these render) and notes the pieces shared with the [Classic CLI](../user-guide/cli.md).
 
 :::note Skins can restyle some of these
 Glyphs marked *themeable* below are brand defaults — a [skin](../user-guide/features/skins.md) can override them (for example `tool_prefix` and the prompt symbol). Everything else is fixed in the renderer.
@@ -49,7 +49,7 @@ The single line at the bottom of the TUI. Segments appear only when relevant and
 | `● REC` | Voice mode is recording. |
 | `◉ STT` | Voice recording stopped; speech-to-text is transcribing. |
 | `◉ focus` | Focus view is on (reduced output). Pinned so it never drops off a narrow terminal. |
-| `♥` | Affection flash — Hermes noticed you being nice to it. |
+| `♥` | Affection flash — Rabbit noticed you being nice to it. |
 | `⚡` / `🔋` | Battery indicator (opt-in): plugged in / on battery, with percentage. |
 | `N bg` | N background terminal processes tracked in this session. |
 | `N live sessions` | Open TUI sessions in this process — click to open the session switcher. |

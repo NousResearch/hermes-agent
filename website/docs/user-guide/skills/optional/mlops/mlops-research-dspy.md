@@ -14,7 +14,7 @@ DSPy: declarative LM programs, auto-optimize prompts, RAG.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/dspy` |
+| Source | Optional — install with `rabbit skills install official/mlops/dspy` |
 | Path | `optional-skills/mlops/research/dspy` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ DSPy: declarative LM programs, auto-optimize prompts, RAG.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # DSPy: Declarative Language Model Programming

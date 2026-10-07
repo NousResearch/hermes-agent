@@ -15,7 +15,7 @@ import pytest
 
 def _gateway(monkeypatch):
     """Import the real gateway after neutralizing process-wide import side effects."""
-    from hermes_cli import banner
+    from rabbit_cli import banner
 
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     monkeypatch.setattr(sys, "stdout", sys.stdout)
@@ -31,9 +31,9 @@ def _gateway(monkeypatch):
     monkeypatch.setattr(project_tools, "_workspace_callback", None)
     monkeypatch.setattr(skills_tool, "_secret_capture_callback", None)
     monkeypatch.setattr(terminal_tool_sudo, "_sudo_password_cache", {})
-    monkeypatch.delenv("HERMES_UI_SESSION_ID", raising=False)
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.delenv("RABBIT_UI_SESSION_ID", raising=False)
+    monkeypatch.delenv("RABBIT_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("RABBIT_INTERACTIVE", raising=False)
     return server, server_requests, skills_tool
 
 
@@ -67,7 +67,7 @@ def _capture(server, server_requests, skills_tool, monkeypatch, *, values):
         return {"success": True, "stored_as": key, "validated": False}
 
     frames, _ = _client(server, server_requests, monkeypatch, values)
-    monkeypatch.setattr("hermes_cli.config.save_env_value_secure", save)
+    monkeypatch.setattr("rabbit_cli.config.save_env_value_secure", save)
     result = skills_tool._capture_required_environment_variables(
         "demo-skill", [{"name": "DEMO_TOKEN", "prompt": "Token"}]
     )
@@ -89,7 +89,7 @@ def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
 
     tokens = server._set_session_context("turn-A", ui_session_id="session-A")
     try:
-        assert get_session_env("HERMES_UI_SESSION_ID") == "session-A"
+        assert get_session_env("RABBIT_UI_SESSION_ID") == "session-A"
         frames, stored, result = _capture(
             server, server_requests, skills_tool, monkeypatch,
             values={"session-A": "owner-secret", "session-B": "closure-secret"},
@@ -118,7 +118,7 @@ def test_secret_prompt_without_bound_owner_is_skipped_not_guessed(monkeypatch):
 
     tokens = server._set_session_context("ownerless-task", cwd="")
     try:
-        assert get_session_env("HERMES_UI_SESSION_ID") == ""
+        assert get_session_env("RABBIT_UI_SESSION_ID") == ""
         frames, stored, result = _capture(
             server, server_requests, skills_tool, monkeypatch,
             values={"only-session": "guessed-secret"},
@@ -146,13 +146,13 @@ required_environment_variables:
 
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
-    launch = tmp_path / ".hermes"
+    launch = tmp_path / ".rabbit"
     homes = [launch / "profiles" / name for name in ("a", "b")]
     for home in homes:
         skill_dir = home / "skills" / "demo" / "secret-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(_SKILL, encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.delenv("DEMO_TOKEN", raising=False)
     return launch, *homes
 
@@ -171,7 +171,7 @@ def test_background_prompt_secret_reaches_its_own_session_and_profile(two_profil
     """
     launch, home_a, home_b = two_profiles
     server, server_requests, skills_tool = _gateway(monkeypatch)
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
 
     class ModelBoundary:
         def __init__(self, **_kw):
@@ -227,7 +227,7 @@ def test_closed_runtime_secret_request_is_refused(two_profiles, monkeypatch):
     """
     launch, home_a, home_b = two_profiles
     server, server_requests, skills_tool = _gateway(monkeypatch)
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
 
     ask_gate = threading.Event()  # main → worker: resume the ask
     ask_reached = threading.Event()  # worker → main: paused right before credential capture

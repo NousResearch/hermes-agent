@@ -1,13 +1,13 @@
 name: jev
-repo: https://github.com/ourines/hermes-jev
+repo: https://github.com/ourines/rabbit-jev
 sha: 28a4ea390f80d97fcdc8c20d6b630dfe2de645de
 subdir: ""
 description: "Explicit Jev decision sidekick via TypeSafe or Cloudflare; advisory judgments, no automatic tool gating."
 maintainer: ourines
 tier: community
 category: tools
-requires_hermes: ">=0.21.3"
-docs_url: https://github.com/ourines/hermes-jev/blob/28a4ea390f80d97fcdc8c20d6b630dfe2de645de/README.md
+requires_rabbit: ">=0.21.3"
+docs_url: https://github.com/ourines/rabbit-jev/blob/28a4ea390f80d97fcdc8c20d6b630dfe2de645de/README.md
 version: "0.1.2"
 platforms: []
 capabilities:

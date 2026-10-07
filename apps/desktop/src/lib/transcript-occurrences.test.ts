@@ -8,7 +8,7 @@ import {
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
 } from '@/lib/inflight-turn-journal'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 const prompt: SessionMessage = { id: 1, role: 'user', content: 'Inspect each phase', timestamp: 1 }
 

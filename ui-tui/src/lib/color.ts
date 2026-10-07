@@ -1,6 +1,6 @@
 /**
  * TUI-only color derivations. The sRGB primitives (parse, mix, WCAG measure,
- * `ensureContrast`) live in `@hermes/shared/color`, shared byte-for-byte with
+ * `ensureContrast`) live in `@rabbit/shared/color`, shared byte-for-byte with
  * the desktop app; this module adds what only a terminal needs — xterm.js's
  * multiplicative contrast lift, HSL re-toning for light-terminal variants, and
  * the chainable `color()` form — and re-parses nothing itself.
@@ -16,7 +16,7 @@ import {
   relativeLuminance,
   type Rgb,
   toHex
-} from '@hermes/shared/color'
+} from '@rabbit/shared/color'
 
 const clampChannel = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
 

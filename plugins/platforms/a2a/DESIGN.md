@@ -114,7 +114,7 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Anti-loop:** per-context turn cap (`A2A_MAX_PINGPONG_TURNS`, default 5,
   hard max 20) rejects (v1.0 `TASK_STATE_REJECTED`) runaway agent↔agent
   ping-pong; `tasks/cancel` resets the counter for the task's context.
-- **Audit log:** append-only `~/.hermes/a2a_audit.jsonl` for every exchange.
+- **Audit log:** append-only `~/.rabbit/a2a_audit.jsonl` for every exchange.
 
 ## State placement
 Task store, turn tracker, and rate limiter are **adapter-instance** objects
@@ -123,7 +123,7 @@ because it is intentionally shared between the inbound adapter and the
 outbound client tools (`/metrics` and `a2a_list` report both directions).
 
 ## Persistence (survives compaction)
-A2A conversations are written to `~/.hermes/a2a_conversations/<context>.jsonl`,
+A2A conversations are written to `~/.rabbit/a2a_conversations/<context>.jsonl`,
 outside the context-compaction pipeline — compaction and restarts can't lose
 them (#11025 requirement). The `a2a_history` tool recalls them by context id.
 

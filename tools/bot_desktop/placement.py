@@ -36,7 +36,7 @@ class Placement:
 
 
 def _setting() -> str:
-    from hermes_cli.config import load_config_readonly
+    from rabbit_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     value = str(cfg.get("placement") or "auto").strip().lower()
     return value if value in ("auto", TERMINAL, GATEWAY) else "auto"

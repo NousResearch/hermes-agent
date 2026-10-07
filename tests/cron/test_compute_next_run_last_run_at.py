@@ -1,6 +1,6 @@
 """Test that compute_next_run uses last_run_at for cron jobs.
 
-Regression test for: cron jobs computing next_run_at from _hermes_now()
+Regression test for: cron jobs computing next_run_at from _rabbit_now()
 instead of from last_run_at, making them inconsistent with interval jobs.
 """
 import pytest
@@ -28,7 +28,7 @@ class TestCronComputeNextRunUsesLastRunAt:
 
         # But now it's April 10 at 22:00 (e.g., gateway restarted)
         now = datetime(2026, 4, 10, 22, 0, 0, tzinfo=morocco)
-        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        monkeypatch.setattr("cron.jobs._rabbit_now", lambda: now)
 
         schedule = {"kind": "cron", "expr": "0 */6 * * *"}  # every 6 hours
 

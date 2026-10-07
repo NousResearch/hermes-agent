@@ -195,7 +195,7 @@ def _background_review_task_config(task_cfg: Optional[Dict[str, Any]] = None) ->
     if task_cfg is not None:
         return task_cfg if isinstance(task_cfg, dict) else {}
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         return _task_block(load_config_readonly())
     except Exception:
         return {}
@@ -229,7 +229,7 @@ def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         from utils import is_truthy_value
         task = _task_block(load_config_readonly())
         return is_truthy_value(task.get("enabled"), default=True), task
@@ -267,7 +267,7 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
     ):
         return parent
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
         rp = resolve_runtime_provider(
             requested=task_provider, target_model=task_model,
             explicit_api_key=task_api_key, explicit_base_url=task_base_url,
@@ -304,11 +304,11 @@ def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: st
 
 def _parent_can_emit_tool_calls(agent: Any) -> bool:
     """Whether a fork inheriting ``agent``'s runtime could act at all: an agent-as-provider client
-    shim declaring ``SUPPORTS_HERMES_TOOL_CALLS = False`` (instance or class) is skipped — the fork
+    shim declaring ``SUPPORTS_RABBIT_TOOL_CALLS = False`` (instance or class) is skipped — the fork
     would be a guaranteed no-op that still pays a full spawn. Silence means capable."""
     client = getattr(agent, "client", None)
     for candidate in (client, type(client) if client is not None else None):
-        supported = getattr(candidate, "SUPPORTS_HERMES_TOOL_CALLS", None)
+        supported = getattr(candidate, "SUPPORTS_RABBIT_TOOL_CALLS", None)
         if candidate is not None and supported is not None:
             return bool(supported)
     return True
@@ -504,17 +504,17 @@ _SKILL_REVIEW_PROMPT = (
     "If you notice two existing skills that overlap, note it in your reply — the background "
     "curator handles consolidation at scale.\n\n"
     "Protected skills (DO NOT edit these):\n"
-    "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
-    "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "  • Bundled skills (shipped with Rabbit, e.g. 'rabbit-agent').\n"
+    "  • Hub-installed skills (installed via 'rabbit skills install').\n"
     "  • Skills in skills.external_dirs (externally owned).\n"
-    "  • PINNED skills (marked via 'hermes curator pin'). You are an autonomous no-user-present "
+    "  • PINNED skills (marked via 'rabbit curator pin'). You are an autonomous no-user-present "
     "actor, so pin blocks your writes too — content updates included. Only the user, in a "
     "foreground session, can change a pinned skill.\n"
     "  • USER-OWNED skills — anything not curator-managed. A skill the user hand-wrote, installed "
     "by URL, or asked a foreground agent to create is theirs, not yours; your writes to it WILL be "
     "refused. This includes skills that were loaded or consulted this session: being in play does "
     "not make one yours to edit. If such a skill is wrong or outdated, say so in your reply and "
-    "recommend 'hermes curator adopt <name>' — do not try to patch it.\n"
+    "recommend 'rabbit curator adopt <name>' — do not try to patch it.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture" + _DO_NOT_CAPTURE_BLOCK +
@@ -572,16 +572,16 @@ _COMBINED_REVIEW_PROMPT = (
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
-    "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
-    "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "  • Bundled skills (shipped with Rabbit, e.g. 'rabbit-agent').\n"
+    "  • Hub-installed skills (installed via 'rabbit skills install').\n"
     "  • Skills in skills.external_dirs (externally owned).\n"
-    "  • PINNED skills (marked via 'hermes curator pin'). Pin blocks autonomous writes entirely — "
+    "  • PINNED skills (marked via 'rabbit curator pin'). Pin blocks autonomous writes entirely — "
     "content updates included — because no user is present to consent. Only a foreground session "
     "can change one.\n"
     "  • USER-OWNED skills — anything not curator-managed (hand-written, URL-installed, or created "
     "by a foreground agent at the user's request). Your writes to these WILL be refused, including "
     "to skills loaded or consulted this session. If one is wrong, say so in your reply and "
-    "recommend 'hermes curator adopt <name>' instead.\n"
+    "recommend 'rabbit curator adopt <name>' instead.\n"
     "If the only skills that need updating are protected, say\n"
     "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills" + _DO_NOT_CAPTURE_BLOCK +
@@ -772,7 +772,7 @@ def build_memory_write_metadata(
         "execution_context": execution_context or getattr(agent, "_memory_write_context", "foreground"),
         "session_id": agent.session_id or "",
         "parent_session_id": agent._parent_session_id or "",
-        "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+        "platform": agent.platform or os.environ.get("RABBIT_SESSION_SOURCE", "cli"),
         "tool_name": "memory",
         "task_id": task_id or None,
         "tool_call_id": tool_call_id or None,
@@ -928,7 +928,7 @@ def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dic
     effort = _background_review_task_config(task_cfg).get("reasoning_effort")
     if effort is None or effort == "":
         return None
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from rabbit_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         logger.warning(
@@ -1028,7 +1028,7 @@ def build_cache_parity_fork(
     # hooks) stays byte-identical.
     # Inherit the parent's cached system prompt verbatim so the review fork's outbound HTTP request hits the
     # same Anthropic/OpenRouter prefix cache the parent warmed. Without this, the fork rebuilds the system
-    # prompt from scratch (fresh _hermes_now() timestamp, fresh session_id, narrower toolset → different
+    # prompt from scratch (fresh _rabbit_now() timestamp, fresh session_id, narrower toolset → different
     # skills_prompt) and the byte-exact prefix-cache key misses. See issue #25322 and PR #17276 for the full
     # analysis + measured impact (~26% end-to-end cost reduction on Sonnet 4.5). When routed to a different
     # model the parent's cached prompt is for the wrong model/cache key and would miss anyway, so let the
@@ -1178,7 +1178,7 @@ def _run_review_fork(
         agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
-    from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
+    from rabbit_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
@@ -1252,12 +1252,12 @@ def _run_review_in_thread(
         finish_background_review_run(agent, review_run)
         return
     _set_thread_approval_callback(_bg_review_auto_deny)
-    # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
+    # A client that can't carry Rabbit tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
     # check first so the normal path never resolves the runtime twice.
     if not _parent_can_emit_tool_calls(agent) and not _resolve_review_runtime(agent, task_cfg).get("routed"):
         logger.warning(
-            "Background review skipped: provider %r cannot emit Hermes tool calls, "
+            "Background review skipped: provider %r cannot emit Rabbit tool calls, "
             "so the review fork could not write memories or skills. Set "
             "auxiliary.background_review.{provider,model} to route the review to a normal model.",
             getattr(agent, "provider", "?"),

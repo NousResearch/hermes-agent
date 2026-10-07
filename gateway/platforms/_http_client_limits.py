@@ -5,7 +5,7 @@ httpx's default ``keepalive_expiry`` (5s) lets peer-initiated FIN sit in
 adapters plus LLM/MCP clients that walks into the default 256 fd limit.
 ``platform_httpx_limits()`` returns tighter ``httpx.Limits``: 10 keepalive
 connections (platform APIs rarely parallelise beyond this), 2.0s expiry.
-Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` / ``HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE``.
+Override via ``RABBIT_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` / ``RABBIT_GATEWAY_HTTPX_MAX_KEEPALIVE``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def platform_httpx_limits() -> "httpx.Limits | None":
     # max_connections stays at the httpx default (100) — plenty of headroom.
     return httpx.Limits(
         max_keepalive_connections=_positive_env(
-            "HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE, int),
+            "RABBIT_GATEWAY_HTTPX_MAX_KEEPALIVE", _DEFAULT_MAX_KEEPALIVE, int),
         keepalive_expiry=_positive_env(
-            "HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", _DEFAULT_KEEPALIVE_EXPIRY_S, float),
+            "RABBIT_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", _DEFAULT_KEEPALIVE_EXPIRY_S, float),
     )

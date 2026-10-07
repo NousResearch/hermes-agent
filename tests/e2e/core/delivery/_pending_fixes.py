@@ -3,7 +3,7 @@
 A plain ``xfail(strict=True)`` turns main red the moment its fix merges (XPASS), and a
 non-strict one guards nothing. Instead, each gap here has a PROBE: a few lines that reproduce
 the defect's mechanism on the tree under test, in a throwaway interpreter with its own
-``HOME``/``HERMES_HOME`` (no state leaks into the suite process). A cell asks ``gap_open`` and
+``HOME``/``RABBIT_HOME`` (no state leaks into the suite process). A cell asks ``gap_open`` and
 tolerates the gap only while the probe still reproduces the defect; once the fix is in the tree
 the cell runs as a plain test, so it must pass. Whichever lands first, suite or fix, main stays
 green, and a probe that disagrees with the end-to-end cell still fails loudly instead of hiding.
@@ -44,7 +44,7 @@ PROBES: Dict[int, tuple] = {
 from datetime import datetime
 from cron import jobs
 # what an unconfigured clock returns: the process zone's offset of the moment, as a fixed offset
-jobs._hermes_now = lambda: datetime.fromisoformat("2026-03-07T09:00:30-05:00")
+jobs._rabbit_now = lambda: datetime.fromisoformat("2026-03-07T09:00:30-05:00")
 nxt = jobs.compute_next_run({"kind": "cron", "expr": "0 9 * * *"})
 print("fixed" if nxt == "2026-03-08T09:00:00-04:00" else "open")
 '''),
@@ -57,10 +57,10 @@ def gap_open(pr: int) -> bool:
     extra_env, script = PROBES[pr]
     with tempfile.TemporaryDirectory(prefix=f"gap-{pr}-") as tmp:
         home = Path(tmp) / "home"
-        (home / ".hermes").mkdir(parents=True)
+        (home / ".rabbit").mkdir(parents=True)
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("PYTEST_", "HERMES_")) and not k.endswith("_API_KEY")}
-        env.update({"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+               if not k.startswith(("PYTEST_", "RABBIT_")) and not k.endswith("_API_KEY")}
+        env.update({"HOME": str(home), "RABBIT_HOME": str(home / ".rabbit"),
                     "PYTHONPATH": str(REPO_ROOT), **extra_env})
         proc = subprocess.run([sys.executable, "-c", _PRELUDE + script], cwd=str(REPO_ROOT), env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)

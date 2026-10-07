@@ -69,7 +69,7 @@ MAX_USD_PER_TEST = 0.12
 @dataclass(frozen=True)
 class LiveCase:
     id: str
-    provider: str  # hermes provider id passed to resolve_runtime_provider
+    provider: str  # rabbit provider id passed to resolve_runtime_provider
     key_env: str
     model_prefs: tuple[str, ...]
     hosts: tuple[str, ...]  # the only hosts allowed to see the credential
@@ -83,7 +83,7 @@ class LiveCase:
 # Cheapest tool-capable model per family (verified live Sep 2026). The first
 # preference present in the provider's live /models listing is used, so a
 # retired slug fails the listing test loudly instead of 404ing mid-conversation.
-# Override with HERMES_LIVE_MODEL_<ID> (upper-cased, '-' -> '_').
+# Override with RABBIT_LIVE_MODEL_<ID> (upper-cased, '-' -> '_').
 LIVE_CASES: tuple[LiveCase, ...] = (
     LiveCase("openrouter-openai", "openrouter", "OPENROUTER_API_KEY",
              ("openai/gpt-4.1-nano", "openai/gpt-5-nano"), ("openrouter.ai",), 0.10, 0.40),
@@ -128,7 +128,7 @@ def live_key(env_name: str) -> str:
 
 
 def model_override(case: LiveCase) -> str | None:
-    return os.environ.get("HERMES_LIVE_MODEL_" + case.id.upper().replace("-", "_")) or None
+    return os.environ.get("RABBIT_LIVE_MODEL_" + case.id.upper().replace("-", "_")) or None
 
 
 # HTTP wire recorder -----------------------------------------------------------
@@ -154,7 +154,7 @@ class WireRecord:
 
 @dataclass
 class WireLog:
-    """Every HTTP exchange made through httpx (all SDKs Hermes uses sit on it)."""
+    """Every HTTP exchange made through httpx (all SDKs Rabbit uses sit on it)."""
 
     secret: str
     records: list[WireRecord] = field(default_factory=list)
@@ -271,13 +271,13 @@ def register_lookup_tool() -> Callable[[], None]:
     return lambda: registry.deregister(TOOL_NAME)
 
 
-# HERMES_HOME wiring -------------------------------------------------------------
+# RABBIT_HOME wiring -------------------------------------------------------------
 
-def write_live_home(hermes_home: Path, provider: str, model: str) -> None:
+def write_live_home(rabbit_home: Path, provider: str, model: str) -> None:
     """Minimal real config: the provider under test, eager tools (no tool_search
     bridge), bounded retries. No credential is ever written to disk."""
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "config.yaml").write_text(
+    rabbit_home.mkdir(parents=True, exist_ok=True)
+    (rabbit_home / "config.yaml").write_text(
         "model:\n"
         f"  provider: {provider}\n"
         f"  default: {model}\n"
@@ -365,15 +365,15 @@ def usage_line(case: LiveCase, model: str, agent: Any, wire: WireLog) -> dict:
         "http_errors": sorted({f"{r.status} {r.error[:160]}" for r in wire.inference() if r.status >= 400})[:5],
         "input": inp, "output": out, "cache_read": cr, "cache_write": cw,
         "reasoning": int(getattr(agent, "session_reasoning_tokens", 0) or 0),
-        "hermes_est_usd": round(float(agent.session_estimated_cost_usd or 0.0), 6),
-        "hermes_cost_status": str(getattr(agent, "session_cost_status", "")),
+        "rabbit_est_usd": round(float(agent.session_estimated_cost_usd or 0.0), 6),
+        "rabbit_cost_status": str(getattr(agent, "session_cost_status", "")),
         "list_price_ceiling_usd": round(ceiling, 6),
     }
 
 
 def emit_usage(line: dict) -> None:
     print("LIVE-USAGE " + json.dumps(line, sort_keys=True), flush=True)
-    target = os.environ.get("HERMES_LIVE_USAGE_FILE")
+    target = os.environ.get("RABBIT_LIVE_USAGE_FILE")
     if target:
         with open(target, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, sort_keys=True) + "\n")

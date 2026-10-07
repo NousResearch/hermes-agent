@@ -1,4 +1,4 @@
-"""`hermes computer-use doctor` names a daemon unit whose cua-driver Exec target was pruned, and a configured
+"""`rabbit computer-use doctor` names a daemon unit whose cua-driver Exec target was pruned, and a configured
 `cua-driver serve` unit whose daemon is not listening (#114748).
 
 Linux has no managed cua-driver autostart, so users hand-write systemd user units / XDG
@@ -43,7 +43,7 @@ def _fake_health_report_proc() -> MagicMock:
 def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
     """Keep binary/process I/O fake while exercising the real resolver and unit guards."""
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    monkeypatch.delenv("RABBIT_CUA_DRIVER_CMD", raising=False)
     if "XDG_CONFIG_HOME" in os.environ and not os.environ["XDG_CONFIG_HOME"].startswith(str(home)):
         monkeypatch.delenv("XDG_CONFIG_HOME")  # the host's own config dir must not leak into the scan
     monkeypatch.setattr("tools.computer_use.cua_backend.cua_daemon_listening", daemon_probe)

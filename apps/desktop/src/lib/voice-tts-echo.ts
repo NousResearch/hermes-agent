@@ -1,6 +1,6 @@
 // TTS self-echo guard for the voice-conversation barge monitor — a port of
 // tools/voice_mode_transcript.is_tts_echo (the CLI's fix for the
-// TTS -> STT -> TTS loop). Over speakers, Hermes' own reply bleeds into the
+// TTS -> STT -> TTS loop). Over speakers, Rabbit' own reply bleeds into the
 // mic, trips the playback-phase barge trigger, and gets transcribed; without
 // this check the fragment is submitted as a user turn nobody spoke (#126708).
 //
@@ -122,8 +122,8 @@ export function sequenceMatcherRatio(a: readonly string[], b: readonly string[])
 
 /**
  * True when `transcript` looks like a self-capture of `spokenText` (the reply
- * Hermes was speaking when the barge tripped). A genuine interjection rarely
- * matches Hermes' own words, so a high ratio signals speaker bleed. Playback
+ * Rabbit was speaking when the barge tripped). A genuine interjection rarely
+ * matches Rabbit' own words, so a high ratio signals speaker bleed. Playback
  * captures span only pre-roll plus time-to-silence, so for long replies the
  * transcript is a FRAGMENT; when the whole-string ratio misses, a
  * transcript-sized window slides across the spoken text.

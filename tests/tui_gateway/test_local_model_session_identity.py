@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import runtime_provider as rp
-from hermes_cli.local_runtime import endpoint
+from rabbit_cli import runtime_provider as rp
+from rabbit_cli.local_runtime import endpoint
 from tui_gateway import server
 
 
@@ -14,14 +14,14 @@ def local_route(tmp_path, monkeypatch):
            "local_runtime": {"enabled": True}}
     monkeypatch.setattr(rp, "load_config", lambda: cfg)
     monkeypatch.setattr(rp, "_get_model_config", lambda: cfg["model"])
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("rabbit_cli.config.load_config", lambda: cfg)
     monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
     route = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "local-test-key"}
     monkeypatch.setattr(endpoint, "_state_endpoint", lambda: route)
     monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda **kw: route)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
-    monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", lambda: {})
+    monkeypatch.setattr("rabbit_cli.banner.get_update_result", lambda **kw: None)
+    monkeypatch.setattr("rabbit_cli.banner.get_available_skills", lambda: {})
     return route, {"cwd": str(tmp_path), "session_key": "local-identity"}
 
 
@@ -79,7 +79,7 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
     import json
     from pathlib import Path
 
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     launch = tmp_path / "launch"
     secondary = launch / "profiles" / "secondary"
@@ -89,23 +89,23 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
         config = {"model": {"provider": "anthropic", "default": "claude-test"},
                   "providers": {name: {"api": url, "models": ["same-model"]}}}
         (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setattr(server, "_rabbit_home", launch)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
-    monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", lambda: {})
+    monkeypatch.setattr("rabbit_cli.banner.get_update_result", lambda **kw: None)
+    monkeypatch.setattr("rabbit_cli.banner.get_available_skills", lambda: {})
     agent = SimpleNamespace(model="same-model", provider="custom", base_url=url,
                             reasoning_config=None, service_tier=None, session_id="profile-identity")
     session = {"cwd": str(tmp_path), "session_key": "profile-identity", "profile_home": str(secondary)}
     # Broadcast/resume can publish metadata outside the session's profile scope.
     assert server._session_info(agent, session)["provider"] == "custom:secondary-route"
-    assert get_hermes_home() == launch
+    assert get_rabbit_home() == launch
     # A launch-profile session must also ignore an ambient secondary-profile scope.
     with server._profile_build_scope(secondary):
         assert server._session_info(agent, {**session, "profile_home": None})["provider"] == "custom:launch-route"
-        assert get_hermes_home() == secondary
-    assert get_hermes_home() == launch
+        assert get_rabbit_home() == secondary
+    assert get_rabbit_home() == launch
     # Remote compute metadata remains authoritative; never reinterpret it using local profiles.
     session["_metadata_mirror"] = {"model": "remote-model", "provider": "custom:remote-route"}
     assert server._session_info(agent, session)["provider"] == "custom:remote-route"

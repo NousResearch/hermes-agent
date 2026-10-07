@@ -2,11 +2,11 @@
 name: github
 description: "GitHub via gh CLI: PRs, issues, reviews, repos, auth."
 version: 2.0.0
-author: Ben Barclay (benbarclay), Hermes Agent
+author: Ben Barclay (benbarclay), Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [github, gh, git, pull-requests, issues, code-review, repos, auth, ci]
     category: software-development
     related_skills: [codebase-inspection, requesting-code-review]

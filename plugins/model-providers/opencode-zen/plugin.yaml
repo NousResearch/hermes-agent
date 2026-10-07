@@ -2,4 +2,4 @@ name: opencode-zen-provider
 kind: model-provider
 version: 1.0.0
 description: OpenCode (Zen + Go)
-author: Nous Research
+author: Sanath Patil

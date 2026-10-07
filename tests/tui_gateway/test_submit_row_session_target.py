@@ -14,7 +14,7 @@ mints the continuation) and asserts one turn's rows stay in ONE session.
 from types import SimpleNamespace
 
 from agent.turn_context import _stage_turn_user_message
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 from tui_gateway import server
 
@@ -51,7 +51,7 @@ def _rotate_to_compression_child(db, parent, agent, *, reopen_parent):
     the ``_ended_by_compression`` guard refuses the submit append outright and the row is silently
     dropped; reopened, the stale key is writable and the turn's rows split across both sessions.
     """
-    from hermes_state_ids import new_session_id
+    from rabbit_state_ids import new_session_id
 
     child = new_session_id()
     db.publish_compression_child(

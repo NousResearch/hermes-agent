@@ -1,95 +1,15 @@
 import { useMemo } from 'react'
 
-import type { ProfileScope } from '@/hermes'
 import { isToolEnabled } from '@/lib/mcp-tool-filter'
 
 import { okProbe } from '../mcp/mcp-status'
 import type { McpServersController } from '../mcp/use-mcp-servers'
 
-import {
-  type ConnectorPolicyView,
-  connectorToolRows,
-  memberDisabledTools,
-  memberRevision,
-  orgLockedTools
-} from './data/join'
-import { useConnectorToolsSave } from './data/mutations'
-import type { ConnectorToolsView } from './data/queries'
 import { localServerName } from './derive'
-import { conflictDifference, toolDisplayName, toolRows } from './derive-tools'
+import { toolDisplayName, toolRows } from './derive-tools'
 import { ToolsList } from './tools-list'
 import type { ConnectorCardModel, ToolInput } from './types'
 import { type SaveResult, useToolsEditor } from './use-tools-editor'
-
-export interface HostedToolsPanelProps {
-  card: ConnectorCardModel
-  disabledTools?: readonly string[]
-  onDisconnect: () => void
-  onRetryRules?: () => void
-  onSignIn: () => void
-  policy: ConnectorPolicyView
-  readOnly?: boolean
-  rulesSignedOut?: boolean
-  scope: ProfileScope
-  tools: ConnectorToolsView
-}
-
-export function HostedToolsPanel({
-  card,
-  disabledTools = [],
-  onDisconnect,
-  onRetryRules,
-  onSignIn,
-  policy,
-  readOnly = false,
-  rulesSignedOut = false,
-  scope,
-  tools
-}: HostedToolsPanelProps) {
-  const saver = useConnectorToolsSave(scope, card.slug, memberRevision(policy))
-
-  const rows = useMemo(
-    () =>
-      readOnly ? toolRows(tools.tools, new Set(disabledTools)) : connectorToolRows(policy, card.slug, tools.tools),
-    [card.slug, disabledTools, policy, readOnly, tools.tools]
-  )
-
-  const savedDisabled = useMemo(
-    () => (readOnly ? [...disabledTools] : [...memberDisabledTools(policy, card.slug)]),
-    [card.slug, disabledTools, policy, readOnly]
-  )
-
-  const editor = useToolsEditor({
-    editorKey: card.slug,
-    onSave: saver.onSave,
-    savedDisabled,
-    status: tools.status,
-    tools: rows
-  })
-
-  return (
-    <ToolsList
-      appOff={card.state === 'off'}
-      conflict={saver.theirs ? conflictDifference(saver.theirs, editor.local) : undefined}
-      connectorName={card.name}
-      editor={editor}
-      listKey={card.slug}
-      onReload={saver.reload}
-      onRemove={onDisconnect}
-      onRetry={tools.retry}
-      onRetryRules={onRetryRules}
-      onSignIn={onSignIn}
-      preview={!settled(card.ways.hosted)}
-      readOnly={readOnly}
-      rulesSignedOut={rulesSignedOut}
-      signedOut={tools.signedOut}
-      tools={rows}
-    />
-  )
-}
-
-const settled = (way: ConnectorCardModel['ways']['hosted']): boolean =>
-  way !== null && way.connected && (way.state === 'connected' || way.state === 'off')
 
 export interface LocalToolsPanelProps {
   card: ConnectorCardModel
@@ -103,9 +23,9 @@ export function LocalToolsPanel({ card, controller, onRemove }: LocalToolsPanelP
   const entry = controller.servers[name]
 
   const status =
-    card.ways.local?.serverEnabled === false
+    card.ways?.serverEnabled === false
       ? 'off'
-      : card.ways.local?.reason?.key === 'serverNeedsAuth'
+      : card.ways?.reason?.key === 'serverNeedsAuth'
         ? 'needsAuth'
         : !probe || probe === 'probing'
           ? 'loading'
@@ -153,8 +73,4 @@ export function LocalToolsPanel({ card, controller, onRemove }: LocalToolsPanelP
       tools={rows}
     />
   )
-}
-
-export function orgDisabledCount(policy: ConnectorPolicyView, slug: string, tools: readonly ToolInput[]): number {
-  return orgLockedTools(policy, slug, tools).size
 }

@@ -17,7 +17,7 @@ PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 mkdir -p "$PREFIX/bin"
 for name in __NAMES__; do
     link="$PREFIX/bin/$name"
-    target="../lib/hermes-agent/bin/$name"
+    target="../lib/rabbit-agent/bin/$name"
     if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
         continue
     fi
@@ -37,7 +37,7 @@ case "${1:-remove}" in
 esac
 for name in __NAMES__; do
     link="$PREFIX/bin/$name"
-    if [ -L "$link" ] && [ "$(readlink "$link")" = "../lib/hermes-agent/bin/$name" ]; then
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "../lib/rabbit-agent/bin/$name" ]; then
         rm -f "$link"
     fi
 done

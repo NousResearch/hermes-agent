@@ -32,7 +32,7 @@ def test_registered_package_installs_archive_in_real_worker(tmp_path, monkeypatc
     from pm import paths
 
     monkeypatch.setattr("pm.runtime.runtime_python", lambda **kwargs: worker_python)
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
     monkeypatch.setattr(paths, "lockfile_path", lambda: tmp_path / "lock.json")
     source = tmp_path / "package.py"
     source.write_text(textwrap.dedent("""\

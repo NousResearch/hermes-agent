@@ -15,7 +15,7 @@ description: "使用 llama.cpp 或 MLX 在 macOS 上搭建兼容 OpenAI 的本�
 | **llama.cpp** | `brew install llama.cpp` | 首 token 延迟最低，量化 KV 缓存节省内存 | GGUF |
 | **omlx** | [omlx.ai](https://omlx.ai) | token 生成速度最快，原生 Metal 优化 | MLX (safetensors) |
 
-两者均暴露兼容 OpenAI 的 `/v1/chat/completions` 端点。Hermes 支持任意一个——只需将其指向 `http://localhost:8080` 或 `http://localhost:8000`。
+两者均暴露兼容 OpenAI 的 `/v1/chat/completions` 端点。Rabbit 支持任意一个——只需将其指向 `http://localhost:8080` 或 `http://localhost:8000`。
 
 :::info 仅限 Apple Silicon
 本指南面向搭载 Apple Silicon（M1 及更新）的 Mac。Intel Mac 可使用 llama.cpp，但无 GPU 加速——性能会明显更慢。
@@ -208,12 +208,12 @@ curl -s http://127.0.0.1:8000/v1/models | jq '.data[].id'
 
 ---
 
-## 连接 Hermes
+## 连接 Rabbit
 
 本地服务器启动后：
 
 ```bash
-hermes model
+rabbit model
 ```
 
 选择 **Custom endpoint**，按提示操作。系统会询问 base URL 和模型名称——使用你所配置的后端对应的值即可。
@@ -222,19 +222,19 @@ hermes model
 
 ## 超时设置
 
-Hermes 会自动检测本地端点（localhost、局域网 IP）并放宽其流式传输超时限制。大多数情况下无需额外配置。
+Rabbit 会自动检测本地端点（localhost、局域网 IP）并放宽其流式传输超时限制。大多数情况下无需额外配置。
 
 如果仍然遇到超时错误（例如在慢速硬件上使用超大上下文），可以覆盖流式读取超时：
 
 ```bash
 # 在 .env 中——将默认的 120s 提高到 30 分钟
-HERMES_STREAM_READ_TIMEOUT=1800
+RABBIT_STREAM_READ_TIMEOUT=1800
 ```
 
 | 超时类型 | 默认值 | 本地自动调整 | 环境变量覆盖 |
 |---------|---------|----------------------|------------------|
-| 流式读取（socket 级别） | 120s | 提升至 1800s | `HERMES_STREAM_READ_TIMEOUT` |
-| 停滞流检测 | 180s | 完全禁用 | `HERMES_STREAM_STALE_TIMEOUT` |
-| API 调用（非流式） | 1800s | 无需调整 | `HERMES_API_TIMEOUT` |
+| 流式读取（socket 级别） | 120s | 提升至 1800s | `RABBIT_STREAM_READ_TIMEOUT` |
+| 停滞流检测 | 180s | 完全禁用 | `RABBIT_STREAM_STALE_TIMEOUT` |
+| API 调用（非流式） | 1800s | 无需调整 | `RABBIT_API_TIMEOUT` |
 
 流式读取超时最容易引发问题——它是接收下一个数据块的 socket 级别截止时间。在大上下文的预填充（prefill）阶段，本地模型可能在处理 prompt 时数分钟内没有任何输出。自动检测机制会透明地处理这一情况。

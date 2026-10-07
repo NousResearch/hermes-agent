@@ -18,10 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from hermes_constants import get_hermes_home
-from hermes_time import now as _hermes_now
+from rabbit_constants import get_rabbit_home
+from rabbit_time import now as _rabbit_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
-from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
+from rabbit_cli.observability.shared_metrics_gateway import record_cron_finish
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -40,18 +40,18 @@ _PROCESS_ID = uuid.uuid4().hex
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``rabbit_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from cron.jobs import _ensure_cron_dir
-    from hermes_cli.sqlite_util import open_db
+    from rabbit_cli.sqlite_util import open_db
 
-    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    path = EXECUTIONS_FILE or (get_rabbit_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
     return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_cli.sqlite_util import add_column_if_missing
+    from rabbit_cli.sqlite_util import add_column_if_missing
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS executions (
@@ -96,7 +96,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    from hermes_cli.sqlite_util import transaction
+    from rabbit_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn
@@ -149,7 +149,7 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
     """Age past which a claimed/running row with a LIVE owner is treated as wedged.
 
     Derived from the existing knobs, never a bare wall-clock constant:
-    ``max(3 × HERMES_CRON_TIMEOUT, cron script timeout, 7200)``. Returns ``None`` (never reclaim
+    ``max(3 × RABBIT_CRON_TIMEOUT, cron script timeout, 7200)``. Returns ``None`` (never reclaim
     live owners — today's behaviour) when the inactivity timeout is 0/unlimited or not a finite
     positive number: with no bound to derive from, fail closed.
     """
@@ -167,8 +167,8 @@ def _live_owner_stale_after_seconds() -> Optional[float]:
 
 
 def _claim_age_seconds(claimed_at: str) -> float:
-    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_time.now)."""
-    return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
+    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from rabbit_time.now)."""
+    return (_rabbit_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
@@ -189,7 +189,7 @@ def create_execution(
     """Persist a claimed attempt before executor/provider dispatch."""
     from cron.occurrences import scheduled_instant as canonical_instant
 
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
     with _transaction() as conn:
@@ -246,7 +246,7 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """
     pid = os.getpid()
     process_started_at = _process_start_time(pid)
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
@@ -265,7 +265,7 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 
 def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
     """Transition one claimed attempt to running exactly once."""
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
@@ -287,7 +287,7 @@ def finish_execution(
     delivery_outcome: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Write a terminal result once; terminal attempts cannot be rewritten."""
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     status = "completed" if success else "failed"
     detail = None if success else (str(error) if error else "unknown failure")
     with _transaction() as conn:
@@ -323,7 +323,7 @@ def recover_interrupted_executions() -> int:
     """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
     dead, plus rows whose live owner holds a claim older than the derived stale bound (the
     process is not killed)."""
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
     # Derived on the first live-owned row only: the bound reads config, and the idle gateway
@@ -405,7 +405,7 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
     this process, inside the handoff adoption grace, or owned by a live process: a
     worker that is still running must never be terminalized out from under itself.
     """
-    now = _hermes_now().isoformat()
+    now = _rabbit_now().isoformat()
     with _transaction() as conn:
         row = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,

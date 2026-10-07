@@ -7,7 +7,7 @@ import { $connection } from '@/store/session'
 import { ArtifactsView } from './index'
 
 const paths = vi.hoisted(() => [
-  '~/.hermes/memories/USER.md',
+  '~/.rabbit/memories/USER.md',
   './report.md',
   '../parent.md',
   String.raw`~\home.txt`,
@@ -20,8 +20,8 @@ const paths = vi.hoisted(() => [
 
 const getSessionMessages = vi.hoisted(() => vi.fn())
 
-vi.mock('@/hermes', async () => ({
-  ...(await vi.importActual('@/hermes')),
+vi.mock('@/rabbit', async () => ({
+  ...(await vi.importActual('@/rabbit')),
   listAllProfileSessions: async () => ({
     sessions: [{ id: 'artifact-session', title: 'Fixture', profile: 'origin-profile' }]
   }),
@@ -47,7 +47,7 @@ it('keeps discovered file paths and originating session scope intact through rem
   })
   const saveGatewayFile = vi.fn().mockResolvedValue({ saved: true })
   const openExternal = vi.fn()
-  vi.stubGlobal('hermesDesktop', { saveGatewayFile, openExternal })
+  vi.stubGlobal('rabbitDesktop', { saveGatewayFile, openExternal })
   $connection.set({
     isFullscreen: false,
     nativeOverlayWidth: 0,

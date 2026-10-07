@@ -1,9 +1,9 @@
-import { Box, Text, useStdout } from '@hermes/ink'
-import { mix } from '@hermes/shared/color'
+import { Box, Text, useStdout } from '@rabbit/ink'
+import { mix } from '@rabbit/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
-import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, mascot, MASCOT_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { useT } from '../i18n/useT.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -57,7 +57,7 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 // comfortably without forcing wrap or truncation drift on box-drawing edges.
 // Taglines live in the catalog (chatBits.branding.tagFull/tagMid); the tiny
 // tier is the bare brand name and stays untranslated.
-const TAG_TINY = 'Nous Research'
+const TAG_TINY = 'Sanath Patil'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
 
@@ -216,8 +216,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
-  const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
+  const heroLines = mascot(t.color, t.bannerHero || undefined)
+  const leftW = Math.min((artWidth(heroLines) || MASCOT_WIDTH) + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
   const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
   const lineBudget = Math.max(12, w - 2)
@@ -287,7 +287,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   // MCP headline counts *connected* servers, not configured-but-disabled ones,
   // so it matches the classic CLI banner (`sum(s.connected)` in
-  // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
+  // rabbit_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
 
@@ -371,7 +371,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       <Text color={t.color.accent}>
         {(info.model ?? '').split('/').pop()}
-        <Text color={t.color.muted}> · Nous Research</Text>
+        <Text color={t.color.muted}> · Sanath Patil</Text>
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
@@ -403,7 +403,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Box flexDirection="column" marginBottom={1}>
           <Text color={t.color.accent} wrap="truncate-end">
             {(info.model ?? '').split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
+            <Text color={t.color.muted}> · Sanath Patil</Text>
           </Text>
           <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
@@ -494,7 +494,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             {T.runPrefix}
           </Text>
           <Text bold color={t.color.warn}>
-            {info.update_command || 'hermes update'}
+            {info.update_command || 'rabbit update'}
           </Text>
           <Text bold={false} color={t.color.warn} dimColor>
             {T.toUpdate}

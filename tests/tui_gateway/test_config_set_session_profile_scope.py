@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import tui_gateway.server as server
 
@@ -33,8 +33,8 @@ def homes(tmp_path, monkeypatch):
     launch, worker = tmp_path / "launch", tmp_path / "profiles" / "worker"
     _write_cfg(launch, "queue", "manual")
     _write_cfg(worker, "queue", "manual")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
-    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
+    monkeypatch.setattr(server, "_rabbit_home", launch)
     monkeypatch.setattr(server, "_cfg_cache", None)
     monkeypatch.setattr(server, "_cfg_sig", None)
     monkeypatch.setattr(server, "_cfg_path", None)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Plugin upgrade-preservation verifier (Hermes release-harness hook).
+"""Plugin upgrade-preservation verifier (Rabbit release-harness hook).
 
 Standalone and stdlib-only. Snapshot/verify are read-only against the home;
 the explicit seed command creates controlled fixtures in a disposable home.
 
-  snapshot  walk every plugin tree of a HERMES_HOME (the active home's
+  snapshot  walk every plugin tree of a RABBIT_HOME (the active home's
             ``plugins/**`` plus each ``profiles/<name>/plugins/**`` tree,
             overridable with --profiles-dir) and record, per entry —
             including EMPTY DIRECTORIES and the tree roots themselves —
@@ -22,8 +22,8 @@ scanner that cannot see a file cannot defend it. The verifier never
 creates, deletes or writes anything under the scanned home.
 
 Usage:
-  python verify-plugin-preservation.py snapshot --home <HERMES_HOME> --out snap.json
-  python verify-plugin-preservation.py verify --home <HERMES_HOME> --snapshot snap.json [--report r.json]
+  python verify-plugin-preservation.py snapshot --home <RABBIT_HOME> --out snap.json
+  python verify-plugin-preservation.py verify --home <RABBIT_HOME> --snapshot snap.json [--report r.json]
 """
 
 from __future__ import annotations

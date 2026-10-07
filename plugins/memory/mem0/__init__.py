@@ -1,8 +1,8 @@
 """Mem0 memory plugin — MemoryProvider interface.
 
 Server-side fact extraction and semantic search via the Mem0 Platform API (cloud), a
-self-hosted Mem0 server (MEM0_HOST, HTTP), or OSS Memory. Secrets live in $HERMES_HOME/.env
-(MEM0_API_KEY, MEM0_HOST); settings in $HERMES_HOME/mem0.json via `hermes memory setup`:
+self-hosted Mem0 server (MEM0_HOST, HTTP), or OSS Memory. Secrets live in $RABBIT_HOME/.env
+(MEM0_API_KEY, MEM0_HOST); settings in $RABBIT_HOME/mem0.json via `rabbit memory setup`:
 mode ("platform"|"oss"), host, user_id (canonical id across gateways; unset → gateway-native
 id), agent_id. MEM0_* env vars remain a fallback.
 """
@@ -31,7 +31,7 @@ _BREAKER_THRESHOLD, _BREAKER_COOLDOWN_SECS, _PREFETCH_WAIT_SECS = 5, 120, 3
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 # Placeholder user_id. initialize() treats it as "no operator-configured user_id"
 # so legacy mem0.json files written by the wizard don't override gateway-native ids.
-_DEFAULT_USER_ID = "hermes-user"
+_DEFAULT_USER_ID = "rabbit-user"
 
 # sync_turn sends the whole turn to the backend for fact extraction. OSS embedding
 # models often have small context windows (bge-small-zh-v1.5: 512 tokens ≈ 500 chars;
@@ -74,19 +74,19 @@ def _is_client_error(exc: Exception) -> bool:
 
 
 def _load_config() -> dict:
-    """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
+    """Env vars provide defaults; $RABBIT_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
     like ``api_key`` that the user set in ``.env``."""
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
     # Identity (user/agent id), host and mode are .env values like the key: read them through the
     # profile scope too, or a secondary profile's memories land in the default profile's account.
     # A scope-less multiplex caller raises here on purpose — that is a spawn-site bug, and
     # swallowing it would silently route the turn's memories to the default profile.
     config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
-              "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
+              "agent_id": get_secret("MEM0_AGENT_ID", "") or "rabbit", "oss": {}}
     if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
-    file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
+    file_cfg = read_json_or_empty(get_rabbit_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
     # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
     # backend from the local ``oss`` config and has no platform credential to resolve, so a profile
@@ -128,7 +128,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def __init__(self):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
-        self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
+        self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "rabbit"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
         self._sync_max_chars = _SYNC_MSG_MAX_CHARS
         self._prefetch_query = self._prefetch_result = ""
@@ -146,9 +146,9 @@ class Mem0MemoryProvider(MemoryProvider):
             return bool(cfg.get("oss", {}).get("vector_store"))
         return bool(cfg.get("api_key") or cfg.get("host"))  # platform needs a key; self-hosted a host (key optional with AUTH_DISABLED)
 
-    def save_config(self, values, hermes_home):
-        """Merge-write config to $HERMES_HOME/mem0.json."""
-        config_path = Path(hermes_home) / "mem0.json"
+    def save_config(self, values, rabbit_home):
+        """Merge-write config to $RABBIT_HOME/mem0.json."""
+        config_path = Path(rabbit_home) / "mem0.json"
         atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def get_config_schema(self):
@@ -156,14 +156,14 @@ class Mem0MemoryProvider(MemoryProvider):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
-            {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
-            {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            {"key": "user_id", "description": "User identifier", "default": "rabbit-user"},
+            {"key": "agent_id", "description": "Agent identifier", "default": "rabbit"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
         ]
 
-    def post_setup(self, hermes_home: str, config: dict) -> None:
+    def post_setup(self, rabbit_home: str, config: dict) -> None:
         from ._setup import post_setup
-        post_setup(hermes_home, config)
+        post_setup(rabbit_home, config)
 
     def _oss_hint(self, template: str, default: str = "vector store") -> str:
         """OSS-only hint; ``{vs}`` is the configured vector-store provider. "" in other modes."""
@@ -226,7 +226,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = cfg = _load_config()
-        self._mode, self._api_key, self._host, self._agent_id = cfg.get("mode", "platform"), cfg.get("api_key", ""), cfg.get("host", ""), cfg.get("agent_id", "hermes")
+        self._mode, self._api_key, self._host, self._agent_id = cfg.get("mode", "platform"), cfg.get("api_key", ""), cfg.get("host", ""), cfg.get("agent_id", "rabbit")
         # user_id precedence: operator-configured (env/mem0.json) > gateway-native id (kwargs) > _DEFAULT_USER_ID.
         # The literal placeholder counts as unset so wizard users still get gateway-native ids.
         configured = cfg.get("user_id")

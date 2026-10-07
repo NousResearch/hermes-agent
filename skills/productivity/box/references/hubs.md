@@ -16,11 +16,11 @@ box hubs:get <HUB_ID> --json
 box hubs:items <HUB_ID> --max-items 100 --json
 ```
 
-For a known Hub URL or ID, run `box hubs:get <HUB_ID>` directly even if the list is empty. Report each Hub as `https://app.box.com/hubs/<HUB_ID>`. Check `is_ai_enabled` before asking a question, then make one bounded Hub Ask request to verify actual API availability. Box AI for Hubs must have been enabled before the Hub was created so Box can index its content. If Hub AI is unavailable, distinguish a disabled feature, a Hub created before AI enablement, indexing delay, missing Hub collaboration, missing access to underlying files, and exhausted AI units; do not silently download source files into Hermes' model context.
+For a known Hub URL or ID, run `box hubs:get <HUB_ID>` directly even if the list is empty. Report each Hub as `https://app.box.com/hubs/<HUB_ID>`. Check `is_ai_enabled` before asking a question, then make one bounded Hub Ask request to verify actual API availability. Box AI for Hubs must have been enabled before the Hub was created so Box can index its content. If Hub AI is unavailable, distinguish a disabled feature, a Hub created before AI enablement, indexing delay, missing Hub collaboration, missing access to underlying files, and exhausted AI units; do not silently download source files into Rabbit' model context.
 
 ## Ask questions across a Hub
 
-Use one Hub item and `single_item_qa`. Request citations so Hermes can report the source files behind an answer. Use `box request` (or the SDK) for Hub Q&A rather than relying on `box ai:ask`, whose installed CLI versions may not accept Hub item types. This uses the Box AI Ask endpoint; the `box-version: 2025.0` header is required for `/hubs` management endpoints, not this request.
+Use one Hub item and `single_item_qa`. Request citations so Rabbit can report the source files behind an answer. Use `box request` (or the SDK) for Hub Q&A rather than relying on `box ai:ask`, whose installed CLI versions may not accept Hub item types. This uses the Box AI Ask endpoint; the `box-version: 2025.0` header is required for `/hubs` management endpoints, not this request.
 
 ```bash
 box request /ai/ask -X POST \

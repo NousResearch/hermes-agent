@@ -1,14 +1,14 @@
 """Install, update, gateway and a turn in a home whose path has spaces and non-ASCII bytes.
 
-Failure class: path handling. Users run Hermes from homes like ``/home/José Müller`` or a
+Failure class: path handling. Users run Rabbit from homes like ``/home/José Müller`` or a
 CJK-named directory. Every path the installer and updater write (clone target, uv/python/node
-store, PM generation, the ``~/.local/bin/hermes`` launcher, the rc-file PATH line, sys.path) must
+store, PM generation, the ``~/.local/bin/rabbit`` launcher, the rc-file PATH line, sys.path) must
 survive a space and non-ASCII bytes.
 
-One real install through HEAD's ``scripts/install.sh`` with the whole sandbox (HOME, HERMES_HOME,
+One real install through HEAD's ``scripts/install.sh`` with the whole sandbox (HOME, RABBIT_HOME,
 TMPDIR) under ``José Müller 漢字 dir``; then a one-shot turn, a new login shell resolving
-``hermes``, an upstream release and ``hermes update``, a turn on the new commit and
-``hermes gateway run``. The symlinked-home shapes live in ``test_paths_symlinked.py`` so the two
+``rabbit``, an upstream release and ``rabbit update``, a turn on the new commit and
+``rabbit gateway run``. The symlinked-home shapes live in ``test_paths_symlinked.py`` so the two
 installs run in parallel.
 """
 
@@ -62,11 +62,11 @@ def test_install_update_gateway_and_turn_under_a_non_ascii_spaced_home(odd_home,
     assert not X.reran_completion(t1), "the first launch after install re-ran the completion:\n" + I.describe(t1)
 
     # A new login shell finds the launcher through the rc line the installer wrote.
-    probe = X.login_shell(sb, "command -v hermes; hermes --version >/dev/null && echo LAUNCH-OK")
+    probe = X.login_shell(sb, "command -v rabbit; rabbit --version >/dev/null && echo LAUNCH-OK")
     assert probe.returncode == 0, H.describe(probe)
     lines = probe.stdout.strip().splitlines()
-    assert lines and lines[0] == sb.hermes and "LAUNCH-OK" in lines, (
-        f"a new login shell does not run the installed launcher (want {sb.hermes}):\n" + H.describe(probe))
+    assert lines and lines[0] == sb.rabbit and "LAUNCH-OK" in lines, (
+        f"a new login shell does not run the installed launcher (want {sb.rabbit}):\n" + H.describe(probe))
 
     # Every sys.path entry of the selected interpreter names a real location.
     seen = X.interpreter_paths(sb)
@@ -77,7 +77,7 @@ def test_install_update_gateway_and_turn_under_a_non_ascii_spaced_home(odd_home,
                               {"docs/e2e-host-paths-marker.txt": "release 1\n"})
     up = sb.cli("update", "--yes", "--branch", "main", timeout=X.UPDATE_TIMEOUT)
     assert up.returncode == 0 and I.TRACEBACK not in up.stdout + up.stderr, (
-        "hermes update failed under a non-ASCII, spaced HOME:\n" + I.describe(up))
+        "rabbit update failed under a non-ASCII, spaced HOME:\n" + I.describe(up))
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == target, "update exited 0 but HEAD is not the new release"
     t2 = X.turn(sb, provider, "turn after updating under a non-ASCII home")
     assert not X.reran_completion(t2), "the first launch after a finished update re-ran the completion:\n" + I.describe(t2)

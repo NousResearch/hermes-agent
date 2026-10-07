@@ -48,4 +48,4 @@ def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
         shared=False,
     )
 
-    assert captured["default_headers"]["originator"] == "hermes-agent"
+    assert captured["default_headers"]["originator"] == "rabbit-agent"

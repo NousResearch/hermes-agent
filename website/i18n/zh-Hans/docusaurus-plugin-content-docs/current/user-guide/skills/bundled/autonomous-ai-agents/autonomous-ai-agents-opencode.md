@@ -17,21 +17,20 @@ description: "将编码任务委托给 OpenCode CLI（功能开发、PR 审查�
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/autonomous-ai-agents/opencode` |
 | 版本 | `1.2.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Coding-Agent`, `OpenCode`, `Autonomous`, `Refactoring`, `Code-Review` |
-| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # OpenCode CLI
 
-使用 [OpenCode](https://opencode.ai) 作为由 Hermes 终端/进程工具编排的自主编码工作器。OpenCode 是一个支持多 provider、开源的 AI 编码 agent，具备 TUI（终端用户界面）和 CLI。
+使用 [OpenCode](https://opencode.ai) 作为由 Rabbit 终端/进程工具编排的自主编码工作器。OpenCode 是一个支持多 provider、开源的 AI 编码 agent，具备 TUI（终端用户界面）和 CLI。
 
 ## 适用场景
 
@@ -50,7 +49,7 @@ description: "将编码任务委托给 OpenCode CLI（功能开发、PR 审查�
 
 ## 二进制文件解析（重要）
 
-Shell 环境可能会解析到不同的 OpenCode 二进制文件。如果你的终端与 Hermes 的行为不一致，请检查：
+Shell 环境可能会解析到不同的 OpenCode 二进制文件。如果你的终端与 Rabbit 的行为不一致，请检查：
 
 ```
 terminal(command="which -a opencode")

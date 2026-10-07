@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# MIT License. Part of the Hermes docx skill.
+# MIT License. Part of the Rabbit docx skill.
 """Fill {{placeholder}} tokens in a .docx from a JSON mapping.
 
 Tokens are replaced everywhere: body paragraphs, tables (including nested

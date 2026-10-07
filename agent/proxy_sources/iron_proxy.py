@@ -4,7 +4,7 @@ Sandboxes (Docker/Modal/SSH) hold only opaque proxy tokens; iron-proxy — a TLS
 default-deny egress firewall — swaps them for real credentials on the way out, so a leaked
 token is useless outside the trusted proxy boundary.  The pinned binary is auto-installed
 into the PM tool store; CA, ``proxy.yaml``, ``mappings.json``, pidfile and logs live in
-``<hermes_home>/proxy``.  Failures warn and never block agent startup.
+``<rabbit_home>/proxy``.  Failures warn and never block agent startup.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ _STARTUP_GRACE_SECONDS = 5
 
 # Management API (v0.39): loopback POST /v1/reload hot-swaps the ruleset.  Bearer key minted at
 # setup (0600 at <proxy>/management.token), injected under this env name; empty => daemon refuses to start.
-_MGMT_API_KEY_ENV = "HERMES_IRON_PROXY_MGMT_KEY"
+_MGMT_API_KEY_ENV = "RABBIT_IRON_PROXY_MGMT_KEY"
 _MGMT_PORT_OFFSET = 2  # tunnel_port is CONNECT/MITM, +1 is plain-HTTP forward, +2 is management
 _MGMT_RELOAD_TIMEOUT = 15
 
@@ -47,7 +47,7 @@ _DEFAULT_TUNNEL_PORT = 9090
 # Hosts allowed by default for AI inference traffic.  Anything else is 403'd.
 _DEFAULT_ALLOWED_HOSTS: Tuple[str, ...] = (
     "openrouter.ai", "*.openrouter.ai", "api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com",
-    "api.x.ai", "api.mistral.ai", "api.groq.com", "api.together.xyz", "api.deepseek.com", "inference.nousresearch.com",
+    "api.x.ai", "api.mistral.ai", "api.groq.com", "api.together.xyz", "api.deepseek.com",
 )
 
 # Provider env-var name -> upstream hosts on which the Authorization Bearer token is swapped.
@@ -55,7 +55,7 @@ _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
     "OPENROUTER_API_KEY": ("openrouter.ai", "*.openrouter.ai"), "OPENAI_API_KEY": ("api.openai.com",),
     "GROQ_API_KEY": ("api.groq.com",), "TOGETHER_API_KEY": ("api.together.xyz",),
     "DEEPSEEK_API_KEY": ("api.deepseek.com",), "MISTRAL_API_KEY": ("api.mistral.ai",),
-    "XAI_API_KEY": ("api.x.ai",), "NOUS_API_KEY": ("inference.nousresearch.com",),
+    "XAI_API_KEY": ("api.x.ai",),
 }
 
 # Non-Authorization-header providers (v0.39 ``match_headers`` is case-insensitive).  ``aliases``
@@ -67,7 +67,7 @@ _BEARER_PROVIDERS: Dict[str, Tuple[str, ...]] = {
 # ``secrets.replace.match_headers`` targets arbitrary header names (case-insensitive; confirmed by the
 # iron-proxy author on PR #30179 and verified in the pinned v0.39.0 source — ``swapHeaders`` +
 # ``parseHeaderMatchers``), so these are first-class swapped providers, not "uncovered". ``aliases`` are
-# interchangeable env-var names for the SAME upstream credential (Hermes' auth.py keys Google on both
+# interchangeable env-var names for the SAME upstream credential (Rabbit' auth.py keys Google on both
 # GEMINI_API_KEY and GOOGLE_API_KEY). The sandbox receives the minted token under the canonical name AND
 # every alias so SDKs reading either work.
 _HEADER_AUTH_PROVIDERS: Dict[str, Dict[str, Tuple[str, ...]]] = {
@@ -110,7 +110,7 @@ _VERSION_CACHE: Dict[str, str] = {}
 
 # Nonce planted in the daemon env so ``_pid_alive`` can prove a PID is still *our* binary across
 # PID recycling (a fresh process can't inherit our arbitrary env value).
-_HERMES_IRON_PROXY_NONCE_ENV = "HERMES_IRON_PROXY_NONCE"
+_RABBIT_IRON_PROXY_NONCE_ENV = "RABBIT_IRON_PROXY_NONCE"
 _proxy_nonce: Optional[str] = None
 
 
@@ -147,8 +147,8 @@ class TokenMapping:
 
 
 def _proxy_state_dir_ro() -> Path:  # without creating it (status probes, pidfile reads)
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "proxy"
+    from rabbit_constants import get_rabbit_home
+    return get_rabbit_home() / "proxy"
 
 
 def _proxy_state_dir() -> Path:
@@ -197,7 +197,7 @@ def _verify_checksums_signature(tmp: Path, checksum_path: Path) -> bool:
     if not sig_path.is_file() or not pubkey_path.is_file():
         logger.warning("iron-proxy release signature assets unavailable — skipping GPG verification (SHA-256 checksum check still enforced).")
         return False
-    with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as gnupg_home:
+    with tempfile.TemporaryDirectory(prefix="rabbit-iron-signature-") as gnupg_home:
         gpg_base = [gpg, "--homedir", gnupg_home, "--batch", "--no-tty"]
         if (imp := _run([*gpg_base, "--import", str(pubkey_path)], timeout=60)).returncode != 0:
             logger.warning("Could not import iron-proxy signing key — skipping GPG verification (SHA-256 still enforced): %s", imp.stderr.decode("utf-8", "replace")[:200])
@@ -264,10 +264,10 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
         return ca_crt, ca_key
     if shutil.which("openssl") is None:
         raise RuntimeError("openssl not found on PATH. Install OpenSSL (apt: `openssl`, brew: `openssl`) to generate the iron-proxy CA cert.")
-    with tempfile.TemporaryDirectory(prefix="hermes-proxy-ca-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="rabbit-proxy-ca-") as tmpdir:
         tmp_key, tmp_crt = Path(tmpdir) / "ca.key", Path(tmpdir) / "ca.crt"
         _run(["openssl", "genrsa", "-out", str(tmp_key), "4096"], timeout=60, check=True)
-        _run(["openssl", "req", "-x509", "-new", "-nodes", "-key", str(tmp_key), "-sha256", "-days", "3650", "-subj", "/CN=hermes iron-proxy CA",
+        _run(["openssl", "req", "-x509", "-new", "-nodes", "-key", str(tmp_key), "-sha256", "-days", "3650", "-subj", "/CN=rabbit iron-proxy CA",
               "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign", "-out", str(tmp_crt)], timeout=60, check=True)
         # Key: stage 0o600 against a fresh inode, then atomically rename into place.
         key_staged = ca_key.with_suffix(ca_key.suffix + ".staged")
@@ -281,7 +281,7 @@ def ensure_ca_cert(*, force: bool = False) -> Tuple[Path, Path]:
     return ca_crt, ca_key
 
 
-def mint_proxy_token(prefix: str = "hermes-proxy") -> str:
+def mint_proxy_token(prefix: str = "rabbit-proxy") -> str:
     """Opaque token: recognizable prefix + 128-bit random hex suffix (iron-proxy matches exactly)."""
     return f"{prefix}-{hashlib.sha256(os.urandom(32)).hexdigest()[:32]}"
 
@@ -303,16 +303,16 @@ def ensure_management_token(*, force: bool = False) -> str:
     """Return the management-API bearer key, minting it on first call.
 
     Stored at the path from :func:`_management_token_path` with 0600 perms.
-    The daemon receives it via the ``HERMES_IRON_PROXY_MGMT_KEY`` env var
+    The daemon receives it via the ``RABBIT_IRON_PROXY_MGMT_KEY`` env var
     (named in the generated config's ``management.api_key_env``);
-    ``hermes egress reload`` reads the same file to authenticate.
+    ``rabbit egress reload`` reads the same file to authenticate.
     """
 
     _proxy_state_dir()
     p = _management_token_path()
     if not force and (existing := _read_text_or_none(p)):
         return existing
-    token = mint_proxy_token(prefix="hermes-mgmt")
+    token = mint_proxy_token(prefix="rabbit-mgmt")
     _write_private_file(p, token.encode("utf-8"))
     return token
 
@@ -321,7 +321,7 @@ def _yaml():
     """Shared YAML helpers or None (not a hard requirement for proxy discovery)."""
 
     try:
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         return yaml
     except ImportError:
         return None
@@ -363,20 +363,20 @@ def _probe_target() -> Tuple[str, int]:
 # Management-API error status -> operator message (422 = validation rejected, ruleset unchanged; 401 = daemon started with another management.token).
 _RELOAD_HTTP_ERRORS = {
     422: "iron-proxy rejected the new config (validation failed; the running ruleset is unchanged): {body}",
-    401: "management API rejected our key (401).  The running daemon was started with a different management.token — run `hermes egress restart`.",
+    401: "management API rejected our key (401).  The running daemon was started with a different management.token — run `rabbit egress restart`.",
 }
 
 
 def reload_proxy() -> bool:
     """``POST /v1/reload`` (validation failures leave the running config untouched); actionable RuntimeError on any failure."""
     if not (pid := _read_pid()) or not _pid_alive(pid):
-        raise RuntimeError("iron-proxy is not running — nothing to reload.  Run `hermes egress start`.")
+        raise RuntimeError("iron-proxy is not running — nothing to reload.  Run `rabbit egress start`.")
     if (mgmt := _read_management_listen_from_config()) is None:
         raise RuntimeError(
-            "The generated proxy.yaml has no management listener (written before reload support).  Re-run `hermes egress setup` and use `hermes egress restart` this one time."
+            "The generated proxy.yaml has no management listener (written before reload support).  Re-run `rabbit egress setup` and use `rabbit egress restart` this one time."
         )
     if not (token := _read_text_or_none(_management_token_path())):
-        raise RuntimeError("management.token is missing — re-run `hermes egress setup`, then `hermes egress restart`.")
+        raise RuntimeError("management.token is missing — re-run `rabbit egress setup`, then `rabbit egress restart`.")
     host, port = mgmt
     req = urllib.request.Request(f"http://{host}:{port}/v1/reload", method="POST", headers={"Authorization": f"Bearer {token}"}, data=b"")
     try:
@@ -393,7 +393,7 @@ def reload_proxy() -> bool:
     except (urllib.error.URLError, OSError) as exc:
         # A daemon started from a pre-management config is alive but has no listener.
         raise RuntimeError(
-            f"could not reach the management API at {host}:{port} ({exc}).  If the daemon was started before reload support, run `hermes egress restart` once."
+            f"could not reach the management API at {host}:{port} ({exc}).  If the daemon was started before reload support, run `rabbit egress restart` once."
         ) from exc
 
 
@@ -502,7 +502,7 @@ def ensure_audit_log(audit_path: Path) -> None:
 
 
 def write_proxy_config(config: Dict) -> Path:
-    """Serialize the config dict to ``<hermes_home>/proxy/proxy.yaml`` (safe_dump, no Python tags).
+    """Serialize the config dict to ``<rabbit_home>/proxy/proxy.yaml`` (safe_dump, no Python tags).
 
     The file holds proxy tokens: written 0600 from creation, never at process umask."""
     if (yaml := _yaml()) is None:
@@ -634,7 +634,7 @@ def _pid_alive(pid: int) -> bool:
     if nonce_candidates:
         with suppress(OSError):
             env_bytes = Path(f"/proc/{pid}/environ").read_bytes()
-            if any(f"{_HERMES_IRON_PROXY_NONCE_ENV}={n}".encode() in env_bytes for n in nonce_candidates):
+            if any(f"{_RABBIT_IRON_PROXY_NONCE_ENV}={n}".encode() in env_bytes for n in nonce_candidates):
                 return True
     with suppress(OSError):
         if (cmdline_path := Path(f"/proc/{pid}/cmdline")).exists():
@@ -657,9 +657,9 @@ def start_proxy(
     if (existing := _read_pid()) and _pid_alive(existing):
         return get_status()
     if (bin_path := binary or find_iron_proxy(install_if_missing=install_if_missing)) is None:
-        raise RuntimeError("iron-proxy binary not available — run `hermes egress install`.")
+        raise RuntimeError("iron-proxy binary not available — run `rabbit egress install`.")
     if not (cfg := config_path or (_proxy_state_dir() / "proxy.yaml")).exists():
-        raise RuntimeError(f"iron-proxy config not found at {cfg}. Run `hermes egress setup` first.")
+        raise RuntimeError(f"iron-proxy config not found at {cfg}. Run `rabbit egress setup` first.")
     # Minimal env: os.environ.copy() would expose every operator secret via /proc/<pid>/environ.
     env = _build_proxy_subprocess_env(extra_env=extra_env, refresh_from_bitwarden=refresh_secrets_from_bitwarden, bitwarden_config=bitwarden_config)
     # v0.39 validates api_key_env is non-empty when management.listen is set.
@@ -667,10 +667,10 @@ def start_proxy(
         env[_MGMT_API_KEY_ENV] = ensure_management_token()
     # Per-start nonce for PID-recycling defense; module-global is fine (one proxy per process).
     _proxy_nonce = hashlib.sha256(os.urandom(16)).hexdigest()
-    env[_HERMES_IRON_PROXY_NONCE_ENV] = _proxy_nonce
+    env[_RABBIT_IRON_PROXY_NONCE_ENV] = _proxy_nonce
     log_path = _proxy_state_dir() / "iron-proxy.log"
     proc = _spawn_daemon(bin_path, cfg, env, log_path)
-    # Pidfile BEFORE the listening poll so `hermes egress stop` can clean an orphan if the parent dies mid-poll.
+    # Pidfile BEFORE the listening poll so `rabbit egress stop` can clean an orphan if the parent dies mid-poll.
     pidfile = _pidfile()
     try:
         _write_pidfile_safely(pidfile, proc.pid)
@@ -765,7 +765,7 @@ def _write_pidfile_safely(pidfile: Path, pid: int) -> None:
     except FileExistsError:
         if (existing_pid := _read_pid()) and _pid_alive(existing_pid):
             raise RuntimeError(
-                f"Another iron-proxy start appears to be in progress (pidfile {pidfile} -> pid {existing_pid}).  Run `hermes egress stop` if that proxy is stuck."
+                f"Another iron-proxy start appears to be in progress (pidfile {pidfile} -> pid {existing_pid}).  Run `rabbit egress stop` if that proxy is stuck."
             )
         pidfile.unlink(missing_ok=True)
         fd = os.open(str(pidfile), open_flags, 0o600)
@@ -865,12 +865,12 @@ def _refresh_secrets_from_bitwarden(env: Dict[str, str], needed: set, bitwarden_
         _bitwarden_shortfall(
             allow_env_fallback,
             f"Bitwarden refresh did not return secrets for {missing}.  Either add the secrets to your BWS project, switch to "
-            f"credential_source: env via `hermes egress setup --no-bitwarden`, or set `proxy.allow_env_fallback: true` in "
+            f"credential_source: env via `rabbit egress setup --no-bitwarden`, or set `proxy.allow_env_fallback: true` in "
             f"config.yaml to opt into the legacy host-env fallback.",
             "Bitwarden refresh did not return secrets for %s — falling back to host env for those names (allow_env_fallback=true).", missing,
         )
     if warnings:  # log only the count: the taint analyzer can't tell bws status text is non-secret
-        logger.warning("Bitwarden refresh produced %d warning(s); run `hermes secrets bitwarden status` for detail.", len(warnings))
+        logger.warning("Bitwarden refresh produced %d warning(s); run `rabbit secrets bitwarden status` for detail.", len(warnings))
 
 
 def _forget_daemon() -> None:

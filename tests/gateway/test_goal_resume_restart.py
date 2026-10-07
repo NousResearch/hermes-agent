@@ -25,26 +25,26 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_cli import goals
+from rabbit_cli import goals
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    # get_hermes_home() prefers the context-local override over the env
-    # var, so a set_hermes_home_override() leaked by ANY earlier test in
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    # get_rabbit_home() prefers the context-local override over the env
+    # var, so a set_rabbit_home_override() leaked by ANY earlier test in
     # this process would silently point the goals DB at a dead tmp
     # dir and make resume enqueue nothing (CI-only flake). Pin the
     # override to THIS home so the fixture is immune to leaks.
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
+    from rabbit_constants import (
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
 
-    token = set_hermes_home_override(str(home))
+    token = set_rabbit_home_override(str(home))
     goals._DB_CACHE.clear()
     # Pre-warm the SessionDB cache from sync context so async GoalManager
     # writes never race the bounded loop-thread bootstrap window on loaded
@@ -52,7 +52,7 @@ def hermes_home(tmp_path, monkeypatch):
     goals._get_session_db()
     yield home
     try:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
     except Exception:
         pass
     goals._DB_CACHE.clear()
@@ -63,7 +63,7 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
     mgr = goals.GoalManager(session_id)
     mgr.set(goal_text, max_turns=1)
     with patch(
-        "hermes_cli.goals.judge_goal",
+        "rabbit_cli.goals.judge_goal",
         return_value=("continue", "needs more steps", False, None, False),
     ):
         decision = mgr.evaluate_after_turn("worked a bit")
@@ -79,9 +79,9 @@ def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):
 
 
 def _make_cli(session_id: str):
-    from cli import HermesCLI
+    from cli import RabbitCLI
 
-    cli = HermesCLI.__new__(HermesCLI)
+    cli = RabbitCLI.__new__(RabbitCLI)
     cli._pending_input = queue.Queue()
     cli.session_id = session_id
     cli.agent = MagicMock()
@@ -90,7 +90,7 @@ def _make_cli(session_id: str):
 
 
 class TestCliResumeRestartsWork:
-    def test_resume_after_budget_exhaustion_queues_continuation(self, hermes_home):
+    def test_resume_after_budget_exhaustion_queues_continuation(self, rabbit_home):
         sid = f"sid-cli-resume-{uuid.uuid4().hex}"
         cli = _make_cli(sid)
         _exhaust_budget(sid)
@@ -108,7 +108,7 @@ class TestCliResumeRestartsWork:
         assert state.status == "active"
         assert state.turns_used == 0
 
-    def test_resume_without_goal_queues_nothing(self, hermes_home):
+    def test_resume_without_goal_queues_nothing(self, rabbit_home):
         sid = f"sid-cli-noresume-{uuid.uuid4().hex}"
         cli = _make_cli(sid)
 
@@ -174,7 +174,7 @@ def _resume_event() -> MessageEvent:
 class TestGatewayResumeRestartsWork:
     @pytest.mark.asyncio
     async def test_resume_after_budget_exhaustion_enqueues_continuation(
-        self, hermes_home
+        self, rabbit_home
     ):
         runner, adapter = _make_runner()
         _exhaust_budget(_GW_SID)
@@ -197,7 +197,7 @@ class TestGatewayResumeRestartsWork:
         assert state.turns_used == 0
 
     @pytest.mark.asyncio
-    async def test_resume_without_goal_enqueues_nothing(self, hermes_home):
+    async def test_resume_without_goal_enqueues_nothing(self, rabbit_home):
         runner, adapter = _make_runner()
 
         response = await GatewayRunner._handle_goal_command(runner, _resume_event())

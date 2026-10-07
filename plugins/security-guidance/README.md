@@ -42,8 +42,8 @@ plugin is warn-by-default precisely because of that.
 Plugins are opt-in. Add it to your allow-list:
 
 ```bash
-hermes plugins enable security-guidance
-# or edit ~/.hermes/config.yaml manually:
+rabbit plugins enable security-guidance
+# or edit ~/.rabbit/config.yaml manually:
 plugins:
   enabled:
     - security-guidance
@@ -60,7 +60,7 @@ plugins:
 ## What it does **not** do (yet)
 
 * **No LLM diff review.** Anthropic's layer 2 spawns an auxiliary LLM call
-  on every agent turn that touched files. On hermes that would route
+  on every agent turn that touched files. On rabbit that would route
   through the main model by default (`auxiliary_client._resolve_auto()` is
   main-model-first), which is real money on reasoning models. A separate
   PR can wire layer 2 to a cheap auxiliary model with explicit opt-in.
@@ -69,7 +69,7 @@ plugins:
   follow-up that would build on `delegate_task`.
 * **No project-local rules file.** Anthropic's `.claude/claude-security-guidance.md`
   is read by their layer 2/3 LLM prompts, not the pattern scanner. We can
-  add an analogous `.hermes/security-guidance.md` once layer 2 lands.
+  add an analogous `.rabbit/security-guidance.md` once layer 2 lands.
 
 ## Limitations
 
@@ -85,4 +85,4 @@ not a substitute for code review, SAST, dependency scanning, or pen testing.
   [Apache License 2.0](./LICENSE). See [NOTICE](./NOTICE) for the full
   attribution.
 * `__init__.py`, `plugin.yaml`, `README.md`, and tests are original work by
-  NousResearch, MIT-licensed alongside the rest of hermes-agent.
+  NousResearch, MIT-licensed alongside the rest of rabbit-agent.

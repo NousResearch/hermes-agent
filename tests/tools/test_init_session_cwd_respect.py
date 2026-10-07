@@ -2,7 +2,7 @@
 
 The bug: when terminal.cwd is set in config.yaml, the configured path was
 displayed in the TUI banner but actual terminal commands ran in os.getcwd()
-(the directory where ``hermes chat`` was started).
+(the directory where ``rabbit chat`` was started).
 
 Root cause: init_session() captures the login shell environment by running
 ``pwd -P`` inside a ``bash -l -c`` bootstrap.  Profile scripts (.bashrc,

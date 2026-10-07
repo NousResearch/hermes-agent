@@ -19,7 +19,7 @@ def _hits(text: str, suffix: str = ".py") -> list[int]:
 @pytest.mark.parametrize(
     "line",
     [
-        'STORAGE_DIR = "/tmp/hermes-results"',
+        'STORAGE_DIR = "/tmp/rabbit-results"',
         'return "/tmp"',
         "LOG=/tmp/pinggy.log",
         'cwd="/tmp"',
@@ -35,7 +35,7 @@ def test_literal_tmp_paths_are_flagged(line):
 @pytest.mark.parametrize(
     "line",
     [
-        'SOCKET_DIR="${TMPDIR:-/tmp}/hermes"',  # shell fallback idiom
+        'SOCKET_DIR="${TMPDIR:-/tmp}/rabbit"',  # shell fallback idiom
         'Path("/var/tmp")',
         'Path("/private/tmp")',
         "mounted as tmpfs",

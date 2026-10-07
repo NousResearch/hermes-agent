@@ -1,0 +1,15 @@
+name: rabbit-muse-code
+repo: https://github.com/TheStreamCode/rabbit-muse-code
+sha: e33501185e328b5597fd98c6de916495922ec727
+description: Muse Spark in Rabbit billed to the Muse Code monthly login (device-code login, no API key).
+maintainer: TheStreamCode
+tier: community
+category: models
+requires_rabbit: ">=0.21.3"
+docs_url: https://github.com/TheStreamCode/rabbit-muse-code
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

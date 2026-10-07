@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-rabbit-env" python3 "$0" "$@"'
 """Generate the bootstrap pin fragments inside the installers.
 
 The installers bootstrap uv (and, on Windows, git) BEFORE any checkout
@@ -185,7 +185,7 @@ def main() -> int:
         "scripts/install.ps1": _splice(
             REPO_ROOT / "scripts" / "install.ps1", _ps1_fragment(uv, git), args.check
         ),
-        # setup-hermes.sh deliberately holds NO fragment: it runs after a
+        # setup-rabbit.sh deliberately holds NO fragment: it runs after a
         # checkout exists, so it reads the pin straight from pm/lock.json
         # at run time (the pm.sh-derived bootstrap). The fragment exists
         # only for the curl|sh / irm|iex installers that bootstrap BEFORE

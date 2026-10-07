@@ -1,12 +1,12 @@
 ---
+author: Hermes Agent
 name: jupyter-notebook
 description: "Iterative Python via live Jupyter kernel (hamelnb)."
 version: 1.0.0
-author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [jupyter, notebook, repl, data-science, exploration, iterative]
     category: data-science
 ---
@@ -22,7 +22,7 @@ state incrementally, explore APIs, inspect DataFrames, or iterate on complex cod
 | Tool | Use When |
 |------|----------|
 | **This skill** | Iterative exploration, state across steps, data science, ML, "let me try this and check" |
-| `execute_code` | One-shot scripts needing hermes tool access (web_search, file ops). Stateless. |
+| `execute_code` | One-shot scripts needing rabbit tool access (web_search, file ops). Stateless. |
 | `terminal` | Shell commands, builds, installs, git, process management |
 
 **Rule of thumb:** If you'd want a Jupyter notebook for the task, use this skill.
@@ -55,7 +55,7 @@ uv run "$SCRIPT" servers
 If no servers found, start one:
 ```
 jupyter-lab --no-browser --port=8888 --notebook-dir=$HOME/notebooks \
-  --IdentityProvider.token='' --ServerApp.password='' > ~/.hermes/cache/scratch/jupyter.log 2>&1 &
+  --IdentityProvider.token='' --ServerApp.password='' > ~/.rabbit/cache/scratch/jupyter.log 2>&1 &
 sleep 3
 ```
 

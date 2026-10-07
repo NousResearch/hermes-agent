@@ -24,7 +24,7 @@ REPO_ROOT = HELPER.parents[3]
     ],
 )
 def test_source_update_follows_staged_main_if_installed_cli_accepts_branch(tmp_path, help_text, expected):
-    cli = tmp_path / "installed hermes"
+    cli = tmp_path / "installed rabbit"
     cli.write_text('''#!/usr/bin/env bash
 if [[ "$*" == *"--branch main"* ]]; then
   printf 'selected staged main: %s\\n' "$*"
@@ -52,13 +52,13 @@ fi
 def test_installed_cli_help_drives_explicit_staged_branch(tmp_path):
     # Use the real update parser's help, not a synthetic one-line help fixture.
     # The fake executable only replaces the destructive update action.
-    env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1", PYTHONDONTWRITEBYTECODE="1")
+    env = dict(os.environ, RABBIT_DISABLE_LAZY_INSTALLS="1", PYTHONDONTWRITEBYTECODE="1")
     help_result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.main", "update", "--help"],
+        [sys.executable, "-m", "rabbit_cli.main", "update", "--help"],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
     )
     assert help_result.returncode == 0, help_result.stderr
-    cli = tmp_path / "installed hermes"
+    cli = tmp_path / "installed rabbit"
     cli.write_text('''#!/usr/bin/env bash
 [[ "$1" == update ]] || exit 2
 shift

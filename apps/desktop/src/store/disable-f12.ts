@@ -10,7 +10,7 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 
-const KEY = 'hermes.desktop.disableF12.v1'
+const KEY = 'rabbit.desktop.disableF12.v1'
 
 export const $disableF12 = atom<boolean>(typeof window === 'undefined' ? false : storedBoolean(KEY, false))
 
@@ -21,6 +21,6 @@ export function setDisableF12(on: boolean): void {
 if (typeof window !== 'undefined') {
   $disableF12.subscribe(on => {
     persistBoolean(KEY, on)
-    window.hermesDesktop?.setDisableF12?.(on)
+    window.rabbitDesktop?.setDisableF12?.(on)
   })
 }

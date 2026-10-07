@@ -1,6 +1,6 @@
 ---
 title: "State DB Recovery"
-description: "How Hermes recovers state.db when the FTS index or the file itself is corrupt"
+description: "How Rabbit recovers state.db when the FTS index or the file itself is corrupt"
 ---
 
 # State database and FTS recovery
@@ -30,7 +30,7 @@ The failing live operation never runs `FTS5('rebuild')`. Existing recovery
 ownership remains unchanged: a later `SessionDB` open may rebuild under the
 cross-process admission lock and foreign-holder guard. If that guarded rebuild
 cannot run, FTS remains detached, canonical writes stay available, and
-`hermes doctor` reports the explicit repair command.
+`rabbit doctor` reports the explicit repair command.
 
 ## Live behavior when the file itself is corrupt
 
@@ -61,14 +61,14 @@ file: pending transcripts go to `sessions/<id>.jsonl` and the gateway
 `pending_messages/` spool instead of the retry queue, and the FTS one-shot
 rebuild never runs on the damaged file. The quarantine is per process — the
 shared handle stays poisoned for every holder until the process restarts on a
-repaired or restored file. Do not run `hermes doctor --fix` while the gateway
+repaired or restored file. Do not run `rabbit doctor --fix` while the gateway
 is still up. Next steps:
 
 ```bash
-hermes gateway stop
-HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --inspect-only
+rabbit gateway stop
+RABBIT_HOME="$HOME/.rabbit" rabbit sessions recover --source "$HOME/.rabbit/state.db" --inspect-only
 # if recoverable:
-HERMES_HOME="$HOME/.hermes" hermes sessions recover --source "$HOME/.hermes/state.db" --output "$HOME/recovered-state.db"
+RABBIT_HOME="$HOME/.rabbit" rabbit sessions recover --source "$HOME/.rabbit/state.db" --output "$HOME/recovered-state.db"
 ```
 
 or restore the newest snapshot from `state-snapshots/`.
@@ -79,9 +79,9 @@ Stop every process that can open the profile database before repairing it.
 Keep them stopped for the complete repair and verification window.
 
 ```bash
-hermes gateway stop
-HERMES_HOME="$HOME/.hermes" hermes sessions repair --check-only
-HERMES_HOME="$HOME/.hermes" hermes sessions repair
+rabbit gateway stop
+RABBIT_HOME="$HOME/.rabbit" rabbit sessions repair --check-only
+RABBIT_HOME="$HOME/.rabbit" rabbit sessions repair
 ```
 
 `sessions repair` creates a SQLite backup by default and performs structural
@@ -93,14 +93,14 @@ After repair, verify the health probe, stale marker, trigger set, and canonical
 row counts before restarting the gateway:
 
 ```bash
-HERMES_HOME="$HOME/.hermes" hermes sessions repair --check-only
-sqlite3 "$HOME/.hermes/state.db" \
+RABBIT_HOME="$HOME/.rabbit" rabbit sessions repair --check-only
+sqlite3 "$HOME/.rabbit/state.db" \
   "SELECT key, value FROM state_meta WHERE key = 'fts_stale';"
-sqlite3 "$HOME/.hermes/state.db" \
+sqlite3 "$HOME/.rabbit/state.db" \
   "SELECT type, name FROM sqlite_master WHERE name IN
    ('messages_fts_insert','messages_fts_update','messages_fts_delete')
    ORDER BY name;"
-sqlite3 "$HOME/.hermes/state.db" \
+sqlite3 "$HOME/.rabbit/state.db" \
   "SELECT 'sessions', COUNT(*) FROM sessions
    UNION ALL SELECT 'messages', COUNT(*) FROM messages;"
 ```

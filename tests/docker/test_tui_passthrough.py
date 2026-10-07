@@ -33,7 +33,7 @@ def test_tty_passthrough_to_container(built_image: str) -> None:
     # 0 from the boot log and flips the assertion (assert 0 > 0) whenever
     # boot output shifts (e.g. a new bundled dep changes the skills-sync
     # counts). Parse only the value tagged with our marker.
-    marker = "HERMES_TTY_COLS"
+    marker = "RABBIT_TTY_COLS"
     probe = (
         f'if [ -t 1 ]; then echo "{marker}=$(tput cols)"; else echo "{marker}=NO_TTY"; fi'
     )

@@ -240,7 +240,7 @@ def _resolve_identity_header(server_name: str, config: dict):
         return _ignore("requires a non-empty 'name'")
     value_from = (raw.get("value_from") or "static").strip().lower()
     if value_from == "profile":
-        from hermes_cli.profiles import get_active_profile_name
+        from rabbit_cli.profiles import get_active_profile_name
         return (name.strip(), get_active_profile_name())
     if value_from != "static":
         return _ignore("value_from must be 'static' or 'profile' (got %r)", value_from)
@@ -468,7 +468,7 @@ _AUTH_ERROR_TYPES: Optional[tuple] = None
 def _get_auth_error_types() -> tuple:
     """Cached ``(auth_types, http_status_types)``: SDK ``OAuthFlowError``/``OAuthTokenError`` (+ legacy
     ``UnauthorizedError``), our ``OAuthNonInteractiveError``, and ``HTTPStatusError`` from both httpx
-    flavours — a 401 may come from the SDK's own stack (``httpx2`` on mcp >= 2.0) or Hermes' pinned
+    flavours — a 401 may come from the SDK's own stack (``httpx2`` on mcp >= 2.0) or Rabbit' pinned
     ``httpx``; the classes are unrelated and still need the 401 check in :func:`_is_auth_error`."""
     global _AUTH_ERROR_TYPES
     if not (_AUTH_ERROR_TYPES and _AUTH_ERROR_TYPES[0]):  # retry while empty (SDK may import later)

@@ -64,7 +64,7 @@ _slack_mod.SLACK_AVAILABLE = True
 from gateway.config import PlatformConfig  # noqa: E402
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
-from hermes_cli.plugins import (  # noqa: E402
+from rabbit_cli.plugins import (  # noqa: E402
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -188,7 +188,7 @@ def _connect_with_recording_app(
          patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
          patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
          patch("gateway.status.release_scoped_lock"), \
-         patch("hermes_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
+         patch("rabbit_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
          patch("asyncio.create_task"):
         result = asyncio.run(adapter.connect())
 
@@ -210,7 +210,7 @@ class TestSlackAdapterPluginActionWiring:
         assert result is True
         # Built-ins still wired
         action_ids = [aid for aid, _cb in registered]
-        assert "hermes_approve_once" in action_ids
+        assert "rabbit_approve_once" in action_ids
 
 
     def test_plugin_loader_failure_does_not_break_connect(self):
@@ -254,7 +254,7 @@ class TestSlackAdapterPluginActionWiring:
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("gateway.status.release_scoped_lock"), \
-             patch("hermes_cli.plugins.get_plugin_manager",
+             patch("rabbit_cli.plugins.get_plugin_manager",
                    side_effect=RuntimeError("plugins broken")), \
              patch("asyncio.create_task"):
             result = asyncio.run(adapter.connect())
@@ -262,4 +262,4 @@ class TestSlackAdapterPluginActionWiring:
         assert result is True
         # Built-ins still wired even when plugin loader failed.
         action_ids = [aid for aid, _cb in registered_actions]
-        assert "hermes_approve_once" in action_ids
+        assert "rabbit_approve_once" in action_ids

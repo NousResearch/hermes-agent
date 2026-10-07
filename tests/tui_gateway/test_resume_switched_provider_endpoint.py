@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from hermes_cli.cli_model_switch_mixin import stored_session_route
-from hermes_state import SessionDB
+from rabbit_cli.cli_model_switch_mixin import stored_session_route
+from rabbit_state import SessionDB
 from tui_gateway.server import _stored_session_runtime_overrides
 
 NOUS_ROUTE = {"base_url": "https://inference-api.nousresearch.com/v1", "api_mode": "chat_completions"}

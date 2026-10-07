@@ -71,7 +71,7 @@ describeHost('parseVoiceRecordKey (#18994)', () => {
 
   it('treats ambiguous mac modifiers (meta / cmd / command) as unrecognised', () => {
     // ``meta`` / ``cmd`` / ``command`` are ambiguous on the wire:
-    // hermes-ink sets ``key.meta`` for plain Alt on every platform AND
+    // rabbit-ink sets ``key.meta`` for plain Alt on every platform AND
     // for Cmd on legacy macOS terminals. Accepting any of them would
     // produce a display/binding mismatch (Copilot round-6 review on
     // #19835). Users on modern kitty-style terminals spell the

@@ -38,8 +38,8 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, 'repo_root', lambda: repo)
     monkeypatch.setattr(paths, 'lockfile_path', lambda: lock.path)
     monkeypatch.setattr(Path, 'home', lambda: tmp_path / 'home')
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'home'))
-    monkeypatch.setenv('HERMES_RUNTIME_DIR', str(tmp_path / 'store'))
+    monkeypatch.setenv('RABBIT_HOME', str(tmp_path / 'home'))
+    monkeypatch.setenv('RABBIT_RUNTIME_DIR', str(tmp_path / 'store'))
     monkeypatch.chdir(caller)
 
     run_live = cli._run_live
@@ -128,7 +128,7 @@ def test_uv_refresh_uses_real_installed_tool_and_only_the_owned_project(tmp_path
 
 @pytest.mark.platforms('windows', 'posix')
 def test_npm_refresh_uses_its_installed_entry_and_owned_project(monkeypatch, capsys):
-    # Keep the real tool's argv clear of the harness's hermes-update guard.
+    # Keep the real tool's argv clear of the harness's rabbit-update guard.
     temp_root = Path(os.environ['LOCALAPPDATA']) / 'Temp' if os.name == 'nt' else Path('/tmp')
     with tempfile.TemporaryDirectory(prefix='pm-deps-', dir=temp_root) as temporary, monkeypatch.context() as scoped:
         monkeypatch = scoped

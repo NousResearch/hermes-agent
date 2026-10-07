@@ -31,7 +31,7 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
 
     ``(False, "")`` when the engine isn't lightpanda; else the reason names the setting shadowing
     it or the driver running it. Mirrors ``_should_inject_engine`` / ``_resolve_backend_cdp``
-    precedence with config-only gates (no network I/O) for ``/browser status`` / ``hermes doctor``.
+    precedence with config-only gates (no network I/O) for ``/browser status`` / ``rabbit doctor``.
     """
     _bt = _origin()
     if not _using_lightpanda_engine():
@@ -62,7 +62,7 @@ def lightpanda_engine_status() -> Tuple[bool, str]:
             return False, "Browser Use cloud (BROWSER_USE_API_KEY) is selected"
     except Exception as e:
         _bt.logger.debug("legacy Browser Use cloud check failed: %s", e)
-    return True, "Browser Use mode: Hermes spawns `lightpanda serve` per session"
+    return True, "Browser Use mode: Rabbit spawns `lightpanda serve` per session"
 
 
 def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any]) -> Optional[str]:
@@ -141,10 +141,10 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
     if not _install._chromium_installed():
         if _install._running_in_docker():
             hint = ("Chrome fallback requires Chromium, but it is missing. You're running in Docker — "
-                    "pull the latest image: docker pull ghcr.io/nousresearch/hermes-agent:latest")
+                    "pull the latest image: docker pull ghcr.io/seven0070/Rabbit-:latest")
         else:
             hint = ("Chrome fallback requires Chromium, but it is missing. Install it with: "
-                    "hermes pm install chromium")
+                    "rabbit pm install chromium")
         return {"success": False, "error": hint}
 
     base_args = _session._agent_browser_argv(browser_cmd) + ["--engine", "chrome", "--session", tmp_session, "--json"]

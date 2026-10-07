@@ -44,10 +44,6 @@ _REASON_TO_LAYER = {
 # Failures between us and the base_url (not a provider verdict); on a
 # custom/local endpoint they point at the user's endpoint config.
 _TRANSPORT_REASONS = {"timeout", "ssl_cert_verification"}
-# Free-tier kinds where a later send can succeed on its own (a wait, an outage clearing); the
-# rest need a sign-in or another provider.
-_FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
-
 # Deterministic for the request — a bare "Retry" repeats the failure. Fallback
 # only: current backends stamp the classifier's verdict in ``failure_retryable``.
 # Kept in sync with ``classify_api_error``'s retryable=False verdicts.
@@ -106,7 +102,7 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
 def _api_key_env(provider: str) -> str:
     """The env var holding ``provider``'s API key, so the client can open that row."""
     try:
-        from hermes_cli.provider_catalog import provider_catalog_by_slug
+        from rabbit_cli.provider_catalog import provider_catalog_by_slug
 
         descriptor = provider_catalog_by_slug().get(provider.strip().lower())
         return descriptor.api_key_env_vars[0] if descriptor and descriptor.api_key_env_vars else ""
@@ -116,7 +112,7 @@ def _api_key_env(provider: str) -> str:
 
 def _provider_label(provider: str) -> str:
     try:
-        from hermes_cli.models import provider_label
+        from rabbit_cli.models import provider_label
 
         return provider_label(provider)
     except Exception:  # pragma: no cover — advisory only
@@ -127,7 +123,7 @@ def auth_kind(provider: Optional[str]) -> str:
     """``"oauth"`` for providers whose credential is an OAuth/subscription grant
     (desktop Accounts tab), ``"api_key"`` for everything else."""
     try:
-        from hermes_cli.provider_catalog import provider_catalog_by_slug
+        from rabbit_cli.provider_catalog import provider_catalog_by_slug
 
         descriptor = provider_catalog_by_slug().get((provider or "").strip().lower())
         return "oauth" if descriptor is not None and descriptor.tab == "accounts" else "api_key"
@@ -137,7 +133,7 @@ def auth_kind(provider: Optional[str]) -> str:
 
 def _disk_full(candidate: Any) -> bool:
     try:
-        from hermes_state_errors import is_disk_full_error
+        from rabbit_state_errors import is_disk_full_error
 
         return bool(is_disk_full_error(candidate))
     except Exception:  # pragma: no cover - defensive import guard
@@ -166,20 +162,11 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         if not error_text and not reason:
             return None
         # Disk-full wins outright: the fix (free space) is unrelated to the
-        # provider stack; hermes_state owns the pattern list.
+        # provider stack; rabbit_state owns the pattern list.
         if error_text and _disk_full(error_text):
             return _surface(LAYER_DISK, "disk_full", False, provider, model)
         if result.get("billing_block") or reason in ("billing", "billing_unverified"):
             return _surface(LAYER_BILLING, reason or "billing", False, provider, model)
-        # The Nous free tier refused or could not serve the turn (``agent/turn_recovery.py``
-        # stamps ``free_tier``): its own code, so a client offers the free sign-in rather than an
-        # OAuth re-login, and the chat sentence rides along as the card body.
-        if isinstance(free_tier := result.get("free_tier"), dict) and free_tier.get("kind"):
-            kind = str(free_tier["kind"])
-            surface = _surface(LAYER_PROVIDER, f"free_tier_{kind}", kind in _FREE_TIER_RETRYABLE_KINDS, provider, model)
-            if message := str(free_tier.get("message") or ""):
-                surface["message"] = message
-            return surface
         if not reason:  # failed result without a classified reason (legacy paths)
             drop = _looks_like_stream_drop(error_text)
             return _surface(LAYER_STREAMING if drop else LAYER_PROVIDER, "stream_drop" if drop else "unknown", True, provider, model)

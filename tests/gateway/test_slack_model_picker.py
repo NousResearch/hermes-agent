@@ -2,8 +2,8 @@
 
 Mirrors test_slack_approval_buttons.py (harness) and
 test_discord_model_picker.py (semantics) for the ``send_model_picker``
-override and the ``hermes_model_provider`` / ``hermes_model_model`` /
-``hermes_model_back`` / ``hermes_model_cancel`` action dispatch.
+override and the ``rabbit_model_provider`` / ``rabbit_model_model`` /
+``rabbit_model_back`` / ``rabbit_model_cancel`` action dispatch.
 """
 
 import sys
@@ -148,14 +148,14 @@ class TestSlackModelPickerSend:
         elements = blocks[1]["elements"]
         assert len(elements) == 2
         assert elements[0]["type"] == "static_select"
-        assert elements[0]["action_id"] == "hermes_model_provider"
+        assert elements[0]["action_id"] == "rabbit_model_provider"
         assert len(elements[0]["options"]) == 2
         # Option values are list indices, never raw slugs (75-char value cap)
         assert elements[0]["options"][0]["value"] == "0"
         assert elements[0]["options"][1]["value"] == "1"
         assert "OpenRouter" in elements[0]["options"][0]["text"]["text"]
         assert elements[1]["type"] == "button"
-        assert elements[1]["action_id"] == "hermes_model_cancel"
+        assert elements[1]["action_id"] == "rabbit_model_cancel"
 
         # State should be stashed for the callback (no metadata → bare ts key)
         assert "1234.5678" in adapter._model_picker_state
@@ -290,7 +290,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_provider",
+            "action_id": "rabbit_model_provider",
             "selected_option": {"value": "0"},  # index 0 = openrouter
         }
 
@@ -300,12 +300,12 @@ class TestSlackModelPickerAction:
         mock_client.chat_update.assert_called_once()
         update_kwargs = mock_client.chat_update.call_args[1]
         elements = update_kwargs["blocks"][1]["elements"]
-        assert elements[0]["action_id"] == "hermes_model_model"
+        assert elements[0]["action_id"] == "rabbit_model_model"
         # Two models for openrouter, values are indices
         assert [o["value"] for o in elements[0]["options"]] == ["0", "1"]
         # Back + Cancel buttons present
-        assert elements[1]["action_id"] == "hermes_model_back"
-        assert elements[2]["action_id"] == "hermes_model_cancel"
+        assert elements[1]["action_id"] == "rabbit_model_back"
+        assert elements[2]["action_id"] == "rabbit_model_cancel"
 
         state = adapter._model_picker_state[("T1", "1234.5678")]
         assert state["stage"] == "model"
@@ -327,7 +327,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_provider",
+            "action_id": "rabbit_model_provider",
             "selected_option": {"value": "0"},  # index 0 = openrouter
         }
 
@@ -355,7 +355,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_provider",
+            "action_id": "rabbit_model_provider",
             "selected_option": {"value": "0"},  # the single seeded provider
         }
 
@@ -385,7 +385,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_model",
+            "action_id": "rabbit_model_model",
             "selected_option": {"value": "0"},  # index 0 = anthropic/claude-sonnet-4
         }
 
@@ -418,7 +418,7 @@ class TestSlackModelPickerAction:
         )
 
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_model", "selected_option": {"value": "1"}}
+        action = {"action_id": "rabbit_model_model", "selected_option": {"value": "1"}}
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
@@ -443,7 +443,7 @@ class TestSlackModelPickerAction:
         )
 
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_model", "selected_option": {"value": "0"}}
+        action = {"action_id": "rabbit_model_model", "selected_option": {"value": "0"}}
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
@@ -469,7 +469,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_model",
+            "action_id": "rabbit_model_model",
             "selected_option": {"value": "bogus"},
         }
 
@@ -496,7 +496,7 @@ class TestSlackModelPickerAction:
         for token in ("2", "-1"):
             ack = AsyncMock()
             action = {
-                "action_id": "hermes_model_model",
+                "action_id": "rabbit_model_model",
                 "selected_option": {"value": token},
             }
             # Re-seed: the first miss pops the entry.
@@ -521,7 +521,7 @@ class TestSlackModelPickerAction:
 
         ack = AsyncMock()
         action = {
-            "action_id": "hermes_model_provider",
+            "action_id": "rabbit_model_provider",
             "selected_option": {"value": "7"},  # only 2 providers seeded
         }
 
@@ -541,7 +541,7 @@ class TestSlackModelPickerAction:
         self._seed_state(adapter)
 
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_cancel", "value": "cancel"}
+        action = {"action_id": "rabbit_model_cancel", "value": "cancel"}
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
@@ -559,14 +559,14 @@ class TestSlackModelPickerAction:
         self._seed_state(adapter, stage="model", selected_provider="openrouter")
 
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_back", "value": "openrouter"}
+        action = {"action_id": "rabbit_model_back", "value": "openrouter"}
 
         await adapter._handle_model_picker_action(ack, _interaction_body(), action)
 
         mock_client.chat_update.assert_called_once()
         update_kwargs = mock_client.chat_update.call_args[1]
         elements = update_kwargs["blocks"][1]["elements"]
-        assert elements[0]["action_id"] == "hermes_model_provider"
+        assert elements[0]["action_id"] == "rabbit_model_provider"
         state = adapter._model_picker_state[("T1", "1234.5678")]
         assert state["stage"] == "provider"
         assert state["selected_provider_slug"] == ""
@@ -584,7 +584,7 @@ class TestSlackModelPickerAction:
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_provider", "selected_option": {"value": "0"}}
+        action = {"action_id": "rabbit_model_provider", "selected_option": {"value": "0"}}
 
         await adapter._handle_model_picker_action(
             ack, _interaction_body(msg_ts="nonexistent"), action
@@ -602,7 +602,7 @@ class TestSlackModelPickerAction:
         self._seed_state(adapter)
 
         ack = AsyncMock()
-        action = {"action_id": "hermes_model_provider", "selected_option": {"value": "openrouter"}}
+        action = {"action_id": "rabbit_model_provider", "selected_option": {"value": "openrouter"}}
 
         await adapter._handle_model_picker_action(
             ack, _interaction_body(user="intruder", uid="U_BAD"), action
@@ -625,7 +625,7 @@ class TestSlackModelPickerGatewayIntegration:
     async def test_bare_model_triggers_picker(self, tmp_path, monkeypatch):
         import types
 
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         from gateway.platforms.event import MessageEvent, MessageType
         from gateway.session import SessionSource
@@ -647,9 +647,9 @@ class TestSlackModelPickerGatewayIntegration:
         runner._session_model_overrides = {}
         runner._running_agents = {}
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        cfg_path = hermes_home / "config.yaml"
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        cfg_path = rabbit_home / "config.yaml"
         cfg_path.write_text(
             yaml.safe_dump({
                 "model": {"default": "old-model", "provider": "openrouter"},
@@ -659,10 +659,10 @@ class TestSlackModelPickerGatewayIntegration:
         )
 
         import gateway.run as gateway_run
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch_providers.list_picker_providers",
+            "rabbit_cli.model_switch_providers.list_picker_providers",
             lambda **kw: [{"slug": "openrouter", "name": "OR", "models": ["m1"], "total_models": 1}],
         )
 
@@ -681,7 +681,7 @@ class TestSlackModelPickerGatewayIntegration:
 
     @pytest.mark.asyncio
     async def test_text_fallback_when_no_picker(self, tmp_path, monkeypatch):
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         from gateway.platforms.event import MessageEvent, MessageType
         from gateway.session import SessionSource
@@ -698,9 +698,9 @@ class TestSlackModelPickerGatewayIntegration:
         runner._session_model_overrides = {}
         runner._running_agents = {}
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        cfg_path = hermes_home / "config.yaml"
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        cfg_path = rabbit_home / "config.yaml"
         cfg_path.write_text(
             yaml.safe_dump({
                 "model": {"default": "old-model", "provider": "openrouter"},
@@ -710,10 +710,10 @@ class TestSlackModelPickerGatewayIntegration:
         )
 
         import gateway.run as gateway_run
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_rabbit_home", rabbit_home)
         monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
         monkeypatch.setattr(
-            "hermes_cli.model_switch_providers.list_authenticated_providers",
+            "rabbit_cli.model_switch_providers.list_authenticated_providers",
             lambda **kw: [],
         )
 

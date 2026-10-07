@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 
 TURN = f"pid={os.getpid()}:turn=tui:platform=tui"

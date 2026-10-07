@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-import hermes_constants
+import rabbit_constants
 import pm
 from pm import paths
 from pm.lock import Facts, Lockfile
@@ -16,7 +16,7 @@ from pm.package import Runner
 from pm.registry import get_package
 from pm.store import current_target, tree_digest
 
-_REAL_HERMES_HOME = Path.home() / ".hermes"  # Captured before per-test HOME isolation.
+_REAL_RABBIT_HOME = Path.home() / ".rabbit"  # Captured before per-test HOME isolation.
 
 
 def _register_installed_tool(name, executable, companions=()):
@@ -47,15 +47,15 @@ def node_store(tmp_path, monkeypatch):
         pytest.skip("requires an already-installed Node executable")
     # The fixture hashes its input. Never read the developer's live PM store to
     # fabricate a temporary one; CI's external Node still exercises this path.
-    if Path(node).absolute().is_relative_to(_REAL_HERMES_HOME):
-        pytest.skip("requires a Node binary outside the real Hermes home")
+    if Path(node).absolute().is_relative_to(_REAL_RABBIT_HOME):
+        pytest.skip("requires a Node binary outside the real Rabbit home")
     monkeypatch.setenv("PATH", str(Path(node).parent))
     home = tmp_path / "home"
     home.mkdir()
     store = home / "tools"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(store))
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     lock_path = tmp_path / "lock.json"
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
     binary = _register_installed_tool("node", node)
@@ -73,10 +73,10 @@ def test_pm_node_wins_over_legacy_tree_and_composes_child_environment(node_store
 
     selected = pm.installed_package("node")
     assert selected is not None and selected.binary == binary
-    resolved = hermes_constants.find_node_executable("node")
+    resolved = rabbit_constants.find_node_executable("node")
     assert resolved is not None and resolved == str(binary)
     base = {"PATH": str(Path(external).parent), "CALLER_VALUE": "preserved"}
-    environment = hermes_constants.with_hermes_node_path(base)
+    environment = rabbit_constants.with_rabbit_node_path(base)
     assert environment == pm.env_for("npm", base_env=base)
     assert shutil.which("node", path=environment["PATH"]) == str(binary)
     child = subprocess.run(
@@ -96,9 +96,9 @@ def test_passive_discovery_never_installs_or_repairs_a_legacy_tree(tmp_path, mon
     legacy.parent.mkdir(parents=True)
     legacy.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     legacy.chmod(0o755)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(home / "tools"))
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(home / "tools"))
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setenv("PATH", "")
     before = {p.relative_to(home): p.read_bytes() for p in home.rglob("*") if p.is_file()}
     attempts = []
@@ -108,21 +108,21 @@ def test_passive_discovery_never_installs_or_repairs_a_legacy_tree(tmp_path, mon
         raise AssertionError("passive lookup must not provision anything")
 
     monkeypatch.setattr(pm, "ensure", forbidden_install)
-    assert hermes_constants.find_node_executable("node") is None
-    assert hermes_constants.find_node_executable("npm") is None
-    assert hermes_constants.with_hermes_node_path({"PATH": ""}) == {"PATH": ""}
+    assert rabbit_constants.find_node_executable("node") is None
+    assert rabbit_constants.find_node_executable("npm") is None
+    assert rabbit_constants.with_rabbit_node_path({"PATH": ""}) == {"PATH": ""}
     assert attempts == []
     assert {p.relative_to(home): p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
     assert not (home / "tools").exists()
 
-    # A user-owned PATH toolchain is never selected: Hermes runs only PM's copy.
+    # A user-owned PATH toolchain is never selected: Rabbit runs only PM's copy.
     external = tmp_path / "external"
     external.mkdir()
     npm = external / "npm"
     npm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     npm.chmod(0o755)
     monkeypatch.setenv("PATH", str(external))
-    assert hermes_constants.find_node_executable("npm") is None
+    assert rabbit_constants.find_node_executable("npm") is None
     assert attempts == []
     assert not (home / "tools").exists()
 
@@ -130,9 +130,9 @@ def test_passive_discovery_never_installs_or_repairs_a_legacy_tree(tmp_path, mon
 @pytest.mark.platforms("posix")
 def test_explicit_node_path_is_not_replaced_by_managed_name(node_store):
     _home, _binary, external = node_store
-    assert hermes_constants.find_node_executable(external) == external
-    assert hermes_constants.find_node_executable(str(Path(external).with_name("missing-node"))) is None
-    assert hermes_constants.find_node_executable("not-a-node-command") is None
+    assert rabbit_constants.find_node_executable(external) == external
+    assert rabbit_constants.find_node_executable(str(Path(external).with_name("missing-node"))) is None
+    assert rabbit_constants.find_node_executable("not-a-node-command") is None
 
 
 @pytest.mark.platforms("posix")
@@ -150,13 +150,13 @@ def test_npm_and_npx_use_the_paired_pm_entry(node_store, monkeypatch):
     before = paths.facts_path().read_bytes()
     monkeypatch.setenv("PATH", "")
 
-    assert hermes_constants.find_node_executable("npm") == str(binary)
-    assert hermes_constants.find_node_executable("npx") == str(companion)
-    environment = hermes_constants.with_hermes_node_path({"PATH": ""})
+    assert rabbit_constants.find_node_executable("npm") == str(binary)
+    assert rabbit_constants.find_node_executable("npx") == str(companion)
+    environment = rabbit_constants.with_rabbit_node_path({"PATH": ""})
     assert shutil.which("npm", path=environment["PATH"]) == str(binary)
     assert shutil.which("node", path=environment["PATH"]) == str(node)
     for command in ("npm", "npx"):
-        resolved = hermes_constants.find_node_executable(command)
+        resolved = rabbit_constants.find_node_executable(command)
         assert resolved is not None
         result = subprocess.run(
             [resolved, "--version"], env=environment,
@@ -165,19 +165,19 @@ def test_npm_and_npx_use_the_paired_pm_entry(node_store, monkeypatch):
         assert result.stdout.strip() == Lockfile(paths.lockfile_path()).version("npm")
     assert paths.facts_path().read_bytes() == before
     companion.unlink()
-    assert hermes_constants.find_node_executable("npx") is None
+    assert rabbit_constants.find_node_executable("npx") is None
 
 
 @pytest.mark.platforms("windows")
 def test_windows_path_prefers_launchable_cmd_but_never_for_pm_tools(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "absent-store"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "absent-store"))
     monkeypatch.setenv("PATH", str(tmp_path))
     for tool in ("npm", "pnpm"):
         for name in (tool, f"{tool}.ps1", f"{tool}.cmd"):
             (tmp_path / name).write_text("@exit /b 0\n", encoding="utf-8")
     # pnpm is an explicit user choice (lsp.package_manager); npm is only ever PM's.
-    assert hermes_constants.find_node_executable("pnpm") == str(tmp_path / "pnpm.cmd")
-    assert hermes_constants.find_node_executable("npm") is None
+    assert rabbit_constants.find_node_executable("pnpm") == str(tmp_path / "pnpm.cmd")
+    assert rabbit_constants.find_node_executable("npm") is None
 
 
 @pytest.fixture
@@ -219,8 +219,8 @@ def npm_probe(node_store, monkeypatch):
 def npm_consumers(npm_probe, tmp_path, monkeypatch):
     from agent.lsp.install import _install_npm
     from gateway.config import PlatformConfig
-    from hermes_cli.main_platform_setup import _whatsapp_install_bridge
-    from hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
+    from rabbit_cli.main_platform_setup import _whatsapp_install_bridge
+    from rabbit_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
     from plugins.platforms.photon import adapter as photon, cli
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
@@ -302,8 +302,8 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
     from plugins.platforms.photon import adapter as photon
     from plugins.platforms.whatsapp import adapter as whatsapp
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-tools"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "missing-tools"))
     monkeypatch.setenv("PATH", "")
     monkeypatch.delenv("PHOTON_NODE_BIN", raising=False)
     monkeypatch.setattr(photon, "_sidecar_dir", lambda: tmp_path)
@@ -325,7 +325,7 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
 @pytest.mark.platforms("posix")
 def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, monkeypatch):
     from gateway.platforms import whatsapp_common
-    from hermes_cli.web_routers.messaging import _spawn_whatsapp_pairing_process
+    from rabbit_cli.web_routers.messaging import _spawn_whatsapp_pairing_process
 
     _home, node, _npm, publish = npm_probe
     node_facts = paths.facts_path().read_bytes()

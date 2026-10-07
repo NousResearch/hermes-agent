@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
+from rabbit_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
 
 
 @pytest.mark.platforms("posix")
@@ -46,13 +46,13 @@ def artifact(tmp_path, request):
 
 @pytest.mark.platforms("posix")
 def test_validator_accepts_real_cli_refusal_for_installed_identity(artifact, monkeypatch, capsys, tmp_path):
-    from hermes_cli import main
+    from rabbit_cli import main
     from scripts.termux.validate_installed import validate_update_refusal
 
     root, source = artifact
     monkeypatch.setattr(main, "PROJECT_ROOT", root)
-    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
-    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setattr("rabbit_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
+    monkeypatch.delenv("RABBIT_MANAGED", raising=False)
 
     def unexpected_update(*args, **kwargs):
         pytest.fail("sealed package reached the mutation path")
@@ -63,9 +63,9 @@ def test_validator_accepts_real_cli_refusal_for_installed_identity(artifact, mon
     output = capsys.readouterr()
     status = stopped.value.code
     assert isinstance(status, int) and status == 2
-    expected = COMMIT_BUILD_UPDATE_MESSAGE if source == "commit-build" else "pkg upgrade hermes-agent"
+    expected = COMMIT_BUILD_UPDATE_MESSAGE if source == "commit-build" else "pkg upgrade rabbit-agent"
     assert expected in output.out + output.err
-    result = subprocess.CompletedProcess(["hermes", "update"], status, output.out, output.err)
+    result = subprocess.CompletedProcess(["rabbit", "update"], status, output.out, output.err)
     validate_update_refusal(root, result)
     marker = "COMMIT_BUILD_UPDATE_REFUSAL_OK" if source == "commit-build" else "APT_UPDATE_REFUSAL_OK"
     assert marker in capsys.readouterr().out
@@ -76,9 +76,9 @@ def test_validator_rejects_wrong_refusal_or_exit_status(artifact):
     from scripts.termux.validate_installed import validate_update_refusal
 
     root, source = artifact
-    expected = COMMIT_BUILD_UPDATE_MESSAGE if source == "commit-build" else "pkg upgrade hermes-agent"
-    other = "pkg upgrade hermes-agent" if source == "commit-build" else COMMIT_BUILD_UPDATE_MESSAGE
+    expected = COMMIT_BUILD_UPDATE_MESSAGE if source == "commit-build" else "pkg upgrade rabbit-agent"
+    other = "pkg upgrade rabbit-agent" if source == "commit-build" else COMMIT_BUILD_UPDATE_MESSAGE
     for status, message in ((0, expected), (1, expected), (2, other), (2, "unrelated startup failure")):
-        result = subprocess.CompletedProcess(["hermes", "update"], status, message, "")
+        result = subprocess.CompletedProcess(["rabbit", "update"], status, message, "")
         with pytest.raises(RuntimeError, match="wrong updater refusal"):
             validate_update_refusal(root, result)

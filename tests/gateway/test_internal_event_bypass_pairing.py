@@ -49,7 +49,7 @@ def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
 
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
@@ -79,7 +79,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -181,7 +181,7 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
     """A message with user_id=None must never call generate_code."""
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())

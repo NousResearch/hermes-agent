@@ -38,7 +38,7 @@ _repeat_lock = threading.Lock()
 def _cfg_vision(key: str, default=None):
     """``vision.<key>`` from config.yaml; ``default`` when config is unavailable."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from rabbit_cli.config import cfg_get, load_config
         return cfg_get(load_config(), "vision", key, default=default)
     except Exception:
         return default
@@ -86,7 +86,7 @@ def _image_key(image_url: str) -> str:
 
 def _count_key(image_url: str) -> tuple[str, str]:
     from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_ID", ""), _image_key(image_url)
+    return get_session_env("RABBIT_SESSION_ID", ""), _image_key(image_url)
 
 
 def repeat_refusal(image_url: str) -> Optional[str]:

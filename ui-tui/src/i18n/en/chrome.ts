@@ -4,7 +4,7 @@
 
 export const chromeEn = {
   status: {
-    summoning: 'summoning hermes…',
+    summoning: 'summoning rabbit…',
     ready: 'ready',
     running: 'running…',
     mcpReloaded: 'MCP reloaded after config change',
@@ -68,7 +68,7 @@ export const chromeEn = {
       resume: 'switch live or resume past sessions',
       details: 'control transcript detail level',
       copy: 'copy selection or last assistant message',
-      quit: 'exit hermes'
+      quit: 'exit rabbit'
     }
   }
 }

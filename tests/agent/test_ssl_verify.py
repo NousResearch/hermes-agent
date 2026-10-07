@@ -125,7 +125,7 @@ def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env = os.environ.copy()
-    env.update(HOME=str(tmp_path), HERMES_HOME=str(home), NO_PROXY="127.0.0.1")
+    env.update(HOME=str(tmp_path), RABBIT_HOME=str(home), NO_PROXY="127.0.0.1")
     for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
         env.pop(key, None)
     script = """

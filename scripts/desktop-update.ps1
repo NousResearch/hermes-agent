@@ -9,7 +9,7 @@
 # exists to escape.
 $target = Join-Path $PSScriptRoot "desktop-update\windows.ps1"
 if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
-    Write-Error "The maintained Desktop updater is missing. Repair the Hermes installation before updating."
+    Write-Error "The maintained Desktop updater is missing. Repair the Rabbit installation before updating."
     exit 3
 }
 & $target @args

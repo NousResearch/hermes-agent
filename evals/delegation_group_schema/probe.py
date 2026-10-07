@@ -16,7 +16,7 @@ sys.path.insert(0, root)
 os.chdir(root)
 with tempfile.TemporaryDirectory(prefix="delegate-schema-") as home:
     os.environ.clear()
-    os.environ.update(HOME=home, HERMES_HOME=home, PATH="/usr/bin:/bin", HERMES_PLATFORM="cli")
+    os.environ.update(HOME=home, RABBIT_HOME=home, PATH="/usr/bin:/bin", RABBIT_PLATFORM="cli")
     config = {"tools": {"tool_search": {"defer": []}}}
     if "--independent" in sys.argv:
         config["delegation"] = {"independent_completions": True}
@@ -30,9 +30,9 @@ with tempfile.TemporaryDirectory(prefix="delegate-schema-") as home:
     from model_tools import get_tool_definitions
 
     encoder = tiktoken.get_encoding("o200k_base")
-    definitions = get_tool_definitions(enabled_toolsets=["hermes-cli"], quiet_mode=True)
+    definitions = get_tool_definitions(enabled_toolsets=["rabbit-cli"], quiet_mode=True)
     serialized = json.dumps(definitions, separators=(",", ":"))
-    repeated = get_tool_definitions(enabled_toolsets=["hermes-cli"], quiet_mode=True)
+    repeated = get_tool_definitions(enabled_toolsets=["rabbit-cli"], quiet_mode=True)
     assert json.dumps(repeated, separators=(",", ":")) == serialized
     counts = {
         definition["function"]["name"]: len(encoder.encode(json.dumps(definition, separators=(",", ":"))))

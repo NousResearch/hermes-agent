@@ -4,7 +4,7 @@
  * Pure, electron-free helpers for the desktop's multi-connection registry —
  * the v2 successor to the single global `mode` + `remote` block in
  * connection.json. The registry is a named list of agent SOURCES (local
- * runtime, remote gateways, Hermes Cloud instances, SSH hosts) that are all
+ * runtime, remote gateways, SSH hosts) that are all
  * registered at once; routing/pooling changes that consume the registry land
  * separately, so this module is deliberately storage-shaped, not
  * transport-shaped.
@@ -41,37 +41,30 @@ export const REGISTRY_VERSION = 2
 
 export const LOCAL_CONNECTION_ID = 'local'
 
-/** Connection kinds. 'cloud' is remote-shaped (see modeIsRemoteLike) but keeps
- * its provenance so the UI can render the right card and updates can skip
- * platform-managed instances. */
-export type ConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh'
+export type ConnectionKind = 'local' | 'remote' | 'ssh'
 
 export interface RegistryConnection {
   id: string
   kind: ConnectionKind
   /** Required, unique (case-insensitive) display name — the "device name". */
   label: string
-  /** remote/cloud: normalized base URL. */
+  /** remote: normalized base URL. */
   url?: string
-  /** remote/cloud: 'token' | 'oauth'. */
+  /** remote: 'token' | 'oauth'. */
   authMode?: 'oauth' | 'token'
   /** remote: encrypted token envelope (opaque here; main.ts encrypts/decrypts). */
   token?: unknown
-  /** remote/cloud: extra gateway headers (Cloudflare Access etc.). Secret
+  /** remote: extra gateway headers (Cloudflare Access etc.). Secret
    * envelopes, same shape as `token`; names pre-filtered through
    * normalizeRemoteHeaders. Optional and additive — v2 registries written
    * before this field keep loading unchanged. */
   headers?: Record<string, unknown>
-  /** cloud: portal org slug/id the instance was discovered under. */
-  org?: string
-  /** Cloud instance name, separate from the user-editable label. */
-  name?: string
   /** ssh fields (normalizeSshConfig shapes). */
   host?: string
   user?: string
   port?: number
   keyPath?: string
-  remoteHermesPath?: string
+  remoteRabbitPath?: string
   remoteProfile?: string
 }
 
@@ -175,7 +168,7 @@ export function agentHandle(profile: string, connectionLabel: string, duplicated
  * profile names).
  *
  * NOTE: the renderer's socket registry uses the twin implementation in
- * apps/shared/src/backend-scope.ts (`@hermes/shared`) — tsconfig project
+ * apps/shared/src/backend-scope.ts (`@rabbit/shared`) — tsconfig project
  * boundaries prevent a single physical module here. The two are pinned
  * byte-identical by the cross-copy contract test in
  * connection-registry.test.ts; change BOTH or that test fails.
@@ -229,7 +222,7 @@ export interface ResolvedConnectionSshDescriptor {
   host?: string
   keyPath?: string
   port?: number
-  remoteHermesPath?: string
+  remoteRabbitPath?: string
   remoteProfile?: string
   user?: string
 }
@@ -245,7 +238,7 @@ export interface ResolvedConnectionDescriptor {
   mode?: 'local' | 'remote'
   org?: unknown
   remoteHost?: string
-  remoteKind?: 'cloud' | 'ssh' | 'url'
+  remoteKind?: 'ssh' | 'url'
   ssh?: ResolvedConnectionSshDescriptor
   token?: unknown
 }
@@ -318,7 +311,7 @@ export function resolvedConnectionId(
     return matchingConnectionId(registry, { kind: 'ssh', ...ssh }, 'unique') ?? null
   }
 
-  const kind = descriptor.remoteKind === 'cloud' ? 'cloud' : descriptor.remoteKind === 'url' ? 'remote' : null
+  const kind = descriptor.remoteKind === 'url' ? 'remote' : null
 
   if (!kind) {
     return null
@@ -351,7 +344,7 @@ export function resolvedConnectionId(
 
   if (!hasExactEnvelope) {
     // A URL alone cannot choose among legal registrations that differ by auth,
-    // headers, Cloud organization, or account. Require one coarse candidate
+    // headers, or account. Require one coarse candidate
     // before the same full-envelope matcher is allowed to accept the legacy
     // defaults; otherwise zero/multiple candidates fail closed.
     const coarseMatches = registry.connections.filter(connection => {
@@ -428,7 +421,7 @@ export async function reuseMatchingPrimarySshBackend({
     !sourceFingerprint ||
     !activeSsh ||
     sourceFingerprint !== String(activeSsh.effectiveConfigFingerprint || '').trim() ||
-    String(source.remoteHermesPath || '').trim() !== String(activeSsh.remoteHermesPath || '').trim() ||
+    String(source.remoteRabbitPath || '').trim() !== String(activeSsh.remoteRabbitPath || '').trim() ||
     rootProfile(source.remoteProfile) !== rootProfile(activeSsh.remoteProfile)
   ) {
     return null
@@ -467,7 +460,7 @@ export interface SharedRegistryProfileScope {
   sharedRemote: true
 }
 
-/** Reuse the live URL/cloud primary without losing the caller's REST profile scope. */
+/** Reuse the live URL primary without losing the caller's REST profile scope. */
 export async function reuseMatchingPrimaryRemoteBackend<T extends ResolvedConnectionDescriptor>({
   connectionId,
   ensurePrimary,
@@ -525,7 +518,7 @@ function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unk
  * route's REMOTE descriptor — so the forced-local child pools under the
  * `conn:local::<profile>` form instead (colons are invalid in profile names,
  * so it cannot collide). A concrete named profile that does not exist on
- * this machine is refused instead of spawned. `default` is `$HERMES_HOME`
+ * this machine is refused instead of spawned. `default` is `$RABBIT_HOME`
  * itself, so it always exists here and is never refused. A per-profile
  * remote override still delegates to the legacy profile route.
  */
@@ -553,7 +546,7 @@ export function resolveRegistryLocalRoute(
     // A concrete named profile that does not exist on this machine is
     // remote-only. Spawning it locally is the #90477 loop, so refuse. An
     // unprofiled call is enumeration, not a dial. `default` lives at
-    // $HERMES_HOME, not profiles/default, so This device -> default always
+    // $RABBIT_HOME, not profiles/default, so This device -> default always
     // force-locals. A profile that exists locally still force-locals so
     // "This device" does not dial the remote.
     if (concrete && profileKey !== 'default' && opts.localProfileExists === false) {
@@ -703,7 +696,7 @@ export function shouldRetrySshInventory(
 
 const PROFILE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
 
-/** Turn `ls ~/.hermes/profiles` output into roster names. Always includes
+/** Turn `ls ~/.rabbit/profiles` output into roster names. Always includes
  *  `default`. Drops rollback snapshots and junk lines. */
 export function parseRemoteProfileListing(text: string): string[] {
   const names = new Set<string>(['default'])
@@ -819,8 +812,8 @@ export function buildAgentRoster(
 }
 
 /** Deterministic route priority for same-backend rows: local is definitionally
- * this box; ssh beats HTTP remotes; cloud last. */
-const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 3, local: 0, remote: 2, ssh: 1 }
+ * this box; ssh beats HTTP remotes. */
+const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { local: 0, remote: 2, ssh: 1 }
 
 /**
  * Which connection represents a collapsed same-backend roster row: the ACTIVE
@@ -845,26 +838,6 @@ function pickCanonicalConnection<T extends { connection: RegistryConnection; ord
 }
 
 // ── Fan-out update eligibility ──────────────────────────────────────────────
-
-export interface UpdateEligibility {
-  eligible: boolean
-  /** Present when not eligible: 'cloud-managed' (platform updates it). */
-  reason?: 'cloud-managed'
-}
-
-/**
- * Whether "Update all instances" may drive this connection. Hermes Cloud
- * instances are platform-managed — we never run `hermes update` against them.
- * Local, remote, and ssh sources are all eligible (reachability and busy
- * checks happen at dispatch time, not here).
- */
-export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
-  if (connection.kind === 'cloud') {
-    return { eligible: false, reason: 'cloud-managed' }
-  }
-
-  return { eligible: true }
-}
 
 /** Mint a registry-unique id from a label (slug, then -2/-3… suffixes). */
 export function connectionIdForLabel(label: string, taken: Iterable<string>): string {
@@ -922,14 +895,11 @@ export interface ConnectionInput {
   authMode?: string
   token?: unknown
   headers?: Record<string, unknown>
-  org?: string
-  /** Cloud instance name, separate from the user-editable label. */
-  name?: string
   host?: string
   user?: string
   port?: number | string
   keyPath?: string
-  remoteHermesPath?: string
+  remoteRabbitPath?: string
   remoteProfile?: string
 }
 
@@ -939,17 +909,6 @@ export interface ConnectionInput {
  * uniqueness context; when `input.id` matches an existing entry this is an
  * edit and that entry is excluded from the label-collision check.
  */
-/**
- * Auth mode a stored remote-shaped entry actually uses. A Hermes Cloud gateway
- * signs in through its OAuth session and never keeps a pasted token (the save
- * path drops one), so a cloud entry on token auth with no token has no
- * credential at all and Test can only fail (#89529). Read it as oauth; a cloud
- * entry that does carry a token keeps its mode.
- */
-function storedAuthMode(kind: ConnectionKind, authMode: unknown, token: unknown): 'oauth' | 'token' {
-  return kind === 'cloud' && !token ? 'oauth' : normAuthMode(authMode)
-}
-
 export function normalizeConnectionInput(input: ConnectionInput, registry: ConnectionRegistry): RegistryConnection {
   const label = String(input.label || '').trim()
 
@@ -998,7 +957,7 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       user: input.user,
       port: input.port,
       keyPath: input.keyPath,
-      remoteHermesPath: input.remoteHermesPath,
+      remoteRabbitPath: input.remoteRabbitPath,
       remoteProfile: input.remoteProfile
     })
 
@@ -1032,57 +991,42 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     return entry
   }
 
-  if (kind === 'remote' || kind === 'cloud') {
+  if (kind === 'remote') {
     // normalizeRemoteBaseUrl throws its own user-facing message on bad input.
     const url = normalizeRemoteBaseUrl(input.url)
 
-    // Duplicate prevention: remote/cloud entries collide on the normalized URL
-    // (trimmed, trailing slashes stripped, lowercased) regardless of kind — a
-    // cloud entry and a remote entry pointing at the same gateway are dupes.
+    // Duplicate prevention: remote entries collide on the normalized URL
+    // (trimmed, trailing slashes stripped, lowercased).
     const urlKey = (value: string) => value.trim().replace(/\/+$/, '').toLowerCase()
 
     const urlDupe = registry.connections.find(
-      c => (c.kind === 'remote' || c.kind === 'cloud') && c.id !== id && urlKey(c.url || '') === urlKey(url)
+      c => c.kind === 'remote' && c.id !== id && urlKey(c.url || '') === urlKey(url)
     )
 
     if (urlDupe) {
       throw new Error(`A connection to this gateway URL already exists ("${urlDupe.label}").`)
     }
 
-    // Cloud never stores a token (below), so it is always oauth.
-    const authMode = storedAuthMode(kind, input.authMode, undefined)
+    const authMode = normAuthMode(input.authMode)
     const entry: RegistryConnection = { id, kind, label, url, authMode }
 
     // A token is only meaningful for token-auth remotes. Dropping it here is
-    // what clears the stale envelope when an entry is switched token→oauth
-    // (or is a cloud entry, which authenticates via the portal session) —
+    // what clears the stale envelope when an entry is switched token→oauth —
     // otherwise dead secret material rides along on the edited entry.
-    if (input.token !== undefined && kind === 'remote' && authMode === 'token') {
+    if (input.token !== undefined && authMode === 'token') {
       entry.token = input.token
     }
 
     // Extra gateway headers (access-proxy credentials) apply to any
     // remote-shaped entry regardless of auth mode — Cloudflare Access sits in
     // front of both token- and OAuth-gated gateways. Normalization drops
-    // transport-/Hermes-managed names; an empty result stores nothing.
+    // transport-/Rabbit-managed names; an empty result stores nothing.
     if (input.headers !== undefined) {
       const headers = normalizeRemoteHeaders(input.headers)
 
       if (Object.keys(headers).length > 0) {
         entry.headers = headers
       }
-    }
-
-    const name = String(input.name || '').trim()
-
-    if (kind === 'cloud' && name) {
-      entry.name = name
-    }
-
-    const org = String(input.org || '').trim()
-
-    if (kind === 'cloud' && org) {
-      entry.org = org
     }
 
     return entry
@@ -1093,10 +1037,8 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
 
 /**
  * Merge a (possibly partial) edit payload over the stored entry so fields the
- * editor doesn't carry survive a save. Renaming a migrated cloud entry must
- * not drop its `org` (downstream update-fanout uses it to skip
- * platform-managed instances), and renaming an ssh entry must not drop
- * `remoteHermesPath`/`remoteProfile`. Only fields the payload explicitly
+ * editor doesn't carry survive a save: renaming an ssh entry must not drop
+ * `remoteRabbitPath`/`remoteProfile`. Only fields the payload explicitly
  * carries (non-undefined) override; `token` is deliberately NOT merged here —
  * the caller owns secret handling.
  */
@@ -1115,18 +1057,10 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
 
   inherit('url')
   inherit('authMode')
-  inherit('org')
-
-  if (
-    input.kind === 'cloud' &&
-    (input.url === undefined || normalizeRemoteBaseUrl(input.url) === normalizeRemoteBaseUrl(existing.url))
-  ) {
-    inherit('name')
-  }
 
   inherit('host')
   inherit('keyPath')
-  inherit('remoteHermesPath')
+  inherit('remoteRabbitPath')
   inherit('remoteProfile')
   // Headers inherit like other dial fields: an edit payload that omits the
   // field keeps the stored set; an explicit payload (even {}) is
@@ -1168,7 +1102,7 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
     'user',
     'port',
     'keyPath',
-    'remoteHermesPath',
+    'remoteRabbitPath',
     'remoteProfile'
   ]
 
@@ -1259,7 +1193,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
       const entry = item as Record<string, unknown>
       const kind = entry.kind
 
-      if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
+      if (kind !== 'local' && kind !== 'remote' && kind !== 'ssh') {
         quarantine('entry-unrecognized-kind', item)
 
         continue
@@ -1291,7 +1225,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
       const clean: RegistryConnection = { id, kind, label }
 
-      if (kind === 'remote' || kind === 'cloud') {
+      if (kind === 'remote') {
         const url = String(entry.url || '').trim()
 
         if (!url) {
@@ -1301,7 +1235,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         }
 
         clean.url = url
-        clean.authMode = storedAuthMode(kind, entry.authMode, entry.token)
+        clean.authMode = normAuthMode(entry.authMode)
 
         if (entry.token !== undefined) {
           clean.token = entry.token
@@ -1311,18 +1245,6 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         if (Object.keys(storedHeaders).length > 0) {
           clean.headers = storedHeaders
-        }
-
-        const name = String(entry.name || '').trim()
-
-        if (kind === 'cloud' && name) {
-          clean.name = name
-        }
-
-        const org = String(entry.org || '').trim()
-
-        if (kind === 'cloud' && org) {
-          clean.org = org
         }
       } else if (kind === 'ssh') {
         const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
@@ -1338,7 +1260,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         // normalizeSshConfig describes only the dial, so the token
         // persistSshConnectionToken() adopted must be carried explicitly (as the
-        // remote/cloud branch does). Losing it on a cold read fails the
+        // remote branch does). Losing it on a cold read fails the
         // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
         if (entry.token !== undefined) {
           clean.token = entry.token
@@ -1390,14 +1312,14 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
   const connections: RegistryConnection[] = [localEntry()]
   const byFingerprint = new Map<string, RegistryConnection>()
 
-  const addRemoteLike = (block: Record<string, any>, kind: 'cloud' | 'remote'): null | RegistryConnection => {
+  const addRemote = (block: Record<string, any>): null | RegistryConnection => {
     const url = String(block?.url || '').trim()
 
     if (!url) {
       return null
     }
 
-    const fingerprint = `${kind}:${url}`
+    const fingerprint = `remote:${url}`
     const existing = byFingerprint.get(fingerprint)
 
     if (existing) {
@@ -1405,7 +1327,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
     }
 
     const label = uniqueLabel(
-      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+      hostLabelFromBaseUrl(url) || 'Remote gateway',
       connections.map(c => c.label)
     )
 
@@ -1414,7 +1336,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
         label,
         connections.map(c => c.id)
       ),
-      kind,
+      kind: 'remote',
       label,
       url,
       authMode: normAuthMode(block.authMode)
@@ -1428,18 +1350,6 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     if (Object.keys(v1Headers).length > 0) {
       entry.headers = v1Headers
-    }
-
-    const name = String(block.name || '').trim()
-
-    if (kind === 'cloud' && name) {
-      entry.name = name
-    }
-
-    const org = String(block.org || '').trim()
-
-    if (kind === 'cloud' && org) {
-      entry.org = org
     }
 
     connections.push(entry)
@@ -1490,7 +1400,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
   const globalMode = config.mode
 
   if (modeIsRemoteLike(globalMode)) {
-    const entry = addRemoteLike(config.remote || {}, globalMode === 'cloud' ? 'cloud' : 'remote')
+    const entry = addRemote(config.remote || {})
 
     if (entry) {
       primary = entry.id
@@ -1512,7 +1422,7 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
     }
 
     if (modeIsRemoteLike(block.mode)) {
-      addRemoteLike(block, block.mode === 'cloud' ? 'cloud' : 'remote')
+      addRemote(block)
     } else if (block.mode === 'ssh') {
       addSsh(block)
     } else if (block.mode === 'local' && block.savedSsh) {
@@ -1581,11 +1491,10 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
  * Apply must publish the same primary identity to connections.json in the
  * same transaction or the live remote descriptor has no connectionId.
  *
- * Remote-shaped entries are matched by normalized URL across remote/cloud so
- * changing provenance never duplicates a gateway. Existing identity and
- * user-chosen label win; a Cloud name upgrades only the default host label. Switching to
- * local keeps registered remotes available while moving primary/last-used
- * back to This device.
+ * Remote entries are matched by normalized URL so re-applying the same
+ * gateway never duplicates it. Existing identity and user-chosen label win.
+ * Switching to local keeps registered remotes available while moving
+ * primary/last-used back to This device.
  */
 export function reconcileAppliedGlobalConnection(
   registry: ConnectionRegistry,
@@ -1607,7 +1516,7 @@ export function reconcileAppliedGlobalConnection(
   const url = normalizeRemoteBaseUrl(block.url)
 
   const existing = registry.connections.find(connection => {
-    if (connection.kind !== 'remote' && connection.kind !== 'cloud') {
+    if (connection.kind !== 'remote') {
       return false
     }
 
@@ -1618,18 +1527,16 @@ export function reconcileAppliedGlobalConnection(
     }
   })
 
-  const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
+  const kind: ConnectionKind = 'remote'
 
-  const hostLabel = hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway')
-  const name = kind === 'cloud' ? String(block.name ?? existing?.name ?? '').trim() : ''
+  const hostLabel = hostLabelFromBaseUrl(url) || 'Remote gateway'
 
   const label =
-    existing && (!name || existing.label !== hostLabel)
-      ? existing.label
-      : uniqueLabel(
-          name || hostLabel,
-          registry.connections.filter(connection => connection.id !== existing?.id).map(connection => connection.label)
-        )
+    existing?.label ||
+    uniqueLabel(
+      hostLabel,
+      registry.connections.filter(connection => connection.id !== existing?.id).map(connection => connection.label)
+    )
 
   const entry = normalizeConnectionInput(
     {
@@ -1639,9 +1546,7 @@ export function reconcileAppliedGlobalConnection(
       url,
       authMode: block.authMode,
       token: block.token,
-      headers: block.headers,
-      org: block.org,
-      name
+      headers: block.headers
     },
     registry
   )
@@ -1712,7 +1617,7 @@ export function reconcileRegistryDrift(
       //
       // Known by target is not enough, though: the router tags the live
       // window by the FULL route identity (matchingConnectionId also compares
-      // keyPath, remoteHermesPath and remoteProfile). A v1 route carrying a
+      // keyPath, remoteRabbitPath and remoteProfile). A v1 route carrying a
       // keyPath the registered entry never had resolves to no connectionId,
       // the renderer treats the untagged window as the unscoped local backend
       // ("This device") and the roster force-spawns a phantom local child.
@@ -1725,7 +1630,7 @@ export function reconcileRegistryDrift(
       const { host: _host, user: _user, port: _port, ...identityFields } = sshFields
       const aligned: RegistryConnection = { ...registered }
       delete aligned.keyPath
-      delete aligned.remoteHermesPath
+      delete aligned.remoteRabbitPath
       delete aligned.remoteProfile
       Object.assign(aligned, identityFields)
 
@@ -1779,7 +1684,7 @@ export function reconcileRegistryDrift(
   }
 
   const alreadyRegistered = registry.connections.some(connection => {
-    if (connection.kind !== 'remote' && connection.kind !== 'cloud') {
+    if (connection.kind !== 'remote') {
       return false
     }
 

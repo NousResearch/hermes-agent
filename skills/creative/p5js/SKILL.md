@@ -2,11 +2,11 @@
 name: p5js
 description: "p5.js sketches: gen art, shaders, interactive, 3D."
 version: 1.0.0
-author: SHL0MS, Hermes Agent
+author: SHL0MS, Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [creative-coding, generative-art, p5js, canvas, interactive, visualization, webgl, shaders, animation]
     related_skills: [ascii-video, manim-video, excalidraw]
 ---

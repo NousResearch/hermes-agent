@@ -99,10 +99,10 @@ class TestRoutedForeignHomeScope:
     the .env-overlay fallthrough is only safe when the scope's home IS ours."""
 
     def test_scoped_miss_under_foreign_home_returns_default(self, monkeypatch, tmp_path):
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
-        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        home_token = set_rabbit_home_override(str(tmp_path / "other-profile"))
         token = ss.set_secret_scope({})
         try:
             assert ss.serves_routed_profile() is True
@@ -110,38 +110,38 @@ class TestRoutedForeignHomeScope:
             assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
         finally:
             ss.reset_secret_scope(token)
-            reset_hermes_home_override(home_token)
+            reset_rabbit_home_override(home_token)
 
     def test_scoped_miss_under_own_home_keeps_env_overlay(self, monkeypatch, tmp_path):
         """The deliberate single-profile overlay: a scope bound for the process's
         own home still falls through to os.environ (systemd / op run credentials)."""
-        from hermes_constants import get_process_hermes_home, set_hermes_home_override, reset_hermes_home_override
+        from rabbit_constants import get_process_rabbit_home, set_rabbit_home_override, reset_rabbit_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
-        home_token = set_hermes_home_override(str(get_process_hermes_home()))
+        home_token = set_rabbit_home_override(str(get_process_rabbit_home()))
         token = ss.set_secret_scope({})
         try:
             assert ss.serves_routed_profile() is False
             assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
         finally:
             ss.reset_secret_scope(token)
-            reset_hermes_home_override(home_token)
+            reset_rabbit_home_override(home_token)
 
     def test_scope_hit_under_foreign_home_still_wins(self, monkeypatch, tmp_path):
         """A scoped hit is unaffected: only the miss branch changes."""
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
-        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        home_token = set_rabbit_home_override(str(tmp_path / "other-profile"))
         token = ss.set_secret_scope({"OPENAI_API_KEY": "sk-served-profile"})
         try:
             assert ss.get_secret("OPENAI_API_KEY") == "sk-served-profile"
         finally:
             ss.reset_secret_scope(token)
-            reset_hermes_home_override(home_token)
+            reset_rabbit_home_override(home_token)
 
     def test_stamped_foreign_scope_miss_fails_closed_without_override(self, monkeypatch, tmp_path):
-        """The kanban/MCP shape: a foreign-home scope bound WITHOUT the HERMES_HOME
+        """The kanban/MCP shape: a foreign-home scope bound WITHOUT the RABBIT_HOME
         override (deliberate — those paths need the dispatcher's policy reads).
         The profile_home stamp makes serves_routed_profile see it anyway."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
@@ -156,10 +156,10 @@ class TestRoutedForeignHomeScope:
     def test_stamped_own_home_scope_keeps_env_overlay(self, monkeypatch):
         """A scope stamped with the process's own home is not routed: env
         fallthrough stays, matching launch_secret_scope's documented precedence."""
-        from hermes_constants import get_process_hermes_home
+        from rabbit_constants import get_process_rabbit_home
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
-        token = ss.set_secret_scope({}, profile_home=str(get_process_hermes_home()))
+        token = ss.set_secret_scope({}, profile_home=str(get_process_rabbit_home()))
         try:
             assert ss.serves_routed_profile() is False
             assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
@@ -191,7 +191,7 @@ class TestRoutedForeignHomeScope:
         ``bind_home=False`` — no home override, because the passthrough POLICY
         belongs to the dispatcher. The profile_home stamp must still make scoped
         misses fail closed, or the dispatcher's env leaks into B's worker env."""
-        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+        from rabbit_cli.kanban_db_dispatch import _worker_profile_scope
 
         foreign = tmp_path / "profiles" / "assignee"
         foreign.mkdir(parents=True)
@@ -206,12 +206,12 @@ class TestRoutedForeignHomeScope:
 
 class TestScopeSetupRecovery:
     """A raise mid-scope-setup must release whatever was already bound — a leaked
-    HERMES_HOME override or secret scope silently re-homes every later read in
+    RABBIT_HOME override or secret scope silently re-homes every later read in
     the caller's context."""
 
     def test_profile_runtime_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
         from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_hermes_home_override
+        from rabbit_constants import get_rabbit_home_override
 
         foreign = tmp_path / "profiles" / "b"
         foreign.mkdir(parents=True)
@@ -223,12 +223,12 @@ class TestScopeSetupRecovery:
         with pytest.raises(RuntimeError):
             with _profile_runtime_scope(foreign, hydrate_secrets=False):
                 pass
-        assert get_hermes_home_override() is None
+        assert get_rabbit_home_override() is None
         assert ss.current_secret_scope() is None
 
     def test_worker_profile_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
-        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
-        from hermes_constants import get_hermes_home_override
+        from rabbit_cli.kanban_db_dispatch import _worker_profile_scope
+        from rabbit_constants import get_rabbit_home_override
 
         foreign = tmp_path / "profiles" / "assignee"
         foreign.mkdir(parents=True)
@@ -240,7 +240,7 @@ class TestScopeSetupRecovery:
         with pytest.raises(RuntimeError):
             with _worker_profile_scope(str(foreign), bind_home=True):
                 pass
-        assert get_hermes_home_override() is None
+        assert get_rabbit_home_override() is None
         assert ss.current_secret_scope() is None
 
     def test_model_switch_bind_releases_partial_scopes_on_raise(self, monkeypatch, tmp_path):
@@ -249,7 +249,7 @@ class TestScopeSetupRecovery:
         Driven through ``server`` — the split module's functions run rebound on
         server.py's globals (``bind_module``)."""
         from tui_gateway import server
-        from hermes_constants import get_hermes_home_override
+        from rabbit_constants import get_rabbit_home_override
 
         home = tmp_path / "profiles" / "b"
         home.mkdir(parents=True)
@@ -260,7 +260,7 @@ class TestScopeSetupRecovery:
         monkeypatch.setattr("tools.terminal_scope.install_profile_terminal_scope", boom)
         with pytest.raises(RuntimeError):
             server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
-        assert get_hermes_home_override() is None
+        assert get_rabbit_home_override() is None
         assert ss.current_secret_scope() is None
 
 
@@ -293,7 +293,7 @@ class TestEnvFileParsing:
         '\"' or '\\' worked interactively but were corrupted under scoped
         (cron / multiplex) resolution.
         """
-        from hermes_cli.config import _quote_env_value
+        from rabbit_cli.config import _quote_env_value
 
         original = 'tok"en\\with spaces'
         (tmp_path / ".env").write_text(f"MY_TOKEN={_quote_env_value(original)}\n")
@@ -346,7 +346,7 @@ class TestEnvFileParsing:
     def test_round_trip_writer_value_with_trailing_comment(self, tmp_path):
         """A value quoted by the save_env_value writer survives an appended
         inline comment byte-exactly."""
-        from hermes_cli.config import _quote_env_value
+        from rabbit_cli.config import _quote_env_value
 
         original = 'we#ird "tok\\en" # not a comment'
         quoted = _quote_env_value(original)
@@ -393,7 +393,7 @@ class TestEnvFileParsing:
         self, tmp_path, monkeypatch
     ):
         (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
-        from hermes_cli import env_loader
+        from rabbit_cli import env_loader
 
         home_key = str(tmp_path.resolve())
         monkeypatch.setitem(
@@ -413,7 +413,7 @@ class TestEnvFileParsing:
         other = tmp_path / "other"
         profile.mkdir()
         other.mkdir()
-        from hermes_cli import env_loader
+        from rabbit_cli import env_loader
 
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,

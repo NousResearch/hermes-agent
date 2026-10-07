@@ -38,7 +38,7 @@ def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("hermes_cli.config.load_config", return_value=config or {}),
+        patch("rabbit_cli.config.load_config", return_value=config or {}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -126,7 +126,7 @@ def test_explanation_persistence_turn_lease_cause_is_specific():
     assert "not saved" in lower
     assert "disk" not in lower
     assert "compression" not in lower
-    assert "hermes doctor" not in lower
+    assert "rabbit doctor" not in lower
 
 
 def test_explanation_persistence_disk_cause_keeps_disk_wording():
@@ -147,26 +147,26 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     )
     lower = out.lower()
     assert "corrupt" in lower
-    assert "hermes doctor" in lower
+    assert "rabbit doctor" in lower
     assert "free some space" not in lower
     assert "full disk" not in lower
 
 
-def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
-    """Step 3 must name the backups dir under the ACTIVE home, not ~/.hermes (#104250).
+def test_explanation_persistence_corrupt_backups_dir_follows_rabbit_home(monkeypatch, tmp_path):
+    """Step 3 must name the backups dir under the ACTIVE home, not ~/.rabbit (#104250).
 
-    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``), so a
-    custom-HERMES_HOME deployment told to restore from ``~/.hermes/backups/`` is misdirected
+    Pre-update backups live at ``<rabbit_root>/backups`` (``rabbit_cli/backup.py``), so a
+    custom-RABBIT_HOME deployment told to restore from ``~/.rabbit/backups/`` is misdirected
     mid data-loss incident: that directory may not exist at all, or may hold an unrelated
     install's backups.
     """
-    custom_home = tmp_path / "custom-hermes-home"
-    monkeypatch.setenv("HERMES_HOME", str(custom_home / "profiles" / "research"))
+    custom_home = tmp_path / "custom-rabbit-home"
+    monkeypatch.setenv("RABBIT_HOME", str(custom_home / "profiles" / "research"))
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "corrupt"
     )
     assert f"{custom_home / 'backups'}" in out
-    assert "~/.hermes/backups" not in out
+    assert "~/.rabbit/backups" not in out
     assert "{backups_dir}" not in out
 
 
@@ -185,7 +185,7 @@ def test_explanation_persistence_fts_index_never_advises_recovery():
     assert "restore from a backup" not in lower and "backups/" not in lower
     assert "would have been lost" not in lower
     assert "free" not in lower  # never disk-space advice
-    assert "hermes doctor" in lower
+    assert "rabbit doctor" in lower
 
 
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
@@ -200,35 +200,35 @@ def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
 
 
 def test_deleted_wal_cause_is_plain_first_steps_not_a_forensic_runbook():
-    """The WAL-generation runbook lives in the logger.error at hermes_state; the chat reply
+    """The WAL-generation runbook lives in the logger.error at rabbit_state; the chat reply
     gives the two steps a user can take (stop, doctor) and points at the log."""
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from rabbit_state_errors import PERSISTENCE_ERROR_CAUSES
 
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "deleted_wal"
     ).lower()
     assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
-    assert "hermes gateway stop" in out and "hermes doctor" in out
+    assert "rabbit gateway stop" in out and "rabbit doctor" in out
     for jargon in ("manifest", "state.db-wal", "sidecar", "header_only", "--inspect-only", "generation"):
         assert jargon not in out, jargon
-    assert "~/.hermes" not in out  # display_hermes_home(), never a hardcoded path
+    assert "~/.rabbit" not in out  # display_rabbit_home(), never a hardcoded path
 
 
 @pytest.mark.parametrize("cause", ["replaced", "deleted_wal", "unknown"])
 def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp_path, cause):
-    """Every copy-pasteable ``hermes`` command in a persistence explanation names the profile
+    """Every copy-pasteable ``rabbit`` command in a persistence explanation names the profile
     whose store failed — a multi-profile backend serves sessions whose state.db is not the
-    process default, and a bare ``hermes`` follows the sticky active_profile (#105887). The
+    process default, and a bare ``rabbit`` follows the sticky active_profile (#105887). The
     corrupt/fts_index causes already did this; replaced/deleted_wal/default did not."""
-    from hermes_constants import profile_cli_selector
+    from rabbit_constants import profile_cli_selector
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit" / "profiles" / "research"))
     selector = profile_cli_selector()
     assert selector.strip(), "fixture must resolve to a named profile"
     out = AIAgent._format_turn_completion_explanation("session_persistence_failed", cause)
     assert "{profile_arg}" not in out
-    assert f"`hermes {selector}doctor" in out
-    assert "`hermes doctor" not in out and "`hermes gateway" not in out
+    assert f"`rabbit {selector}doctor" in out
+    assert "`rabbit doctor" not in out and "`rabbit gateway" not in out
 
 
 def test_explanation_persistence_unknown_cause_is_neutral():
@@ -241,7 +241,7 @@ def test_explanation_persistence_unknown_cause_is_neutral():
         assert out.strip() != ""
         assert "disk space" not in lower
         assert "full disk" not in lower
-        assert "hermes doctor" in lower
+        assert "rabbit doctor" in lower
         assert "again" in lower
 
 
@@ -249,7 +249,7 @@ def test_explanation_persistence_one_arg_backward_compat():
     """Existing one-arg callers must keep working (optional second param)."""
     out = AIAgent._format_turn_completion_explanation("session_persistence_failed")
     assert out.strip() != ""
-    assert "hermes doctor" in out.lower()
+    assert "rabbit doctor" in out.lower()
 
 
 def test_explanation_cause_ignored_for_other_reasons():
@@ -272,7 +272,7 @@ def test_explanation_cause_ignored_for_other_reasons():
 def test_classify_persistence_error_categories():
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from rabbit_state import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.OperationalError("database is locked")
@@ -297,7 +297,7 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
     comment thread, v0.20.0 malformed-DB incident)."""
     import sqlite3
 
-    from hermes_state import classify_persistence_error
+    from rabbit_state import classify_persistence_error
 
     assert classify_persistence_error(
         sqlite3.DatabaseError("database disk image is malformed")
@@ -315,12 +315,12 @@ def test_classify_persistence_error_corruption_beats_disk_bucket():
 
 
 def test_classify_persistence_error_reuses_disk_full_markers():
-    """The disk bucket delegates to hermes_state_errors.is_disk_full_error, so
+    """The disk bucket delegates to rabbit_state_errors.is_disk_full_error, so
     every marker that helper recognizes (ENOSPC, 'not enough space', ...)
     must classify as 'disk' — the two classifiers can never drift apart."""
     import errno
 
-    from hermes_state import classify_persistence_error
+    from rabbit_state import classify_persistence_error
 
     assert classify_persistence_error("ENOSPC writing state.db") == "disk"
     assert classify_persistence_error(
@@ -336,9 +336,9 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     storage damage — but its message contains neither 'locked' nor 'busy',
     so it must classify by exception type (and by phrase for RPC-wrapped
     strings). This is the exact failure mode of issue #81227."""
-    from hermes_state import SessionCompressionInProgressError
-    from hermes_state_errors import CompressionSessionBusyError
-    from hermes_state import classify_persistence_error
+    from rabbit_state import SessionCompressionInProgressError
+    from rabbit_state_errors import CompressionSessionBusyError
+    from rabbit_state import classify_persistence_error
 
     assert classify_persistence_error(
         SessionCompressionInProgressError(
@@ -358,8 +358,8 @@ def test_classify_persistence_error_compression_busy_is_distinct():
 
 
 def test_classify_persistence_error_turn_lease_lost_is_distinct():
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import SessionTurnLeaseLostError
+    from rabbit_state import classify_persistence_error
+    from rabbit_state_errors import SessionTurnLeaseLostError
 
     assert classify_persistence_error(
         SessionTurnLeaseLostError(
@@ -374,8 +374,8 @@ def test_classify_persistence_error_turn_lease_lost_is_distinct():
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
-    from hermes_state import classify_persistence_error
-    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+    from rabbit_state import classify_persistence_error
+    from rabbit_state_errors import PERSISTENCE_ERROR_CAUSES
 
     probes = (
         "database is locked",
@@ -399,8 +399,8 @@ def test_classify_persistence_error_fts_provenance_order():
     "provably FTS-only" (#97794 review)."""
     import sqlite3
 
-    from hermes_state import SessionDB, classify_persistence_error
-    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+    from rabbit_state import SessionDB, classify_persistence_error
+    from rabbit_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
 
     def _err(text, code=None, cls=sqlite3.DatabaseError):
         exc = cls(text)
@@ -456,15 +456,15 @@ def test_classify_persistence_error_fts_provenance_order():
 def test_explainer_enabled_by_default():
     agent = _make_agent()
     with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch("hermes_cli.config.load_config", return_value={}):
+        os.environ.pop("RABBIT_TURN_COMPLETION_EXPLAINER", None)
+        with patch("rabbit_cli.config.load_config", return_value={}):
             assert agent._turn_completion_explainer_enabled() is True
 
 
 def test_explainer_disabled_via_env():
     agent = _make_agent()
     with patch.dict(
-        os.environ, {"HERMES_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
+        os.environ, {"RABBIT_TURN_COMPLETION_EXPLAINER": "0"}, clear=False
     ):
         assert agent._turn_completion_explainer_enabled() is False
 
@@ -532,6 +532,6 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
 def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
     """A quarantined SessionDB raises the typed error; it stays in the corrupt bucket."""
-    from hermes_state import StateDbCorruptError, classify_persistence_error
+    from rabbit_state import StateDbCorruptError, classify_persistence_error
 
     assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"

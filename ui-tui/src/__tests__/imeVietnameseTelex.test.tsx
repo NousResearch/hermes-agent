@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync } from '@rabbit/ink'
 import React, { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 

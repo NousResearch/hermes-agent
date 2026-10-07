@@ -36,7 +36,7 @@ class TestGetCommandTimeoutRace:
     def test_returns_default_when_config_read_raises(self):
         """If config reading blows up, we still return an int (not None)."""
         with patch(
-            "hermes_cli.config.read_raw_config", side_effect=RuntimeError("boom")
+            "rabbit_cli.config.read_raw_config", side_effect=RuntimeError("boom")
         ):
             result = self.bt._get_command_timeout()
 

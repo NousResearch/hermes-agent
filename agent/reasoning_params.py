@@ -87,13 +87,13 @@ class ReasoningParamsMixin:
 
     def _supports_reasoning_extra_body(self) -> bool:
         """True when reasoning extra_body is safe to send: OpenRouter forwards unknown extra_body upstream and
-        some routes 400 on ``reasoning``, so gate to known reasoning-capable families and direct Nous Portal."""
+        some routes 400 on ``reasoning``, so gate to known reasoning-capable families and direct portal hosts."""
         url = self._base_url_lower
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
         if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from rabbit_cli.models import github_model_reasoning_efforts
 
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
@@ -109,7 +109,7 @@ class ReasoningParamsMixin:
         # Live-catalog metadata first (OpenRouter /v1/models supported_parameters) — the static prefix
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.
         try:
-            from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
+            from rabbit_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
             caps = openrouter_model_reasoning_capabilities(self.model)
             if caps is None:
                 warm_openrouter_reasoning_caps_async()  # cache cold — warm in the background, never block
@@ -123,7 +123,7 @@ class ReasoningParamsMixin:
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """LM Studio's published reasoning ``allowed_options`` (gate + clamp so toggle models don't 400 on ``high``)."""
         try:
-            from hermes_cli.models_local import lmstudio_model_reasoning_options
+            from rabbit_cli.models_local import lmstudio_model_reasoning_options
         except Exception:
             return []
         return _cached_probe(self, "_lm_reasoning_opts_cache", lmstudio_model_reasoning_options, [], bool)
@@ -131,7 +131,7 @@ class ReasoningParamsMixin:
     def _ollama_supports_thinking_cached(self) -> bool:
         """True only if Ollama's ``/api/show`` declares the ``thinking`` capability."""
         try:
-            from hermes_cli.models_local import ollama_model_supports_thinking
+            from rabbit_cli.models_local import ollama_model_supports_thinking
         except Exception:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
@@ -139,7 +139,7 @@ class ReasoningParamsMixin:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
+            from rabbit_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
         except Exception:
             return None
 
@@ -181,7 +181,7 @@ class ReasoningParamsMixin:
     def _read_reasoning_echo_from_config() -> bool:
         """Read ``model.reasoning_echo`` from config; False on any error."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from rabbit_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
         except Exception:
             return False

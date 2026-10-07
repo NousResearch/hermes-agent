@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $gateway } from './gateway'

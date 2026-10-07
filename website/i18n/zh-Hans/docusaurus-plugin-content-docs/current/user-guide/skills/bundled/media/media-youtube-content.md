@@ -21,7 +21,7 @@ YouTube 视频转文字摘要、推文、博客。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # YouTube Content Tool
@@ -34,9 +34,9 @@ YouTube 视频转文字摘要、推文、博客。
 
 ## 安装
 
-通过 `terminal` 使用 PM 准备的 Hermes 源码检出中的 Python。`youtube` extra
-声明了此辅助脚本的依赖；不要用 pip 或会自动发现项目的 `uv run` 修改 Hermes 环境。
-先按照[包管理](https://hermes-agent.nousresearch.com/docs/reference/package-management#developer-workflow)
+通过 `terminal` 使用 PM 准备的 Rabbit 源码检出中的 Python。`youtube` extra
+声明了此辅助脚本的依赖；不要用 pip 或会自动发现项目的 `uv run` 修改 Rabbit 环境。
+先按照[包管理](https://github.com/seven0070/Rabbit-/tree/main/website/docs/reference/package-management#developer-workflow)
 选择独立开发数据目录，再准备依赖并重新激活：
 
 ```bash

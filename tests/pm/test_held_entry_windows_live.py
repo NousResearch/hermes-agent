@@ -1,6 +1,6 @@
 """Live Windows obstacles to removing a replaced PM entry.
 
-A running Hermes process keeps the replaced interpreter's DLLs mapped (#124807),
+A running Rabbit process keeps the replaced interpreter's DLLs mapped (#124807),
 and archives such as PortableGit ship read-only files; both make deleting the
 old entry fail with WinError 5. The OS produces each obstacle here, no model.
 """

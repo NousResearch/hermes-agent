@@ -288,7 +288,7 @@ class TestNFKCNormalisation:
         # Full-width latin letters (ｃ U+FF43 etc.) are compatibility variants
         # that NFKC folds to ASCII; without normalisation they bypass the
         # keyword-based exfil patterns.
-        findings = scan_for_threats("ｃａｔ ~/.hermes/.env", scope="all")
+        findings = scan_for_threats("ｃａｔ ~/.rabbit/.env", scope="all")
         assert "read_secrets" in findings
 
 

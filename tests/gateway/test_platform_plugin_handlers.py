@@ -30,7 +30,7 @@ if _repo not in sys.path:
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.config import PlatformConfig  # noqa: E402
 
-from hermes_cli.plugins import (  # noqa: E402
+from rabbit_cli.plugins import (  # noqa: E402
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -143,7 +143,7 @@ class TestAdapterPluginWiring:
         mgr = MagicMock()
         mgr.get_platform_handler_factories.return_value = [(factory, "biz_plugin")]
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("rabbit_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(adapter._app)
 
         assert calls == [(adapter._app, adapter)]
@@ -167,7 +167,7 @@ class TestAdapterPluginWiring:
             (good_factory, "good_plugin"),
         ]
 
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("rabbit_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(adapter._app)  # must not raise
 
         assert wired == ["good"]
@@ -175,7 +175,7 @@ class TestAdapterPluginWiring:
     def test_manager_load_failure_does_not_raise(self):
         adapter = _make_adapter()
         with patch(
-            "hermes_cli.plugins.get_plugin_manager",
+            "rabbit_cli.plugins.get_plugin_manager",
             side_effect=RuntimeError("plugin system down"),
         ):
             adapter._wire_plugin_handlers(adapter._app)  # must not raise
@@ -189,7 +189,7 @@ class TestAdapterPluginWiring:
         mgr.get_platform_handler_factories.return_value = [
             (lambda native, adp: seen.append(native), "p"),
         ]
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+        with patch("rabbit_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
 

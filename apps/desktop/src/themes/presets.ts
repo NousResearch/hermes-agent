@@ -2,23 +2,23 @@
  * Built-in desktop themes. Names match the CLI skins / dashboard presets.
  * Add new themes here — no code changes needed elsewhere.
  *
- * The palette-bearing skins (nous, catppuccin, everforest, solarized) are forks
+ * The palette-bearing skins (rabbit, catppuccin, everforest, solarized) are forks
  * of their VS Code originals, converted by `buildThemeFromMarketplace` (see
  * ./install.ts) from the extensions below — the same path a Marketplace import
  * takes, so each is identical to installing the extension by hand and costs the
  * user neither the download nor the install step.
  *
- *   nous       ← github.github-vscode-theme   (Light Default / Dark Default)
+ *   rabbit     ← github.github-vscode-theme   (Light Default / Dark Default)
  *   catppuccin ← Catppuccin.catppuccin-vsc    (Latte / Mocha)
  *   everforest ← sainnhe.everforest
  *   solarized  ← ryanolsonx.solarized
  *
  * Re-convert marketplace forks from the upstream extension rather than
  * hand-editing hexes; hand edits drift from upstream silently and can't be
- * re-derived. `nous-alt` is first-party — do not re-derive it from GitHub.
+ * re-derived. `rabbit-alt` is first-party — do not re-derive it from GitHub.
  */
 
-import { THEME_PRESET_PALETTES } from '@hermes/shared'
+import { THEME_PRESET_PALETTES } from '@rabbit/shared'
 
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
@@ -46,22 +46,22 @@ const SYSTEM_MONO =
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
 /**
- * Nous — the canonical Hermes desktop identity, forked from the GitHub VS Code
+ * Rabbit — the canonical Rabbit desktop identity, forked from the GitHub VS Code
  * theme (github.github-vscode-theme). Light is GitHub Light Default, dark is
  * GitHub Dark Default, both converted through the same path a Marketplace
  * install takes, so the palette here is byte-identical to importing the
  * extension yourself.
  *
- * Typography stays Hermes's own: a VS Code theme carries no font opinion, and
+ * Typography stays Rabbit's own: a VS Code theme carries no font opinion, and
  * these are the stacks every skin has been rendering with.
  */
 /**
  * GitHub — the upstream palette, unmodified.
  *
- * `nous` is a fork of this with its own accent, so shipping both keeps the
+ * `rabbit` is a fork of this with its own accent, so shipping both keeps the
  * original available on its own terms instead of only existing as the thing
- * nous diverged from. Everything but the accent family is identical between
- * them; separate presets are what let nous's accent move without silently
+ * rabbit diverged from. Everything but the accent family is identical between
+ * them; separate presets are what let rabbit's accent move without silently
  * redefining what "GitHub" means.
  */
 export const githubTheme: DesktopTheme = {
@@ -117,8 +117,8 @@ export const githubTheme: DesktopTheme = {
 /** Catppuccin — Latte in light, Mocha in dark (Catppuccin.catppuccin-vsc). */
 
 /**
- * Nous — the canonical Hermes desktop identity: GitHub's chrome carrying Nous
- * blue. Forked from github.github-vscode-theme (Light Default / Dark Default),
+ * Rabbit — the canonical Rabbit desktop identity: GitHub's chrome carrying
+ * Rabbit blue. Forked from github.github-vscode-theme (Light Default / Dark Default),
  * with only the accent family re-seeded; every neutral is upstream's.
  *
  * Two seeds, one blue. `#0053FD` is the brand color and reads at 5.4:1 on the
@@ -127,11 +127,11 @@ export const githubTheme: DesktopTheme = {
  * surfaces below are mixed from those seeds in OKLab, which is what keeps a
  * saturated blue from drifting violet on its way to white.
  */
-export const nousTheme: DesktopTheme = {
-  name: 'nous',
-  label: 'Nous',
-  description: 'GitHub chrome, Nous blue accent',
-  ...THEME_PRESET_PALETTES.nous,
+export const rabbitTheme: DesktopTheme = {
+  name: 'rabbit',
+  label: 'Rabbit',
+  description: 'GitHub chrome, Rabbit blue accent',
+  ...THEME_PRESET_PALETTES.rabbit,
   typography: {
     fontSans: SYSTEM_SANS,
     fontMono: SYSTEM_MONO,
@@ -324,14 +324,14 @@ export const solarizedTheme: DesktopTheme = {
 }
 
 /**
- * Nous Alt — the hand-authored Nous from before the GitHub fork. Light is
+ * Rabbit Alt — the hand-authored original from before the GitHub fork. Light is
  * glass neutrals with brand blue; dark is cream on mission-blue.
  */
-export const nousAltTheme: DesktopTheme = {
-  name: 'nous-alt',
-  label: 'Nous Alt',
+export const rabbitAltTheme: DesktopTheme = {
+  name: 'rabbit-alt',
+  label: 'Rabbit Alt',
   description: 'Glass neutrals, cream on mission-blue',
-  ...THEME_PRESET_PALETTES['nous-alt'],
+  ...THEME_PRESET_PALETTES['rabbit-alt'],
   typography: {
     fontSans: SYSTEM_SANS,
     fontMono: SYSTEM_MONO,
@@ -339,13 +339,13 @@ export const nousAltTheme: DesktopTheme = {
   }
 }
 
-// The converter's input: the keys it reads from `hermes_cli/skin_engine.py`'s
+// The converter's input: the keys it reads from `rabbit_cli/skin_engine.py`'s
 // `default` skin. Light is that skin's `light_colors` overlay (its goldenrod
 // ladder for white backgrounds; `banner_border` is not overridden there) with
 // one change: the ink. The CLI's `#5C4718` is a single-weight terminal color,
 // but Desktop sets secondary and tertiary text at 74% / 54% of it, which left
 // them at 4.2:1 / 2.7:1. A deeper ink of the same brown gives 6.5:1 / 3.5:1,
-// the levels Nous Light has.
+// the levels Rabbit Light has.
 const CLASSIC_DARK_SKIN_COLORS = {
   status_bar_bg: '#1a1a2e',
   banner_text: '#FFF8DC',
@@ -369,16 +369,16 @@ const CLASSIC_LIGHT_SKIN_COLORS = {
 const classicPalette = (colors: Record<string, string>) => skinToDesktopTheme({ name: 'classic', colors })!.colors
 
 /**
- * Classic Hermes — the CLI's stock `default` skin (gold on navy), offered as a
+ * Classic Rabbit — the CLI's stock `default` skin (gold on navy), offered as a
  * Desktop pick under its OWN id. Never `default`: stock config ships
- * `display.skin: default`, and Desktop reads that as "no pick" (→ nous), so a
+ * `display.skin: default`, and Desktop reads that as "no pick" (→ rabbit), so a
  * user only ever gets Classic by choosing it (#76579). Both palettes go through
  * the converter a backend skin takes, so each mode paints what the CLI paints
  * in a dark or light terminal.
  */
 export const classicTheme: DesktopTheme = {
   name: 'classic',
-  label: 'Classic Hermes',
+  label: 'Classic Rabbit',
   description: "Gold on navy, the CLI's original look",
   colors: classicPalette(CLASSIC_LIGHT_SKIN_COLORS),
   darkColors: classicPalette(CLASSIC_DARK_SKIN_COLORS)
@@ -442,12 +442,12 @@ export const slateTheme: DesktopTheme = {
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
-  nous: nousTheme,
+  rabbit: rabbitTheme,
   github: githubTheme,
   catppuccin: catppuccinTheme,
   everforest: everforestTheme,
   solarized: solarizedTheme,
-  'nous-alt': nousAltTheme,
+  'rabbit-alt': rabbitAltTheme,
   classic: classicTheme,
   midnight: midnightTheme,
   ember: emberTheme,
@@ -459,10 +459,17 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'rabbit'
 
 /** Names that no longer resolve to a skin of their own. A stored pick of one
  *  falls back to DEFAULT_SKIN_NAME, and a cached backend theme under one is
  *  dropped (the reverted #130015 build cached the CLI `default` skin as a
- *  second "Classic Hermes"). */
+ *  second "Classic Rabbit"). */
 export const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
+
+/** Pre-rebrand skin names. A stored pick of one resolves to its renamed
+ *  built-in, so an existing install keeps its look across the rename. */
+export const LEGACY_SKIN_NAMES: Record<string, string> = {
+  nous: 'rabbit',
+  'nous-alt': 'rabbit-alt'
+}

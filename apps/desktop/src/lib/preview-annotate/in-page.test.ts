@@ -4,7 +4,7 @@ import { annotateInPage } from './in-page'
 
 afterEach(() => {
   document.body.replaceChildren()
-  document.querySelectorAll('hermes-annotate').forEach(node => node.remove())
+  document.querySelectorAll('rabbit-annotate').forEach(node => node.remove())
 })
 
 describe('annotateInPage overlay', () => {
@@ -13,12 +13,12 @@ describe('annotateInPage overlay', () => {
     api.install()
 
     expect(api.isInstalled()).toBe(true)
-    expect(document.querySelector('hermes-annotate')).toBeTruthy()
+    expect(document.querySelector('rabbit-annotate')).toBeTruthy()
 
     api.teardown()
 
     expect(api.isInstalled()).toBe(false)
-    expect(document.querySelector('hermes-annotate')).toBeNull()
+    expect(document.querySelector('rabbit-annotate')).toBeNull()
   })
 
   it('numbers the markers for stacked pins', () => {
@@ -57,7 +57,7 @@ describe('annotateInPage overlay', () => {
     ])
 
     const pin = () =>
-      document.querySelector('hermes-annotate')!.shadowRoot!.querySelector('[data-annotate-pin="1"]') as HTMLElement
+      document.querySelector('rabbit-annotate')!.shadowRoot!.querySelector('[data-annotate-pin="1"]') as HTMLElement
 
     expect(pin().style.top).toBe('40px')
     top = 200
@@ -87,7 +87,7 @@ describe('annotateInPage overlay', () => {
 
     const api = annotateInPage(document)
     api.install()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 48 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 49 }))
 
@@ -96,7 +96,7 @@ describe('annotateInPage overlay', () => {
     ])
 
     const pin = () =>
-      document.querySelector('hermes-annotate')!.shadowRoot!.querySelector('[data-annotate-pin="1"]') as HTMLElement
+      document.querySelector('rabbit-annotate')!.shadowRoot!.querySelector('[data-annotate-pin="1"]') as HTMLElement
 
     expect(pin().style.top).toBe('40px')
     top = 180
@@ -126,7 +126,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -167,7 +167,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -211,7 +211,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -252,7 +252,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -292,7 +292,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -330,7 +330,7 @@ describe('annotateInPage overlay', () => {
     const api = annotateInPage(document)
     api.install()
     const pending = api.wait()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
 
     host.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: 20, clientY: 20 }))
     host.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 21, clientY: 21 }))
@@ -351,7 +351,7 @@ describe('annotateInPage overlay', () => {
     api.showDraft({ height: 24, width: 80, x: 10, y: 10 }, 2)
 
     const ready = await api.beginCapture()
-    const shadow = document.querySelector('hermes-annotate')!.shadowRoot!
+    const shadow = document.querySelector('rabbit-annotate')!.shadowRoot!
     const draft = shadow.querySelector('[data-annotate-outline="draft"]') as HTMLElement
     const marker = draft.querySelector('[data-annotate-marker]')
 
@@ -370,7 +370,7 @@ describe('annotateInPage overlay', () => {
     ])
     api.showDraft({ height: 24, width: 80, x: 10, y: 70 }, 3)
 
-    const shadow = document.querySelector('hermes-annotate')!.shadowRoot!
+    const shadow = document.querySelector('rabbit-annotate')!.shadowRoot!
     const pins = () => shadow.querySelector('[data-annotate-pin="1"]')!.parentElement as HTMLElement
 
     expect(pins().style.display).not.toBe('none')
@@ -405,7 +405,7 @@ describe('annotateInPage overlay', () => {
 
     const api = annotateInPage(document)
     api.install()
-    const host = document.querySelector('hermes-annotate') as HTMLElement
+    const host = document.querySelector('rabbit-annotate') as HTMLElement
     const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 30 })
 
     host.dispatchEvent(wheel)

@@ -5,7 +5,7 @@ async function prepareWindowForInput(app, page) {
   // Use the same persistent setting as Appearance. A bare setZoomLevel is
   // overwritten by the app's focus/navigation handlers restoring saved zoom.
   const persistent = await page.evaluate(() => {
-    const zoom = globalThis.hermesDesktop?.zoom
+    const zoom = globalThis.rabbitDesktop?.zoom
     if (!zoom?.setPercent || !zoom?.get) return false
     zoom.setPercent(100)
     return true
@@ -18,8 +18,8 @@ async function prepareWindowForInput(app, page) {
       const state = await page.evaluate(() => {
         // Cold-start restoration can overwrite the first preference write.
         // Reapply through its owner until a subsequent read observes it.
-        globalThis.hermesDesktop.zoom.setPercent(100)
-        return globalThis.hermesDesktop.zoom.get()
+        globalThis.rabbitDesktop.zoom.setPercent(100)
+        return globalThis.rabbitDesktop.zoom.get()
       })
       // The renderer IPC and BrowserWindow can observe different moments of
       // startup restoration. Both must agree before the driver sends input.

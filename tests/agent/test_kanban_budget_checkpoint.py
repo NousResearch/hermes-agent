@@ -22,7 +22,7 @@ def test_checkpoint_requires_opt_in_or_dispatcher_completion_scope(
     from agent.turn_iteration_prep import prepare_iteration
 
     if scope != "ordinary":
-        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_checkpoint")
+        monkeypatch.setenv("RABBIT_KANBAN_TASK", "t_checkpoint")
     contexts = {"non-owner": non_dispatcher_owned_context, "child": delegated_child_context}
     with contexts.get(scope, nullcontext)():
         agent = _agent(tmp_path, monkeypatch, ratio)

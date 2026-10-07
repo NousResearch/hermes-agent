@@ -14,7 +14,7 @@ description: "用于运行 ML 工作负载的无服务器 GPU 云平台"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/modal` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/modal` 安装 |
 | 路径 | `optional-skills/mlops/modal` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "用于运行 ML 工作负载的无服务器 GPU 云平台"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Modal Serverless GPU
@@ -351,8 +351,8 @@ if __name__ == "__main__":
 
 ## 参考资料
 
-- **[高级用法](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/modal/references/advanced-usage.md)** - 多 GPU、分布式训练、成本优化
-- **[故障排查](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/modal/references/troubleshooting.md)** - 常见问题与解决方案
+- **[高级用法](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/modal/references/advanced-usage.md)** - 多 GPU、分布式训练、成本优化
+- **[故障排查](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/modal/references/troubleshooting.md)** - 常见问题与解决方案
 
 ## 资源
 

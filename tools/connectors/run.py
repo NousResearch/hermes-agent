@@ -57,10 +57,9 @@ def reissue(operation: ConnectionOperation, names: Sequence[str]) -> Optional[st
     if any(allowed(target.kind, target.state, TargetState.initiated) is None for target in targets):
         return NOT_ALLOWED
     if targets[0].kind == "connector":
-        from tools.connectors.managed import managed_client, mint
-
-        mint(managed_client(), operation, stale, reinitiate=True, actor=Actor.user)
-        return None
+        # Hosted connector accounts are not part of this build; a stale hosted target
+        # cannot be re-minted.
+        return REFUSED
     from tools.connectors import catalog
     from tools.connectors.mcp import retry
 

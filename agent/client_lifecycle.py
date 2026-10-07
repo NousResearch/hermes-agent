@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import Any, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
-from hermes_cli.timeouts import get_provider_request_timeout
+from rabbit_cli.timeouts import get_provider_request_timeout
 from utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
@@ -23,8 +23,8 @@ _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running 
 
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli.version_info import get_version_info
-    return {"User-Agent": f"HermesAgent/{get_version_info().base_version}"}
+    from rabbit_cli.version_info import get_version_info
+    return {"User-Agent": f"RabbitAgent/{get_version_info().base_version}"}
 
 
 def _qwen_portal_headers() -> dict:
@@ -43,13 +43,13 @@ _ROUTE_DEFAULT_HEADERS = (
     ("ai-gateway.vercel.sh", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
     ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
     ("api.routermint.com", lambda self, url: _routermint_headers()),
-    ("githubcopilot.com", lambda self, url: _lazy_attr("hermes_cli.models", "copilot_default_headers")()),
+    ("githubcopilot.com", lambda self, url: _lazy_attr("rabbit_cli.models", "copilot_default_headers")()),
     ("api.kimi.com", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
     ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
     ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
         self._client_kwargs.get("api_key", ""), base_url=url)),
     # Covers provider=xai and provider=xai-oauth (api.x.ai).
-    ("x.ai", lambda self, url: _lazy_attr("tools.xai_http", "hermes_xai_default_headers")()),
+    ("x.ai", lambda self, url: _lazy_attr("tools.xai_http", "rabbit_xai_default_headers")()),
 )
 
 
@@ -451,7 +451,7 @@ class ClientLifecycleMixin:
         request_kwargs["max_retries"] = 0
         is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
-            from hermes_cli.copilot_auth import copilot_request_headers
+            from rabbit_cli.copilot_auth import copilot_request_headers
             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
         cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
         if cached is not None:
@@ -573,7 +573,7 @@ class ClientLifecycleMixin:
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
         try:
-            from hermes_cli import auth as _auth
+            from rabbit_cli import auth as _auth
             resolve = (
                 _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
                 else _auth.resolve_xai_oauth_runtime_credentials
@@ -604,81 +604,6 @@ class ClientLifecycleMixin:
             return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
-        # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
-        if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
-            return False
-        try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
-            timeout = env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15)
-            # Pass the bearer that just 401'd so a refresh already done by a sibling process is
-            # adopted instead of rotating the grant again.
-            creds = resolve_nous_runtime_credentials(
-                timeout_seconds=timeout, force_refresh=force, stale_access_token=self.api_key or None,
-            )
-        except Exception as exc:
-            logger.debug("Nous credential refresh failed: %s", exc)
-            return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
-            return False
-        if (str(api_key).strip() == str(self.api_key or "").strip()
-                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
-            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
-        if require_account is not None:
-            try:
-                from hermes_cli.auth_constants import _decode_jwt_claims
-                new_account = _decode_jwt_claims(str(api_key)).get("sub")
-            except Exception:
-                new_account = None
-            if str(new_account or "") != require_account:
-                logger.info(
-                    "Nous pre-expiry adoption skipped: the store's key belongs to a different account "
-                    "than the one in hand; keeping the current credential."
-                )
-                return False
-        if self.api_mode == "anthropic_messages":
-            self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
-            self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
-            self._rebuild_anthropic_client()
-            return True
-        # Nous requests should not inherit OpenRouter-only attribution headers.
-        self._client_kwargs.pop("default_headers", None)
-        return self._adopt_openai_credentials(api_key, base_url, reason="nous_credential_refresh")
-
-    # Adopt a fresh key this many seconds before the one in hand expires. Wider than the store's
-    # own refresh skew (120 s) so the keepalive has normally already minted the replacement.
-    _NOUS_KEY_ADOPT_SKEW_S = 180
-
-    def _adopt_nous_key_before_expiry(self) -> bool:
-        """Swap in a fresh Nous agent key BEFORE the one in hand expires, so the request never 401s.
-
-        The agent key is a JWT; its ``exp`` is read locally (no network). Inside the skew the store
-        is re-read under the auth-store lock: the keepalive thread normally holds a fresh key already
-        (adopt, no POST), otherwise ONE refresh runs and every peer adopts its result. Before this,
-        every agent in a process learned about the hourly expiry from its own 401, all in the same
-        minute (620 in one 200-subagent run), and the pool benched the sole credential for all of
-        them. Returns True when a new key was adopted.
-
-        Identity guard: the replacement must belong to the SAME account (``sub`` claim) as the key
-        in hand. The store holds the logged-in singleton; an agent running on an explicitly supplied
-        or pool-selected key for a different account must never be silently moved onto it (that
-        changes who is billed). When either side lacks a ``sub`` nothing is adopted here; the
-        reactive 401 path is unchanged.
-        """
-        if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
-            return False
-        try:
-            from hermes_cli.auth_constants import _decode_jwt_claims
-            claims = _decode_jwt_claims(self.api_key)
-        except Exception:
-            return False
-        exp, account = claims.get("exp"), claims.get("sub")
-        if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
-            return False
-        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
-
-
     def _resolve_env_credentials(self) -> Optional[tuple]:
         """Current ``.env``-sourced ``(api_key, base_url, default_base)`` for this provider, or ``None``.
 
@@ -686,7 +611,7 @@ class ClientLifecycleMixin:
         """
         try:
             from agent.credential_pool import get_env_prefer_dotenv
-            from hermes_cli.auth import PROVIDER_REGISTRY
+            from rabbit_cli.auth import PROVIDER_REGISTRY
         except ImportError:
             return None
         pconfig = PROVIDER_REGISTRY.get(self.provider)
@@ -700,18 +625,18 @@ class ClientLifecycleMixin:
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
             if self.provider == "actual":
-                from hermes_cli.auth import normalize_actual_base_url
-                from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+                from rabbit_cli.auth import normalize_actual_base_url
+                from rabbit_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
                 configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
                 base_url = normalize_actual_base_url(configured_base or base_url)
             elif self.provider in ("kimi-coding", "zai"):
-                from hermes_cli import auth as _auth
+                from rabbit_cli import auth as _auth
                 resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
                 base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
             try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
+                from rabbit_cli.runtime_provider import _get_named_custom_provider
             except ImportError:
                 return None
             custom_provider = _get_named_custom_provider(getattr(self, "requested_provider", "") or "")
@@ -745,7 +670,7 @@ class ClientLifecycleMixin:
         return (base_url, api_key) != prev and current_base in {default_base, prev[0]} and not unchanged
 
     def _try_refresh_env_client_credentials(self) -> bool:
-        """Adopt ``~/.hermes/.env`` credential/base-url edits at the turn boundary (a Settings save updates ``.env``
+        """Adopt ``~/.rabbit/.env`` credential/base-url edits at the turn boundary (a Settings save updates ``.env``
         but a live worker keeps init-time values). Adoption rule: ``_should_adopt_env_credentials``.
 
         Covers api-key registry providers and named custom providers with a ``key_env`` (#67935) — the
@@ -761,7 +686,7 @@ class ClientLifecycleMixin:
         if not self._should_adopt_env_credentials(api_key, base_url, default_base):
             self._env_creds_seen = (base_url, api_key)
             return False
-        from hermes_cli.route_identity import normalize_route_base_url
+        from rabbit_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
@@ -819,7 +744,7 @@ class ClientLifecycleMixin:
         if not self._is_copilot_provider():
             return False
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
+            from rabbit_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
             new_token, token_source = resolve_copilot_token()
         except Exception as exc:
             logger.debug("Copilot credential refresh failed: %s", exc)
@@ -849,7 +774,7 @@ class ClientLifecycleMixin:
         if not self._is_copilot_provider():
             return False
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
+            from rabbit_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
             raw_token, token_source = resolve_copilot_token()
             if not isinstance(raw_token, str) or not raw_token.strip():
                 return False
@@ -933,7 +858,7 @@ class ClientLifecycleMixin:
         # Per-provider extra_headers last so they survive swaps/rebuilds. SECURITY: may carry credentials; never log.
         if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
             try:
-                from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+                from rabbit_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
@@ -954,23 +879,18 @@ class ClientLifecycleMixin:
         rotation; the caller treats a refused swap as "no entry")."""
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
-        from hermes_cli.providers import is_actual_route
+        from rabbit_cli.providers import is_actual_route
         actual_route = is_actual_route(getattr(self, "provider", ""), runtime_base)
         if actual_route:
-            from hermes_cli.auth import normalize_actual_base_url
+            from rabbit_cli.auth import normalize_actual_base_url
             runtime_base = normalize_actual_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
-        from hermes_cli.anon_auth import route_can_serve_model
-        if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
-            logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
-            return False
         if actual_route:
             self.api_mode = "chat_completions"
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
         self._credential_pool_entry_id = getattr(entry, "id", None)
-        from hermes_cli.route_identity import normalize_route_base_url
+        from rabbit_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
@@ -996,7 +916,7 @@ class ClientLifecycleMixin:
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:
-            from hermes_cli.config import (
+            from rabbit_cli.config import (
                 apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers, load_config_readonly,
             )
             apply_custom_provider_tls_to_client_kwargs(

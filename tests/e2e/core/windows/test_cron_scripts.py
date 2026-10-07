@@ -1,10 +1,10 @@
-"""Cron script jobs on native Windows (``hermes cron create --script`` + ``hermes cron run``).
+"""Cron script jobs on native Windows (``rabbit cron create --script`` + ``rabbit cron run``).
 
 A no-agent script job runs its script through an interpreter picked by extension and
-delivers stdout as the job result. ``hermes cron run <id>`` executes it synchronously
+delivers stdout as the job result. ``rabbit cron run <id>`` executes it synchronously
 through ``cron.scheduler.run_job`` (the ticker's code path) when no gateway owns the store.
 
-The ``.sh`` case launches Hermes with the PATH a NATIVE Windows process has (Start menu,
+The ``.sh`` case launches Rabbit with the PATH a NATIVE Windows process has (Start menu,
 Scheduled Task, Desktop): Git's ``cmd`` dir only, no ``Git\\bin`` / ``Git\\usr\\bin``, so
 the only ``bash`` a bare PATH lookup finds is the WSL stub in System32 (or none). Git for
 Windows is installed at its standard location the whole time, which is exactly the host
@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.core._pending_fixes import known_gate
-from tests.e2e.core.windows._helpers import KnownBugSymptom, WinHome, expect, hermes, make_home, nonce
+from tests.e2e.core.windows._helpers import KnownBugSymptom, WinHome, expect, rabbit, make_home, nonce
 
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
@@ -54,23 +54,23 @@ def _native_process_path() -> str:
 
 
 def _run_script_job(home: WinHome, script: str, env_extra: dict[str, str] | None = None) -> tuple[dict, str]:
-    created = hermes(home, "cron", "create", "1d", "--name", "win-script", "--script", script,
+    created = rabbit(home, "cron", "create", "1d", "--name", "win-script", "--script", script,
                      "--no-agent", "--deliver", "local", cwd=home.profile, env_extra=env_extra)
     match = _JOB_ID.search(created.stdout)
     assert created.returncode == 0 and match, created.tail()
     job_id = match.group(1)
-    ran = hermes(home, "cron", "run", job_id, cwd=home.profile, env_extra=env_extra)
+    ran = rabbit(home, "cron", "run", job_id, cwd=home.profile, env_extra=env_extra)
     assert ran.returncode == 0 and "Ran now:" in ran.stdout, f"job did not run synchronously:\n{ran.tail()}"
-    jobs = json.loads((home.hermes_home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
+    jobs = json.loads((home.rabbit_home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
     job = next(j for j in jobs if j["id"] == job_id)
-    outputs = sorted((home.hermes_home / "cron" / "output" / job_id).glob("*.md"))
+    outputs = sorted((home.rabbit_home / "cron" / "output" / job_id).glob("*.md"))
     return job, outputs[-1].read_text(encoding="utf-8") if outputs else ""
 
 
 def test_python_script_job_delivers_stdout(tmp_path: Path) -> None:
     marker = nonce("PYJOB")
     home = make_home(tmp_path, "http://127.0.0.1:9/v1")  # no-agent: the model is never called
-    scripts = home.hermes_home / "scripts"
+    scripts = home.rabbit_home / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "report.py").write_text(f"import sys\nprint('{marker}', sys.platform)\n", encoding="utf-8")
     job, output = _run_script_job(home, "report.py")
@@ -83,7 +83,7 @@ def test_sh_script_job_runs_under_git_bash(tmp_path: Path) -> None:
     assert git_bash.is_file(), f"precondition: Git for Windows installed at {git_bash}"
     marker = nonce("SHJOB")
     home = make_home(tmp_path, "http://127.0.0.1:9/v1")
-    scripts = home.hermes_home / "scripts"
+    scripts = home.rabbit_home / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "report.sh").write_bytes(f'#!/usr/bin/env bash\necho "{marker}" "$(uname -s)"\n'.encode())
     native_path = _native_process_path()

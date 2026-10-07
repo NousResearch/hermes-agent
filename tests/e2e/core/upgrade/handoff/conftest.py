@@ -12,8 +12,8 @@ import pytest
 
 @pytest.fixture
 def root(tmp_path: Path):
-    """A SHORT cell root. A user's ``~/.hermes`` is a short path; pytest's ``tmp_path`` nests deep enough
-    that the gateway's AF_UNIX sockets under ``$HERMES_HOME`` overflow ``sun_path`` (108 bytes) and
+    """A SHORT cell root. A user's ``~/.rabbit`` is a short path; pytest's ``tmp_path`` nests deep enough
+    that the gateway's AF_UNIX sockets under ``$RABBIT_HOME`` overflow ``sun_path`` (108 bytes) and
     silently degrade, which is a harness artifact, not the user's machine."""
     base = os.environ.get("TMPDIR") or tempfile.gettempdir()
     path = Path(tempfile.mkdtemp(prefix="ho", dir=base))

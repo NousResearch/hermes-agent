@@ -11,17 +11,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def test_session_search_honours_requested_profile_db(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    profile_home = hermes_home / "profiles" / "llm-wiki"
+    rabbit_home = tmp_path / ".rabbit"
+    profile_home = rabbit_home / "profiles" / "llm-wiki"
     profile_home.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
 
-    current_db = SessionDB(hermes_home / "state.db")
+    current_db = SessionDB(rabbit_home / "state.db")
     current_db.create_session("default-session", source="gateway")
     current_db.append_message("default-session", role="user", content="weekly report default")
     current_db._conn.commit()

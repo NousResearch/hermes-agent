@@ -1,12 +1,12 @@
 name: jackal-verified
-repo: https://github.com/AnubisQuantumCipher/hermes-jackal-verified
+repo: https://github.com/AnubisQuantumCipher/rabbit-jackal-verified
 sha: dab507a521406a69d308025bed380401eff967b9
 description: 'Typed adapter for the reproducible JACKAL v1.7.3 release: 41 catalog-derived verification
   tools (exact, numerical, Lean-checked bounded lanes, claim replay).'
 maintainer: AnubisQuantumCipher
 tier: community
 category: tools
-docs_url: https://github.com/AnubisQuantumCipher/hermes-jackal-verified
+docs_url: https://github.com/AnubisQuantumCipher/rabbit-jackal-verified
 platforms: []
 capabilities:
   provides_tools:

@@ -160,9 +160,9 @@ def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wir
     ever issued and the call only ended at the byte-read timeout (>= 20s here,
     120s by default). Now the kill unblocks the reader, the abort-induced read
     error is transient, and the retry lands."""
-    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "1")
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
-    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "20")
+    monkeypatch.setenv("RABBIT_STREAM_STALE_TIMEOUT", "1")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "1")
+    monkeypatch.setenv("RABBIT_STREAM_READ_TIMEOUT", "20")
     agent = run_agent.AIAgent(
         api_key="test-key", base_url=silent_wire.base_url, model="m", provider="custom",
         platform="cli",  # worker thread + monitor thread: the gateway shape from the report

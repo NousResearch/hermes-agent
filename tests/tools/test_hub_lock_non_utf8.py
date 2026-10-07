@@ -1,6 +1,6 @@
 """Regression test for #68053 — hub lock.json with Windows-1252 bytes.
 
-`_read_hub_installed_names()` reads `~/.hermes/skills/.hub/lock.json` with a
+`_read_hub_installed_names()` reads `~/.rabbit/skills/.hub/lock.json` with a
 strict UTF-8 decode. A hub skill description carrying a Windows-1252 typographic
 byte (em-dash `0x97`, smart quotes, bullets) makes `read_text(encoding="utf-8")`
 raise `UnicodeDecodeError` — a `ValueError` sibling that is NOT caught by the
@@ -19,11 +19,11 @@ import pytest
 
 @pytest.fixture
 def skills_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "skills").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     import tools.skill_usage as mod
     importlib.reload(mod)
     return home

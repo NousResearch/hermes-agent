@@ -22,8 +22,7 @@ function backend(initial: SharedMetricsConsent) {
     calls.push({ method, params })
 
     if (method === 'shared_metrics.set') {
-      const enabled = params?.enabled === true
-      stored = { enabled, send: enabled && params?.send === true, decided: true }
+      stored = { enabled: params?.enabled === true, decided: true }
     }
 
     return stored as T
@@ -47,7 +46,7 @@ afterEach(() => {
 
 describe('SharedMetricsConsentDialog', () => {
   it('never blocks launch: an undecided profile becomes a composer offer, not a modal', async () => {
-    const undecided = backend({ enabled: false, send: false, decided: false })
+    const undecided = backend({ enabled: false, decided: false })
 
     const { unmount } = render(
       <SharedMetricsConsentDialog enabled profile="default" requestGateway={undecided.requestGateway} />
@@ -57,15 +56,15 @@ describe('SharedMetricsConsentDialog', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     unmount()
 
-    // An answer given in `hermes setup` is the same config keys: no offer at all.
-    const answered = backend({ enabled: false, send: false, decided: true })
+    // An answer given in `rabbit setup` is the same config keys: no offer at all.
+    const answered = backend({ enabled: false, decided: true })
     render(<SharedMetricsConsentDialog enabled profile="work" requestGateway={answered.requestGateway} />)
     await waitFor(() => expect($sharedMetricsConsent.get()?.decided).toBe(true))
     expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false)
   })
 
-  it('details decide nothing when closed and record a chosen answer as both opt-ins', async () => {
-    const { calls, requestGateway } = backend({ enabled: false, send: false, decided: false })
+  it('details decide nothing when closed and record a chosen answer', async () => {
+    const { calls, requestGateway } = backend({ enabled: false, decided: false })
 
     render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
     await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
@@ -87,7 +86,6 @@ describe('SharedMetricsConsentDialog', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
       enabled: true,
-      send: false,
       first_run: true
     })
   })

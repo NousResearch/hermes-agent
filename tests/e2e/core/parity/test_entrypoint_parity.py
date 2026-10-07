@@ -1,6 +1,6 @@
 """Entrypoint parity matrix (issue classes C19 + C15).
 
-One fixture HERMES_HOME (shell hook + plugin hook on ``pre_llm_call``, AGENTS.md,
+One fixture RABBIT_HOME (shell hook + plugin hook on ``pre_llm_call``, AGENTS.md,
 a skill, a memory entry, a stdio MCP server that spawns a grandchild, the custom
 provider pointed at the recording fake, a disabled toolset) and ONE scripted turn
 per entrypoint: the fake model calls the MCP canary tool, then answers.
@@ -55,7 +55,7 @@ from tests.e2e.core.parity._helpers import (
 # ONLY for the orphan sweep: orphans reparented to init (the exact failure this suite
 # hunts) sit outside the pytest subtree, and kill_tagged() signals nothing but
 # PIDs carrying this run's unique PARITY_TREE_TAG. Children run with a tmp
-# HOME/HERMES_HOME (asserted in ParityHome.env), so no real state is reachable.
+# HOME/RABBIT_HOME (asserted in ParityHome.env), so no real state is reachable.
 pytestmark = [
     pytest.mark.skipif(not sys.platform.startswith("linux"), reason="process-tree checks use /proc"),
     pytest.mark.live_system_guard_bypass,

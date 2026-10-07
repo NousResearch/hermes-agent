@@ -23,7 +23,7 @@ def store_lock_path(base: Path) -> Path:
 @contextmanager
 def store_lock(base: Path):
     """Serialize whole operations, including GC and clear, across processes."""
-    from hermes_cli.runtime_state import _lock
+    from rabbit_cli.runtime_state import _lock
 
     base.parent.mkdir(parents=True, exist_ok=True)
     # Outside base so clear_all and legacy migration cannot replace its inode.

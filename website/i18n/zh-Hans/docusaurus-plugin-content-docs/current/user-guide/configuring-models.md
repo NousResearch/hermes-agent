@@ -4,15 +4,15 @@ sidebar_position: 3
 
 # 配置模型
 
-Hermes 使用两类模型槽位：
+Rabbit 使用两类模型槽位：
 
 - **主模型** — agent 的思考核心。每条用户消息、每个工具调用循环、每次流式响应都经由该模型处理。
 - **辅助模型** — agent 卸载给较小模型的边缘任务。包括上下文压缩、视觉（图像分析）、网页摘要、审批评分、MCP 工具路由、会话标题生成和技能搜索。每项任务有独立槽位，可单独覆盖。
 
 本页介绍如何通过仪表板配置上述两类模型。如需使用配置文件或 CLI，请跳至底部的[其他方法](#alternative-methods)。
 
-:::tip 最快路径：Nous Portal
-[Nous Portal](./features/tool-gateway.md) 在单一订阅下提供 300+ 个模型。全新安装后，运行 `hermes setup --portal` 即可登录并一键将 Nous 设为提供商。使用 `hermes portal info` 查看当前配置。
+:::tip 最快路径：一个密钥，众多模型
+[OpenRouter](https://openrouter.ai) 在单一 API 密钥下提供 300+ 个模型。全新安装后，运行 `rabbit model` 并选择 **OpenRouter** 即可一步完成提供商设置。
 :::
 
 ## Models 页面
@@ -35,11 +35,11 @@ Hermes 使用两类模型槽位：
 选择器分为两列：
 
 - **左列** — 已认证的提供商。仅显示已配置的提供商（已设置 API key、完成 OAuth 或定义了自定义端点）。若某提供商未出现，请前往 **Keys** 添加凭据。
-- **右列** — 所选提供商的精选模型列表。这些是 Hermes 针对该提供商推荐的 agentic 模型，而非原始的 `/models` 接口返回结果（OpenRouter 的原始列表包含 400+ 个模型，涵盖 TTS、图像生成器和重排序器）。
+- **右列** — 所选提供商的精选模型列表。这些是 Rabbit 针对该提供商推荐的 agentic 模型，而非原始的 `/models` 接口返回结果（OpenRouter 的原始列表包含 400+ 个模型，涵盖 TTS、图像生成器和重排序器）。
 
 在过滤框中输入提供商名称、slug 或模型 ID 进行筛选。
 
-选择模型后点击 **Switch**，Hermes 会将其写入 `~/.hermes/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
+选择模型后点击 **Switch**，Rabbit 会将其写入 `~/.rabbit/config.yaml` 的 `model` 部分。**此操作仅对新会话生效** — 已打开的聊天标签页将继续使用启动时的模型。如需在当前聊天中热切换，请在聊天内使用 `/model` 斜杠命令。
 
 ## 设置辅助模型
 
@@ -47,7 +47,7 @@ Hermes 使用两类模型槽位：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 
-每个辅助任务默认为 `auto`，即 Hermes 对该任务也使用主模型。当某个边缘任务需要更便宜或更快的模型时，可单独覆盖该槽位。
+每个辅助任务默认为 `auto`，即 Rabbit 对该任务也使用主模型。当某个边缘任务需要更便宜或更快的模型时，可单独覆盖该槽位。
 
 ### 常见覆盖模式
 
@@ -58,7 +58,7 @@ Hermes 使用两类模型槽位：
 | **Compression（压缩）** | 当你在用 Opus/M2.7 的推理 token 来摘要上下文时。快速聊天模型以 1/50 的成本即可完成此工作。 |
 | **Approval（审批）** | 用于 `approval_mode: smart` — 由快速/廉价模型（haiku、flash、gpt-5-mini）决定是否自动批准低风险命令。此处使用昂贵模型是浪费。 |
 | **Web Extract（网页提取）** | 当你大量使用 `web_extract` 时。逻辑同压缩 — 摘要任务不需要推理能力。 |
-| **Skills Hub（技能中心）** | `hermes skills search` 使用此槽位。通常保持 `auto` 即可。 |
+| **Skills Hub（技能中心）** | `rabbit skills search` 使用此槽位。通常保持 `auto` 即可。 |
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |
 
 ### 单任务覆盖
@@ -85,7 +85,7 @@ Hermes 使用两类模型槽位：
 
 ## 写入 `config.yaml` 的内容
 
-通过仪表板保存时，Hermes 写入 `~/.hermes/config.yaml`：
+通过仪表板保存时，Rabbit 写入 `~/.rabbit/config.yaml`：
 
 **主模型：**
 ```yaml
@@ -119,12 +119,12 @@ auxiliary:
     # ... other fields unchanged
 ```
 
-`provider: auto` 加 `model: ''` 表示 Hermes 对该任务使用主模型。
+`provider: auto` 加 `model: ''` 表示 Rabbit 对该任务使用主模型。
 
 ## 何时生效？
 
-- **CLI**（`hermes chat`）：下次执行 `hermes chat` 时生效。
-- **Gateway**（Telegram、Discord、Slack 等）：下一个*新*会话生效。现有会话保持原有模型。如需强制所有会话使用新配置，重启 gateway（`hermes gateway restart`）。
+- **CLI**（`rabbit chat`）：下次执行 `rabbit chat` 时生效。
+- **Gateway**（Telegram、Discord、Slack 等）：下一个*新*会话生效。现有会话保持原有模型。如需强制所有会话使用新配置，重启 gateway（`rabbit gateway restart`）。
 - **仪表板聊天标签页**（`/chat`）：下一个新 PTY 生效。当前打开的聊天保持原有模型 — 在聊天内使用 `/model` 进行热切换。
 
 更改不会使运行中会话的 prompt 缓存失效。这是有意为之：在会话内切换主模型需要重置缓存（系统 prompt 包含模型特定内容），该操作保留给聊天内的显式 `/model` 斜杠命令。
@@ -133,7 +133,7 @@ auxiliary:
 
 ### 选择器中显示"No authenticated providers"
 
-Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** — 应存在以下之一：API key、成功的 OAuth 或自定义端点 URL。若所需提供商不在列表中，运行 `hermes setup` 进行配置，或前往 **Keys** 添加环境变量。
+Rabbit 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** — 应存在以下之一：API key、成功的 OAuth 或自定义端点 URL。若所需提供商不在列表中，运行 `rabbit setup` 进行配置，或前往 **Keys** 添加环境变量。
 
 ### 主模型在运行中的聊天里未发生变化
 
@@ -147,7 +147,7 @@ Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** 
 2. **`provider` 是否设置为非 `auto` 的值？** 若字段显示 `auto`，该任务仍在使用主模型。点击 **Change** 选择实际的提供商。
 3. **提供商是否已认证？** 若将 `minimax` 分配给某任务但没有 MiniMax API key，该任务将回退到 openrouter 默认值，并在 `agent.log` 中记录警告。
 
-### 我选择了模型，但 Hermes 切换了提供商
+### 我选择了模型，但 Rabbit 切换了提供商
 
 在 OpenRouter（或任何聚合器）上，裸模型名称会优先在聚合器内解析。因此 OpenRouter 上的 `claude-sonnet-4` 会解析为 `anthropic/claude-sonnet-4.6`，保持在你的 OpenRouter 认证下。但若在原生 Anthropic 认证下输入 `claude-sonnet-4`，则会保持为 `claude-sonnet-4-6`。若出现意外的提供商切换，请确认当前提供商是否符合预期 — 选择器始终在对话框顶部显示当前主模型。
 
@@ -155,7 +155,7 @@ Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** 
 
 ### CLI 斜杠命令
 
-在任意 `hermes chat` 会话内：
+在任意 `rabbit chat` 会话内：
 
 ```
 /model gpt-5.4 --provider openrouter             # 仅当前会话
@@ -169,7 +169,7 @@ Hermes 仅列出具有有效凭据的提供商。检查侧边栏中的 **Keys** 
 为常用模型定义短名称，然后在 CLI 或任意消息平台中使用 `/model <alias>`：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 model_aliases:
   fav:
     model: claude-sonnet-4.6
@@ -182,27 +182,27 @@ model_aliases:
 或通过 shell 命令（简写形式，`provider/model`）：
 
 ```bash
-hermes config set model.aliases.fav anthropic/claude-opus-4.6
-hermes config set model.aliases.grok x-ai/grok-4
+rabbit config set model.aliases.fav anthropic/claude-opus-4.6
+rabbit config set model.aliases.grok x-ai/grok-4
 ```
 
 然后在聊天中使用 `/model fav` 或 `/model grok`。用户别名会覆盖内置短名称（`sonnet`、`kimi`、`opus` 等）。完整参考请见[自定义模型别名](../reference/slash-commands.md#custom-model-aliases)。
 
-### `hermes model` 子命令
+### `rabbit model` 子命令
 
 ```bash
-hermes model            # 交互式提供商 + 模型选择器（切换默认值的标准方式）
+rabbit model            # 交互式提供商 + 模型选择器（切换默认值的标准方式）
 ```
 
-`hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。保存新模型后会紧接一步推理强度选择（`minimal` … `ultra`、**Disable reasoning**，或 **Skip** 保留当前值），写入 `agent.reasoning_effort`；目录标记为无推理控制的模型会跳过该步。提供商列表中还有 **Reasoning effort for the current model...** 一行，可只更改推理强度。
+`rabbit model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.rabbit/config.yaml` 的 `model.provider` 和 `model.model` 字段。保存新模型后会紧接一步推理强度选择（`minimal` … `ultra`、**Disable reasoning**，或 **Skip** 保留当前值），写入 `agent.reasoning_effort`；目录标记为无推理控制的模型会跳过该步。提供商列表中还有 **Reasoning effort for the current model...** 一行，可只更改推理强度。
 
 **Configure auxiliary models...** 打开各辅助任务（视觉、压缩、审批、委派等）的侧模型选择器。每个任务在选完提供商 → 模型后同样会进入推理强度步骤，存为 `auxiliary.<task>.reasoning_effort`（或 `delegation.reasoning_effort`），并多一行 **Provider default** 把强度交给提供商决定。设计上没有 `reasoning_effort` 键的任务（MoA 槽位、记忆查询改写）会跳过该步。
 
-如需在不启动选择器的情况下列出提供商/模型，请使用仪表板或下方的 REST 端点。查看 CLI 当前实际使用的配置：`hermes config get model` 和 `hermes status`。
+如需在不启动选择器的情况下列出提供商/模型，请使用仪表板或下方的 REST 端点。查看 CLI 当前实际使用的配置：`rabbit config get model` 和 `rabbit status`。
 
 ### 直接编辑配置文件
 
-编辑 `~/.hermes/config.yaml` 后重启相关服务。完整 schema 请见[配置参考](./configuration.md)。
+编辑 `~/.rabbit/config.yaml` 后重启相关服务。完整 schema 请见[配置参考](./configuration.md)。
 
 ### REST API
 
@@ -210,30 +210,30 @@ hermes model            # 交互式提供商 + 模型选择器（切换默认值
 
 ```bash
 # 列出已认证的提供商及精选模型列表
-curl -H "X-Hermes-Session-Token: $TOKEN" http://localhost:PORT/api/model/options
+curl -H "X-Rabbit-Session-Token: $TOKEN" http://localhost:PORT/api/model/options
 
 # 读取当前主模型及辅助任务分配
-curl -H "X-Hermes-Session-Token: $TOKEN" http://localhost:PORT/api/model/auxiliary
+curl -H "X-Rabbit-Session-Token: $TOKEN" http://localhost:PORT/api/model/auxiliary
 
 # 设置主模型
-curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
+curl -X POST -H "Content-Type: application/json" -H "X-Rabbit-Session-Token: $TOKEN" \
   -d '{"scope":"main","provider":"openrouter","model":"anthropic/claude-opus-4.7"}' \
   http://localhost:PORT/api/model/set
 
 # 覆盖单个辅助任务
-curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
+curl -X POST -H "Content-Type: application/json" -H "X-Rabbit-Session-Token: $TOKEN" \
   -d '{"scope":"auxiliary","task":"vision","provider":"openrouter","model":"google/gemini-2.5-flash"}' \
   http://localhost:PORT/api/model/set
 
 # 将一个模型分配给所有辅助任务
-curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
+curl -X POST -H "Content-Type: application/json" -H "X-Rabbit-Session-Token: $TOKEN" \
   -d '{"scope":"auxiliary","task":"","provider":"openrouter","model":"google/gemini-2.5-flash"}' \
   http://localhost:PORT/api/model/set
 
 # 将所有辅助任务重置为 auto
-curl -X POST -H "Content-Type: application/json" -H "X-Hermes-Session-Token: $TOKEN" \
+curl -X POST -H "Content-Type: application/json" -H "X-Rabbit-Session-Token: $TOKEN" \
   -d '{"scope":"auxiliary","task":"__reset__","provider":"","model":""}' \
   http://localhost:PORT/api/model/set
 ```
 
-session token 在启动时注入仪表板 HTML，每次服务器重启后轮换。如需对运行中的仪表板编写脚本，可从浏览器开发者工具中获取（`window.__HERMES_SESSION_TOKEN__`）。
+session token 在启动时注入仪表板 HTML，每次服务器重启后轮换。如需对运行中的仪表板编写脚本，可从浏览器开发者工具中获取（`window.__RABBIT_SESSION_TOKEN__`）。

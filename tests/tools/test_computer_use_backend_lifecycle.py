@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 from tools.bot_desktop import browser, lease, runtime as desktop
 from tools.computer_use import tool as cu
 from tools.computer_use_tool import registry
@@ -18,11 +18,11 @@ from tools.computer_use_tool import registry
 
 @contextmanager
 def _profile(home):
-    token = set_hermes_home_override(str(home))
+    token = set_rabbit_home_override(str(home))
     try:
         yield
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def _spawn(fn, name):
@@ -51,7 +51,7 @@ def runtime(tmp_path, monkeypatch):
         (home / "bot-desktop").mkdir(parents=True)
         (home / "bot-desktop" / "env").write_text(f"DISPLAY={display}\n", encoding="utf-8")
         (home / "config.yaml").write_text("computer_use:\n  permission_mode: standard\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(homes[0]))
+    monkeypatch.setenv("RABBIT_HOME", str(homes[0]))
     # Fake the device boundary only. Profile env publication, spawn identity,
     # config, backend caches, dispatch and persisted human leases stay real.
     monkeypatch.setattr(desktop, "_launcher_pid", lambda: 1)

@@ -52,10 +52,6 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
     """
     patches = [
         patch(
-            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
-            return_value=None,
-        ),
-        patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(
                 _mock_client(base_url=resolved_base_url),
@@ -63,7 +59,7 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
             ),
         ),
         patch(
-            "hermes_cli.model_normalize.normalize_model_for_provider",
+            "rabbit_cli.model_normalize.normalize_model_for_provider",
             side_effect=lambda m, p: m,
         ),
         patch(
@@ -72,7 +68,7 @@ def _activate(agent, resolved_base_url, resolved_model, build_anthropic=None):
             or (lambda api_key, base_url, timeout=None, **kw: MagicMock()),
         ),
     ]
-    with patches[0], patches[1] as mock_rpc, patches[2], patches[3]:
+    with patches[0] as mock_rpc, patches[1], patches[2]:
         assert agent._try_activate_fallback() is True
     return mock_rpc
 
@@ -186,7 +182,7 @@ class TestNamedProviderDeclaredWire:
         fbs = [{"provider": "custom:ai-proxy", "model": "claude-4.7-opus"}]
         agent = _make_agent(fallback_model=fbs)
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "rabbit_cli.runtime_provider._get_named_custom_provider",
             return_value={"name": "ai-proxy", "base_url": "https://ai-proxy.example.com",
                           "api_key": "k", "api_mode": "anthropic_messages"},
         ):

@@ -216,7 +216,7 @@ async def test_websocket_loop_reconnects_when_discovery_send_sees_closed_socket(
         await asyncio.Event().wait()
 
     async def rediscover(websocket, subscriptions):
-        await websocket.send(json.dumps(["REQ", "hermes-buzz-dm-1", {}]))
+        await websocket.send(json.dumps(["REQ", "rabbit-buzz-dm-1", {}]))
 
     monkeypatch.setattr(adapter, "_rediscover_and_subscribe", rediscover)
 
@@ -312,7 +312,7 @@ async def test_websocket_loop_dispatches_frames_and_closes_cleanly(monkeypatch):
     frames = iter(
         [
             json.dumps(
-                ["EVENT", "hermes-buzz-0", {"id": "e1", "kind": 9, "created_at": 2, "content": "hi"}]
+                ["EVENT", "rabbit-buzz-0", {"id": "e1", "kind": 9, "created_at": 2, "content": "hi"}]
             ),
         ]
     )
@@ -390,7 +390,7 @@ async def test_websocket_loop_drops_restricted_channel_without_reconnect():
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
     adapter._ws_ready = asyncio.Event()
 
-    sub_id = "hermes-buzz-0"
+    sub_id = "rabbit-buzz-0"
     messages = [json.dumps(["CLOSED", sub_id, "restricted: not a channel member"])]
     idx = 0
 
@@ -464,7 +464,7 @@ async def test_websocket_loop_reconnects_on_non_restricted_closed():
     adapter = _make_adapter(extra={"channels": [CHANNEL]})
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
 
-    sub_id = "hermes-buzz-0"
+    sub_id = "rabbit-buzz-0"
     messages = [json.dumps(["CLOSED", sub_id, "error: server shutting down"])]
     idx = 0
 
@@ -574,7 +574,7 @@ async def test_new_subscription_without_high_water_mark_has_no_since_floor():
             self.sent.append(json.loads(raw))
 
     ws = _Ws()
-    await adapter._send_channel_subscription(ws, "hermes-buzz-dm-1", CHANNEL)
+    await adapter._send_channel_subscription(ws, "rabbit-buzz-dm-1", CHANNEL)
     assert len(ws.sent) == 1
     req_filter = ws.sent[0][2]
     assert "since" not in req_filter, (
@@ -599,7 +599,7 @@ async def test_seeded_subscription_resumes_from_high_water_mark():
             self.sent.append(json.loads(raw))
 
     ws = _Ws()
-    await adapter._send_channel_subscription(ws, "hermes-buzz-0", CHANNEL)
+    await adapter._send_channel_subscription(ws, "rabbit-buzz-0", CHANNEL)
     req_filter = ws.sent[0][2]
     assert req_filter["since"] == 1_699_999_999
     assert "limit" not in req_filter
@@ -627,7 +627,7 @@ async def test_closed_membership_phrases_prune_without_reconnect(detail):
     adapter = _make_adapter(extra={"channels": [CHANNEL]})
     adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
 
-    sub_id = "hermes-buzz-0"
+    sub_id = "rabbit-buzz-0"
     messages = [json.dumps(["CLOSED", sub_id, detail])]
     idx = 0
 
@@ -735,7 +735,7 @@ async def test_ws_discovery_loop_subscribes_newly_discovered_conversation(monkey
             self.sent.append(json.loads(raw))
 
     ws = _Ws()
-    subscriptions = {"hermes-buzz-0": CHANNEL}
+    subscriptions = {"rabbit-buzz-0": CHANNEL}
     task = asyncio.create_task(adapter._ws_discovery_loop(ws, subscriptions))
     try:
         deadline = time.monotonic() + 5.0

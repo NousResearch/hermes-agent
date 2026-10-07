@@ -15,7 +15,7 @@ Covers the three seams added for remote Desktop backends:
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from tools.connectors import mcp_oauth
 from tools.connectors.mcp_oauth import _validate_client_redirect_uri
 from tools.mcp_dashboard_oauth import DashboardOAuthFlow
@@ -71,7 +71,7 @@ def _fake_worker_publishes_url(monkeypatch, state="teststate123"):
     carrying *state* and then waits for the callback like the real worker's
     SDK does."""
 
-    def worker(hermes_home, server_name, cfg, reconnect_live, *, flow, on_done=None, **_card_options):
+    def worker(rabbit_home, server_name, cfg, reconnect_live, *, flow, on_done=None, **_card_options):
         import asyncio
 
         asyncio.run(
@@ -106,7 +106,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     )
 
     result = mcp_oauth_sessions.start_flow(
-        str(get_hermes_home()),
+        str(get_rabbit_home()),
         "clicky",
         {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
         client_redirect_uri="http://127.0.0.1:8412/callback",
@@ -128,7 +128,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
 
     # The connection-card path does not require a dashboard web server: it binds the same backend
     # receiver, registers the flow for callback relay, and carries the SSH paste hint in detail.
-    import hermes_cli.mcp_config as mcp_config
+    import rabbit_cli.mcp_config as mcp_config
 
     monkeypatch.setattr(
         mcp_config,
@@ -148,7 +148,7 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     # A pre-registered client owns its pinned listener inside the SDK; the receiver picker must
     # publish that URI without attempting a second bind.
     pinned = DashboardOAuthFlow(
-        "pinned", "asana", None, str(get_hermes_home()), ""
+        "pinned", "asana", None, str(get_rabbit_home()), ""
     )
     pinned_bound = []
     monkeypatch.setattr(
@@ -167,7 +167,7 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     _fake_worker_publishes_url(monkeypatch)
     with pytest.raises(ValueError):
         mcp_oauth_sessions.start_flow(
-            str(get_hermes_home()),
+            str(get_rabbit_home()),
             "clicky2",
             {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
             client_redirect_uri="https://evil.example.com/callback",
@@ -188,7 +188,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
         flow_id=session_id,
         server_name=server,
         profile=None,
-        hermes_home=str(get_hermes_home()),
+        rabbit_home=str(get_rabbit_home()),
         redirect_uri="http://127.0.0.1:9000/callback",
     )
     # Pin the expected state the way publish_authorization_url does.
@@ -202,7 +202,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
     rec = {
         "session_id": session_id,
         "server_name": server,
-        "hermes_home": str(get_hermes_home()),
+        "rabbit_home": str(get_rabbit_home()),
         "flow": flow,
         "httpd": None,
         "created_at": __import__("time").time(),

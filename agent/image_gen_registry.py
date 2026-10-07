@@ -4,7 +4,7 @@ Populated by plugins at import-time via ``PluginContext.register_image_gen_provi
 the ``image_generate`` tool dispatches to :func:`get_active_provider`. Selection is
 ``image_gen.provider`` in config.yaml; when unset: the single *available* provider,
 else ``fal`` if registered and available (legacy default), else ``None`` (the tool
-points the user at ``hermes tools``).
+points the user at ``rabbit tools``).
 """
 
 from __future__ import annotations

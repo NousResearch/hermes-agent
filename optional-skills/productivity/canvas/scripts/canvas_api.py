@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Canvas LMS API CLI for Hermes Agent.
+"""Canvas LMS API CLI for Rabbit Agent.
 
 A thin CLI wrapper around the Canvas REST API.
 Authenticates using a personal access token from environment variables.
@@ -28,12 +28,12 @@ def _check_config():
     if not CANVAS_BASE_URL:
         missing.append("CANVAS_BASE_URL")
     if missing:
-        hermes_env = os.path.join(
-            os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"
+        rabbit_env = os.path.join(
+            os.environ.get("RABBIT_HOME", os.path.expanduser("~/.rabbit")), ".env"
         )
         print(
             f"Missing required environment variables: {', '.join(missing)}\n"
-            f"Set them in {hermes_env} or export them in your shell.\n"
+            f"Set them in {rabbit_env} or export them in your shell.\n"
             "See the canvas skill SKILL.md for setup instructions.",
             file=sys.stderr,
         )
@@ -127,7 +127,7 @@ def list_assignments(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Canvas LMS API CLI for Hermes Agent"
+        description="Canvas LMS API CLI for Rabbit Agent"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

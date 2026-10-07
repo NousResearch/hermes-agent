@@ -20,7 +20,7 @@ interface RemoteOAuthOptions {
    * Registry-draft identity for a sign-in that runs BEFORE the draft is
    * saved. The main process derives the login window's cookie partition from
    * the settled connection id, gated on the draft's kind/authMode — only a
-   * cookie-auth remote draft gets its own jar; cloud and token drafts sign in
+   * cookie-auth remote draft gets its own jar; token drafts sign in
    * on the legacy shared jar the saved entry reads. Without the identity an
    * unsaved draft's session lands in the legacy shared jar the saved
    * connection never reads. Absent on the first-run/settings hosts, which
@@ -94,8 +94,8 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
       const identity = oauthLoginIdentity?.()
 
       const result = identity
-        ? await window.hermesDesktop.oauthLoginConnectionConfig(url, identity)
-        : await window.hermesDesktop.oauthLoginConnectionConfig(url)
+        ? await window.rabbitDesktop.oauthLoginConnectionConfig(url, identity)
+        : await window.rabbitDesktop.oauthLoginConnectionConfig(url)
 
       if (!current()) {
         return
@@ -142,7 +142,7 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
     setSigningIn(true)
 
     try {
-      await window.hermesDesktop.oauthLogoutConnectionConfig(url)
+      await window.rabbitDesktop.oauthLogoutConnectionConfig(url)
 
       if (current()) {
         setOAuthConnected(false)

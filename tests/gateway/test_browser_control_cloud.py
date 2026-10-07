@@ -8,9 +8,9 @@ from gateway.browser_control_broker import (
     ControllerRejected,
     get_browser_control_broker,
 )
-from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
-from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
+from rabbit_cli import web_server
+import rabbit_cli.web_server_chat as _web_server_chat
+from rabbit_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
 from tui_gateway import server
 from tui_gateway.ws import WSTransport
 from tui_gateway.methods_browser_control import _broker_event_writer, _principal_digest
@@ -56,7 +56,7 @@ def test_dashboard_ticket_identity_is_carried_forward_without_trusting_rpc_param
     ws = _fake_ticket_ws(ticket)
 
     assert _web_server_chat._ws_auth_ok(ws) is True
-    assert ws._hermes_auth_identity == {
+    assert ws._rabbit_auth_identity == {
         "user_id": "user-fixture",
         "provider": "provider-fixture",
     }
@@ -69,11 +69,11 @@ def test_dashboard_ticket_subprotocol_carries_the_same_server_identity(gated_das
     ws = _fake_ticket_subprotocol_ws(ticket)
 
     assert _web_server_chat._ws_auth_ok(ws) is True
-    assert ws._hermes_auth_identity == {
+    assert ws._rabbit_auth_identity == {
         "user_id": "subprotocol-user",
         "provider": "provider-fixture",
     }
-    assert ws._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
+    assert ws._rabbit_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
 
 
 def test_ws_transport_records_only_server_authenticated_identity():
@@ -102,11 +102,11 @@ def test_cloud_agent_context_binds_registration_principal_and_transport_family()
     tokens = []
     try:
         tokens = server._set_session_context("stored-context-session")
-        assert get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL") == _principal_digest(
+        assert get_session_env("RABBIT_BROWSER_CONTROL_PRINCIPAL") == _principal_digest(
             identity
         )
         assert (
-            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+            get_session_env("RABBIT_BROWSER_CONTROL_TRANSPORT_FAMILY")
             == "cloud-ticket-ws"
         )
     finally:

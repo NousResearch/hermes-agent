@@ -1,4 +1,4 @@
-"""Hermes gateway monitoring: service health + redacted diagnostics over OTLP.
+"""Rabbit gateway monitoring: service health + redacted diagnostics over OTLP.
 
 ``emitter`` is the in-process event bus: producers hand typed events to a
 fire-and-forget queue that never blocks or raises into gateway code, and OTLP

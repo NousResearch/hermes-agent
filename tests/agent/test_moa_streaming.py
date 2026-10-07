@@ -36,9 +36,9 @@ moa:
 
 
 def _facade(monkeypatch, tmp_path, on_call=None):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _write_cfg(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     calls = []
 
     def fake_call_llm(**kwargs):
@@ -96,9 +96,9 @@ def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch
     crashed on restore with MoAPresetNotFoundError because build_moa_facade()
     reused agent.model as the preset (#MoA restore path).
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _write_cfg(home)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     from agent.moa_loop import build_moa_facade
 

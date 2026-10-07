@@ -1,6 +1,6 @@
 """Channel directory -- cached map of reachable channels/contacts per platform.
 
-Built on gateway startup, refreshed every 5 min, saved to ``<HERMES_HOME>/channel_directory.json``.
+Built on gateway startup, refreshed every 5 min, saved to ``<RABBIT_HOME>/channel_directory.json``.
 send_message reads it for action="list" and to resolve friendly channel names to IDs.
 """
 
@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from hermes_cli.config import get_hermes_home
+from rabbit_cli.config import get_rabbit_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -38,11 +38,11 @@ _SLACK_RAW_ID_PREFIXES = ("C0", "D0", "G0")
 
 
 def _directory_path() -> Path:
-    return DIRECTORY_PATH or get_hermes_home() / "channel_directory.json"
+    return DIRECTORY_PATH or get_rabbit_home() / "channel_directory.json"
 
 
 def _aliases_path() -> Path:
-    return CHANNEL_ALIASES_PATH or get_hermes_home() / "channel_aliases.json"
+    return CHANNEL_ALIASES_PATH or get_rabbit_home() / "channel_aliases.json"
 
 
 def _read_json(path: Path) -> Any:
@@ -348,7 +348,7 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> List[D
 def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     def _origins() -> Iterable[Tuple[Dict[str, Any], Any]]:
-        from hermes_state_registry import acquire, release_or_close
+        from rabbit_state_registry import acquire, release_or_close
         db = acquire()
         try:
             lister = getattr(db, "list_gateway_sessions", None)
@@ -369,7 +369,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
 
 def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
     """Legacy fallback: pull channels/contacts from sessions.json origin data."""
-    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    sessions_path = get_rabbit_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
     def _origins() -> Iterable[Tuple[Dict[str, Any], Any]]:
@@ -437,7 +437,7 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 def format_directory_for_display(platforms: Optional[Dict[str, Any]] = None) -> str:
     """Format the channel directory as a human-readable list for the model.
 
-    ``platforms`` overrides the on-disk directory (``hermes send --list`` merges in
+    ``platforms`` overrides the on-disk directory (``rabbit send --list`` merges in
     configured-but-undiscovered platforms); an empty channel list renders a "(no channels
     discovered yet)" hint because the platform is still a valid send target.
     """

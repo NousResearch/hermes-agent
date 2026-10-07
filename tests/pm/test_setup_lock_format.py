@@ -32,7 +32,7 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     assert bash, "the shell bootstrap contract requires Bash"
     core = tmp_path / "checkout with spaces"
     (core / "pm").mkdir(parents=True)
-    shutil.copy2(REPO / "setup-hermes.sh", core / "setup-hermes.sh")
+    shutil.copy2(REPO / "setup-rabbit.sh", core / "setup-rabbit.sh")
     home = tmp_path / "home"
     home.mkdir()
     runtime = tmp_path / "runtime"
@@ -81,10 +81,10 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
         json.dumps({"origin": base_url, "prefix": "mirror/"}, indent=mirror_indent), encoding="utf-8",
     )
     env = {"PATH": os.environ["PATH"], "HOME": str(home),
-           "HERMES_HOME": str(home / ".hermes"), "HERMES_RUNTIME_DIR": str(runtime),
+           "RABBIT_HOME": str(home / ".rabbit"), "RABBIT_RUNTIME_DIR": str(runtime),
            "PYTHONNOUSERSITE": "1"}
     result = subprocess.run(
-        [bash, str(core / "setup-hermes.sh"), "--runtime-only"], cwd=tmp_path,
+        [bash, str(core / "setup-rabbit.sh"), "--runtime-only"], cwd=tmp_path,
         env=env, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -96,6 +96,6 @@ def test_setup_reads_pins_independent_of_indentation(tmp_path, served, indent, b
     ]
     assert not (home / ".local").exists()
     assert not (core / ".env").exists()
-    assert not (home / ".hermes" / "skills").exists()
+    assert not (home / ".rabbit" / "skills").exists()
     print(f"runtime-only bootstrap: indent={indent!r}, blank_lines={blank_lines}: exit {result.returncode}")
     print(result.stdout)

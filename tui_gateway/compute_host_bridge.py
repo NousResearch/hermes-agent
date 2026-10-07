@@ -21,7 +21,7 @@ _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS = 630.0
 
 
 def _turn_isolation_enabled(cfg: dict | None = None) -> bool:
-    if os.environ.get("HERMES_COMPUTE_HOST_CHILD") == "1":
+    if os.environ.get("RABBIT_COMPUTE_HOST_CHILD") == "1":
         return False
     return bool((cfg or _load_dashboard_process_isolation_config()).get("turn_isolation"))
 

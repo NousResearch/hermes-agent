@@ -33,7 +33,7 @@ describe('default profile preference', () => {
       return read.promise
     })
 
-    vi.stubGlobal('window', { hermesDesktop: { profile: { getDefault, onDefaultChanged } } })
+    vi.stubGlobal('window', { rabbitDesktop: { profile: { getDefault, onDefaultChanged } } })
     const { unmount } = renderHook(useDefaultProfilePreference)
 
     await act(async () => {
@@ -52,7 +52,7 @@ describe('default profile preference', () => {
     const read = deferred<typeof first>()
     const getDefault = vi.fn(() => read.promise)
     const setDefault = vi.fn(async () => second)
-    vi.stubGlobal('window', { hermesDesktop: { profile: { getDefault, setDefault } } })
+    vi.stubGlobal('window', { rabbitDesktop: { profile: { getDefault, setDefault } } })
 
     const refreshing = preference.refreshDefaultProfile()
     await preference.setDefaultProfile(second)

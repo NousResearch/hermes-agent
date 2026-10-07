@@ -14,7 +14,7 @@ Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/research/blogwatcher` |
+| Source | Optional — install with `rabbit skills install official/research/blogwatcher` |
 | Path | `optional-skills/research/blogwatcher` |
 | Version | `2.0.0` |
 | Author | JulienTant (fork of Hyaxia/blogwatcher) |
@@ -25,16 +25,16 @@ Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Blogwatcher
 
 Track blog and RSS/Atom feed updates with the `blogwatcher-cli` tool. Supports automatic feed discovery, HTML scraping fallback, OPML import, and read/unread article management.
 
-## Working with Hermes tools (read this first)
+## Working with Rabbit tools (read this first)
 
-`blogwatcher-cli` is the feed database; Hermes tools do the automation around it:
+`blogwatcher-cli` is the feed database; Rabbit tools do the automation around it:
 
 - **Recurring watch — use the cronjob tool's `monitor` field, not a bare schedule.** `monitor` runs a script each tick and only wakes the agent when output changes: set it to a script that runs `blogwatcher-cli scan >/dev/null 2>&1 && blogwatcher-cli articles` (deterministic output; new articles = changed output = agent wakes with the diff injected). Unchanged ticks cost zero LLM calls. Set `deliver` to route digests to a chat/channel; add `continuity: true` so consecutive digests can dedupe.
 - **Reading an article the user asks about**: `web_extract([url])` on the article URL from `blogwatcher-cli articles` — do not re-scrape by hand.

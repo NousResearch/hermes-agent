@@ -1,7 +1,7 @@
 // Importing the apps barrel registers the reference apps before launch.
 import '../../../sdk/apps/index.js'
 
-import { terminalBackgroundHex } from '@hermes/ink'
+import { terminalBackgroundHex } from '@rabbit/ink'
 
 import { t } from '../../../i18n/runtime.js'
 import { formatBytes, performHeapDump } from '../../../lib/memory.js'
@@ -31,7 +31,7 @@ export const debugCommands: SlashCommand[] = [
   ...widgetAppCommands,
 
   {
-    help: 'rescan $HERMES_HOME/tui-widgets and (re)register user widget apps',
+    help: 'rescan $RABBIT_HOME/tui-widgets and (re)register user widget apps',
     name: 'widgets-reload',
     run: (_arg, ctx) => {
       void loadUserWidgets().then(({ errors, loaded }) => {
@@ -48,7 +48,7 @@ export const debugCommands: SlashCommand[] = [
   },
 
   {
-    help: 'write a V8 heap snapshot + memory diagnostics (see HERMES_HEAPDUMP_DIR)',
+    help: 'write a V8 heap snapshot + memory diagnostics (see RABBIT_HEAPDUMP_DIR)',
     name: 'heapdump',
     run: (_arg, ctx) => {
       const { heapUsed, rss } = process.memoryUsage()
@@ -87,8 +87,8 @@ export const debugCommands: SlashCommand[] = [
               t('slashCmd.debug.themeInfo.osc11Background'),
               terminalBackgroundHex() ?? t('slashCmd.debug.themeInfo.noReply')
             ],
-            ['HERMES_TUI_BACKGROUND', process.env.HERMES_TUI_BACKGROUND ?? unset],
-            ['HERMES_TUI_THEME', process.env.HERMES_TUI_THEME ?? unset],
+            ['RABBIT_TUI_BACKGROUND', process.env.RABBIT_TUI_BACKGROUND ?? unset],
+            ['RABBIT_TUI_THEME', process.env.RABBIT_TUI_THEME ?? unset],
             ['COLORFGBG', process.env.COLORFGBG ?? unset],
             ['TERM_PROGRAM', process.env.TERM_PROGRAM ?? unset],
             [

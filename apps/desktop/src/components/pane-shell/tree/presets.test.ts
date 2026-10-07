@@ -12,7 +12,7 @@ import { $dismissedPanes, $hiddenTreePanes, $layoutTree } from './store'
 // and the UI kept RPCing the dead id. These are the save / apply / load-heal
 // paths for that defect.
 
-const USER_KEY = 'hermes.desktop.layoutPresets.v2'
+const USER_KEY = 'rabbit.desktop.layoutPresets.v2'
 
 const LIVE_TILE = 'session-tile:20260823_233759_0fc103'
 const FOREIGN_TILE = 'session-tile:20260823_193634_728a24'

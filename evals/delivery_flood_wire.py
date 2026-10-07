@@ -82,7 +82,7 @@ async def setup(url):
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram import Bot
     runner = object.__new__(GatewayRunner)
-    runner.session_store = SessionStore(Path(os.environ['HERMES_HOME']) / 'sessions', GatewayConfig())
+    runner.session_store = SessionStore(Path(os.environ['RABBIT_HOME']) / 'sessions', GatewayConfig())
     runner._profile_adapters = {}
     runner._running = True
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token='123456:fixture', extra={}))
@@ -108,7 +108,7 @@ async def produce(runner, adapter, chat):
 
 
 def rows():
-    with sqlite3.connect(Path(os.environ['HERMES_HOME']) / 'state.db') as conn:
+    with sqlite3.connect(Path(os.environ['RABBIT_HOME']) / 'state.db') as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute('SELECT * FROM delivery_obligations ORDER BY chat_id')]
 
@@ -169,7 +169,7 @@ async def scenario(wire, mode):
 async def run_mode(output, mode):
     home = output / mode
     home.mkdir(parents=True, exist_ok=True)
-    os.environ['HERMES_HOME'] = str(home)
+    os.environ['RABBIT_HOME'] = str(home)
     (home / 'config.yaml').write_text('gateway:\n  delivery_ledger: true\n')
     wire = Wire()
     try:

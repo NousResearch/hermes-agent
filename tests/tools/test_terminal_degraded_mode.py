@@ -21,10 +21,10 @@ from tools.environments.base import EnvironmentConnectionError
 
 @pytest.fixture
 def isolated_env(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME + a clean environment cache for terminal_tool."""
+    """Isolated RABBIT_HOME + a clean environment cache for terminal_tool."""
     import tools.terminal_tool as tt
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     # The one-shot config bridge would overwrite our TERMINAL_* test vars
     # from the developer's real config.yaml; mark it as already attempted.
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)

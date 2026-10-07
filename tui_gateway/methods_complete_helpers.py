@@ -27,7 +27,7 @@ def _git_repo_files(root: str):
 
     :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): runs on a keystroke in the session cwd,
     and ``ls-files`` reads the index, which executes a repo-configured ``core.fsmonitor``."""
-    from hermes_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
+    from rabbit_cli._subprocess_compat import noninteractive_git_env, windows_hide_flags
     run_kw = dict(capture_output=True, timeout=2.0, check=False, stdin=subprocess.DEVNULL,
                   creationflags=windows_hide_flags(), env=noninteractive_git_env())
     try:
@@ -172,12 +172,12 @@ def _details_completions(text: str) -> list[dict] | None:
 
 def _model_picker_context(agent):
     """Layer live session state onto config without losing custom identity."""
-    from hermes_cli.inventory import load_picker_context
+    from rabbit_cli.inventory import load_picker_context
     ctx = load_picker_context()
     provider, base_url, model = (getattr(agent, k, "") if agent else "" for k in ("provider", "base_url", "model"))
     if str(provider or "").strip().lower() == "custom":
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
+            from rabbit_cli.runtime_provider import canonical_custom_identity
             provider = canonical_custom_identity(
                 base_url=base_url or None, config_provider=ctx.current_provider, model=model or None) or provider
         except Exception:

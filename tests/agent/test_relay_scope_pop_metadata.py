@@ -19,13 +19,13 @@ def test_pop_relay_scope_omits_unsupported_metadata_kwarg():
         calls.append((handle, {"output": output}))
 
     relay = SimpleNamespace(scope=SimpleNamespace(pop=pop_without_metadata))
-    handle = ("scope", "hermes.turn", 1)
+    handle = ("scope", "rabbit.turn", 1)
 
     relay_runtime.pop_relay_scope(
         relay,
         handle,
         output={"outcome": "success"},
-        metadata={"hermes.relay.schema_version": "hermes.relay.runtime.v1"},
+        metadata={"rabbit.relay.schema_version": "rabbit.relay.runtime.v1"},
     )
 
     assert calls == [(handle, {"output": {"outcome": "success"}})]
@@ -47,8 +47,8 @@ def test_pop_relay_scope_forwards_metadata_when_supported():
         )
 
     relay = SimpleNamespace(scope=SimpleNamespace(pop=pop_with_metadata))
-    handle = ("scope", "hermes.turn", 2)
-    metadata = {"hermes.relay.runtime_instance": "abc"}
+    handle = ("scope", "rabbit.turn", 2)
+    metadata = {"rabbit.relay.runtime_instance": "abc"}
 
     relay_runtime.pop_relay_scope(
         relay,
@@ -73,7 +73,7 @@ def test_end_turn_finalization_survives_pop_without_metadata(monkeypatch, caplog
     """Mirror #78993: nemo-relay 0.3.x rejects metadata= on scope.pop."""
     pytest.importorskip("nemo_relay")
 
-    monkeypatch.setenv("HERMES_HOME", tempfile.mkdtemp())
+    monkeypatch.setenv("RABBIT_HOME", tempfile.mkdtemp())
     relay_runtime._reset_for_tests()
     lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
         profile_key=relay_runtime.current_profile_key(),
@@ -102,7 +102,7 @@ def test_end_turn_finalization_survives_pop_without_metadata(monkeypatch, caplog
         lease.host.relay.ScopeType.Custom,
         handle=turn.handle,
         input={},
-        metadata={"hermes.test": True},
+        metadata={"rabbit.test": True},
     )
     turn.logical_llm_calls["api-1"] = logical
 

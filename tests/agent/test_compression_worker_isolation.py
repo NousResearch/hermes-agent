@@ -11,7 +11,7 @@ summary is STILL blocked → release old worker → prove it cannot clear
 cooldown / release the new holder's lease / publish state.
 
 F5: after a successful out-of-place rotation, the CALLER's session
-ContextVar resolves to the child id (get_session_env / HERMES_SESSION_ID).
+ContextVar resolves to the child id (get_session_env / RABBIT_SESSION_ID).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str, **compressor_kwargs):
@@ -333,7 +333,7 @@ def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
 def test_f5_session_contextvar_rebound_after_rotation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Post-compression tool reads of HERMES_SESSION_ID see the CHILD id."""
+    """Post-compression tool reads of RABBIT_SESSION_ID see the CHILD id."""
     from gateway.session_context import (
         clear_session_vars,
         get_session_env,
@@ -357,14 +357,14 @@ def test_f5_session_contextvar_rebound_after_rotation(
     # Simulate the gateway's bound session context for the caller.
     tokens = set_session_vars(session_id=parent_sid, platform="telegram")
     try:
-        assert get_session_env("HERMES_SESSION_ID") == parent_sid
+        assert get_session_env("RABBIT_SESSION_ID") == parent_sid
 
         messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
         agent._compress_context(messages, "sys", approx_tokens=120_000)
 
         assert agent.session_id != parent_sid  # rotation happened
         # ── The F5 contract: caller-context reads resolve to the child ──
-        assert get_session_env("HERMES_SESSION_ID") == agent.session_id, (
+        assert get_session_env("RABBIT_SESSION_ID") == agent.session_id, (
             "caller's session ContextVar still returns the parent id after "
             "an out-of-place compression rotation"
         )

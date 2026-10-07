@@ -55,7 +55,7 @@ describe('createPluginContext.os', () => {
   it('resolves false (never throws) when the desktop bridge is missing', async () => {
     const ctx = createPluginContext('demo')
 
-    // jsdom has no window.hermesDesktop — the exact older-shell/browser case.
+    // jsdom has no window.rabbitDesktop — the exact older-shell/browser case.
     await expect(ctx.os.openExternal('https://example.com')).resolves.toBe(false)
     await expect(ctx.os.revealPath('/tmp')).resolves.toBe(false)
     await expect(ctx.os.writeClipboard('hi')).resolves.toBe(false)
@@ -70,7 +70,7 @@ describe('createPluginContext.os', () => {
       selectSavePath: vi.fn().mockResolvedValue('/tmp/out.tar.gz')
     }
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = bridge
 
     try {
       const ctx = createPluginContext('demo')
@@ -87,19 +87,19 @@ describe('createPluginContext.os', () => {
       await expect(ctx.os.pickSavePath()).resolves.toBeNull()
       await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
     } finally {
-      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     }
   })
 
   it('file pickers degrade to null on an older shell that lacks them', async () => {
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = {}
 
     try {
       const ctx = createPluginContext('demo')
       await expect(ctx.os.pickSavePath()).resolves.toBeNull()
       await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
     } finally {
-      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     }
   })
 
@@ -110,7 +110,7 @@ describe('createPluginContext.os', () => {
       writeClipboard: vi.fn().mockRejectedValue(new Error('nope'))
     }
 
-    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+    ;(window as unknown as { rabbitDesktop: unknown }).rabbitDesktop = bridge
 
     try {
       const ctx = createPluginContext('demo')
@@ -119,7 +119,7 @@ describe('createPluginContext.os', () => {
       await expect(ctx.os.revealPath('/tmp')).resolves.toBe(true)
       await expect(ctx.os.writeClipboard('hi')).resolves.toBe(false)
     } finally {
-      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+      delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
     }
   })
 })

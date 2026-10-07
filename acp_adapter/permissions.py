@@ -1,4 +1,4 @@
-"""ACP permission bridging for Hermes dangerous-command approvals."""
+"""ACP permission bridging for Rabbit dangerous-command approvals."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from acp.schema import AllowedOutcome, PermissionOption
 
 logger = logging.getLogger(__name__)
 
-# ACP permission option id -> Hermes approval result. Ids are stable across the
+# ACP permission option id -> Rabbit approval result. Ids are stable across the
 # ``allow_permanent=True`` and ``False`` paths even though the option list differs.
-_OPTION_ID_TO_HERMES = {
+_OPTION_ID_TO_RABBIT = {
     "allow_once": "once", "allow_session": "session", "allow_always": "always", "deny": "deny", "deny_always": "deny"
 }
 
@@ -33,15 +33,15 @@ def _permission_option_supports_kind(kind: str) -> bool:
 def _build_permission_options(
     *, allow_permanent: bool, allow_session: bool = True, smart_denied: bool = False,
 ) -> list[PermissionOption]:
-    """Return ACP options that match Hermes approval semantics."""
+    """Return ACP options that match Rabbit approval semantics."""
     # A gate that re-asks every time (allow_session=False, e.g. protected
     # agent-instruction writes) collapses to the same two options as a Smart
-    # DENY override — offering a scope Hermes discards would re-prompt every write.
+    # DENY override — offering a scope Rabbit discards would re-prompt every write.
     # See #81887.
     once_only = smart_denied or not allow_session
     options = [PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once")]
     if not once_only:
-        # ACP has no session-scoped kind: closest persistent hint, Hermes semantics in the id.
+        # ACP has no session-scoped kind: closest persistent hint, Rabbit semantics in the id.
         options.append(PermissionOption(option_id="allow_session", kind="allow_always", name="Allow for session"))
         if allow_permanent:
             options.append(PermissionOption(option_id="allow_always", kind="allow_always", name="Allow always"))
@@ -64,14 +64,14 @@ def _build_permission_tool_call(command: str, description: str):
     )
 
 
-def _map_outcome_to_hermes(outcome: object, *, allowed_option_ids: set[str]) -> str:
-    """Map an ACP permission outcome into Hermes approval strings."""
+def _map_outcome_to_rabbit(outcome: object, *, allowed_option_ids: set[str]) -> str:
+    """Map an ACP permission outcome into Rabbit approval strings."""
     if not isinstance(outcome, AllowedOutcome):
         return "deny"
     if outcome.option_id not in allowed_option_ids:
         logger.warning("Permission request returned unknown option_id: %s", outcome.option_id)
         return "deny"
-    return _OPTION_ID_TO_HERMES.get(outcome.option_id, "deny")
+    return _OPTION_ID_TO_RABBIT.get(outcome.option_id, "deny")
 
 
 def await_permission(
@@ -117,7 +117,7 @@ def await_permission(
 def resolve_permission_timeout(timeout: float | None) -> float:
     """``None`` → the user's ``approvals.timeout`` (same knob as CLI/gateway prompts, default
     300 s). The ACP bridges used to hardcode 60 s, so a host whose approval card was still
-    waiting saw Hermes self-deny under it (#73403)."""
+    waiting saw Rabbit self-deny under it (#73403)."""
     if timeout is not None:
         return float(timeout)
     from tools.approval_context import _get_approval_timeout
@@ -128,7 +128,7 @@ def resolve_permission_timeout(timeout: float | None) -> float:
 def make_approval_callback(request_permission_fn: Callable, loop: asyncio.AbstractEventLoop,
                            session_id: str, timeout: float | None = None,
                            send_update: Callable[[object], None] | None = None) -> Callable[..., str]:
-    """Return a Hermes approval callback (``command, description, **kw`` as used by
+    """Return a Rabbit approval callback (``command, description, **kw`` as used by
     ``tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
     connection's ``request_permission`` coroutine on ``loop``; auto-denies after ``timeout`` s
     (``None`` → ``approvals.timeout``, read per request)."""
@@ -148,6 +148,6 @@ def make_approval_callback(request_permission_fn: Callable, loop: asyncio.Abstra
             return "timeout"
         if response is None:
             return "deny"
-        return _map_outcome_to_hermes(response.outcome, allowed_option_ids={option.option_id for option in options})
+        return _map_outcome_to_rabbit(response.outcome, allowed_option_ids={option.option_id for option in options})
 
     return _callback

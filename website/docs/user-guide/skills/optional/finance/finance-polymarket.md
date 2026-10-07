@@ -14,17 +14,16 @@ Query Polymarket: markets, prices, orderbooks, history.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/finance/polymarket` |
+| Source | Optional — install with `rabbit skills install official/finance/polymarket` |
 | Path | `optional-skills/finance/polymarket` |
 | Version | `1.0.0` |
-| Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Polymarket — Prediction Market Data

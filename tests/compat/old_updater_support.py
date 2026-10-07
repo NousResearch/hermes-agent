@@ -52,7 +52,7 @@ class FreshChild:
     def run(self, command, *, cwd, env):
         """Intercept ONLY the fresh-child seam, leaving the real JSON bridge intact."""
         assert command[:7] == [
-            sys.executable, "-I", "-S", "-B", "-X", "utf8", str(ROOT / "hermes_cli/_update_takeover.py"),
+            sys.executable, "-I", "-S", "-B", "-X", "utf8", str(ROOT / "rabbit_cli/_update_takeover.py"),
         ], f"old installer/fallback ran instead of takeover: {command!r}"
         assert len(command) == 9
         assert Path(command[0]).is_absolute()
@@ -63,7 +63,7 @@ class FreshChild:
         assert context.parent == result.parent and context != result
         request = json.loads(context.read_text(encoding="utf-8"))
         assert request["root"] == str(ROOT)
-        assert request["home"] == os.environ["HERMES_HOME"]
+        assert request["home"] == os.environ["RABBIT_HOME"]
         assert request["argv"] == sys.argv
         self.requests.append(request)
         self.paths.append((context, result))
@@ -76,14 +76,14 @@ class FreshChild:
         before_calls = len(self.requests)
         before_env = dict(os.environ)
         before_modules = dict(sys.modules)
-        home = Path(os.environ["HERMES_HOME"])
+        home = Path(os.environ["RABBIT_HOME"])
         before_files = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
         real_import = builtins.__import__
         real_import_module = importlib.import_module
 
         def check_import(name):
             if name == "pm" or name.startswith("pm.") or name in {
-                "hermes_cli._update_takeover", "hermes_cli.update_finish",
+                "rabbit_cli._update_takeover", "rabbit_cli.update_finish",
             }:
                 pytest.fail(f"fresh updater imported in the old parent: {name}")
 
@@ -113,7 +113,7 @@ class FreshChild:
 
 @pytest.fixture
 def fresh_child(monkeypatch, no_external_work):
-    from hermes_cli import _old_updater
+    from rabbit_cli import _old_updater
 
     # Production caches across finally/atexit reentry. Test probes model separate
     # historical processes, so they must not inherit the previous probe's status.

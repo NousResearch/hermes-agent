@@ -1,16 +1,16 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@rabbit/ink'
 import React, { useLayoutEffect, useRef } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
-import SourceBox from '../../packages/hermes-ink/src/ink/components/Box.js'
-import SourceScrollBox from '../../packages/hermes-ink/src/ink/components/ScrollBox.js'
-import SourceText from '../../packages/hermes-ink/src/ink/components/Text.js'
-import type { DOMElement } from '../../packages/hermes-ink/src/ink/dom.js'
-import Output from '../../packages/hermes-ink/src/ink/output.js'
-import { scrollFastPathStats as sourceScrollFastPathStats } from '../../packages/hermes-ink/src/ink/render-node-to-output.js'
-import { renderSync as renderSourceSync } from '../../packages/hermes-ink/src/ink/root.js'
+import SourceBox from '../../packages/rabbit-ink/src/ink/components/Box.js'
+import SourceScrollBox from '../../packages/rabbit-ink/src/ink/components/ScrollBox.js'
+import SourceText from '../../packages/rabbit-ink/src/ink/components/Text.js'
+import type { DOMElement } from '../../packages/rabbit-ink/src/ink/dom.js'
+import Output from '../../packages/rabbit-ink/src/ink/output.js'
+import { scrollFastPathStats as sourceScrollFastPathStats } from '../../packages/rabbit-ink/src/ink/render-node-to-output.js'
+import { renderSync as renderSourceSync } from '../../packages/rabbit-ink/src/ink/root.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 
 interface Item {

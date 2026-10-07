@@ -22,7 +22,7 @@ def start(request):
 
 
 def test_one_shot_delay_preserves_elapsed_duration(monkeypatch, start):
-    monkeypatch.setattr(jobs, "_hermes_now", lambda: start)
+    monkeypatch.setattr(jobs, "_rabbit_now", lambda: start)
 
     schedule = jobs.parse_schedule("in 2h")
     run_at = datetime.fromisoformat(schedule["run_at"])
@@ -34,7 +34,7 @@ def test_one_shot_delay_preserves_elapsed_duration(monkeypatch, start):
 @pytest.mark.parametrize("resume", [False, True])
 def test_interval_preserves_elapsed_duration(monkeypatch, start, resume):
     now = start + timedelta(days=2) if resume else start
-    monkeypatch.setattr(jobs, "_hermes_now", lambda: now)
+    monkeypatch.setattr(jobs, "_rabbit_now", lambda: now)
 
     schedule = jobs.parse_schedule("every 2h")
     run_at = datetime.fromisoformat(jobs.compute_next_run(

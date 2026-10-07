@@ -4,8 +4,8 @@ import json
 
 
 def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_MAX_TOKENS", "13")
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_MAX_TOKENS", "13")
     config = {
         "model": {"default": "fixture", "provider": "local-fixture", "max_tokens": 17},
         "providers": {"local-fixture": {"api": "http://127.0.0.1:1/v1", "api_key": "fixture", "max_output_tokens": 19}},
@@ -13,7 +13,7 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(json.dumps(config))
     from gateway.run import _resolve_runtime_agent_kwargs
     from gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
-    from hermes_cli.moa_config import _normalize_preset
+    from rabbit_cli.moa_config import _normalize_preset
     from agent.models_dev import _override_to_catalog_shape
 
     runtime = _resolve_runtime_agent_kwargs()

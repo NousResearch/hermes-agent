@@ -15,7 +15,7 @@ from .method_ctx import bind_module
 @contextlib.contextmanager
 def _session_turn_admission(session: dict):
     """Hold process admission until the history-locked running claim is visible to idle probes."""
-    from hermes_cli.backend_retirement import retirement
+    from rabbit_cli.backend_retirement import retirement
 
     with retirement.work() as admitted, session["history_lock"]:
         yield admitted
@@ -24,7 +24,7 @@ def _session_turn_admission(session: dict):
 def _start_session_work(target, *, name: str, session: dict | None = None):
     """Reserve before spawning; release only after the worker (including cleanup) has unwound."""
     from agent.memory_provider import spawn_context_thread
-    from hermes_cli.backend_retirement import retirement
+    from rabbit_cli.backend_retirement import retirement
 
     if not retirement.acquire():
         return None
@@ -49,14 +49,14 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
     """Fire session lifecycle hooks with CLI parity."""
     with contextlib.suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session, invoke_hook
+        from rabbit_cli.lifecycle import finalize_session, invoke_hook
         if event_type == "on_session_finalize":
             finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform))
         else:
             invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
 
 
-_SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
+_SESSION_OWNERSHIP_UNAVAILABLE = "Rabbit could not safely reserve this session. Try again."
 _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
 
 
@@ -70,7 +70,7 @@ def _claim_active_session_slot(
     session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
 ) -> tuple[Any, str | None]:
     try:
-        from hermes_cli.active_sessions import try_acquire_active_session
+        from rabbit_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
             metadata=_lease_metadata(live_session_id),
@@ -112,7 +112,7 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
     key = str(session.get("session_key") or "")
     if not key or str(vouch.get("session_id") or "") != key:
         return
-    from hermes_cli.active_sessions import ActiveSessionLease
+    from rabbit_cli.active_sessions import ActiveSessionLease
     session["active_session_lease"] = ActiveSessionLease(
         lease_id=f"borrowed:{vouch.get('lease_id') or sid}", session_id=key,
         surface=str(frame.get("source") or "desktop"), enabled=False)
@@ -131,7 +131,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if limit_message is None:
         _attach_lease(session, lease)
         return None
-    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+    from rabbit_cli.active_sessions import SESSION_NOT_OWNED
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
@@ -167,7 +167,7 @@ def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool
     A live foreign pid, a sibling that still has a client, or a same-id runtime of another profile keeps
     refusing — cross-process, multi-window and cross-profile (#100029) exclusivity are untouched. See #104691.
     """
-    from hermes_cli.active_sessions import transfer_active_session
+    from rabbit_cli.active_sessions import transfer_active_session
     with _session_resume_lock, _sessions_lock:
         if (found := _detached_lease_holder(session, key)) is None:
             return False
@@ -246,7 +246,7 @@ def _other_runtime_lease_guard(session_id: str, session: dict):
     the lifecycle -> preserve) when the guard can't be loaded/entered in 3 tries: unknown ownership never ends a row."""
     lease = session.get("active_session_lease")
     try:
-        from hermes_cli.active_sessions import active_session_liveness_guard, release_active_session_liveness_guard
+        from rabbit_cli.active_sessions import active_session_liveness_guard, release_active_session_liveness_guard
     except Exception as exc:
         logger.warning("Failed to load active session ownership guard; preserving session %s: %s", session_id, exc)
         yield True
@@ -284,7 +284,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
     if lease is None:
         return True
     try:
-        from hermes_cli.active_sessions import transfer_active_session
+        from rabbit_cli.active_sessions import transfer_active_session
         if transfer_active_session(lease, session_id=new_session_id, metadata=_lease_metadata(sid)):
             return True
     except Exception:
@@ -384,7 +384,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     with _session_profile_runtime_scope(session):
         if agent is not None:
             with contextlib.suppress(Exception):
-                from hermes_cli.lifecycle import invoke_hook
+                from rabbit_cli.lifecycle import invoke_hook
                 invoke_hook(
                     "on_session_end", completed=False, interrupted=True,
                     session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
@@ -554,9 +554,9 @@ def _pop_session_by_id(sid: str) -> dict | None:
     with _sessions_lock:
         session = _sessions.pop(sid, None)
         if session is not None:
-            from hermes_constants import get_hermes_home
+            from rabbit_constants import get_rabbit_home
 
-            home = str(Path(session.get("profile_home") or get_hermes_home()).resolve())
+            home = str(Path(session.get("profile_home") or get_rabbit_home()).resolve())
             last_active = time.time() if session.get("running") else float(session.get("last_active") or 0)
             _closed_session_activity[home] = max(_closed_session_activity.get(home, 0), last_active)
             session["_closing"] = True
@@ -712,10 +712,10 @@ def _interrupt_session_turn(
         # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
         # resources. Observer-only; dispatch failures never break the interrupt.
         # Every caller (session.interrupt RPC, orphan/idle reapers, lease takeover) is off-turn, so bind the
-        # SESSION's profile as _finalize_session does or an observer's get_hermes_home() names the launch
+        # SESSION's profile as _finalize_session does or an observer's get_rabbit_home() names the launch
         # profile (#125063). hydrate_secrets=False: observer-only, /stop must stay fast.
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            from rabbit_cli.plugins import invoke_hook as _invoke_hook
             with _session_profile_runtime_scope(session, hydrate_secrets=False):
                 _invoke_hook(
                     "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
@@ -1024,7 +1024,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 claimed_for_teardown = _pop_session_by_id(sid)
             else:
                 # Point at the drop sentinel (NOT real stdio) so _ws_session_is_orphaned recognizes it; standalone
-                # `hermes --tui` keeps real _stdio. UNLESS another window (pop-out viewer) still shows the session:
+                # `rabbit --tui` keeps real _stdio. UNLESS another window (pop-out viewer) still shows the session:
                 # re-bind to the most recent surviving viewer instead.
                 viewers = current.get("viewers") or {}
                 # See #83716.

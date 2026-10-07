@@ -6,10 +6,10 @@ then run it as a driver script. The skeleton handles all the wiring so you only
 write the domain-specific logic.
 
 To run:
-    cd ~/.hermes/cache/darwinian-evolver/darwinian_evolver
+    cd ~/.rabbit/cache/darwinian-evolver/darwinian_evolver
     OPENROUTER_API_KEY=... uv run --with openai python /path/to/this_file.py \
         --num_iterations 3 --num_parents_per_iteration 2 \
-        --output_dir ~/.hermes/cache/scratch/my_problem
+        --output_dir ~/.rabbit/cache/scratch/my_problem
 
 The pattern mirrors `scripts/parrot_openrouter.py` (the working reference).
 """

@@ -1,6 +1,6 @@
 """Loopback fake of Google Vertex AI (Gemini behind the OpenAI-compatible endpoint) + Google OAuth.
 
-Two external boundaries Hermes does not own, both faked for real:
+Two external boundaries Rabbit does not own, both faked for real:
 
 * **Google OAuth2 token endpoint** (``POST /token`` on plain loopback HTTP). A generated
   service-account JSON names it as ``token_uri``, so the REAL ``google-auth`` library signs an
@@ -8,10 +8,10 @@ Two external boundaries Hermes does not own, both faked for real:
   against the SA public key and the claims Google checks (``iss``/``aud``/``scope``/``iat``/``exp``)
   and mints ``ya29.``-style access tokens with a scripted ``expires_in``.
 * **Vertex AI** at ``https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/
-  {region}/endpoints/openapi/chat/completions``. Hermes has no base-URL override for Vertex, so the
+  {region}/endpoints/openapi/chat/completions``. Rabbit has no base-URL override for Vertex, so the
   fake is an HTTPS ``CONNECT`` proxy that terminates TLS with a leaf cert signed by a generated CA:
   the child trusts it through the standard ``SSL_CERT_FILE`` and reaches it through the standard
-  ``HTTPS_PROXY`` (the corporate-proxy channel Hermes documents). CONNECTs to any other host are
+  ``HTTPS_PROXY`` (the corporate-proxy channel Rabbit documents). CONNECTs to any other host are
   refused (recorded), so nothing can leak to the real network.
 
 Every Vertex request is recorded (host, path, headers, body) and validated against the published
@@ -132,7 +132,7 @@ def make_tls_material(root: Path, hosts: list[str]) -> tuple[Path, Path, Path]:
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
     ca_cert = (
-        x509.CertificateBuilder().subject_name(_name("hermes-e2e fake Google CA")).issuer_name(_name("hermes-e2e fake Google CA"))
+        x509.CertificateBuilder().subject_name(_name("rabbit-e2e fake Google CA")).issuer_name(_name("rabbit-e2e fake Google CA"))
         .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
         .not_valid_before(now - _dt.timedelta(minutes=5)).not_valid_after(now + _dt.timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
@@ -170,7 +170,7 @@ class ServiceAccount:
 def make_service_account(path: Path, token_uri: str, project_id: str) -> ServiceAccount:
     """A service-account key file shaped like the one the Cloud console downloads."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    email = f"hermes-e2e@{project_id}.iam.gserviceaccount.com"
+    email = f"rabbit-e2e@{project_id}.iam.gserviceaccount.com"
     kid = secrets.token_hex(20)
     info = {
         "type": "service_account", "project_id": project_id, "private_key_id": kid,
@@ -425,7 +425,7 @@ class FakeVertex:
         return f"/v1beta1/projects/{self.project}/locations/{self.region}/endpoints/openapi/chat/completions"
 
     def child_env(self) -> dict[str, str]:
-        """Standard proxy + CA-trust env for the Hermes child (no Hermes-specific knobs)."""
+        """Standard proxy + CA-trust env for the Rabbit child (no Rabbit-specific knobs)."""
         return {"HTTPS_PROXY": f"http://127.0.0.1:{self.port}", "NO_PROXY": "127.0.0.1,localhost",
                 "SSL_CERT_FILE": str(self.ca_pem)}
 
@@ -678,14 +678,14 @@ def _handler_for(fake: FakeVertex) -> type[BaseHTTPRequestHandler]:
 
 
 MODEL = "google/gemini-3-flash-preview"
-PROJECT = "hermes-e2e-proj"
-SA_EMBEDDED_PROJECT = "hermes-sa-embedded-proj"  # differs from PROJECT: proves the config override wins
+PROJECT = "rabbit-e2e-proj"
+SA_EMBEDDED_PROJECT = "rabbit-sa-embedded-proj"  # differs from PROJECT: proves the config override wins
 REGION = "us-central1"
 
 
-def hermes_setup(fake: FakeVertex, *, model: str = MODEL, extra_config: dict[str, Any] | None = None,
+def rabbit_setup(fake: FakeVertex, *, model: str = MODEL, extra_config: dict[str, Any] | None = None,
                  context_length: int | None = None) -> dict[str, Any]:
-    """``make_home`` kwargs for a Hermes home that selects ``provider: vertex`` against ``fake``: the SA
+    """``make_home`` kwargs for a Rabbit home that selects ``provider: vertex`` against ``fake``: the SA
     key path in ``.env`` (VERTEX_CREDENTIALS_PATH) and project/region under ``vertex:`` in config.yaml."""
     assert fake.sa is not None
     block: dict[str, Any] = {"provider": "vertex", "default": model}
@@ -703,7 +703,7 @@ def signatures_on_wire(body: dict[str, Any]) -> list[str]:
 
 
 __all__ = [
-    "MODEL", "PROJECT", "REGION", "SA_EMBEDDED_PROJECT", "hermes_setup",
+    "MODEL", "PROJECT", "REGION", "SA_EMBEDDED_PROJECT", "rabbit_setup",
     "Call", "Drop", "Fail", "FakeVertex", "GRPC_STATUS", "Say", "ServiceAccount", "TokenPolicy",
     "make_service_account", "make_tls_material", "signatures_on_wire", "validate_chat_body", "verify_jwt_assertion",
 ]

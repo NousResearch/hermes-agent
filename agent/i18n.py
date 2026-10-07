@@ -1,14 +1,14 @@
-"""Lightweight i18n for Hermes' static user-facing strings (approval prompts, gateway replies, CLI, tips).
+"""Lightweight i18n for Rabbit' static user-facing strings (approval prompts, gateway replies, CLI, tips).
 
 Catalogs are flat dotted-key mappings resolved through layers, top first:
 
 1. plugin language packs (``PluginContext.register_locale``; last registered wins) — ``agent.i18n_layers``
-2. the user overlay ``$HERMES_HOME/locales/<lang>.yaml`` of the current profile home
+2. the user overlay ``$RABBIT_HOME/locales/<lang>.yaml`` of the current profile home
 3. the bundled ``locales/<lang>.yaml``
 4. the same chain for ``en``
 5. the bare key
 
-Every layer may be partial. Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` >
+Every layer may be partial. Language resolution: explicit ``lang=`` > ``RABBIT_LANGUAGE`` >
 ``display.language`` > ``en``; any id that some layer supplies is accepted, so a pack-only language
 (``pl``) works the moment its plugin loads. ``t()`` is a hot path: one cached merged dict per
 ``(home, lang)``, invalidated by :func:`reset_language_cache` (which every pack registration calls).
@@ -70,25 +70,25 @@ _catalog_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
-    """Locale dir: ``HERMES_BUNDLED_LOCALES`` (sealed packaging, e.g. Nix) if it exists, else ``<repo-root>/locales``.
+    """Locale dir: ``RABBIT_BUNDLED_LOCALES`` (sealed packaging, e.g. Nix) if it exists, else ``<repo-root>/locales``.
 
     The source path is returned even when missing so ``_load_bundled`` can log
     the path it looked at rather than raise.
     """
-    override = os.getenv("HERMES_BUNDLED_LOCALES", "").strip()
+    override = os.getenv("RABBIT_BUNDLED_LOCALES", "").strip()
     if override and Path(override).is_dir():
         return Path(override)
     if override:
         logger.warning(
-            "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
+            "RABBIT_BUNDLED_LOCALES points to a non-directory path (%s); "
             "falling back to bundled/source locale resolution", override,
         )
     return Path(__file__).resolve().parent.parent / "locales"
 
 
 def _current_home() -> str:
-    from hermes_constants import get_hermes_home
-    return str(get_hermes_home())
+    from rabbit_constants import get_rabbit_home
+    return str(get_rabbit_home())
 
 
 def supported_languages(home: str | None = None) -> tuple[str, ...]:
@@ -108,7 +108,7 @@ def supported_languages(home: str | None = None) -> tuple[str, ...]:
 
 def resolve_language_id(value: Any, home: str | None = None) -> str | None:
     """Canonical supported id for a user-supplied value (code, alias, regional tag), or ``None`` when no
-    layer supplies it — the validation ``hermes config set display.language`` runs."""
+    layer supplies it — the validation ``rabbit config set display.language`` runs."""
     key = i18n_layers.normalize_language_id(value)
     if not key:
         return None
@@ -176,14 +176,14 @@ def surface_catalog(lang: str, surface: str = i18n_layers.CORE_SURFACE) -> dict[
 
 
 @lru_cache(maxsize=8)
-def _config_language_cached(hermes_home: str) -> str | None:
+def _config_language_cached(rabbit_home: str) -> str | None:
     """``display.language`` from config.yaml, read once per profile home (``t()`` is a hot path).
     Keyed by home so a multiplexed gateway serving several profiles doesn't freeze the first
     profile's language for every other profile."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         lang = (load_config_readonly().get("display") or {}).get("language")
-        return _normalize_lang(lang, hermes_home) if lang else None
+        return _normalize_lang(lang, rabbit_home) if lang else None
     except Exception as exc:
         logger.debug("Could not read display.language from config: %s", exc)
         return None
@@ -207,14 +207,14 @@ def reset_language_cache() -> None:
 def _resolve_language(home: str) -> str:
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
-        env_lang = get_secret("HERMES_LANGUAGE")
+        env_lang = get_secret("RABBIT_LANGUAGE")
     except UnscopedSecretError:
-        env_lang = os.environ.get("HERMES_LANGUAGE")  # unscoped default-profile path: environ IS its own value
+        env_lang = os.environ.get("RABBIT_LANGUAGE")  # unscoped default-profile path: environ IS its own value
     return _normalize_lang(env_lang, home) if env_lang else _config_language_cached(home) or DEFAULT_LANGUAGE
 
 
 def get_language() -> str:
-    """Resolve the active language using env > config > default order. ``HERMES_LANGUAGE`` is a
+    """Resolve the active language using env > config > default order. ``RABBIT_LANGUAGE`` is a
     per-profile ``.env`` value, so it is read through the secret scope: under multiplexing a raw
     environ read would impose the default profile's language on every other profile."""
     return _resolve_language(_current_home())

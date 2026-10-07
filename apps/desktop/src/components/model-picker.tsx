@@ -1,5 +1,5 @@
-import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
-import { fuzzyRank, modelSearchText } from '@hermes/shared'
+import type { ModelOptionProvider, ModelPricing } from '@rabbit/shared'
+import { fuzzyRank, modelSearchText } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
@@ -18,9 +18,9 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
-import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/rabbit'
 
-import type { HermesGateway } from '../hermes'
+import type { RabbitGateway } from '../rabbit'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
@@ -33,7 +33,7 @@ import { Skeleton } from './ui/skeleton'
 interface ModelPickerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  gw?: HermesGateway
+  gw?: RabbitGateway
   sessionId?: string | null
   currentModel: string
   currentProvider: string
@@ -71,7 +71,7 @@ export function ModelPickerDialog({
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
-  // it: an empty query shows the curated list verbatim (like the `hermes
+  // it: an empty query shows the curated list verbatim (like the `rabbit
   // model` CLI picker) and a query ranks with the shared fuzzyRank.
   const [search, setSearch] = useState<string>('')
   // "Add custom model…" flips the search into slug entry: the typed id is
@@ -581,28 +581,12 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  // Two different facts wear the same badge: `free_tier` is a signed-in Nous
-  // account on the free plan; `free_tier_row` is the no-account route's own
-  // row. Either way the user is on free inference, so say so. Never match the
-  // route by name — the label is copy.
-  const tierBadge =
-    provider.free_tier === true || provider.free_tier_row === true ? (
-      <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-        {copy.freeTier}
-      </span>
-    ) : provider.free_tier === false ? (
-      <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
-        {copy.pro}
-      </span>
-    ) : null
-
   return (
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
-      {tierBadge}
     </span>
   )
 }

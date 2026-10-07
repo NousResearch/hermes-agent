@@ -7,7 +7,7 @@ type GatewayRequest = (
  *  boot per app launch; the backend buckets it and drops it unless the user opted in.
  *  An older Electron shell (no bridge) or backend (no method) just skips the metric. */
 export async function reportStartupLatency(
-  desktop: Pick<Window['hermesDesktop'], 'claimStartupLatency'> | undefined,
+  desktop: Pick<Window['rabbitDesktop'], 'claimStartupLatency'> | undefined,
   request: GatewayRequest
 ): Promise<void> {
   const elapsedMs = (await desktop?.claimStartupLatency?.().catch(() => null)) ?? null
@@ -18,7 +18,7 @@ export async function reportStartupLatency(
 
   // The main-process claim succeeds once per app launch, so an id minted on success names the
   // launch; the backend latches on it, so a long-lived backend still counts the next launch.
-  // Declared, not env-detected: a URL/cloud backend has no HERMES_DESKTOP to tell it who attached.
+  // Declared, not env-detected: a URL backend has no RABBIT_DESKTOP to tell it who attached.
   await request('shared_metrics.startup_latency', {
     elapsed_ms: elapsedMs,
     launch_id: crypto.randomUUID(),

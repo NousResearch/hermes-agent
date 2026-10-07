@@ -1,4 +1,4 @@
-"""Entrypoint driver for the parity matrix: the ACP stdio server (``hermes acp``).
+"""Entrypoint driver for the parity matrix: the ACP stdio server (``rabbit acp``).
 
 Follows the driver contract in ``_drive_cli``. The client side speaks
 newline-delimited JSON-RPC 2.0 itself (no SDK client) so the driver controls
@@ -17,10 +17,10 @@ import threading
 import time
 from typing import Any
 
-from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, hermes_argv, terminate
+from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, rabbit_argv, terminate
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
-ACP_TOOLSET = "hermes-acp"  # acp_adapter/session.py::_expand_acp_enabled_toolsets default
+ACP_TOOLSET = "rabbit-acp"  # acp_adapter/session.py::_expand_acp_enabled_toolsets default
 EOF_EXIT_TIMEOUT = 30.0
 
 
@@ -103,7 +103,7 @@ def drive_acp(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
     stderr_path = ph.root / "acp_stderr.log"
     with open(stderr_path, "w", encoding="utf-8") as stderr_fh:
         proc = subprocess.Popen(
-            hermes_argv("acp"), cwd=ph.project, env=ph.env(), stdin=subprocess.PIPE,
+            rabbit_argv("acp"), cwd=ph.project, env=ph.env(), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=stderr_fh, text=True, bufsize=1,
         )
         client = _AcpClient(proc)

@@ -65,7 +65,7 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
 // debug log names the code while stdio stays on the terminal, so give each run
 // its own logs dir and retry once only on that code. Other failures keep the tree.
 function runNpmCi(node, npm, args, { source, env }) {
-  const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
+  const logsDir = mkdtempSync(join(tmpdir(), 'rabbit-npm-logs-'))
   // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
   // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
   const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
@@ -115,7 +115,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   ]
   // This receipt certifies dependency preparation, never compiled product freshness.
   // Keep it inside the cached tree so a clean npm ci also removes the receipt.
-  const receipt = join(source, 'node_modules/.hermes-node-deps')
+  const receipt = join(source, 'node_modules/.rabbit-node-deps')
   // Ordinary product builders consume the baseline receipt; preparation also
   // binds lifecycle outputs to its compiler/SDK identity. On a mismatch npm ci
   // removes arbitrary package lifecycle outputs, not just known node-pty paths.

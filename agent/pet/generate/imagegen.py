@@ -16,11 +16,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Providers that can ground generation on a reference image, in preference order.
-# OpenRouter/Nous run a quality-first model chain and may fall back depending on
+# OpenRouter runs a quality-first model chain and may fall back depending on
 # account access, so fidelity can vary by configured backend.
-_REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
+_REF_CAPABLE = ("openai", "openai-codex", "openrouter", "krea")
 # Friendly display label per reference-capable provider (desktop pet-gen picker).
-_PROVIDER_LABELS = {"nous": "Nous Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea"}
+_PROVIDER_LABELS = {"openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea"}
 
 
 class GenerationError(RuntimeError):
@@ -38,7 +38,7 @@ class SpriteProvider:
 
 def _discover() -> None:
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from rabbit_cli.plugins import _ensure_plugins_discovered
 
         _ensure_plugins_discovered()
     except Exception as exc:  # noqa: BLE001 - discovery is best-effort
@@ -56,7 +56,7 @@ def _available(name: str):
 def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
     """Pick the image provider for sprite work.
 
-    Preference: ``HERMES_PET_IMAGE_PROVIDER`` (QA override, unknown values ignored),
+    Preference: ``RABBIT_PET_IMAGE_PROVIDER`` (QA override, unknown values ignored),
     then *prefer* (desktop picker), then the active provider, then the first available
     — each only if ref-capable and configured. With *require_references* off, any
     available active provider is accepted (prompt-only base drafts).
@@ -64,7 +64,7 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     _discover()
     from agent.image_gen_registry import get_active_provider
 
-    forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
+    forced = os.environ.get("RABBIT_PET_IMAGE_PROVIDER", "").strip().lower()
     for name in (forced, prefer):
         if name in _REF_CAPABLE and (chosen := _available(name)) is not None:
             return SpriteProvider(name=name, provider=chosen, supports_references=True)
@@ -82,8 +82,8 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
         return SpriteProvider(name=getattr(active, "name", "unknown"), provider=active, supports_references=False)
     raise GenerationError(
         "Pet generation needs an image backend that supports reference images. "
-        "Open `hermes tools` → Image Generation and configure Nous Portal, "
-        "OpenRouter, or OpenAI (gpt-image-2) with an API key."
+        "Open `rabbit tools` → Image Generation and configure OpenRouter "
+        "or OpenAI (gpt-image-2) with an API key."
     )
 
 
@@ -142,7 +142,7 @@ def generate(
 
     refs = [str(p) for p in (reference_images or [])]
 
-    # Providers disagree on the ref kwarg name: our OpenRouter/Nous backends read
+    # Providers disagree on the ref kwarg name: our OpenRouter backend reads
     # ``reference_images``, OpenAI's gpt-image-2 reads ``reference_image_urls``.
     # Send both; each ignores the other.
     ref_kwargs = {"reference_images": refs, "reference_image_urls": refs} if refs else {}

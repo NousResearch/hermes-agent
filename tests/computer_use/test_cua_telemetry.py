@@ -1,7 +1,7 @@
 """Tests for the cua-driver telemetry opt-in policy.
 
 cua-driver ships anonymous PostHog telemetry ENABLED by default upstream.
-Hermes disables it unless the user opts in via
+Rabbit disables it unless the user opts in via
 ``computer_use.cua_telemetry: true``. The policy is applied by injecting
 ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0`` into every cua-driver child env.
 
@@ -21,14 +21,14 @@ _VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 class TestTelemetryDisabledFlag:
 
     def test_explicit_false_disables(self):
-        with patch("hermes_cli.config.load_config",
+        with patch("rabbit_cli.config.load_config",
                    return_value={"computer_use": {"cua_telemetry": False}}):
             assert cua_backend._cua_telemetry_disabled() is True
 
 
     def test_config_load_failure_fails_safe(self):
         # Unreadable config => default to disabling telemetry (privacy-safe).
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+        with patch("rabbit_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert cua_backend._cua_telemetry_disabled() is True
 
 

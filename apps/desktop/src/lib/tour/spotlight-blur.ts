@@ -31,8 +31,8 @@ const FEATHER_PX = 12
 const STAGE_PADDING = 6
 const STAGE_RADIUS = 8
 
-const LAYER_ID = '__hermes-tour-spotlight-blur'
-const MASK_ID = '__hermes-tour-spotlight-mask'
+const LAYER_ID = '__rabbit-tour-spotlight-blur'
+const MASK_ID = '__rabbit-tour-spotlight-mask'
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
 /** One rect's worth of geometry — driver's stage, or an element's box. */

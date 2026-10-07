@@ -49,7 +49,7 @@ async def test_warmup_timeout_warning_runs_off_the_event_loop(monkeypatch):
 
     handler = _BlockingHandler()
     base_logger = logging.getLogger(
-        f"hermes.test.startup_logger_offloop.{id(handler)}"
+        f"rabbit.test.startup_logger_offloop.{id(handler)}"
     )
     base_logger.handlers = [handler]
     base_logger.setLevel(logging.WARNING)

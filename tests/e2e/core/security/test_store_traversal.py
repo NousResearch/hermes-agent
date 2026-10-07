@@ -3,15 +3,15 @@
 Two operator/agent-facing name lookups must stay inside the thing they name:
 
 * ``/memory`` and ``/skills`` ``approve|reject|diff <id>`` (#119997): the id names a record staged under
-  ``<HERMES_HOME>/pending/<subsystem>/``. A ``../`` or absolute id must not read, delete or apply any
+  ``<RABBIT_HOME>/pending/<subsystem>/``. A ``../`` or absolute id must not read, delete or apply any
   file outside that directory. Driven through the real ``tui_gateway`` stdio backend (``slash.exec``),
   after real staged writes: the fake model calls the ``memory`` and ``skill_manage`` tools with
   ``memory.write_approval`` / ``skills.write_approval`` on, so the store directories exist exactly as
   they do for a user.
-* ``skill_manage delete`` (#120528) must refuse a pinned skill and the essential ``hermes-agent`` skill
+* ``skill_manage delete`` (#120528) must refuse a pinned skill and the essential ``rabbit-agent`` skill
   whatever spelling names it: bare (``my-skill``) or categorized (``research/my-skill``). The pin is set
-  with the real ``hermes curator pin`` CLI; the deletes are real tool calls in real agent turns on the
-  same backend (``hermes chat -q`` does not offer ``skill_manage``: one-shot runs hide it).
+  with the real ``rabbit curator pin`` CLI; the deletes are real tool calls in real agent turns on the
+  same backend (``rabbit chat -q`` does not offer ``skill_manage``: one-shot runs hide it).
 
 Every breach asserts on disk (victim bytes, skill dir, MEMORY.md) and on the command output.
 """
@@ -38,8 +38,8 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX absolute-
 _ISSUE_STORE = "#119997 pending id is used as a path: ../ or absolute ids reach files outside pending/<subsystem>/"
 _ISSUE_DELETE = "#120528 skill_manage delete skips the pin/essential guard for a category/name spelling"
 
-# scenario -> (slash command, where the victim lives). "home" victims are <HERMES_HOME>/auth.json spelled
-# ``../../auth``; "outside" victims live outside the Hermes home and are spelled by absolute path.
+# scenario -> (slash command, where the victim lives). "home" victims are <RABBIT_HOME>/auth.json spelled
+# ``../../auth``; "outside" victims live outside the Rabbit home and are spelled by absolute path.
 TRAVERSALS: dict[str, tuple[str, str]] = {
     "memory_reject_dotdot": ("memory reject", "home"),
     "memory_approve_dotdot": ("memory approve", "home"),
@@ -51,7 +51,7 @@ TRAVERSALS: dict[str, tuple[str, str]] = {
 }
 DELETES: dict[str, tuple[str, str]] = {  # scenario -> (name given to skill_manage, skill dir under skills/)
     "pinned_by_category": ("research/my-skill", "research/my-skill"),
-    "essential_by_category": ("autonomous-ai-agents/hermes-agent", "autonomous-ai-agents/hermes-agent"),
+    "essential_by_category": ("autonomous-ai-agents/rabbit-agent", "autonomous-ai-agents/rabbit-agent"),
 }
 
 
@@ -98,7 +98,7 @@ def _slash(b: TuiBackend, sid: str, command: str) -> str:
 class Store:
     b: TuiBackend
     sid: str
-    hermes_home: Path
+    rabbit_home: Path
     outside: Path
     memory_ids: list[str]
     memory_texts: list[str]
@@ -106,11 +106,11 @@ class Store:
     skill_texts: list[str]
 
     def pending_ids(self, subsystem: str) -> set[str]:
-        d = self.hermes_home / "pending" / subsystem
+        d = self.rabbit_home / "pending" / subsystem
         return {p.stem for p in d.glob("*.json")} if d.is_dir() else set()
 
     def memory_blob(self) -> str:
-        d = self.hermes_home / "memories"
+        d = self.rabbit_home / "memories"
         return "".join(p.read_text(encoding="utf-8", errors="replace") for p in d.glob("*")) if d.is_dir() else ""
 
 
@@ -127,7 +127,7 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
                                          "content": _skill_md(f"staged-skill-{i}", t)})
                for i, t in enumerate(skill_texts)]
     with FakeLLMServer([*script, Text("staged")], api_key=key) as srv:
-        H.write_home(home / ".hermes", srv.base_url, api_key=key, config=_STORE_CONFIG)
+        H.write_home(home / ".rabbit", srv.base_url, api_key=key, config=_STORE_CONFIG)
         b = TuiBackend(home, root / "tui.log")
         try:
             sid = b.ok("session.create", {})["session_id"]
@@ -135,9 +135,9 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
             staged = _tool_results(srv)
             assert len(staged) == 5 and all(r.get("staged") for r in staged), f"writes were not staged: {staged}"
             ids = [r["pending_id"] for r in staged]
-            s = Store(b, sid, home / ".hermes", outside, ids[:3], memory_texts, ids[3:], skill_texts)
+            s = Store(b, sid, home / ".rabbit", outside, ids[:3], memory_texts, ids[3:], skill_texts)
             assert s.pending_ids("memory") == set(ids[:3]) and s.pending_ids("skills") == set(ids[3:]), \
-                f"pending store on disk does not match the staged ids: {sorted((s.hermes_home / 'pending').rglob('*'))}"
+                f"pending store on disk does not match the staged ids: {sorted((s.rabbit_home / 'pending').rglob('*'))}"
             yield s
         finally:
             b.close()
@@ -147,7 +147,7 @@ def _plant_victim(s: Store, where: str) -> tuple[Path, str, str]:
     """A record-shaped JSON file outside the store: ``(path, id spelling, canary)``. Record-shaped so a
     traversal that reaches it is observable on every verb (reject deletes it, approve applies its payload,
     diff prints its summary)."""
-    victim, spelled = ((s.hermes_home / "auth.json", "../../auth") if where == "home"
+    victim, spelled = ((s.rabbit_home / "auth.json", "../../auth") if where == "home"
                        else (s.outside / "victim.json", str(s.outside / "victim")))
     mark = H.canary("victim")
     victim.write_text(json.dumps({"id": spelled, "subsystem": "memory", "summary": mark, "origin": "foreground",
@@ -209,7 +209,7 @@ class DeleteRun:
 # Executed in this order, one agent turn each, so a later delete can never mask an earlier outcome.
 _DELETE_STEPS: tuple[tuple[str, str, str], ...] = (
     ("control_pinned_bare", "my-skill", "research/my-skill"),
-    ("control_essential_bare", "hermes-agent", "autonomous-ai-agents/hermes-agent"),
+    ("control_essential_bare", "rabbit-agent", "autonomous-ai-agents/rabbit-agent"),
     *((n, name, rel) for n, (name, rel) in DELETES.items()),
     ("control_unpinned_category", "research/free-skill", "research/free-skill"),
     # bare-name discovery works, so a refused bare pinned/essential delete is the guard, not "not found"
@@ -221,16 +221,16 @@ _DELETE_STEPS: tuple[tuple[str, str, str], ...] = (
 def deletes(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DeleteRun]:
     root = tmp_path_factory.mktemp("deletes")
     home = root / "home"
-    skills = home / ".hermes" / "skills"
-    for rel in ("research/my-skill", "research/free-skill", "research/spare-skill", "autonomous-ai-agents/hermes-agent"):
+    skills = home / ".rabbit" / "skills"
+    for rel in ("research/my-skill", "research/free-skill", "research/spare-skill", "autonomous-ai-agents/rabbit-agent"):
         (skills / rel).mkdir(parents=True)
         (skills / rel / "SKILL.md").write_text(_skill_md(rel.rsplit("/", 1)[1]), encoding="utf-8")
     key = H.canary("sk-delete")
     run = DeleteRun()
     with FakeLLMServer([], api_key=key) as srv:
-        H.write_home(home / ".hermes", srv.base_url, api_key=key)
-        pin = H.run_hermes(["curator", "pin", "my-skill"], home, timeout=90)
-        assert pin.returncode == 0, f"hermes curator pin failed: {pin.stdout}\n{pin.stderr[-2000:]}"
+        H.write_home(home / ".rabbit", srv.base_url, api_key=key)
+        pin = H.run_rabbit(["curator", "pin", "my-skill"], home, timeout=90)
+        assert pin.returncode == 0, f"rabbit curator pin failed: {pin.stdout}\n{pin.stderr[-2000:]}"
         b = TuiBackend(home, root / "tui.log")
         try:
             sid = b.ok("session.create", {})["session_id"]

@@ -7,7 +7,7 @@ import { modeBound } from '@/store/interface-mode'
 // gateway switcher so switching profiles never loses its door. On by default.
 // Simple mode rests it hidden (unless it is the only door left) without
 // touching this preference.
-const $profileRailVisiblePref = persistentAtom('hermes.desktop.profileRailVisible', true, Codecs.bool)
+const $profileRailVisiblePref = persistentAtom('rabbit.desktop.profileRailVisible', true, Codecs.bool)
 
 export const $profileRailVisible = modeBound('profileRailVisible', $profileRailVisiblePref, value =>
   $profileRailVisiblePref.set(value)

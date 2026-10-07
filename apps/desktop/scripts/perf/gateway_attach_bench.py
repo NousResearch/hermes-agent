@@ -28,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO))
 
-os.environ.setdefault("HERMES_HOME", tempfile.mkdtemp(prefix="hermes-bench-home-"))
+os.environ.setdefault("RABBIT_HOME", tempfile.mkdtemp(prefix="rabbit-bench-home-"))
 
 
 class CollectTransport:
@@ -108,7 +108,7 @@ def main() -> int:
     # Keep the run readable: session.info frames go to the transport, not stdout.
     server._emit = lambda *a, **k: None
 
-    home = Path(os.environ["HERMES_HOME"])
+    home = Path(os.environ["RABBIT_HOME"])
     home.mkdir(parents=True, exist_ok=True)
 
     content_b64 = base64.b64encode(png_bytes(args.kb)).decode("ascii")

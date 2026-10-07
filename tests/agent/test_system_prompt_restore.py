@@ -244,7 +244,7 @@ class TestStoredPromptReuse:
         model reads old `Model:` metadata ("what model are you?" lies).
         """
         stored = (
-            "You are Hermes Agent.\n\n"
+            "You are Rabbit Agent.\n\n"
             "Conversation started: Tuesday, June 16, 2026\n"
             "Session ID: test-session-id\n"
             "Model: anthropic/claude-opus-4.8-fast\n"
@@ -255,7 +255,7 @@ class TestStoredPromptReuse:
         agent = _make_agent(
             session_db=db,
             prebuilt_prompt=(
-                "You are Hermes Agent.\n\n"
+                "You are Rabbit Agent.\n\n"
                 "Conversation started: Tuesday, June 16, 2026\n"
                 "Session ID: test-session-id\n"
                 "Model: openai/gpt-5.5\n"
@@ -284,7 +284,7 @@ class TestStoredPromptReuse:
         rebuild keeps the pinned array and never persists its own surface's build over the pin."""
         from unittest.mock import patch as _patch
 
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from tools.mcp_tool_agent import tool_pin_version
 
         def _tool(name):
@@ -309,10 +309,10 @@ class TestStoredPromptReuse:
             assert json.loads(db.get_session("test-session-id")["tool_names"])["tools"] == pinned
 
     def test_a_swept_pin_row_is_re_pinned_on_the_next_turn(self, tmp_path):
-        """``hermes sessions recover`` from an older build deleted pin rows it did not know about,
+        """``rabbit sessions recover`` from an older build deleted pin rows it did not know about,
         leaving ``tool_names`` a hash that resolves to itself. The next turn must pin what it sends,
         or every later surface hop re-derives tools[] for the rest of the session."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         tools = [{"type": "function", "function": {"name": "read_file", "description": "", "parameters": {}}}]
         with SessionDB(db_path=tmp_path / "state.db") as db:
@@ -559,7 +559,7 @@ class TestReconstructStaticPrefixMemoization:
 class TestPerResponseSessionWritePath:
     """The write path under an embedding host's per-response session (#96570).
 
-    Hermes Studio group chat pre-creates the SQLite row and pre-persists the
+    Rabbit Studio group chat pre-creates the SQLite row and pre-persists the
     user message BEFORE ``run_conversation()``, then runs one turn under a
     session id it destroys afterwards. The row therefore starts with a null
     system prompt and a non-empty history on its own genuine FIRST turn, which
@@ -580,7 +580,7 @@ class TestPerResponseSessionWritePath:
         self, tmp_path, caplog
     ):
         """Second turn of the SAME id restores — so nothing was dropped."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
         history = [{"role": "user", "content": "hi"}]
@@ -610,7 +610,7 @@ class TestPerResponseSessionWritePath:
 
 def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
     """A NULL system_prompt row already rebuilds. The capability probe must not gate it."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from agent.conversation_loop import _bot_chat_prompt_stale
 
     agent = SimpleNamespace(

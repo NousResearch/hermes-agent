@@ -6,7 +6,7 @@ author: Shunit Haviv Hakimi (shunithaviv)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [video, launch-video, marketing, motion-graphics, share-copy]
     category: creative
     related_skills: [brag, hyperframes]
@@ -19,7 +19,7 @@ metadata:
 
 > **Catalog stub.** This entry is maintained upstream at
 > [latent-spaces/brag](https://github.com/latent-spaces/brag): the project
-> ships `/brag-slim` as a single `SKILL.md` under `skills/brag-slim/`. `hermes
+> ships `/brag-slim` as a single `SKILL.md` under `skills/brag-slim/`. `rabbit
 > skills install official/creative/brag-slim` pulls the current file live from
 > that repo (quarantined and scanned like any hub install) — this directory
 > holds only the catalog metadata, so the vendored copy can never go stale.

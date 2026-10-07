@@ -32,8 +32,8 @@ def _bound_identity() -> Tuple[Optional[str], Optional[str], Optional[str]]:
 
     return tuple(  # type: ignore[return-value]
         get_session_env(key, "") or None
-        for key in ("HERMES_SESSION_ID", "HERMES_BROWSER_CONTROL_PRINCIPAL",
-                    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+        for key in ("RABBIT_SESSION_ID", "RABBIT_BROWSER_CONTROL_PRINCIPAL",
+                    "RABBIT_BROWSER_CONTROL_TRANSPORT_FAMILY")
     )
 
 

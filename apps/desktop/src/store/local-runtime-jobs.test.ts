@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { queryClient } from '@/lib/query-client'
 import { deferred } from '@/test/deferred'
-import type { LocalRuntimeJob } from '@/types/hermes'
+import type { LocalRuntimeJob } from '@/types/rabbit'
 
 import type { LocalModelsOwner } from './local-runtime-jobs'
 
@@ -23,7 +23,7 @@ import type { LocalModelsOwner } from './local-runtime-jobs'
 // never by mutating the cache directly.
 const backend = vi.hoisted(() => ({ jobs: [] as LocalRuntimeJob[] }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getLocalModelsJobs: vi.fn(async (): Promise<{ jobs: LocalRuntimeJob[] }> => ({
     jobs: structuredClone(backend.jobs)
   })),
@@ -40,7 +40,7 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 const { localModelsKey, localModelsOwner, watchLocalRuntimeJobs } = await import('./local-runtime-jobs')
-const { getLocalModelsJobs } = await import('@/hermes')
+const { getLocalModelsJobs } = await import('@/rabbit')
 const { $connection } = await import('@/store/session')
 const { notify, notifyError } = await import('@/store/notifications')
 

@@ -46,7 +46,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty paste")
     _paste_counter += 1
     line_count = text.count("\n") + 1
-    paste_dir = _hermes_home / "pastes"
+    paste_dir = _rabbit_home / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
     from datetime import datetime
     paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
@@ -58,10 +58,10 @@ def _(rid, params: dict) -> dict:
 def _profile_mention_items(prefix: str) -> list[dict]:
     """`@<profile>` completions (multi-agent UIs route `@<profile>` text to another
     profile). Bare-word matches only, never `@kind:` directives; the primary profile
-    is also offered as 'hermes' when no real profile claims that name."""
+    is also offered as 'rabbit' when no real profile claims that name."""
     out: list[dict] = []
     try:
-        from hermes_cli.profiles import list_profiles
+        from rabbit_cli.profiles import list_profiles
         seen: set[str] = set()
         # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
         for p in list_profiles(lazy_skill_count=True):
@@ -70,8 +70,8 @@ def _profile_mention_items(prefix: str) -> list[dict]:
             seen.add(name.lower())
             if name.lower().startswith(prefix.lower()):
                 out.append(_item(f"@{name}", (getattr(p, "description", "") or "").strip() or "agent profile"))
-        if "hermes".startswith(prefix.lower()) and "hermes" not in seen:
-            out.append(_item("@hermes", "agent profile (primary)"))
+        if "rabbit".startswith(prefix.lower()) and "rabbit" not in seen:
+            out.append(_item("@rabbit", "agent profile (primary)"))
     except Exception:
         return []
     return out
@@ -165,7 +165,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
     )
     try:
-        from hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
+        from rabbit_cli.observability.shared_metrics_loop import unmetered_backend_calls
         from tools.terminal_tool import terminal_tool
         # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
         # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
@@ -173,7 +173,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         # configured), and Desktop's ws reconnect loop turns that into model traffic from an
         # idle machine (#115478). The script is a constant and the search dir is quoted, so
         # nothing here needs an approval verdict.
-        with unmetered_backend_calls():  # Hermes' own listing, not the user's backend work
+        with unmetered_backend_calls():  # Rabbit' own listing, not the user's backend work
             result = json.loads(terminal_tool(
                 f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
                 force=True))
@@ -281,7 +281,7 @@ def _(rid, params: dict) -> dict:
     text = params.get("text", "")
     if not text.startswith("/"):
         return _ok(rid, {"items": []})
-    from hermes_cli.commands_completion import SlashCommandCompleter
+    from rabbit_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_interactive_skill_commands
@@ -361,7 +361,7 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from hermes_cli.inventory import build_model_options_payload
+    from rabbit_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
     return _ok(rid, build_model_options_payload(
@@ -377,8 +377,8 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import is_managed
+    from rabbit_cli.auth import PROVIDER_REGISTRY
+    from rabbit_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
@@ -387,28 +387,26 @@ def _(rid, params: dict) -> dict:
     if not (pconfig := PROVIDER_REGISTRY.get(slug)):
         return _err(rid, 4002, f"unknown provider: {slug}")
     if pconfig.auth_type != "api_key":
-        return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `hermes model` to configure")
+        return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `rabbit model` to configure")
     if not pconfig.api_key_env_vars:
         return _err(rid, 4004, f"no env var defined for {pconfig.name}")
-    # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
+    # Save the key to ~/.rabbit/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
-    from hermes_cli.config import load_env
-    from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    from rabbit_cli.config import load_env
+    from rabbit_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     previous = load_env().get(env_var)
     # Under the profile scope the save publishes into the addressed profile's secret scope (and the
     # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
     if api_key != previous:  # a same-key re-save connects nothing new
-        from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
+        from rabbit_cli.observability.shared_metrics_setup import record_provider_setup_done
         record_provider_setup_done(_resolve_session_platform(), slug, background=True)
     # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
     # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
     # leaves it alone when the bound home is another profile's.
-    from hermes_cli.free_tier_bootstrap import reconcile_record
-    reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
-    from hermes_cli.inventory import build_models_payload
+    from rabbit_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
@@ -422,10 +420,10 @@ def _(rid, params: dict) -> dict:
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
-    from hermes_cli import managed_scope
-    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-    from hermes_cli.config import env_write_refusal, load_env
-    from hermes_cli.credential_lifecycle import remove_provider_env_credential
+    from rabbit_cli import managed_scope
+    from rabbit_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from rabbit_cli.config import env_write_refusal, load_env
+    from rabbit_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)

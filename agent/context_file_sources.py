@@ -8,7 +8,7 @@ flagged but loaded), empty/unreadable, or suppressed by the install-tree guard. 
 is free of cache impact.
 
 Approximations (the manifest re-derives, it does not re-render): the truncation check sizes the raw
-``## label`` section, so a .hermes.md whose YAML frontmatter the builder strips can read a few chars larger
+``## label`` section, so a .rabbit.md whose YAML frontmatter the builder strips can read a few chars larger
 here, and the AGENTS.md directory-chain cap (applied to the merged chain after per-file caps) is not modelled.
 """
 
@@ -30,7 +30,7 @@ _STATUS_DISPLAY = {
     "flagged": ("⚠", "loaded — matched prompt-injection pattern(s); review the file"),
     "empty": ("○", "not loaded — empty file"),
     "unreadable": ("✗", "not loaded — could not be read"),
-    "suppressed": ("○", "not loaded — cwd fell back to the Hermes install tree"),
+    "suppressed": ("○", "not loaded — cwd fell back to the Rabbit install tree"),
 }
 
 
@@ -61,7 +61,7 @@ def list_context_file_sources(
     cwd: Optional[str] = None, context_length: Optional[int] = None, allow_install_tree_fallback: bool = False,
     home_override: "Path | None" = None, skip_soul: bool = False,
 ) -> List[Dict[str, Any]]:
-    """One dict per context file Hermes considered, in the builder's priority order.
+    """One dict per context file Rabbit considered, in the builder's priority order.
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
@@ -86,7 +86,7 @@ def list_context_file_sources(
         sources.append(_entry(label, path, content, status))
 
     if not skip_soul:
-        home = Path(home_override) if home_override is not None else _pb.get_hermes_home()
+        home = Path(home_override) if home_override is not None else _pb.get_rabbit_home()
         soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
             content = _pb._read_context_file(soul_path)

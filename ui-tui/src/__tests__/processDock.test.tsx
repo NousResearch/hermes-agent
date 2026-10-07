@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync } from '@rabbit/ink'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { expect, it } from 'vitest'

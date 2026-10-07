@@ -1,4 +1,4 @@
-"""A killed ``hermes serve`` must not lose in-memory session transcripts.
+"""A killed ``rabbit serve`` must not lose in-memory session transcripts.
 
 Regression for #94724 (item 2, @ruangraung): a serve terminated mid-update
 lost every un-flushed in-memory session — the next RPC failed with
@@ -68,8 +68,8 @@ def test_sigterm_flushes_populated_session_into_state_db(
     registered_session, tmp_path, monkeypatch
 ):
     """A populated in-memory session survives a SIGTERM into state.db."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_state import SessionDB
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "sess-sigterm-flush"

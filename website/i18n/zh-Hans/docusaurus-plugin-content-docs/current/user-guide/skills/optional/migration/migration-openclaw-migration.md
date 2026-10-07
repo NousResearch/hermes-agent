@@ -1,88 +1,87 @@
 ---
-title: "Openclaw Migration — 将用户的 OpenClaw 自定义配置迁移到 Hermes Agent"
+title: "Openclaw Migration — 将用户的 OpenClaw 自定义配置迁移到 Rabbit Agent"
 sidebar_label: "Openclaw Migration"
-description: "将用户的 OpenClaw 自定义配置迁移到 Hermes Agent"
+description: "将用户的 OpenClaw 自定义配置迁移到 Rabbit Agent"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Openclaw Migration
 
-将用户的 OpenClaw 自定义配置迁移到 Hermes Agent。从 `~/.openclaw` 导入 Hermes 兼容的记忆、`SOUL.md`、命令白名单、用户技能及所选工作区资产，并精确报告无法迁移的内容及原因。
+将用户的 OpenClaw 自定义配置迁移到 Rabbit Agent。从 `~/.openclaw` 导入 Rabbit 兼容的记忆、`SOUL.md`、命令白名单、用户技能及所选工作区资产，并精确报告无法迁移的内容及原因。
 
 ## Skill 元数据
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/migration/openclaw-migration` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/migration/openclaw-migration` 安装 |
 | 路径 | `optional-skills/migration/openclaw-migration` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent (Nous Research) |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
-| 标签 | `Migration`, `OpenClaw`, `Hermes`, `Memory`, `Persona`, `Import` |
-| 相关 skill | [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| 标签 | `Migration`, `OpenClaw`, `Rabbit`, `Memory`, `Persona`, `Import` |
+| 相关 skill | [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
-# OpenClaw -> Hermes 迁移
+# OpenClaw -> Rabbit 迁移
 
-当用户希望以最少的手动清理将其 OpenClaw 配置迁移到 Hermes Agent 时，使用此 skill。
+当用户希望以最少的手动清理将其 OpenClaw 配置迁移到 Rabbit Agent 时，使用此 skill。
 
 ## CLI 命令
 
 如需快速、非交互式迁移，使用内置 CLI 命令：
 
 ```bash
-hermes claw migrate              # Full interactive migration
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-hermes claw migrate --source /custom/path/.openclaw  # Custom source
+rabbit claw migrate              # Full interactive migration
+rabbit claw migrate --dry-run    # Preview what would be migrated
+rabbit claw migrate --preset user-data   # Migrate without secrets
+rabbit claw migrate --overwrite  # Overwrite existing conflicts
+rabbit claw migrate --source /custom/path/.openclaw  # Custom source
 ```
 
 CLI 命令运行与下文所述相同的迁移脚本。当需要交互式、引导式迁移并支持 dry-run（预览）和逐项冲突解决时，请通过 agent 使用此 skill。
 
-**首次设置：** `hermes setup` 向导会自动检测 `~/.openclaw`，并在配置开始前提供迁移选项。
+**首次设置：** `rabbit setup` 向导会自动检测 `~/.openclaw`，并在配置开始前提供迁移选项。
 
 ## 此 skill 的功能
 
-它使用 `scripts/openclaw_to_hermes.py` 来：
+它使用 `scripts/openclaw_to_rabbit.py` 来：
 
-- 将 `SOUL.md` 导入 Hermes 主目录，保存为 `SOUL.md`
-- 将 OpenClaw 的 `MEMORY.md` 和 `USER.md` 转换为 Hermes 记忆条目
-- 将 OpenClaw 命令审批模式合并到 Hermes `command_allowlist`
-- 迁移 Hermes 兼容的消息设置，例如 `TELEGRAM_ALLOWED_USERS` 和 `MESSAGING_CWD`
-- 将 OpenClaw skill 复制到 `~/.hermes/skills/openclaw-imports/`
-- 可选地将 OpenClaw 工作区指令文件复制到所选 Hermes 工作区
-- 将兼容的工作区资产（如 `workspace/tts/`）镜像到 `~/.hermes/tts/`
-- 归档没有直接 Hermes 目标的非机密文档
+- 将 `SOUL.md` 导入 Rabbit 主目录，保存为 `SOUL.md`
+- 将 OpenClaw 的 `MEMORY.md` 和 `USER.md` 转换为 Rabbit 记忆条目
+- 将 OpenClaw 命令审批模式合并到 Rabbit `command_allowlist`
+- 迁移 Rabbit 兼容的消息设置，例如 `TELEGRAM_ALLOWED_USERS` 和 `MESSAGING_CWD`
+- 将 OpenClaw skill 复制到 `~/.rabbit/skills/openclaw-imports/`
+- 可选地将 OpenClaw 工作区指令文件复制到所选 Rabbit 工作区
+- 将兼容的工作区资产（如 `workspace/tts/`）镜像到 `~/.rabbit/tts/`
+- 归档没有直接 Rabbit 目标的非机密文档
 - 生成结构化报告，列出已迁移项、冲突项、跳过项及原因
 
 ## 路径解析
 
 辅助脚本位于此 skill 目录下：
 
-- `scripts/openclaw_to_hermes.py`
+- `scripts/openclaw_to_rabbit.py`
 
 从 Skills Hub 安装此 skill 后，通常位于：
 
-- `~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py`
+- `~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py`
 
-请勿猜测更短的路径，如 `~/.hermes/skills/openclaw-migration/...`。
+请勿猜测更短的路径，如 `~/.rabbit/skills/openclaw-migration/...`。
 
 运行辅助脚本前：
 
-1. 优先使用 `~/.hermes/skills/migration/openclaw-migration/` 下的已安装路径。
+1. 优先使用 `~/.rabbit/skills/migration/openclaw-migration/` 下的已安装路径。
 2. 如果该路径失败，检查已安装的 skill 目录，并相对于已安装的 `SKILL.md` 解析脚本路径。
 3. 仅在已安装位置缺失或 skill 被手动移动时，才使用 `find` 作为备用方案。
 4. 调用终端工具时，不要传入 `workdir: "~"`。请使用绝对目录（如用户主目录），或完全省略 `workdir`。
 
-使用 `--migrate-secrets` 时，还将导入一小组 Hermes 兼容的白名单 secret，目前包括：
+使用 `--migrate-secrets` 时，还将导入一小组 Rabbit 兼容的白名单 secret，目前包括：
 
 - `TELEGRAM_BOT_TOKEN`
 
@@ -102,7 +101,7 @@ CLI 命令运行与下文所述相同的迁移脚本。当需要交互式、引�
 
 ## 用户交互协议
 
-Hermes CLI 支持 `clarify` 工具进行交互式提示，但有以下限制：
+Rabbit CLI 支持 `clarify` 工具进行交互式提示，但有以下限制：
 
 - 每次只能处理一个选择
 - 最多 4 个预定义选项
@@ -177,9 +176,9 @@ Hermes CLI 支持 `clarify` 工具进行交互式提示，但有以下限制：
 使用以下精确的 `clarify` payload 形式作为默认模式：
 
 - `{"question":"Your existing SOUL.md conflicts with the imported one. What should I do?","choices":["keep existing","overwrite with backup","review first"]}`
-- `{"question":"One or more imported OpenClaw skills already exist in Hermes. How should I handle those skill conflicts?","choices":["keep existing skills","overwrite conflicting skills with backup","import conflicting skills under renamed folders"]}`
+- `{"question":"One or more imported OpenClaw skills already exist in Rabbit. How should I handle those skill conflicts?","choices":["keep existing skills","overwrite conflicting skills with backup","import conflicting skills under renamed folders"]}`
 - `{"question":"Choose migration mode: migrate only user data, or run the full compatible migration including allowlisted secrets?","choices":["user-data only","full compatible migration","cancel"]}`
-- `{"question":"Do you want to copy the OpenClaw workspace instructions file into a Hermes workspace?","choices":["skip workspace instructions","copy to a workspace path","decide later"]}`
+- `{"question":"Do you want to copy the OpenClaw workspace instructions file into a Rabbit workspace?","choices":["skip workspace instructions","copy to a workspace path","decide later"]}`
 - `{"question":"Please provide an absolute path where the workspace instructions should be copied."}`
 
 ## 决策到命令的映射
@@ -215,7 +214,7 @@ Hermes CLI 支持 `clarify` 工具进行交互式提示，但有以下限制：
 10. 如果 `report.skill_conflict_mode` 存在，将其作为所选已导入 skill 冲突策略的事实来源。
 11. 如果某项 `status="skipped"`，不得将其描述为已覆盖、已备份、已迁移或已解决。
 12. 如果 `kind="soul"` 的 `status="skipped"` 且原因为 `Target already matches source`，说明其保持不变，不提及备份。
-13. 如果重命名的已导入 skill 的 `details.backup` 为空，不得暗示现有 Hermes skill 已被重命名或备份。仅说明已导入的副本被放置在新目标位置，并将 `details.renamed_from` 作为保持原位的已有文件夹引用。
+13. 如果重命名的已导入 skill 的 `details.backup` 为空，不得暗示现有 Rabbit skill 已被重命名或备份。仅说明已导入的副本被放置在新目标位置，并将 `details.renamed_from` 作为保持原位的已有文件夹引用。
 
 ## 迁移 preset
 
@@ -247,37 +246,37 @@ Hermes CLI 支持 `clarify` 工具进行交互式提示，但有以下限制：
 完整发现的 dry run：
 
 ```bash
-python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py
+python3 ~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py
 ```
 
 使用终端工具时，优先使用绝对调用模式，例如：
 
 ```json
-{"command":"python3 /home/USER/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py","workdir":"/home/USER"}
+{"command":"python3 /home/USER/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py","workdir":"/home/USER"}
 ```
 
 使用 user-data preset 的 dry run：
 
 ```bash
-python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py --preset user-data
+python3 ~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py --preset user-data
 ```
 
 执行 user-data 迁移：
 
 ```bash
-python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py --execute --preset user-data --skill-conflict skip
+python3 ~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py --execute --preset user-data --skill-conflict skip
 ```
 
 执行完整兼容迁移：
 
 ```bash
-python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py --execute --preset full --migrate-secrets --skill-conflict skip
+python3 ~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py --execute --preset full --migrate-secrets --skill-conflict skip
 ```
 
 包含工作区指令的执行：
 
 ```bash
-python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes.py --execute --preset user-data --skill-conflict rename --workspace-target "/absolute/workspace/path"
+python3 ~/.rabbit/skills/migration/openclaw-migration/scripts/openclaw_to_rabbit.py --execute --preset user-data --skill-conflict rename --workspace-target "/absolute/workspace/path"
 ```
 
 默认情况下不要使用 `$PWD` 或主目录作为工作区目标。请先明确询问工作区路径。
@@ -285,11 +284,11 @@ python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes
 ## 重要规则
 
 1. 除非用户明确表示立即执行，否则在写入前先运行 dry run。
-2. 默认不迁移 secret。Token、认证 blob、设备凭据和原始 gateway 配置应保留在 Hermes 之外，除非用户明确要求迁移 secret。
-3. 除非用户明确要求，否则不得静默覆盖非空的 Hermes 目标。辅助脚本在启用覆盖时会保留备份。
+2. 默认不迁移 secret。Token、认证 blob、设备凭据和原始 gateway 配置应保留在 Rabbit 之外，除非用户明确要求迁移 secret。
+3. 除非用户明确要求，否则不得静默覆盖非空的 Rabbit 目标。辅助脚本在启用覆盖时会保留备份。
 4. 始终向用户提供跳过项报告。该报告是迁移的一部分，而非可选附加内容。
 5. 优先使用主 OpenClaw 工作区（`~/.openclaw/workspace/`）而非 `workspace.default/`。仅在主文件缺失时才使用默认工作区作为备用。
-6. 即使在 secret 迁移模式下，也只迁移具有干净 Hermes 目标的 secret。不支持的认证 blob 仍须报告为已跳过。
+6. 即使在 secret 迁移模式下，也只迁移具有干净 Rabbit 目标的 secret。不支持的认证 blob 仍须报告为已跳过。
 7. 如果 dry run 显示大型资产复制、冲突的 `SOUL.md` 或溢出的记忆条目，在执行前单独指出这些情况。
 8. 如果用户不确定，默认选择 `user-data only`。
 9. 仅在用户明确提供目标工作区路径时，才包含 `workspace-agents`。
@@ -310,7 +309,7 @@ python3 ~/.hermes/skills/migration/openclaw-migration/scripts/openclaw_to_hermes
 
 成功运行后，用户应拥有：
 
-- 已导入的 Hermes persona 状态
-- 已填充转换后 OpenClaw 知识的 Hermes 记忆文件
-- 在 `~/.hermes/skills/openclaw-imports/` 下可用的 OpenClaw skill
+- 已导入的 Rabbit persona 状态
+- 已填充转换后 OpenClaw 知识的 Rabbit 记忆文件
+- 在 `~/.rabbit/skills/openclaw-imports/` 下可用的 OpenClaw skill
 - 显示任何冲突、遗漏或不支持数据的迁移报告

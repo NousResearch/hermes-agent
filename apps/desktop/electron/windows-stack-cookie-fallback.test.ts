@@ -147,7 +147,7 @@ test('decideWindowsGpuStackCookieLaunch enables sticky fallback, re-probes on ve
   const overrideOff = decideWindowsGpuStackCookieLaunch({
     platform: 'win32',
     marker: { state: 'fallback', reason: 'renderer-crash-loop', version: '1.2.3' },
-    env: { HERMES_DESKTOP_DISABLE_GPU: '0' },
+    env: { RABBIT_DESKTOP_DISABLE_GPU: '0' },
     appVersion: '1.2.3'
   })
 
@@ -174,18 +174,18 @@ test('decideWindowsGpuStackCookieLaunch enables sticky fallback, re-probes on ve
   assert.equal(legacy.enable, true)
 })
 
-test('alreadyHasDisableGpu honors argv and HERMES_DESKTOP_DISABLE_GPU', () => {
+test('alreadyHasDisableGpu honors argv and RABBIT_DESKTOP_DISABLE_GPU', () => {
   assert.equal(alreadyHasDisableGpu(['--foo', '--disable-gpu'], {}), true)
-  assert.equal(alreadyHasDisableGpu([], { HERMES_DESKTOP_DISABLE_GPU: '1' }), true)
-  assert.equal(alreadyHasDisableGpu([], { HERMES_DESKTOP_DISABLE_GPU: 'true' }), true)
+  assert.equal(alreadyHasDisableGpu([], { RABBIT_DESKTOP_DISABLE_GPU: '1' }), true)
+  assert.equal(alreadyHasDisableGpu([], { RABBIT_DESKTOP_DISABLE_GPU: 'true' }), true)
   assert.equal(alreadyHasDisableGpu(['--disable-gpu-compositing'], {}), false)
   assert.equal(alreadyHasDisableGpu(['--no-sandbox'], {}), false)
 })
 
 test('buildDisableGpuRelaunchArgs appends a single GPU-off pair', () => {
-  assert.deepEqual(buildDisableGpuRelaunchArgs(['--foo', '--disable-gpu', 'hermes://x']), [
+  assert.deepEqual(buildDisableGpuRelaunchArgs(['--foo', '--disable-gpu', 'rabbit://x']), [
     '--foo',
-    'hermes://x',
+    'rabbit://x',
     '--disable-gpu',
     '--disable-gpu-compositing'
   ])
@@ -218,7 +218,7 @@ test('decideWindowsGpuStackCookieLaunch honors argv --disable-gpu even without a
   const overrideOffBeatsArgv = decideWindowsGpuStackCookieLaunch({
     platform: 'win32',
     argv: ['--disable-gpu'],
-    env: { HERMES_DESKTOP_DISABLE_GPU: '0' },
+    env: { RABBIT_DESKTOP_DISABLE_GPU: '0' },
     marker: { state: 'fallback', reason: 'renderer-crash-loop', version: '1.2.3' },
     appVersion: '1.2.3'
   })
@@ -307,7 +307,7 @@ test('shouldSurfaceErrorForRendererStackCookieCrashLoop when GPU fallback cannot
 })
 
 test('GPU stack-cookie marker lives in its own file and round-trips', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-stack-cookie-marker-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-stack-cookie-marker-'))
 
   try {
     assert.equal(gpuStackCookieMarkerPath(dir), path.join(dir, WINDOWS_GPU_STACK_COOKIE_MARKER_FILENAME))

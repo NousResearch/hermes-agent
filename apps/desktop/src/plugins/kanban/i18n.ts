@@ -5,7 +5,7 @@
  * SHAPE so components keep typed `k.newTask` / `k.moveTo(label)` access.
  */
 
-import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
+import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@rabbit/plugin-sdk'
 import { useMemo } from 'react'
 
 type KanbanMessages = {
@@ -428,7 +428,7 @@ export const en: KanbanMessages = {
   noProject: 'No project (scratch sandboxes)',
   projectHintPre:
     'New tasks run in the project’s repo (a worktree per task); each task can still override its workspace at creation. Manage projects with ',
-  projectHintCmd: 'hermes project',
+  projectHintCmd: 'rabbit project',
   createBoard: 'Create board',
   orchestratorProfile: 'Orchestrator profile',
   defaultAssignee: 'Default assignee',
@@ -444,9 +444,9 @@ export const en: KanbanMessages = {
     blockedTitle: 'Task blocked — needs your input',
     blockLoopTitle: 'Task routed to triage — needs a decision',
     gaveUpTitle: 'Task stopped',
-    gaveUpBody: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
-    crashedTitle: 'Task hit a problem — Hermes will retry it automatically',
-    timedOutTitle: 'Task took too long — Hermes will retry it automatically',
+    gaveUpBody: 'Rabbit couldn’t finish this task. Open Kanban to see why and reassign it.',
+    crashedTitle: 'Task hit a problem — Rabbit will retry it automatically',
+    timedOutTitle: 'Task took too long — Rabbit will retry it automatically',
     openKanban: 'Open Kanban',
     artifacts: (n: number) => `${n} artifacts`
   }
@@ -655,7 +655,7 @@ const ja: KanbanMessages = {
   noProject: 'プロジェクトなし（スクラッチのサンドボックス）',
   projectHintPre:
     '新しいタスクはプロジェクトのリポジトリで実行されます（タスクごとに worktree）。各タスクは作成時にワークスペースを上書きできます。プロジェクトの管理は ',
-  projectHintCmd: 'hermes project',
+  projectHintCmd: 'rabbit project',
   createBoard: 'ボードを作成',
   orchestratorProfile: 'オーケストレータープロフィール',
   defaultAssignee: 'デフォルトの担当',
@@ -671,9 +671,9 @@ const ja: KanbanMessages = {
     blockedTitle: 'タスクがブロック中 — 入力が必要です',
     blockLoopTitle: 'タスクをトリアージへ移動 — 判断が必要です',
     gaveUpTitle: 'タスクが停止しました',
-    gaveUpBody: 'Hermes はこのタスクを完了できませんでした。かんばんを開いて原因を確認し、再割り当てしてください。',
-    crashedTitle: 'タスクで問題が発生 — Hermes が自動で再試行します',
-    timedOutTitle: 'タスクに時間がかかりすぎました — Hermes が自動で再試行します',
+    gaveUpBody: 'Rabbit はこのタスクを完了できませんでした。かんばんを開いて原因を確認し、再割り当てしてください。',
+    crashedTitle: 'タスクで問題が発生 — Rabbit が自動で再試行します',
+    timedOutTitle: 'タスクに時間がかかりすぎました — Rabbit が自動で再試行します',
     openKanban: 'かんばんを開く',
     artifacts: (n: number) => `成果物 ${n} 件`
   }
@@ -880,7 +880,7 @@ const zh: KanbanMessages = {
   noProject: '无项目（临时沙箱）',
   projectHintPre:
     '新任务将在项目的仓库中运行（每个任务一个 worktree）；每个任务在创建时仍可覆盖其工作区。管理项目请使用 ',
-  projectHintCmd: 'hermes project',
+  projectHintCmd: 'rabbit project',
   createBoard: '创建面板',
   orchestratorProfile: '编排者配置档',
   defaultAssignee: '默认负责人',
@@ -895,9 +895,9 @@ const zh: KanbanMessages = {
     blockedTitle: '任务受阻 — 需要你的输入',
     blockLoopTitle: '任务已转入分类 — 需要人工决定',
     gaveUpTitle: '任务已停止',
-    gaveUpBody: 'Hermes 无法完成这个任务。打开看板查看原因并重新分配。',
-    crashedTitle: '任务遇到问题 — Hermes 将自动重试',
-    timedOutTitle: '任务耗时过长 — Hermes 将自动重试',
+    gaveUpBody: 'Rabbit 无法完成这个任务。打开看板查看原因并重新分配。',
+    crashedTitle: '任务遇到问题 — Rabbit 将自动重试',
+    timedOutTitle: '任务耗时过长 — Rabbit 将自动重试',
     openKanban: '打开看板',
     artifacts: (n: number) => `${n} 个产物`
   }
@@ -1104,7 +1104,7 @@ const zhHant: KanbanMessages = {
   noProject: '無專案（暫存沙箱）',
   projectHintPre:
     '新任務將在專案的儲存庫中執行（每個任務一個 worktree）；每個任務在建立時仍可覆寫其工作區。管理專案請使用 ',
-  projectHintCmd: 'hermes project',
+  projectHintCmd: 'rabbit project',
   createBoard: '建立面板',
   orchestratorProfile: '編排者設定檔',
   defaultAssignee: '預設負責人',
@@ -1119,9 +1119,9 @@ const zhHant: KanbanMessages = {
     blockedTitle: '任務受阻 — 需要你的輸入',
     blockLoopTitle: '任務已轉入分類 — 需要人工決定',
     gaveUpTitle: '任務已停止',
-    gaveUpBody: 'Hermes 無法完成這個任務。開啟看板查看原因並重新指派。',
-    crashedTitle: '任務遇到問題 — Hermes 將自動重試',
-    timedOutTitle: '任務耗時過長 — Hermes 將自動重試',
+    gaveUpBody: 'Rabbit 無法完成這個任務。開啟看板查看原因並重新指派。',
+    crashedTitle: '任務遇到問題 — Rabbit 將自動重試',
+    timedOutTitle: '任務耗時過長 — Rabbit 將自動重試',
     openKanban: '開啟看板',
     artifacts: (n: number) => `${n} 個產物`
   }

@@ -6,7 +6,7 @@ name: context7
 description: Up-to-date, version-specific library docs and code examples.
 source: https://context7.com/docs/resources/all-clients
 
-# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# Official vendor-hosted remote MCP (URL-only — Rabbit never spawns a local
 # process for this entry). No authentication required (verified live:
 # initialize succeeds anonymously).
 

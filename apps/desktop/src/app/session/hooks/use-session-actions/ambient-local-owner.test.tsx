@@ -2,8 +2,8 @@ import { act, cleanup, render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesConnection } from '@/global'
-import { getLatestSessionMessages, type SessionInfo } from '@/hermes'
+import type { RabbitConnection } from '@/global'
+import { getLatestSessionMessages, type SessionInfo } from '@/rabbit'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import * as gateways from '@/store/gateway'
 import { $activeGatewayProfile, $showAllProfiles } from '@/store/profile'
@@ -15,11 +15,11 @@ import type { ClientSessionState } from '../../../types'
 import { useSessionActions } from './index'
 
 vi.mock('@/app/contrib/hooks/use-background-sync', () => ({ resetLiveRuntimeTracking: vi.fn() }))
-vi.mock('@/hermes', async importOriginal => ({
+vi.mock('@/rabbit', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'stored' })),
   getProfiles: vi.fn(async () => ({ profiles: [{ name: 'default' }] })),
-  HermesGateway: class {
+  RabbitGateway: class {
     connectionState = 'closed'
     connect = async () => {
       this.connectionState = 'open'
@@ -37,7 +37,7 @@ function rpcResult(method: string) {
   return method === 'session.resume' ? { info: {}, messages: [], resumed: 'stored', session_id: 'runtime' } : {}
 }
 
-function descriptor(connectionId: string, registryScoped = true): HermesConnection {
+function descriptor(connectionId: string, registryScoped = true): RabbitConnection {
   return {
     connectionId,
     profile: 'default',
@@ -47,7 +47,7 @@ function descriptor(connectionId: string, registryScoped = true): HermesConnecti
     token: 'test',
     wsUrl: `ws://${connectionId}.invalid/ws`,
     baseUrl: `http://${connectionId}.invalid`
-  } as HermesConnection
+  } as RabbitConnection
 }
 
 type Resume = ReturnType<typeof useSessionActions>['resumeSession']
@@ -99,7 +99,7 @@ describe('untagged resume ambient owner', () => {
     $showAllProfiles.set(false)
     $activeGatewayProfile.set('default')
     vi.clearAllMocks()
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'rabbitDesktop', {
       configurable: true,
       value: {
         getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string }) => descriptor(connectionId)),

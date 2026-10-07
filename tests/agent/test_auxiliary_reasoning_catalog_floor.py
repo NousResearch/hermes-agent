@@ -12,10 +12,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import hermes_cli.models as models_mod
+import rabbit_cli.models as models_mod
 from agent import auxiliary_reasoning_floor
 from agent.auxiliary_client import call_llm
-from hermes_cli import models_reasoning_caps
+from rabbit_cli import models_reasoning_caps
 
 _CATALOG = [
     {"id": "openai/gpt-oss-20b", "supported_parameters": ["reasoning", "tools"],

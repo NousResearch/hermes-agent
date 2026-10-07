@@ -12,7 +12,7 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 SID = "20260913_210721_c89ac8"

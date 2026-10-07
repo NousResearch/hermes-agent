@@ -151,7 +151,7 @@ class TestStringContentSidecarDelivery:
         bytes (replay keeps them byte-stable in history)."""
         agent = _FakeAgent()
         agent._gateway_turn_context_notes = RESET_NOTE
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("rabbit_cli.plugins.invoke_hook", return_value=[]):
             ctx = _build(agent)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
@@ -167,7 +167,7 @@ class TestStringContentSidecarDelivery:
         agent = _FakeAgent()
         agent._gateway_turn_context_notes = VC_NOTE
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "rabbit_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
@@ -176,7 +176,7 @@ class TestStringContentSidecarDelivery:
 
     def test_no_notes_means_no_stamp(self):
         agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("rabbit_cli.plugins.invoke_hook", return_value=[]):
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
@@ -192,7 +192,7 @@ class TestMultimodalFallback:
             {"type": "text", "text": "look at this"},
             {"type": "image_url", "image_url": {"url": "https://x/img.png"}},
         ]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("rabbit_cli.plugins.invoke_hook", return_value=[]):
             ctx = _build(agent, user_message=content)
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"][-1] == {"type": "text", "text": RESET_NOTE}

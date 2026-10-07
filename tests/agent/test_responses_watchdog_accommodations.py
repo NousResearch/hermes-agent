@@ -52,7 +52,7 @@ def test_xai_responses_receives_stale_timeout_floor_in_api_call(monkeypatch):
     agent = _make_mock_agent(provider="xai-oauth", api_mode="codex_responses", base_url="https://api.x.ai/v1")
     assert h._is_openai_codex_backend(agent) is False
 
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "0")
     closes = []
     monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: SimpleNamespace())
     monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **k: None)
@@ -93,7 +93,7 @@ def test_xai_responses_ttfb_scaled_for_large_requests(monkeypatch):
     agent = _make_mock_agent(provider="xai-oauth", api_mode="codex_responses", base_url="https://api.x.ai/v1")
     assert h._is_openai_codex_backend(agent) is False
 
-    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "0.2")
+    monkeypatch.setenv("RABBIT_CODEX_TTFB_TIMEOUT_SECONDS", "0.2")
 
     closes = []
     monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: SimpleNamespace())
@@ -143,7 +143,7 @@ def test_hard_ceiling_clamps_hosted_but_not_local_responses_endpoints(monkeypatc
     local Responses server's configured stale timeout."""
     from agent import chat_completion_helpers as h
 
-    monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("RABBIT_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
     kwargs = {"input": [{"role": "user", "content": "hi"}]}
     hosted = _make_mock_agent()
     local = _make_mock_agent(provider="custom", base_url="http://127.0.0.1:1234/v1")

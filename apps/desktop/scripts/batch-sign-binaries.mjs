@@ -1,5 +1,5 @@
 // batch-sign-binaries.mjs — Authenticode-sign every standalone binary inside
-// the packed Windows app tree (Hermes.exe's sibling DLLs and everything under
+// the packed Windows app tree (Rabbit.exe's sibling DLLs and everything under
 // resources/agent-payload/tools/: node.exe, ffmpeg.exe, chromium, the minted
 // CLI launcher exes, pm tool binaries, …).
 //
@@ -416,7 +416,7 @@ async function main() {
     console.error('usage: batch-sign-binaries.mjs <dir>')
     process.exit(2)
   }
-  const result = await batchSignAppTree(root, process.env.HERMES_PRODUCT_EXE || path.join(root, 'Hermes.exe'))
+  const result = await batchSignAppTree(root, process.env.RABBIT_PRODUCT_EXE || path.join(root, 'Rabbit.exe'))
   if (result.skipped) process.exit(0)
 }
 

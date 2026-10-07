@@ -17,7 +17,7 @@ function deferred() {
   return { promise, reject, resolve }
 }
 
-const config = { host: 'box', user: 'alice', port: 22, keyPath: '/key', remoteHermesPath: '/hermes' }
+const config = { host: 'box', user: 'alice', port: 22, keyPath: '/key', remoteRabbitPath: '/rabbit' }
 
 test('sshConfigFingerprint covers scope and every connection field', () => {
   const base = sshConfigFingerprint('', config)
@@ -28,7 +28,7 @@ test('sshConfigFingerprint covers scope and every connection field', () => {
     user: 'bob',
     port: 2222,
     keyPath: '/other',
-    remoteHermesPath: '/other-hermes',
+    remoteRabbitPath: '/other-rabbit',
     remoteProfile: 'default',
     effectiveConfigFingerprint: 'changed-config'
   })) {

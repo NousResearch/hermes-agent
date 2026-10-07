@@ -241,7 +241,6 @@ class TestDDGSBackendWiring:
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
                     "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "KEENABLE_API_KEY"):
             monkeypatch.delenv(key, raising=False)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         assert web_tools._get_backend() == "ddgs"
 
@@ -273,7 +272,6 @@ class TestDDGSSearchOnlyErrors:
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:
             return True
 

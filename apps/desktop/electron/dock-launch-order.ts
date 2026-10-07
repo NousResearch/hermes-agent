@@ -9,7 +9,7 @@
  * is registered before the lock.
  *
  * Other platforms have no Dock. They still take the lock at module load so a
- * second `hermes://` launch arrives as `second-instance` argv, and they
+ * second `rabbit://` launch arrives as `second-instance` argv, and they
  * register the protocol on ready.
  */
 

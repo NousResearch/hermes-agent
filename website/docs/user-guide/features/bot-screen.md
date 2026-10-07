@@ -5,9 +5,9 @@ sidebar_position: 17
 
 # Bot Screen
 
-On a headless Linux gateway host (a server, a cloud VM, Hermes Cloud) each bot
+On a headless Linux gateway host (a server, a cloud VM, Rabbit Cloud) each bot
 gets its **own desktop**: an Xfce screen the bot's `computer_use` and headed
-browser act on, streamed live into Hermes Desktop. Watch what the bot does,
+browser act on, streamed live into Rabbit Desktop. Watch what the bot does,
 **take over** when it hits a login, 2FA prompt, CAPTCHA or payment step, then
 **hand control back** and let it continue with the session you just signed in
 to. The bot keeps working after you close the app or turn off your laptop; the
@@ -17,7 +17,7 @@ the screen lives **inside that sandbox** instead, alongside the shell, so the
 bot's `computer_use` and browser never act outside the boundary you drew (see
 [Where the screen runs](#where-the-screen-runs)).
 
-Every Hermes profile ("bot") has its own screen, its own browser profile and
+Every Rabbit profile ("bot") has its own screen, its own browser profile and
 its own cookies. Screens are work surfaces, not security boundaries: the bots
 share the host's user account, files and network (the same model as other
 hosted-agent products).
@@ -46,23 +46,23 @@ reverse proxy's access log may record an already-spent ticket.
 - The gateway host runs Linux. macOS and Windows hosts already have a real
   display; the pane is not offered there.
 - TigerVNC's `Xvnc` and the Xfce core components are installed on the host.
-  Nothing installs them silently: `hermes update` and fresh installs leave every
-  machine as it is. When they are missing the Screen pane in Hermes Desktop shows
+  Nothing installs them silently: `rabbit update` and fresh installs leave every
+  machine as it is. When they are missing the Screen pane in Rabbit Desktop shows
   **Install on host** — one click runs the package manager on the gateway host
   (it asks for that host's sudo password in a masked card; the password goes to
-  that host only and is never stored) and streams the log. When Hermes itself
+  that host only and is never stored) and streams the log. When Rabbit itself
   runs as root — the usual case in a container — the installer runs the package
   manager directly, with no sudo and no password card. When it is not root and
   the host has no `sudo` at all, the pane and the CLI print the exact install
   command for you to run on the host instead of showing a card. The official
-  Docker image (`nousresearch/hermes-agent`, which also powers Hermes Cloud) is
+  Docker image (`seven0070/Rabbit-`, which also powers Rabbit Cloud) is
   that second case: the gateway runs as an unprivileged user and the image has no
   `sudo`, so the pane shows the `apt-get` line and an operator runs it once as
   root in the container (`docker exec -u 0 <container> apt-get install -y …`).
   Add `chromium` to that line if you want the dock's Browser icon; see
   [Browser sessions](#browser-sessions-that-survive-the-handoff) below. From a shell,
-  `hermes computer-use screen status` prints the exact line and
-  `hermes computer-use screen install` runs it:
+  `rabbit computer-use screen status` prints the exact line and
+  `rabbit computer-use screen install` runs it:
 
   | Distro | Packages |
   |---|---|
@@ -82,11 +82,11 @@ reverse proxy's access log may record an already-spent ticket.
   constraint (idle desktop ≈ 0.01 core, live streaming ≈ 0.03 core). The packages
   take ~930 MB of disk on Debian 13.
 
-  Before starting a screen, Hermes checks that the host — or its container
+  Before starting a screen, Rabbit checks that the host — or its container
   cgroup, whichever is tighter — has `bot_desktop.min_free_memory_mb` free
   (default 1536; `0` disables the check). Below that the pane shows why in place
   of **Start screen** and
-  `hermes computer-use screen start` refuses; a screen already running is never
+  `rabbit computer-use screen start` refuses; a screen already running is never
   taken down by this check. A screen nobody uses is stopped after
   `bot_desktop.idle_stop_minutes` (default 30) and comes back on the next use, so
   an instance pays for a desktop only while something is on it. Practical guidance
@@ -109,7 +109,7 @@ Build your own only if you want the packages in a custom image. The official
 `docker build .` stays lean:
 
 ```bash
-docker build --build-arg HERMES_BOT_DESKTOP=1 -t hermes-agent:screen .
+docker build --build-arg RABBIT_BOT_DESKTOP=1 -t rabbit-agent:screen .
 ```
 
 It adds TigerVNC, the Xfce components and the distro `chromium` (the sandbox
@@ -122,7 +122,7 @@ screen is started.
 
 ## Using it
 
-Every bot's computer is one click away in three places of Hermes Desktop:
+Every bot's computer is one click away in three places of Rabbit Desktop:
 
 - **Bots → a bot → Scheduled Jobs**: the bot's screen is the hero at the very
   top of the pane, above the title and the routines: a live preview of the
@@ -142,7 +142,7 @@ Every bot's computer is one click away in three places of Hermes Desktop:
 
 1. Open the Screen with any of the entries above.
    The screen is **off by default** and nothing starts it for you: click
-   **Start screen** in the pane, run `hermes computer-use screen start` on the
+   **Start screen** in the pane, run `rabbit computer-use screen start` on the
    host, or set `bot_desktop.auto_start: true` if you want a headless host to
    start the screen by itself on the bot's first `computer_use` call or first
    headed browser use (`browser.headed: true`) — off so that installing
@@ -179,9 +179,9 @@ controller drops back to watching.
 
 While the screen runs, the bot's browser tool and the dock's **Browser** icon are
 the same browser: the Chromium agent-browser drives, with one persistent
-user-data-dir per bot (`<HERMES_HOME>/bot-desktop/browser-profile`; set
+user-data-dir per bot (`<RABBIT_HOME>/bot-desktop/browser-profile`; set
 `AGENT_BROWSER_PROFILE` to pin your own — `~` expands, and a relative path such
-as `pin` resolves against that bot's `HERMES_HOME`, i.e. `<HERMES_HOME>/pin`).
+as `pin` resolves against that bot's `RABBIT_HOME`, i.e. `<RABBIT_HOME>/pin`).
 Click Browser during a takeover and you
 are in the bot's own windows and cookie jar; what you sign in to is what the bot
 uses afterwards and in every later session, until the site expires the login.
@@ -189,14 +189,14 @@ Set `browser.headed: true` so the bot's own browsing is visible on the screen to
 
 The dock is seeded **once**, the first time the screen starts for a profile.
 The guard is the panel layout file
-`<HERMES_HOME>/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`:
+`<RABBIT_HOME>/bot-desktop/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`:
 while it exists the launcher leaves the panel alone, so changing
 `AGENT_BROWSER_EXECUTABLE_PATH` or `AGENT_BROWSER_PROFILE` and restarting the
 screen does not re-pin the Browser icon. Delete that file and the dock is
 rebuilt on the next `screen start` from whatever is installed then.
 
 Which Chromium the dock and the bot use: an explicit
-`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Hermes uses the PM-managed
+`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Rabbit uses the PM-managed
 Chromium and falls back to a system `chromium` / `google-chrome`. A non-root
 user on a host with `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu
 23.10 and later) gets the reverse order, because there the managed build cannot
@@ -218,12 +218,12 @@ and the same.
 ## CLI
 
 ```bash
-hermes computer-use screen status          # installed? running? who holds control?
-hermes computer-use screen start           # start this profile's screen
-hermes computer-use screen stop            # stop it; refuses while a human holds control
-hermes computer-use screen stop --force    # ...unless you say so (also frees a stuck lease)
-hermes computer-use screen install [-y]    # apt/dnf/pacman the packages
-hermes -p research computer-use screen start   # another bot's screen
+rabbit computer-use screen status          # installed? running? who holds control?
+rabbit computer-use screen start           # start this profile's screen
+rabbit computer-use screen stop            # stop it; refuses while a human holds control
+rabbit computer-use screen stop --force    # ...unless you say so (also frees a stuck lease)
+rabbit computer-use screen install [-y]    # apt/dnf/pacman the packages
+rabbit -p research computer-use screen start   # another bot's screen
 ```
 
 ## Where the screen runs
@@ -255,7 +255,7 @@ it, so the restarted gateway re-attaches to a still-running sandbox, and
 
 ### The sandbox image
 
-The sandbox needs the desktop stack. `nousresearch/hermes-sandbox:desktop` is
+The sandbox needs the desktop stack. `nousresearch/rabbit-sandbox:desktop` is
 the default image for every container backend (Docker, Modal, Daytona,
 Singularity): the `nikolaik/python-nodejs` base (Python 3.13 / Node 26) plus
 TigerVNC, the Xfce components, a headed Chromium, `agent-browser`, `cua-driver`
@@ -267,14 +267,14 @@ the screen then tells you it needs this image or `bot_desktop.placement: gateway
 ```yaml
 terminal:
   backend: docker
-  docker_image: nousresearch/hermes-sandbox:desktop
+  docker_image: nousresearch/rabbit-sandbox:desktop
 ```
 
 With a plain image the Screen pane reports the missing binaries and names
 this tag.
 
 Under Singularity/Apptainer the same image is converted to a SIF
-(`docker://nousresearch/hermes-sandbox:desktop`); Dockerfile `ENV` survives the
+(`docker://nousresearch/rabbit-sandbox:desktop`); Dockerfile `ENV` survives the
 conversion, the image's `USER` does not: everything runs as you, so the browser
 profile lands in your `$HOME` inside the container, which is the persistent
 overlay by default. The instance runs `--containall`, so its temp dir (where the
@@ -296,14 +296,14 @@ kept, not replaced: when `docker_image` is unset and a persisted container runs
 another image (the old default, `nikolaik/python-nodejs:python3.11-nodejs20`),
 the terminal keeps using that container and you decide the switch. The
 interactive CLI asks once at startup; the Screen pane shows the same choice
-with **Switch image** / **Keep current image**; `hermes config set
-terminal.docker_image nousresearch/hermes-sandbox:desktop` is the same answer
+with **Switch image** / **Keep current image**; `rabbit config set
+terminal.docker_image nousresearch/rabbit-sandbox:desktop` is the same answer
 from any shell. Either answer writes `terminal.docker_image`, and a written
 image is a decision: the container is recreated on the next terminal call only
 when you chose the new image, and only once the new image has been pulled (a
 private or misspelled tag, or a registry outage, keeps your current container
 running instead of leaving you with nothing). What a switch means: files under `/root` and
-`/workspace` stay (they are host directories under `~/.hermes/sandboxes/`),
+`/workspace` stay (they are host directories under `~/.rabbit/sandboxes/`),
 packages installed inside the container with `apt`/`pip`/`npm -g` are
 reinstalled on demand, and Python 3.11 virtualenvs need a rebuild on 3.13.
 Gateways and cron never decide; they keep the sandbox and log the notice.
@@ -316,9 +316,9 @@ denies the user namespaces its own sandbox needs; the container is the
 sandbox).
 
 Runtime state inside the sandbox (X socket, cookie, launcher log) lives under
-`<sandbox tmp>/hermes-bot-desktop/<profile>/`; the host keeps only a marker under
-`<HERMES_HOME>/bot-desktop/`. The browser profile (logins, cookies) lives in the
-desktop user's home inside the sandbox, `~/.hermes/bot-desktop/browser-profile`,
+`<sandbox tmp>/rabbit-bot-desktop/<profile>/`; the host keeps only a marker under
+`<RABBIT_HOME>/bot-desktop/`. The browser profile (logins, cookies) lives in the
+desktop user's home inside the sandbox, `~/.rabbit/bot-desktop/browser-profile`,
 shared by the agent's browser and the dock's **Browser** icon. It follows the
 container's own persistence: kept across stops and restarts of a persisted
 container, gone with an ephemeral one or when you approve an image switch (the
@@ -341,12 +341,12 @@ bot_desktop:
 ```
 
 `auto_start` is off by default. Start the screen from the Desktop's Screen
-pane (**Start screen**), from `hermes computer-use screen start`, or set the
+pane (**Start screen**), from `rabbit computer-use screen start`, or set the
 flag to `true` for a headless host that should bring its screen up the first
 time the bot calls `computer_use` or opens a headed browser (`browser.headed:
 true`) and no display is available.
 
-State lives under `<HERMES_HOME>/bot-desktop/` per profile (RFB Unix socket,
+State lives under `<RABBIT_HOME>/bot-desktop/` per profile (RFB Unix socket,
 Xauthority, launcher log, per-profile xfconf).
 
 ## How it works
@@ -359,15 +359,15 @@ Xauthority, launcher log, per-profile xfconf).
 - **Xfce** starts component-wise (`xfsettingsd`, `xfwm4 --compositor=off`,
   `xfdesktop`, `xfce4-panel`) under a private D-Bus session, without
   `xfce4-session`, so nothing tries to lock the screen or reach `logind`.
-- **Hermes Desktop** bundles noVNC. It asks the gateway for a single-use ticket
+- **Rabbit Desktop** bundles noVNC. It asks the gateway for a single-use ticket
   (`display.observe`) over its normal authenticated connection and opens a
   sibling WebSocket to `/api/display/ws`; the gateway splices the RFB stream
   through. Nothing new is exposed; the pane works over local, SSH, URL+token
-  and Hermes Cloud connections alike.
+  and Rabbit Cloud connections alike.
 - **Control lease.** The gateway drops keyboard, pointer and clipboard messages
   from any viewer that does not hold the lease, at the RFB byte level; noVNC's
   view-only flag is only the UI hint. The same lease gates `computer_use` and
-  the browser tools. It is a file under `<HERMES_HOME>/bot-desktop/`: no file
+  the browser tools. It is a file under `<RABBIT_HOME>/bot-desktop/`: no file
   means the bot holds control (a fresh profile); a file that exists but cannot
   be read or parsed fails closed — the bot is treated as locked out until the
   next successful hand-off rewrites it. Xvnc never pushes the screen's clipboard
@@ -381,8 +381,8 @@ Xauthority, launcher log, per-profile xfconf).
 
 - **"Screen packages missing"** — click **Install on host** in the pane, or run
   the printed install line on the gateway host (not on the machine running
-  Hermes Desktop). The pane refuses a second install while one is running.
-- **Screen starts then stops** — read `<HERMES_HOME>/bot-desktop/launcher.log`.
+  Rabbit Desktop). The pane refuses a second install while one is running.
+- **Screen starts then stops** — read `<RABBIT_HOME>/bot-desktop/launcher.log`.
 - **Typing produces wrong characters during a takeover** — the screen runs a
   US keymap so RFB keysyms and cua-driver agree, and noVNC sends raw keycodes
   (QEMU extended key events) once Xvnc offers them, so on a non-US physical
@@ -391,9 +391,9 @@ Xauthority, launcher log, per-profile xfconf).
   with `setxkbmap` on that `DISPLAY`.
 - **Bot says `human_has_control` after you left** — click **Hand back** in the
   pane (or **Hand back (force)** after a reload). From a shell,
-  `hermes computer-use screen stop --force` releases the lease and stops the
+  `rabbit computer-use screen stop --force` releases the lease and stops the
   screen (without `--force` the command refuses while a human holds control, so a
-  runbook can never yank a live takeover); `hermes computer-use screen start`
+  runbook can never yank a live takeover); `rabbit computer-use screen start`
   brings it back with the bot in control.
 
 ### Testing under WSL

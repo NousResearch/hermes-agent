@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired } from '@hermes/shared'
+import { isGatewayReauthRequired } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -9,26 +9,17 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type {
-  DesktopCloudAgent,
-  DesktopCloudOrg,
-  DesktopConnectionConfigInput,
-  DesktopRegistryConnection
-} from '@/global'
+import type { DesktopConnectionConfigInput, DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
-import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { ExternalLink } from '@/lib/external-link'
 import {
   AlertCircle,
   Check,
-  Cloud,
   FileText,
   Globe,
   HelpCircle,
   Loader2,
-  LogIn,
   Monitor,
-  RefreshCw,
   Terminal
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
@@ -43,7 +34,6 @@ import {
 import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
 
-import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
@@ -52,10 +42,8 @@ import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
-type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
+type Mode = 'local' | 'remote' | 'ssh'
 type AuthMode = 'oauth' | 'token'
-// Hermes Cloud discovery lifecycle for the cloud-mode panel.
-type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
 
 export interface GatewaySettingsState {
   envOverride: boolean
@@ -71,12 +59,11 @@ export interface GatewaySettingsState {
   // disk (opted-in on a machine without secure storage). Drives the warning banner.
   remoteTokenPlainText: boolean
   remoteUrl: string
-  cloudOrg: string
   sshHost: string
   sshUser: string
   sshPort: number | null
   sshKeyPath: string
-  sshRemoteHermesPath: string
+  sshRemoteRabbitPath: string
   sshRemoteProfile: string
 }
 
@@ -92,12 +79,11 @@ const EMPTY_STATE: GatewaySettingsState = {
   secureTokenStorage: true,
   remoteTokenPlainText: false,
   remoteUrl: '',
-  cloudOrg: '',
   sshHost: '',
   sshUser: '',
   sshPort: null,
   sshKeyPath: '',
-  sshRemoteHermesPath: '',
+  sshRemoteRabbitPath: '',
   sshRemoteProfile: ''
 }
 
@@ -111,10 +97,6 @@ export function normalizeGatewaySettingsState(
   const defined = Object.fromEntries(Object.entries(config).filter(([, value]) => value != null))
 
   return { ...EMPTY_STATE, ...defined }
-}
-
-export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
-  return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
 }
 
 function ModeCard({
@@ -263,7 +245,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     host: 'settings',
     enabled: !loading && state.mode === 'remote',
     beforeOAuthLogin: async (payload: DesktopConnectionConfigInput): Promise<void> => {
-      await window.hermesDesktop.saveConnectionConfig(payload)
+      await window.rabbitDesktop.saveConnectionConfig(payload)
     },
     onNotice: notify
   })
@@ -276,11 +258,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   const saveSeq = useRef(0)
   const saveOwner = useRef<number | null>(null)
   const signingSeq = useRef(0)
-  const cloudConnectSeq = useRef(0)
   const contextSeq = useRef(0)
   const registry = useStore($connectionsRegistry)
   const activeConnectionId = useStore($activeConnectionId)
-  const savedCloudConnections = registry?.connections.filter(connection => connection.kind === 'cloud') ?? []
 
   useEffect(() => {
     void refreshConnectionsRegistry().catch(err => notifyError(err, g.failedLoad))
@@ -295,7 +275,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   useEffect(() => {
     let cancelled = false
 
-    void window.hermesDesktop
+    void window.rabbitDesktop
       ?.getSecretStorageEncryption?.()
       .then(res => {
         if (!cancelled && res) {
@@ -315,7 +295,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     setKeychainEncryptionState(on)
 
     try {
-      const res = await window.hermesDesktop.setSecretStorageEncryption(on)
+      const res = await window.rabbitDesktop.setSecretStorageEncryption(on)
 
       setKeychainEncryptionState(res?.on === true)
     } catch (err) {
@@ -344,35 +324,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   // so confirm resumes the right one.
   const [plainTextConfirm, setPlainTextConfirm] = useState<null | { apply: boolean }>(null)
 
-  // --- Hermes Cloud (cloud mode) state ---
-  // One portal session powers discovery + the silent per-agent cascade. These
-  // track the cloud panel: whether we're signed in, the discovered agent list,
-  // and which agent is mid-connect.
-  const [cloudSignedIn, setCloudSignedIn] = useState(false)
-  const [cloudSigningIn, setCloudSigningIn] = useState(false)
-  const [cloudAgents, setCloudAgents] = useState<DesktopCloudAgent[]>([])
-  const [cloudDiscover, setCloudDiscover] = useState<CloudDiscoverStatus>('idle')
-  const [cloudConnectingId, setCloudConnectingId] = useState<null | string>(null)
-  // Multi-org users: when discovery returns needsOrgSelection, we hold the org
-  // list here and show a picker. `cloudOrg` is the chosen org slug/id (null =
-  // not yet chosen / single-org user).
-  const [cloudOrgs, setCloudOrgs] = useState<DesktopCloudOrg[]>([])
-  const [cloudOrg, setCloudOrgState] = useState<null | string>(null)
-  // Mirror the selected org into a ref so connect reads the CURRENT value, not a
-  // value captured in a stale render closure. discoverCloud() resolves the org
-  // asynchronously (from the NAS response) and a user can click Connect in the
-  // same render tick; without the ref, connectCloudAgent could persist a null
-  // org even though discovery just resolved one. Always set both together.
-  const cloudOrgRef = useRef<null | string>(null)
-
-  const setCloudOrg = (value: null | string) => {
-    cloudOrgRef.current = value
-    setCloudOrgState(value)
-  }
-
   useEffect(() => {
     let cancelled = false
-    const desktop = window.hermesDesktop
+    const desktop = window.rabbitDesktop
 
     if (!desktop?.getConnectionConfig) {
       setLoading(false)
@@ -408,76 +362,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   // prefers a fresh probe result over the saved value.
   const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
-  const savedAgent = (agent: DesktopCloudAgent) => {
-    const dashboardUrl = agent.dashboardUrl
-
-    if (!dashboardUrl) {
-      return undefined
-    }
-
-    const target = savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: dashboardUrl })
-
-    return registry?.connections.find(
-      (connection): connection is DesktopRegistryConnection & { url: string } =>
-        (connection.kind === 'cloud' || connection.kind === 'remote') &&
-        typeof connection.url === 'string' &&
-        savedCloudConnectionUrl({ mode: 'cloud', remoteUrl: connection.url }) === target
-    )
-  }
-
-  const isConnectedAgent = (agent: DesktopCloudAgent) =>
-    savedAgent(agent)?.id === activeConnectionId && !cloudTeamChanged(savedAgent(agent), cloudOrg)
-
-  // A saved cloud connection's gateway session can lapse while the app sits
-  // on a local-primary device — the dial then rejects with a reauth-shaped
-  // error whose copy points here ("Open Settings → Gateway and sign in
-  // again"), yet nothing else in Settings re-authenticates a cloud row. Run
-  // the one recovery that exists for this state — drop the lapsed cookies,
-  // ensure the portal session, silent-cascade the agent — then retry the
-  // switch once. Everything else stays a plain failed switch.
-  const selectSavedCloudWithReauth = async (id: string, dashboardUrl?: string) => {
-    try {
-      await selectConnection(id)
-    } catch (error) {
-      if (!isGatewayReauthRequired(error)) {
-        throw error
-      }
-
-      const desktop = window.hermesDesktop
-
-      // Cloud registry URLs are the persisted agent dashboardUrl. Keep saved
-      // rows usable without discovery, but never run the cascade against ''.
-      if (!desktop?.cloud || !dashboardUrl) {
-        throw error
-      }
-
-      const outcome = await reestablishCloudAgentSession(desktop, dashboardUrl)
-
-      if (outcome !== 'connected') {
-        notify({
-          kind: 'warning',
-          title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
-        })
-
-        throw error
-      }
-
-      await selectConnection(id)
-    }
-  }
-
-  const activateSavedCloud = async (id: string, dashboardUrl?: string) => {
-    setCloudConnectingId(id)
-
-    try {
-      await selectSavedCloudWithReauth(id, dashboardUrl)
-    } catch (err) {
-      notifyError(err, g.cloudConnectFailed)
-    } finally {
-      setCloudConnectingId(null)
-    }
-  }
 
   useEffect(() => {
     // One-directional: a saved host that isn't in the suggestions must render
@@ -491,12 +375,12 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   }, [state.sshHost, sshHostSuggestions])
 
   useEffect(() => {
-    if (state.mode !== 'ssh' || !window.hermesDesktop?.sshConfigHosts) {
+    if (state.mode !== 'ssh' || !window.rabbitDesktop?.sshConfigHosts) {
       return
     }
 
     let cancelled = false
-    void window.hermesDesktop
+    void window.rabbitDesktop
       .sshConfigHosts()
       .then(result => {
         if (!cancelled) {
@@ -518,7 +402,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     sshTestSeq.current += 1
     saveSeq.current += 1
     signingSeq.current += 1
-    cloudConnectSeq.current += 1
     setLastTest(null)
   }, [
     state.mode,
@@ -529,7 +412,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     state.sshUser,
     state.sshPort,
     state.sshKeyPath,
-    state.sshRemoteHermesPath,
+    state.sshRemoteRabbitPath,
     state.sshRemoteProfile
   ])
 
@@ -550,7 +433,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           sshUser: state.sshUser.trim(),
           sshPort: state.sshPort,
           sshKeyPath: state.sshKeyPath.trim(),
-          sshRemoteHermesPath: state.sshRemoteHermesPath.trim(),
+          sshRemoteRabbitPath: state.sshRemoteRabbitPath.trim(),
           // A blank clears an existing remote-profile mapping.
           sshRemoteProfile: state.sshRemoteProfile.trim()
         }),
@@ -574,8 +457,8 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
     try {
       const next = apply
-        ? await window.hermesDesktop.applyConnectionConfig(payload(allowPlainTextToken))
-        : await window.hermesDesktop.saveConnectionConfig(payload(allowPlainTextToken))
+        ? await window.rabbitDesktop.applyConnectionConfig(payload(allowPlainTextToken))
+        : await window.rabbitDesktop.saveConnectionConfig(payload(allowPlainTextToken))
 
       if (seq !== saveSeq.current) {
         return
@@ -603,7 +486,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       const errors = {
         'auth-failed': g.sshErrAuth,
-        'hermes-not-found': g.sshErrNotInstalled,
+        'rabbit-not-found': g.sshErrNotInstalled,
         'host-key-changed': g.sshErrHostKey,
         timeout: g.sshErrTimeout,
         unreachable: g.sshErrUnreachable,
@@ -650,321 +533,15 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     await performSave(apply, false)
   }
 
-  // --- Hermes Cloud handlers ---
-
-  // Pull the discovered agent list over the shared portal session. Tolerant of
-  // a lapsed session: a needsCloudLogin error flips us back to signed-out.
-  // `org` scopes discovery for multi-org users; when discovery comes back with
-  // needsOrgSelection we surface the org list and show a picker instead.
-  const discoverCloud = async (org?: string) => {
-    const desktop = window.hermesDesktop
-    const seq = contextSeq.current
-
-    if (!desktop?.cloud) {
-      return
-    }
-
-    setCloudDiscover('loading')
-
-    try {
-      const result = await desktop.cloud.discover(org)
-
-      if (seq !== contextSeq.current) {
-        return
-      }
-
-      if ('needsOrgSelection' in result && result.needsOrgSelection) {
-        // Multi-org user with no org chosen yet: show the picker. Don't clear a
-        // previously-chosen org list on a refresh.
-        setCloudOrgs(result.orgs)
-        setCloudOrg(null)
-        setCloudAgents([])
-        setCloudDiscover('done')
-
-        return
-      }
-
-      // Single org (or org now chosen): we have agents.
-      setCloudAgents('agents' in result ? result.agents : [])
-
-      // Record the org AUTHORITATIVELY from the response (NAS echoes the org the
-      // list was scoped to), falling back to the org we requested. This is what
-      // gets persisted on connect, so it must be set even on single-membership
-      // auto-resolve where no picker ran and no `org` arg was passed.
-      const resolvedOrgRef = 'org' in result && result.org ? (result.org.slug ?? result.org.id) : null
-
-      if (resolvedOrgRef) {
-        setCloudOrg(resolvedOrgRef)
-      } else if (org) {
-        setCloudOrg(org)
-      }
-
-      setCloudDiscover('done')
-    } catch (err) {
-      if (seq !== contextSeq.current) {
-        return
-      }
-
-      setCloudAgents([])
-      setCloudDiscover('error')
-
-      // A lapsed/absent portal session means we're effectively signed out.
-      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
-        setCloudSignedIn(false)
-      }
-
-      notifyError(err, g.cloudDiscoverFailed)
-    }
-  }
-
-  // User picked an org from the multi-org picker: remember it and re-run
-  // discovery scoped to it.
-  const selectCloudOrg = (org: DesktopCloudOrg) => {
-    const ref = org.slug ?? org.id
-    setCloudOrg(ref)
-    void discoverCloud(ref)
-  }
-
-  // "Change org": clear the selected org and re-discover with no org arg. A
-  // multi-org user gets NAS's 409 → the picker; a single-org user auto-resolves
-  // back to their one org. Also clear the agent list so the current org's
-  // agents don't linger under the picker while discovery re-runs.
-  const changeCloudOrg = () => {
-    setCloudOrg(null)
-    setCloudAgents([])
-    void discoverCloud()
-  }
-
-  // On entering cloud mode, read the portal session status and
-  // auto-discover when already signed in, so the picker is populated on open.
-  useEffect(() => {
-    if (state.mode !== 'cloud') {
-      return
-    }
-
-    const desktop = window.hermesDesktop
-
-    if (!desktop?.cloud) {
-      return
-    }
-
-    let cancelled = false
-    desktop.cloud
-      .status()
-      .then(status => {
-        if (cancelled) {
-          return
-        }
-
-        setCloudSignedIn(status.signedIn)
-
-        if (status.signedIn) {
-          // Restore the persisted org (if any) so we reopen straight into that
-          // org's agent list instead of the picker; discoverCloud(org) also
-          // records it as the selected org. Empty → normal discovery (single-org
-          // resolves automatically; multi-org shows the picker).
-          const savedOrg = state.cloudOrg || ''
-
-          if (savedOrg) {
-            setCloudOrg(savedOrg)
-          }
-
-          void discoverCloud(savedOrg || undefined)
-        } else {
-          setCloudAgents([])
-          setCloudOrgs([])
-          setCloudOrg(null)
-          setCloudDiscover('idle')
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCloudSignedIn(false)
-        }
-      })
-
-    return () => void (cancelled = true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload on mode change only
-  }, [state.mode])
-
-  const cloudSignIn = async () => {
-    const desktop = window.hermesDesktop
-    const seq = ++signingSeq.current
-
-    if (!desktop?.cloud) {
-      return
-    }
-
-    setCloudSigningIn(true)
-
-    try {
-      const result = await desktop.cloud.login()
-
-      if (seq !== signingSeq.current) {
-        return
-      }
-
-      setCloudSignedIn(result.signedIn)
-
-      if (result.signedIn) {
-        await discoverCloud()
-      }
-    } catch (err) {
-      if (seq === signingSeq.current) {
-        notifyError(err, g.cloudSignInFailed)
-      }
-    } finally {
-      if (seq === signingSeq.current) {
-        setCloudSigningIn(false)
-      }
-    }
-  }
-
-  const cloudSignOut = async () => {
-    const desktop = window.hermesDesktop
-    const seq = ++signingSeq.current
-
-    if (!desktop?.cloud) {
-      return
-    }
-
-    setCloudSigningIn(true)
-
-    try {
-      await desktop.cloud.logout()
-
-      if (seq !== signingSeq.current) {
-        return
-      }
-
-      setCloudSignedIn(false)
-      setCloudAgents([])
-      setCloudOrgs([])
-      setCloudOrg(null)
-      setCloudDiscover('idle')
-      notify({ kind: 'success', title: g.cloudSignedOutTitle, message: g.cloudSignedOutMessage })
-    } catch (err) {
-      if (seq === signingSeq.current) {
-        notifyError(err, g.signOutFailed)
-      }
-    } finally {
-      if (seq === signingSeq.current) {
-        setCloudSigningIn(false)
-      }
-    }
-  }
-
-  // Select a discovered agent: drive the silent per-agent cascade (no second
-  // prompt — the shared portal session auto-approves), then persist a cloud-mode
-  // connection pointed at its dashboardUrl and apply it (soft-reconnects in place).
-  const connectCloudAgent = async (agent: DesktopCloudAgent) => {
-    const seq = contextSeq.current
-
-    if (!agent.dashboardUrl) {
-      return
-    }
-
-    const desktop = window.hermesDesktop
-
-    if (!desktop?.cloud) {
-      return
-    }
-
-    setCloudConnectingId(agent.id)
-
-    const warnSignInIncomplete = () =>
-      notify({
-        kind: 'warning',
-        title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
-      })
-
-    try {
-      // Saved sources keep their identity, credentials and default gateway.
-      // The activation path reuses healthy sockets and validates auth on a new dial.
-      const saved = savedAgent(agent)
-
-      if (saved) {
-        const org = cloudOrgRef.current
-
-        if (org && cloudTeamChanged(saved, org)) {
-          const reconnected = await reconnectMovedCloudAgent(desktop, saved, org, () => seq === contextSeq.current)
-
-          if (seq !== contextSeq.current) {
-            return
-          }
-
-          if (!reconnected) {
-            warnSignInIncomplete()
-
-            return
-          }
-
-          await refreshConnectionsRegistry()
-        }
-
-        await selectSavedCloudWithReauth(saved.id, agent.dashboardUrl)
-
-        return
-      }
-
-      const result = await desktop.cloud.agentSignIn(agent.dashboardUrl)
-
-      if (seq !== contextSeq.current) {
-        return
-      }
-
-      if (!result.connected) {
-        warnSignInIncomplete()
-
-        return
-      }
-
-      // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
-      // Include the selected org so Settings reopens into the same org + instance.
-      // Read the REF (not the cloudOrg state) so a just-resolved org from
-      // discovery in this same render tick is captured, not a stale null.
-      const next = await desktop.applyConnectionConfig({
-        mode: 'cloud',
-        remoteAuthMode: 'oauth',
-        remoteUrl: agent.dashboardUrl,
-        cloudOrg: cloudOrgRef.current ?? undefined,
-        cloudName: agent.name
-      })
-
-      if (seq !== contextSeq.current) {
-        return
-      }
-
-      acceptSavedConfig(next)
-      await refreshConnectionsRegistry()
-      notify({ kind: 'success', title: g.cloudConnectedTitle, message: g.cloudConnectedTo(agent.name) })
-    } catch (err) {
-      if (seq !== contextSeq.current) {
-        return
-      }
-
-      if (err && typeof err === 'object' && 'needsCloudLogin' in err) {
-        setCloudSignedIn(false)
-      }
-
-      notifyError(err, g.cloudConnectFailed)
-    } finally {
-      if (seq === contextSeq.current) {
-        setCloudConnectingId(null)
-      }
-    }
-  }
-
   const resolveSshHost = async (host: string) => {
-    if (!host || !window.hermesDesktop?.sshResolveHost) {
+    if (!host || !window.rabbitDesktop?.sshResolveHost) {
       return
     }
 
     const seq = ++sshResolveSeq.current
 
     try {
-      const resolved = await window.hermesDesktop.sshResolveHost(host)
+      const resolved = await window.rabbitDesktop.sshResolveHost(host)
 
       if (seq !== sshResolveSeq.current) {
         return
@@ -1002,7 +579,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     setLastTest(null)
 
     try {
-      const result = await window.hermesDesktop.testConnectionConfig(payload())
+      const result = await window.rabbitDesktop.testConnectionConfig(payload())
 
       if (seq !== sshTestSeq.current) {
         return
@@ -1011,7 +588,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
       if (!result.reachable) {
         const errors = {
           'auth-failed': g.sshErrAuth,
-          'hermes-not-found': g.sshErrNotInstalled,
+          'rabbit-not-found': g.sshErrNotInstalled,
           'host-key-changed': g.sshErrHostKey,
           timeout: g.sshErrTimeout,
           unreachable: g.sshErrUnreachable,
@@ -1048,7 +625,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     )
   }
 
-  if (!window.hermesDesktop?.getConnectionConfig) {
+  if (!window.rabbitDesktop?.getConnectionConfig) {
     return <EmptyState description={g.unavailableDesc} title={g.unavailableTitle} />
   }
 
@@ -1091,14 +668,6 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             title={g.localTitle}
           />
           <ModeCard
-            active={state.mode === 'cloud'}
-            description={g.cloudDesc}
-            disabled={state.envOverride}
-            icon={Cloud}
-            onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
-            title={g.cloudTitle}
-          />
-          <ModeCard
             active={state.mode === 'remote'}
             description={g.remoteDesc}
             disabled={state.envOverride}
@@ -1119,188 +688,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       </div>
 
-      {/* Hermes Cloud panel: one portal sign-in, then a discovered-agent picker
-          whose selection drives the silent per-agent cascade + a cloud
-          connection. Replaces the URL/token form while in cloud mode. */}
-      {state.mode === 'cloud' && !state.envOverride ? (
-        <div className="mt-5 grid gap-1">
-          {savedCloudConnections.length > 0 ? (
-            <div className="mb-4 grid gap-1">
-              <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                {g.cloudSavedTitle}
-              </div>
-              <p className="mb-2 text-xs text-muted-foreground">{g.cloudSavedDesc}</p>
-              {savedCloudConnections.map(connection => (
-                <div data-slot="saved-cloud-gateway" key={connection.id}>
-                  <ListRow
-                    action={
-                      activeConnectionId === connection.id ? (
-                        <Pill tone="primary">
-                          <Check className="size-3" />
-                          {g.cloudActive}
-                        </Pill>
-                      ) : (
-                        <Button
-                          disabled={cloudConnectingId !== null}
-                          onClick={() => void activateSavedCloud(connection.id, connection.url)}
-                          size="sm"
-                          variant="outline"
-                        >
-                          {cloudConnectingId === connection.id ? <Loader2 className="animate-spin" /> : null}
-                          {g.cloudUseSaved}
-                        </Button>
-                      )
-                    }
-                    description={connection.url}
-                    title={connection.label}
-                  />
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <ListRow
-            action={
-              cloudSignedIn ? (
-                <div className="flex items-center gap-2">
-                  <Pill tone="primary">
-                    <Check className="size-3" /> {g.cloudSignedIn}
-                  </Pill>
-                  <Button disabled={cloudSigningIn} onClick={() => void cloudSignOut()} variant="outline">
-                    {cloudSigningIn ? <Loader2 className="animate-spin" /> : null}
-                    {g.signOut}
-                  </Button>
-                </div>
-              ) : (
-                <Button disabled={cloudSigningIn} onClick={() => void cloudSignIn()}>
-                  {cloudSigningIn ? <Loader2 className="animate-spin" /> : <LogIn />}
-                  {g.cloudSignIn}
-                </Button>
-              )
-            }
-            description={cloudSignedIn ? g.cloudSignedInDesc : g.cloudNeedsSignIn}
-            title={g.cloudSignInTitle}
-          />
-
-          {cloudSignedIn ? (
-            cloudOrgs.length > 0 && !cloudOrg ? (
-              // Multi-org user who hasn't picked an org yet: show the org picker
-              // instead of the agent list. Selecting one re-runs discovery
-              // scoped to it.
-              <div className="mt-3">
-                <div className="mb-2 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                  {g.cloudOrgPickerTitle}
-                </div>
-                <div className="grid gap-1">
-                  {cloudOrgs.map(orgEntry => (
-                    <ListRow
-                      action={
-                        <Button onClick={() => selectCloudOrg(orgEntry)} size="sm">
-                          {g.cloudOrgSelect}
-                        </Button>
-                      }
-                      description={g.cloudOrgRole(orgEntry.role)}
-                      key={orgEntry.id}
-                      title={orgEntry.name}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="mt-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-                    {g.cloudAgentsTitle}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {cloudOrg ? (
-                      // Let the user switch orgs. Gating on cloudOrgs.length would
-                      // hide this after a restore-open (which discovers straight
-                      // into the saved org and never populates the org list). So
-                      // show it whenever an org is selected: clicking clears the
-                      // org and re-runs discovery with no org arg — a multi-org
-                      // user gets the picker (NAS 409), a single-org user simply
-                      // auto-resolves back to their one org (harmless).
-                      <Button onClick={() => changeCloudOrg()} size="sm" variant="text">
-                        {g.cloudOrgChange}
-                      </Button>
-                    ) : null}
-                    <Button
-                      disabled={cloudDiscover === 'loading'}
-                      onClick={() => void discoverCloud(cloudOrg ?? undefined)}
-                      size="sm"
-                      variant="text"
-                    >
-                      {cloudDiscover === 'loading' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                      {g.cloudRefresh}
-                    </Button>
-                  </div>
-                </div>
-
-                {cloudDiscover === 'loading' ? (
-                  <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    <Loader2 className="size-4 animate-spin" />
-                    {g.cloudLoadingAgents}
-                  </div>
-                ) : cloudAgents.length === 0 ? (
-                  <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                    <span>
-                      {g.cloudNoAgents.before}
-                      <ExternalLink href="https://portal.nousresearch.com/agents" showExternalIcon={false}>
-                        {g.cloudNoAgents.linkText}
-                      </ExternalLink>
-                      {g.cloudNoAgents.after}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="grid gap-1">
-                    {cloudAgents.map(agent => {
-                      const connected = isConnectedAgent(agent)
-
-                      return (
-                        <div
-                          className={cn('rounded-md px-2', connected && 'bg-primary/5 ring-1 ring-primary/25')}
-                          key={agent.id}
-                        >
-                          <ListRow
-                            action={
-                              connected ? (
-                                <Pill tone="primary">
-                                  <Check className="mr-1 inline size-3" />
-                                  {g.cloudActive}
-                                </Pill>
-                              ) : (
-                                <Button
-                                  disabled={!agent.dashboardUrl || cloudConnectingId !== null}
-                                  onClick={() => void connectCloudAgent(agent)}
-                                  size="sm"
-                                >
-                                  {cloudConnectingId === agent.id ? <Loader2 className="animate-spin" /> : null}
-                                  {agent.dashboardUrl
-                                    ? cloudConnectingId === agent.id
-                                      ? g.cloudConnecting
-                                      : savedAgent(agent)
-                                        ? g.cloudUseSaved
-                                        : g.cloudConnect
-                                    : g.cloudAgentProvisioning}
-                                </Button>
-                              )
-                            }
-                            description={g.cloudStatusLabel(agent.dashboardGatewayState)}
-                            title={savedAgent(agent)?.label || agent.name}
-                          />
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )
-          ) : null}
-        </div>
-      ) : null}
-
-      {/* An env-pinned remote (HERMES_DESKTOP_REMOTE_URL) still renders this
+      {/* An env-pinned remote (RABBIT_DESKTOP_REMOTE_URL) still renders this
           block: the override pins the URL/mode, but the browser SESSION is not
           env-owned — docs promise "you still sign in from the Gateway settings
           panel" (user-guide/desktop.md). Hiding it left a lapsed session with
@@ -1418,23 +806,20 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             action={
               <Input
                 className={cn('h-8 font-mono', CONTROL_TEXT)}
-                onChange={event => setState(current => ({ ...current, sshRemoteHermesPath: event.target.value }))}
-                placeholder={g.sshHermesPathPlaceholder}
-                value={state.sshRemoteHermesPath}
+                onChange={event => setState(current => ({ ...current, sshRemoteRabbitPath: event.target.value }))}
+                placeholder={g.sshRabbitPathPlaceholder}
+                value={state.sshRemoteRabbitPath}
               />
             }
-            description={g.sshHermesPathDesc}
-            title={g.sshHermesPathTitle}
+            description={g.sshRabbitPathDesc}
+            title={g.sshRabbitPathTitle}
           />
         </div>
       ) : null}
 
       {lastTest ? <div className="mt-4 text-xs text-primary">{lastTest}</div> : null}
 
-      {/* Test/Save apply to local + remote. Cloud connects via the agent picker
-          above (which applies a cloud connection on select), so its only
-          bottom-row action would be redundant — hidden in cloud mode. */}
-      {state.mode !== 'cloud' ? (
+      {(
         <div className="mt-6 flex flex-wrap items-center justify-end gap-4">
           {state.mode === 'remote' ? (
             <Button
@@ -1474,7 +859,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
             {g.saveAndReconnect}
           </Button>
         </div>
-      ) : null}
+      )}
 
       {embedded ? null : (
         <div className="mt-6 grid gap-1">
@@ -1488,7 +873,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           />
           <ListRow
             action={
-              <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
+              <Button onClick={() => void window.rabbitDesktop?.revealLogs()} size="sm" variant="textStrong">
                 <FileText />
                 {g.openLogs}
               </Button>

@@ -35,7 +35,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, SessionStore
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 class _Adapter(BasePlatformAdapter):
@@ -218,7 +218,7 @@ def _orphaned(adapter, key) -> bool:
 async def test_followup_accepted_as_turn_ends_is_owned_and_runs_before_a_later_message(
     tmp_path, monkeypatch, route
 ):
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+    monkeypatch.setenv("RABBIT_GATEWAY_BUSY_ACK_ENABLED", "false")
     held = _HeldRead(asyncio.get_running_loop())
     adapter, turns, key = _gateway(tmp_path, monkeypatch, route, held)
     try:
@@ -245,7 +245,7 @@ async def test_followup_accepted_as_turn_ends_is_owned_and_runs_before_a_later_m
 async def test_followup_stored_before_the_busy_handler_raised_runs_once(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true")
+    monkeypatch.setenv("RABBIT_GATEWAY_BUSY_ACK_ENABLED", "true")
     held = _HeldRead(asyncio.get_running_loop())
     adapter, turns, key = _gateway(
         tmp_path, monkeypatch, _stock_interrupt_ack_raises, held
@@ -274,7 +274,7 @@ async def test_reconnect_during_busy_admission_runs_accepted_followup_once(
     """A reconnect can replace the delivery adapter while the busy handler awaits, either
     before it stores the follow-up (it lands in the replacement's slot) or after (it stays in
     the old adapter's slot).  Either way the accepted follow-up must run exactly once."""
-    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true")
+    monkeypatch.setenv("RABBIT_GATEWAY_BUSY_ACK_ENABLED", "true")
     held = _HeldRead(asyncio.get_running_loop())
     adapter, turns, key = _gateway(tmp_path, monkeypatch, _stock_interrupt, held)
     runner = adapter.gateway_runner

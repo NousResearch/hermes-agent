@@ -30,12 +30,12 @@ name: uv.lock check
 #
 #     git fetch origin main
 #     git rebase origin/main      # or merge, whatever the repo prefers
-#     hermes pm lock                     # regenerates uv.lock against new pyproject.toml
+#     rabbit pm lock                     # regenerates uv.lock against new pyproject.toml
 #     git add uv.lock
 #     git commit -m "chore: refresh uv.lock after rebase onto main"
 #     git push --force-with-lease # if you rebased
 #
-# If you also changed pyproject.toml in your PR, `hermes pm lock` handles that
+# If you also changed pyproject.toml in your PR, `rabbit pm lock` handles that
 # at the same time — one regeneration covers both your changes and the
 # drift from main.
 #
@@ -95,7 +95,7 @@ jobs:
           # registry, versus "lockfile needs to be updated" when the lock is
           # genuinely stale. Only the second is the contributor's to fix, so
           # an unreachable registry says so instead of sending them to
-          # `hermes pm lock` with nothing to regenerate.
+          # `rabbit pm lock` with nothing to regenerate.
           ok=false
           net_fail=false
           delays=(5 15 45)
@@ -141,13 +141,13 @@ jobs:
           ```bash
           git fetch origin main
           git rebase origin/main   # or `git merge origin/main`
-          hermes pm lock                  # regenerate against new pyproject.toml
+          rabbit pm lock                  # regenerate against new pyproject.toml
           git add uv.lock
           git commit -m "chore: refresh uv.lock after syncing with main"
           git push --force-with-lease  # drop --force-with-lease if you merged
           ```
 
-          **If you only changed pyproject.toml:** run `hermes pm lock` locally
+          **If you only changed pyproject.toml:** run `rabbit pm lock` locally
           and commit the result.
 
           This check is blocking because the Docker image build uses
@@ -155,8 +155,8 @@ jobs:
           — catching it here avoids a ~15 min failed docker run
           on `main` post-merge.
           EOF
-            echo "::error title=uv.lock out of sync::Run \`hermes pm lock\` locally and commit the result. If on a PR, sync with main first."
-            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `hermes pm lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nhermes pm lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
+            echo "::error title=uv.lock out of sync::Run \`rabbit pm lock\` locally and commit the result. If on a PR, sync with main first."
+            review_status='[{"source":"uv.lock check","results":[{"kind":"action_required","title":"uv.lock out of sync","summary":"uv.lock is out of sync with pyproject.toml.","how_to_fix":"Run `rabbit pm lock` locally and commit the result. If on a PR, sync with main first:\n```\ngit fetch origin main\ngit rebase origin/main\nrabbit pm lock\ngit add uv.lock\ngit commit -m \"chore: refresh uv.lock\"\n```\n"}]}]'
             echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
             echo "review_status=${review_status}" > review-status.json
             exit 1

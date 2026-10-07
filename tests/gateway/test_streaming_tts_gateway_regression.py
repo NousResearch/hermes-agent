@@ -95,7 +95,7 @@ def _make_voice_source() -> SessionSource:
 def _setup_monkeypatches(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     (tmp_path / "config.yaml").write_text("agent:\n  model: test-model\n", encoding="utf-8")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
     monkeypatch.setattr(
         gateway_run,
@@ -114,7 +114,7 @@ def _setup_monkeypatches(monkeypatch, tmp_path):
         },
     )
 
-    import hermes_cli.tools_config as tools_config
+    import rabbit_cli.tools_config as tools_config
     monkeypatch.setattr(tools_config, "_get_platform_tools", lambda user_config, platform_key: {"core"})
 
 

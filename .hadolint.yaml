@@ -1,4 +1,4 @@
-# hadolint configuration for the Hermes Agent Dockerfile.
+# hadolint configuration for the Rabbit Agent Dockerfile.
 # See https://github.com/hadolint/hadolint#configure for rules.
 #
 # We want hadolint to surface NEW Dockerfile lint regressions, but we
@@ -26,8 +26,8 @@ ignored:
   - DL3059
   # Last USER should not be root. /init (s6-overlay) runs as root so the
   # stage2 hook can usermod/groupmod and chown the data volume per
-  # HERMES_UID at runtime; each supervised service then drops to the
-  # hermes user via `s6-setuidgid`.
+  # RABBIT_UID at runtime; each supervised service then drops to the
+  # rabbit user via `s6-setuidgid`.
   - DL3002
 
 # Require explicit base-image pins (SHA256) — we already do this.

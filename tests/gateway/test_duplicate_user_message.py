@@ -74,7 +74,7 @@ def _bootstrap(monkeypatch, tmp_path):
     runner.session_store.transcript_tail_role.return_value = "user"
     runner.session_store.update_session = MagicMock()
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )

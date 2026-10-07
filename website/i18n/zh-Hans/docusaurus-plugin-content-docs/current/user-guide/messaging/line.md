@@ -1,12 +1,12 @@
 ---
 sidebar_position: 17
 title: "LINE"
-description: "将 Hermes Agent 设置为 LINE Messaging API 机器人"
+description: "将 Rabbit Agent 设置为 LINE Messaging API 机器人"
 ---
 
 # LINE 配置
 
-通过官方 LINE Messaging API 将 Hermes Agent 作为 [LINE](https://line.me/) 机器人运行。适配器以捆绑平台插件的形式存放于 `plugins/platforms/line/` — 无需修改核心代码，像其他平台一样启用即可。
+通过官方 LINE Messaging API 将 Rabbit Agent 作为 [LINE](https://line.me/) 机器人运行。适配器以捆绑平台插件的形式存放于 `plugins/platforms/line/` — 无需修改核心代码，像其他平台一样启用即可。
 
 LINE 是日本、台湾和泰国的主流即时通讯应用。如果你的用户在这些地区，这就是他们与你沟通的方式。
 
@@ -44,18 +44,18 @@ cloudflared tunnel --url http://localhost:8646
 ngrok http 8646
 
 # devtunnel
-devtunnel create hermes-line --allow-anonymous
-devtunnel port create hermes-line -p 8646 --protocol https
-devtunnel host hermes-line
+devtunnel create rabbit-line --allow-anonymous
+devtunnel port create rabbit-line -p 8646 --protocol https
+devtunnel host rabbit-line
 ```
 
 复制 `https://...` URL — 稍后将其设置为 webhook URL。**保持隧道运行**以便测试。生产环境请配置固定的 Cloudflare 命名隧道，避免重启后 webhook URL 变更。
 
 ---
 
-## 第三步：配置 Hermes
+## 第三步：配置 Rabbit
 
-在 `~/.hermes/.env` 中添加：
+在 `~/.rabbit/.env` 中添加：
 
 ```env
 LINE_CHANNEL_ACCESS_TOKEN=YOUR_LONG_LIVED_TOKEN
@@ -71,7 +71,7 @@ LINE_ALLOWED_ROOMS=R1234567890abcdef...           # 可选的房间 ID
 LINE_PUBLIC_URL=https://my-tunnel.example.com
 ```
 
-然后在 `~/.hermes/config.yaml` 中：
+然后在 `~/.rabbit/config.yaml` 中：
 
 ```yaml
 gateway:
@@ -98,7 +98,7 @@ gateway:
 ## 第五步：运行 gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 Agent 日志显示：
@@ -134,7 +134,7 @@ LINE_SLOW_RESPONSE_THRESHOLD=0
 为使 postback 流程可靠触发，请抑制可能在阈值前消耗 reply token 的冗余输出：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 display:
   interim_assistant_messages: false
   platforms:
@@ -181,13 +181,13 @@ LINE_HOME_CHANNEL=Uxxxxxxxxxxxxxxxxxxxx     # 默认推送目标
 
 **webhook 验证时提示"invalid signature"。** `Channel secret` 复制有误，或隧道重写了请求体。请先用 `curl -i https://<tunnel>/line/webhook/health` 验证 — 应返回 `{"status":"ok","platform":"line"}`。
 
-**机器人在群组中收不到消息。** 检查 `LINE_ALLOWED_GROUPS` 是否包含对应的 `C...` 群组 ID。如需查找群组 ID，发送一条测试消息后在 `~/.hermes/logs/gateway.log` 中搜索 `LINE: rejecting unauthorized source` — 被拒绝的 source 字典中包含相关 ID。
+**机器人在群组中收不到消息。** 检查 `LINE_ALLOWED_GROUPS` 是否包含对应的 `C...` 群组 ID。如需查找群组 ID，发送一条测试消息后在 `~/.rabbit/logs/gateway.log` 中搜索 `LINE: rejecting unauthorized source` — 被拒绝的 source 字典中包含相关 ID。
 
 **`send_image` 报错"LINE_PUBLIC_URL must be set"。** LINE Messaging API 不接受二进制上传 — 图片、音频和视频必须是可访问的 HTTPS URL。将 `LINE_PUBLIC_URL` 设置为隧道的公网主机名，适配器会自动从 `/line/media/<token>/<filename>` 提供文件服务。
 
 **postback 按钮始终不出现。** 要么 LLM 的响应速度快于 `LINE_SLOW_RESPONSE_THRESHOLD`，要么其他气泡（工具进度、流式输出）已提前消耗了 reply token。参见"LLM 响应缓慢"中的抑制配置。
 
-**"already in use by another profile"。** 同一个频道访问 token 已被另一个运行中的 Hermes profile 占用。请停止另一个 gateway，或使用独立的频道。
+**"already in use by another profile"。** 同一个频道访问 token 已被另一个运行中的 Rabbit profile 占用。请停止另一个 gateway，或使用独立的频道。
 
 ---
 

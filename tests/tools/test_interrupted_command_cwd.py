@@ -1,6 +1,6 @@
 """An interrupted command must not adopt the shared environment's cwd.
 
-The command wrapper prints the ``__HERMES_CWD_*`` marker AFTER the command
+The command wrapper prints the ``__RABBIT_CWD_*`` marker AFTER the command
 returns, so a killed / timed-out command emits none and ``env.cwd`` still holds
 whatever the last command to FINISH left there. One local environment is shared
 by every session (``_resolve_container_task_id`` collapses cwd-only overrides to

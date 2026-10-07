@@ -71,12 +71,12 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     # would serialize discovery across profiles and never coordinate with B's own single-profile processes.
     from tools import mcp_tool as _origin
     try:
-        from hermes_constants import get_hermes_home, get_hermes_home_override
-        if get_hermes_home_override() is not None:
-            lock_path = str(get_hermes_home() / ".mcp-discovery.lock")
+        from rabbit_constants import get_rabbit_home, get_rabbit_home_override
+        if get_rabbit_home_override() is not None:
+            lock_path = str(get_rabbit_home() / ".mcp-discovery.lock")
         else:
             if _origin._MCP_DISCOVERY_LOCK_PATH is None:
-                _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
+                _origin._MCP_DISCOVERY_LOCK_PATH = str(get_rabbit_home() / ".mcp-discovery.lock")
             lock_path = _origin._MCP_DISCOVERY_LOCK_PATH
         fh = open(lock_path, "w", encoding="utf-8")
     except Exception:
@@ -101,22 +101,22 @@ def _mcp_loop_exception_handler(loop, context):
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
-    """Carry the caller's context-local HERMES_HOME override into ``coro`` (task-local on the MCP
+    """Carry the caller's context-local RABBIT_HOME override into ``coro`` (task-local on the MCP
     loop, so concurrent scopes don't interfere)."""
     try:
-        from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
-        home_override = get_hermes_home_override()
+        from rabbit_constants import get_rabbit_home_override, reset_rabbit_home_override, set_rabbit_home_override
+        home_override = get_rabbit_home_override()
     except Exception:
         home_override = None
     if not home_override:
         return coro
 
     async def _scoped():
-        token = set_hermes_home_override(home_override)
+        token = set_rabbit_home_override(home_override)
         try:
             return await coro
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
     return _scoped()
 

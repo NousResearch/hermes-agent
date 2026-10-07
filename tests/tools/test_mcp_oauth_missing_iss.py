@@ -22,10 +22,10 @@ from mcp.client.auth.oauth2 import OAuthClientProvider  # noqa: E402
 from mcp.client.auth.utils import validate_authorization_response_iss  # noqa: E402
 from mcp.shared.auth import AuthorizationCodeResult, OAuthMetadata  # noqa: E402
 
-from tools.mcp_oauth_provider import HermesProviderMixin  # noqa: E402
+from tools.mcp_oauth_provider import RabbitProviderMixin  # noqa: E402
 
 
-class _Provider(HermesProviderMixin, OAuthClientProvider):
+class _Provider(RabbitProviderMixin, OAuthClientProvider):
     pass
 
 
@@ -43,7 +43,7 @@ def _provider_for(issuer: str, *, iss_in_redirect: str | None) -> _Provider:
 
     provider.context = SimpleNamespace(oauth_metadata=meta, callback_handler=callback,
                                        client_info=SimpleNamespace(grant_types=["authorization_code"]))
-    provider._hermes_oauth_flow = "browser"
+    provider._rabbit_oauth_flow = "browser"
     return provider
 
 

@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@rabbit/ink'
 import { memo } from 'react'
 
 // A cell is [tr,tg,tb,ta, br,bg,bb,ba] — the top + bottom pixel of one

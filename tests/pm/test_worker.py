@@ -33,7 +33,7 @@ def test_isolated_worker_preserves_install_error(client, monkeypatch):
         client.ensure("node", explicit=True)
     assert caught.value.package == "node"
     assert caught.value.cause == "not in the lockfile"
-    assert caught.value.remedy == "add it with `hermes pm lock --bump`"
+    assert caught.value.remedy == "add it with `rabbit pm lock --bump`"
     assert not paths.facts_path().exists()
 
 
@@ -43,7 +43,7 @@ def test_refused_or_already_paused_install_does_not_acquire_runtime(client, monk
     from pm.downloader import DownloadPaused
 
     monkeypatch.setattr(client, "runtime_command", lambda path, **kwargs: pytest.fail("refusal acquired PM runtime"))
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         client.ensure("node")
     paused = threading.Event()
@@ -173,7 +173,7 @@ def _assert_worker_holds_lock(repo):
 def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_path, monkeypatch, isolated_python, explicit):
     from concurrent.futures import ThreadPoolExecutor
     import time
-    from hermes_cli.runtime_state import runtime_lock
+    from rabbit_cli.runtime_state import runtime_lock
     from tests.pm._fixtures import worker_toolchain
 
     sibling = tmp_path / "home/profiles/sibling/plugins/dependency"
@@ -182,7 +182,7 @@ def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_p
     repo = _current_environment(tmp_path, monkeypatch, [sibling])
     ready = tmp_path / "waiting-for-lock"
     worker_toolchain(client, monkeypatch, isolated_python,
-        "from contextlib import contextmanager\nimport hermes_cli.runtime_state as state\n"
+        "from contextlib import contextmanager\nimport rabbit_cli.runtime_state as state\n"
         "original = state.runtime_lock\n@contextmanager\ndef lock(project, **kwargs):\n"
         f"    Path({str(ready)!r}).touch()\n"
         "    with original(project, **kwargs) as held:\n        yield held\nstate.runtime_lock = lock\n")
@@ -210,7 +210,7 @@ def test_lazy_disabled_sync_does_not_bootstrap_tools(client, tmp_path, monkeypat
     repo = _current_environment(tmp_path, monkeypatch, [])
     if not current:
         (repo / "uv.lock").write_text("version = 2\n")
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     # Exercise runtime acquisition too: the other worker tests supply a ready
     # interpreter, which hides an explicit tool install before worker refusal.
     monkeypatch.setattr("pm.runtime.runtime_python", runtime_python)
@@ -576,7 +576,7 @@ def test_worker_side_environment_reuses_and_keeps_selection_on_failed_tool(clien
     assert (root / "active.json").read_bytes() == selection
     assert set(root.glob("gen-*")) == generations
     assert python_tool("proof", "side-proof", root=root) == executable
-    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+    monkeypatch.setenv("RABBIT_DISABLE_LAZY_INSTALLS", "1")
     with pytest.raises(InstallError, match="lazy installs are disabled"):
         client.ensure_environment("proof", ["absent-dependency==0"], root=root)
     assert (root / "active.json").read_bytes() == selection

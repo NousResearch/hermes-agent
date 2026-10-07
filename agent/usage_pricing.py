@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
-_NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 # Pay-per-token first-party APIs whose models.dev rate card is the vendor's own
 # list price, keyed by billing-route provider -> API domain. A model missing from
 # the snapshot below is priced from models.dev only on HTTPS:443 to that domain
@@ -333,7 +332,7 @@ _ANTHROPIC_FAST_MODE_PRICING: Dict[str, PricingEntry] = {
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
 # GPT-5.6 / GPT-6 tier "-pro" high-effort variants bill at the base tier's per-token
-# rates (more tokens per task, not a higher rate); the Hermes-side "-900k" Codex
+# rates (more tokens per task, not a higher rate); the Rabbit-side "-900k" Codex
 # picker variants are the same model with the suffix stripped on the wire.
 # The direct Gemini provider emits preview IDs for two models; key the snapshot
 # by both the documented stable name and the emitted ID.
@@ -409,8 +408,6 @@ def resolve_billing_route(
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
-    if provider_name == "nous" or host("inference-api.nousresearch.com"):
-        return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
     snapshot_provider = _SNAPSHOT_PROVIDER_ALIASES.get(provider_name)
     if snapshot_provider is None:
         if (

@@ -1,6 +1,6 @@
 """/heartbeat firing from the TUI/Desktop session-owner process (#102056, #103044).
 
-The slash worker that parses ``/heartbeat`` runs a HermesCLI whose watchdog queues the due prompt
+The slash worker that parses ``/heartbeat`` runs a RabbitCLI whose watchdog queues the due prompt
 into its own ``_pending_input`` — a queue no turn loop drains in that process. The per-session
 notification poller (the same driver that fires ``/loop``) must poll the persisted HeartbeatManager
 and re-enter the live session through ``_run_prompt_submit``.
@@ -18,12 +18,12 @@ import pytest
 
 
 @pytest.fixture()
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import goals
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    from rabbit_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -31,8 +31,8 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def server(hermes_home):
-    with patch.dict("sys.modules", {"hermes_cli.env_loader": MagicMock(), "hermes_cli.banner": MagicMock()}):
+def server(rabbit_home):
+    with patch.dict("sys.modules", {"rabbit_cli.env_loader": MagicMock(), "rabbit_cli.banner": MagicMock()}):
         mod = importlib.import_module("tui_gateway.server")
         yield mod
         mod._sessions.clear()
@@ -48,7 +48,7 @@ def session(server):
 
 
 def _arm_due(key: str):
-    from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
+    from rabbit_cli.heartbeat import HeartbeatManager, save_heartbeat
 
     mgr = HeartbeatManager(key)
     state = mgr.set("report backend health", 60)
@@ -85,24 +85,24 @@ def test_notification_poller_fires_due_heartbeat_when_idle(server, session):
         stop.set()
         t.join(timeout=5)
 
-    from hermes_cli.heartbeat import load_heartbeat
+    from rabbit_cli.heartbeat import load_heartbeat
 
     assert len(dispatched) == 1 and "report backend health" in dispatched[0]
     assert s["running"] is True  # claimed for the heartbeat turn
     assert load_heartbeat(key).fire_count == 1 and not load_heartbeat(key).is_due()
 
 
-def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, session, hermes_home):
+def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, session, rabbit_home):
     """A Desktop viewer must not consume a messaging session's routed heartbeat, but ownership follows the
     gateway's live routing index, not the row's immutable ``source``: once /reset archives the row the gateway
     never registers a watch for it again, so the Desktop viewer must fire it (else nobody does)."""
     from gateway.config import GatewayConfig, Platform
     from gateway.session import SessionSource, SessionStore
-    from hermes_cli.heartbeat import load_heartbeat
+    from rabbit_cli.heartbeat import load_heartbeat
 
     sid, _, s = session
     s["source"] = "desktop"
-    store = SessionStore(hermes_home / "sessions", GatewayConfig())
+    store = SessionStore(rabbit_home / "sessions", GatewayConfig())
     store._db = server._get_db()  # the routing index lives in the store the Desktop poller reads
     src = SessionSource(platform=Platform.TELEGRAM, chat_id="42")
     archived_key = store.get_or_create_session(src).session_id
@@ -125,7 +125,7 @@ def test_heartbeat_tick_defers_when_busy_or_not_due(server, session, running, du
     mgr = _arm_due(key)
     if not due:
         mgr.state.created_at = time.time()
-        from hermes_cli.heartbeat import save_heartbeat
+        from rabbit_cli.heartbeat import save_heartbeat
 
         save_heartbeat(key, mgr.state)
     s["running"] = running
@@ -133,7 +133,7 @@ def test_heartbeat_tick_defers_when_busy_or_not_due(server, session, running, du
     with p_submit as submit, p_emit:
         server._maybe_fire_tui_heartbeat_tick(sid, s)
     submit.assert_not_called()
-    from hermes_cli.heartbeat import load_heartbeat
+    from rabbit_cli.heartbeat import load_heartbeat
 
     assert s["running"] is running  # a busy session is never released by the poller
     assert load_heartbeat(key).fire_count == 0  # tick not consumed — still due when the session frees up
@@ -157,14 +157,14 @@ def test_heartbeat_dispatch_that_never_starts_a_turn_stays_due(server, session, 
     with p_submit, p_emit:
         server._maybe_fire_tui_heartbeat_tick(sid, s)
 
-    from hermes_cli.heartbeat import load_heartbeat
+    from rabbit_cli.heartbeat import load_heartbeat
 
     assert s["running"] is False
     assert load_heartbeat(key).fire_count == 0 and load_heartbeat(key).is_due()
 
 
-def test_abandon_fire_never_overwrites_a_concurrent_pause(hermes_home):
-    from hermes_cli.heartbeat import HeartbeatManager, load_heartbeat
+def test_abandon_fire_never_overwrites_a_concurrent_pause(rabbit_home):
+    from rabbit_cli.heartbeat import HeartbeatManager, load_heartbeat
 
     key = "hb-abandon-race"
     driver = _arm_due(key)

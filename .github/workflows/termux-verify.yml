@@ -138,7 +138,7 @@ jobs:
           archive-inputs: true
           cache-python: false
       - name: Preserve and retrieve pinned inputs
-        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$RABBIT_RUNTIME_DIR"
       - name: Stage the pinned bionic runtimes
         run: |
           bash scripts/termux/build_cpython.sh termux-build/payload

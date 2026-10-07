@@ -149,7 +149,7 @@ export function installFoundInPageForwarder(webContents: Electron.WebContents | 
       return
     }
 
-    webContents.send('hermes:found-in-page', formatFoundInPage(result))
+    webContents.send('rabbit:found-in-page', formatFoundInPage(result))
   }
 
   webContents.on('found-in-page', handler)
@@ -177,7 +177,7 @@ export function installFoundInPageForwarder(webContents: Electron.WebContents | 
  * chord un-rebindable and double-open on a rebound binding.
  *
  * The renderer's existing find-in-page pipeline still does the actual work
- * (it owns the FindBar UI, the store, the `hermes:find-in-page` IPC to drive
+ * (it owns the FindBar UI, the store, the `rabbit:find-in-page` IPC to drive
  * `webContents.findInPage`). This helper just guarantees that a Ctrl/Cmd+F
  * press reaches that pipeline on Linux.
  *
@@ -218,7 +218,7 @@ export function installFindShortcut(window: Electron.BrowserWindow, isMac: () =>
       event.preventDefault()
     }
 
-    webContents.send('hermes:open-find-bar')
+    webContents.send('rabbit:open-find-bar')
   }
 
   webContents.on('before-input-event', handler)

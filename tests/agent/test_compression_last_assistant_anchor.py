@@ -1,6 +1,6 @@
 """Compaction must not deactivate the just-delivered assistant reply (#118900).
 
-Measured cause (Desktop macOS client, Hermes 0.21.4): a reply that had just
+Measured cause (Desktop macOS client, Rabbit 0.21.4): a reply that had just
 finished streaming was folded into the compaction summary by engine-driven
 preflight maintenance and its row archived (active=0). The Desktop renders the
 active set, so the reply vanished from the surface on next render while its
@@ -95,7 +95,7 @@ def _seed(tmp_path, tail_rows, fold, follower):
     import os
     from unittest.mock import MagicMock, patch
 
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "E2E_118900_REPLY"

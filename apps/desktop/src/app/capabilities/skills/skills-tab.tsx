@@ -1,4 +1,4 @@
-import { compactNumber } from '@hermes/shared'
+import { compactNumber } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useCallback, useMemo, useState } from 'react'
@@ -14,7 +14,7 @@ import {
   type ProfileScope,
   profileScopeKey,
   setSkillEnabled
-} from '@/hermes'
+} from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -23,7 +23,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $hubActions, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
-import type { OfficialSkillInfo, SkillInfo } from '@/types/hermes'
+import type { OfficialSkillInfo, SkillInfo } from '@/types/rabbit'
 
 import {
   CapRow,
@@ -44,7 +44,7 @@ import { categoryFor, filteredOfficial, filteredSkills, skillsQueryKey, usageOf 
 
 // Sort direction for the Skills list — persisted so the tab remembers
 // most/least-used across navigations and restarts.
-const $skillsSortDesc = persistentAtom('hermes.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
+const $skillsSortDesc = persistentAtom('rabbit.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
 
 // Row subtitle: category, with non-default origins badged.
 function skillSubtitle(skill: SkillInfo): ReactNode {
@@ -96,7 +96,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
 
   // Learned/local skills are editable + archivable, mirroring the memory
   // graph (same /api/learning/node endpoints — delete archives, restorable
-  // via `hermes curator restore`).
+  // via `rabbit curator restore`).
   const [skillEditor, setSkillEditor] = useState<null | { content: string; name: string }>(null)
   const [skillDraft, setSkillDraft] = useState('')
   const [skillSaving, setSkillSaving] = useState(false)

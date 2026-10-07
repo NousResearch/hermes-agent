@@ -13,18 +13,18 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
     from scripts.bundles import native
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     uv = shutil.which("uv")
     assert uv, "the packaging test requires uv"
     root = tmp_path / "build"
-    repo = root / "hermes-agent"
+    repo = root / "rabbit-agent"
     source = Path(__file__).resolve().parents[2]
-    shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__", ".hermes-tmp.*"))
-    (repo / "hermes_cli").mkdir()
+    shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__", ".rabbit-tmp.*"))
+    (repo / "rabbit_cli").mkdir()
     for name in ("__init__.py", "runtime_state.py"):
-        shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
-    shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
+        shutil.copy2(source / "rabbit_cli" / name, repo / "rabbit_cli" / name)
+    shutil.copy2(source / "rabbit_constants.py", repo / "rabbit_constants.py")
     # Copy the base executable, not a venv's launcher. The test host provides
     # its stdlib; production's package stage provides the complete distribution.
     python = root / "tools" / "python" / ("python.exe" if os.name == "nt" else "bin/python")
@@ -45,7 +45,7 @@ def _exercise_relocated_pm_runtime(tmp_path, monkeypatch):
     assert cache.is_dir()
     assert not (tmp_path / "home/cache/uv").exists()
     stage(root, python, repo, offline=True, cache=cache)
-    (root / "manifest.json").write_text(json.dumps({"repo": "hermes-agent"}))
+    (root / "manifest.json").write_text(json.dumps({"repo": "rabbit-agent"}))
     assert not (repo / ".venv").exists()
     moved = tmp_path / "installed elsewhere"
     root.rename(moved)
@@ -69,8 +69,8 @@ print(json.dumps(YAML(typ='safe').load('isolated: true')))
     assert checked.returncode == 0, checked.stderr
     assert json.loads(checked.stdout) == {"isolated": True}
     from pm import runtime as runtime_api, paths
-    monkeypatch.setattr(paths, "repo_root", lambda: moved / "hermes-agent")
-    command = runtime_api.runtime_command(moved / "hermes-agent/pm/launch.py", ["status"])
+    monkeypatch.setattr(paths, "repo_root", lambda: moved / "rabbit-agent")
+    command = runtime_api.runtime_command(moved / "rabbit-agent/pm/launch.py", ["status"])
     checked = subprocess.run(command, cwd=tmp_path, env=runtime_api.runtime_environment(),
                              capture_output=True, text=True, timeout=30)
     assert checked.returncode == 0, checked.stderr
@@ -97,8 +97,8 @@ def test_pm_builder_ignores_ambient_uv_configuration(tmp_path, monkeypatch, pois
     from pm import stage_manager_runtime
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "tools"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("APPDATA", str(tmp_path / "config"))
     monkeypatch.chdir(tmp_path)

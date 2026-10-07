@@ -4,7 +4,7 @@ Hosted images keep the plugin tree read-only (EROFS), so, mirroring
 ``resolve_whatsapp_bridge_dir``: (1) ``PHOTON_SIDECAR_DIR`` override as-is; (2) writable
 source dir → run in place; (3) read-only with baked, current ``node_modules`` → in place;
 (4) read-only and deps missing/stale → mirror the source files to
-``$HERMES_HOME/photon/sidecar``. The mirror is refreshed by content compare; ``node_modules``
+``$RABBIT_HOME/photon/sidecar``. The mirror is refreshed by content compare; ``node_modules``
 is left alone so the lockfile-vs-install-marker check triggers ``npm ci`` inside the mirror.
 Resolution never happens at import time (it probes/copies on disk).
 """
@@ -25,7 +25,7 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 _MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
-# Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
+# Written by `rabbit photon install-sidecar` on npm failure so check_requirements() can
 # surface the root cause later; cleared on success.
 _NPM_ERROR_LOG: Optional[Path] = None
 _NPM_ERROR_LOG_MAX_CHARS = 300
@@ -34,7 +34,7 @@ _NPM_ERROR_LOG_MAX_CHARS = 300
 def dir_writable(path: Path) -> bool:
     """True when we can create files in ``path`` (probe, not stat — stat lies on root-squash
     / read-only bind mounts)."""
-    probe = path / ".hermes-write-probe"
+    probe = path / ".rabbit-write-probe"
     try:
         probe.touch()
         probe.unlink()
@@ -69,8 +69,8 @@ def resolve_sidecar_dir(source_dir: Optional[Path] = None) -> Path:
     # Read-only tree with baked, current deps: run in place (the sidecar never writes there).
     if (source / "node_modules").exists() and not _lock_newer_than_install(source):
         return source
-    from hermes_constants import get_hermes_home
-    mirror = get_hermes_home() / "photon" / "sidecar"
+    from rabbit_constants import get_rabbit_home
+    mirror = get_rabbit_home() / "photon" / "sidecar"
     try:
         mirror.mkdir(parents=True, exist_ok=True)
         for name in _MIRROR_FILES:

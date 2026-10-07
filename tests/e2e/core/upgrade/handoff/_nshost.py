@@ -1,7 +1,7 @@
 """Host side of the shared-PID-namespace sandbox (see ``_ns_agent.py``).
 
 ``NamespaceHost(root)`` starts ONE ``bwrap`` sandbox (``_helpers.sandbox_argv``: own PID namespace,
-tmpfs over ``/run/user/<uid>``, real ``~/.hermes`` read-only, only ``root`` writable) running the
+tmpfs over ``/run/user/<uid>``, real ``~/.rabbit`` read-only, only ``root`` writable) running the
 agent, then runs and spawns every process of a cell inside it. Closing it kills the sandbox's init,
 which takes every process of the namespace with it, detached or not, so nothing a cell starts can
 outlive it; the dashboard lane's ``_reaper`` is armed around it as the leak check.

@@ -18,7 +18,7 @@ notifications, in their original order; they are not folded into completion batc
 
 ## Consumers and ownership
 
-- **Classic CLI:** `hermes_cli/cli_process_notifications.py` owns the idle/post-turn
+- **Classic CLI:** `rabbit_cli/cli_process_notifications.py` owns the idle/post-turn
   drain, compression-aware ownership and final input unwrapping.
 - **TUI and Desktop:** `tui_gateway/session_notifications.py` groups the poller's
   ready snapshot after checking ownership. Each process still emits its own UI

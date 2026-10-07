@@ -276,10 +276,10 @@ class TestDelegationCleanup:
     def test_run_single_child_calls_close(self, monkeypatch, tmp_path):
         """_run_single_child finally block should call close() on child."""
         from unittest.mock import MagicMock
-        from hermes_constants import (
-            get_hermes_home,
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            get_rabbit_home,
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         from agent import relay_runtime
         from tools.delegate_tool import _run_single_child
@@ -294,7 +294,7 @@ class TestDelegationCleanup:
         observed = {}
 
         def run_conversation(**_kwargs):
-            observed["hermes_home"] = get_hermes_home()
+            observed["rabbit_home"] = get_rabbit_home()
             raise RuntimeError("test abort")
 
         child.run_conversation.side_effect = run_conversation
@@ -304,7 +304,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
 
         profile_home = tmp_path / "profile-a"
-        token = set_hermes_home_override(profile_home)
+        token = set_rabbit_home_override(profile_home)
         try:
             result = _run_single_child(
                 task_index=0,
@@ -313,10 +313,10 @@ class TestDelegationCleanup:
                 parent_agent=parent,
             )
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
 
         child.close.assert_called_once()
-        assert observed["hermes_home"] == profile_home
+        assert observed["rabbit_home"] == profile_home
         relay_host.unregister_subagent.assert_called_once_with(
             {"child_session_id": "child-session"}
         )
@@ -361,15 +361,15 @@ class TestDelegationCleanup:
         from unittest.mock import MagicMock
 
         from agent import relay_runtime
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from rabbit_constants import (
+            reset_rabbit_home_override,
+            set_rabbit_home_override,
         )
         from tools.delegate_tool import _run_single_child
 
         relay_runtime._reset_for_tests()
         profile_home = tmp_path / "profile-timeout"
-        profile_token = set_hermes_home_override(profile_home)
+        profile_token = set_rabbit_home_override(profile_home)
         child_started = threading.Event()
         release_child = threading.Event()
         child_finished = threading.Event()
@@ -460,5 +460,5 @@ class TestDelegationCleanup:
             release_child.set()
             if child_started.is_set():
                 assert child_finished.wait(timeout=10)
-            reset_hermes_home_override(profile_token)
+            reset_rabbit_home_override(profile_token)
             relay_runtime._reset_for_tests()

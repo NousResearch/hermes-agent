@@ -33,8 +33,8 @@
  * we never disable the GPU pipeline wholesale.
  *
  * Skipped when a remote display already forced software rendering, under WSLg
- * (vGPU is healthy there), or when `HERMES_DESKTOP_DISABLE_GPU=0` keeps the
- * GPU on. `HERMES_DESKTOP_NVIDIA_SWIFTSHADER=1` forces the fallback on;
+ * (vGPU is healthy there), or when `RABBIT_DESKTOP_DISABLE_GPU=0` keeps the
+ * GPU on. `RABBIT_DESKTOP_NVIDIA_SWIFTSHADER=1` forces the fallback on;
  * `=0` opts out entirely.
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
@@ -177,7 +177,7 @@ export interface NvidiaEglFallbackDecision {
  * - `ok` or no marker → boot with hardware GL, write `booting` so a death
  *   mid-boot is attributable.
  *
- * The env override `HERMES_DESKTOP_NVIDIA_SWIFTSHADER=1` forces the fallback
+ * The env override `RABBIT_DESKTOP_NVIDIA_SWIFTSHADER=1` forces the fallback
  * on regardless of the marker; `=0` keeps it off and clears the marker.
  */
 export function decideNvidiaEglFallback(options: {
@@ -201,7 +201,7 @@ export function decideNvidiaEglFallback(options: {
 
   const bootMarker: NvidiaEglMarker = { state: 'booting' }
 
-  const nvidiaOverride = String(env.HERMES_DESKTOP_NVIDIA_SWIFTSHADER || '')
+  const nvidiaOverride = String(env.RABBIT_DESKTOP_NVIDIA_SWIFTSHADER || '')
     .trim()
     .toLowerCase()
 
@@ -214,8 +214,8 @@ export function decideNvidiaEglFallback(options: {
     return { enable: false, reason: null, nextMarker: bootMarker }
   }
 
-  // A user who forced GPU back on (HERMES_DESKTOP_DISABLE_GPU=0) owns that call.
-  const gpuOverride = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
+  // A user who forced GPU back on (RABBIT_DESKTOP_DISABLE_GPU=0) owns that call.
+  const gpuOverride = String(env.RABBIT_DESKTOP_DISABLE_GPU || '')
     .trim()
     .toLowerCase()
 
@@ -236,7 +236,7 @@ export function decideNvidiaEglFallback(options: {
   }
 
   if (OVERRIDE_ON.has(nvidiaOverride)) {
-    return { enable: true, reason: 'override (HERMES_DESKTOP_NVIDIA_SWIFTSHADER)', nextMarker: bootMarker }
+    return { enable: true, reason: 'override (RABBIT_DESKTOP_NVIDIA_SWIFTSHADER)', nextMarker: bootMarker }
   }
 
   // Witnessed brokenness: sticky only for the same app AND driver version.

@@ -1,9 +1,9 @@
 // Uninstall of a STANDALONE desktop plugin: delete one folder directly under
-// the app-level `<HERMES_HOME>/desktop-plugins` root. The renderer names the
+// the app-level `<RABBIT_HOME>/desktop-plugins` root. The renderer names the
 // folder, never a path — containment is by construction (single segment) and
 // re-checked after resolution so nothing outside the root can be addressed.
 //
-// A unified package's desktop half (folder carrying `.hermes-package.json`) is
+// A unified package's desktop half (folder carrying `.rabbit-package.json`) is
 // refused here: the reconcile re-copies it from `plugins/<name>/desktop` on
 // the next pass while the agent package exists, so deleting the copy would
 // only make it flicker. That half goes away with `plugins.manage remove`.

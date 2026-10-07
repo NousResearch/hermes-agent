@@ -88,7 +88,7 @@ describe('tool row preview recording', () => {
       { toolName: 'read_file' },
       { isError: true, result: { error: 'Permission denied' } },
       { args: { path: '/work/missing.html' }, result: undefined },
-      { result: { preview: 'file:///opt/Hermes/resources/app.asar/dist/index.html' } }
+      { result: { preview: 'file:///opt/Rabbit/resources/app.asar/dist/index.html' } }
     ]) {
       renderToolRow(node => node, overrides)
       expect($previewStatusBySession.get()[PRIMARY_ID]).toBeUndefined()

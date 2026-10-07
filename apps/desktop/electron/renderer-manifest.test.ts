@@ -9,7 +9,7 @@ import { missingRendererAssets } from './renderer-bundle'
 
 test('Vite manifest validates lazy assets without opening their JavaScript', async () => {
   const { build } = await import('vite')
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-manifest-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-renderer-manifest-'))
 
   try {
     fs.writeFileSync(path.join(root, 'index.html'), '<script type="module" src="/main.js"></script>')
@@ -39,7 +39,7 @@ test('Vite manifest validates lazy assets without opening their JavaScript', asy
 })
 
 test('a manifest from another generation falls back to the existing lazy graph check', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-renderer-stale-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-renderer-stale-'))
 
   try {
     fs.mkdirSync(path.join(root, 'assets'))

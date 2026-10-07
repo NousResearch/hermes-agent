@@ -1,19 +1,20 @@
-"""Unit tests for the generic-OIDC / Nous-Portal caller-identity token resolver.
+"""Unit tests for the generic-OIDC caller-identity token resolver.
 
 Covers gateway.relay._resolve_relay_identity_token() — the canonical resolver
-shared by the runtime self-provision path and the `hermes gateway enroll` CLI.
+shared by the runtime self-provision path and the `rabbit gateway enroll` CLI.
 
-Three modes:
+Two modes:
   1. Generic OAuth2 client_credentials when gateway.idp.token_url (or
      GATEWAY_RELAY_IDP_TOKEN_URL) is configured WITH client credentials
      (air-gapped / self-hosted-IdP).
   1b. Ambient token endpoint when token_url is configured WITHOUT client
      credentials: plain GET, body is the token (raw JWT or JSON envelope).
      The metadata-server pattern (e.g. Domino's $DOMINO_API_PROXY/access-token).
-  2. Nous Portal (resolve_nous_access_token) otherwise — the default.
 
-The HTTP calls and the Nous resolver are monkeypatched; these prove the mode
-SELECTION, the request shapes, and the fail-closed paths.
+Without a configured token endpoint the resolver raises.
+
+The HTTP calls are monkeypatched; these prove the mode SELECTION, the request
+shapes, and the fail-closed paths.
 """
 
 from __future__ import annotations

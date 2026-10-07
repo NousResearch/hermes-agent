@@ -1,19 +1,19 @@
 """Real config → SQLite persistence → explicit /save A/B, without provider calls.
 
-Run with a clean HOME/HERMES_HOME and PYTHONPATH pointing at the tree under test.
+Run with a clean HOME/RABBIT_HOME and PYTHONPATH pointing at the tree under test.
 """
 import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 
-home = Path(os.environ["HERMES_HOME"])
+home = Path(os.environ["RABBIT_HOME"])
 home.mkdir(parents=True, exist_ok=True)
 (home / "config.yaml").write_text("sessions:\n  write_json_snapshots: true\n", encoding="utf-8")
 from agent.agent_init import _init_session_state
 from agent.session_persistence import SessionPersistenceMixin
-from hermes_cli.cli_session_mixin import CLISessionMixin
-from hermes_state import SessionDB
+from rabbit_cli.cli_session_mixin import CLISessionMixin
+from rabbit_state import SessionDB
 
 with SessionDB(db_path=home / "state.db") as db:
     agent = SessionPersistenceMixin()

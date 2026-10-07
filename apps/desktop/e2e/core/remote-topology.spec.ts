@@ -1,6 +1,6 @@
 /**
  * Remote-backend topology: the Desktop attached by URL + token to a real
- * `hermes serve` it did NOT spawn, running under a different HOME and
+ * `rabbit serve` it did NOT spawn, running under a different HOME and
  * filesystem root (./remote-helpers.ts). Only the LLM is faked.
  *
  *  - first chat over the remote route: the turn persists in the BACKEND's
@@ -82,7 +82,7 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
   const provider = await startScriptedProvider()
   const backendBox = createCoreSandbox('remote-backend')
   const clientBox = createCoreSandbox('remote-client')
-  writeProviderHome(backendBox.hermesHome, provider.url, 'agent:\n  image_input_mode: native\n')
+  writeProviderHome(backendBox.rabbitHome, provider.url, 'agent:\n  image_input_mode: native\n')
   // The client-only folder is hidden from the backend (private mount
   // namespace), so a path attach would really miss like on another machine.
   const picturesDir = path.join(clientBox.root, 'client-only-pictures')
@@ -116,7 +116,7 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       await assertTranscriptOracle(page, ws, provider, session, 'remote first chat')
       expect(new URL(ws.sockets[0]!.url).port, 'the socket dials the remote backend').toBe(String(backend.port))
       expect(backendProcesses(clientBox), 'the client spawned no backend of its own').toEqual([])
-      expect(fs.existsSync(path.join(clientBox.hermesHome, 'state.db')), 'no client-side state.db').toBe(false)
+      expect(fs.existsSync(path.join(clientBox.rabbitHome, 'state.db')), 'no client-side state.db').toBe(false)
     })
 
     await test.step('an image that exists only on the client reaches the model as bytes (#120730)', async () => {
@@ -163,7 +163,7 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       const turn = provider.completions.find(c => c.marker === U(2))!
       const user = imageTurnUser(turn.body)
       const userText = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content ?? '')
-      const at = userText.indexOf(backendBox.hermesHome)
+      const at = userText.indexOf(backendBox.rabbitHome)
       const staged = at >= 0 ? /^\S+?\.png/.exec(userText.slice(at))?.[0] : undefined
       expect(staged, `the turn references a backend-side image path: ${userText.slice(0, 400)}`).toBeTruthy()
       expect(fs.readFileSync(staged!).equals(png), 'backend-staged image is byte-identical').toBe(true)

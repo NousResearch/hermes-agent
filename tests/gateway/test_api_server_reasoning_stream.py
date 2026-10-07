@@ -62,7 +62,7 @@ def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
     monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
     monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
     monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
-    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr("rabbit_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
 @pytest.mark.asyncio
@@ -92,7 +92,7 @@ async def test_chat_completions_stream_forwards_agent_reasoning_callback(adapter
         stream_q, user_message="q", conversation_history=[], session_id="api-session")
     with patch.object(api_mod.web, "StreamResponse", return_value=fake_response):
         await adapter._write_sse_chat_completion(
-            request, "chatcmpl-x", "hermes-agent", int(time.time()), stream_q, agent_task, agent_ref)
+            request, "chatcmpl-x", "rabbit-agent", int(time.time()), stream_q, agent_task, agent_ref)
     assert isinstance(agent_ref[0], FakeAgent)
     deltas = [d["choices"][0]["delta"] for _e, d in _frames(written)]
     assert [d.get("reasoning_content") for d in deltas if d.get("reasoning_content")] == ["thinking..."]
@@ -119,7 +119,7 @@ async def test_responses_stream_emits_reasoning_summary_events_before_message(ad
     agent_task.add_done_callback(lambda _f: stream_q.put_nowait(None))
     with patch.object(api_mod.web, "StreamResponse", return_value=fake_response):
         await adapter._write_sse_responses(
-            request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}", model="hermes-agent",
+            request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}", model="rabbit-agent",
             created_at=int(time.time()), stream_q=stream_q, agent_task=agent_task, agent_ref=[None],
             conversation_history=[], user_message="q", instructions=None, conversation=None,
             store=False, session_id=None)

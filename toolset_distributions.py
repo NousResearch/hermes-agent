@@ -37,7 +37,6 @@ DISTRIBUTIONS = {
         "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
         **{"browser+search": 97}, vision=12, terminal=15,
     ),
-    # nous-terminal-tasks.jsonl
     "terminal_tasks": _dist("Terminal-focused distribution with high terminal/file availability, occasional other tools",
                             terminal=97, file=97, web=97, browser=75, vision=50, image_gen=10),
     # mixed-browser-terminal-tasks.jsonl

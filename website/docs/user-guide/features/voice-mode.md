@@ -1,31 +1,27 @@
 ---
 sidebar_position: 10
 title: "Voice Mode"
-description: "Real-time voice conversations with Hermes Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels)"
+description: "Real-time voice conversations with Rabbit Agent — CLI, Telegram, Discord (DMs, text channels, and voice channels)"
 ---
 
 # Voice Mode
 
-Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
+Rabbit Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
 
-If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md).
+If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Rabbit](../../guides/use-voice-mode-with-rabbit.md).
 
-For hands-free session start — saying "hey hermes" (or any phrase) to open a fresh voice session on the CLI, TUI, or desktop app — see [Wake Word](./wake-word.md).
+For hands-free session start — saying "hey rabbit" (or any phrase) to open a fresh voice session on the CLI, TUI, or desktop app — see [Wake Word](./wake-word.md).
 
 ## Prerequisites
 
 Before using voice features, make sure you have:
 
-1. **Hermes Agent installed** — via the install script (see [Installation](../../getting-started/installation.md))
-2. **An LLM provider configured** — run `hermes model` or set your preferred provider credentials in `~/.hermes/.env`
-3. **A working base setup** — run `hermes` to verify the agent responds to text before enabling voice
+1. **Rabbit Agent installed** — via the install script (see [Installation](../../getting-started/installation.md))
+2. **An LLM provider configured** — run `rabbit model` or set your preferred provider credentials in `~/.rabbit/.env`
+3. **A working base setup** — run `rabbit` to verify the agent responds to text before enabling voice
 
 :::tip
-The `~/.hermes/` directory and default `config.yaml` are created automatically the first time you run `hermes`. You only need to create `~/.hermes/.env` manually for API keys.
-:::
-
-:::tip Nous Portal covers both
-A paid [Nous Portal](./tool-gateway.md) subscription supplies the LLM (step 2) **and** OpenAI TTS via the Tool Gateway — no separate OpenAI key needed. On a fresh install, `hermes setup --portal` wires both up at once.
+The `~/.rabbit/` directory and default `config.yaml` are created automatically the first time you run `rabbit`. You only need to create `~/.rabbit/.env` manually for API keys.
 :::
 
 ## Overview
@@ -40,9 +36,9 @@ A paid [Nous Portal](./tool-gateway.md) subscription supplies the LLM (step 2) *
 
 ### Python Packages
 
-Use `hermes tools` to configure voice providers. Missing built-in feature
+Use `rabbit tools` to configure voice providers. Missing built-in feature
 requirements go through PM, subject to `security.allow_lazy_installs` and the
-target's dependency support. Restart Hermes if the selected dependency
+target's dependency support. Restart Rabbit if the selected dependency
 environment changes.
 
 A bundled app includes its supported engine dependencies. Docker includes a
@@ -90,7 +86,7 @@ sudo apt install espeak-ng   # for NeuTTS
 
 ### API Keys
 
-Add to `~/.hermes/.env`:
+Add to `~/.rabbit/.env`:
 
 ```bash
 # Speech-to-Text — local provider needs NO key at all
@@ -107,27 +103,27 @@ ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 If `faster-whisper` is installed, voice mode works with **zero API keys** for STT. The model (~150 MB for `base`) downloads automatically on first use.
 :::
 
-The first download normally comes from `huggingface.co`. If that host is unavailable on your network, export an accessible mirror in the shell or service that starts Hermes:
+The first download normally comes from `huggingface.co`. If that host is unavailable on your network, export an accessible mirror in the shell or service that starts Rabbit:
 
 ```bash
 HF_ENDPOINT=https://your-hugging-face-mirror.example
 HF_HUB_DISABLE_XET=1
 ```
 
-Disabling Xet avoids authentication failures from Xet's separate CAS hosts when a mirror is in use. After the model is cached, Hermes loads that snapshot without an online revision check.
+Disabling Xet avoids authentication failures from Xet's separate CAS hosts when a mirror is in use. After the model is cached, Rabbit loads that snapshot without an online revision check.
 
 ---
 
 ## CLI Voice Mode
 
-Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Behavior is identical across both — same slash commands, same VAD silence detection, same streaming TTS, same hallucination filter. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
+Voice mode is available in both the **classic CLI** (`rabbit chat`) and the **TUI** (`rabbit --tui`). Behavior is identical across both — same slash commands, same VAD silence detection, same streaming TTS, same hallucination filter. The TUI additionally forwards crash-forensic logs to `~/.rabbit/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
 
 ### Quick Start
 
 Start the CLI and enable voice mode:
 
 ```bash
-hermes                # Start the interactive CLI
+rabbit                # Start the interactive CLI
 ```
 
 Then use these commands inside the CLI:
@@ -142,7 +138,7 @@ Then use these commands inside the CLI:
 
 ### How It Works
 
-1. Start the CLI with `hermes` and enable voice mode with `/voice on`
+1. Start the CLI with `rabbit` and enable voice mode with `/voice on`
 2. **Press Ctrl+B** — a beep plays (880Hz), recording starts
 3. **Speak** — a live audio level bar shows your input: `● [▁▂▃▅▇▇▅▂] ❯`
 4. **Stop speaking** — after 3 seconds of silence, recording auto-stops
@@ -154,7 +150,7 @@ Then use these commands inside the CLI:
 This loop continues until you press **Ctrl+B** during recording (exits continuous mode) or 3 consecutive recordings detect no speech.
 
 :::tip
-The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
+The record key is configurable via `voice.record_key` in `~/.rabbit/config.yaml` (default: `ctrl+b`).
 :::
 
 ### Silence Detection
@@ -170,7 +166,7 @@ Both `silence_threshold` and `silence_duration` are configurable in `config.yaml
 
 ### Ending a voice chat by voice
 
-Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye hermes"]`), or set it to `[]` to disable. Phrases can be in any language (e.g. `["отбой", "стоп"]` with `stt.language: ru`). The desktop app honours the same list; while `voice.stop_phrases` is left at its default it also accepts a few English extras ("goodbye", "never mind", "cancel", …), and a customised list replaces them. A voice chat also ends on its own after three consecutive silent cycles (no speech detected).
+Say **"stop"** — and nothing else — to end the voice conversation hands-free. The match is deliberately strict: the whole utterance (case-insensitive, surrounding punctuation ignored) must equal a configured phrase, so "stop doing that and try X instead" still reaches the agent normally. Customize the phrase list with `voice.stop_phrases` in `config.yaml` (e.g. `["stop", "goodbye rabbit"]`), or set it to `[]` to disable. Phrases can be in any language (e.g. `["отбой", "стоп"]` with `stt.language: ru`). The desktop app honours the same list; while `voice.stop_phrases` is left at its default it also accepts a few English extras ("goodbye", "never mind", "cancel", …), and a customised list replaces them. A voice chat also ends on its own after three consecutive silent cycles (no speech detected).
 
 **Typing** a bare stop phrase while a voice chat is active works the same way on every surface (CLI, TUI, desktop): the message ends the voice chat instead of being sent to the agent. Outside a voice chat, typed "stop" is an ordinary message.
 
@@ -186,7 +182,7 @@ The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a de
 
 ### Desktop remote: client-direct voice (lowest-hop path)
 
-When Hermes Desktop is connected to a **remote gateway**, audio does not need to be relayed through the gateway at all. At voice-session start the desktop fetches the active profile's resolved STT/TTS settings (provider, model, language/voice, and credential) from the gateway over the authenticated REST channel (`GET /api/audio/voice-config`) and then calls the providers **directly**:
+When Rabbit Desktop is connected to a **remote gateway**, audio does not need to be relayed through the gateway at all. At voice-session start the desktop fetches the active profile's resolved STT/TTS settings (provider, model, language/voice, and credential) from the gateway over the authenticated REST channel (`GET /api/audio/voice-config`) and then calls the providers **directly**:
 
 - **Dictation / voice input:** the mic recording goes straight from your desktop to the profile's STT provider; only the resulting *text* is sent to the gateway as the prompt.
 - **Spoken replies:** the reply text is already streaming to the desktop over the chat socket, so the desktop synthesizes it locally with the profile's TTS provider and plays it — the gateway link never carries audio.
@@ -200,11 +196,11 @@ voice:
   client_direct: false
 ```
 
-Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
+Client-direct wire support: OpenAI, Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
 
-### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
+### Desktop: GPT-Live voice chat mode (full duplex, delegates to Rabbit)
 
-The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Hermes, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
+The chained loop above is one of two voice chat modes in the desktop app. The other replaces the whole STT → turn → TTS chain with **one full-duplex voice model**, OpenAI's `gpt-live-1`: it listens while it speaks, handles interruptions, backchannels and background noise itself, and has **no tools of its own**. Whenever you ask for real work it *delegates* to Rabbit, which answers as usual — with whatever model and provider the session has selected, the full toolset, memory and approvals — and the voice paraphrases the answer aloud.
 
 ```yaml
 voice:
@@ -214,11 +210,11 @@ voice:
     instructions: ""            # optional extra persona sentences (tone, pace, language)
 ```
 
-Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
+Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Rabbit turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.
 
-How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Hermes is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
+How it works: pressing the voice button opens a WebRTC session from the desktop to GPT-Live; the desktop only ever receives a session id and an SDP answer — the key stays on the gateway host, which performs the session creation (`POST /api/audio/voice-live/session`). Each `session.delegation.created` becomes a normal turn on the open chat (the bubble shows what you said; the recent spoken exchange rides the model input as a per-turn note, never the system prompt, so the reply is speakable prose). Tool activity is fed to the voice as quiet context ("Rabbit is working: terminal") so it can tell you what is happening if you ask; the final answer is streamed back sentence by sentence. Saying the stop phrase ends the conversation. If `gpt-live` is selected but no key resolves, the button falls back to the chained mode with a notice.
 
-Not supported in this mode: the Nous-managed audio proxy (direct key only), the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
+Not supported in this mode: the CLI/TUI (`/voice` keeps the chained loop), and the `tts` tool (it keeps using `tts.provider`).
 
 ### Barge-in
 
@@ -229,7 +225,7 @@ You can interrupt the agent at ANY point in its turn — the microphone stays li
 - **Type or press the record key** — sending a new message or hitting the push-to-talk key stops playback instantly on every surface.
 - **Say "stop"** — the stop phrase works in both phases: mid-generation it interrupts the turn AND ends the voice chat; mid-playback it cuts the speech and ends the chat.
 
-Tuning (config.yaml): `voice.barge_in: false` disables it; `voice.barge_in_threshold_multiplier` (default `3.0`) scales the speech trigger over the quiet-room floor — lower is more sensitive; the desktop app also scales its playback-phase trigger by it, so a quiet Bluetooth headset that can't interrupt a reply can use e.g. `1.5`; `voice.barge_in_grace_seconds` (default `0.5`) suppresses trips right after playback starts. Set `HERMES_VOICE_DEBUG=1` to stream per-block VAD diagnostics (calibrated floor, RMS, trip decisions) to stderr for live tuning.
+Tuning (config.yaml): `voice.barge_in: false` disables it; `voice.barge_in_threshold_multiplier` (default `3.0`) scales the speech trigger over the quiet-room floor — lower is more sensitive; the desktop app also scales its playback-phase trigger by it, so a quiet Bluetooth headset that can't interrupt a reply can use e.g. `1.5`; `voice.barge_in_grace_seconds` (default `0.5`) suppresses trips right after playback starts. Set `RABBIT_VOICE_DEBUG=1` to stream per-block VAD diagnostics (calibrated floor, RMS, trip decisions) to stderr for live tuning.
 
 The agent **knows** it was interrupted: the next message carries a short note telling the model its spoken reply was cut off, so it can react naturally ("rude!") or pick up where it left off instead of being oblivious.
 
@@ -248,8 +244,8 @@ If you haven't set up your messaging bots yet, see the platform-specific guides:
 Start the gateway to connect to your messaging platforms:
 
 ```bash
-hermes gateway        # Start the gateway (connects to configured platforms)
-hermes gateway setup  # Interactive setup wizard for first-time configuration
+rabbit gateway        # Start the gateway (connects to configured platforms)
+rabbit gateway setup  # Interactive setup wizard for first-time configuration
 ```
 
 ### Discord: Channels vs DMs
@@ -263,10 +259,10 @@ The bot supports two interaction modes on Discord:
 
 **DM (recommended for personal use):** Just open a DM with the bot and type — no @mention needed. Voice replies and all commands work the same as in channels.
 
-**Server channels:** The bot only responds when you @mention it (e.g. `@hermesbyt4 hello`). Make sure you select the **bot user** from the mention popup, not the role with the same name.
+**Server channels:** The bot only responds when you @mention it (e.g. `@rabbitbyt4 hello`). Make sure you select the **bot user** from the mention popup, not the role with the same name.
 
 :::tip
-To disable the mention requirement in server channels, add to `~/.hermes/.env`:
+To disable the mention requirement in server channels, add to `~/.rabbit/.env`:
 ```bash
 DISCORD_REQUIRE_MENTION=false
 ```
@@ -377,7 +373,7 @@ The bot auto-loads the codec from:
 #### 4. Environment Variables
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 
 # Discord bot (already configured for text)
 DISCORD_BOT_TOKEN=your-bot-token
@@ -394,7 +390,7 @@ DISCORD_ALLOWED_USERS=your-user-id
 ### Start the Gateway
 
 ```bash
-hermes gateway        # Start with existing configuration
+rabbit gateway        # Start with existing configuration
 ```
 
 The bot should come online in Discord within a few seconds.
@@ -441,7 +437,7 @@ The bot automatically pauses its audio listener while playing TTS replies, preve
 Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users' audio is silently ignored.
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 DISCORD_ALLOWED_USERS=284102345871466496
 ```
 
@@ -472,9 +468,9 @@ stt:
   provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""                     # optional ISO-639-1 hint; blank = use RABBIT_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
-    language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""                     # optional ISO-639-1 hint; blank = use RABBIT_LOCAL_STT_LANGUAGE if set, else auto-detect
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -571,7 +567,7 @@ brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
 
-If you are running Hermes inside Docker on a Linux desktop, the container also needs access to your host audio socket. See the [Docker audio bridge](../docker.md#optional-linux-desktop-audio-bridge) notes for a PulseAudio/PipeWire-compatible setup.
+If you are running Rabbit inside Docker on a Linux desktop, the container also needs access to your host audio socket. See the [Docker audio bridge](../docker.md#optional-linux-desktop-audio-bridge) notes for a PulseAudio/PipeWire-compatible setup.
 
 ### Bot doesn't respond in Discord server channels
 
@@ -579,7 +575,7 @@ The bot requires an @mention by default in server channels. Make sure you:
 
 1. Type `@` and select the **bot user** (with the #discriminator), not the **role** with the same name
 2. Or use DMs instead — no mention needed
-3. Or set `DISCORD_REQUIRE_MENTION=false` in `~/.hermes/.env`
+3. Or set `DISCORD_REQUIRE_MENTION=false` in `~/.rabbit/.env`
 
 ### Bot joins VC but doesn't hear me
 
@@ -591,7 +587,7 @@ The bot requires an @mention by default in server channels. Make sure you:
 
 - Verify STT is available: install `faster-whisper` (no key needed) or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`
 - Check the LLM model is configured and accessible
-- Review gateway logs: `tail -f ~/.hermes/logs/gateway.log`
+- Review gateway logs: `tail -f ~/.rabbit/logs/gateway.log`
 
 ### Bot responds in text but not in voice channel
 

@@ -73,9 +73,9 @@ def _try_lazy_install_stt() -> bool:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
             "When the message names a restart, this process selected its dependency generation at "
-            "boot and a new one cannot take effect in-flight; otherwise the Hermes process user "
-            "may not be able to write to the dependency environment. Run `hermes tools` as the "
-            "Hermes installation owner and select Local Whisper under Speech-to-Text.",
+            "boot and a new one cannot take effect in-flight; otherwise the Rabbit process user "
+            "may not be able to write to the dependency environment. Run `rabbit tools` as the "
+            "Rabbit installation owner and select Local Whisper under Speech-to-Text.",
             exc)
     return False
 
@@ -274,18 +274,18 @@ def _transcribe_local_command(
     language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
     try:
-        with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
+        with tempfile.TemporaryDirectory(prefix="rabbit-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:
                 return _error_result(prep_error)
             command = command_template.format(
                 input_path=shlex.quote(prepared_input), output_dir=shlex.quote(output_dir),
                 language=shlex.quote(language), model=shlex.quote(normalized_model))
-            # Scrub Hermes secrets from the child env (same policy as _run_command_stt).
-            # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
+            # Scrub Rabbit secrets from the child env (same policy as _run_command_stt).
+            # Scrub Rabbit secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).
-            from tools.environments.local import hermes_subprocess_env
-            _run_quiet(shlex.split(command), timeout=300, env=hermes_subprocess_env(inherit_credentials=False))
+            from tools.environments.local import rabbit_subprocess_env
+            _run_quiet(shlex.split(command), timeout=300, env=rabbit_subprocess_env(inherit_credentials=False))
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")

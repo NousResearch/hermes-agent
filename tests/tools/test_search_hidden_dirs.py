@@ -119,11 +119,11 @@ class TestGrepExcludesHiddenDirs:
 class TestGrepSearchesRootsUnderHiddenDirs:
     """Regression for #18473: grep applies ``--exclude-dir='.*'`` to the command-line
     root as well (GNU grep: to every component of it), so a search rooted anywhere
-    under a dot-directory such as ``~/.hermes`` returned nothing on the fallback."""
+    under a dot-directory such as ``~/.rabbit`` returned nothing on the fallback."""
 
     @staticmethod
     def _hidden_tree(tmp_path):
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         (home / "skills").mkdir(parents=True)
         (home / "skills" / "SKILL.md").write_text("visible document under a hidden home")
         (home / ".hub").mkdir()
@@ -170,11 +170,11 @@ class TestIgnoreFileWritten:
     """_write_index_cache should create .ignore in .hub/ directory."""
 
     def test_write_index_cache_creates_ignore_file(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
         # Patch module-level paths
         import tools.skills_hub as hub_mod
-        monkeypatch.setattr(hub_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(hub_mod, "RABBIT_HOME", tmp_path)
         monkeypatch.setattr(hub_mod, "SKILLS_DIR", tmp_path / "skills")
         monkeypatch.setattr(hub_mod, "HUB_DIR", tmp_path / "skills" / ".hub")
         monkeypatch.setattr(
@@ -192,10 +192,10 @@ class TestIgnoreFileWritten:
     def test_write_index_cache_does_not_overwrite_existing_ignore(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
         import tools.skills_hub as hub_mod
-        monkeypatch.setattr(hub_mod, "HERMES_HOME", tmp_path)
+        monkeypatch.setattr(hub_mod, "RABBIT_HOME", tmp_path)
         monkeypatch.setattr(hub_mod, "SKILLS_DIR", tmp_path / "skills")
         monkeypatch.setattr(hub_mod, "HUB_DIR", tmp_path / "skills" / ".hub")
         monkeypatch.setattr(

@@ -48,7 +48,7 @@ describe('createBudgetedLoop', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { rabbitDesktop?: unknown }).rabbitDesktop
   })
 
   it('enforces the fps budget: frames inside the interval reschedule without drawing', () => {

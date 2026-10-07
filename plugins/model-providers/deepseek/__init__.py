@@ -5,7 +5,7 @@ requires ``reasoning_content`` to be echoed back on later turns (HTTP 400 after
 the first tool call otherwise). This profile sets ``thinking`` explicitly and
 maps effort onto DeepSeek's ``reasoning_effort``; V3 models are left untouched.
 Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
-``hermes_cli.model_normalize`` before reaching here.
+``rabbit_cli.model_normalize`` before reaching here.
 """
 
 from typing import Any
@@ -31,7 +31,7 @@ class DeepSeekProfile(ProviderProfile):
         m = (model or "").strip().lower()
         # v4+ only; v3 excluded. Version-less canonicals (``deepseek-flash``) carry the
         # same thinking-mode contract but no ``v<N>`` prefix, so consult the id set too —
-        # missing them makes Hermes omit ``thinking``, so the server defaults to on and
+        # missing them makes Rabbit omit ``thinking``, so the server defaults to on and
         # the user's thinking toggle / effort setting is silently ignored.
         versioned_v4_plus = m.startswith("deepseek-v") and not m.startswith("deepseek-v3")
         if not versioned_v4_plus and m not in _THINKING_CAPABLE_IDS:

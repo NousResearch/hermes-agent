@@ -1,12 +1,12 @@
 name: davinci-resolve
-repo: https://github.com/wassermanproductions/hermes-davinci-resolve-plugin
+repo: https://github.com/wassermanproductions/rabbit-davinci-resolve-plugin
 sha: bbd5b207f823f16a20e756bfa80f44ad34790a3f
 description: Control DaVinci Resolve Studio live, or generate importable interchange files for free DaVinci
   Resolve.
 maintainer: wassermanproductions
 tier: community
 category: tools
-docs_url: https://github.com/wassermanproductions/hermes-davinci-resolve-plugin#readme
+docs_url: https://github.com/wassermanproductions/rabbit-davinci-resolve-plugin#readme
 capabilities:
   provides_tools:
   - resolve_add_timeline_marker

@@ -16,11 +16,11 @@ def launchers(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_relay, "__file__", str(module))
     old_bin = tmp_path / "old generation" / "bin"
     old_bin.mkdir(parents=True)
-    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    name = "rabbit.exe" if sys.platform == "win32" else "rabbit"
     sibling = old_bin / name
     sibling.touch()
     monkeypatch.setattr(sys, "executable", str(old_bin / "python"))
-    published = root / ".hermes" / "bin" / name
+    published = root / ".rabbit" / "bin" / name
     published.parent.mkdir(parents=True)
     return published, sibling
 
@@ -50,10 +50,10 @@ def test_windows_delivery_does_not_select_batch_shims(launchers):
 def test_path_then_bare_fallback_remain_available(launchers, monkeypatch):
     _, sibling = launchers
     sibling.unlink()
-    monkeypatch.setattr(bot_relay.shutil, "which", lambda name: "external-hermes")
-    assert bot_relay._hermes_cli() == "external-hermes"
+    monkeypatch.setattr(bot_relay.shutil, "which", lambda name: "external-rabbit")
+    assert bot_relay._rabbit_cli() == "external-rabbit"
     monkeypatch.setattr(bot_relay.shutil, "which", lambda name: None)
-    assert bot_relay._hermes_cli() == "hermes"
+    assert bot_relay._rabbit_cli() == "rabbit"
 
 
 @pytest.mark.platforms("windows")
@@ -61,20 +61,20 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     import json
     import os
     import subprocess
-    from hermes_cli import _launchers
+    from rabbit_cli import _launchers
     from pm.environments import runtime_facts_path, site_packages
 
     real_python = Path(sys.executable)
     real_root = Path(bot_relay.__file__).resolve().parents[1]
     root = tmp_path / "install with spaces"
-    package = root / "hermes_cli"
+    package = root / "rabbit_cli"
     package.mkdir(parents=True)
     # Load the checkout's constants before the launcher's bootstrap import;
     # an editable test interpreter may also expose an older installed checkout.
     import shutil
-    shutil.copyfile(real_root / "hermes_constants.py", root / "hermes_constants.py")
+    shutil.copyfile(real_root / "rabbit_constants.py", root / "rabbit_constants.py")
     (package / "__init__.py").write_text(
-        f"__path__.append({str(real_root / 'hermes_cli')!r})\n", encoding="utf-8")
+        f"__path__.append({str(real_root / 'rabbit_cli')!r})\n", encoding="utf-8")
     (package / "main.py").write_text(
         "import json, sys\n"
         "def main():\n"
@@ -82,28 +82,28 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
         "    print(json.dumps([plugin_generation_probe.VALUE, sys.argv[1:]]))\n"
         "    return 0\n", encoding="utf-8")
     # Keep the entry point local and non-networked, but run real PM selection.
-    (root / "hermes_bootstrap.py").write_text(
+    (root / "rabbit_bootstrap.py").write_text(
         f"import sys\nsys.path.append({str(real_root)!r})\n"
         "from pathlib import Path\nfrom pm.environments import activate_dependencies\n"
         "activate_dependencies(Path(__file__).resolve().parent)\n", encoding="utf-8")
     runtime = tmp_path / "runtime"
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
-    out = root / ".hermes" / "bin"
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(runtime))
+    out = root / ".rabbit" / "bin"
     out.mkdir(parents=True)
-    published = _launchers.mint_launcher("hermes", root, out, real_python, None)
+    published = _launchers.mint_launcher("rabbit", root, out, real_python, None)
     assert published is not None
     record = runtime_facts_path(root)
     record.parent.mkdir(parents=True, exist_ok=True)
     old_bin = tmp_path / "old" / "Scripts"
     old_bin.mkdir(parents=True)
     # Both choices are executable: the old console script reports missing deps.
-    old_package = tmp_path / "old source" / "hermes_cli"
+    old_package = tmp_path / "old source" / "rabbit_cli"
     old_package.mkdir(parents=True)
     (old_package / "__init__.py").write_text("", encoding="utf-8")
     (old_package / "main.py").write_text(
         "def main():\n    print('old-generation')\n    return 0\n", encoding="utf-8")
-    (old_package.parent / "hermes_bootstrap.py").write_text("", encoding="utf-8")
-    assert _launchers.mint_launcher("hermes", old_package.parent, old_bin, real_python, None)
+    (old_package.parent / "rabbit_bootstrap.py").write_text("", encoding="utf-8")
+    assert _launchers.mint_launcher("rabbit", old_package.parent, old_bin, real_python, None)
     monkeypatch.setattr(bot_relay, "__file__", str(root / "tools" / "bot_relay.py"))
     monkeypatch.setattr(sys, "executable", str(old_bin / "python.exe"))
     argv = bot_relay.local_delivery_command("researcher", str(tmp_path / "message&extra.txt"))
@@ -128,7 +128,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
     assert "old-generation" not in result.stdout
 
 
-@pytest.mark.parametrize("name", ["hermes", "hermes.exe"])
+@pytest.mark.parametrize("name", ["rabbit", "rabbit.exe"])
 def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     import contextlib
     from tools import bot_mode_dm, bot_mode_probe
@@ -136,7 +136,7 @@ def test_launcher_shape_preserves_profile_and_lock(tmp_path, monkeypatch, name):
     home = tmp_path / "home"
     target = home / "profiles" / "researcher"
     monkeypatch.setattr(bot_mode_dm, "_default_home", lambda: str(home))
-    monkeypatch.setattr(bot_mode_probe, "_hermes_root", lambda path: home)
+    monkeypatch.setattr(bot_mode_probe, "_rabbit_root", lambda path: home)
     monkeypatch.setattr(bot_mode_probe, "_roster", lambda root: [("researcher", target)])
     locked = []
     @contextlib.contextmanager

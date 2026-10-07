@@ -181,31 +181,31 @@ class TestFormatReport:
 class TestConfigGate:
 
     def test_disabled_via_config(self):
-        with mock.patch("hermes_cli.config.load_config",
+        with mock.patch("rabbit_cli.config.load_config",
                         return_value={"skills": {"tier1_advisory": False}}):
             assert not tier1_advisory_enabled()
 
     def test_string_false_disabled(self):
-        with mock.patch("hermes_cli.config.load_config",
+        with mock.patch("rabbit_cli.config.load_config",
                         return_value={"skills": {"tier1_advisory": "false"}}):
             assert not tier1_advisory_enabled()
 
     def test_config_error_defaults_enabled(self):
-        with mock.patch("hermes_cli.config.load_config", side_effect=RuntimeError):
+        with mock.patch("rabbit_cli.config.load_config", side_effect=RuntimeError):
             assert tier1_advisory_enabled()
 
 class TestInstallPathHelper:
     """_print_tier1_advisory must never raise and never block."""
 
     def test_helper_never_raises_on_scanner_error(self, tmp_path):
-        from hermes_cli.skills_hub import _print_tier1_advisory
+        from rabbit_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
         with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
                         side_effect=RuntimeError("boom")):
             _print_tier1_advisory(tmp_path, console)  # must not raise
 
     def test_helper_silent_when_unavailable(self, tmp_path):
-        from hermes_cli.skills_hub import _print_tier1_advisory
+        from rabbit_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
         with mock.patch("tools.skillevaluator_scan.run_tier1_scan",
                         return_value=Tier1Report(available=False)):
@@ -213,7 +213,7 @@ class TestInstallPathHelper:
         console.print.assert_not_called()
 
     def test_helper_silent_when_disabled(self, tmp_path):
-        from hermes_cli.skills_hub import _print_tier1_advisory
+        from rabbit_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
         with mock.patch("tools.skillevaluator_scan.tier1_advisory_enabled",
                         return_value=False), \
@@ -223,7 +223,7 @@ class TestInstallPathHelper:
         console.print.assert_not_called()
 
     def test_helper_prints_findings_and_continues(self, tmp_path):
-        from hermes_cli.skills_hub import _print_tier1_advisory
+        from rabbit_cli.skills_hub import _print_tier1_advisory
         console = mock.MagicMock()
         report = _parse_report(_report_json([
             _finding("emails", message="Non-placeholder email: a@b.com"),

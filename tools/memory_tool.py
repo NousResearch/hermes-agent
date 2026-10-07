@@ -9,7 +9,7 @@ import json
 import logging
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
@@ -36,8 +36,8 @@ _memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar("mem
 
 
 def get_memory_dir() -> Path:
-    """Profile-scoped memories dir, resolved per call (HERMES_HOME may switch after import)."""
-    return get_hermes_home() / "memories"
+    """Profile-scoped memories dir, resolved per call (RABBIT_HOME may switch after import)."""
+    return get_rabbit_home() / "memories"
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
@@ -49,7 +49,7 @@ def load_on_disk_store() -> "MemoryStore":
     agent (gateway, Desktop, ``/memory``) so approvals enforce the SAME caps as
     ``agent_init``. Falls back to defaults if config can't load; never raises."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         config = load_config() or {}
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
@@ -214,7 +214,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
-    from hermes_cli.observability.shared_metrics_loop import record_builtin_memory_call
+    from rabbit_cli.observability.shared_metrics_loop import record_builtin_memory_call
     record_builtin_memory_call(action, operations, outcome=outcome)
     return result
 
@@ -268,7 +268,7 @@ def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
     enabled). ``agent_init`` reads the same section so availability and store cannot diverge."""
     if config is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from rabbit_cli.config import load_config_readonly
             config = load_config_readonly()
         except Exception:
             logger.debug("Could not read memory config for availability", exc_info=True)

@@ -1,6 +1,6 @@
 """Registry walk for the injected-parameter strip-and-retry safety class.
 
-Bug class (#90257, #89897, #91164, #89503): a parameter that Hermes (or the
+Bug class (#90257, #89897, #91164, #89503): a parameter that Rabbit (or the
 provider's own gateway) injects into a request — ``prompt_cache_retention``,
 reasoning translations, ``temperature``/``max_tokens``/``response_format``
 adjustments — draws an HTTP 400 from the provider and the turn DIES instead

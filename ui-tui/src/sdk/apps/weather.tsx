@@ -1,5 +1,5 @@
-import { Box, Text } from '@hermes/ink'
-import { mix } from '@hermes/shared/color'
+import { Box, Text } from '@rabbit/ink'
+import { mix } from '@rabbit/shared/color'
 
 import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
@@ -119,7 +119,7 @@ async function geocodeLocation(location: string): Promise<Coordinates> {
   const params = new URLSearchParams({ count: '1', format: 'json', language: 'en', name: location })
 
   const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?${params}`, {
-    headers: { 'User-Agent': 'hermes-tui-weather' },
+    headers: { 'User-Agent': 'rabbit-tui-weather' },
     signal: AbortSignal.timeout(10_000)
   })
 
@@ -149,7 +149,7 @@ async function geolocateByIp(): Promise<Coordinates> {
   const fields = 'success,city,country,latitude,longitude,timezone'
 
   const res = await fetch(`https://ipwho.is/?fields=${fields}`, {
-    headers: { 'User-Agent': 'hermes-tui-weather' },
+    headers: { 'User-Agent': 'rabbit-tui-weather' },
     signal: AbortSignal.timeout(10_000)
   })
 
@@ -189,7 +189,7 @@ async function fetchReport(location: string): Promise<Report> {
   })
 
   const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, {
-    headers: { 'User-Agent': 'hermes-tui-weather' },
+    headers: { 'User-Agent': 'rabbit-tui-weather' },
     signal: AbortSignal.timeout(10_000)
   })
 

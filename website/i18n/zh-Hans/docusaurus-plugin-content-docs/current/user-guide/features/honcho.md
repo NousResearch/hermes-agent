@@ -6,7 +6,7 @@ description: "通过 Honcho 实现 AI 原生持久记忆——辩证推理、多
 
 # Honcho Memory
 
-[Honcho](https://github.com/plastic-labs/honcho) 是一个 AI 原生记忆后端，在 Hermes 内置记忆系统之上增加了辩证推理（dialectic reasoning）和深度用户建模能力。它不是简单的键值存储，而是通过对对话事后推理，持续维护一个关于用户的动态模型——涵盖其偏好、沟通风格、目标与行为模式。
+[Honcho](https://github.com/plastic-labs/honcho) 是一个 AI 原生记忆后端，在 Rabbit 内置记忆系统之上增加了辩证推理（dialectic reasoning）和深度用户建模能力。它不是简单的键值存储，而是通过对对话事后推理，持续维护一个关于用户的动态模型——涵盖其偏好、沟通风格、目标与行为模式。
 
 :::info Honcho 是一个 Memory Provider 插件
 Honcho 已集成到 [Memory Providers](./memory-providers.md) 系统中。以下所有功能均可通过统一的 memory provider 接口使用。
@@ -28,24 +28,24 @@ Honcho 已集成到 [Memory Providers](./memory-providers.md) 系统中。以下
 
 **会话级上下文**：基础上下文现在包含会话摘要，以及用户表示和 peer 卡片。这使 agent 能感知当前会话中已讨论的内容，减少重复并保持连贯性。
 
-**多 agent 画像**：当多个 Hermes 实例与同一用户交互时（例如编程助手和个人助手），Honcho 为每个 peer 维护独立画像。每个 peer 只能看到自己的观察和结论，防止上下文交叉污染。
+**多 agent 画像**：当多个 Rabbit 实例与同一用户交互时（例如编程助手和个人助手），Honcho 为每个 peer 维护独立画像。每个 peer 只能看到自己的观察和结论，防止上下文交叉污染。
 
 ## 设置
 
 ```bash
-hermes memory setup    # 从 provider 列表中选择 "honcho"
+rabbit memory setup    # 从 provider 列表中选择 "honcho"
 ```
 
 或手动配置：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 memory:
   provider: honcho
 ```
 
 ```bash
-echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.rabbit/.env
 ```
 
 在 [honcho.dev](https://honcho.dev) 获取 API key。
@@ -104,7 +104,7 @@ echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
 
 ## 配置选项
 
-Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（profile 本地）中配置。设置向导会自动处理。
+Honcho 在 `~/.honcho/config.json`（全局）或 `$RABBIT_HOME/honcho.json`（profile 本地）中配置。设置向导会自动处理。
 
 ### 完整配置参考
 
@@ -127,7 +127,7 @@ Honcho 在 `~/.honcho/config.json`（全局）或 `$HERMES_HOME/honcho.json`（p
 | `sessionStrategy` | `'per-directory'` | `per-directory`、`per-repo`、`per-session` 或 `global` |
 
 **会话策略**控制 Honcho 会话与工作内容的映射方式：
-- `per-session` — 每次 `hermes` 运行获得一个新会话。干净启动，通过 tools 访问记忆。推荐新用户使用。
+- `per-session` — 每次 `rabbit` 运行获得一个新会话。干净启动，通过 tools 访问记忆。推荐新用户使用。
 - `per-directory` — 每个工作目录对应一个 Honcho 会话，上下文跨运行积累。
 - `per-repo` — 每个 git 仓库对应一个会话。
 - `global` — 所有目录共用一个会话。
@@ -183,7 +183,7 @@ Honcho 将对话建模为 peer 之间的消息交换。每个 peer 有两个观�
 | AI 不应根据自身回复重新建模用户 | `"ai": {"observeMe": true, "observeOthers": false}` |
 | AI peer 不应通过自我观察更新的强人设 | `"ai": {"observeMe": false, "observeOthers": true}` |
 
-通过 [Honcho 控制台](https://app.honcho.dev) 设置的服务端开关优先于本地默认值——Hermes 在会话初始化时同步回本地。
+通过 [Honcho 控制台](https://app.honcho.dev) 设置的服务端开关优先于本地默认值——Rabbit 在会话初始化时同步回本地。
 
 ## Tools
 
@@ -199,34 +199,34 @@ Honcho 将对话建模为 peer 之间的消息交换。每个 peer 有两个观�
 
 ## CLI 命令
 
-`hermes honcho` 子命令**仅在 Honcho 为当前活跃 memory provider 时注册**（`config.yaml` 中 `memory.provider: honcho`）。先运行 `hermes memory setup` 并选择 Honcho，子命令将在下次调用时出现。
+`rabbit honcho` 子命令**仅在 Honcho 为当前活跃 memory provider 时注册**（`config.yaml` 中 `memory.provider: honcho`）。先运行 `rabbit memory setup` 并选择 Honcho，子命令将在下次调用时出现。
 
 ```bash
-hermes honcho status          # 连接状态、配置及关键设置
-hermes honcho setup           # 重定向到 `hermes memory setup`
-hermes honcho strategy        # 查看或设置会话策略（per-session/per-directory/per-repo/global）
-hermes honcho peer            # 查看或更新 peer 名称及辩证推理级别
-hermes honcho mode            # 查看或设置 recall 模式（hybrid/context/tools）
-hermes honcho tokens          # 查看或设置上下文和辩证的 token 预算
-hermes honcho identity        # 初始化或查看 AI peer 的 Honcho 身份
-hermes honcho sync            # 将 Honcho 配置同步到所有现有 profile
-hermes honcho peers           # 查看所有 profile 中的 peer 身份
-hermes honcho sessions        # 列出已知的 Honcho 会话映射
-hermes honcho map             # 将当前目录映射到 Honcho 会话名称
-hermes honcho enable          # 为当前 profile 启用 Honcho
-hermes honcho disable         # 为当前 profile 禁用 Honcho
-hermes honcho migrate         # 从 openclaw-honcho 迁移的分步指南
+rabbit honcho status          # 连接状态、配置及关键设置
+rabbit honcho setup           # 重定向到 `rabbit memory setup`
+rabbit honcho strategy        # 查看或设置会话策略（per-session/per-directory/per-repo/global）
+rabbit honcho peer            # 查看或更新 peer 名称及辩证推理级别
+rabbit honcho mode            # 查看或设置 recall 模式（hybrid/context/tools）
+rabbit honcho tokens          # 查看或设置上下文和辩证的 token 预算
+rabbit honcho identity        # 初始化或查看 AI peer 的 Honcho 身份
+rabbit honcho sync            # 将 Honcho 配置同步到所有现有 profile
+rabbit honcho peers           # 查看所有 profile 中的 peer 身份
+rabbit honcho sessions        # 列出已知的 Honcho 会话映射
+rabbit honcho map             # 将当前目录映射到 Honcho 会话名称
+rabbit honcho enable          # 为当前 profile 启用 Honcho
+rabbit honcho disable         # 为当前 profile 禁用 Honcho
+rabbit honcho migrate         # 从 openclaw-honcho 迁移的分步指南
 ```
 
-## 从 `hermes honcho` 迁移
+## 从 `rabbit honcho` 迁移
 
-如果你之前使用了独立的 `hermes honcho setup`：
+如果你之前使用了独立的 `rabbit honcho setup`：
 
 1. 你的现有配置（`honcho.json` 或 `~/.honcho/config.json`）已保留
 2. 你的服务端数据（记忆、结论、用户画像）完好无损
 3. 在 config.yaml 中设置 `memory.provider: honcho` 即可重新激活
 
-无需重新登录或重新设置。运行 `hermes memory setup` 并选择"honcho"——向导会自动检测你的现有配置。
+无需重新登录或重新设置。运行 `rabbit memory setup` 并选择"honcho"——向导会自动检测你的现有配置。
 
 ## 完整文档
 

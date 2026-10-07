@@ -2,11 +2,11 @@
 name: stocks
 description: Stock quotes, history, search, compare, crypto via Yahoo.
 version: 0.1.0
-author: Mibay (Mibayy), Hermes Agent
+author: Mibay (Mibayy), Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Stocks, Finance, Market, Crypto, Investing]
     category: finance
     related_skills: [dcf-model, comps-analysis, lbo-model]
@@ -37,7 +37,7 @@ fields come back null. Free key: https://www.alphavantage.co/support/#api-key
 Invoke through the `terminal` tool. Once installed:
 
 ```
-SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
+SCRIPT=~/.rabbit/skills/finance/stocks/scripts/stocks_client.py
 python $SCRIPT quote AAPL
 ```
 
@@ -89,7 +89,7 @@ Crypto prices. Pass `BTC` (the script appends `-USD` automatically).
 ## Verification
 
 ```
-python ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
+python ~/.rabbit/skills/finance/stocks/scripts/stocks_client.py quote AAPL
 ```
 
 Returns a JSON object with `symbol: "AAPL"` and a numeric `price` field.

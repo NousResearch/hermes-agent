@@ -98,7 +98,7 @@ def test_installer_sudo_warmup_honours_non_interactive(tmp_path, flags):
 
 def test_update_completion_installs_before_detaching(monkeypatch):
     """run_completion's child has no controlling terminal; the pre-install runs first, in-session."""
-    from hermes_cli import update_completion
+    from rabbit_cli import update_completion
 
     monkeypatch.setattr(update_completion.sys, "platform", "linux")
     calls = []

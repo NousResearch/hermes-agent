@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from rabbit_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 
 
 def _make_agent():
@@ -62,7 +62,7 @@ class TestOverflowTerminalStub:
         agent = _make_agent()
         agent._current_streamed_assistant_text = "Here's my long partial answer ..."
 
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID
@@ -92,7 +92,7 @@ class TestOverflowTerminalStub:
         agent = _make_agent()
         agent._current_streamed_assistant_text = "some media-heavy partial output ..."
 
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
         response = agent._interruptible_streaming_api_call({})
 
         assert response.id == PARTIAL_STREAM_STUB_ID

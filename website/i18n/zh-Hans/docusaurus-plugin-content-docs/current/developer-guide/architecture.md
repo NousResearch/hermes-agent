@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "架构"
-description: "Hermes Agent 内部结构——主要子系统、执行路径、数据流及延伸阅读指引"
+description: "Rabbit Agent 内部结构——主要子系统、执行路径、数据流及延伸阅读指引"
 ---
 
 # 架构
 
-本页是 Hermes Agent 内部结构的顶层导图。用它在代码库中定位自己，然后深入各子系统专项文档了解实现细节。
+本页是 Rabbit Agent 内部结构的顶层导图。用它在代码库中定位自己，然后深入各子系统专项文档了解实现细节。
 
 ## 系统概览
 
@@ -41,7 +41,7 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 ┌───────────────────┐              ┌──────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
 │ (SQLite + FTS5)   │              │ Terminal (7 backends) │
-│ hermes_state.py   │              │ Browser (5 backends)  │
+│ rabbit_state.py   │              │ Browser (5 backends)  │
 │ gateway/session.py│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
@@ -51,13 +51,13 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 ## 目录结构
 
 ```text
-hermes-agent/
+rabbit-agent/
 ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
-├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
+├── cli.py                    # RabbitCLI — 交互式终端 UI（大文件）
 ├── model_tools.py            # 工具发现、schema 收集、分发
 ├── toolsets.py               # 工具分组与平台预设
-├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
-├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
+├── rabbit_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
+├── rabbit_constants.py       # RABBIT_HOME、感知 profile 的路径
 ├── batch_runner.py           # 批量轨迹生成
 │
 ├── agent/                    # Agent 内部模块
@@ -75,8 +75,8 @@ hermes-agent/
 │   ├── memory_provider.py   # 记忆提供者 ABC
 │   └── trajectory.py         # 轨迹保存辅助函数
 │
-├── hermes_cli/               # CLI 子命令与设置
-│   ├── main.py               # 入口点——所有 `hermes` 子命令（大文件）
+├── rabbit_cli/               # CLI 子命令与设置
+│   ├── main.py               # 入口点——所有 `rabbit` 子命令（大文件）
 │   ├── config.py             # DEFAULT_CONFIG、OPTIONAL_ENV_VARS、迁移
 │   ├── commands.py           # COMMAND_REGISTRY——斜杠命令中央定义
 │   ├── auth.py               # PROVIDER_REGISTRY、凭据解析
@@ -85,12 +85,12 @@ hermes-agent/
 │   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
 │   ├── setup.py              # 交互式设置向导（大文件）
 │   ├── skin_engine.py        # CLI 主题引擎
-│   ├── skills_config.py      # hermes skills——按平台启用/禁用
+│   ├── skills_config.py      # rabbit skills——按平台启用/禁用
 │   ├── skills_hub.py         # /skills 斜杠命令
-│   ├── tools_config.py       # hermes tools——按平台启用/禁用
+│   ├── tools_config.py       # rabbit tools——按平台启用/禁用
 │   ├── plugins.py            # PluginManager——发现、加载、hook
 │   ├── callbacks.py          # 终端回调（clarify、sudo、approval）
-│   └── gateway.py            # hermes gateway 启动/停止
+│   └── gateway.py            # rabbit gateway 启动/停止
 │
 ├── tools/                    # 工具实现（每个工具一个文件）
 │   ├── registry.py           # 中央工具注册表
@@ -138,7 +138,7 @@ hermes-agent/
 ### CLI 会话
 
 ```text
-用户输入 → HermesCLI.process_input()
+用户输入 → RabbitCLI.process_input()
   → AIAgent.run_conversation()
     → prompt_builder.build_system_prompt()
     → runtime_provider.resolve_runtime_provider()
@@ -197,7 +197,7 @@ hermes-agent/
 
 在对话生命周期中构建和维护 prompt：
 
-- **`prompt_builder.py`** — 从以下来源组装系统 prompt：个性（SOUL.md）、记忆（MEMORY.md、USER.md）、skill、上下文文件（AGENTS.md、.hermes.md）、工具使用指引以及模型专项指令
+- **`prompt_builder.py`** — 从以下来源组装系统 prompt：个性（SOUL.md）、记忆（MEMORY.md、USER.md）、skill、上下文文件（AGENTS.md、.rabbit.md）、工具使用指引以及模型专项指令
 - **`prompt_caching.py`** — 为前缀缓存应用 Anthropic 缓存断点
 - **`context_compressor.py`** — 当上下文超出阈值时对中间对话轮次进行摘要
 
@@ -229,7 +229,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 插件系统
 
-三种发现来源：`~/.hermes/plugins/`（用户级）、`.hermes/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`plugins/memory/`）和上下文引擎（`plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `hermes plugins` 或 `config.yaml` 配置。
+三种发现来源：`~/.rabbit/plugins/`（用户级）、`.rabbit/plugins/`（项目级）和 pip entry point。插件通过上下文 API 注册工具、hook 和 CLI 命令。存在两种专用插件类型：记忆提供者（`plugins/memory/`）和上下文引擎（`plugins/context_engine/`）。两者均为单选——每种同时只能激活一个，通过 `rabbit plugins` 或 `config.yaml` 配置。
 
 → [插件指南](./plugins/index.md)，[记忆提供者插件](./memory-provider-plugin.md)
 
@@ -241,7 +241,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### ACP 集成
 
-通过 stdio/JSON-RPC 将 Hermes 作为编辑器原生 agent 暴露给 VS Code、Zed 和 JetBrains。
+通过 stdio/JSON-RPC 将 Rabbit 作为编辑器原生 agent 暴露给 VS Code、Zed 和 JetBrains。
 
 → [ACP 内部机制](./acp-internals.md)
 
@@ -260,7 +260,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 | **可中断** | API 调用和工具执行可被用户输入或信号在执行中途取消。 |
 | **平台无关的核心** | 单一 AIAgent 类同时服务于 CLI、gateway、ACP、批处理和 API 服务器。平台差异存在于入口点，而非 agent 内部。 |
 | **松耦合** | 可选子系统（MCP、插件、记忆提供者、RL 环境）使用注册表模式和 check_fn 门控，而非硬依赖。 |
-| **Profile 隔离** | 每个 profile（`hermes -p <name>`）拥有独立的 HERMES_HOME、配置、记忆、会话和 gateway PID。多个 profile 可并发运行。 |
+| **Profile 隔离** | 每个 profile（`rabbit -p <name>`）拥有独立的 RABBIT_HOME、配置、记忆、会话和 gateway PID。多个 profile 可并发运行。 |
 
 ## 文件依赖链
 

@@ -188,13 +188,13 @@ function senderId(event: unknown): number {
 }
 
 export function registerRendererCrashIpc(ipc: IpcHandleTarget, recorder: RendererCrashRecorder): void {
-  ipc.handle('hermes:desktop-metrics:set-enabled', (event: unknown, on: unknown, profile: unknown): void =>
+  ipc.handle('rabbit:desktop-metrics:set-enabled', (event: unknown, on: unknown, profile: unknown): void =>
     recorder.setEnabled(senderId(event), profile, on === true)
   )
-  ipc.handle('hermes:desktop-metrics:crash:take', (event: unknown): { reasons: RendererCrashReason[] } | null =>
+  ipc.handle('rabbit:desktop-metrics:crash:take', (event: unknown): { reasons: RendererCrashReason[] } | null =>
     recorder.take(senderId(event))
   )
-  ipc.handle('hermes:desktop-metrics:crash:ack', (event: unknown, sent: unknown): void =>
+  ipc.handle('rabbit:desktop-metrics:crash:ack', (event: unknown, sent: unknown): void =>
     recorder.ack(senderId(event), sent === true)
   )
 }

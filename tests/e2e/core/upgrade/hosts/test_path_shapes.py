@@ -8,9 +8,9 @@ Failure class: PATH shapes. Two things users report once the install "works":
   installer must not edit the startup files again;
 * a node/npm the user already has, earlier on PATH, must never stand in for the managed toolchain:
   not for the TUI/web builds and not for an MCP server configured with a bare ``command: node``.
-  Hermes only ever runs its own packaged node/npm; when such a server's native addon was built by
-  the user's Node it fails under Hermes's, and that failure must reach the user with the remedy
-  (rebuild it under Hermes's Node) instead of a silent park (#124264).
+  Rabbit only ever runs its own packaged node/npm; when such a server's native addon was built by
+  the user's Node it fails under Rabbit's, and that failure must reach the user with the remedy
+  (rebuild it under Rabbit's Node) instead of a silent park (#124264).
 
 One real install through HEAD's ``scripts/install.sh`` into a HOME carrying Fedora's stock
 ``.bashrc`` / ``.bash_profile``, with a user-owned ``node``/``npm`` first on PATH. That node
@@ -118,7 +118,7 @@ def _user_toolchain(root: Path) -> dict[str, Path]:
             f"  --version|-v) echo {ver}; exit 0 ;;\n"
             f"{serve}"
             "esac\n"
-            f'echo "user {name} {ver}: refusing to run \'$*\' (Hermes must use its managed toolchain here)" >&2\n'
+            f'echo "user {name} {ver}: refusing to run \'$*\' (Rabbit must use its managed toolchain here)" >&2\n'
             "exit 1\n", encoding="utf-8")
         p.chmod(0o755)
     return {"bin": sysbin, "calls": calls, "server_js": server_js, "marker": marker}
@@ -195,7 +195,7 @@ def test_mcp_server_runs_on_the_managed_node_and_an_abi_mismatch_names_the_rebui
     sb, user = world["sb"], world["user"]
     assert world["install"].returncode == 0, I.describe(world["install"])
     X.configure(sb, provider)
-    cfg = sb.hermes_home / "config.yaml"
+    cfg = sb.rabbit_home / "config.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8")
                    + f"mcp_servers:\n  usernode:\n    command: node\n    args: [\"{user['server_js']}\"]\n",
                    encoding="utf-8")
@@ -205,13 +205,13 @@ def test_mcp_server_runs_on_the_managed_node_and_an_abi_mismatch_names_the_rebui
     ran_js = [c for c in _calls(world)[before:] if c.startswith("node ") and c.endswith("server.js")]
     managed = user["marker"].read_text(encoding="utf-8").split()[0] if user["marker"].exists() else ""
     assert I.TRACEBACK not in out, I.describe(probe)
-    assert not ran_js, f"the user's node ({USER_NODE_VERSION}) ran the MCP server instead of Hermes's: {ran_js}"
-    assert managed.startswith(str(sb.home / ".hermes")), (
-        f"the MCP server did not run on Hermes's managed node (ran on {managed!r}):\n" + I.describe(probe))
-    assert probe.returncode == 1, "`hermes mcp test` passed for a server that died at startup:\n" + I.describe(probe)
-    # The failure reaches the user with the remedy: drop the npx entry, or rebuild with Hermes's own npm
-    # under Hermes's own node (never "point the server at your node").
+    assert not ran_js, f"the user's node ({USER_NODE_VERSION}) ran the MCP server instead of Rabbit's: {ran_js}"
+    assert managed.startswith(str(sb.home / ".rabbit")), (
+        f"the MCP server did not run on Rabbit's managed node (ran on {managed!r}):\n" + I.describe(probe))
+    assert probe.returncode == 1, "`rabbit mcp test` passed for a server that died at startup:\n" + I.describe(probe)
+    # The failure reaches the user with the remedy: drop the npx entry, or rebuild with Rabbit's own npm
+    # under Rabbit's own node (never "point the server at your node").
     assert "NODE_MODULE_VERSION 127" in out and f"rm -rf {sb.home / NPX_ENTRY}" in out, (
         "the ABI mismatch was not surfaced with the npx-cache remedy:\n" + I.describe(probe))
     assert f"PATH={Path(managed).parent}:" in out and " rebuild better-sqlite3 --prefix " in out, (
-        "the rebuild command does not run Hermes's npm under Hermes's node:\n" + I.describe(probe))
+        "the rebuild command does not run Rabbit's npm under Rabbit's node:\n" + I.describe(probe))

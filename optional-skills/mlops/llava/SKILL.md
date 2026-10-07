@@ -7,7 +7,7 @@ license: MIT
 dependencies: [transformers, torch, pillow]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [LLaVA, Vision-Language, Multimodal, Visual Question Answering, Image Chat, CLIP, Vicuna, Conversational AI, Instruction Tuning, VQA]
 
 ---

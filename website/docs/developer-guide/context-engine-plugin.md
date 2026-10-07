@@ -191,7 +191,7 @@ What the host guarantees:
   Never assume per-row uniqueness in the active set; key your own state on
   the uid and treat the later row as the current version.
 - **Tool calls get per-occurrence ids too.** Provider tool-call ids repeat
-  (Hermes mints deterministic `call_<12hex>` ids for identical calls, and models
+  (Rabbit mints deterministic `call_<12hex>` ids for identical calls, and models
   reuse ids), so an assistant message carries `_tool_call_uids`, a
   `{tool_call_id: uid}` map for its `tool_calls`, and each tool-result message
   carries the matching `_tool_call_uid`. Calls that repeat a provider id inside
@@ -273,7 +273,7 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ### Via directory (recommended)
 
-Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
+Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.rabbit/plugins/<name>/` (user-installed; `$RABBIT_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
 
 ### Via general plugin system
 
@@ -289,7 +289,7 @@ Only one engine can be registered. A second plugin attempting to register is rej
 
 The registered instance is shared process-wide, but every `AIAgent` (parent, subagents, gateway
 sessions) needs its own engine so a child's `update_model()` cannot mutate the parent's budget.
-Hermes therefore calls `engine.clone_for_agent()` on the registered instance at each agent init.
+Rabbit therefore calls `engine.clone_for_agent()` on the registered instance at each agent init.
 The default is `copy.deepcopy(self)`; override it when the engine holds state that cannot be
 deep-copied (locks, SQLite or HTTP connections) and return a fresh engine sharing the durable
 backend while copying only the mutable budget fields. If the clone raises, the agent falls back to
@@ -317,7 +317,7 @@ def clone_for_agent(self):
 
 ## Configuration
 
-Users select your engine via `hermes plugins` → Provider Plugins → Context Engine, or by editing `config.yaml`:
+Users select your engine via `rabbit plugins` → Provider Plugins → Context Engine, or by editing `config.yaml`:
 
 ```yaml
 context:
@@ -348,7 +348,7 @@ See `tests/agent/test_context_engine.py` for the full ABC contract test suite.
 
 ## Thread safety
 
-When `compression.context_timeout_seconds > 0` (the default), Hermes runs the
+When `compression.context_timeout_seconds > 0` (the default), Rabbit runs the
 whole compression pass — including your engine's `compress()` and boundary
 callbacks, and any memory provider's `on_pre_compress` /
 `on_session_switch` — on a pooled daemon thread with a host-side timeout.

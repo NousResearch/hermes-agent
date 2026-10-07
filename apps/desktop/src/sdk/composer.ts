@@ -131,7 +131,7 @@ export const composerHost = {
    *  VISIBLE surface they paint; this is the standalone verb for the other
    *  cases (return the caret after a plugin popover/dialog closes, a
    *  keybind that "goes to the input") that plugins used to reach with a
-   *  hand-built `hermes:composer-focus` CustomEvent. Fail-closed like the
+   *  hand-built `rabbit:composer-focus` CustomEvent. Fail-closed like the
    *  rest: an absent tile drops the request instead of focusing whatever
    *  the primary happens to show. */
   focus: (sessionId: null | string = null): void => {

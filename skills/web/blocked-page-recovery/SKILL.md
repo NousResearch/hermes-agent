@@ -1,12 +1,12 @@
 ---
+author: Hermes Agent
 name: blocked-page-recovery
 description: "Use when a fetch fails: 403/429, paywall, WAF, bot wall."
 version: 1.0.0
-author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Research, Archives, Wayback, Paywall, WAF, Fallback]
     related_skills: [grounded-citations]
 ---
@@ -79,7 +79,7 @@ Rate-limits aggressively (429) and rotates domains, so iterate:
 
 ```bash
 for d in archive.ph archive.md archive.li archive.is; do
-  curl -sL --max-time 20 "https://$d/newest/{URL}" -o ~/.hermes/cache/scratch/page.html \
+  curl -sL --max-time 20 "https://$d/newest/{URL}" -o ~/.rabbit/cache/scratch/page.html \
     -w "%{http_code}" && break
 done
 ```

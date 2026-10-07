@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { setApiRequestConnection, setApiRequestProfile } from '@/rabbit'
 
 import { resolveSpeakStreamUrl } from './voice-playback'
 
@@ -31,7 +31,7 @@ describe('resolveSpeakStreamUrl', () => {
     getGatewayWsUrl = vi.fn(async () => ({ ok: true, wsUrl: localWsUrl }))
     getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: remoteWsUrl }))
 
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'rabbitDesktop', {
       configurable: true,
       value: { getConnection, getConnectionFor, getGatewayWsUrl, getGatewayWsUrlFor }
     })
@@ -40,7 +40,7 @@ describe('resolveSpeakStreamUrl', () => {
   afterEach(() => {
     setApiRequestConnection(null)
     setApiRequestProfile(null)
-    Reflect.deleteProperty(window, 'hermesDesktop')
+    Reflect.deleteProperty(window, 'rabbitDesktop')
     vi.useRealTimers()
   })
 
@@ -105,7 +105,7 @@ describe('resolveSpeakStreamUrl', () => {
   it('falls back to the plain connection descriptor when the *For bridges are absent (older main)', async () => {
     setApiRequestConnection('gw-tailscale')
     setApiRequestProfile('research')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'rabbitDesktop', {
       configurable: true,
       value: { getConnection, getGatewayWsUrl }
     })

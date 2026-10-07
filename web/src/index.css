@@ -43,13 +43,13 @@
 }
 
 /* ------------------------------------------------------------------ */
-/* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) palette applied
+/* Rabbit Agent — design system with the LENS_0 (Rabbit teal) palette applied
    statically as the default dashboard theme. */
 /* ------------------------------------------------------------------ */
 
 :root {
   /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
-     These are the defaults for the `default` (Hermes Teal) dashboard theme;
+     These are the defaults for the `default` (Rabbit Teal) dashboard theme;
      ThemeProvider rewrites them as inline styles when a user switches themes. */
   --foreground: color-mix(in srgb, #ffffff 0%, transparent);
   --foreground-base: #ffffff;
@@ -80,7 +80,7 @@
 
   /* Data-series accents — consumed by Analytics + Models pages for the
      input-vs-output token visualisations (chart bars, table values,
-     legend swatches). Defaults are tuned for the Hermes-teal LENS_0
+     legend swatches). Defaults are tuned for the Rabbit-teal LENS_0
      look: cream input + emerald-400 output read as warm/cool against
      the dark canvas. Themes override via ThemeProvider, which emits
      these as `--series-input-token` / `--series-output-token`. */
@@ -141,16 +141,16 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   }
 }
 
-/* Nousnet's hermes-agent layout bumps `small` and `code` to readable
+/* The dashboard layout bumps `small` and `code` to readable
    dashboard sizes. Keep in sync. */
 small { font-size: 1.0625rem; }
 code { font-size: 0.875rem; }
 
 /* Shadcn-compat tokens.
-   The dashboard's page code predates the Nous DS and uses shadcn-style
+   The dashboard's page code predates the design system and uses shadcn-style
    utility classes (bg-card, text-muted-foreground, border-border, etc.)
    extensively. Rather than rewrite every call site, we expose those
-   tokens on top of the Nous palette so classes continue to resolve. */
+   tokens on top of the palette so classes continue to resolve. */
 @theme inline {
   /* Remap foreground to midground so `text-foreground` / `bg-foreground`
      stay visible — in LENS_0, `--foreground` itself has alpha 0. */

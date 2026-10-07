@@ -30,8 +30,8 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
 
     home = tmp_path / "home"
     store = tmp_path / "tools"
-    env = dict(os.environ, HERMES_HOME=str(home), HERMES_RUNTIME_DIR=str(store),
-               HERMES_REPO_URL=str(origin))
+    env = dict(os.environ, RABBIT_HOME=str(home), RABBIT_RUNTIME_DIR=str(store),
+               RABBIT_REPO_URL=str(origin))
 
     def stage(name):
         result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -50,10 +50,10 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
     env["PATH"] = str(poison) + os.pathsep + env["PATH"]
     stage("repository")  # new process; prerequisites' PATH cannot propagate
     stage("complete")  # the marker's bare git call is also a new process
-    checkout = home / "hermes-agent"
+    checkout = home / "rabbit-agent"
     actual = subprocess.run([str(staged[0]), "-C", str(checkout), "rev-parse", "HEAD"],
                             check=True, capture_output=True, text=True).stdout.strip()
-    marker = json.loads((checkout / ".hermes-bootstrap-complete").read_text(encoding="utf-8-sig"))
+    marker = json.loads((checkout / ".rabbit-bootstrap-complete").read_text(encoding="utf-8-sig"))
     assert actual == expected == marker["pinnedCommit"]
 
     # Even when system Git is on PATH, an unsupported pin must fail closed.

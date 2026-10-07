@@ -1,41 +1,7 @@
 export { hasAnsi, sanitizeAnsiForRender, stripAnsi } from './ansi'
 export { backendScopeKey, backendScopePrefix, LOCAL_CONNECTION_ID, registryBackendScopeKey } from './backend-scope'
-export {
-  BILLING_REFUSAL_POLICY,
-  type BillingRecovery,
-  type BillingRefusalPolicy,
-  refusalPolicy
-} from './billing-policy'
-export type {
-  BillingAutoReload,
-  BillingCardInfo,
-  BillingChargeResponse,
-  BillingChargeStatusResponse,
-  BillingErrorPayload,
-  BillingMonthlyCap,
-  BillingMutationResponse,
-  BillingPaymentMethod,
-  BillingRefusalCode,
-  BillingStateResponse,
-  ChargeFailureReason,
-  KnownBillingRefusalCode,
-  KnownChargeFailureReason,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse,
-  SubscriptionTierOption,
-  SubscriptionUpgradeResponse,
-  UsageBarData,
-  UsageModelData
-} from './billing-types'
+export type { BillingBlock } from './billing-types'
 export { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from './catalog-install'
-export {
-  driveChargeSettlement,
-  SETTLEMENT_MAX_RETRY_AFTER_MS,
-  SETTLEMENT_POLL_CAP_MS,
-  SETTLEMENT_POLL_INTERVAL_MS,
-  type SettlementDeps,
-  type SettlementOutcome
-} from './charge-settlement'
 export {
   contrastRatio,
   darken,
@@ -115,7 +81,7 @@ export {
 } from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
-  type HermesSkin,
+  type RabbitSkin,
   SKIN_BRANDING_TOKENS,
   SKIN_COLOR_TOKENS,
   type SkinBranding,
@@ -175,12 +141,12 @@ export {
   type WindowsBackgroundMaterial
 } from './translucency'
 export {
-  buildHermesWebSocketUrl,
+  buildRabbitWebSocketUrl,
   type GatewayAuthMode,
   GatewayReauthRequiredError,
   type GatewayWsConnection,
   type GatewayWsUrlResult,
-  type HermesWebSocketUrlOptions,
+  type RabbitWebSocketUrlOptions,
   isGatewayReauthRequired,
   resolveGatewayWsUrl,
   type ResolveGatewayWsUrlDeps,

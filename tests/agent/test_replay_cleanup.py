@@ -99,7 +99,7 @@ import json
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.turn_context import build_api_messages
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 class _SendAgent:

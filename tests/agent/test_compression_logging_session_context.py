@@ -2,8 +2,8 @@
 
 When ``compress_context`` rotates ``agent.session_id`` it updates the
 gateway/tools session context (``gateway.session_context.set_current_session_id``,
-which moves ``HERMES_SESSION_ID`` env + ContextVar). The ``[session_id]`` tag on
-log lines comes from a SEPARATE mechanism — ``hermes_logging._session_context``
+which moves ``RABBIT_SESSION_ID`` env + ContextVar). The ``[session_id]`` tag on
+log lines comes from a SEPARATE mechanism — ``rabbit_logging._session_context``
 (a threading.local read by the global LogRecord factory), set once per turn in
 ``conversation_loop.py``. Before the fix, the rotation block never updated it, so
 log lines emitted after a mid-turn compaction carried the STALE old id while the
@@ -17,8 +17,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import hermes_logging
-from hermes_state import SessionDB
+import rabbit_logging
+from rabbit_state import SessionDB
 
 
 def _build_agent_with_db(db: SessionDB, session_id: str):
@@ -65,7 +65,7 @@ def test_logging_session_context_follows_compression_rotation(tmp_path: Path) ->
     agent = _build_agent_with_db(db, parent_sid)
 
     # conversation_loop.py pins the logging tag to the ORIGINAL id at turn start.
-    hermes_logging.set_session_context(parent_sid)
+    rabbit_logging.set_session_context(parent_sid)
     try:
         messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
         agent._compress_context(messages, "sys", approx_tokens=120_000)
@@ -74,11 +74,11 @@ def test_logging_session_context_follows_compression_rotation(tmp_path: Path) ->
         assert agent.session_id != parent_sid
 
         # The logging context must now match the NEW id, not the stale one.
-        current = getattr(hermes_logging._session_context, "session_id", None)
+        current = getattr(rabbit_logging._session_context, "session_id", None)
         assert current == agent.session_id, (
             "Logging session context did not follow the compaction rotation: "
             f"log tag still {current!r}, agent.session_id is {agent.session_id!r} "
             "(see #34089)."
         )
     finally:
-        hermes_logging.clear_session_context()
+        rabbit_logging.clear_session_context()

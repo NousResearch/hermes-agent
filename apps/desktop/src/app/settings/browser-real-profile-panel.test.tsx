@@ -12,8 +12,8 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn()
 }))
 
-vi.mock('@/hermes', () => ({
-  saveHermesConfigRecord: (config: Record<string, unknown>, profile?: unknown) => mocks.save(config, profile)
+vi.mock('@/rabbit', () => ({
+  saveRabbitConfigRecord: (config: Record<string, unknown>, profile?: unknown) => mocks.save(config, profile)
 }))
 
 vi.mock('@/i18n', () => ({
@@ -42,13 +42,13 @@ vi.mock('@/store/notifications', () => ({
 }))
 
 vi.mock('../hooks/use-config-record', () => ({
-  hermesConfigCacheWriter: () => (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  rabbitConfigCacheWriter: () => (config: Record<string, unknown>) => mocks.cache(config),
+  useRabbitConfigRecord: () => ({ data: mocks.loadedConfig })
 }))
 
 describe('BrowserRealProfilePanel', () => {
   beforeEach(() => {
-    mocks.loadedConfig = { browser: { allow_private_urls: false }, model: { provider: 'nous' } }
+    mocks.loadedConfig = { browser: { allow_private_urls: false }, model: { provider: 'acme' } }
     mocks.save.mockResolvedValue({ ok: true })
   })
 
@@ -72,7 +72,7 @@ describe('BrowserRealProfilePanel', () => {
     expect(mocks.save).toHaveBeenCalledWith({ browser: { use_real_profile: true } }, undefined)
     expect(mocks.cache).toHaveBeenCalledWith({
       browser: { allow_private_urls: false, use_real_profile: true },
-      model: { provider: 'nous' }
+      model: { provider: 'acme' }
     })
     expect(mocks.notify).toHaveBeenCalled()
   })

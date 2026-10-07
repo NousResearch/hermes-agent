@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useEffect, useState } from 'react'
 
-import { getUsageAnalytics, type ProfileScope, profileScopeKey } from '@/hermes'
+import { getUsageAnalytics, type ProfileScope, profileScopeKey } from '@/rabbit'
 
 // Per-tool call counts come from a 365-day message scan — heavy, and purely
 // cosmetic (Toolsets usage badges). Cache the result module-wide with a TTL so

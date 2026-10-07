@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { LOCAL_SETUP_RESHOW_MS, LOCAL_SETUP_TIP_ID, localSetupDue, localSetupEligible } from '@/lib/tips/local-cta'
-import type { LocalCatalogModel, LocalModelsStatus } from '@/types/hermes'
+import type { LocalCatalogModel, LocalModelsStatus } from '@/types/rabbit'
 
 function status(overrides: Partial<LocalModelsStatus> = {}): LocalModelsStatus {
   return {
@@ -32,8 +32,8 @@ describe('localSetupEligible', () => {
     expect(localSetupEligible('local', status(), [fittingModel()])).toBe(true)
   })
 
-  it('never promises local privacy on a remote or cloud backend', () => {
-    for (const mode of ['remote', 'cloud', 'ssh', null]) {
+  it('never promises local privacy on a remote backend', () => {
+    for (const mode of ['remote', 'ssh', null]) {
       expect(localSetupEligible(mode, status(), [fittingModel()])).toBe(false)
     }
   })

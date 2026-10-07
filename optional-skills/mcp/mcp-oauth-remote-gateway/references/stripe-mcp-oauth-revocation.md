@@ -24,7 +24,7 @@ Per Stripe's OAuth docs (https://docs.stripe.com/stripe-apps/api-authentication/
 - **Access tokens** expire in **1 hour**.
 - **Refresh tokens** expire after **1 year**, and are **rolled on every exchange** — so
   as long as you refresh at least once a year they never naturally expire.
-- Hermes auto-refreshes independently of whether you call Stripe tools, so "not using
+- Rabbit auto-refreshes independently of whether you call Stripe tools, so "not using
   the tools enough" is irrelevant.
 
 So a *recurring* death cannot be refresh-token expiry (1yr) or "max OAuth session

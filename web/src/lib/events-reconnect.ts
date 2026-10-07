@@ -6,7 +6,7 @@
  * decision so both can be unit-tested without a fake WebSocket.
  */
 
-import { reconnectBackoffDelayMs } from '@hermes/shared'
+import { reconnectBackoffDelayMs } from '@rabbit/shared'
 
 export const EVENTS_RECONNECT_BASE_MS = 1_000
 export const EVENTS_RECONNECT_MAX_MS = 30_000

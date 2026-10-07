@@ -14,8 +14,8 @@ NOISY = "echo noisy-first; echo noisy-second >&2; exit {code}"
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS", "HERMES_INSTALL_VERBOSE")}
-    env.update(HOME=str(tmp_path), HERMES_HOME=str(tmp_path / "home"), NO_COLOR="1", TERM="dumb", **extra)
+    env = {k: v for k, v in os.environ.items() if k not in ("CI", "GITHUB_ACTIONS", "RABBIT_INSTALL_VERBOSE")}
+    env.update(HOME=str(tmp_path), RABBIT_HOME=str(tmp_path / "home"), NO_COLOR="1", TERM="dumb", **extra)
     return env
 
 

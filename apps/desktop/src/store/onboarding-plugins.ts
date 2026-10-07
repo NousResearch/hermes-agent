@@ -1,4 +1,4 @@
-import type { OnboardingCatalogPlugin } from '@hermes/shared'
+import type { OnboardingCatalogPlugin } from '@rabbit/shared'
 import { useQuery } from '@tanstack/react-query'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'

@@ -6,9 +6,9 @@ iteration prep must hand back a re-anchored index and mirror it into the persist
 
 
 def _agent(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from run_agent import AIAgent
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     return AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"),
                    model="test-model", provider="openai-compat", api_key="test",

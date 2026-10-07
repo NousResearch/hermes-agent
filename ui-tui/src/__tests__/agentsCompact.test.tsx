@@ -1,12 +1,12 @@
 import { PassThrough } from 'node:stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, renderSync } from '@rabbit/ink'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { expect, it, vi } from 'vitest'
 
-import { renderToScreen } from '../../packages/hermes-ink/src/ink/render-to-screen.js'
-import { cellAtIndex } from '../../packages/hermes-ink/src/ink/screen.js'
+import { renderToScreen } from '../../packages/rabbit-ink/src/ink/render-to-screen.js'
+import { cellAtIndex } from '../../packages/rabbit-ink/src/ink/screen.js'
 import { applyAgentSnapshot } from '../app/agentRoster.js'
 import { getInputSelection } from '../app/inputSelectionStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'

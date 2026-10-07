@@ -2,7 +2,7 @@
  * Window-open policy for every BrowserWindow's webContents.
  *
  * Every external URL the desktop opens on purpose goes through the audited
- * `hermes:openExternal` IPC channel (`openExternalUrl` in main.ts: http/https/
+ * `rabbit:openExternal` IPC channel (`openExternalUrl` in main.ts: http/https/
  * mailto allowlist, guarded file:). The `window.open` / `target=_blank` path
  * that reaches `setWindowOpenHandler` is therefore only ever driven by content
  * we did NOT initiate — most dangerously untrusted HTML in sandboxed
@@ -25,7 +25,7 @@
  * all, preserving the CVE-2026-70608 posture for every other guest.
  */
 
-import { isHermesHubExternalUrl, isHermesHubOrigin } from './hub-iframe-policy'
+import { isRabbitHubExternalUrl, isRabbitHubOrigin } from './hub-iframe-policy'
 
 export interface WindowOpenRequestLike {
   url: string
@@ -74,7 +74,7 @@ export function createWindowOpenHandler(
   return details => {
     const openerOrigin = trusted ? safeOpenerOrigin(trusted, details) : null
 
-    if (trusted && isHermesHubOrigin(openerOrigin) && isHermesHubExternalUrl(details.url)) {
+    if (trusted && isRabbitHubOrigin(openerOrigin) && isRabbitHubExternalUrl(details.url)) {
       try {
         trusted.openExternalUrl(details.url)
       } catch {

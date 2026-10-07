@@ -13,7 +13,7 @@ const { api, view } = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({
   capabilityScoped: (scope: object) => scope,
-  hermesApi: api,
+  rabbitApi: api,
   sessionReadOwnerPin: () => ({})
 }))
 vi.mock('@/app/chat/session-view', () => ({ useSessionView: () => view }))

@@ -6,19 +6,19 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from hermes_platform import declaration
-from hermes_platform.host import facts
-from hermes_platform.resolver.app import AppDef, AppResolver
-from hermes_platform.resolver.availability import Availability, availability
-from hermes_platform.resolver.base import Effort
-from hermes_platform.resolver.core import CheckState
+from rabbit_platform import declaration
+from rabbit_platform.host import facts
+from rabbit_platform.resolver.app import AppDef, AppResolver
+from rabbit_platform.resolver.availability import Availability, availability
+from rabbit_platform.resolver.base import Effort
+from rabbit_platform.resolver.core import CheckState
 
 logger = logging.getLogger(__name__)
 
 LivenessKind = Literal["static", "server_json", "interactive_session"]
 LivenessState = Literal[
     "app_not_running",
-    "hermes_not_connected",
+    "rabbit_not_connected",
     "endpoint_unavailable",
     "no_interactive_session",
     "version_too_old",
@@ -95,7 +95,7 @@ def parse_liveness(raw: Any) -> Liveness:
 def liveness_for(server_name: str) -> Liveness:
     """Return a server's registered liveness declaration, defaulting to static."""
     try:
-        from hermes_cli.agent_plugins import liveness_for as registered_liveness
+        from rabbit_cli.agent_plugins import liveness_for as registered_liveness
     except ImportError:
         return Liveness("static")
     raw = registered_liveness(server_name)
@@ -111,7 +111,7 @@ def liveness_for(server_name: str) -> Liveness:
 def _action(state: LivenessState, app_name: str, gpu_label: str) -> tuple[str, Retry]:
     actions: dict[LivenessState, tuple[str, Retry]] = {
         "app_not_running": (f"Start {app_name}, then try again.", "after_user_action"),
-        "hermes_not_connected": (f"Reconnect {app_name} in Hermes, then try again.", "after_user_action"),
+        "rabbit_not_connected": (f"Reconnect {app_name} in Rabbit, then try again.", "after_user_action"),
         "endpoint_unavailable": (f"Open {app_name} and enable its local connection, then try again.", "after_user_action"),
         "no_interactive_session": (f"Open an interactive desktop session and start {app_name}, then try again.", "never_here"),
         "version_too_old": (f"Update {app_name}, then try again.", "after_user_action"),
@@ -149,14 +149,14 @@ def status(server_name: str) -> Status | None:
             elif probe.endpoint.state is not CheckState.PRESENT:
                 state = "endpoint_unavailable"
             else:
-                # The app runs and its endpoint answers: the only thing missing is Hermes' own
+                # The app runs and its endpoint answers: the only thing missing is Rabbit' own
                 # MCP connection to it. Telling the user to "start" an app that IS running is
                 # the wrong instruction (#119975).
-                state = "hermes_not_connected"
+                state = "rabbit_not_connected"
     else:
         # static / unknown liveness kinds cannot observe the app, so they cannot conclude it
-        # is not running; the honest answer is that Hermes is not connected (#119975).
-        state = "hermes_not_connected"
+        # is not running; the honest answer is that Rabbit is not connected (#119975).
+        state = "rabbit_not_connected"
     action, retry = _action(state, decl.name, declaration.gpu_label(decl.required_gpu))
     return Status(state, available, live, action, retry)
 
@@ -182,7 +182,7 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
         reason = f"{app_name} needs an interactive desktop session."
     elif liveness_state == "endpoint_unavailable":
         reason = f"{app_name}'s local endpoint is unavailable."
-    elif liveness_state == "hermes_not_connected":
+    elif liveness_state == "rabbit_not_connected":
         reason = f"{app_name}'s MCP connection is missing."
     else:
         reason = f"{app_name} is not running."

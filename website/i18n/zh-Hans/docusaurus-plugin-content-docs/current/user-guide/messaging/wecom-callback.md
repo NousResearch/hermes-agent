@@ -4,10 +4,10 @@ sidebar_position: 15
 
 # WeCom 回调（自建应用）
 
-通过回调/webhook 模式，将 Hermes 作为企业自建应用接入企业微信（WeCom）。
+通过回调/webhook 模式，将 Rabbit 作为企业自建应用接入企业微信（WeCom）。
 
 :::info WeCom Bot 与 WeCom 回调
-Hermes 支持两种企业微信集成模式：
+Rabbit 支持两种企业微信集成模式：
 - **[WeCom Bot](wecom.md)** — Bot 风格，通过 WebSocket 连接。配置简单，支持群聊。
 - **WeCom 回调**（本页）— 自建应用，接收加密 XML 回调。在用户企业微信侧边栏中显示为一级应用，支持多企业路由。
 :::
@@ -16,7 +16,7 @@ Hermes 支持两种企业微信集成模式：
 
 1. 在企业微信管理后台注册自建应用
 2. 企业微信将加密 XML 推送至你的 HTTP 回调端点
-3. Hermes 解密消息，将其加入 agent 处理队列
+3. Rabbit 解密消息，将其加入 agent 处理队列
 4. 立即确认（静默——不向用户显示任何内容）
 5. Agent 处理请求（通常需要 3–30 分钟）
 6. 通过企业微信 `message/send` API 主动下发回复
@@ -60,10 +60,10 @@ WECOM_CALLBACK_ALLOWED_USERS=user1,user2
 ### 3. 启动 Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
-（仅在通过 `hermes gateway install` 注册 systemd/launchd 服务后，才使用 `hermes gateway start`。）
+（仅在通过 `rabbit gateway install` 注册 systemd/launchd 服务后，才使用 `rabbit gateway start`。）
 
 回调适配器会在配置的端口上启动 HTTP 服务器。企业微信将通过 GET 请求验证回调 URL，随后开始通过 POST 发送消息。
 

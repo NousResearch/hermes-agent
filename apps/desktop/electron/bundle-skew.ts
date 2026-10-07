@@ -2,10 +2,10 @@
  * Renderer-bundle skew detection.
  *
  * The desktop UI (including bundled plugins like Bot Mode) is compiled into
- * the app binary at build time, while `hermes update` only moves the source
+ * the app binary at build time, while `rabbit update` only moves the source
  * tree. A user who updates from the terminal — or whose in-app update failed
  * on the bundle-swap leg — ends up running a NEW runtime under an OLD
- * renderer: About proudly reports the new Hermes version while the sidebar
+ * renderer: About proudly reports the new Rabbit version while the sidebar
  * is missing the features that version shipped (the "no Bots tab after the
  * Bot Mode update" reports).
  *
@@ -63,7 +63,7 @@ export type RunGit = (
  * The paths that actually reach the user: renderer sources, main-process
  * sources, the HTML entry, the public/ assets Vite copies into the bundle, app
  * icons, and the packaging config -- plus apps/shared, which both bundles
- * compile in (the renderer through the `@hermes/shared` alias, the main process
+ * compile in (the renderer through the `@rabbit/shared` alias, the main process
  * by relative import). Docs, e2e specs, scratch scripts, and dev tooling never
  * reach the shipped app, so a delta confined to them is not a torn install in
  * any way the user can see.

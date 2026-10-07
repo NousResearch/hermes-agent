@@ -61,7 +61,7 @@ def test_missing_explicit_seed_cannot_silently_resolve_new_versions(layout):
 
 
 def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked_project):
-    """Regression for #120076: Hermes's 14-day cutoff must not filter a plugin's own deps.
+    """Regression for #120076: Rabbit's 14-day cutoff must not filter a plugin's own deps.
 
     A global ``exclude-newer`` in the generated root made a catalog pin floored on a fresh
     release unresolvable. The cutoff now travels per package: every registry package in

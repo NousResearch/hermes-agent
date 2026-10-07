@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 
-import { getStatus } from '@/hermes'
+import { getStatus } from '@/rabbit'
 import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
 import { dismissNotification, notify } from '@/store/notifications'
-import type { StatusResponse } from '@/types/hermes'
+import type { StatusResponse } from '@/types/rabbit'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
 // within seconds. 60s + an actively-viewed check keeps traffic low; focus and
@@ -56,21 +55,16 @@ export function useStatusSnapshot(
       // user is working in another app.
       document.visibilityState === 'visible' && document.hasFocus()
 
-    // Inference readiness + the free-tier verdict. Not on the periodic tick:
-    // both change only at seams the backend announces (`setup.ready` at boot)
-    // or that this window crosses (open, return from another app), so they
-    // run once per seam instead of every 60s.
+    // Inference readiness. Not on the periodic tick: it changes only at
+    // seams the backend announces (boot) or that this window crosses (open,
+    // return from another app), so it runs once per seam instead of every 60s.
     const refreshReadiness = async () => {
       if (gatewayState !== 'open') {
         return
       }
 
-      // The free-tier verdict is a local, zero-network read that writes
-      // straight to its own store and swallows its failures — nothing here
-      // waits on it or reads the result.
       const [inferenceResult] = await Promise.allSettled([
-        evaluateRuntimeReadiness(requestGateway),
-        refreshFreeTierStatus(requestGateway)
+        evaluateRuntimeReadiness(requestGateway)
       ])
 
       if (cancelled || inferenceResult.status !== 'fulfilled') {
@@ -86,7 +80,6 @@ export function useStatusSnapshot(
         // became unconfigured. Keep the last authoritative result instead
         // of flashing "Inference not ready" during a gateway flap.
         setInferenceStatus(inference)
-        setFreeTierRoute(inference.freeTier)
       }
     }
 

@@ -7,17 +7,17 @@ sidebar_position: 7
 
 # Provider Routing
 
-When using [OpenRouter](https://openrouter.ai) as your LLM provider, Hermes Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
+When using [OpenRouter](https://openrouter.ai) as your LLM provider, Rabbit Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
 
 OpenRouter routes requests to many providers (e.g., Anthropic, Google, AWS Bedrock, Together AI). Provider routing lets you optimize for cost, speed, quality, or enforce specific provider requirements.
 
 :::note
-[Nous Portal](../../integrations/nous-portal.md) decides routing centrally per model and does not accept caller-supplied provider preferences; Hermes never sends the `provider` object to Portal, so `provider_routing` is simply ignored there.
+
 :::
 
 ## Configuration
 
-Add a `provider_routing` section to your `~/.hermes/config.yaml`:
+Add a `provider_routing` section to your `~/.rabbit/config.yaml`:
 
 ```yaml
 provider_routing:
@@ -30,7 +30,7 @@ provider_routing:
 ```
 
 :::info
-Provider routing only applies when using OpenRouter. It has no effect on Nous Portal or direct provider connections (e.g., connecting directly to the Anthropic API).
+Provider routing only applies when using OpenRouter. It has no effect on direct provider connections (e.g., connecting directly to the Anthropic API).
 :::
 
 ## Options
@@ -124,7 +124,7 @@ provider_routing:
 Matching is spelling-tolerant like `agent.reasoning_overrides` (`claude-fable-5.1` / `claude-fable-5-1`,
 with or without the `openrouter/` prefix). The override follows the model the agent is *currently* on, so
 `/model` switches, fallback activation, cron jobs, and delegated subagents on another model each get their
-own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
+own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `rabbit config set`
 reads as path separators.
 
 ## Practical Examples
@@ -194,7 +194,7 @@ provider_routing:
 
 Provider routing preferences are passed to OpenRouter on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
 
-- **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
+- **CLI mode** — configured in `~/.rabbit/config.yaml`, loaded at startup
 - **Gateway mode** — same config file, loaded when the gateway starts
 
 The routing config is read from `config.yaml` and passed as parameters when creating the `AIAgent`:

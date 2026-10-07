@@ -26,7 +26,7 @@ function downloadUrl(url: string): URL {
   }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`)
+    throw new Error(`Unsupported Rabbit backend URL protocol: ${parsed.protocol}`)
   }
 
   return parsed
@@ -51,7 +51,7 @@ export function downloadViaTokenToFile(
         method: 'GET',
         headers: options.bearer
           ? { Authorization: `Bearer ${options.bearer}` }
-          : { 'X-Hermes-Session-Token': token ?? '' }
+          : { 'X-Rabbit-Session-Token': token ?? '' }
       },
       (response: http.IncomingMessage): void => {
         // Headers end the connection deadline, not the user's save-dialog time.
@@ -69,7 +69,7 @@ export function downloadViaTokenToFile(
 
     request.on('error', reject)
     request.setTimeout(timeoutMs, (): void => {
-      request.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      request.destroy(new Error(`Timed out connecting to Rabbit backend after ${timeoutMs}ms`))
     })
     request.end()
   })
@@ -128,7 +128,7 @@ export function downloadViaOauthSessionToFile<S>(
 
       settled = true
       request.abort()
-      reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      reject(new Error(`Timed out connecting to Rabbit backend after ${timeoutMs}ms`))
     }, timeoutMs)
 
     request.on('response', (response: GatewayDownloadResponse): void => {

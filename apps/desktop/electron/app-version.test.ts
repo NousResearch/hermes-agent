@@ -49,7 +49,7 @@ describe('artifact version identity', (): void => {
         buildId: 'b'.repeat(32),
         channel: 'new-name',
         sequence: 7,
-        repository: 'example/hermes-agent',
+        repository: 'example/rabbit-agent',
         commit: 'a'.repeat(40),
         sourceVersion: '1.2.3',
         version: '0.0.7',
@@ -64,7 +64,7 @@ describe('artifact version identity', (): void => {
           artifactNamePascal: 'Preview',
           cliName: 'preview',
           windowsExecutableName: 'Preview.exe',
-          msixAppIdWithOrg: 'Nous.Preview'
+          msixAppIdWithOrg: 'Seven0070.Preview'
         }
       }
     }

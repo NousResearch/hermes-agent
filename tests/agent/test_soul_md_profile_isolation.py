@@ -1,6 +1,6 @@
 """Regression (#50233, SOUL.md half): a profile agent's SOUL.md must load from
 ITS OWN home, never the ambient/launch home — even on a thread that did not
-bind the HERMES_HOME ContextVar. Same bug class as the skills-index leak
+bind the RABBIT_HOME ContextVar. Same bug class as the skills-index leak
 fixed in #86313; load_soul_md now accepts home_override.
 """
 
@@ -22,7 +22,7 @@ def test_soul_md_scoped_to_home_override_not_ambient(tmp_path, monkeypatch):
 
     # Ambient home points at default (mimics a build thread that lost the
     # profile's ContextVar override and fell back to launch).
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
 
     result = {}
 
@@ -42,7 +42,7 @@ def test_soul_md_override_missing_file_returns_none(tmp_path, monkeypatch):
     default_home = tmp_path / "default"
     default_home.mkdir()
     (default_home / "SOUL.md").write_text("DEFAULT SOUL", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("RABBIT_HOME", str(default_home))
 
     empty_bot = tmp_path / "profiles" / "emptybot"
     empty_bot.mkdir(parents=True)
@@ -57,6 +57,6 @@ def test_soul_md_ambient_unchanged_without_override(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     (home / "SOUL.md").write_text("AMBIENT SOUL", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
 
     assert prompt_builder.load_soul_md() == "AMBIENT SOUL"

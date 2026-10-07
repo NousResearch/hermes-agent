@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@rabbit/ink'
 
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'

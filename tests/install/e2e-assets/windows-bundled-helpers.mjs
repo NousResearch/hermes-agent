@@ -73,7 +73,7 @@ async function main() {
     const feed = path.resolve(flags.feed)
     const outPath = flags.out || path.join(feed, 'update.appinstaller')
     const base = flags['base-url'].replace(/\/+$/, '')
-    execFileSync(process.env.HERMES_PYTHON || 'python', [
+    execFileSync(process.env.RABBIT_PYTHON || 'python', [
       '-m', 'scripts.bundles.release_artifacts', 'appinstaller', '--root', feed, '--out', outPath,
       '--identity', flags.identity, '--publisher', flags.publisher, '--version', flags.version,
       '--self-uri', `${base}/${flags['descriptor-filename'] || 'update.appinstaller'}`,

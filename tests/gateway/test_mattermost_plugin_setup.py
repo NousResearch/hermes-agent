@@ -1,13 +1,13 @@
 """Tests for the Mattermost plugin's interactive_setup wizard home-channel flow.
 
 The interactive_setup wizard lazy-imports its CLI helpers from
-``hermes_cli.config`` (get_env_value / save_env_value / remove_env_value) and
-``hermes_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
+``rabbit_cli.config`` (get_env_value / save_env_value / remove_env_value) and
+``rabbit_cli.cli_output`` (prompt / prompt_yes_no / print_*); we patch those
 source modules. Covers the home-channel clear-on-blank behavior added in
 PR #58421 and extended in the follow-up.
 """
-import hermes_cli.config as config_mod
-import hermes_cli.cli_output as cli_output_mod
+import rabbit_cli.config as config_mod
+import rabbit_cli.cli_output as cli_output_mod
 from plugins.platforms.mattermost.adapter import interactive_setup
 
 
@@ -37,7 +37,7 @@ class TestMattermostHomeChannelClear:
     """Blank home-channel answer must clear MATTERMOST_HOME_CHANNEL (#12423)."""
 
     def test_blank_removes_existing_home_channel(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         saved, removed = {}, []
         _patch_setup_io(
             monkeypatch,

@@ -7,7 +7,7 @@ serving bytes that don't match the pinned digest.
 
 The contract for a failure (``_seed.assert_nothing_changed``): non-zero exit, a message naming
 what failed, no success banner, the checkout / selected PM environment / PM runtime / tool store
-exactly as before, and the next ``hermes`` still starts. For a transient fault the contract is
+exactly as before, and the next ``rabbit`` still starts. For a transient fault the contract is
 that the operation retries within bounds and then succeeds.
 
 Classes: offline update (channel and git phases) and offline PM provisioning; transient and
@@ -30,7 +30,7 @@ from tests.e2e.core.upgrade.network import _seed as S
 
 pytestmark = [
     pytest.mark.platforms("linux"),
-    # Every `hermes update` here targets a throwaway sandboxed install, never the real checkout.
+    # Every `rabbit update` here targets a throwaway sandboxed install, never the real checkout.
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(N.netns_required_reason() is not None, reason=str(N.netns_required_reason())),
@@ -50,7 +50,7 @@ def inst(tmp_path_factory):
 def test_offline_update_fails_fast_and_changes_nothing(inst):
     inst.publish("offline")
     before = inst.state()
-    r = inst.hermes("update", "--yes", edge=None, timeout=300)
+    r = inst.rabbit("update", "--yes", edge=None, timeout=300)
     assert r.secs < FAST, f"an offline update took {r.secs:.0f}s to give up\n" + r.report(inst)
     S.assert_nothing_changed(inst, before, r, "offline update")
     assert "unavailable" in r.out.lower() or "cannot reach" in r.out.lower(), (
@@ -59,16 +59,16 @@ def test_offline_update_fails_fast_and_changes_nothing(inst):
 
 def test_offline_provisioning_of_a_missing_tool_fails_loudly(inst):
     """The tool store lost an entry (pruned, antivirus, disk cleanup) and the machine is offline:
-    the documented remedy `hermes pm install <tool>` must fail within bounds, name the tool and
+    the documented remedy `rabbit pm install <tool>` must fail within bounds, name the tool and
     the download, and leave every other tool alone."""
     with S.tool_missing(inst, "ripgrep") as tool:
         before = inst.state()
-        r = inst.hermes("pm", "install", "ripgrep", edge=None, timeout=300)
+        r = inst.rabbit("pm", "install", "ripgrep", edge=None, timeout=300)
         assert r.secs < FAST, f"offline provisioning took {r.secs:.0f}s to give up\n" + r.report(inst)
-        S.assert_nothing_changed(inst, before, r, "offline `hermes pm install ripgrep`")
+        S.assert_nothing_changed(inst, before, r, "offline `rabbit pm install ripgrep`")
         assert "ripgrep" in r.out and "download failed" in r.out, (
             "the failure does not name the tool and the failed download\n" + r.report(inst))
-        assert not (inst.sb.hermes_home / "tools" / tool["entry"]).exists(), (
+        assert not (inst.sb.rabbit_home / "tools" / tool["entry"]).exists(), (
             "an offline install left a store entry behind\n" + r.report(inst))
 
 
@@ -78,7 +78,7 @@ def test_channel_503_with_retry_after_is_retried_then_updates(inst):
     assets = N.static_app({}, faults={MAIN_RECORD: [N.Response(503, b"busy\n", {"Retry-After": "1"})]})
     edge = inst.edge(assets=assets)
     try:
-        r = inst.hermes("update", "--yes", edge=edge)
+        r = inst.rabbit("update", "--yes", edge=edge)
     finally:
         edge.close()
     reads = [h for h in edge.proxy.requests(S.ASSETS) if h.path == MAIN_RECORD]
@@ -95,7 +95,7 @@ def test_channel_outage_fails_truthfully_within_bounds(inst):
     assets = N.static_app({}, always={MAIN_RECORD: N.Response(503, b"down\n", {"Retry-After": "1"})})
     edge = inst.edge(assets=assets)
     try:
-        r = inst.hermes("update", "--yes", edge=edge, timeout=300)
+        r = inst.rabbit("update", "--yes", edge=edge, timeout=300)
     finally:
         edge.close()
     assert r.secs < FAST, f"a persistent 503 took {r.secs:.0f}s to give up\n" + r.report(inst)
@@ -111,7 +111,7 @@ def test_forge_rate_limit_fails_truthfully(inst):
     git = N.git_app(inst.gitroot, faults=[N.Response(429, b"rate limited\n", {"Retry-After": "1"})] * 50)
     edge = inst.edge(git=git)
     try:
-        r = inst.hermes("update", "--yes", edge=edge, timeout=300)
+        r = inst.rabbit("update", "--yes", edge=edge, timeout=300)
     finally:
         edge.close()
     assert r.secs < FAST * 2, f"a rate-limited fetch took {r.secs:.0f}s to give up\n" + r.report(inst)
@@ -120,7 +120,7 @@ def test_forge_rate_limit_fails_truthfully(inst):
 
 
 # Where each tool's pinned artifact is downloaded from, as the PM lock declares it; the edge
-# serves those hosts (and the content-addressed hermes-assets mirror) with wrong bytes.
+# serves those hosts (and the content-addressed rabbit-assets mirror) with wrong bytes.
 ARTIFACT_HOSTS = {
     "ripgrep": ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"),
     "node": ("nodejs.org",),
@@ -138,7 +138,7 @@ def test_pm_download_retries_then_refuses_a_digest_mismatch(inst, tool_name):
         before = inst.state()
         edge = inst.edge(assets=N.static_app({"*": bad}), git=extra.pop("github.com", None), extra=extra)
         try:
-            r = inst.hermes("pm", "install", tool_name, edge=edge, timeout=600)
+            r = inst.rabbit("pm", "install", tool_name, edge=edge, timeout=600)
         finally:
             edge.close()
         served = [h for h in edge.proxy.hits if h.kind == "request" and h.host in ARTIFACT_HOSTS[tool_name]]
@@ -146,6 +146,6 @@ def test_pm_download_retries_then_refuses_a_digest_mismatch(inst, tool_name):
             f"the artifact host was not retried past its 503s: {[str(h) for h in served]}\n" + r.report(inst))
         assert "sha256 mismatch" in r.out or "digest" in r.out.lower(), (
             f"{tool_name}: the failure does not say the download failed verification\n" + r.report(inst))
-        assert not (inst.sb.hermes_home / "tools" / tool["entry"]).exists(), (
+        assert not (inst.sb.rabbit_home / "tools" / tool["entry"]).exists(), (
             f"{tool_name}: unverified bytes were published to the tool store\n" + r.report(inst))
-        S.assert_nothing_changed(inst, before, r, f"`hermes pm install {tool_name}` with a digest mismatch")
+        S.assert_nothing_changed(inst, before, r, f"`rabbit pm install {tool_name}` with a digest mismatch")

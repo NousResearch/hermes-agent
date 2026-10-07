@@ -79,7 +79,7 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
 # JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
 # raises, which is what makes the suite the gate.
 
-STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
+STRICT = bool(os.environ.get("RABBIT_TEST_ISOLATION"))
 
 class ContractViolation(AssertionError):
     """A result or payload the gateway produced does not match its declared contract."""
@@ -104,7 +104,7 @@ def validate_params(contract: MethodContract | ServerRequestContract, params: di
             if err.get("type") == "extra_forbidden":
                 loc = ".".join(str(p) for p in err.get("loc", ())) or "params"
                 return None, (f"invalid params for {contract.name}: {loc}: {err.get('msg')} — the client and "
-                              "the Hermes backend are out of sync (different versions); run `hermes update` "
+                              "the Rabbit backend are out of sync (different versions); run `rabbit update` "
                               "and restart both")
     return params, None
 

@@ -19,7 +19,7 @@ CARD = "card"
 SIDE = "side"
 LINK = "link"
 
-_SURFACE: ContextVar[str] = ContextVar("hermes_connection_surface", default=LINK)
+_SURFACE: ContextVar[str] = ContextVar("rabbit_connection_surface", default=LINK)
 
 
 def connection_surface() -> str:

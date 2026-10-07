@@ -23,9 +23,9 @@ import { isLiveTailReplyId } from '@/lib/spoken-reply'
  * Best-effort by design: storage failures must never break chat streaming.
  */
 
-const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
-const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
-const LEGACY_MIGRATION_KEY = 'hermes.desktop.inflightTurnJournal.v2.migrated'
+const LEGACY_STORAGE_KEY = 'rabbit.desktop.inflightTurnJournal.v1'
+const STORAGE_PREFIX = 'rabbit.desktop.inflightTurnJournal.v2:'
+const LEGACY_MIGRATION_KEY = 'rabbit.desktop.inflightTurnJournal.v2.migrated'
 const DISCARDED_SNAPSHOT_RAW = '0'
 const STORE_VERSION = 1
 const MAX_SESSION_STORE_CHARS = 4 * 1024 * 1024

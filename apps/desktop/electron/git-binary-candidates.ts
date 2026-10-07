@@ -54,15 +54,15 @@ export function ugitGitBinaries(localAppData: string, fs: GitCandidateFs): strin
 
 /**
  * resolveGitBinary's fixed Windows candidate list, in preference order:
- * the Hermes-bundled PortableGit first, then UGit's bundled copies, then the
+ * the Rabbit-bundled PortableGit first, then UGit's bundled copies, then the
  * standard Git-for-Windows locations.
  */
 export function windowsGitCandidates(env: WindowsGitEnv, fs: GitCandidateFs): string[] {
   const candidates: string[] = []
 
   if (env.localAppData) {
-    candidates.push(path.join(env.localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(env.localAppData, 'hermes', 'git', 'bin', 'git.exe'))
+    candidates.push(path.join(env.localAppData, 'rabbit', 'git', 'cmd', 'git.exe'))
+    candidates.push(path.join(env.localAppData, 'rabbit', 'git', 'bin', 'git.exe'))
     candidates.push(...ugitGitBinaries(env.localAppData, fs))
   }
 

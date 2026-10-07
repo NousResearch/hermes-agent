@@ -11,7 +11,7 @@ import re
 import sqlite3
 import time
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from utils import atomic_json_write
 
 logger = logging.getLogger("tools.process_registry")
@@ -27,7 +27,7 @@ _RESULT_FIELDS = (
 
 def _result_paths():
     """Prune by completion time, not start time (jobs can take days)."""
-    directory = get_hermes_home() / "logs" / "process-results"
+    directory = get_rabbit_home() / "logs" / "process-results"
     cutoff = time.time() - RESULT_RETENTION_SECONDS
     retained = []
     for path in directory.glob("proc_*.json"):
@@ -55,9 +55,9 @@ def save_completed_result(session) -> None:
     # Live-output opt-out must not persist raw credentials in durable receipts.
     record["output"] = redact_terminal_output(record["output"], record["command"], force=True)
     record["command"] = redact_sensitive_text(record["command"], code_file=True, force=True)
-    directory = get_hermes_home() / "logs" / "process-results"
+    directory = get_rabbit_home() / "logs" / "process-results"
     try:
-        from hermes_constants import assert_named_profile_home_live
+        from rabbit_constants import assert_named_profile_home_live
         assert_named_profile_home_live(directory)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         atomic_json_write(directory / f"{session.id}.json", record, mode=0o600)
@@ -72,7 +72,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         return False
     if owner == parent:
         return True
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     # Pure lineage read on the hot path of every retained-result load; a writable open here
     # was one more writer handle per call inside the gateway (#100896).
@@ -89,7 +89,7 @@ def load_completed_results(prefix: str = "") -> dict:
 
     from gateway.session_context import get_session_env
 
-    owner = get_session_env("HERMES_SESSION_ID", "")
+    owner = get_session_env("RABBIT_SESSION_ID", "")
     if not owner:
         return {}
     results = {}

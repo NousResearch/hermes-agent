@@ -35,14 +35,14 @@ const COMPACTION_TRIGGER_PADDING = ' force real context compression'.repeat(600)
 async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   const mock = await startMockServer()
   const sandbox = createSandbox('hidden-history')
-  writeMockProviderConfig(sandbox.hermesHome, mock.url)
+  writeMockProviderConfig(sandbox.rabbitHome, mock.url)
   fs.appendFileSync(
-    path.join(sandbox.hermesHome, 'config.yaml'),
+    path.join(sandbox.rabbitHome, 'config.yaml'),
     '\ncompression:\n  threshold_tokens: 1\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
-  const builder = await RealSessionBuilder.start(sandbox.hermesHome)
+  writeEnvFile(sandbox.rabbitHome)
+  const builder = await RealSessionBuilder.start(sandbox.rabbitHome)
 
   try {
     await builder.createSession({
@@ -109,8 +109,8 @@ test('live verify-on-stop continuations stay out of the transcript', async ({}, 
   )
 
   const mock = await startMockServer({ verificationWritePath: changedFile })
-  writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), '\nagent:\n  verify_on_stop: true\n', 'utf8')
+  writeMockProviderConfig(sandbox.rabbitHome, mock.url)
+  fs.appendFileSync(path.join(sandbox.rabbitHome, 'config.yaml'), '\nagent:\n  verify_on_stop: true\n', 'utf8')
   // Auto session titling (feat f726090d48) fires an auxiliary title_generation
   // LLM call whose user snippet CONTAINS the trigger keyword, so the mock's
   // isVerificationStopTrigger matches it and the title call steals a scripted
@@ -118,11 +118,11 @@ test('live verify-on-stop continuations stay out of the transcript', async ({}, 
   // complete.' instead of the exhausted-verifier final). Disable the
   // model-backed title upgrade so script indices track real chat turns.
   fs.appendFileSync(
-    path.join(sandbox.hermesHome, 'config.yaml'),
+    path.join(sandbox.rabbitHome, 'config.yaml'),
     '\nauxiliary:\n  title_generation:\n    enabled: false\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.rabbitHome)
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
 
   const fixture: MockBackendFixture = {

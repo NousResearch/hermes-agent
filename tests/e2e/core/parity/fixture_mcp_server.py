@@ -2,12 +2,12 @@
 
 Exposes one tool, ``parity_canary``, whose result is the value of the
 ``PARITY_MCP_CANARY`` env var — so a test can prove a REAL tool call round-tripped
-through the real Hermes MCP client (discovery, transport, liveness checks, result
+through the real Rabbit MCP client (discovery, transport, liveness checks, result
 plumbing) instead of a registered-but-dead schema.
 
 ``PARITY_MCP_SPAWN_GRANDCHILD=1`` makes the server fork a long-lived grandchild at
 startup (the shape of npx/uvx wrappers and servers with worker helpers) so
-shutdown tests can prove Hermes reaps the whole process tree, not just its direct
+shutdown tests can prove Rabbit reaps the whole process tree, not just its direct
 child. ``PARITY_MCP_DEATH_TOOL=1`` adds ``parity_die``, which kills the server while its
 own call is in flight, leaving a helper holding the stdio pipe open so no EOF ever
 arrives (the fast-death supervisor's target shape, #81995).

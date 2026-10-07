@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from hermes_cli.config import (
+from rabbit_cli.config import (
     InvalidUserConfigError,
     _read_config_version_stamp,
     check_config_version,
@@ -15,8 +15,8 @@ from hermes_cli.config import (
     get_env_path,
     migrate_config,
 )
-from hermes_cli.config_backups import backup_config, list_config_backups
-from hermes_cli.config_migrations import (
+from rabbit_cli.config_backups import backup_config, list_config_backups
+from rabbit_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
     support_floor_message,
 )
@@ -45,8 +45,8 @@ def _restore_backups(backups: dict[Path, Path]) -> list[Path]:
 
 
 def main() -> int:
-    if env_var_enabled("HERMES_SKIP_CONFIG_MIGRATION"):
-        print("[config-migrate] HERMES_SKIP_CONFIG_MIGRATION is set; skipping config migration")
+    if env_var_enabled("RABBIT_SKIP_CONFIG_MIGRATION"):
+        print("[config-migrate] RABBIT_SKIP_CONFIG_MIGRATION is set; skipping config migration")
         return 0
 
     # Strict read: malformed YAML or a non-mapping root is left alone with a warning and the

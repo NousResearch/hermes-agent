@@ -1,6 +1,6 @@
 """Live, tail-able transcripts for delegated subagents.
 
-One append-only log per child under ``<hermes_home>/cache/delegation/live/
+One append-only log per child under ``<rabbit_home>/cache/delegation/live/
 <delegation_id>/task-<n>.log``, pre-created with a header at dispatch (so
 ``tail -f`` attaches immediately); paths are returned from ``delegate_task``.
 ``cache/delegation`` is mounted read-only into remote terminal backends, so
@@ -38,17 +38,17 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def live_transcript_root(home: Optional[Path] = None) -> Path:
-    """Root directory for live transcripts (profile-safe, never ~/.hermes).
+    """Root directory for live transcripts (profile-safe, never ~/.rabbit).
 
     Pass ``home`` when the caller holds stable parent-owned profile state
-    (e.g. the parent agent's SessionDB path). Ambient ``get_hermes_home()``
+    (e.g. the parent agent's SessionDB path). Ambient ``get_rabbit_home()``
     consults a ContextVar that raw ``threading.Thread`` boundaries drop, so
     in a multi-profile process an ambient resolve can land transcripts under
-    whatever profile the process-wide ``HERMES_HOME`` names at that moment
+    whatever profile the process-wide ``RABBIT_HOME`` names at that moment
     (#91996).
     """
-    from hermes_constants import get_hermes_dir
-    return get_hermes_dir("cache/delegation", "delegation_cache", home=home) / "live"
+    from rabbit_constants import get_rabbit_dir
+    return get_rabbit_dir("cache/delegation", "delegation_cache", home=home) / "live"
 
 
 @contextmanager
@@ -107,7 +107,7 @@ class LiveTranscriptWriter:
             d.mkdir(parents=True, exist_ok=True)
             path = d / f"task-{task_index}.log"
             path.write_text(
-                "=== Hermes subagent live transcript ===\n"
+                "=== Rabbit subagent live transcript ===\n"
                 f"delegation: {delegation_id}   task: {task_index}\n"
                 f"goal: {_redact(goal_line)}\n"  # header bypasses event(), so redact here too
                 f"started: {time.strftime(_TIME_FMT)}\n"

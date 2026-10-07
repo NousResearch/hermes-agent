@@ -1,10 +1,10 @@
 """Shared harness for the OpenAI-dialect provider wire-conformance suite.
 
-Every test drives REAL Hermes processes (``hermes -z`` oneshot, ``--resume``, the
+Every test drives REAL Rabbit processes (``rabbit -z`` oneshot, ``--resume``, the
 ``tui_gateway`` stdio server) against a loopback fake of the vendor HTTP API
-(``tests/fakes/providers``) and asserts on the next wire request Hermes sends, the
+(``tests/fakes/providers``) and asserts on the next wire request Rabbit sends, the
 user-visible answer, and persisted ``state.db`` rows. Homes are hermetic: a fake HOME
-whose ``.hermes`` is the HERMES_HOME, an allowlisted env with no credentials.
+whose ``.rabbit`` is the RABBIT_HOME, an allowlisted env with no credentials.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_gate
 
@@ -92,7 +92,7 @@ def write_sitecustomize_shim(shim_dir: Path, body: str) -> Path:
     return shim_dir
 
 
-# One tool Hermes always offers on the CLI toolset and that has an observable,
+# One tool Rabbit always offers on the CLI toolset and that has an observable,
 # side-effect-free result: the model reads a file the fixture wrote.
 READ_TOOL = "read_file"
 
@@ -106,8 +106,8 @@ class Home:
         return self.root / "home"
 
     @property
-    def hermes_home(self) -> Path:
-        return self.home / ".hermes"
+    def rabbit_home(self) -> Path:
+        return self.home / ".rabbit"
 
     @property
     def project(self) -> Path:
@@ -115,43 +115,43 @@ class Home:
 
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "state.db"
+        return self.rabbit_home / "state.db"
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        """Allowlisted env: the runner may itself be a Hermes process whose HERMES_* or
+        """Allowlisted env: the runner may itself be a Rabbit process whose RABBIT_* or
         credential env would silently reroute the child."""
         import pwd  # the suite is Linux-gated
 
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()  # windows-footgun: ok — every file here is skipif(not linux)
-        fixture = self.hermes_home.resolve()
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".rabbit").resolve()  # windows-footgun: ok — every file here is skipif(not linux)
+        fixture = self.rabbit_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", "fixture is a live home"
         env = {k: v for k, v in os.environ.items()
                if (k in _PASSTHROUGH_ENV or k.startswith("LC_")) and not k.endswith(_SECRET_ENV_SUFFIXES)}
         env.update({
-            "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home), "PYTHONPATH": str(REPO_ROOT),
+            "HOME": str(self.home), "RABBIT_HOME": str(self.rabbit_home), "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb",
             # The child's state.db lives under tmp_path; the live-DB guard's documented child escape hatch.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         })
         env.update(extra or {})
         return env
 
     def write(self, config: dict[str, Any], dotenv: dict[str, str] | None = None,
               auth: dict[str, Any] | None = None) -> "Home":
-        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        self.rabbit_home.mkdir(parents=True, exist_ok=True)
         self.project.mkdir(parents=True, exist_ok=True)
         base = {"updates": {"check": False}, "agent": {"api_max_retries": 2},
                 "terminal": {"cwd": str(self.project)}, "memory": {"memory_enabled": False}}
         _deep_merge(base, config)
-        (self.hermes_home / "config.yaml").write_text(yaml.safe_dump(base, sort_keys=False), encoding="utf-8")
-        (self.hermes_home / ".env").write_text(
+        (self.rabbit_home / "config.yaml").write_text(yaml.safe_dump(base, sort_keys=False), encoding="utf-8")
+        (self.rabbit_home / ".env").write_text(
             "".join(f"{k}={v}\n" for k, v in (dotenv or {}).items()), encoding="utf-8")
         if auth is not None:
-            (self.hermes_home / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+            (self.rabbit_home / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
         return self
 
     def update_config(self, mutate: Callable[[dict], None]) -> None:
-        path = self.hermes_home / "config.yaml"
+        path = self.rabbit_home / "config.yaml"
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         mutate(cfg)
         path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
@@ -203,18 +203,18 @@ class Run:
                 f"stdout={self.proc.stdout[-1500:]!r}\nstderr={self.proc.stderr[-4000:]}")
 
 
-def hermes_argv(*args: str) -> list[str]:
-    return [sys.executable, "-m", "hermes_cli.main", *args]
+def rabbit_argv(*args: str) -> list[str]:
+    return [sys.executable, "-m", "rabbit_cli.main", *args]
 
 
 def oneshot(h: Home, prompt: str, *args: str, resume: str | None = None, timeout: float = TURN_TIMEOUT,
             env: dict[str, str] | None = None) -> Run:
-    """One real ``hermes -z`` turn; the usage file names the session for ``--resume``."""
+    """One real ``rabbit -z`` turn; the usage file names the session for ``--resume``."""
     usage_file = h.root / f"usage-{time.monotonic_ns()}.json"
     argv = ["-z", prompt, "--usage-file", str(usage_file), *args]
     if resume:
         argv += ["--resume", resume]
-    proc = subprocess.run(hermes_argv(*argv), cwd=h.project, env=h.env(env), capture_output=True,
+    proc = subprocess.run(rabbit_argv(*argv), cwd=h.project, env=h.env(env), capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
     usage = json.loads(usage_file.read_text(encoding="utf-8")) if usage_file.exists() else {}
     return Run(proc, usage)

@@ -1,12 +1,11 @@
 import crypto from 'node:crypto'
 
 export interface ProfileRouteConfig {
-  cloudOrg: string
-  mode: 'cloud' | 'local' | 'remote' | 'ssh'
+  mode: 'local' | 'remote' | 'ssh'
   remoteUrl: string
   sshHost: string
   sshPort: null | number
-  sshRemoteHermesPath: string
+  sshRemoteRabbitPath: string
   sshRemoteProfile: string
   sshUser: string
 }
@@ -34,7 +33,7 @@ interface RegistryProfileRouteAgent {
 interface RegistryProfileRouteSource {
   [field: string]: unknown
   id: string
-  kind: 'cloud' | 'local' | 'remote' | 'ssh'
+  kind: 'local' | 'remote' | 'ssh'
   remoteProfile?: string
 }
 
@@ -154,7 +153,7 @@ async function connectionScope(
     }
 
     // Remote profile is intentionally excluded: profiles mapped into the same
-    // remote Hermes home form one interaction scope. Key/identity-file paths are
+    // remote Rabbit home form one interaction scope. Key/identity-file paths are
     // credentials and likewise stay out of the scope material.
     return {
       key: [
@@ -162,15 +161,8 @@ async function connectionScope(
         effective.user.trim(),
         effective.hostname.trim().toLowerCase(),
         effective.port ?? 22,
-        config.sshRemoteHermesPath.trim()
+        config.sshRemoteRabbitPath.trim()
       ].join('\0'),
-      mode: 'remote'
-    }
-  }
-
-  if (config.mode === 'cloud') {
-    return {
-      key: `cloud\0${normalizeRemoteUrl(config.remoteUrl)}\0${config.cloudOrg.trim()}`,
       mode: 'remote'
     }
   }
@@ -193,16 +185,16 @@ function backendTargetProfile(scoped: ProfileRouteConfig, globalConfig: ProfileR
     return normalizeProfile(scoped.sshRemoteProfile || profile)
   }
 
-  // A per-profile URL/cloud override selects a standalone remote backend. It
+  // A per-profile URL override selects a standalone remote backend. It
   // does not forward the Desktop alias as a backend profile scope, so that
   // backend answers as its own root profile.
-  if (scoped.mode === 'remote' || scoped.mode === 'cloud') {
+  if (scoped.mode === 'remote') {
     return 'default'
   }
 
   // An inherited global SSH route may explicitly pin the remote process to a
   // differently named profile. Without that pin, Desktop profile names remain
-  // the backend profile scope, like inherited URL/cloud connections.
+  // the backend profile scope, like inherited URL connections.
   if (globalConfig.mode === 'ssh' && globalConfig.sshRemoteProfile) {
     return normalizeProfile(globalConfig.sshRemoteProfile)
   }
@@ -302,7 +294,7 @@ export function buildRegistryProfileRoutes({
   return routes
 }
 
-/** Add the backend profile scope only for registry remote/cloud descriptors. */
+/** Add the backend profile scope only for registry remote descriptors. */
 export function registryGatewayWsUrl(
   connection: { profile?: null | string; sharedRemote?: boolean },
   wsUrl: string

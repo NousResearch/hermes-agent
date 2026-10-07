@@ -38,12 +38,12 @@ test('resolveAppIcon returns the first candidate that passes the probe', () => {
 })
 
 test('decodingFileProbe rejects a missing file', () => {
-  const missing = path.join(os.tmpdir(), `hermes-icon-missing-${process.pid}.png`)
+  const missing = path.join(os.tmpdir(), `rabbit-icon-missing-${process.pid}.png`)
   assert.equal(decodingFileProbe(missing), false)
 })
 
 test('decodingFileProbe rejects a directory', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-icon-dir-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-icon-dir-'))
 
   try {
     assert.equal(decodingFileProbe(dir), false)
@@ -58,7 +58,7 @@ test('decodingFileProbe rejects a directory', () => {
 // icon.ico to resources/), so resolving the ladder must never probe inside the archive, even though
 // the packed copies exist too.
 test('resolving a packaged icon never probes a path inside app.asar', () => {
-  const resources = path.join('/opt', 'Hermes', 'resources')
+  const resources = path.join('/opt', 'Rabbit', 'resources')
   const appRoot = path.join(resources, 'app.asar')
   const unpackedPathFor = (p: string) => p.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
   const unpackedIcon = path.join(unpackedPathFor(appRoot), 'dist', 'apple-touch-icon.png')
@@ -98,14 +98,14 @@ test('resolving a packaged icon never probes a path inside app.asar', () => {
 test('appIconCandidates keeps the documented precedence ladder', () => {
   const mac = appIconCandidates({
     isWindows: false,
-    appRoot: '/Applications/Hermes.app/Contents/Resources',
+    appRoot: '/Applications/Rabbit.app/Contents/Resources',
     unpackedPathFor: p => `${p}.unpacked`
   })
 
   assert.deepEqual(mac, [
-    path.join('/Applications/Hermes.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources', 'public', 'apple-touch-icon.png'),
-    path.join('/Applications/Hermes.app/Contents/Resources', 'dist', 'apple-touch-icon.png')
+    path.join('/Applications/Rabbit.app/Contents/Resources.unpacked', 'dist', 'apple-touch-icon.png'),
+    path.join('/Applications/Rabbit.app/Contents/Resources', 'public', 'apple-touch-icon.png'),
+    path.join('/Applications/Rabbit.app/Contents/Resources', 'dist', 'apple-touch-icon.png')
   ])
 
   // Windows prepends the two full-bleed .ico rungs ahead of the PNG ladder.
@@ -127,7 +127,7 @@ test('appIconCandidates keeps the documented precedence ladder', () => {
 
 // #73195: a runtime app.dock.setIcon(png) replaces the bundle's icon for the
 // life of the process, so macOS 26 cannot apply the Clear/Tinted Liquid Glass
-// styles to it. A packaged .app already carries the Hermes icon; only dev runs
+// styles to it. A packaged .app already carries the Rabbit icon; only dev runs
 // (the stock Electron bundle) need the runtime override.
 test('shouldOverrideDockIcon leaves a packaged macOS app on its bundle icon', () => {
   assert.equal(shouldOverrideDockIcon({ platform: 'darwin', isPackaged: true }), false)

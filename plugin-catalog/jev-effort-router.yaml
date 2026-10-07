@@ -5,7 +5,7 @@ description: "Per-turn model AND reasoning-effort routing, decided by TypeSafe J
 maintainer: AlphaPerseii3000
 tier: community
 category: models
-requires_hermes: ">=0.21.4"
+requires_rabbit: ">=0.21.4"
 docs_url: https://github.com/AlphaPerseii3000/jev-effort-router
 version: "0.2.2"
 platforms: []

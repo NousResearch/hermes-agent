@@ -14,7 +14,7 @@ Control Philips Hue lights, scenes, rooms via OpenHue CLI.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/smart-home/openhue` |
+| Source | Optional — install with `rabbit skills install official/smart-home/openhue` |
 | Path | `optional-skills/smart-home/openhue` |
 | Version | `1.0.1` |
 | Author | community |
@@ -25,7 +25,7 @@ Control Philips Hue lights, scenes, rooms via OpenHue CLI.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # OpenHue CLI
@@ -37,8 +37,8 @@ Control Philips Hue lights and scenes via a Hue Bridge from the terminal.
 ```bash
 # Linux (pre-built binary — releases ship tarballs, not bare binaries)
 curl -sL "https://github.com/openhue/openhue-cli/releases/latest/download/openhue_Linux_x86_64.tar.gz" \
-  | tar -xz -C ~/.hermes/cache/scratch openhue \
-  && install -m 0755 ~/.hermes/cache/scratch/openhue ~/.local/bin/openhue
+  | tar -xz -C ~/.rabbit/cache/scratch openhue \
+  && install -m 0755 ~/.rabbit/cache/scratch/openhue ~/.local/bin/openhue
 # (use openhue_Linux_arm64.tar.gz on ARM64)
 
 # macOS
@@ -120,7 +120,7 @@ openhue set room "Living Room" --off
 
 ## Notes
 
-- Bridge must be on the same local network as the machine running Hermes
+- Bridge must be on the same local network as the machine running Rabbit
 - First run requires physically pressing the button on the Hue Bridge to authorize
 - Colors only work on color-capable bulbs (not white-only models)
 - Light and room names are case-sensitive — use `openhue get light` to check exact names

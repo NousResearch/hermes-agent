@@ -64,7 +64,7 @@ class TestGetActiveProvider:
         DeepInfra-only-box case: fal/xai register unconditionally but lack keys.
         Mirrors agent/image_gen_registry's availability-filtered fallback.
         """
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         video_gen_registry.register_provider(_FakeProvider("fal", available=False))
         video_gen_registry.register_provider(_FakeProvider("xai", available=False))
         video_gen_registry.register_provider(_FakeProvider("deepinfra", available=True))
@@ -74,9 +74,9 @@ class TestGetActiveProvider:
 
     def test_unknown_explicit_config_fails_closed(self, tmp_path, monkeypatch):
         """A typo must not silently route a paid request to another backend."""
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"video_gen": {"provider": "ghost"}})
         )

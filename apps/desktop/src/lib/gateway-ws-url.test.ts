@@ -1,7 +1,7 @@
-import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@rabbit/shared'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { HermesConnection } from '@/global'
+import type { RabbitConnection } from '@/global'
 
 import { resolveDesktopGatewayWsUrl } from './gateway-ws-url'
 
@@ -17,18 +17,18 @@ describe('desktop connection scope', () => {
       connectionId: 'remote-device',
       profile: 'client-alias',
       wsUrl: 'wss://remote.invalid/api/ws?token=cached'
-    } as HermesConnection
+    } as RabbitConnection
   }
 
   function registeredConnection(authMode: (typeof authModes)[number]) {
-    return { ...aliasConnection(authMode), profile: 'remote-profile', registryScoped: true } as HermesConnection
+    return { ...aliasConnection(authMode), profile: 'remote-profile', registryScoped: true } as RabbitConnection
   }
 
   function fakeDesktop(withScopedMint = true) {
     return {
       getGatewayWsUrl: vi.fn(async () => 'wss://legacy.invalid/api/ws?token=fresh'),
       ...(withScopedMint ? { getGatewayWsUrlFor: vi.fn(async () => 'wss://remote.invalid/api/ws?ticket=fresh') } : {})
-    } as unknown as Window['hermesDesktop']
+    } as unknown as Window['rabbitDesktop']
   }
 
   it.each(authModes)('an inferred connectionId keeps the legacy profile-alias mint (%s)', async authMode => {
@@ -54,7 +54,7 @@ describe('desktop connection scope', () => {
 
   it('a registry-scoped flag without a connectionId still takes the legacy mint', async () => {
     const desktop = fakeDesktop()
-    const scopedWithoutId = { ...registeredConnection('token'), connectionId: undefined } as HermesConnection
+    const scopedWithoutId = { ...registeredConnection('token'), connectionId: undefined } as RabbitConnection
 
     await expect(resolveDesktopGatewayWsUrl(desktop, scopedWithoutId)).resolves.toContain('legacy.invalid')
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('remote-profile')

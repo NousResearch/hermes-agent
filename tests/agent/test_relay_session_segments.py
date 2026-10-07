@@ -139,14 +139,14 @@ def _fast_scope_timeout(monkeypatch):
 def _default_config(monkeypatch):
     """No config on disk by default; tests override _segments_config directly."""
     monkeypatch.setattr(
-        "hermes_cli.config_effective.load_user_config_effective", lambda *_a, **_k: {}
+        "rabbit_cli.config_effective.load_user_config_effective", lambda *_a, **_k: {}
     )
     relay_runtime._reset_segments_config_for_tests()
 
 
 def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
     monkeypatch.setattr(
-        "hermes_cli.config_effective.load_user_config_effective",
+        "rabbit_cli.config_effective.load_user_config_effective",
         lambda *_a, **_k: {
             "gateway": {
                 "telemetry": {
@@ -362,8 +362,8 @@ class TestCompactionRotation:
         _run_turn(coordinator, lease, "t1")
 
         new_seg = _session_pushes(fake)[-1]["metadata"]
-        assert new_seg.get("hermes.session.segment") == 1
-        assert new_seg.get("hermes.session.segment_reason") == "compaction"
+        assert new_seg.get("rabbit.session.segment") == 1
+        assert new_seg.get("rabbit.session.segment_reason") == "compaction"
 
     def test_unknown_session_compaction_is_noop(self, coordinator, monkeypatch):
         _set_segments(monkeypatch, on_compaction=True)
@@ -459,7 +459,7 @@ class TestMaxTurnsRotation:
         # segment 1; rotation before turn 4.
         sessions = _session_pushes(fake)
         assert len(sessions) == 3, "cap of 2 over 5 turns => 2 rotations"
-        assert sessions[-1]["metadata"].get("hermes.session.segment_reason") == "max_turns"
+        assert sessions[-1]["metadata"].get("rabbit.session.segment_reason") == "max_turns"
 
     def test_zero_cap_means_unlimited(self, coordinator, monkeypatch):
         _set_segments(monkeypatch, max_turns=0)
@@ -553,14 +553,14 @@ class TestGatewayRunStaysUnimported:
     """Guard against re-importing gateway.run from a non-gateway host.
 
     relay_runtime._segments_config() must NEVER trigger ``gateway.run`` — its
-    import-time env setup (_HERMES_GATEWAY, HERMES_QUIET, TERMINAL_CWD := home)
-    hangs CLI approvals (#87183) and runs ``hermes -z`` in $HOME (#95577). A
+    import-time env setup (_RABBIT_GATEWAY, RABBIT_QUIET, TERMINAL_CWD := home)
+    hangs CLI approvals (#87183) and runs ``rabbit -z`` in $HOME (#95577). A
     monkeypatch can't catch a refactor re-adding the import, so this runs the
     real path in a fresh process with those vars unset.
     """
 
     def test_relay_runtime_never_imports_gateway_run(self, monkeypatch) -> None:
-        for var in ("TERMINAL_CWD", "HERMES_QUIET", "_HERMES_GATEWAY"):
+        for var in ("TERMINAL_CWD", "RABBIT_QUIET", "_RABBIT_GATEWAY"):
             monkeypatch.delenv(var, raising=False)
         result = _run_isolated(
             """
@@ -572,7 +572,7 @@ import agent.relay_runtime as rr
 rr._segments_config()
 rr._segments_config()  # cached path too
 
-leaked = {v: os.environ[v] for v in ("TERMINAL_CWD", "HERMES_QUIET", "_HERMES_GATEWAY") if v in os.environ}
+leaked = {v: os.environ[v] for v in ("TERMINAL_CWD", "RABBIT_QUIET", "_RABBIT_GATEWAY") if v in os.environ}
 print("gateway.run imported:", "gateway.run" in sys.modules, "leaked env:", leaked)
 sys.exit(1 if "gateway.run" in sys.modules or leaked else 0)
 """

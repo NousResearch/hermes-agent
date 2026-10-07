@@ -10,9 +10,9 @@ from types import SimpleNamespace
 from collections import OrderedDict
 root=Path(sys.argv[1]).resolve(); sys.path.insert(0,str(root))
 for key in list(os.environ):
-    if key.startswith('HERMES_') or any(s in key for s in ('API_KEY','TOKEN','SECRET')):
+    if key.startswith('RABBIT_') or any(s in key for s in ('API_KEY','TOKEN','SECRET')):
         os.environ.pop(key,None)
-os.environ['HERMES_HOME']=tempfile.mkdtemp(prefix='notice-review-')
+os.environ['RABBIT_HOME']=tempfile.mkdtemp(prefix='notice-review-')
 socket.socket.connect=lambda *a,**k: (_ for _ in ()).throw(RuntimeError('network forbidden'))
 import tools.async_delegation as ad
 import tools.delegate_tool_dispatch as dd

@@ -17,7 +17,7 @@
 // char in, one char out, so returned positions still index the original
 // target and a highlighter can apply the same fold without drift.
 //
-// Shared by the desktop, web and TUI pickers via `@hermes/shared/fuzzy` so a
+// Shared by the desktop, web and TUI pickers via `@rabbit/shared/fuzzy` so a
 // query ranks identically on every surface.
 
 export interface FuzzyMatch {

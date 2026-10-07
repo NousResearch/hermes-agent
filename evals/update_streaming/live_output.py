@@ -29,8 +29,8 @@ def run_child(mode):
 
 
 def step(mode):
-    from hermes_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
-    from hermes_cli.main import _run_logged_subprocess
+    from rabbit_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
+    from rabbit_cli.main import _run_logged_subprocess
     state = _install_hangup_protection(gateway_mode=True)
     try:
         return _run_logged_subprocess([sys.executable, __file__, "--child", mode]).returncode
@@ -39,12 +39,12 @@ def step(mode):
 
 
 def probe():
-    from hermes_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
-    from hermes_cli.main import _run_logged_subprocess
+    from rabbit_cli.main_dashboard import _install_hangup_protection, _finalize_update_output
+    from rabbit_cli.main import _run_logged_subprocess
     receipts = []
     for gateway in (False, True):
         with tempfile.TemporaryDirectory(prefix="update-output-") as temp:
-            os.environ["HERMES_HOME"] = temp
+            os.environ["RABBIT_HOME"] = temp
             os.environ["HOME"] = temp
             os.environ["USERPROFILE"] = temp
             screen, original = io.StringIO(), sys.stdout

@@ -104,13 +104,13 @@ def test_remediation_never_raises_on_junk_cfg():
 
 
 def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
-    from hermes_cli import env_loader
+    from rabbit_cli import env_loader
     from agent.secret_sources import registry
 
     registry._reset_registry_for_tests()
     env_loader.reset_secret_source_cache()
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "config.yaml").write_text(
         "secrets:\n"
@@ -143,7 +143,7 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
 
 def test_remediation_hint_uses_explicit_profile_scope(tmp_path, monkeypatch):
     from agent.secret_sources import registry
-    from hermes_cli import env_loader
+    from rabbit_cli import env_loader
 
     class ScopedSource(SecretSource):
         name = "scoped_hint"

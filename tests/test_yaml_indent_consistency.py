@@ -2,7 +2,7 @@
 
 import pytest
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 from utils import atomic_roundtrip_yaml_update, atomic_yaml_write
 
 

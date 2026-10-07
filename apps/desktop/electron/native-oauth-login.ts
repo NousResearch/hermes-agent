@@ -48,7 +48,7 @@ const DEFAULT_LOGIN_TIMEOUT_MS = 5 * 60 * 1000
 const DONE_HTML =
   '<!doctype html><meta charset="utf-8"><title>Signed in</title>' +
   '<body style="font:15px system-ui;margin:3rem;text-align:center">' +
-  '<h2>&#10003; Signed in to Hermes</h2>' +
+  '<h2>&#10003; Signed in to Rabbit</h2>' +
   '<p>You can close this window and return to the app.</p>' +
   '<script>setTimeout(()=>window.close(),800)</script>'
 

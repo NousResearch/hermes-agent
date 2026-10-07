@@ -1,8 +1,8 @@
 """Install on a musl libc host (Alpine) through the real ``scripts/install.sh``.
 
-Failure class: libc. Hermes's PM store pins glibc (``-linux-gnu``) builds of uv, CPython and
+Failure class: libc. Rabbit's PM store pins glibc (``-linux-gnu``) builds of uv, CPython and
 Node. On a musl host those binaries either fail to exec or, with the ``gcompat`` shim, load and
-segfault, so an install or update that publishes them leaves every later ``hermes`` command dead
+segfault, so an install or update that publishes them leaves every later ``rabbit`` command dead
 (#123682). The acceptable outcomes are: musl-compatible tools that run, or a refusal that tells
 the user why (names musl) and publishes nothing unrunnable.
 
@@ -55,13 +55,13 @@ SCRIPT = r"""
 set -u
 apk add --no-cache -q bash git curl >/dev/null 2>&1 || { echo "HARNESS: apk add failed"; exit 90; }
 git config --global safe.directory '*'
-git config --global url."file://$ORIGIN".insteadOf https://github.com/NousResearch/hermes-agent.git
+git config --global url."file://$ORIGIN".insteadOf https://github.com/seven0070/Rabbit-.git
 echo "=== libc: $(ldd --version 2>&1 | head -n1)"
 bash /work/install.sh --non-interactive </dev/null
 echo "=== install rc=$?"
 echo "=== probes"
-for exe in "$HOME"/.hermes/tools/*/uv "$HOME"/.hermes/tools/*/bin/python3 "$HOME"/.hermes/tools/*/bin/node \
-           "$HOME"/.local/bin/hermes; do
+for exe in "$HOME"/.rabbit/tools/*/uv "$HOME"/.rabbit/tools/*/bin/python3 "$HOME"/.rabbit/tools/*/bin/node \
+           "$HOME"/.local/bin/rabbit; do
     [ -e "$exe" ] || continue
     timeout 60 "$exe" --version >/dev/null 2>&1
     echo "probe rc=$? $exe"
@@ -119,6 +119,6 @@ def test_musl_host_gets_runnable_tools_or_a_refusal_naming_musl(alpine_install):
     assert not dead, ("musl host: published tool binaries that cannot execute: " + ", ".join(dead)
                       + "\n" + I.describe(cp))
     if rc == 0:
-        hermes = [p for code, p in probes if p.endswith("/.local/bin/hermes")]
-        assert hermes, "musl host: install exited 0 but published no hermes command:\n" + I.describe(cp)
+        rabbit = [p for code, p in probes if p.endswith("/.local/bin/rabbit")]
+        assert rabbit, "musl host: install exited 0 but published no rabbit command:\n" + I.describe(cp)
 

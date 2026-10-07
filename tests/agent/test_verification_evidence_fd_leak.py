@@ -16,7 +16,7 @@ from agent import verification_evidence as ve
 @pytest.fixture(autouse=True)
 def _ledger_on(monkeypatch):
     """The ledger is inert unless verify-on-stop is enabled; these tests exercise the ledger."""
-    monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
+    monkeypatch.setenv("RABBIT_VERIFY_ON_STOP", "1")
 
 
 
@@ -74,7 +74,7 @@ def _python_project(root):
 
 def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     """Recording, editing, and status reads must close every connection opened."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     _point_ledger(monkeypatch, tmp_path)
     _python_project(tmp_path)
     opened, closed = _track_connections(monkeypatch)

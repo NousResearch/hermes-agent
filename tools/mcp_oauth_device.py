@@ -1,7 +1,7 @@
 """Explicit RFC 8628 MCP login, sharing SDK discovery, client auth and token storage.
 
 The SDK still owns runtime requests and refresh. Device authorization is only
-started by `hermes mcp login/reauth`, never a background reconnect.
+started by `rabbit mcp login/reauth`, never a background reconnect.
 """
 from __future__ import annotations
 
@@ -204,14 +204,14 @@ async def _authorize(client, provider, cfg):
 async def login_device(name, server_url, oauth_config):
     """Authorize then commit state in the active profile; failed grants preserve old state."""
     from tools.mcp_oauth import _build_client_metadata
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
+    from tools.mcp_oauth_manager import RabbitMCPOAuthProvider, get_manager
     from tools.mcp_oauth_provider import prepare_oauth_config
     from tools.mcp_tool import sdk_httpx
 
     cfg, storage = prepare_oauth_config(name, server_url, oauth_config)
     # Device flow never binds a callback socket or uses the hosted browser CIMD.
     cfg["_resolved_port"] = cfg.get("redirect_port", 8420)
-    provider = HermesMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
+    provider = RabbitMCPOAuthProvider(server_url=server_url, server_name=name, storage=storage,
                                      client_metadata=_build_client_metadata(cfg),
                                      token_user_agent=cfg.get("user_agent"))
     httpx = sdk_httpx()

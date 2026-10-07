@@ -3,7 +3,7 @@ import type { ElectronApplication, Page } from '@playwright/test'
 import type { NativeProcess } from '../../../tests-js/scripts/desktop-smoke-process.ts'
 
 export interface UpdateWindowIdentity {
-  hermesRoot: string
+  rabbitRoot: string
 }
 
 export interface UpdateWindowChatOptions {

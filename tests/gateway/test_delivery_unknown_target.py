@@ -11,7 +11,7 @@ from gateway.delivery import DeliveryRouter, DeliveryTarget
 @pytest.mark.asyncio
 @pytest.mark.parametrize("raw", ["MisspelledPlatform:ChatID:ThreadID", "", "   "])
 async def test_unknown_destination_fails_without_writing_and_local_still_works(tmp_path, monkeypatch, raw):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     router = DeliveryRouter(GatewayConfig())
     target = DeliveryTarget.parse(raw)
     raw = raw.strip()

@@ -59,7 +59,7 @@ def test_bounded_fast_window_policy(monkeypatch):
     assert fast_mode.effective_request_overrides(anth)["speed"] == "fast"
 
     # unsupported routes never get fast params, in auto or static mode
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from rabbit_cli.models import resolve_fast_mode_overrides
 
     for provider, base_url in (
         ("openrouter", "https://openrouter.ai/api/v1"),
@@ -91,14 +91,14 @@ def test_bounded_fast_window_policy(monkeypatch):
 
 
 def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
-    import hermes_cli.config as config_mod
+    import rabbit_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {"success": True}
     import cli as cli_mod
     from gateway.run import GatewayRunner
-    from hermes_cli.commands import COMMAND_REGISTRY
-    from hermes_cli.config import DEFAULT_CONFIG
+    from rabbit_cli.commands import COMMAND_REGISTRY
+    from rabbit_cli.config import DEFAULT_CONFIG
 
     # config parsing: CLI, gateway, TUI all accept auto/cold; default stays off
     for raw, expected in (("auto", "auto"), ("COLD", "cold"), ("fast", "priority"), ("", None), ("bogus", None)):
@@ -119,12 +119,12 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     stub = SimpleNamespace(
         service_tier=None, model="gpt-5.4", agent=object(), _fast_command_available=lambda: True
     )
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast auto")
+    cli_mod.RabbitCLI._handle_fast_command(stub, "/fast auto")
     assert stub.service_tier == "auto"
     assert stub.agent is None
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast status")
+    cli_mod.RabbitCLI._handle_fast_command(stub, "/fast status")
     assert any("auto" in line for line in printed)
-    cli_mod.HermesCLI._handle_fast_command(stub, "/fast cold")
+    cli_mod.RabbitCLI._handle_fast_command(stub, "/fast cold")
     assert stub.service_tier == "cold"
 
     # auto/cold do NOT pin a static override into the turn route
@@ -133,14 +133,14 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
         api_mode="chat_completions", acp_command=None, acp_args=[], _credential_pool=None,
         service_tier="auto",
     )
-    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
+    assert cli_mod.RabbitCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
     route_stub.service_tier = "priority"
-    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] == {
+    assert cli_mod.RabbitCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] == {
         "service_tier": "priority"
     }
     route_stub.base_url = "https://openrouter.ai/api/v1"
     route_stub.provider = "openrouter"
-    assert cli_mod.HermesCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
+    assert cli_mod.RabbitCLI._resolve_turn_agent_config(route_stub, "hi")["request_overrides"] is None
 
 
 class _FastRateLimitError(Exception):

@@ -24,7 +24,7 @@ with minor refactors:
 - `SCENE_ANIMATIONS` renamed to `SCENES` and restructured to hold layer
   names (strings) instead of function-name strings resolved via `globals()`
 - `generate_video()` split: the Pollinations text-to-image call was removed
-  (Hermes uses its own `image_generate` + `pixel_art()` pipeline for base
+  (Rabbit uses its own `image_generate` + `pixel_art()` pipeline for base
   frames). Only the overlay + ffmpeg encoding remains.
 - Frame directory is now a `tempfile.TemporaryDirectory` instead of
   hand-managed cleanup.
@@ -37,7 +37,7 @@ with minor refactors:
 - Sobel edge-aware downsampling (requires scipy; not worth the dep)
 - Bayer / Atkinson dither (would need numpy reimplementation; kept scope tight)
 - Pollinations text-to-image generation (`pixelart_image.py`,
-  `generate_base()` in `pixelart_video.py`) — Hermes has `image_generate`
+  `generate_base()` in `pixelart_video.py`) — Rabbit has `image_generate`
 
 ### License compatibility
 
@@ -49,6 +49,6 @@ and in the SKILL.md credits block. No code was relicensed.
 
 ## pixel-art skill itself
 
-- License: MIT (inherits from hermes-agent repo)
+- License: MIT (inherits from rabbit-agent repo)
 - Original author of the skill shell: dodo-reach
-- Expansion with palettes + video: Hermes Agent contributors
+- Expansion with palettes + video: Rabbit Agent contributors

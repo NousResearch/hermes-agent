@@ -15,7 +15,7 @@ vi.mock('./right-rail/real-profile-consent-dialog', () => ({
 // way the main window left it, sets the pop-out query string, and only then
 // imports the shell. Regression tests for the black pop-out window (shell
 // spawns, no URL bar, content never paints — #119850).
-const TABS_KEY = 'hermes.desktop.previewTabs.v2'
+const TABS_KEY = 'rabbit.desktop.previewTabs.v2'
 
 // Cold module graph, not test logic: the shell pulls in the whole app.
 vi.setConfig({ testTimeout: 90000 })

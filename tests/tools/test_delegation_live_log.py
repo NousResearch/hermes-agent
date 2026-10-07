@@ -38,12 +38,12 @@ def test_writer_precreates_file_with_header():
     w = LiveTranscriptWriter("deleg_test1", 0, "do the thing", context="some ctx")
     assert w.path is not None and w.path.exists()
     text = w.path.read_text(encoding="utf-8")
-    assert "Hermes subagent live transcript" in text
+    assert "Rabbit subagent live transcript" in text
     assert "delegation: deleg_test1" in text
     assert "goal: do the thing" in text
     assert "kickoff" in text
     assert "some ctx" in text
-    # Lives under the hermes cache/delegation/live root, named task-<n>.log
+    # Lives under the rabbit cache/delegation/live root, named task-<n>.log
     assert w.path.name == "task-0.log"
     assert w.path.parent.name == "deleg_test1"
     assert w.path.parent.parent == live_transcript_root()
@@ -260,18 +260,18 @@ def test_manifest_goal_is_redacted():
 # ---------------------------------------------------------------------------
 
 def test_explicit_home_pins_transcripts_across_raw_thread_boundary(tmp_path, monkeypatch):
-    """Ambient resolve falls through to process HERMES_HOME when the session's
+    """Ambient resolve falls through to process RABBIT_HOME when the session's
     ContextVar override is dropped by a raw threading.Thread boundary; an
     explicit home keeps transcripts + manifest under the originating profile."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     process_home = tmp_path / "process-default"
     session_home = tmp_path / "session-profile"
     process_home.mkdir()
     session_home.mkdir()
 
-    monkeypatch.setenv("HERMES_HOME", str(process_home))
-    token = set_hermes_home_override(session_home)
+    monkeypatch.setenv("RABBIT_HOME", str(process_home))
+    token = set_rabbit_home_override(session_home)
     out = {}
     try:
         def worker():
@@ -284,7 +284,7 @@ def test_explicit_home_pins_transcripts_across_raw_thread_boundary(tmp_path, mon
         t.start()
         t.join()
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
     expected_root = session_home / "cache" / "delegation" / "live"
     assert out["paths"], "transcripts were created"
@@ -300,7 +300,7 @@ def test_manifest_update_uses_same_explicit_home(tmp_path, monkeypatch):
     explicit home create used, or the status write is silently lost."""
     ambient_home = tmp_path / "other-profile"
     ambient_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+    monkeypatch.setenv("RABBIT_HOME", str(ambient_home))
 
     home = tmp_path / "own-profile"
     home.mkdir()
@@ -384,7 +384,7 @@ def test_prune_sweeps_the_pinned_root_not_ambient(tmp_path, monkeypatch):
     pinned_home = tmp_path / "pinned"
     ambient_home.mkdir()
     pinned_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(ambient_home))
+    monkeypatch.setenv("RABBIT_HOME", str(ambient_home))
 
     stale_age = time.time() - (dll.LIVE_RETENTION_DAYS + 1) * 86400
     stale_pinned = pinned_home / "cache" / "delegation" / "live" / "old-deleg"

@@ -137,7 +137,7 @@ class IronProxy(_SignedBinary):
         if not gpg:
             logging.getLogger(__name__).warning("gpg unavailable; iron-proxy archive checksum remains enforced")
             return
-        with tempfile.TemporaryDirectory(prefix="hermes-iron-signature-") as home:
+        with tempfile.TemporaryDirectory(prefix="rabbit-iron-signature-") as home:
             args = [gpg, "--homedir", home, "--batch", "--no-tty"]
             signature = directory / "checksums.txt.asc"
             key = directory / "public-key.asc"

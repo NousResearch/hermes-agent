@@ -15,9 +15,9 @@ import io
 import time
 import types
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import entry, server
-from hermes_cli import model_switch_providers
+from rabbit_cli import model_switch_providers
 
 
 IDLE_S = 6 * 3600

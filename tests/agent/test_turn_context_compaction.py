@@ -30,7 +30,7 @@ def test_codex_native_auto_compaction_gate():
         SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="OFF")
     )
     assert not _codex_native_auto_compaction(
-        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="hermes")
+        SimpleNamespace(api_mode="codex_app_server", codex_app_server_auto_compaction="rabbit")
     )
     assert not _codex_native_auto_compaction(SimpleNamespace(api_mode="chat_completions"))
 

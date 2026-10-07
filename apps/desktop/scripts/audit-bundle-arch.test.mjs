@@ -92,7 +92,7 @@ test('findUnpackedDirs matches electron-builder output shapes only', () => {
   const dirs = findUnpackedDirs([
     'win-unpacked', 'win-arm64-unpacked', 'linux-unpacked', 'linux-arm64-unpacked',
     'mac', 'mac-arm64',
-    'builder-debug.yml', 'Hermes-0.20.0.exe', 'latest.yml', '.icon-ico'
+    'builder-debug.yml', 'Rabbit-0.20.0.exe', 'latest.yml', '.icon-ico'
   ])
   assert.deepEqual(dirs, [
     'win-unpacked', 'win-arm64-unpacked', 'linux-unpacked', 'linux-arm64-unpacked',
@@ -130,7 +130,7 @@ test.each([
   ['resources/agent-payload/uv-cache/builds-v0/whatever/build.exe', true],
   ['resources/agent-payload/tools/something-1.0-win32-arm64/bin/thing.exe', false],
   ['resources/agent-payload/tools/uv-cache-1.0/tool.exe', false],
-  ['resources/agent-payload/hermes-agent/something.exe', false],
+  ['resources/agent-payload/rabbit-agent/something.exe', false],
 ])('foreign architecture exemption %s → %s', (file, exempt) => {
   assert.equal(isExemptPath(file), exempt)
 })

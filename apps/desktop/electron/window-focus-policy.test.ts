@@ -4,7 +4,7 @@
  * `focusWindow()` runs for every ambient window raise (tray restore,
  * notification click, second-instance, dock/taskbar activate). On Windows,
  * `show()` + unconditional `focus()` seizes the OS foreground and dismisses
- * other apps' native dialogs while Hermes streams in the background. The
+ * other apps' native dialogs while Rabbit streams in the background. The
  * main-process call sites now follow the policy in window-focus-policy.ts;
  * these tests pin it.
  */

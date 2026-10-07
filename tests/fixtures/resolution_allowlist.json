@@ -101,7 +101,7 @@
   },
   {
     "path": "gateway/run.py",
-    "symbol": "_resolve_hermes_bin",
+    "symbol": "_resolve_rabbit_bin",
     "kind": "bare_which"
   },
   {
@@ -120,307 +120,307 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/_subprocess_compat.py",
+    "path": "rabbit_cli/_subprocess_compat.py",
     "symbol": "resolve_node_command",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/auth.py",
+    "path": "rabbit_cli/auth.py",
     "symbol": "_external_process_spec",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/boot_bootstrap.py",
+    "path": "rabbit_cli/boot_bootstrap.py",
     "symbol": "_git_binary",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/cli_session_mixin.py",
+    "path": "rabbit_cli/cli_session_mixin.py",
     "symbol": "CLISessionMixin._clear_terminal_on_exit",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/commands_completion.py",
+    "path": "rabbit_cli/commands_completion.py",
     "symbol": "SlashCommandCompleter._get_project_files",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/config.py",
+    "path": "rabbit_cli/config.py",
     "symbol": "edit_config",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/doctor_platform.py",
+    "path": "rabbit_cli/doctor_platform.py",
     "symbol": "_check_command_installation",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/doctor_platform.py",
+    "path": "rabbit_cli/doctor_platform.py",
     "symbol": "_macos_desktop_dr",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/doctor_tools.py",
+    "path": "rabbit_cli/doctor_tools.py",
     "symbol": "_safe_which",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_build_wsl_interop_paths",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_ensure_linger_enabled",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_get_parent_pid",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_preflight_user_systemd",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_windows_process_listing",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "_windows_scheduled_task_state",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "get_systemd_linger_status",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway.py",
+    "path": "rabbit_cli/gateway.py",
     "symbol": "supports_systemd_services",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_setup_wizard.py",
+    "path": "rabbit_cli/gateway_setup_wizard.py",
     "symbol": "_setup_signal",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_windows.py",
+    "path": "rabbit_cli/gateway_windows.py",
     "symbol": "_exec_schtasks",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/git_credentials.py",
+    "path": "rabbit_cli/git_credentials.py",
     "symbol": "_credential_fill",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/git_credentials.py",
+    "path": "rabbit_cli/git_credentials.py",
     "symbol": "_gh_cli_token",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/kanban_db_dispatch.py",
-    "symbol": "_resolve_hermes_argv",
+    "path": "rabbit_cli/kanban_db_dispatch.py",
+    "symbol": "_resolve_rabbit_argv",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/linux_desktop_entry.py",
+    "path": "rabbit_cli/linux_desktop_entry.py",
     "symbol": "_refresh_hicolor_cache",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/linux_desktop_entry.py",
+    "path": "rabbit_cli/linux_desktop_entry.py",
     "symbol": "refresh_desktop_databases",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/local_runtime/hardware.py",
+    "path": "rabbit_cli/local_runtime/hardware.py",
     "symbol": "_nvidia_smi_path",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/macos_signing.py",
+    "path": "rabbit_cli/macos_signing.py",
     "symbol": "sign_managed_python",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main.py",
+    "path": "rabbit_cli/main.py",
     "symbol": "_exec_in_container",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_linux_sandbox_fixup",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_linux_userns_sandbox_available",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_macos_has_valid_real_signature",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_macos_local_codesign",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_macos_relaunchable_fixup",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_desktop_macos_setup_tcc_identity",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "_install_rebuilt_macos_bundles",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_desktop.py",
+    "path": "rabbit_cli/main_desktop.py",
     "symbol": "cmd_gui",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_tui_launch.py",
+    "path": "rabbit_cli/main_tui_launch.py",
     "symbol": "_apply_tui_python_env",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_tui_launch.py",
+    "path": "rabbit_cli/main_tui_launch.py",
     "symbol": "_make_tui_argv",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_tui_launch.py",
+    "path": "rabbit_cli/main_tui_launch.py",
     "symbol": "_restore_tui_workspace",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_tui_launch.py",
+    "path": "rabbit_cli/main_tui_launch.py",
     "symbol": "_tui_node_bin",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/mcp_app_detection.py",
+    "path": "rabbit_cli/mcp_app_detection.py",
     "symbol": "_Scan.path_candidates",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/mcp_catalog.py",
+    "path": "rabbit_cli/mcp_catalog.py",
     "symbol": "_do_git_install",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/plugins_cmd.py",
+    "path": "rabbit_cli/plugins_cmd.py",
     "symbol": "_resolve_git_executable",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/profiles.py",
+    "path": "rabbit_cli/profiles.py",
     "symbol": "create_wrapper_script",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/relaunch.py",
-    "symbol": "resolve_hermes_bin",
+    "path": "rabbit_cli/relaunch.py",
+    "symbol": "resolve_rabbit_bin",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/session_lost_and_found.py",
+    "path": "rabbit_cli/session_lost_and_found.py",
     "symbol": "find_sqlite3_cli",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/setup_terminal.py",
+    "path": "rabbit_cli/setup_terminal.py",
     "symbol": "_setup_backend_singularity",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/setup_tts.py",
+    "path": "rabbit_cli/setup_tts.py",
     "symbol": "_install_neutts_deps",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/source_build.py",
+    "path": "rabbit_cli/source_build.py",
     "symbol": "build_update_products",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/source_build.py",
+    "path": "rabbit_cli/source_build.py",
     "symbol": "run_source_script",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/stdio.py",
+    "path": "rabbit_cli/stdio.py",
     "symbol": "_default_windows_editor",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/tools_config_cua.py",
+    "path": "rabbit_cli/tools_config_cua.py",
     "symbol": "_repair_cua_driver_autostart_windows",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/tools_config_post_setup.py",
+    "path": "rabbit_cli/tools_config_post_setup.py",
     "symbol": "_post_setup_agent_browser",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/update_abort_recovery.py",
+    "path": "rabbit_cli/update_abort_recovery.py",
     "symbol": "_run_fresh_recovery_process",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/update_abort_recovery.py",
+    "path": "rabbit_cli/update_abort_recovery.py",
     "symbol": "_serve_unit_recovery_available",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/update_restart_recovery.py",
+    "path": "rabbit_cli/update_restart_recovery.py",
     "symbol": "_systemctl_scopes",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/update_restart_recovery.py",
+    "path": "rabbit_cli/update_restart_recovery.py",
     "symbol": "_systemd_verified_active",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_git.py",
+    "path": "rabbit_cli/web_git.py",
     "symbol": "_gh",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_routers/audio.py",
+    "path": "rabbit_cli/web_routers/audio.py",
     "symbol": "_ffmpeg_s16le_mono",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_routers/git.py",
+    "path": "rabbit_cli/web_routers/git.py",
     "symbol": "_probe_gh_auth",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_routers/tools.py",
+    "path": "rabbit_cli/web_routers/tools.py",
     "symbol": "_probe_singularity_backend",
     "kind": "bare_which"
   },
   {
-    "path": "hermes_constants.py",
+    "path": "rabbit_constants.py",
     "symbol": "find_node_executable",
     "kind": "bare_which"
   },
@@ -456,7 +456,7 @@
   },
   {
     "path": "tools/bot_relay.py",
-    "symbol": "_hermes_cli",
+    "symbol": "_rabbit_cli",
     "kind": "bare_which"
   },
   {
@@ -521,7 +521,7 @@
   },
   {
     "path": "tools/environments/local.py",
-    "symbol": "_resolve_hermes_bin_dir",
+    "symbol": "_resolve_rabbit_bin_dir",
     "kind": "bare_which"
   },
   {

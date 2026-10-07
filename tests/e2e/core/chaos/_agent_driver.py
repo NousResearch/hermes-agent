@@ -2,7 +2,7 @@
 
 Run as ``python -m tests.e2e.core.chaos._agent_driver <spec.json>`` with a hermetic
 env (see ``_helpers.hermetic_env``). The agent is built the way the CLI builds it:
-config.yaml under HERMES_HOME supplies the provider, retry and timeout knobs, and
+config.yaml under RABBIT_HOME supplies the provider, retry and timeout knobs, and
 ``agent.max_turns`` becomes the iteration budget. Each turn feeds the previous
 turn's messages back as ``conversation_history`` (the CLI's multi-turn contract).
 
@@ -31,8 +31,8 @@ def _emit(**payload: object) -> None:
 def main(spec_path: str) -> None:
     spec = json.loads(open(spec_path, encoding="utf-8").read())
 
-    from hermes_cli.config import load_config
-    from hermes_state import SessionDB
+    from rabbit_cli.config import load_config
+    from rabbit_state import SessionDB
     from run_agent import AIAgent
 
     cfg = load_config()

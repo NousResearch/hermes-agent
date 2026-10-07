@@ -10,7 +10,7 @@ import {
   getLatestSessionMessages,
   getSession,
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
-} from '@/hermes'
+} from '@/rabbit'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
@@ -32,7 +32,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/rabbit'
 
 import { refreshCronRunWriteGate } from '../../cron/open-cron-run'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'

@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { renderSync } from '@hermes/ink'
+import { renderSync } from '@rabbit/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
@@ -12,10 +12,10 @@ import type { McpServerStatus, SessionInfo } from '../types.js'
 // Invariant under test: the TUI banner's MCP headline counts *connected*
 // servers, never configured-but-disabled ones. This mirrors the classic CLI
 // banner (`mcp_connected = sum(1 for s in mcp_status if s["connected"])` in
-// hermes_cli/banner.py) and the "connected" label on the MCP collapse toggle.
+// rabbit_cli/banner.py) and the "connected" label on the MCP collapse toggle.
 //
 // Regression: branding.tsx used the raw `info.mcp_servers.length`, so a
-// disabled `linear` server alongside a connected `nous-support` server made
+// disabled `linear` server alongside a connected `support` server made
 // the TUI report "2 MCP" while the classic CLI correctly reported "1 MCP".
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -77,7 +77,7 @@ describe('branding MCP headline count', () => {
   it('counts only connected servers, not configured-but-disabled ones', async () => {
     const frame = await renderFooter(
       baseInfo([
-        mcp({ connected: true, name: 'nous-support', status: 'connected', tools: 6 }),
+        mcp({ connected: true, name: 'support', status: 'connected', tools: 6 }),
         mcp({ connected: false, disabled: true, name: 'linear', status: 'disabled' })
       ])
     )

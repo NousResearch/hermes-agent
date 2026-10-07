@@ -19,13 +19,13 @@ beforeEach(() => {
   bridge.mockImplementation(() => BRIDGED)
 })
 
-// Regression for hermes-agent 123823: the media protocol handler decodes the
+// Regression for rabbit-agent 123823: the media protocol handler decodes the
 // request pathname itself (parseMediaProtocolTarget in media-protocol.ts), so
 // the resolveLocalFile boundary must NOT decode or strip leading slashes again.
 // The pre-fix wiring ran decodeURIComponent + strip on the already-decoded
 // path, turning `/home/...` into a cwd-relative `home/...` that ENOENTs into
 // the handler's silent 404, and threw URIError on filenames with a literal `%`.
-test('resolveMediaStreamFile (hermes-media:// resolveLocalFile) bridges the already-decoded path unchanged', () => {
+test('resolveMediaStreamFile (rabbit-media:// resolveLocalFile) bridges the already-decoded path unchanged', () => {
   const result = resolveMediaStreamFile('/home/alex/My Clips/clip.mp4')
 
   assert.equal(bridge.mock.calls.length, 1)
@@ -34,10 +34,10 @@ test('resolveMediaStreamFile (hermes-media:// resolveLocalFile) bridges the alre
 })
 
 test('resolveMediaStreamFile preserves a leading slash so absolute POSIX paths stay absolute', () => {
-  // What the protocol handler hands over for hermes-media://stream/%2Fhome%2F...:
+  // What the protocol handler hands over for rabbit-media://stream/%2Fhome%2F...:
   // already decoded, still absolute. Stripping the leading slash here is the
   // 123823 regression (cwd-relative ENOENT -> silent 404 on Linux/macOS).
-  const url = new URL(`hermes-media://stream/${encodeURIComponent('/home/alex/clip.mp4')}`)
+  const url = new URL(`rabbit-media://stream/${encodeURIComponent('/home/alex/clip.mp4')}`)
   const filePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
 
   resolveMediaStreamFile(filePath)
@@ -63,7 +63,7 @@ test('resolveMediaStreamFile tolerates nullish input', () => {
   assert.equal(result, BRIDGED)
 })
 
-test('resolveIpcFileReadPath (hermes:readFileDataUrl / hermes:readFileText) bridges the supplied path', () => {
+test('resolveIpcFileReadPath (rabbit:readFileDataUrl / rabbit:readFileText) bridges the supplied path', () => {
   const result = resolveIpcFileReadPath('/home/alex/notes.txt')
 
   assert.equal(bridge.mock.calls.length, 1)

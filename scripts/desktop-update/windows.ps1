@@ -2,14 +2,14 @@
 #
 # WHY THIS EXISTS (the frozen-binary problem): the Desktop's Update button
 # used to hand off exclusively to the staged Tauri binary
-# (%HERMES_HOME%\hermes-setup.exe). That binary has no self-update path --
-# copy_self_to_hermes_home deliberately no-ops during --update -- so every
+# (%RABBIT_HOME%\rabbit-setup.exe). That binary has no self-update path --
+# copy_self_to_rabbit_home deliberately no-ops during --update -- so every
 # updater-side fix (cache refresh #67369, marker self-adopt #74782, straggler
 # handling) only reaches users when a new installer is built, signed, and
 # published. In practice binaries go months stale and users hit long-fixed
 # bugs on every update (the 2026-08-09 incident chain).
 #
-# This script lives in the repo checkout, so EVERY `hermes update` refreshes
+# This script lives in the repo checkout, so EVERY `rabbit update` refreshes
 # the very code that drives the next update. The Desktop spawns it through a
 # `cmd start` wrapper (see wrapHandoffForDetachedConsole in
 # apps/desktop/electron/updater-process.ts -- a bare detached+hidden
@@ -19,25 +19,25 @@
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
 #   cmd /d /s /c start "" /b powershell -NoProfile -ExecutionPolicy Bypass
 #     -File scripts\desktop-update\windows.ps1
-#     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
+#     -InstallRoot <path>   repo checkout (RABBIT_HOME\rabbit-agent)
 #     [-Branch <ref> | -Channel stable|canary|main]  default: branch main
 #     -DesktopPid <pid>     the Electron main process to wait out
-#     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
+#     [-RelaunchExe <path>] Rabbit.exe to start when done (omit = no relaunch)
 #     [-NoUi]               headless (tests); default shows a progress window
-#     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+#     [-NoMarkerCleanup]    leave .rabbit-update-in-progress in place (tests)
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
 # mutating the install -- a skipped update is recoverable, a half-updated
 # venv is not. Every exit path (success, abort, crash) writes
-# .hermes-update-result.json for the relaunched Desktop to surface, and
+# .rabbit-update-result.json for the relaunched Desktop to surface, and
 # relaunches the Desktop so the user is never left stranded.
 #
-# Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
+# Marker: we claim RABBIT_HOME\.rabbit-update-in-progress with OUR pid as
 # step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
-# hermes_cli/update_lock.py's ancestry rule lets our
-# `hermes update` child adopt the claim; electron/update-marker.ts parks a
+# immediately), retaining RABBIT_UPDATE_STARTED_AT from the Desktop hand-off.
+# rabbit_cli/update_lock.py's ancestry rule lets our
+# `rabbit update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
 
@@ -74,9 +74,9 @@ $ErrorActionPreference = "Continue"
 # unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
-# pass our foreground right on to the new Hermes.exe pid.
+# pass our foreground right on to the new Rabbit.exe pid.
 try {
-    Add-Type -Namespace HermesHandoff -Name Win32 -MemberDefinition @'
+    Add-Type -Namespace RabbitHandoff -Name Win32 -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int dwProcessId);
 [DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
@@ -86,13 +86,13 @@ try {
 # Console selection must never hold the hand-off (#103222). The console is
 # hidden by design (wrapHandoffForDetachedConsole), but an older Desktop or a
 # manual run can leave it visible, and conhost blocks every write to it while a
-# selection is active: the child output replayed after `hermes update` exited
+# selection is active: the child output replayed after `rabbit update` exited
 # stalled on Write-Host until the user pressed Esc, and the result, marker
 # cleanup and relaunch waited behind it. QuickEdit goes off for the run (so a
 # stray click cannot start a selection) and the console echo is skipped while
 # one is active; the log file keeps every line either way.
 try {
-    Add-Type -Namespace HermesHandoff -Name ConsoleInput -MemberDefinition @'
+    Add-Type -Namespace RabbitHandoff -Name ConsoleInput -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)] public struct SelectionInfo { public uint Flags; public uint Anchor; public ulong Window; }
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr attributes, uint disposition, uint flags, IntPtr template);
@@ -128,20 +128,20 @@ try {
     $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {}
 $TempDir = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
-$HermesHome = if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
-$env:HERMES_HOME = $HermesHome
-$MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
-$LogDir = Join-Path $HermesHome "logs"
+$RabbitHome = if ($env:RABBIT_HOME) { $env:RABBIT_HOME } elseif ($InstallRoot) { Split-Path -Parent $InstallRoot } else { $TempDir }
+$env:RABBIT_HOME = $RabbitHome
+$MarkerPath = Join-Path $RabbitHome ".rabbit-update-in-progress"
+$LogDir = Join-Path $RabbitHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
-$ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+$ResultPath = Join-Path $RabbitHome ".rabbit-update-result.json"
 $script:Ui = $null
-$script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
+$script:UiStage = "Rabbit will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
-    if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
+    if ($script:ConsoleInput -and [RabbitHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
 }
 
@@ -328,15 +328,15 @@ function Stop-UiServer([switch]$LeaveWindow) {
         } catch {}
     }
     # Best-effort removal of the dedicated browser profile dirs: this run's
-    # profile plus any stale hermes-update-ui-* leftovers from interrupted
+    # profile plus any stale rabbit-update-ui-* leftovers from interrupted
     # past runs. A browser that is still shutting down may hold the lock, in
     # which case the delete silently no-ops. Safe to sweep by prefix: the
-    # update marker (.hermes-update-in-progress) serialises hand-offs, so no
+    # update marker (.rabbit-update-in-progress) serialises hand-offs, so no
     # other run's profile can be in active use here.
     try {
         $profileDirs = @()
         if ($script:UiServer.Profile) { $profileDirs += $script:UiServer.Profile }
-        Get-ChildItem -LiteralPath $TempDir -Directory -Filter "hermes-update-ui-*" -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $TempDir -Directory -Filter "rabbit-update-ui-*" -ErrorAction SilentlyContinue |
             ForEach-Object { $profileDirs += $_.FullName }
         foreach ($dir in ($profileDirs | Select-Object -Unique)) {
             Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
@@ -381,7 +381,7 @@ function Get-UiProgressLine {
 
 function Publish-UiProgress([string]$Message) {
     # Stages come from the orchestrator's own control flow. Child stdout and
-    # stderr remain asynchronously drained in Invoke-HermesStep and are never
+    # stderr remain asynchronously drained in Invoke-RabbitStep and are never
     # read or parsed for UI updates.
     $script:UiStage = $Message
     $script:UiState.message = $Message
@@ -422,7 +422,7 @@ function Show-ProgressWindow {
                 # we own (a default-profile launch delegates to an existing
                 # browser and returns instantly, leaving nothing to close), and
                 # avoids touching the user's real browser profile.
-                $browserProfile = Join-Path $TempDir ("hermes-update-ui-{0}" -f $PID)
+                $browserProfile = Join-Path $TempDir ("rabbit-update-ui-{0}" -f $PID)
                 $browserArgs = @(
                     "--app=http://127.0.0.1:$($server.Port)/",
                     "--user-data-dir=$browserProfile",
@@ -458,7 +458,7 @@ function Show-ProgressWindow {
             $mute = [System.Drawing.ColorTranslator]::FromHtml("#A8A8A8")
         }
         $form = New-Object System.Windows.Forms.Form
-        $form.Text = "Hermes"
+        $form.Text = "Rabbit"
         $form.FormBorderStyle = "FixedSingle"
         $form.MaximizeBox = $false
         $form.MinimizeBox = $false
@@ -472,7 +472,7 @@ function Show-ProgressWindow {
         $bar.MarqueeAnimationSpeed = 30
         $bar.SetBounds(60, 128, 160, 8)
         $title = New-Object System.Windows.Forms.Label
-        $title.Text = "Updating Hermes"
+        $title.Text = "Updating Rabbit"
         $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
         $title.ForeColor = $fore
         $title.TextAlign = "MiddleCenter"
@@ -493,7 +493,7 @@ function Show-ProgressWindow {
         # window is decoration and competes with nothing (no TopMost).
         try {
             $form.Activate()
-            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
+            if ($script:Win32) { [RabbitHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
         $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub; Timer = $null }
@@ -514,7 +514,7 @@ function Show-ProgressWindow {
 
 function Show-ErrorFinale([string]$Message) {
     # Terse by design: a title + the debug-share pointer. No error text, no
-    # log tail -- `hermes debug share` uploads the real evidence and the
+    # log tail -- `rabbit debug share` uploads the real evidence and the
     # relaunched Desktop surfaces the result message.
     if ($script:UiServer) {
         # The shim renders the error state itself; leave the window up for
@@ -530,7 +530,7 @@ function Show-ErrorFinale([string]$Message) {
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
         $ui.Title.Text = "Failed to update"
-        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $ui.Sub.Text = "Run `"rabbit debug share`" in a terminal to send a report."
         $close = New-Object System.Windows.Forms.Button
         $close.Text = "Close"
         $close.SetBounds(100, 252, 80, 28)
@@ -542,7 +542,7 @@ function Show-ErrorFinale([string]$Message) {
         $ui.Form.AcceptButton = $close
         try {
             $ui.Form.Activate()
-            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
+            if ($script:Win32) { [RabbitHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
         } catch {}
         # Hold for dismissal so the failure is actually seen, but never park
         # forever -- the marker is already cleaned up and the relaunched
@@ -560,7 +560,7 @@ function Show-ManualFinale([string]$Message) {
     # shape as the error finale, success glyph semantics: the shim renders
     # `manual` itself; the WinForms card swaps its copy. Held so the user
     # actually sees the instruction — this window is the only surface until
-    # they reopen Hermes themselves.
+    # they reopen Rabbit themselves.
     if ($script:UiServer) {
         Publish-UiEvent "manual" $Message
         Stop-UiServer -LeaveWindow
@@ -584,7 +584,7 @@ function Show-ManualFinale([string]$Message) {
         $ui.Form.AcceptButton = $close
         try {
             $ui.Form.Activate()
-            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
+            if ($script:Win32) { [RabbitHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
         } catch {}
         $deadline = (Get-Date).AddMinutes(5)
         while (-not $script:ErrorDismissed -and (Get-Date) -lt $deadline -and $ui.Form.Visible) {
@@ -654,7 +654,7 @@ function Start-DesktopRelaunch {
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
     # electron-builder replaces win-unpacked in place. After a successful
-    # update it can remove the old Hermes.exe before writing the replacement,
+    # update it can remove the old Rabbit.exe before writing the replacement,
     # so a one-shot existence check races the rebuild and strands the user.
     $relaunchDeadline = (Get-Date).AddSeconds(120)
     while (-not (Test-Path -LiteralPath $RelaunchExe)) {
@@ -666,7 +666,7 @@ function Start-DesktopRelaunch {
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
     }
     Write-HandoffLog "relaunching desktop: $RelaunchExe"
-    # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
+    # DO NOT spawn Rabbit.exe as our child: Electron/Chromium calls
     # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
     # directly from this console PowerShell latches onto OUR console --
     # the console window then outlives the script (it can't close while
@@ -692,7 +692,7 @@ function Start-DesktopRelaunch {
             # takes a couple seconds to create it.
             try {
                 if ($script:Win32) {
-                    [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
+                    [RabbitHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
                     $deadline = (Get-Date).AddSeconds(20)
                     while ((Get-Date) -lt $deadline) {
                         $hwnd = [System.IntPtr]::Zero
@@ -707,8 +707,8 @@ function Start-DesktopRelaunch {
                             break
                         }
                         if ($hwnd -ne [System.IntPtr]::Zero) {
-                            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                            [RabbitHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                            [RabbitHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
                             Write-HandoffLog "focused relaunched desktop window"
                             break
                         }
@@ -732,7 +732,7 @@ function Start-DesktopRelaunch {
         # window can't close while the app lives. Explorer re-parents the
         # target exactly like a normal shell launch, giving the same
         # no-console detachment WMI would have. Explorer returns no pid, so
-        # verify by watching for a fresh Hermes process.
+        # verify by watching for a fresh Rabbit process.
         try {
             $exeName = [System.IO.Path]::GetFileNameWithoutExtension($RelaunchExe)
             $before = @(Get-Process -Name $exeName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
@@ -748,14 +748,14 @@ function Start-DesktopRelaunch {
                     # (us) can delegate that right.
                     try {
                         if ($script:Win32) {
-                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
+                            [RabbitHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
                             $focusDeadline = (Get-Date).AddSeconds(20)
                             while ((Get-Date) -lt $focusDeadline) {
                                 $hwnd = [System.IntPtr]::Zero
                                 try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
                                 if ($hwnd -ne [System.IntPtr]::Zero) {
-                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                                    [RabbitHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                                    [RabbitHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
                                     Write-HandoffLog "focused relaunched desktop window"
                                     break
                                 }
@@ -801,8 +801,8 @@ function Start-DesktopRelaunch {
 # write end of a redirected pipe to the child as an INHERITABLE handle, so
 # every descendant that is spawned without its own redirection gets a
 # duplicate -- and the read side does not see EOF until the last of them
-# closes it. `hermes update` deliberately runs its build steps with stdout
-# inherited (hermes_cli/main.py, the tee-stderr runner), so the tree under a
+# closes it. `rabbit update` deliberately runs its build steps with stdout
+# inherited (rabbit_cli/main.py, the tee-stderr runner), so the tree under a
 # step is arbitrarily deep and not something this script can enumerate. When
 # one of those descendants is a resident gateway, the pipe stays open for the
 # life of the gateway, i.e. forever.
@@ -810,9 +810,9 @@ function Start-DesktopRelaunch {
 # Overridable so the pipe-drain self-test does not have to sit out the real
 # grace; not documented as a user knob.
 $script:StepDrainGraceSeconds = 20
-if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
+if ($env:RABBIT_UPDATE_PIPE_DRAIN_SECONDS) {
     $parsedGrace = 0
-    if ([int]::TryParse($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS, [ref]$parsedGrace) -and $parsedGrace -ge 0) {
+    if ([int]::TryParse($env:RABBIT_UPDATE_PIPE_DRAIN_SECONDS, [ref]$parsedGrace) -and $parsedGrace -ge 0) {
         $script:StepDrainGraceSeconds = $parsedGrace
     }
 }
@@ -824,16 +824,16 @@ if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
 # every step is assigned to a private, non-breakaway Windows job and a timed-out
 # step is retryable only after that job reports zero active processes.
 $script:StepIdleTimeoutSeconds = 600
-if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
+if ($env:RABBIT_UPDATE_STEP_IDLE_SECONDS) {
     $parsedIdle = 0
-    if ([int]::TryParse($env:HERMES_UPDATE_STEP_IDLE_SECONDS, [ref]$parsedIdle) -and $parsedIdle -gt 0) {
+    if ([int]::TryParse($env:RABBIT_UPDATE_STEP_IDLE_SECONDS, [ref]$parsedIdle) -and $parsedIdle -gt 0) {
         $script:StepIdleTimeoutSeconds = $parsedIdle
     }
 }
 
-# Silence on the pipes is NOT silence in the update. `hermes update` captures
+# Silence on the pipes is NOT silence in the update. `rabbit update` captures
 # the (very loud) Electron/vite build into logs/update.log instead of its own
-# stdout (hermes_cli/update_cmd.py, the update-log tee), so a real update is
+# stdout (rabbit_cli/update_cmd.py, the update-log tee), so a real update is
 # routinely stdout-silent for 40+ minutes while demonstrably progressing. An
 # idle ceiling that watched only stdout/stderr would cancel every healthy
 # large update at StepIdleTimeoutSeconds. The drain therefore also counts
@@ -841,8 +841,8 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
 # Overridable so the pipe-drain self-test can point it at its own file; not
 # documented as a user knob.
 $script:StepProgressLogPath = Join-Path $LogDir "update.log"
-if ($env:HERMES_UPDATE_PROGRESS_LOG) {
-    $script:StepProgressLogPath = $env:HERMES_UPDATE_PROGRESS_LOG
+if ($env:RABBIT_UPDATE_PROGRESS_LOG) {
+    $script:StepProgressLogPath = $env:RABBIT_UPDATE_PROGRESS_LOG
 }
 
 function Get-StepProgressLogStamp {
@@ -858,7 +858,7 @@ function Get-StepProgressLogStamp {
     }
 }
 
-if (-not ("HermesUpdateJob" -as [type])) {
+if (-not ("RabbitUpdateJob" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
@@ -868,7 +868,7 @@ using System.Text;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
-public static class HermesUpdateJob {
+public static class RabbitUpdateJob {
     public sealed class StartedProcess {
         public Process Process;
         public StreamReader StandardOutput;
@@ -1092,33 +1092,33 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     return $false
 }
 
-function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+function Invoke-RabbitStep([string]$Exe, [string[]]$RabbitArgs, [string]$Tag) {
     # The window does not stream child output, so no line-pump: both pipes
     # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
     # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
     # children and froze it. Full output still lands in the hand-off log
-    # afterwards, where `hermes debug share` picks it up.
+    # afterwards, where `rabbit debug share` picks it up.
     #
     # The drain is bounded once the step exits (#90455). Waiting for pipe EOF
     # is waiting on the step's whole surviving descendant tree, and this
     # function sits upstream of every terminal obligation the hand-off has --
-    # .hermes-update-result.json, clearing .hermes-update-in-progress,
+    # .rabbit-update-result.json, clearing .rabbit-update-in-progress,
     # relaunching the Desktop. One resident grandchild holding an inherited
     # handle used to strand all three and leave the Desktop on "Updating
-    # Hermes" until the user killed something by hand. Losing the tail of a
+    # Rabbit" until the user killed something by hand. Losing the tail of a
     # log is the strictly better failure.
     # System.Diagnostics.Process directly: Start-Process's .ExitCode is
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     # CREATE_SUSPENDED closes the startup race: no updater instruction can run
     # before the process is assigned to its private job and resumed.
-    $arguments = ($HermesArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    $arguments = ($RabbitArgs | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
     # CreateProcess inherits this process's environment. Set Python's encoding
     # and buffering only for the atomic launch, then restore the hand-off host.
     # Historical user-bin publication could be a command file rather than a
     # native launcher. Keep the wrapper inside the same supervised job.
     if ([IO.Path]::GetExtension($Exe) -eq '.cmd') {
-        if ($Exe -match '[%!"\x0D\x0A]' -or @($HermesArgs | Where-Object { $_ -match '[%!"\x0D\x0A]' }).Count) {
+        if ($Exe -match '[%!"\x0D\x0A]' -or @($RabbitArgs | Where-Object { $_ -match '[%!"\x0D\x0A]' }).Count) {
             throw 'The legacy command launcher cannot safely quote this update target; refresh the installation launcher first.'
         }
         $arguments = '/d /s /c ""' + $Exe + '" ' + $arguments + '"'
@@ -1131,7 +1131,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         $env:PYTHONIOENCODING = "utf-8"
         $env:PYTHONUTF8 = "1"
         $env:PYTHONUNBUFFERED = "1"
-        $started = [HermesUpdateJob]::StartAssigned($Exe, $arguments)
+        $started = [RabbitUpdateJob]::StartAssigned($Exe, $arguments)
     } finally {
         if ($null -eq $savedPythonIoEncoding) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $savedPythonIoEncoding }
         if ($null -eq $savedPythonUtf8) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $savedPythonUtf8 }
@@ -1174,7 +1174,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 break
             }
         } elseif (-not $stalled -and $job -ne [IntPtr]::Zero -and ((Get-Date) - $lastProgressAt).TotalSeconds -ge $script:StepIdleTimeoutSeconds) {
-            # Quiet pipes are how a healthy `hermes update` looks for 40+
+            # Quiet pipes are how a healthy `rabbit update` looks for 40+
             # minutes: its build output streams to logs/update.log, not the
             # child's stdout. Growth of that file is progress -- reset the
             # clock instead of cancelling. Stat'd only once the ceiling is
@@ -1192,11 +1192,11 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
                 # venv, or release tree can overlap two installers and
                 # corrupt the install.
                 Write-HandoffLog ("{0}!| step stalled: no stdout/stderr for {1}s and no update.log growth while pid {2} remained alive; cancelling its process tree." -f $Tag, $script:StepIdleTimeoutSeconds, $proc.Id)
-                $stalled = [HermesUpdateJob]::TerminateAndWait($job, 124, 10000)
+                $stalled = [RabbitUpdateJob]::TerminateAndWait($job, 124, 10000)
                 if (-not $stalled) {
                     Write-HandoffLog ("{0}!| process-tree cancellation could not prove quiescence; refusing the timeout retry." -f $Tag)
                     $script:TreeSafeToFinalize = $false
-                    [HermesUpdateJob]::Close($job)
+                    [RabbitUpdateJob]::Close($job)
                     throw "Unable to quiesce stalled update process tree"
                 }
             }
@@ -1245,14 +1245,14 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $all = $outText
     if ($errText) { $all += "`n" + $errText }
     $code = if ($stalled) { 124 } else { $proc.ExitCode }
-    [HermesUpdateJob]::Close($job)
+    [RabbitUpdateJob]::Close($job)
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
-# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# `rabbit update` can COMPLETE (its output carries "✓ Update complete!") and
 # still be killed with the idle-watchdog sentinel 124: the post-update phase
 # (gateway restart hand-off) stayed alive and silent past the ceiling, so
-# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# Invoke-RabbitStep terminated the tree (#96205). The install is done; failing
 # would keep the old Desktop and a legacy install would re-run the whole update.
 # Surface success so the hand-off verifies, restores the gateways and relaunches.
 # Only 124 is remapped, and never when anything after the banner reports a
@@ -1260,7 +1260,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
 # incomplete — …", "✗ <unit> failed to come back after restart" or
 # "verification incomplete" there. \u2717 (✗) stays an escape: Windows
 # PowerShell reads this BOM-less script as ANSI, never as UTF-8.
-function Resolve-HermesUpdateOutcome($StepResult) {
+function Resolve-RabbitUpdateOutcome($StepResult) {
     $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
     if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
         Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
@@ -1285,8 +1285,8 @@ $script:TreeSafeToFinalize = $true
 # Manual QA for the Edge shell without a checkout or a real update. Exits
 # before the marker/desktop/venv machinery — touches nothing. Off Windows
 # (or without Edge) the loopback server still starts and the URL prints, so
-# the page can be QA'd in any browser; HERMES_SELFTEST_FAIL=1 exercises the
-# error state, HERMES_SELFTEST_HOLD_SECONDS delays the terminal event.
+# the page can be QA'd in any browser; RABBIT_SELFTEST_FAIL=1 exercises the
+# error state, RABBIT_SELFTEST_HOLD_SECONDS delays the terminal event.
 if ($SelfTestUi) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Show-ProgressWindow
@@ -1301,10 +1301,10 @@ if ($SelfTestUi) {
     }
     Write-HandoffLog "SELF-TEST: shim simulation (no update will run)"
     $hold = 6
-    if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
+    if ($env:RABBIT_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:RABBIT_SELFTEST_HOLD_SECONDS }
     Publish-UiProgress "Testing quiet update"
     Start-Sleep -Seconds $hold
-    if ($env:HERMES_SELFTEST_FAIL) {
+    if ($env:RABBIT_SELFTEST_FAIL) {
         Show-ErrorFinale "self-test error state"
     } else {
         Close-ProgressWindow
@@ -1312,8 +1312,8 @@ if ($SelfTestUi) {
     exit 0
 }
 
-# -SelfTestPipeDrain: prove Invoke-HermesStep survives a leaked pipe ------
-# The #90455 deadlock needs no update, no checkout and no Hermes install to
+# -SelfTestPipeDrain: prove Invoke-RabbitStep survives a leaked pipe ------
+# The #90455 deadlock needs no update, no checkout and no Rabbit install to
 # reproduce -- only a step whose grandchild outlives it holding the inherited
 # write end of the redirected pipe. That is exactly what this builds, so the
 # fix has an executable proof on Windows instead of a source-grep. Exits
@@ -1332,27 +1332,27 @@ if ($SelfTestUi) {
 #            output. Guards #95589: the hand-off must terminate it and reach its
 #            retry/finally recovery rather than strand the Desktop.
 #   logstall -- a step that is silent on its pipes but keeps growing the
-#            update log, the shape of every real `hermes update` build (output
+#            update log, the shape of every real `rabbit update` build (output
 #            goes to logs/update.log, not stdout, for 40+ minutes). Guards the
 #            watchdog's other cliff: the idle ceiling must count update.log
 #            growth as progress and must NOT kill the healthy step.
 if ($SelfTestPipeDrain) {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     $hold = 60
-    if ($env:HERMES_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:HERMES_SELFTEST_HOLD_SECONDS }
+    if ($env:RABBIT_SELFTEST_HOLD_SECONDS) { $hold = [int]$env:RABBIT_SELFTEST_HOLD_SECONDS }
     $floodKb = 8192
-    if ($env:HERMES_SELFTEST_FLOOD_KB) { $floodKb = [int]$env:HERMES_SELFTEST_FLOOD_KB }
+    if ($env:RABBIT_SELFTEST_FLOOD_KB) { $floodKb = [int]$env:RABBIT_SELFTEST_FLOOD_KB }
     # $PSHOME is this interpreter's own directory -- no hardcoded system path.
     $powershell = Join-Path $PSHOME "powershell.exe"
     $stamp = [Guid]::NewGuid().ToString("N")
-    $childPs1 = Join-Path $TempDir "hermes-pipe-drain-$stamp.ps1"
-    $floodPs1 = Join-Path $TempDir "hermes-pipe-flood-$stamp.ps1"
-    $pidFile = Join-Path $TempDir "hermes-pipe-drain-$stamp.pid"
-    $stallPs1 = Join-Path $TempDir "hermes-step-stall-$stamp.ps1"
-    $stallPidFile = Join-Path $TempDir "hermes-step-stall-$stamp.pid"
-    $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
-    $logStallPs1 = Join-Path $TempDir "hermes-step-logstall-$stamp.ps1"
-    $logStallProgress = Join-Path $TempDir "hermes-step-logstall-$stamp.update.log"
+    $childPs1 = Join-Path $TempDir "rabbit-pipe-drain-$stamp.ps1"
+    $floodPs1 = Join-Path $TempDir "rabbit-pipe-flood-$stamp.ps1"
+    $pidFile = Join-Path $TempDir "rabbit-pipe-drain-$stamp.pid"
+    $stallPs1 = Join-Path $TempDir "rabbit-step-stall-$stamp.ps1"
+    $stallPidFile = Join-Path $TempDir "rabbit-step-stall-$stamp.pid"
+    $stallGrandchildPidFile = Join-Path $TempDir "rabbit-step-stall-grandchild-$stamp.pid"
+    $logStallPs1 = Join-Path $TempDir "rabbit-step-logstall-$stamp.ps1"
+    $logStallProgress = Join-Path $TempDir "rabbit-step-logstall-$stamp.update.log"
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -1371,7 +1371,7 @@ Write-Output "pipe-drain step output"
 exit 7
 '@
     # Writes straight to the console stream, holding nothing: a step that is
-    # merely loud. `hermes update` is this shape -- the Electron/vite build
+    # merely loud. `rabbit update` is this shape -- the Electron/vite build
     # alone is megabytes. Few large lines rather than many small ones on
     # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
     # measured window, so line-heavy output would time the logger instead of
@@ -1416,7 +1416,7 @@ exit 3
     $savedIdle = $script:StepIdleTimeoutSeconds
     try {
         $script:StepIdleTimeoutSeconds = 120
-        $res = Invoke-HermesStep $powershell @(
+        $res = Invoke-RabbitStep $powershell @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $childPs1,
             "-Hold", [string]$hold, "-PidFile", $pidFile
         ) "pipedrain"
@@ -1440,7 +1440,7 @@ exit 3
     }
 
     $floodSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $flood = Invoke-HermesStep $powershell @(
+    $flood = Invoke-RabbitStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $floodPs1,
         "-Kb", [string]$floodKb
     ) "pipeflood"
@@ -1449,7 +1449,7 @@ exit 3
     $floodBytes = $flood.Output.Length
 
     $stallSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $stall = Invoke-HermesStep $powershell @(
+    $stall = Invoke-RabbitStep $powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stallPs1,
         "-Hold", [string]$hold, "-PidFile", $stallPidFile,
         "-GrandchildPidFile", $stallGrandchildPidFile
@@ -1476,7 +1476,7 @@ exit 3
     $script:StepProgressLogPath = $logStallProgress
     $logStallSw = [System.Diagnostics.Stopwatch]::StartNew()
     try {
-        $logstall = Invoke-HermesStep $powershell @(
+        $logstall = Invoke-RabbitStep $powershell @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $logStallPs1,
             "-Hold", [string]$hold, "-ProgressLog", $logStallProgress
         ) "logstall"
@@ -1506,8 +1506,8 @@ exit 3
     if ($stallElapsed -ge $stallBudget) { $problems += "stall arm returned in ${stallElapsed}s, over the ${stallBudget}s budget" }
     if ($stall.Code -ne 124) { $problems += "stall arm exit code $($stall.Code), expected 124" }
     if ($stall.Output -notmatch "step entered silent finalization") { $problems += "stall arm step output was lost" }
-    if ($stallAlive) { $problems += "stalled child pid $stallPid remained alive after Invoke-HermesStep returned" }
-    if ($stallGrandchildAlive) { $problems += "stalled descendant pid $stallGrandchildPid remained alive after Invoke-HermesStep returned" }
+    if ($stallAlive) { $problems += "stalled child pid $stallPid remained alive after Invoke-RabbitStep returned" }
+    if ($stallGrandchildAlive) { $problems += "stalled descendant pid $stallGrandchildPid remained alive after Invoke-RabbitStep returned" }
     if (-not $stall.TreeQuiesced) { $problems += "stall arm returned without proving its process tree quiescent" }
     if (-not $stall.StartedAfterJobAssignment) { $problems += "stall arm started before cancellation-job assignment" }
     $logStallBudget = $hold + 60
@@ -1524,7 +1524,7 @@ exit 3
     exit 0
 }
 
-$savedConsoleInputMode = if ($script:ConsoleInput) { [HermesHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
+$savedConsoleInputMode = if ($script:ConsoleInput) { [RabbitHandoff.ConsoleInput]::DisableQuickEdit() } else { $null }
 try {
     New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
     Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
@@ -1535,7 +1535,7 @@ try {
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $startedAt = 0L
-        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
+        $hasStartedAt = [int64]::TryParse($env:RABBIT_UPDATE_STARTED_AT, [ref]$startedAt)
         if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
             $startedAt = $epoch
         }
@@ -1555,7 +1555,7 @@ try {
 
     # StartAssigned passes a null CreateProcess currentDirectory, so children
     # inherit the hand-off process directory rather than PowerShell's $PWD.
-    # Desktop launches us from HERMES_HOME; pin the process directory to the
+    # Desktop launches us from RABBIT_HOME; pin the process directory to the
     # checkout before any update child can resolve files against the wrong tree.
     try {
         $resolvedInstallRoot = Set-InstallRootCurrentDirectory $InstallRoot
@@ -1571,7 +1571,7 @@ try {
     if ($SelfTestWorkingDirectory) {
         $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
         $probeExe = Join-Path $PSHOME "powershell.exe"
-        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory; [Console]::IsInputRedirected") "cwd"
+        $probe = Invoke-RabbitStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory; [Console]::IsInputRedirected") "cwd"
         $observed, $stdinRedirected = @($probe.Output.Trim() -split "`r?`n" | ForEach-Object { $_.Trim() })
         if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
             $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
@@ -1593,7 +1593,7 @@ try {
     . (Join-Path $PSScriptRoot 'runtime.ps1')
     $legacyInstall = -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'pm') -PathType Container)
     try {
-        $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+        $runtimeCommand = @(Get-RabbitRuntimeCommand -InstallRoot $InstallRoot)
     } catch {
         $finalCode = 3
         $finalMsg = $_.Exception.Message
@@ -1602,7 +1602,7 @@ try {
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------
-    Publish-UiProgress "Waiting for Hermes to close"
+    Publish-UiProgress "Waiting for Rabbit to close"
     if ($DesktopPid -gt 0) {
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
@@ -1614,7 +1614,7 @@ try {
         if (Get-Process -Id $DesktopPid -ErrorAction SilentlyContinue) {
             # The running Desktop still owns application outputs being replaced.
             $finalCode = 4
-            $finalMsg = "Update aborted: the Hermes window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+            $finalMsg = "Update aborted: the Rabbit window (pid $DesktopPid) did not exit within 30s. Nothing was changed. Close Rabbit fully and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1643,59 +1643,59 @@ try {
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which
-    # collides with the "close all Hermes windows" sentinel.
+    # collides with the "close all Rabbit windows" sentinel.
     try {
         $updateHelp = & $pythonExe @runtimeArgs update --help 2>$null | Out-String
         if ($updateHelp -match "--keep-stash") {
             $updateArgs += "--keep-stash"
         } else {
-            Write-HandoffLog "installed hermes predates --keep-stash; running without it"
+            Write-HandoffLog "installed rabbit predates --keep-stash; running without it"
         }
     } catch {
         Write-HandoffLog "could not probe update --help; running without --keep-stash"
     }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
-    $res = Invoke-HermesStep $pythonExe $updateArgs "update"
-    Write-HandoffLog "hermes update exit code: $($res.Code)"
-    $res = Resolve-HermesUpdateOutcome $res
+    $res = Invoke-RabbitStep $pythonExe $updateArgs "update"
+    Write-HandoffLog "rabbit update exit code: $($res.Code)"
+    $res = Resolve-RabbitUpdateOutcome $res
 
     # Retry only the identified pre-PM update-boundary transition. Current
     # update/build failures propagate and must not trigger another owner.
     if ($legacyInstall -and $res.Code -ne 0 -and $res.Code -ne 2) {
         Write-HandoffLog "legacy update failed; retrying once from the updated installation"
         Publish-UiProgress "Retrying update"
-        $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+        $runtimeCommand = @(Get-RabbitRuntimeCommand -InstallRoot $InstallRoot)
         $pythonExe = $runtimeCommand[0]
         $runtimeArgs = @($runtimeCommand | Select-Object -Skip 1)
         # Same request as the first attempt (--force included): the installation is still the
         # legacy one being converted until this run succeeds.
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
-        $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
-        $res = Resolve-HermesUpdateOutcome $res
+        $res = Invoke-RabbitStep $pythonExe $updateArgs 'update'
+        $res = Resolve-RabbitUpdateOutcome $res
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.
     # Keep that historical transition here only; current failures propagate.
     $desktopBuildFailed = $false
     if ($legacyInstall -and $res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
-        Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
+        Write-HandoffLog "rabbit update reported a desktop build failure (non-fatal there, fatal here); retrying build"
         Publish-UiProgress "Rebuilding Desktop"
-        $runtimeCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+        $runtimeCommand = @(Get-RabbitRuntimeCommand -InstallRoot $InstallRoot)
         $rebuildArgs = @($runtimeCommand | Select-Object -Skip 1) + @('desktop', '--force-build', '--build-only')
-        $rebuild = Invoke-HermesStep $runtimeCommand[0] $rebuildArgs 'rebuild'
+        $rebuild = Invoke-RabbitStep $runtimeCommand[0] $rebuildArgs 'rebuild'
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }
 
     # A zero-exit update is not proof that the runtime survived the update.
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
-        $verifyCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot -Module 'hermes_cli.desktop_update_verify')
+        $verifyCommand = @(Get-RabbitRuntimeCommand -InstallRoot $InstallRoot -Module 'rabbit_cli.desktop_update_verify')
         $verifyArgs = @($verifyCommand | Select-Object -Skip 1)
-        $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
+        $verify = Invoke-RabbitStep $verifyCommand[0] $verifyArgs 'verify'
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "Hermes was updated, but the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it."
+            $finalMsg = "Rabbit was updated, but the new Desktop build could not be verified. Nothing was removed. If Rabbit does not start normally, run 'rabbit desktop --force-build' in a terminal to rebuild it."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1703,7 +1703,7 @@ try {
 
     # Desktop stopped every locally running profile gateway before handing off
     # so their venv launchers could not hold the update lock. That happens
-    # before `hermes update` captures its Windows pause inventory, leaving the
+    # before `rabbit update` captures its Windows pause inventory, leaving the
     # updater nothing to resume on its normal success path. Restore the same
     # all-profile fleet only after the updated runtime verifies. A remote-served
     # Desktop must stay passive: its -NoGateway hand-off owns no local poller.
@@ -1712,9 +1712,9 @@ try {
         try {
             # Resolve again after update: PM may have published a new generation,
             # and its command can include an isolation/bootstrap prefix.
-            $gatewayCommand = @(Get-HermesRuntimeCommand -InstallRoot $InstallRoot)
+            $gatewayCommand = @(Get-RabbitRuntimeCommand -InstallRoot $InstallRoot)
             $gatewayArgs = @($gatewayCommand | Select-Object -Skip 1) + @("gateway", "start", "--all")
-            $gatewayRestart = Invoke-HermesStep $gatewayCommand[0] $gatewayArgs "gateway restart"
+            $gatewayRestart = Invoke-RabbitStep $gatewayCommand[0] $gatewayArgs "gateway restart"
             $gatewayRestartFailed = $gatewayRestart.Code -ne 0
         } catch {
             $gatewayRestartFailed = $true
@@ -1726,7 +1726,7 @@ try {
             # update: a non-zero exit here would run the error finale and hide
             # the fact that the new runtime is installed and verified.
             $manualAction = $true
-            $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
+            $manualMsg = "Update complete, but Rabbit could not restart every messaging gateway. Run `rabbit gateway start --all` in a terminal."
             Write-HandoffLog $manualMsg
         }
     }
@@ -1736,10 +1736,10 @@ try {
         $finalMsg = "Update complete."
     } elseif ($desktopBuildFailed) {
         $finalCode = 6
-        $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
+        $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `rabbit desktop --force-build` from a terminal to retry."
     } else {
         $finalCode = $res.Code
-        $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        $finalMsg = "Update failed (exit $($res.Code)). Run `rabbit debug share` in a terminal to send a report."
     }
     exit $finalCode
 } finally {
@@ -1747,7 +1747,7 @@ try {
     #   1. durable result + marker removal (the relaunched Desktop consumes
     #      the result on boot and must not park on our marker);
     #   2. attempt the relaunch and require ACCEPTANCE;
-    #   3. only then the terminal UI state — done means "Hermes is back",
+    #   3. only then the terminal UI state — done means "Rabbit is back",
     #      manual means "it is not, reopen it", error is error (and still
     #      tries to bring the app back after showing itself).
     if (-not $script:TreeSafeToFinalize) {
@@ -1756,7 +1756,7 @@ try {
         # that unknown state. This is intentionally fail-closed; the marker's
         # dead-owner recovery remains the next-start escape hatch.
         $finalCode = 7
-        $finalMsg = "Update recovery could not stop every updater process. Hermes was not restarted to avoid overlapping the active install. Wait for it to finish or restart Windows, then reopen Hermes."
+        $finalMsg = "Update recovery could not stop every updater process. Rabbit was not restarted to avoid overlapping the active install. Wait for it to finish or restart Windows, then reopen Rabbit."
         Write-Result $false $finalCode $finalMsg
         Write-HandoffLog $finalMsg
         Show-ErrorFinale $finalMsg
@@ -1770,17 +1770,17 @@ try {
             Close-ProgressWindow
             [void](Start-DesktopRelaunch)
         } else {
-            Publish-UiProgress "Opening Hermes"
+            Publish-UiProgress "Opening Rabbit"
             $cameBack = Start-DesktopRelaunch
             if (-not $cameBack -and $RelaunchExe) {
                 # Launch was due and did not verifiably land: truthful result
                 # for the next boot, manual state held on screen now.
-                $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
+                $finalMsg = "Update complete. Reopen Rabbit to finish (it could not restart itself)."
                 Write-Result $true 0 $finalMsg $true
                 Show-ManualFinale $finalMsg
             }
             Close-ProgressWindow
         }
     }
-    if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
+    if ($null -ne $savedConsoleInputMode) { [RabbitHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
 }

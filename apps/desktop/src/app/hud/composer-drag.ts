@@ -50,11 +50,11 @@ function releasePointer(state: PressState): void {
 }
 
 function setWorkspaceTransfer(transferring: boolean): void {
-  window.hermesDesktop?.hud?.setWorkspaceTransfer?.(transferring)
+  window.rabbitDesktop?.hud?.setWorkspaceTransfer?.(transferring)
 }
 
 function moveHud(state: PressState): void {
-  window.hermesDesktop?.hud?.moveBy?.({
+  window.rabbitDesktop?.hud?.moveBy?.({
     width: state.originW,
     height: state.originH
   })
@@ -68,7 +68,7 @@ function armGrab(state: PressState, workspaceTransfer: boolean): void {
     setWorkspaceTransfer(true)
   }
 
-  window.hermesDesktop?.hud?.beginMove?.()
+  window.rabbitDesktop?.hud?.beginMove?.()
 }
 
 /**
@@ -90,7 +90,7 @@ function armGrab(state: PressState, workspaceTransfer: boolean): void {
  * are moving, so a window that keeps up reports the same clientX every frame.
  *
  * The size is snapshotted at press and sent with every move, so main can pin it
- * (see hermes:hud:move-by — a transparent frameless window drifts wider on
+ * (see rabbit:hud:move-by — a transparent frameless window drifts wider on
  * Windows otherwise). Crossing a display can fire pointercancel; that must
  * not end the grab, or the bar sticks on the first monitor.
  */
@@ -112,7 +112,7 @@ export function useHudComposerDrag(
 
     if (state) {
       if (state.armed) {
-        window.hermesDesktop?.hud?.endMove?.()
+        window.rabbitDesktop?.hud?.endMove?.()
       }
 
       if (state.workspaceTransfer) {

@@ -1,6 +1,6 @@
 """Curated catalog of starter cron-job suggestions.
 
-These are the built-in automations Hermes can offer a new user out of the box — the ``catalog``
+These are the built-in automations Rabbit can offer a new user out of the box — the ``catalog``
 source of the unified suggestion surface. Each entry is a ready-to-run ``cron.jobs.create_job`` spec
 wrapped as a suggestion; the user accepts via ``/suggestions``. Nothing here auto-schedules.
 
@@ -66,7 +66,7 @@ CATALOG: List[CatalogEntry] = [
                 "only mail that needs a reply today, is from a manager/family "
                 "member, or mentions a deadline. Pipe candidates through the "
                 "urgency classifier (run `python3 -m cron.scripts.classify_items "
-                "--threshold 7 --criteria ...` from the hermes-agent install — "
+                "--threshold 7 --criteria ...` from the rabbit-agent install — "
                 "resolve the script path at run time, do not assume a fixed "
                 "location) and deliver ONLY what it returns. If nothing "
                 "clears the bar, respond with [SILENT] so the user is not "

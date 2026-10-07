@@ -293,7 +293,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
     setAddOpen(true)
   }, [])
 
-  // Deep link (`hermes://open/settings?tab=vault&kind=login&label=…&origin=…`,
+  // Deep link (`rabbit://open/settings?tab=vault&kind=login&label=…&origin=…`,
   // e.g. relayed by the agent when a login is missing): open the Add dialog
   // pre-filled from the query params — metadata only, never a secret — then
   // drop the params so a refresh doesn't re-open it.

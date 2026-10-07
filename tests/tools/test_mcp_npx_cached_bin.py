@@ -3,7 +3,7 @@
 `npx` resolves the package and then FORKS, staying alive as the real server's
 parent for the whole process lifetime while doing no work. Measured on a
 4-agent host that is ~48 MB of private memory per MCP server — and it buys
-nothing, because Hermes already wraps the child in its own parent-death
+nothing, because Rabbit already wraps the child in its own parent-death
 watchdog, so npx's supervision is a second parent nobody reads.
 
 Removing it must stay conservative: a cache miss, a version-pinned spec, or an

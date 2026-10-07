@@ -1,18 +1,18 @@
-"""hermes.cron.run: one row per terminal execution and per dropped occurrence."""
+"""rabbit.cron.run: one row per terminal execution and per dropped occurrence."""
 
 from datetime import timedelta
 
 import pytest
 
 from cron import executions, jobs
-from hermes_cli.observability import relay_shared_metrics as rsm
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_gateway as smg
+from rabbit_cli.observability import relay_shared_metrics as rsm
+from rabbit_cli.observability import shared_metrics_contract as contract
+from rabbit_cli.observability import shared_metrics_gateway as smg
 
 
 @pytest.fixture
 def cron_rows(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     got = []
     monkeypatch.setattr(rsm, "enabled", lambda: True)
     monkeypatch.setattr(rsm, "record_process_mark", lambda mark, data: got.append((mark, dict(data))))
@@ -54,7 +54,7 @@ def test_an_occurrence_dropped_after_downtime_is_one_missed_row(tmp_path, cron_r
     with jobs.use_cron_store(tmp_path / "cron"):
         jobs.create_job(prompt="secret prompt", schedule="every 1h", model="fixture", deliver="local")
         stored = jobs.load_jobs()
-        stored[0]["next_run_at"] = (jobs._hermes_now() - timedelta(hours=4)).isoformat()
+        stored[0]["next_run_at"] = (jobs._rabbit_now() - timedelta(hours=4)).isoformat()
         jobs.save_jobs(stored)
         assert jobs.get_due_jobs() == []
         assert jobs.get_due_jobs() == []

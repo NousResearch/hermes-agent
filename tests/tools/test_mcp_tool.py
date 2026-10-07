@@ -116,7 +116,7 @@ class TestLoadMCPConfig:
                 "env": {},
             }
         }
-        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}):
+        with patch("rabbit_cli.config.load_config", return_value={"mcp_servers": servers}):
             from tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert "filesystem" in result
@@ -124,7 +124,7 @@ class TestLoadMCPConfig:
 
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
-        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
+        with patch("rabbit_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
             from tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
@@ -140,9 +140,9 @@ class TestLoadMCPConfig:
         }
         manager = SimpleNamespace(get_portable_mcp_servers=lambda: portable)
         with (
-            patch("hermes_cli.config.load_config", return_value={"mcp_servers": native}),
-            patch("hermes_cli.plugins.discover_plugins"),
-            patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
+            patch("rabbit_cli.config.load_config", return_value={"mcp_servers": native}),
+            patch("rabbit_cli.plugins.discover_plugins"),
+            patch("rabbit_cli.plugins.get_plugin_manager", return_value=manager),
             patch.dict(os.environ, {"PORT": "3000"}),
         ):
             from tools.mcp_tool_config import _load_mcp_config
@@ -156,9 +156,9 @@ class TestLoadMCPConfig:
         self, tmp_path, monkeypatch
     ):
         import json
-        import hermes_yaml as yaml
-        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
-        from hermes_cli import plugins as plugins_mod
+        import rabbit_yaml as yaml
+        from rabbit_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from rabbit_cli import plugins as plugins_mod
 
         home = tmp_path / "home"
         plugin = home / "plugins" / "portable"
@@ -182,8 +182,8 @@ class TestLoadMCPConfig:
         )
         bundled = tmp_path / "bundled"
         bundled.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
+        monkeypatch.setenv("RABBIT_BUNDLED_PLUGINS", str(bundled))
         monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
 
         from tools.mcp_tool_config import _load_mcp_config
@@ -462,7 +462,7 @@ class TestLifecycleConfig:
 # ---------------------------------------------------------------------------
 
 class TestSchemaConversion:
-    def test_converts_mcp_tool_to_hermes_schema(self):
+    def test_converts_mcp_tool_to_rabbit_schema(self):
         from tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="read_file", description="Read a file")
@@ -1144,7 +1144,7 @@ class TestMCPServerTask:
         """A pinned session working directory becomes the stdio default cwd.
 
         Hosted/multiplexed sessions (ACP, gateway) pin their logical cwd; a stdio
-        server spawned there inherits the Hermes process dir instead, so
+        server spawned there inherits the Rabbit process dir instead, so
         relative-path servers resolve against the wrong tree.
         """
         from agent.runtime_cwd import clear_session_cwd, set_session_cwd
@@ -1281,7 +1281,7 @@ class TestToolsetInjection:
             "good": {"command": "npx", "args": []},
         }
         fake_toolsets = {
-            "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
+            "rabbit-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
@@ -1515,7 +1515,7 @@ class TestBuildSafeEnv:
     def test_secret_source_injected_vars_are_passed(self, monkeypatch):
         """Vars tagged by an external secret source (Bitwarden/1Password) are
         deliberately allowed for MCP stdio servers."""
-        from hermes_cli import env_loader
+        from rabbit_cli import env_loader
         from tools.mcp_tool_config import _build_safe_env
 
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
@@ -1538,7 +1538,7 @@ class TestBuildSafeEnv:
         """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
         never the launch profile's os.environ copy; a name the profile lacks is omitted."""
         from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
-        from hermes_cli import env_loader
+        from rabbit_cli import env_loader
         from tools.mcp_tool_config import _build_safe_env
 
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
@@ -2533,7 +2533,7 @@ class TestDiscoveryConnectConcurrency:
             return []
 
         with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
-             patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
+             patch("rabbit_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
              patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
              patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
@@ -2677,7 +2677,7 @@ class TestMCPSelectiveToolLoading:
             }
         }
         fake_toolsets = {
-            "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
+            "rabbit-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \

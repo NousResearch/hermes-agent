@@ -41,5 +41,5 @@ def test_interpreter_kill_in_execute_code_names_the_owned_process_route(monkeypa
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     result = json.loads(cet.execute_code('import subprocess; subprocess.run(["pkill", "-9", "python3"])'))
     assert "proc_" in result["error"] and "explicit PID" in result["error"]
-    generic = json.loads(cet.execute_code('import os; os.system("hermes gateway restart")'))
+    generic = json.loads(cet.execute_code('import os; os.system("rabbit gateway restart")'))
     assert "proc_" not in generic["error"] and "cannot restart or stop the gateway" in generic["error"]

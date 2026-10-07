@@ -10,7 +10,7 @@ CFG = {"bedrock": {"guardrail": {"guardrail_identifier": "gr-1", "guardrail_vers
 
 
 def test_anthropic_bedrock_client_carries_configured_guardrail_headers():
-    with patch("hermes_cli.config.load_config_readonly", return_value=CFG):
+    with patch("rabbit_cli.config.load_config_readonly", return_value=CFG):
         from agent.anthropic_adapter import build_anthropic_bedrock_client
         client = build_anthropic_bedrock_client("us-east-2")
     headers = {k.lower(): v for k, v in client.default_headers.items()}

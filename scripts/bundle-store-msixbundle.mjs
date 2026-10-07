@@ -4,7 +4,7 @@
 //
 // The win32 build legs produce per-arch Store-submission packages
 // (Store-<name>-<fileVersion>-win-<arch>.msix, built with
-// HERMES_DESKTOP_VARIANT=store / the Partner Center identity). This script
+// RABBIT_DESKTOP_VARIANT=store / the Partner Center identity). This script
 // bundles the x64 + arm64 packages into ONE universal Store .msixbundle for
 // the Windows Store submission. --output-file writes its absolute path for
 // callers, independently of the installer's download/progress logs.
@@ -30,20 +30,20 @@ const { values } = parseArgs({ options: {
   tag: { type: 'string' },
   'output-file': { type: 'string' },
 } })
-const tag = values.tag || process.env.HERMES_PAYLOAD_TAG
-if (!/^v\d+\.\d+\.\d+$/.test(tag || '') || process.env.HERMES_BUILD_COMMIT) {
+const tag = values.tag || process.env.RABBIT_PAYLOAD_TAG
+if (!/^v\d+\.\d+\.\d+$/.test(tag || '') || process.env.RABBIT_BUILD_COMMIT) {
   throw new Error('Store packaging requires a stable release tag')
 }
-process.env.HERMES_PAYLOAD_TAG = tag
+process.env.RABBIT_PAYLOAD_TAG = tag
 if (process.platform !== 'win32') {
   console.error('[bundle-store] this job must run on a Windows runner (makeappx)')
   process.exit(1)
 }
 
-// product-identity.cjs keys the app name off HERMES_DESKTOP_VARIANT — the
+// product-identity.cjs keys the app name off RABBIT_DESKTOP_VARIANT — the
 // Store-submission artifacts carry the Store- prefix + Partner Center
 // identity, so the env var MUST be 'store' before the identity lookup.
-process.env.HERMES_DESKTOP_VARIANT = 'store'
+process.env.RABBIT_DESKTOP_VARIANT = 'store'
 
 const desktop = path.join(REPO_ROOT, 'apps', 'desktop')
 const releaseDir = path.join(desktop, 'release')

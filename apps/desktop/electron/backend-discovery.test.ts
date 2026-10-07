@@ -12,7 +12,7 @@ import { runPrimaryBackendStartup } from './primary-backend-startup'
 
 const LEDGER = JSON.stringify([
   {
-    argv: 'hermes serve --host 127.0.0.1 --port 0',
+    argv: 'rabbit serve --host 127.0.0.1 --port 0',
     create_time: 1_000,
     host: '127.0.0.1',
     install: 'abc',
@@ -173,7 +173,7 @@ test('a lost spawn-gate race attaches instead of spawning a second backend', asy
 
 /** Gate creation is exclusive and an old release cannot remove a replacement. */
 test('only one process owns the spawn gate file', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-spawn-gate-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-spawn-gate-'))
   const gatePath = path.join(directory, 'gate.json')
 
   try {
@@ -212,7 +212,7 @@ test('only one process owns the spawn gate file', () => {
 
 /** A crashed owner cannot leave every later launch waiting on an orphan. */
 test('a stale spawn gate is reclaimed before taking ownership', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-spawn-gate-stale-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-spawn-gate-stale-'))
   const gatePath = path.join(directory, 'gate.json')
 
   try {
@@ -241,7 +241,7 @@ test('a stale spawn gate is reclaimed before taking ownership', () => {
 
 /** Discovery takes over a crashed owner immediately instead of polling for a minute. */
 test('a crashed spawn-gate owner is reclaimed without waiting', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-spawn-gate-crashed-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-spawn-gate-crashed-'))
   const gatePath = path.join(directory, 'gate.json')
   let sleeps = 0
 
@@ -283,7 +283,7 @@ test('a crashed spawn-gate owner is reclaimed without waiting', async () => {
 
 /** Recovery must not replace a live owner merely because a contender exists. */
 test('a live spawn gate is not reclaimed', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-spawn-gate-live-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-spawn-gate-live-'))
   const gatePath = path.join(directory, 'gate.json')
 
   try {

@@ -1,4 +1,4 @@
-/* Hermes surface treatment for the APP surface's tour popovers.
+/* Rabbit surface treatment for the APP surface's tour popovers.
 
    driver.js ships a fixed light palette, a heavy drop shadow, and 19px/14px
    type — none of which is how this app draws a floating popover. Repaint it
@@ -122,7 +122,7 @@
   opacity: 0.8;
 }
 
-#__hermes-tour-spotlight-blur {
+#__rabbit-tour-spotlight-blur {
   backdrop-filter: grayscale(1) opacity(0.55);
   -webkit-backdrop-filter: grayscale(1) opacity(0.55);
 }

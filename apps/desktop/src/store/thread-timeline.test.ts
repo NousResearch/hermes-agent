@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-const STORAGE_KEY = 'hermes.desktop.hideThreadTimeline'
+const STORAGE_KEY = 'rabbit.desktop.hideThreadTimeline'
 
 afterEach(() => {
   window.localStorage.removeItem(STORAGE_KEY)

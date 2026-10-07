@@ -12,7 +12,7 @@ import {
   startTelegramOnboarding,
   type TelegramOnboardingApplyResponse,
   type TelegramOnboardingStartResponse
-} from '@/hermes'
+} from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { Check, ExternalLink, QrCode, Save, X } from '@/lib/icons'

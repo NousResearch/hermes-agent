@@ -27,7 +27,7 @@ def _version_at(pkg_dir: Path) -> str | None:
 
 def _cache_root() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "hermes-code-health"
+    return Path(base) / "rabbit-code-health"
 
 
 def _install(repo: Path, prefix: Path, pin: str) -> None:

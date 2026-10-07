@@ -443,7 +443,7 @@ class TestRunCompressContextWithProgressTimeout:
 
 
     def test_propagates_conversation_context_into_worker(self):
-        from agent.portal_tags import (
+        from agent.conversation_context import (
             get_conversation_context,
             reset_conversation_context,
             set_conversation_context,
@@ -552,7 +552,7 @@ class TestCompressContextForwarderOwnsTimeout:
             lambda compression_cfg=None: (0.05, 0.2),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "agent.conversation_context.get_conversation_context",
             lambda: object(),
         )
 
@@ -623,7 +623,7 @@ class TestCompressContextForwarderOwnsTimeout:
             lambda: None,
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "agent.conversation_context.get_conversation_context",
             lambda: object(),
         )
 
@@ -686,7 +686,7 @@ class TestCompressContextForwarderOwnsTimeout:
             lambda compression_cfg=None: (0.05, 0.2),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "agent.conversation_context.get_conversation_context",
             lambda: object(),
         )
 
@@ -728,7 +728,7 @@ class TestCompressContextForwarderOwnsTimeout:
             ),
         )
         monkeypatch.setattr(
-            "agent.portal_tags.get_conversation_context",
+            "agent.conversation_context.get_conversation_context",
             lambda: object(),
         )
 

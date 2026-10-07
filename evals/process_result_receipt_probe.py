@@ -12,7 +12,7 @@ import json, shlex, sys
 from gateway.session_context import scoped_current_session_id
 from tools.terminal_tool import terminal_tool
 from tools.process_registry import process_registry
-from hermes_cli.oneshot import _linger_for_background_completions
+from rabbit_cli.oneshot import _linger_for_background_completions
 with scoped_current_session_id("receipt-owner"):
     code = "import sys,time; time.sleep(.2); print('RECEIPT_STDOUT'); print('RECEIPT_STDERR',file=sys.stderr); sys.exit(7)"
     result = json.loads(terminal_tool(shlex.join([sys.executable, '-c', code]), background=True,
@@ -32,15 +32,15 @@ with scoped_current_session_id(sys.argv[2]):
                      'replayed':process_registry.completion_queue.qsize()}))
 '''
 env = {key: value for key, value in os.environ.items()
-       if not key.startswith(('HERMES_', 'OPENAI_', 'ANTHROPIC_', 'TERMINAL_'))
+       if not key.startswith(('RABBIT_', 'OPENAI_', 'ANTHROPIC_', 'TERMINAL_'))
        and not key.endswith(('_API_KEY', '_TOKEN', '_SECRET'))}
-env.update(HOME=str(out), HERMES_HOME=str(out / 'profile'), PYTHONPATH=str(repo),
+env.update(HOME=str(out), RABBIT_HOME=str(out / 'profile'), PYTHONPATH=str(repo),
            TERMINAL_CWD=str(out), PYTHONDONTWRITEBYTECODE='1')
 
 def run(code, *args, profile=None):
     child_env = dict(env)
     if profile:
-        child_env['HERMES_HOME'] = str(out / profile)
+        child_env['RABBIT_HOME'] = str(out / profile)
     result = subprocess.run([sys.executable, '-c', code, *args], cwd=repo,
                             env=child_env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, encoding='utf-8', timeout=45)

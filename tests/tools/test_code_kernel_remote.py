@@ -1,4 +1,4 @@
-"""Remote session kernels (tools/code_kernel_remote.py) — hermes-agent#96873.
+"""Remote session kernels (tools/code_kernel_remote.py) — rabbit-agent#96873.
 
 These tests drive execute_in_remote_kernel against a scripted fake env that
 implements the same contract as docker/ssh/modal envs (run-to-completion
@@ -275,7 +275,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
 
     def test_eviction_skips_kernels_with_a_running_cell(self):
         """Cap eviction must never kill a kernel mid-cell (the local-kernel
-        race from hermes-agent#101861): a busy kernel stays put and a
+        race from rabbit-agent#101861): a busy kernel stays put and a
         settled one goes instead, even if the busy one is older."""
         import threading
 
@@ -371,7 +371,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
             any(kernel.rpc_token in c for c in env.commands),
             "rpc token appeared in a remote command line")
         spawn_cmd = next(c for c in env.commands if "nohup" in c)
-        self.assertNotIn("HERMES_RPC_TOKEN=", spawn_cmd)
+        self.assertNotIn("RABBIT_RPC_TOKEN=", spawn_cmd)
         mkdir_cmd = next(c for c in env.commands if "mkdir -p" in c)
         if sys.platform != "win32":
             # Behaviour, not command text: replay the recorded dir setup
@@ -396,7 +396,7 @@ class TestSharedHostLockdown(RemoteKernelBase):
         env_ship = next(p for p, c in zip(env.stdin_payloads, env.commands)
                         if p and "kernel.env" in c)
         env_content = base64.b64decode(env_ship).decode()
-        self.assertIn(f"HERMES_RPC_TOKEN={kernel.rpc_token}", env_content)
+        self.assertIn(f"RABBIT_RPC_TOKEN={kernel.rpc_token}", env_content)
         # Fail closed on a failed cell ship: the checked write raises and the
         # kernel is evicted, so the next call cannot reuse a kernel whose
         # state silently missed this cell.

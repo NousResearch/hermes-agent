@@ -22,7 +22,7 @@ import pytest
 
 from gateway.config import PlatformConfig, Platform
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
+from rabbit_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -39,7 +39,7 @@ def _write_plugin(home: Path, name: str = "late_cmd") -> None:
 
 
 def test_on_plugin_loaded_fires_with_activation_summary_after_a_late_load():
-    home = Path(os.environ["HERMES_HOME"])
+    home = Path(os.environ["RABBIT_HOME"])
     manager = get_plugin_manager()
     discover_plugins()  # boot: plugin not on disk yet
     events: list = []
@@ -69,7 +69,7 @@ def _factory_manager(calls: list, plugin: str = "p") -> PluginManager:
 def test_rewire_is_idempotent_per_native_client():
     calls: list = []
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra={}))
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
+    with patch("rabbit_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
         adapter.rewire_plugin_handlers()  # before connect wired anything: nothing to do
         assert calls == []
         adapter._wire_plugin_handlers("app-1")
@@ -77,7 +77,7 @@ def test_rewire_is_idempotent_per_native_client():
         adapter.rewire_plugin_handlers()
         assert calls == ["app-1"]
         # A force re-discovery re-registers a NEW factory object for the same plugin: still once.
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
+        with patch("rabbit_cli.plugins.get_plugin_manager", return_value=_factory_manager(calls)):
             adapter.rewire_plugin_handlers()
         assert calls == ["app-1"]
         adapter._wire_plugin_handlers("app-2")  # rebuilt native client: wired again, once
@@ -101,7 +101,7 @@ def test_telegram_late_plugin_handler_precedes_core_catch_all():
     plugin_handler = object()
     mgr = PluginManager()
     ctx = PluginContext(manifest=PluginManifest(name="p", version="0", description=""), manager=mgr)
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+    with patch("rabbit_cli.plugins.get_plugin_manager", return_value=mgr):
         adapter._wire_plugin_handlers(app)  # connect(): plugins first (none yet), then core
         adapter._register_handlers(app)
         core = list(app.handlers[0])  # text catch-all, COMMAND catch-all, ..., CallbackQueryHandler
@@ -119,7 +119,7 @@ def test_slack_late_action_handler_registers_one_listener():
     adapter._app = MagicMock()
     mgr = PluginManager()
     ctx = PluginContext(manifest=PluginManifest(name="p", version="0", description=""), manager=mgr)
-    with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+    with patch("rabbit_cli.plugins.get_plugin_manager", return_value=mgr):
         adapter._register_plugin_action_handlers()  # connect
         async def cb(ack, body, action):
             pass
@@ -133,7 +133,7 @@ def test_runner_rewires_live_adapters_on_the_loop_when_plugins_load():
     class Runner(GatewayPluginRewireMixin):
         adapters = {Platform.TELEGRAM: MagicMock()}
 
-    _write_plugin(Path(os.environ["HERMES_HOME"]))  # something must actually load for the event to fire
+    _write_plugin(Path(os.environ["RABBIT_HOME"]))  # something must actually load for the event to fire
     mgr = PluginManager()
 
     async def scenario():

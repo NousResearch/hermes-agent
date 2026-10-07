@@ -27,7 +27,7 @@ def _fake_terminal_tool(seen, output="src/\nREADME.md\n", exit_code=0):
 
 
 def test_backend_dir_entries_preconfirms_internal_listing(monkeypatch):
-    """The listing is Hermes-owned plumbing: it must skip the approval gate, not consult it."""
+    """The listing is Rabbit-owned plumbing: it must skip the approval gate, not consult it."""
     seen = {}
     monkeypatch.setattr("tools.terminal_tool.terminal_tool", _fake_terminal_tool(seen))
     entries = _backend_dir_entries("/workspace", session_key="sess")

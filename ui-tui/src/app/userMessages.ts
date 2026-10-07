@@ -4,7 +4,7 @@
 // (namespace `userMessages`); every exported message is a function so it is
 // resolved against the active locale at call time, never at import time.
 
-import type { ErrorSurface } from '@hermes/shared/gateway-events'
+import type { ErrorSurface } from '@rabbit/shared/gateway-events'
 
 import { messages, t } from '../i18n/runtime.js'
 import type { Translations } from '../i18n/types.js'
@@ -41,7 +41,7 @@ export const backendRestarting = (): string => t('userMessages.backend.restartin
 
 export const backendRestartingActivity = (): string => t('userMessages.backend.restartingActivity')
 
-// Attached (dashboard / embedded) mode: only the socket dropped; Hermes and any
+// Attached (dashboard / embedded) mode: only the socket dropped; Rabbit and any
 // reply in progress are still alive on the backend and come back on reconnect.
 export const connectionLost = (): string => t('userMessages.backend.connectionLost')
 

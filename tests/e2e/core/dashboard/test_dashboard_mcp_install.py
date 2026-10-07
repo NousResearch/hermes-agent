@@ -1,9 +1,9 @@
 """#120527: a dashboard MCP catalog install must never wedge the web server.
 
-Real ``hermes dashboard`` launched the way the reporter launched ``hermes serve``: from an
+Real ``rabbit dashboard`` launched the way the reporter launched ``rabbit serve``: from an
 interactive terminal, so the process's stdin IS a TTY (a pty slave here; the master is held open and
 never written — nobody is watching that console). The MCP catalog is sourced through its supported
-package-manager override (``HERMES_OPTIONAL_MCPS``) from a directory holding one manifest for a
+package-manager override (``RABBIT_OPTIONAL_MCPS``) from a directory holding one manifest for a
 local offline stdio MCP server (``fixture_catalog_mcp.py``), whose tool probe succeeds.
 
 User-visible contract (what the Connectors page needs):
@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
 from tests.e2e.core._pending_fixes import known_gate
@@ -90,7 +90,7 @@ def _install_and_probe(sb: Sandbox, tmp_path: Path, *, tty: bool, wedge_exc: typ
     returns the installed ``mcp_servers.<name>`` block when the install answered 200."""
     name = f"dashfix-{sb.profiles['default'].tag}"
     catalog = _write_catalog(tmp_path, name)
-    dash = PtyDashboard(sb, tmp_path / "dashboard.log", extra_env={"HERMES_OPTIONAL_MCPS": str(catalog)}, tty=tty)
+    dash = PtyDashboard(sb, tmp_path / "dashboard.log", extra_env={"RABBIT_OPTIONAL_MCPS": str(catalog)}, tty=tty)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="e2e-120527")
     try:
         stdin = dash.stdin_target()

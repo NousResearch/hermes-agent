@@ -1,1 +1,1 @@
-# Hermes plugins package
+# Rabbit plugins package

@@ -14,10 +14,10 @@ description: "使用 USD 定价查询 Solana 区块链数据——钱包余额�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/blockchain/solana` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/blockchain/solana` 安装 |
 | 路径 | `optional-skills/blockchain/solana` |
 | 版本 | `0.2.0` |
-| 作者 | Deniz Alagoz (gizdusum)，由 Hermes Agent 增强 |
+| 作者 | Deniz Alagoz (gizdusum)，由 Rabbit Agent 增强 |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Solana`, `Blockchain`, `Crypto`, `Web3`, `RPC`, `DeFi`, `NFT` |
@@ -25,7 +25,7 @@ description: "使用 USD 定价查询 Solana 区块链数据——钱包余额�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Solana 区块链 Skill
@@ -64,7 +64,7 @@ description: "使用 USD 定价查询 Solana 区块链数据——钱包余额�
 RPC 端点（默认）：https://api.mainnet-beta.solana.com
 覆盖方式：export SOLANA_RPC_URL=https://your-private-rpc.com
 
-辅助脚本路径：~/.hermes/skills/blockchain/solana/scripts/solana_client.py
+辅助脚本路径：~/.rabbit/skills/blockchain/solana/scripts/solana_client.py
 
 ```
 python3 solana_client.py wallet   <address> [--limit N] [--all] [--no-prices]
@@ -90,7 +90,7 @@ python3 --version
 export SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
 
 # 确认连通性
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py stats
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py stats
 ```
 
 ### 1. 钱包投资组合
@@ -98,7 +98,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py stats
 获取 SOL 余额、带 USD 价值的 SPL 代币持仓、NFT 数量及投资组合总值。代币按价值排序，过滤粉尘（dust），已知代币按名称标注（BONK、JUP、USDC 等）。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   wallet 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM
 ```
 
@@ -114,7 +114,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 通过 base58 签名查看完整交易信息，显示 SOL 和 USD 的余额变化。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   tx 5j7s8K...your_signature_here
 ```
 
@@ -125,7 +125,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 获取 SPL 代币元数据、当前价格、市值、供应量、精度、铸造/冻结权限及前 5 大持仓地址。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   token DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
 ```
 
@@ -136,7 +136,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 列出某地址的近期交易（默认：最近 10 条，最多：25 条）。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   activity 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM --limit 25
 ```
 
@@ -145,7 +145,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 列出某钱包持有的 NFT（启发式判断：amount=1 且 decimals=0 的 SPL 代币）。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   nft 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM
 ```
 
@@ -156,7 +156,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 扫描最新区块中的大额 SOL 转账及其 USD 价值。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py \
   whales --min-sol 500
 ```
 
@@ -167,7 +167,7 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py \
 实时 Solana 网络健康状态：当前 slot、epoch、TPS、供应量、验证者版本、SOL 价格及市值。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py stats
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py stats
 ```
 
 ### 8. 价格查询
@@ -175,10 +175,10 @@ python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py stats
 通过铸造地址或已知符号快速查询任意代币价格。
 
 ```bash
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py price BONK
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py price JUP
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py price SOL
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py price DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py price BONK
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py price JUP
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py price SOL
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py price DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263
 ```
 
 已知符号：SOL、USDC、USDT、BONK、JUP、WETH、JTO、mSOL、stSOL、
@@ -202,5 +202,5 @@ PYTH、HNT、RNDR、WEN、W、TNSR、DRIFT、bSOL、JLP、WIF、MEW、BOME、PEN
 
 ```bash
 # 应输出当前 Solana slot、TPS 及 SOL 价格
-python3 ~/.hermes/skills/blockchain/solana/scripts/solana_client.py stats
+python3 ~/.rabbit/skills/blockchain/solana/scripts/solana_client.py stats
 ```

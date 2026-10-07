@@ -1,15 +1,12 @@
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import type { Translations } from '@/i18n/types'
-import { connectorIconUrl } from '@/lib/connector-tools'
 import { cn } from '@/lib/utils'
 
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
-import { twinPillOf } from './derive'
 import type { ConnectorCardModel, ConnectorFact, ConnectorState } from './types'
 
 const STATE_DOT = {
@@ -52,7 +49,6 @@ export interface ConnectorRowCardProps {
   busy?: boolean
   card: ConnectorCardModel
   onOpen: () => void
-  onPrefetch?: () => void
   onServerToggle?: (next: boolean) => void
   onVerb?: () => void
   selected?: boolean
@@ -62,20 +58,17 @@ export function ConnectorRowCard({
   busy = false,
   card,
   onOpen,
-  onPrefetch,
   onServerToggle,
   onVerb,
   selected = false
 }: ConnectorRowCardProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage.card
-  const local = card.residency === 'local'
   const unset = card.state === 'available'
 
-  const stateLabel = local && card.fact ? factText(copy, card.fact) : copy.state[card.stateWord]
+  const stateLabel = card.fact ? factText(copy, card.fact) : copy.state[card.stateWord]
 
   const reason = card.reason ? (card.reason.text ?? copy.reason[card.reason.key]) : undefined
-  const twin = twinPillOf(card)
 
   return (
     <div
@@ -87,12 +80,10 @@ export function ConnectorRowCard({
       )}
       data-connector={card.slug}
       data-slot="connector-row-card"
-      onFocus={onPrefetch}
-      onPointerEnter={onPrefetch}
     >
       <ConnectorLogo
         className="size-9 shrink-0 rounded-[9px]"
-        connector={{ iconUrl: local ? undefined : connectorIconUrl(card.slug), name: card.slug, title: card.name }}
+        connector={{ name: card.slug, title: card.name }}
       />
 
       <div className="grid min-w-0 flex-1 gap-0.5">
@@ -109,12 +100,6 @@ export function ConnectorRowCard({
           <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">{connectorKindWord(card, copy)}</span>
 
           {showsCatalogMark(card) ? <CatalogMark /> : null}
-
-          {twin ? (
-            <Badge className="shrink-0" size="xs" variant="muted">
-              {twin === 'hostedTwin' ? copy.hostedTwin : copy.alsoLocal}
-            </Badge>
-          ) : null}
         </div>
 
         <SecondLine card={card} reason={reason} />
@@ -123,7 +108,7 @@ export function ConnectorRowCard({
       <CardLane
         busy={busy}
         card={card}
-        onServerToggle={local && card.plugin === undefined ? onServerToggle : undefined}
+        onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
         onVerb={onVerb}
         stateLabel={stateLabel}
         withDot={!unset}
@@ -149,8 +134,7 @@ function CardLane({
 }) {
   const { t } = useI18n()
   const copy = t.connectorsPage.card
-  const server = card.ways.local
-  const fact = card.residency === 'hosted' && card.fact ? factText(copy, card.fact) : null
+  const server = card.ways
 
   return (
     <div className="relative z-10 flex w-[7.75rem] shrink-0 flex-col items-end gap-1">
@@ -182,9 +166,6 @@ function CardLane({
         </Button>
       ) : null}
 
-      {card.verb === undefined && fact !== null ? (
-        <span className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{fact}</span>
-      ) : null}
     </div>
   )
 }

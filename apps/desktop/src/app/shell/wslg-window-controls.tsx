@@ -27,7 +27,7 @@ const buttonClass =
 const stopTitlebarDrag = (event: PointerEvent<HTMLButtonElement>) => event.stopPropagation()
 
 export function WslgWindowControls({ isFullscreen, isMaximized }: WslgWindowControlsProps) {
-  const controls = window.hermesDesktop?.windowControls
+  const controls = window.rabbitDesktop?.windowControls
 
   if (!controls || isFullscreen) {
     return null

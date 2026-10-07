@@ -36,7 +36,7 @@ class _FakeResponse:
 
 def test_x_search_posts_responses_request(monkeypatch):
     from tools.x_search_tool import x_search_tool
-    from hermes_cli.version_info import get_version_info
+    from rabbit_cli.version_info import get_version_info
 
     captured = {}
 
@@ -67,7 +67,7 @@ def test_x_search_posts_responses_request(monkeypatch):
 
     tool_def = captured["json"]["tools"][0]
     assert captured["url"] == "https://api.x.ai/v1/responses"
-    assert captured["headers"]["User-Agent"] == f"Hermes-Agent/{get_version_info().base_version}"
+    assert captured["headers"]["User-Agent"] == f"Rabbit-Agent/{get_version_info().base_version}"
     assert captured["json"]["model"]
     assert captured["json"]["store"] is False
     assert "reasoning" not in captured["json"]
@@ -175,7 +175,7 @@ def test_x_search_returns_structured_http_error(monkeypatch):
 
 def _no_xai_env(monkeypatch):
     """Strip any XAI_* env vars so the resolver doesn't see a leaked dev key."""
-    for var in ("XAI_API_KEY", "XAI_BASE_URL", "HERMES_XAI_BASE_URL"):
+    for var in ("XAI_API_KEY", "XAI_BASE_URL", "RABBIT_XAI_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
 
 def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
@@ -315,7 +315,7 @@ def test_x_search_prefers_explicit_api_key_over_oauth(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "rabbit_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": paid_key,
         }.get(name, default),
@@ -345,7 +345,7 @@ def test_x_search_bearer_helper_falls_back_to_oauth_without_api_key(monkeypatch)
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "rabbit_cli.config.get_env_value",
         lambda name, default=None: default,
     )
     _install_fake_oauth_pool(monkeypatch, oauth_token)

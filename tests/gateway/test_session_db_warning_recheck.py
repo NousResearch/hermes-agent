@@ -7,8 +7,8 @@ import threading
 import pytest
 
 import gateway.run as gateway_run
-import hermes_state
-import hermes_state_registry
+import rabbit_state
+import rabbit_state_registry
 from gateway.run import _SESSION_DB_UNPINNED
 from gateway.session_db_recovery import RecoverableHandleCache
 
@@ -41,8 +41,8 @@ def _runner_with_startup_failure(monkeypatch, clock: _Clock, *, heals: bool):
             raise RuntimeError("database is locked")
         return object()
 
-    monkeypatch.setattr(hermes_state_registry, "acquire", acquire)
-    monkeypatch.setattr(hermes_state, "AsyncSessionDB", lambda db: ("async", db))
+    monkeypatch.setattr(rabbit_state_registry, "acquire", acquire)
+    monkeypatch.setattr(rabbit_state, "AsyncSessionDB", lambda db: ("async", db))
     monkeypatch.setattr(runner, "session_store", None, raising=False)
     # Record the startup failure the way __init__ does (one failed open in the cache).
     with pytest.raises(RuntimeError):
@@ -61,7 +61,7 @@ def _runner_with_startup_failure(monkeypatch, clock: _Clock, *, heals: bool):
 @pytest.mark.parametrize("warning_notifications", [True, False])
 def test_lock_that_cleared_before_connect_is_not_broadcast(monkeypatch, tmp_path, warning_notifications):
     (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     clock = _Clock()
     runner, sent = _runner_with_startup_failure(monkeypatch, clock, heals=True)
     asyncio.run(runner._send_session_db_warning_notifications())

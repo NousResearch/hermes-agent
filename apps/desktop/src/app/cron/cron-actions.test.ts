@@ -4,7 +4,7 @@ const getCronJobs = vi.fn()
 const getApiRequestConnection = vi.fn<() => null | string>(() => null)
 const triggerCronJob = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getApiRequestConnection: () => getApiRequestConnection(),
   getCronJobs: (...args: unknown[]) => getCronJobs(...args),
   triggerCronJob: (...args: unknown[]) => triggerCronJob(...args)

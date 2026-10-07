@@ -1,6 +1,6 @@
 """Anthropic Messages wire conformance: compaction in a session full of signed thinking.
 
-Real ``hermes chat -q`` / ``--resume`` turns run interleaved [thinking, tool_use] rounds
+Real ``rabbit chat -q`` / ``--resume`` turns run interleaved [thinking, tool_use] rounds
 whose tool results are large, with the compaction trigger pinned low (documented
 ``compression.threshold_tokens``) so older history is summarised repeatedly. For EVERY request
 the fake saw: tool_use/tool_result pairing holds (no orphan tool_result after a

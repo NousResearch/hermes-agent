@@ -15,7 +15,7 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 
-const KEY = 'hermes.desktop.alwaysExternalLinks.v1'
+const KEY = 'rabbit.desktop.alwaysExternalLinks.v1'
 
 export const $alwaysExternalLinks = atom<boolean>(typeof window === 'undefined' ? false : storedBoolean(KEY, false))
 

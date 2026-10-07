@@ -1,7 +1,7 @@
 """E2E tests for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
 These drive the real registered gateway handlers against a real temp
-``HERMES_HOME`` with named profile dirs — no mocks of the config/mcp layer — and
+``RABBIT_HOME`` with named profile dirs — no mocks of the config/mcp layer — and
 assert that every write lands in the RIGHT profile's ``config.yaml`` / ``.env``
 and NEVER leaks into the launch (default) profile.
 
@@ -21,21 +21,21 @@ import tui_gateway.server as server
 
 
 @pytest.fixture
-def hermes_root(tmp_path, monkeypatch):
-    """A temp HERMES_HOME root with two named profiles: 'work' and 'other'.
+def rabbit_root(tmp_path, monkeypatch):
+    """A temp RABBIT_HOME root with two named profiles: 'work' and 'other'.
 
-    Pointing HERMES_HOME at a dir outside ~/.hermes makes it the profile ROOT
-    (get_default_hermes_root's Docker/custom branch), so named profiles live at
+    Pointing RABBIT_HOME at a dir outside ~/.rabbit makes it the profile ROOT
+    (get_default_rabbit_root's Docker/custom branch), so named profiles live at
     ``<root>/profiles/<name>/`` and the launch/default profile is ``<root>``.
     """
-    root = tmp_path / "hermes_home"
+    root = tmp_path / "rabbit_home"
     (root / "profiles" / "work").mkdir(parents=True)
     (root / "profiles" / "other").mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     # Make sure no stale process-wide home override leaks in from another test.
-    from hermes_constants import get_hermes_home_override
+    from rabbit_constants import get_rabbit_home_override
 
-    assert get_hermes_home_override() is None
+    assert get_rabbit_home_override() is None
     return root
 
 
@@ -51,7 +51,7 @@ def _result(resp):
 
 def _read_yaml(path: Path) -> dict:
     """Read a config.yaml directly for assertions (test-side, not the guarded loader)."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     if not path.is_file():
         return {}
@@ -59,8 +59,8 @@ def _read_yaml(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def test_add_lands_in_named_profile_only(hermes_root):
-    root = hermes_root
+def test_add_lands_in_named_profile_only(rabbit_root):
+    root = rabbit_root
     resp = _call(
         "mcp.servers.add",
         {
@@ -85,7 +85,7 @@ def test_add_lands_in_named_profile_only(hermes_root):
     assert "weather" not in other_cfg.get("mcp_servers", {})
 
 
-def test_list_reflects_the_scoped_profile(hermes_root):
+def test_list_reflects_the_scoped_profile(rabbit_root):
     _result(
         _call(
             "mcp.servers.add",
@@ -111,7 +111,7 @@ def test_list_reflects_the_scoped_profile(hermes_root):
     assert work_server["command"] == "svc-a-bin"
 
 
-def test_status_is_profile_scoped_and_credential_safe(hermes_root):
+def test_status_is_profile_scoped_and_credential_safe(rabbit_root):
     _result(
         _call(
             "mcp.servers.add",
@@ -143,7 +143,7 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
     assert "error" not in str(payload)
 
 
-def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
+def test_status_does_not_mix_launch_runtime_into_another_profile(rabbit_root):
     import tools.mcp_tool as mcp_tool
 
     _result(
@@ -177,12 +177,12 @@ def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
     assert payload["servers"][0]["tools"] == 0
 
 
-def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
+def test_status_includes_named_profile_runtime_in_multiplex(rabbit_root):
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from hermes_constants import (
-        hermes_home_key,
-        reset_hermes_home_override,
-        set_hermes_home_override,
+    from rabbit_constants import (
+        rabbit_home_key,
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
     import tools.mcp_tool as mcp_tool
 
@@ -192,11 +192,11 @@ def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
             {"profile": "work", "name": "shared", "config": {"command": "work-bin"}},
         )
     )
-    work_token = set_hermes_home_override(hermes_root / "profiles" / "work")
+    work_token = set_rabbit_home_override(rabbit_root / "profiles" / "work")
     try:
-        work_scope = hermes_home_key()
+        work_scope = rabbit_home_key()
     finally:
-        reset_hermes_home_override(work_token)
+        reset_rabbit_home_override(work_token)
 
     work_server = SimpleNamespace(
         session=object(),
@@ -226,8 +226,8 @@ def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
     assert payload["servers"][0]["tools"] == 1
 
 
-def test_set_api_key_writes_env_and_header_to_right_profile(hermes_root):
-    root = hermes_root
+def test_set_api_key_writes_env_and_header_to_right_profile(rabbit_root):
+    root = rabbit_root
     _result(
         _call(
             "mcp.servers.add",
@@ -263,8 +263,8 @@ def test_set_api_key_writes_env_and_header_to_right_profile(hermes_root):
     assert "sk-secret-123" not in str(work_cfg)
 
 
-def test_set_api_key_stdio_references_env_block(hermes_root):
-    root = hermes_root
+def test_set_api_key_stdio_references_env_block(rabbit_root):
+    root = rabbit_root
     _result(
         _call(
             "mcp.servers.add",
@@ -291,8 +291,8 @@ def test_set_api_key_stdio_references_env_block(hermes_root):
     assert "LOCALTOOL_TOKEN=tok-xyz" in work_env
 
 
-def test_remove_scoped_to_profile(hermes_root):
-    root = hermes_root
+def test_remove_scoped_to_profile(rabbit_root):
+    root = rabbit_root
     _result(
         _call(
             "mcp.servers.add",
@@ -315,7 +315,7 @@ def test_remove_scoped_to_profile(hermes_root):
     assert "temp" in _read_yaml(root / "profiles" / "other" / "config.yaml").get("mcp_servers", {})
 
 
-def test_add_duplicate_and_missing_errors(hermes_root):
+def test_add_duplicate_and_missing_errors(rabbit_root):
     _result(
         _call(
             "mcp.servers.add",
@@ -341,7 +341,7 @@ def test_add_duplicate_and_missing_errors(hermes_root):
     assert bad_profile["error"]["code"] == 4064
 
 
-def test_add_requires_transport(hermes_root):
+def test_add_requires_transport(rabbit_root):
     resp = _call("mcp.servers.add", {"profile": "work", "name": "empty", "config": {}})
     assert "error" in resp
     assert resp["error"]["code"] == 4063
@@ -349,7 +349,7 @@ def test_add_requires_transport(hermes_root):
 
 def _catalog_http_entry(*, auth: str | None = None):
     """A real HTTP catalog entry. Assertions compare the saved block to this manifest."""
-    from hermes_cli.mcp_catalog import list_catalog
+    from rabbit_cli.mcp_catalog import list_catalog
 
     for entry in list_catalog():
         if entry.transport.type != "http" or not entry.transport.url:
@@ -365,7 +365,7 @@ def _saved_server(root: Path, profile: str, name: str) -> dict:
     return (_read_yaml(path).get("mcp_servers") or {}).get(name) or {}
 
 
-def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(hermes_root):
+def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(rabbit_root):
     """Desktop add-from-catalog sends {profile, name, preset} with a catalog id."""
     entry = _catalog_http_entry()
     result = _result(
@@ -377,43 +377,43 @@ def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(hermes_r
 
     assert result["ok"] is True
     assert result["server"]["transport"] == "http"
-    saved = _saved_server(hermes_root, "work", entry.name)
+    saved = _saved_server(rabbit_root, "work", entry.name)
     assert saved["url"] == entry.transport.url
-    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
-    other = _read_yaml(hermes_root / "profiles" / "other" / "config.yaml").get("mcp_servers") or {}
+    assert entry.name not in (_read_yaml(rabbit_root / "config.yaml").get("mcp_servers") or {})
+    other = _read_yaml(rabbit_root / "profiles" / "other" / "config.yaml").get("mcp_servers") or {}
     assert entry.name not in other
 
 
-def test_oauth_catalog_add_follows_routed_profile_not_payload(hermes_root):
+def test_oauth_catalog_add_follows_routed_profile_not_payload(rabbit_root):
     """OAuth add sends {name, preset} only. requestGatewayForAgent carries the
     profile as routing metadata, so the write follows the bound scope."""
     from agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
     entry = _catalog_http_entry(auth="oauth")
-    routed = hermes_root / "profiles" / "work"
+    routed = rabbit_root / "profiles" / "work"
     previous = is_multiplex_active()
     set_multiplex_active(False)
-    token = set_hermes_home_override(routed)
+    token = set_rabbit_home_override(routed)
     try:
         result = _result(
             _call("mcp.servers.add", {"name": entry.name, "preset": entry.name})
         )
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
         set_multiplex_active(previous)
 
     assert result["server"]["transport"] == "http"
     assert result["server"]["auth"] == "oauth"
-    saved = _saved_server(hermes_root, "work", entry.name)
+    saved = _saved_server(rabbit_root, "work", entry.name)
     assert saved["url"] == entry.transport.url
     assert saved["auth"] == "oauth"
     assert entry.auth.type == "oauth"
-    assert entry.name not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
-    assert not _saved_server(hermes_root, "other", entry.name)
+    assert entry.name not in (_read_yaml(rabbit_root / "config.yaml").get("mcp_servers") or {})
+    assert not _saved_server(rabbit_root, "other", entry.name)
 
 
-def test_explicit_transport_wins_over_catalog_or_unknown_preset(hermes_root):
+def test_explicit_transport_wins_over_catalog_or_unknown_preset(rabbit_root):
     entry = _catalog_http_entry()
     catalog = _result(
         _call(
@@ -440,27 +440,27 @@ def test_explicit_transport_wins_over_catalog_or_unknown_preset(hermes_root):
 
     assert catalog["server"]["command"] == "explicit-bin"
     assert catalog["server"]["url"] != entry.transport.url
-    saved_catalog = _saved_server(hermes_root, "work", "kept-catalog")
+    saved_catalog = _saved_server(rabbit_root, "work", "kept-catalog")
     assert saved_catalog["command"] == "explicit-bin"
     assert saved_catalog.get("url") != entry.transport.url
     assert unknown["server"]["url"] == "https://override.example/mcp"
-    assert _saved_server(hermes_root, "work", "kept-unknown")["url"] == "https://override.example/mcp"
+    assert _saved_server(rabbit_root, "work", "kept-unknown")["url"] == "https://override.example/mcp"
 
 
-def test_unknown_preset_returns_4063_and_writes_nothing(hermes_root):
+def test_unknown_preset_returns_4063_and_writes_nothing(rabbit_root):
     resp = _call(
         "mcp.servers.add",
         {"profile": "work", "name": "unknown", "preset": "not-a-catalog-entry"},
     )
 
     assert resp["error"]["code"] == 4063
-    assert not _saved_server(hermes_root, "work", "unknown")
-    assert "unknown" not in (_read_yaml(hermes_root / "config.yaml").get("mcp_servers") or {})
+    assert not _saved_server(rabbit_root, "work", "unknown")
+    assert "unknown" not in (_read_yaml(rabbit_root / "config.yaml").get("mcp_servers") or {})
 
 
-def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
-    import hermes_cli.mcp_config as mcp_config
-    from hermes_cli.mcp_catalog import get_entry
+def test_cli_preset_still_fills_transport_when_not_in_catalog(rabbit_root):
+    import rabbit_cli.mcp_config as mcp_config
+    from rabbit_cli.mcp_catalog import get_entry
 
     preset_name = next(
         name for name in mcp_config._MCP_PRESETS if get_entry(name) is None
@@ -473,21 +473,21 @@ def test_cli_preset_still_fills_transport_when_not_in_catalog(hermes_root):
         )
     )
 
-    saved = _saved_server(hermes_root, "work", "cli-preset")
+    saved = _saved_server(rabbit_root, "work", "cli-preset")
     assert result["server"]["command"] == expected["command"]
     assert saved["command"] == expected["command"]
     assert saved.get("args") == list(expected.get("args") or [])
 
 
-def test_default_profile_add_when_profile_omitted(hermes_root):
-    root = hermes_root
+def test_default_profile_add_when_profile_omitted(rabbit_root):
+    root = rabbit_root
     _result(
         _call(
             "mcp.servers.add",
             {"name": "rootsvc", "config": {"command": "rootsvc-bin"}},
         )
     )
-    # Omitted profile → launch/default profile == HERMES_HOME root config.yaml.
+    # Omitted profile → launch/default profile == RABBIT_HOME root config.yaml.
     default_cfg = _read_yaml(root / "config.yaml")
     assert "rootsvc" in default_cfg.get("mcp_servers", {})
     # ...and NOT in a named profile.
@@ -496,14 +496,14 @@ def test_default_profile_add_when_profile_omitted(hermes_root):
     )
 
 
-def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root, monkeypatch):
+def test_test_resolves_env_refs_from_requested_profile_secret_scope(rabbit_root, monkeypatch):
     """``mcp.servers.test`` for a secondary must expand its ``${VAR}`` header from THAT profile's
     secret scope, not the launch process's ``os.environ`` (the default profile's value) — the
     Desktop MCP setup "Test connection" otherwise reports green against the wrong credential.
     ``os.environ`` is never mutated by the scope."""
-    import hermes_cli.mcp_config as mcp_config
+    import rabbit_cli.mcp_config as mcp_config
 
-    work = hermes_root / "profiles" / "work"
+    work = rabbit_root / "profiles" / "work"
     (work / ".env").write_text("ALPHA_ONLY_TOKEN=work-token\n", encoding="utf-8")
     (work / "config.yaml").write_text(
         "mcp_servers:\n  srv:\n    url: http://x/mcp\n"

@@ -14,7 +14,7 @@ Create meme PNGs from templates with Pillow text overlay.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/meme-generation` |
+| Source | Optional — install with `rabbit skills install official/creative/meme-generation` |
 | Path | `optional-skills/creative/meme-generation` |
 | Version | `2.0.0` |
 | Author | adanaleycio |
@@ -26,7 +26,7 @@ Create meme PNGs from templates with Pillow text overlay.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Meme Generation
@@ -74,13 +74,13 @@ python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
 3. Write short captions for each field (8-12 words max per field, shorter is better).
 4. Find the skill's script directory:
    ```
-   SKILL_DIR=$(dirname "$(find ~/.hermes/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
+   SKILL_DIR=$(dirname "$(find ~/.rabbit/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
    ```
 5. Run the generator:
    ```bash
-   python "$SKILL_DIR/scripts/generate_meme.py" <template_id> ~/.hermes/cache/scratch/meme.png "caption 1" "caption 2" ...
+   python "$SKILL_DIR/scripts/generate_meme.py" <template_id> ~/.rabbit/cache/scratch/meme.png "caption 1" "caption 2" ...
    ```
-6. Return the image with `MEDIA:~/.hermes/cache/scratch/meme.png`
+6. Return the image with `MEDIA:~/.rabbit/cache/scratch/meme.png`
 
 ### Mode 2: Custom AI Image (when image_generate is available)
 
@@ -92,35 +92,35 @@ Use this when no classic template fits, or when the user wants something origina
 4. Run the script with `--image` to overlay text, choosing a mode:
    - **Overlay** (text directly on image, white with black outline):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png ~/.rabbit/cache/scratch/meme.png "top text" "bottom text"
      ```
    - **Bars** (black bars above/below with white text — cleaner, always readable):
      ```bash
-     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars ~/.hermes/cache/scratch/meme.png "top text" "bottom text"
+     python "$SKILL_DIR/scripts/generate_meme.py" --image /path/to/scene.png --bars ~/.rabbit/cache/scratch/meme.png "top text" "bottom text"
      ```
    Use `--bars` when the image is busy/detailed and text would be hard to read on top of it.
 5. **Verify with vision** (if `vision_analyze` is available): Check the result looks good:
    ```
-   vision_analyze(image_url="~/.hermes/cache/scratch/meme.png", question="Is the text legible and well-positioned? Does the meme work visually?")
+   vision_analyze(image_url="~/.rabbit/cache/scratch/meme.png", question="Is the text legible and well-positioned? Does the meme work visually?")
    ```
    If the vision model flags issues (text hard to read, bad placement, etc.), try the other mode (switch between overlay and bars) or regenerate the scene.
-6. Return the image with `MEDIA:~/.hermes/cache/scratch/meme.png`
+6. Return the image with `MEDIA:~/.rabbit/cache/scratch/meme.png`
 
 ## Examples
 
 **"debugging production at 2 AM":**
 ```bash
-python generate_meme.py this-is-fine ~/.hermes/cache/scratch/meme.png "SERVERS ARE ON FIRE" "This is fine"
+python generate_meme.py this-is-fine ~/.rabbit/cache/scratch/meme.png "SERVERS ARE ON FIRE" "This is fine"
 ```
 
 **"choosing between sleep and one more episode":**
 ```bash
-python generate_meme.py drake ~/.hermes/cache/scratch/meme.png "Getting 8 hours of sleep" "One more episode at 3 AM"
+python generate_meme.py drake ~/.rabbit/cache/scratch/meme.png "Getting 8 hours of sleep" "One more episode at 3 AM"
 ```
 
 **"the stages of a Monday morning":**
 ```bash
-python generate_meme.py expanding-brain ~/.hermes/cache/scratch/meme.png "Setting an alarm" "Setting 5 alarms" "Sleeping through all alarms" "Working from bed"
+python generate_meme.py expanding-brain ~/.rabbit/cache/scratch/meme.png "Setting an alarm" "Setting 5 alarms" "Sleeping through all alarms" "Working from bed"
 ```
 
 ## Listing Templates

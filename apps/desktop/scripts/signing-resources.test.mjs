@@ -57,7 +57,7 @@ function fixture(root) {
     for (const [dir, name, type] of [[app, 'Probe', 'APPL'], [child, 'Child', 'APPL'], [framework, 'Demo', 'FMWK']]) {
       const info = type === 'APPL' ? path.join(dir, 'Contents/Info.plist') : path.join(dir, 'Versions/A/Resources/Info.plist')
       fs.mkdirSync(path.dirname(info), { recursive: true })
-      fs.writeFileSync(info, plist.build({ CFBundleExecutable: name, CFBundleIdentifier: `org.hermes.fixture.${name}`,
+      fs.writeFileSync(info, plist.build({ CFBundleExecutable: name, CFBundleIdentifier: `org.rabbit.fixture.${name}`,
         CFBundleVersion: '1', CFBundlePackageType: type }))
     }
     fs.symlinkSync('Versions/Current/Resources', path.join(framework, 'Resources'))

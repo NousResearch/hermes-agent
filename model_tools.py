@@ -52,7 +52,7 @@ def _is_delegated_child_context() -> bool:
 
 
 def _is_dispatcher_owned_worker() -> bool:
-    """False when HERMES_KANBAN_* is present but this execution does not own it
+    """False when RABBIT_KANBAN_* is present but this execution does not own it
     (delegate_task child, or a cron job fired in-process from a worker)."""
     try:
         from agent.delegation_context import is_dispatcher_owned_worker_context
@@ -123,7 +123,7 @@ def _run_async(coro):
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Carry profile + approval/sudo context so get_hermes_home() resolves correctly.
+        # Carry profile + approval/sudo context so get_rabbit_home() resolves correctly.
         from tools.thread_context import propagate_context_to_thread
         future = pool.submit(propagate_context_to_thread(_run_in_worker))
         try:
@@ -158,7 +158,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
     # acp_adapter/server.py     -> asyncio.to_thread on session init
-    from hermes_cli.plugins import discover_plugins
+    from rabbit_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -266,7 +266,7 @@ def _tool_defs_cache_key(
     if profile_scope == CHECK_FN_CACHE_BYPASS:
         return None
     try:
-        from hermes_cli.config import get_config_path
+        from rabbit_cli.config import get_config_path
         cfg_stat = get_config_path().stat()
         cfg_fp = file_signature(cfg_stat)
     except (FileNotFoundError, OSError, ImportError):
@@ -274,7 +274,7 @@ def _tool_defs_cache_key(
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
+        bool(os.environ.get("RABBIT_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
     )
 
@@ -286,11 +286,11 @@ def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, 
     for name in names:
         if validate_toolset(name):
             label = f"{verb} toolset"
-            if disable and (name.startswith("hermes-") or (get_toolset(name) or {}).get("posture")):
+            if disable and (name.startswith("rabbit-") or (get_toolset(name) or {}).get("posture")):
                 # Bundles/postures re-list the core tools without owning them;
                 # subtracting the whole set would empty the list — remove only the non-core delta.
                 resolved = sorted(bundle_non_core_tools(name))
-                if not quiet_mode and name.startswith("hermes-") and name not in _WARNED_DISABLED_BUNDLES:
+                if not quiet_mode and name.startswith("rabbit-") and name not in _WARNED_DISABLED_BUNDLES:
                     _WARNED_DISABLED_BUNDLES.add(name)
                     logger.info(
                         "agent.disabled_toolsets contains platform-bundle name '%s'; core tools are "
@@ -319,7 +319,7 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
         enabled = list(enabled_toolsets)
         # Dispatcher-spawned kanban workers always get the lifecycle handoff
         # tools, even when the assignee profile restricts its chat toolsets.
-        if (os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context()
+        if (os.environ.get("RABBIT_KANBAN_TASK") and not _is_delegated_child_context()
                 and _is_dispatcher_owned_worker() and "kanban" not in enabled):
             enabled.append("kanban")
         _apply_toolset_selection(tools, enabled, quiet_mode, disable=False)
@@ -333,8 +333,8 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     for ts_name in profile_role_toolsets()[1]:
         tools.difference_update(resolve_toolset(ts_name))
     # Disabled toolsets are always subtracted LAST, so a tool in a disabled
-    # toolset is stripped even when a composite (hermes-cli) re-enables it.
-    # This ensures that even if a composite toolset (like hermes-cli) is enabled, any tools belonging to a
+    # toolset is stripped even when a composite (rabbit-cli) re-enables it.
+    # This ensures that even if a composite toolset (like rabbit-cli) is enabled, any tools belonging to a
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
@@ -549,12 +549,12 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
 
 def _active_model_config() -> Tuple[str, Dict[str, Any]]:
     """(model_id, model section) from config.yaml; model_id is "" when unset."""
-    from hermes_cli.config import load_config
+    from rabbit_cli.config import load_config
     cfg = load_config() or {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
     if isinstance(raw_model_id, dict):
-        from hermes_cli.config import split_model_config_default
+        from rabbit_cli.config import split_model_config_default
         raw_model_id, _ = split_model_config_default(raw_model_id)
     return str(raw_model_id).strip(), model_cfg
 
@@ -584,7 +584,7 @@ def _resolve_active_context_length() -> int:
             # Credential resolution failing (offline, no keys) degrades to a
             # provider+base_url-only lookup so static fallbacks still apply.
             try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
+                from rabbit_cli.runtime_provider import resolve_runtime_provider
                 rt = resolve_runtime_provider(requested=provider, target_model=model_id) or {}
                 base_url = str(rt.get("base_url") or base_url or "").strip()
                 api_key = str(rt.get("api_key") or "").strip()
@@ -689,7 +689,7 @@ def _emit_post_tool_call_hook(
     if _post_tool_call_hook_suppressed.get():
         return
     try:
-        from hermes_cli.lifecycle import has_hook, invoke_hook
+        from rabbit_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return
         if status is None:
@@ -758,7 +758,7 @@ def _apply_request_middleware(
 ) -> Tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
     """tool_request middleware: returns (args, original_args, trace); fail-open."""
     try:
-        from hermes_cli.middleware import apply_tool_request_middleware
+        from rabbit_cli.middleware import apply_tool_request_middleware
         mw = apply_tool_request_middleware(function_name, function_args, **ids.hook_kwargs())
         return mw.payload, mw.original_payload, mw.trace
     except Exception as _mw_err:
@@ -779,7 +779,7 @@ def _pre_dispatch_guards(function_name: str, function_args: Dict[str, Any], skip
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            from rabbit_cli.plugins import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )
@@ -844,7 +844,7 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
     with _approval_observability(ids):
         if skip_tool_execution_middleware:
             return _dispatch(function_args)
-        from hermes_cli.middleware import run_tool_execution_middleware
+        from rabbit_cli.middleware import run_tool_execution_middleware
         return run_tool_execution_middleware(function_name, function_args, _dispatch, original_args=original_args,
                                              **ids.hook_kwargs())
 
@@ -857,7 +857,7 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: Dict[st
     first string return wins. Gated on has_hook so the no-listener path is cheap.
     """
     try:
-        from hermes_cli.lifecycle import has_hook, invoke_hook
+        from rabbit_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,

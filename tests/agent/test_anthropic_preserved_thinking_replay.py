@@ -77,7 +77,7 @@ def _native_turn(agent, question, size, sig):
 
 
 def _session_db(tmp_path, *session_ids):
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     for session_id in session_ids:
@@ -199,7 +199,6 @@ _PRESERVED = [
 # case -> (model, route, number of growing thinking blocks that must reach the wire)
 _ACCOUNTING_CASES = {
     **{f"route:{m}": (m, ANTHROPIC, int(p)) for m, p in _PRESERVED},
-    "route:nous": ("claude-opus-4-6", NOUS, 1),
     "route:openrouter": ("claude-opus-4-6", OPENROUTER, 0),
     "producer": ("claude-opus-4-6", ANTHROPIC, 2),
     "context_selection_clone": ("claude-opus-4-6", ANTHROPIC, 1),

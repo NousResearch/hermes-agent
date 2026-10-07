@@ -14,34 +14,34 @@ Manual OAuth for remote MCP servers on headless gateways.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mcp/mcp-oauth-remote-gateway` |
+| Source | Optional — install with `rabbit skills install official/mcp/mcp-oauth-remote-gateway` |
 | Path | `optional-skills/mcp/mcp-oauth-remote-gateway` |
 | Version | `1.0.0` |
-| Author | Ben Barclay (benbarclay), Hermes Agent |
+| Author | Ben Barclay (benbarclay), Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `MCP`, `OAuth`, `PKCE`, `Remote-Deployment` |
-| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md), [`mcporter`](../../optional/mcp/mcp-mcporter.md), [`fastmcp`](../../optional/mcp/mcp-fastmcp.md) |
+| Related skills | [`rabbit-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent.md), [`mcporter`](../../optional/mcp/mcp-mcporter.md), [`fastmcp`](../../optional/mcp/mcp-fastmcp.md) |
 
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# MCP OAuth on a Remote Hermes Gateway
+# MCP OAuth on a Remote Rabbit Gateway
 
 ## Overview
 
-Hermes' built-in MCP OAuth client runs a one-shot HTTP listener on `127.0.0.1:<port>`
-inside the Hermes process and registers that loopback address as the OAuth
+Rabbit' built-in MCP OAuth client runs a one-shot HTTP listener on `127.0.0.1:<port>`
+inside the Rabbit process and registers that loopback address as the OAuth
 `redirect_uri`. That works perfectly for a local CLI on the user's own machine.
-It breaks completely when Hermes runs as a remote gateway (container, VPS,
+It breaks completely when Rabbit runs as a remote gateway (container, VPS,
 messaging bot), because the user's browser resolves `127.0.0.1` to the user's own
-laptop, not the remote container — so the authorization code never reaches Hermes.
+laptop, not the remote container — so the authorization code never reaches Rabbit.
 
 This skill does the OAuth dance by hand and writes the resulting tokens into the
-exact files Hermes' token storage expects, so a subsequent `/reload-mcp` finds
+exact files Rabbit' token storage expects, so a subsequent `/reload-mcp` finds
 cached tokens and skips the browser flow entirely.
 
 ## When to Use
@@ -49,37 +49,37 @@ cached tokens and skips the browser flow entirely.
 Use this skill when **all** of the following are true:
 
 1. The user wants to add a remote HTTP MCP server that requires OAuth (not a static Bearer token).
-2. Hermes is running as a **remote gateway** (container, VPS, Docker, managed service) — NOT a local CLI on the user's laptop.
+2. Rabbit is running as a **remote gateway** (container, VPS, Docker, managed service) — NOT a local CLI on the user's laptop.
 3. The server supports OAuth 2.1 with PKCE and RFC 7591 Dynamic Client Registration (most modern MCP servers do — Better Stack, Linear, Cloudflare, Datadog, etc.). If it doesn't support DCR (GitHub is the notable exception), this skill does not apply — use a pre-registered OAuth App or a Personal Access Token instead.
 
 Do NOT use this for:
-- **Local CLI Hermes** — just set `auth: oauth` in `mcp_servers.<name>` and `/reload-mcp`. The built-in flow opens a browser and captures the callback on localhost. Works perfectly.
+- **Local CLI Rabbit** — just set `auth: oauth` in `mcp_servers.<name>` and `/reload-mcp`. The built-in flow opens a browser and captures the callback on localhost. Works perfectly.
 - **Servers that accept a static Bearer token (API key)** — always prefer `headers.Authorization: "Bearer <token>"` when the user is willing. Simpler, no refresh dance.
 - **GitHub Copilot MCP** (`api.githubcopilot.com/mcp/`) — GitHub does not expose DCR. Use a PAT or a pre-registered OAuth App (see pitfall 12).
 
 ## Why the Built-in OAuth Flow Fails on a Remote Gateway
 
-Hermes' native MCP OAuth client (`tools/mcp_oauth.py`):
+Rabbit' native MCP OAuth client (`tools/mcp_oauth.py`):
 
 1. Picks a free local port `P`.
 2. Registers a dynamic OAuth client with the AS, sending `redirect_uri = http://127.0.0.1:P/callback`.
-3. Starts an HTTP server on `127.0.0.1:P` **inside the Hermes process**.
+3. Starts an HTTP server on `127.0.0.1:P` **inside the Rabbit process**.
 4. Prints the authorize URL and waits for the code at its local endpoint.
 
-When Hermes runs remotely, the `127.0.0.1` in the `redirect_uri` is the remote
+When Rabbit runs remotely, the `127.0.0.1` in the `redirect_uri` is the remote
 container's loopback, not the user's. After authorizing, the user's browser 302s
 to `http://127.0.0.1:P/callback?code=...`, which resolves to the user's own
-laptop and fails to connect. The callback never reaches the Hermes process, the
+laptop and fails to connect. The callback never reaches the Rabbit process, the
 flow times out, and `/reload-mcp` returns "No MCP tools available" with no detail.
 
-Symptoms to recognize: `[xdg-open] <defunct>` processes under the hermes user, an
-empty or missing tokens directory (`$HERMES_HOME/mcp-tokens/`), and a reload that
+Symptoms to recognize: `[xdg-open] <defunct>` processes under the rabbit user, an
+empty or missing tokens directory (`$RABBIT_HOME/mcp-tokens/`), and a reload that
 responds without any "Added/Reconnected: X" line in `change_detail`.
 
 ## Cheap First Fallbacks: the Built-in Flow's Own Escape Hatches
 
 Before any manual token surgery, check whether the built-in flow's fallbacks
-already cover the deployment. When Hermes detects a remote session it prints two
+already cover the deployment. When Rabbit detects a remote session it prints two
 options alongside the authorize URL (`tools/mcp_oauth.py`):
 
 1. **Paste-back** — on an interactive TTY, a stdin reader races the HTTP
@@ -89,15 +89,15 @@ options alongside the authorize URL (`tools/mcp_oauth.py`):
 2. **SSH port-forward** — `ssh -N -L <port>:127.0.0.1:<port> <user>@<host>`
    makes the redirect reach the remote listener normally.
 
-Both require an interactive terminal to the Hermes host. The rest of this skill
-is for when there is NO interactive TTY — Hermes running purely as a messaging
+Both require an interactive terminal to the Rabbit host. The rest of this skill
+is for when there is NO interactive TTY — Rabbit running purely as a messaging
 gateway/bot where `/reload-mcp` triggers the flow with nobody at a prompt.
 
-## Preferred Front Door: the Hermes Dashboard (try this BEFORE manual token surgery)
+## Preferred Front Door: the Rabbit Dashboard (try this BEFORE manual token surgery)
 
-A remote Hermes gateway often also runs the **dashboard** web UI as a SEPARATE
-process (e.g. `hermes dashboard --host 0.0.0.0 --port <port>`; check with
-`ps aux | grep 'hermes dashboard'`). It exposes a connector/MCP console —
+A remote Rabbit gateway often also runs the **dashboard** web UI as a SEPARATE
+process (e.g. `rabbit dashboard --host 0.0.0.0 --port <port>`; check with
+`ps aux | grep 'rabbit dashboard'`). It exposes a connector/MCP console —
 endpoints like `/api/mcp/servers`, `/api/mcp/status`, and `/connectors` (all
 login-gated; a cookieless curl returning 401/302 confirms they exist).
 
@@ -116,11 +116,11 @@ platforms inject it into the environment — grep for it rather than making the
 user hunt:
 
 ```bash
-env | grep -iE "HERMES_DASHBOARD_PUBLIC_URL|RAILWAY_PUBLIC_DOMAIN|RAILWAY_STATIC_URL|RAILWAY_SERVICE_.*_URL|PUBLIC_URL|BASE_URL|DOMAIN" \
+env | grep -iE "RABBIT_DASHBOARD_PUBLIC_URL|RAILWAY_PUBLIC_DOMAIN|RAILWAY_STATIC_URL|RAILWAY_SERVICE_.*_URL|PUBLIC_URL|BASE_URL|DOMAIN" \
   | sed -E 's/(TOKEN|SECRET|KEY|PASSWORD)=.*/\1=***REDACTED***/I'
 ```
 
-`HERMES_DASHBOARD_PUBLIC_URL` is authoritative when present. On Railway also check
+`RABBIT_DASHBOARD_PUBLIC_URL` is authoritative when present. On Railway also check
 `RAILWAY_PUBLIC_DOMAIN` / `RAILWAY_STATIC_URL` (the `*.up.railway.app` host) and
 `RAILWAY_SERVICE_*_URL` vars, which sometimes carry a friendlier custom domain.
 Hand the user the full `https://` URL and point them at the Connectors/MCP
@@ -129,13 +129,13 @@ to `*_TOKEN`/`*_SECRET` vars.
 
 **What the dashboard does NOT fix (still host-side / shell):** stdio servers that
 need shell auth state (a CLI `login` command whose credentials may not persist
-across restarts) and anything reading credentials from `$HERMES_HOME/.env`. Those
+across restarts) and anything reading credentials from `$RABBIT_HOME/.env`. Those
 are out of the dashboard's scope regardless.
 
 ## The Workaround
 
 Do the OAuth dance manually, then write the resulting tokens into the exact files
-Hermes' `HermesTokenStorage` would have written, so on `/reload-mcp` Hermes finds
+Rabbit' `RabbitTokenStorage` would have written, so on `/reload-mcp` Rabbit finds
 cached tokens and skips the browser flow entirely.
 
 Run the shell commands below through the `terminal` tool on the gateway host and
@@ -146,20 +146,20 @@ the SAME code block as the token exchange (see pitfall 16).
 ### 1. Confirm it's a remote gateway
 
 ```bash
-env | grep -iE "HERMES|RAILWAY|CONTAINER"
+env | grep -iE "RABBIT|RAILWAY|CONTAINER"
 echo "$DISPLAY $WAYLAND_DISPLAY $SSH_CLIENT"
 ```
 
 No display + a remote indicator = remote gateway. `tools/mcp_oauth.py::_can_open_browser()`
-uses these same env vars, so if Hermes' own auto-detect says "headless", the
+uses these same env vars, so if Rabbit' own auto-detect says "headless", the
 built-in flow won't work.
 
-### 2. Find HERMES_HOME and the config path
+### 2. Find RABBIT_HOME and the config path
 
 ```bash
-HERMES_HOME=$(python3 -c 'from hermes_constants import get_hermes_home; print(get_hermes_home())')
-echo "config: $HERMES_HOME/config.yaml"
-echo "tokens: $HERMES_HOME/mcp-tokens/"
+RABBIT_HOME=$(python3 -c 'from rabbit_constants import get_rabbit_home; print(get_rabbit_home())')
+echo "config: $RABBIT_HOME/config.yaml"
+echo "tokens: $RABBIT_HOME/mcp-tokens/"
 ```
 
 ### 3. Discover OAuth metadata from the MCP server
@@ -199,7 +199,7 @@ POST to the `registration_endpoint` with:
 
 ```json
 {
-  "client_name": "Hermes Agent (manual OAuth)",
+  "client_name": "Rabbit Agent (manual OAuth)",
   "redirect_uris": ["http://127.0.0.1:8765/callback"],
   "grant_types": ["authorization_code", "refresh_token"],
   "response_types": ["code"],
@@ -229,7 +229,7 @@ non-empty array AND/OR the resource metadata declares specific scopes. If
 default set on its own. Fabricating scope strings against an empty
 `scopes_supported` can cause `invalid_scope` errors on some ASes.
 
-**Stash `code_verifier` and `state` to disk** (e.g. `~/.hermes/cache/scratch/.mcp-oauth-work/<server>.json`,
+**Stash `code_verifier` and `state` to disk** (e.g. `~/.rabbit/cache/scratch/.mcp-oauth-work/<server>.json`,
 0600 perms). You need them for step 7, possibly across multiple chat turns.
 
 ### 6. Give the user the authorize URL
@@ -258,10 +258,10 @@ When the user pastes the callback URL:
    - `resource=<mcp_server_url>` (if the AS required it in step 5, include here too)
 4. Response contains `access_token`, `refresh_token`, `token_type`, `expires_in`, `scope`.
 
-### 8. Write tokens in Hermes' exact schema
+### 8. Write tokens in Rabbit' exact schema
 
-`tools/mcp_oauth.py::HermesTokenStorage` expects two files under
-`$HERMES_HOME/mcp-tokens/` (create dir with `0o700`, files with `0o600`):
+`tools/mcp_oauth.py::RabbitTokenStorage` expects two files under
+`$RABBIT_HOME/mcp-tokens/` (create dir with `0o700`, files with `0o600`):
 
 **`<server_name>.json`** — the `OAuthToken` pydantic model:
 ```json
@@ -289,7 +289,7 @@ When the user pastes the callback URL:
 
 Write each file via `json.dumps(..., indent=2)`. Sanitize the filename with
 `re.sub(r'[^\w\-]', '_', server_name)[:128]` — this matches `_safe_filename()` in
-Hermes' token storage.
+Rabbit' token storage.
 
 ### 9. Add the server to config.yaml
 
@@ -314,7 +314,7 @@ body = json.dumps({
     "params": {
         "protocolVersion": "2025-06-18",
         "capabilities": {},
-        "clientInfo": {"name": "hermes-debug", "version": "1.0"},
+        "clientInfo": {"name": "rabbit-debug", "version": "1.0"},
     },
 }).encode()
 # POST to the MCP URL with:
@@ -327,22 +327,22 @@ body = json.dumps({
 
 Expect HTTP 200 with `Content-Type: text/event-stream` and a JSON-RPC result
 containing `serverInfo` and `capabilities`. **Do not use `urllib` with its default
-UA** — Cloudflare will 403 you even though Hermes (which uses httpx) will succeed.
+UA** — Cloudflare will 403 you even though Rabbit (which uses httpx) will succeed.
 `scripts/diagnose-oauth-mcp.py` automates this smoke test.
 
 ### 11. Tell the user to run `/reload-mcp`
 
-On reload, Hermes sees `auth: oauth`, calls `HermesTokenStorage.get_tokens()`,
+On reload, Rabbit sees `auth: oauth`, calls `RabbitTokenStorage.get_tokens()`,
 finds your cached tokens, skips the browser flow, and registers `mcp_<name>_*`
 tools. Refresh happens automatically before `expires_in` elapses.
 
 ## Pitfalls & Lessons Learned
 
-1. **Do not assume "headless" means "OAuth impossible."** The built-in flow works fine for local CLI; the issue is strictly remote deployments where the user's browser and the Hermes process are on different machines. Check the execution environment before claiming OAuth isn't an option.
+1. **Do not assume "headless" means "OAuth impossible."** The built-in flow works fine for local CLI; the issue is strictly remote deployments where the user's browser and the Rabbit process are on different machines. Check the execution environment before claiming OAuth isn't an option.
 
 2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
 
-3. **Cloudflare UA filter.** Many MCP/OAuth providers front their infra with Cloudflare, which 403s `python-urllib/*` user agents on metadata endpoints even though those endpoints are public. Set `User-Agent: python-httpx/0.27` (or any browser-like string) on every request in this flow. Hermes itself uses httpx, so this is never a problem in the real connection path.
+3. **Cloudflare UA filter.** Many MCP/OAuth providers front their infra with Cloudflare, which 403s `python-urllib/*` user agents on metadata endpoints even though those endpoints are public. Set `User-Agent: python-httpx/0.27` (or any browser-like string) on every request in this flow. Rabbit itself uses httpx, so this is never a problem in the real connection path.
 
 4. **Include `resource` in both authorize and token requests.** RFC 8707 resource indicators are not optional for most modern MCP servers — they bind the issued token to the specific MCP resource URL. Leaving it out sometimes still works but may yield a token that later fails at the MCP server with a scope/audience error.
 
@@ -358,11 +358,11 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 10. **A successful refresh that STILL yields a rejected token = server-side SESSION revocation; only a fresh authorization_code flow fixes it.** Distinct from pitfall 9. The stored token file can look healthy (`expires_at` well out, refresh_token present), yet a live `initialize` POST returns `401 invalid_token` with a JSON-RPC body like `{"error":{"code":-32002,"message":"Session expired. Please re-authenticate."}}`. The `grant_type=refresh_token` POST may **succeed** (HTTP 200, new access_token) — yet the brand-new token gets the SAME `-32002`. The provider revoked the underlying MCP *session* server-side; the OAuth refresh chain re-mints credentials but cannot re-establish a revoked session. Decision rule when an OAuth MCP reports "not connected": (1) smoke-test the stored access_token with a manual `initialize` POST; (2) if `401 invalid_token`, attempt a refresh and smoke-test the NEW token; (3a) new token works → write it + restart to clear the breaker; (3b) new token STILL gets `-32002`/"Session expired" → stop, this is session revocation, hand the user the authorize URL for a full re-auth. `scripts/diagnose-oauth-mcp.py` automates steps 1–2 and prints which branch you're in. For an unattended gateway whose session keeps getting revoked, prefer a static Personal API key. See `references/stripe-mcp-oauth-revocation.md` for a worked example of a provider that revokes weekly.
 
-11. **Client info file is NOT optional.** Hermes needs `<server>.client.json` to know the `client_id` for refresh grants. Skipping it means the first refresh fails and the user has to re-auth — writing both files is the whole point of this skill.
+11. **Client info file is NOT optional.** Rabbit needs `<server>.client.json` to know the `client_id` for refresh grants. Skipping it means the first refresh fails and the user has to re-auth — writing both files is the whole point of this skill.
 
 12. **Never hand-type the redirect URL for the user to open.** Generate the authorize URL programmatically with `urllib.parse.urlencode()`. Spaces in scopes and special chars in `state` break string-concatenated URLs.
 
-13. **Security: the stash file contains the `code_verifier`.** Delete `~/.hermes/cache/scratch/.mcp-oauth-work/<server>.json` immediately after successful token exchange. There's no reason to keep a proof-of-identity secret around once it's consumed.
+13. **Security: the stash file contains the `code_verifier`.** Delete `~/.rabbit/cache/scratch/.mcp-oauth-work/<server>.json` immediately after successful token exchange. There's no reason to keep a proof-of-identity secret around once it's consumed.
 
 14. **Write what the token endpoint actually returned.** The AS may grant a narrower (or wider) scope than requested. Write the `scope` from the token-exchange response to `<server>.json`, not what you asked for in step 5. When `scopes_supported: []`, the explicit scope list you send IS authoritative both ways: some servers grant exactly what you list (pass narrow scopes for least-privilege, or enumerate the full set if the user needs everything), and some won't echo the granted scope back at registration time — only the token-exchange response is authoritative.
 
@@ -374,9 +374,9 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 ## What NOT to do
 
-- **Don't use `mcp-remote` as a fallback.** It runs an npx subprocess whose OAuth callback server ALSO sits on the remote container's localhost — same problem. `mcp-remote` only helps when the MCP client doesn't speak remote HTTP at all (Hermes does natively).
+- **Don't use `mcp-remote` as a fallback.** It runs an npx subprocess whose OAuth callback server ALSO sits on the remote container's localhost — same problem. `mcp-remote` only helps when the MCP client doesn't speak remote HTTP at all (Rabbit does natively).
 - **Don't push "paste your API token and I'll add headers"** if the user explicitly asked for OAuth. Offer the static-token shortcut only after explaining why the native OAuth flow fails in remote deployments. Respect the user's choice to do the extra legwork for rotation-free, scope-limited access.
-- **Don't claim Hermes doesn't support a feature without reading the source.** Grep the source tree before making capability claims.
+- **Don't claim Rabbit doesn't support a feature without reading the source.** Grep the source tree before making capability claims.
 
 ## Quick Reference Files
 
@@ -385,5 +385,5 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 ## Related
 
-- `native-mcp` — general guide to configuring MCP in Hermes. Authoritative config reference lives there.
-- `mcporter` — the external CLI bridge, for ad-hoc MCP calls outside of Hermes' config.
+- `native-mcp` — general guide to configuring MCP in Rabbit. Authoritative config reference lives there.
+- `mcporter` — the external CLI bridge, for ad-hoc MCP calls outside of Rabbit' config.

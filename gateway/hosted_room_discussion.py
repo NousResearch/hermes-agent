@@ -36,11 +36,11 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
-# Openers of Hermes' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
+# Openers of Rabbit' own control frames (agent.prompt_builder.CONTROL_FRAME_OPENERS: the steer marker, the
 # compaction handoff, runtime/system notes, background-process and prior-context frames). A member reply is
 # republished to every peer inside a role=user prompt, so a reply reproducing one of these reads as harness
 # input to the peers; the opener is relabelled visibly (the words stay, the exact trusted shape does not).
-# Genuine user lines are never touched. Keep in sync with apps/desktop hermes-bots/group-round-prompt.ts.
+# Genuine user lines are never touched. Keep in sync with apps/desktop rabbit-bots/group-round-prompt.ts.
 _MEMBER_CONTROL_FRAME_RE = re.compile(
     r"\[(?=" + "|".join(opener.replace("]", r"\]") for opener in CONTROL_FRAME_OPENERS) + ")",
     re.IGNORECASE,

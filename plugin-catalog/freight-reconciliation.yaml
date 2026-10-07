@@ -1,5 +1,5 @@
 name: freight-reconciliation
-repo: https://github.com/harrylabsj/hermes-plugin-freight-reconciliation
+repo: https://github.com/harrylabsj/rabbit-plugin-freight-reconciliation
 sha: 160ed80ddf6333e48f176f299322aaf9ed2414b0
 description: 'Payer-side freight reconciliation: import carrier bills and trip ledgers into a
   deterministic local core (SQLite, WAL, no cloud), re-calculate against contracted rates and
@@ -12,7 +12,7 @@ description: 'Payer-side freight reconciliation: import carrier bills and trip l
 maintainer: harrylabsj
 tier: community
 category: tools
-docs_url: https://github.com/harrylabsj/hermes-plugin-freight-reconciliation
+docs_url: https://github.com/harrylabsj/rabbit-plugin-freight-reconciliation
 version: "0.4.1"
 platforms: []
 capabilities:

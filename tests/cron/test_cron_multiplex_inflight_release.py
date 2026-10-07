@@ -5,7 +5,7 @@ the claim on the TICKER thread inside that scope, but the pool worker's ``finall
 OUTSIDE ``ctx.run``, where the worker thread resolves the LAUNCH home instead. Releasing without
 the registering home therefore discarded a key nothing holds and leaked every secondary profile's
 claim: the job skipped its next fire window until the force-release backstop swept it, and the
-shutdown drain plus ``hermes.cron.jobs.running`` saw phantom work.
+shutdown drain plus ``rabbit.cron.jobs.running`` saw phantom work.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 
 import cron.scheduler as sched
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
 
 class _Scope:
@@ -23,11 +23,11 @@ class _Scope:
         self._home = str(home)
 
     def __enter__(self):
-        self._token = set_hermes_home_override(self._home)
+        self._token = set_rabbit_home_override(self._home)
         return self
 
     def __exit__(self, *_exc):
-        reset_hermes_home_override(self._token)
+        reset_rabbit_home_override(self._token)
         return False
 
 
@@ -41,7 +41,7 @@ def test_pool_worker_release_clears_the_ticked_profiles_claim(tmp_path):
 
     def _process_job(j):
         # Runs via ctx.run, so it still sees profile B — only the release is unscoped.
-        ran_in["home"] = str(sched._get_hermes_home())
+        ran_in["home"] = str(sched._get_rabbit_home())
 
     # The launch home is what an unscoped pool worker thread resolves to.
     with _Scope(launch_home), concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

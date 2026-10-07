@@ -43,7 +43,7 @@ def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_pat
     snapshot — the conftest guard's parent-chain walk can no longer see it under the test PID."""
     import psutil
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     agent = _Agent()
     res = {}
 

@@ -1,4 +1,4 @@
-import { parseColor, THEME_PRESET_PALETTES, type ThemePresetPalette } from "@hermes/shared";
+import { parseColor, THEME_PRESET_PALETTES, type ThemePresetPalette } from "@rabbit/shared";
 import type { DashboardTheme, ThemePalette, ThemeTypography, ThemeLayout } from "./types";
 
 /**
@@ -9,10 +9,10 @@ import type { DashboardTheme, ThemePalette, ThemeTypography, ThemeLayout } from 
  * corner-radius all shift to match the theme's personality.
  *
  * Theme names must stay in sync with the backend's
- * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
+ * `_BUILTIN_DASHBOARD_THEMES` list in `rabbit_cli/web_server.py`.
  *
  * Presets that also ship on the desktop (midnight, ember, mono, cyberpunk)
- * take their colours from `@hermes/shared` `THEME_PRESET_PALETTES` so both
+ * take their colours from `@rabbit/shared` `THEME_PRESET_PALETTES` so both
  * surfaces render one palette; only typography/layout/overrides live here.
  */
 
@@ -67,8 +67,8 @@ export function webPresetFromShared(
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "Rabbit Teal",
+  description: "Classic dark teal — the canonical Rabbit look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -199,11 +199,11 @@ export const roseTheme: DashboardTheme = {
   },
 };
 
-/** Light mode — vivid Nous-blue accents on a cream canvas. */
-export const nousBlueTheme: DashboardTheme = {
-  name: "nous-blue",
-  label: "Nous Blue",
-  description: "Light mode — vivid Nous-blue accents on cream canvas",
+/** Light mode — vivid Rabbit-blue accents on a cream canvas. */
+export const rabbitBlueTheme: DashboardTheme = {
+  name: "rabbit-blue",
+  label: "Rabbit Blue",
+  description: "Light mode — vivid Rabbit-blue accents on cream canvas",
   palette: {
     background: { hex: "#E8F2FD", alpha: 1 },
     midground: { hex: "#0053FD", alpha: 1 },
@@ -229,8 +229,8 @@ export const nousBlueTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "Rabbit Teal (Large)",
+  description: "Rabbit Teal with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
@@ -246,7 +246,7 @@ export const defaultLargeTheme: DashboardTheme = {
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
-  "nous-blue": nousBlueTheme,
+  "rabbit-blue": rabbitBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

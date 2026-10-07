@@ -1,7 +1,7 @@
 """Email modes A/B/C helpers + anti-phishing verification-link extraction.
 
 Mode A (default): render a ready-to-send draft to disk; the operator sends it.
-Mode B/C: the agent SENDS via a Hermes email mechanism (IMAP/SMTP gateway,
+Mode B/C: the agent SENDS via a Rabbit email mechanism (IMAP/SMTP gateway,
 `himalaya`, AgentMail, or Gmail via `google-workspace`) and READS the reply to
 resolve the verification link with `extract_verification_link`. Those transports
 are driven by the agent through native tools; this module stays network-free so

@@ -6,7 +6,7 @@ author: sprmn24
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [docker, containers, devops, infrastructure, compose, images, volumes, networks, debugging]
     category: devops
     requires_toolsets: [terminal]

@@ -5,7 +5,7 @@ Selection runs on a hot path (every model call plus auxiliary tasks). Before
 the throttle, an empty/exhausted pool logged this line on *every* select(),
 which on Windows storms concurrent-log-handler's cross-process lock
 ("Cannot acquire lock after 20 attempts"), stalls the asyncio event loop, and
-fails the Desktop backend readiness handshake ("Timed out connecting to Hermes
+fails the Desktop backend readiness handshake ("Timed out connecting to Rabbit
 backend after 15000ms"). See #58265 for the same fix class on another message.
 """
 

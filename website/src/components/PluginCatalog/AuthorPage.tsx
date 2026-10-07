@@ -37,7 +37,7 @@ export default function AuthorPage({ data }: { data: AuthorPageData }) {
   return (
     <Layout
       title={`Plugins by ${author.name} · Plugin Catalog`}
-      description={`${plugins.length} Hermes Agent plugin${plugins.length === 1 ? "" : "s"} by ${author.name} in the reviewed catalog.`}
+      description={`${plugins.length} Rabbit Agent plugin${plugins.length === 1 ? "" : "s"} by ${author.name} in the reviewed catalog.`}
     >
       <div className={styles.page}>
         <nav className={styles.crumbs} aria-label="Breadcrumb">

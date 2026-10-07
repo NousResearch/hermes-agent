@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Telephony helper for the Hermes optional telephony skill.
+"""Telephony helper for the Rabbit optional telephony skill.
 
 Capabilities:
-- Persist telephony provider credentials to the Hermes .env file ($HERMES_HOME/.env)
+- Persist telephony provider credentials to the Rabbit .env file ($RABBIT_HOME/.env)
 - Search for, buy, and remember Twilio phone numbers
 - Make direct Twilio calls (TwiML <Say> or <Play>)
 - Send SMS / MMS via Twilio
@@ -11,7 +11,7 @@ Capabilities:
 - Make outbound AI voice calls via Bland.ai or Vapi
 
 This file intentionally uses Python stdlib HTTP clients so the skill can run in a
-minimal environment with no extra pip installs. Reading Hermes config.yaml is
+minimal environment with no extra pip installs. Reading Rabbit config.yaml is
 optional and requires ruamel.yaml (standalone install: ruamel.yaml==0.18.17).
 """
 
@@ -69,20 +69,20 @@ class OwnedTwilioNumber:
     capabilities: dict[str, Any]
 
 
-def _hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+def _rabbit_home() -> Path:
+    return Path(os.environ.get("RABBIT_HOME", "~/.rabbit")).expanduser()
 
 
 def _env_path() -> Path:
-    return _hermes_home() / ".env"
+    return _rabbit_home() / ".env"
 
 
 def _config_path() -> Path:
-    return _hermes_home() / "config.yaml"
+    return _rabbit_home() / "config.yaml"
 
 
 def _state_path() -> Path:
-    return _hermes_home() / "telephony_state.json"
+    return _rabbit_home() / "telephony_state.json"
 
 
 def _load_root_config() -> dict[str, Any]:
@@ -90,7 +90,7 @@ def _load_root_config() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        from ruamel.yaml import YAML  # optional dependency; Hermes ships ruamel.yaml
+        from ruamel.yaml import YAML  # optional dependency; Rabbit ships ruamel.yaml
     except Exception:
         return {}
     try:
@@ -1149,22 +1149,22 @@ def save_vapi(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Hermes telephony helper")
+    parser = argparse.ArgumentParser(description="Rabbit telephony helper")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("diagnose", help="Show saved telephony state and provider readiness")
 
-    p = sub.add_parser("save-twilio", help="Save Twilio credentials to the Hermes .env file")
+    p = sub.add_parser("save-twilio", help="Save Twilio credentials to the Rabbit .env file")
     p.add_argument("account_sid")
     p.add_argument("auth_token")
     p.add_argument("--phone-number", default="")
     p.add_argument("--phone-sid", default="")
 
-    p = sub.add_parser("save-bland", help="Save Bland.ai settings to the Hermes .env file")
+    p = sub.add_parser("save-bland", help="Save Bland.ai settings to the Rabbit .env file")
     p.add_argument("api_key")
     p.add_argument("--voice", default=BLAND_DEFAULT_VOICE)
 
-    p = sub.add_parser("save-vapi", help="Save Vapi settings to the Hermes .env file")
+    p = sub.add_parser("save-vapi", help="Save Vapi settings to the Rabbit .env file")
     p.add_argument("api_key")
     p.add_argument("--phone-number-id", default="")
     p.add_argument("--voice-provider", default=VAPI_DEFAULT_VOICE_PROVIDER)

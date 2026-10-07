@@ -89,9 +89,9 @@ class FakeIdP:
 PLUGIN_TEMPLATE = '''
 from providers import register_provider
 from providers.base import ProviderProfile
-from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
+from rabbit_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
 
-cfg = OAuthPKCEConfig(client_id="hermes-example", authorize_url="{base}/authorize", token_url="{base}/token",
+cfg = OAuthPKCEConfig(client_id="rabbit-example", authorize_url="{base}/authorize", token_url="{base}/token",
                       scopes=("inference",), timeout_seconds=20)
 register_provider(ProviderProfile(name="example-pkce", auth_type="oauth_external",
                                   base_url="https://example.invalid/v1", fallback_models=("example-model",),

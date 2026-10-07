@@ -16,7 +16,7 @@ import {
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {
-    expect(filePathFromMediaPath('/home/u/.hermes/images/a.png')).toBe('/home/u/.hermes/images/a.png')
+    expect(filePathFromMediaPath('/home/u/.rabbit/images/a.png')).toBe('/home/u/.rabbit/images/a.png')
   })
 
   it('decodes a file:// URL with encoded characters', () => {
@@ -84,12 +84,12 @@ describe('mediaGatewayStreamUrl', () => {
 
   it('rewrites gateway-local media to the main-process remote stream proxy', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
-    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
+    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('rabbit-media://remote/%2Ftmp%2Fa%20b.mp4')
   })
 
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
-    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe('rabbit-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer')
   })
 
   it('pins remote streams to their registered connection and profile', () => {
@@ -101,7 +101,7 @@ describe('mediaGatewayStreamUrl', () => {
     } as never)
 
     expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
-      'hermes-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
+      'rabbit-media://remote/%2Ftmp%2Fa.mp4?connectionId=studio-ssh&profile=voice%20reviewer'
     )
   })
 })
@@ -131,7 +131,7 @@ describe('resolveMediaDisplaySrc', () => {
   })
 
   it('leaves web, data, and relative markdown image sources unchanged', async () => {
-    vi.stubGlobal('window', { hermesDesktop: { api } })
+    vi.stubGlobal('window', { rabbitDesktop: { api } })
     $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
 
     await expect(resolveMediaDisplaySrc('https://example.com/a.png')).resolves.toBe('https://example.com/a.png')
@@ -145,7 +145,7 @@ describe('resolveMediaDisplaySrc', () => {
   })
 
   it('reads remote gateway-local file paths through the desktop fs bridge', async () => {
-    vi.stubGlobal('window', { hermesDesktop: { api } })
+    vi.stubGlobal('window', { rabbitDesktop: { api } })
     $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
 
     await expect(resolveMediaDisplaySrc('/Users/me/project/a b.png')).resolves.toBe('data:image/png;base64,ZHVtbXk=')
@@ -158,7 +158,7 @@ describe('resolveMediaDisplaySrc', () => {
   it('reads local desktop file paths from the local desktop shell', async () => {
     const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
 
-    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl } })
+    vi.stubGlobal('window', { rabbitDesktop: { readFileDataUrl } })
     $connection.set({ mode: 'local' } as never)
 
     await expect(resolveMediaDisplaySrc('file:///Users/me/project/a%20b.png')).resolves.toBe(
@@ -175,7 +175,7 @@ describe('resolveMediaPlaybackSrc', () => {
   })
 
   it('keeps a remote HTTPS video URL unchanged', async () => {
-    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    vi.stubGlobal('window', { rabbitDesktop: { api: vi.fn() } })
     $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 'secret' } as never)
 
     await expect(resolveMediaPlaybackSrc('https://cdn.example.com/render.mp4')).resolves.toBe(
@@ -184,20 +184,20 @@ describe('resolveMediaPlaybackSrc', () => {
   })
 
   it('routes OAuth gateway-local video through the authenticated main-process proxy', async () => {
-    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    vi.stubGlobal('window', { rabbitDesktop: { api: vi.fn() } })
     $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'default', token: null } as never)
 
     await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
-      'hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=default'
+      'rabbit-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=default'
     )
   })
 
   it('uses the Electron streaming protocol for local desktop video', async () => {
-    vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
+    vi.stubGlobal('window', { rabbitDesktop: { api: vi.fn() } })
     $connection.set({ mode: 'local' } as never)
 
     await expect(resolveMediaPlaybackSrc('C:\\renders\\demo.mp4')).resolves.toBe(
-      'hermes-media://stream/C%3A%5Crenders%5Cdemo.mp4'
+      'rabbit-media://stream/C%3A%5Crenders%5Cdemo.mp4'
     )
   })
 })
@@ -213,7 +213,7 @@ describe('gatewayMediaDataUrl', () => {
 
   beforeEach(() => {
     api.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { api } })
+    vi.stubGlobal('window', { rabbitDesktop: { api } })
     $connection.set({ mode: 'remote' } as never)
   })
 
@@ -223,11 +223,11 @@ describe('gatewayMediaDataUrl', () => {
   })
 
   it('reads gateway media through the desktop fs bridge instead of /api/media roots', async () => {
-    const url = await gatewayMediaDataUrl('/home/u/.hermes/skills/demo/images/a b.png')
+    const url = await gatewayMediaDataUrl('/home/u/.rabbit/skills/demo/images/a b.png')
 
     expect(url).toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
-      path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.hermes%2Fskills%2Fdemo%2Fimages%2Fa%20b.png'
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fu%2F.rabbit%2Fskills%2Fdemo%2Fimages%2Fa%20b.png'
     })
   })
 })
@@ -243,7 +243,7 @@ describe('gatewayImageProxyDataUrl (#74564)', () => {
 
   beforeEach(() => {
     api.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { api } })
+    vi.stubGlobal('window', { rabbitDesktop: { api } })
     $connection.set({ mode: 'remote' } as never)
   })
 
@@ -287,7 +287,7 @@ describe('downloadGatewayMediaFile', () => {
 
   beforeEach(() => {
     saveGatewayFile.mockClear()
-    vi.stubGlobal('window', { hermesDesktop: { saveGatewayFile } })
+    vi.stubGlobal('window', { rabbitDesktop: { saveGatewayFile } })
     $connection.set({ connectionId: 'work-ssh', mode: 'remote', profile: 'docker-gw' } as never)
   })
 
@@ -311,7 +311,7 @@ describe('downloadGatewayMediaFile', () => {
   })
 
   it('rejects when the desktop bridge is unavailable', async () => {
-    vi.stubGlobal('window', { hermesDesktop: {} })
+    vi.stubGlobal('window', { rabbitDesktop: {} })
 
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'

@@ -1,7 +1,7 @@
 """Relay-side accumulator for the chat_completions streaming wire.
 
 Relay invokes its collector for every post-intercept chunk and then its finalizer as soon
-as the provider stream ends — concurrently with Hermes' consumer thread, which may not have
+as the provider stream ends — concurrently with Rabbit' consumer thread, which may not have
 read the last chunk yet. The finalizer therefore builds Relay's recorded response from
 collector-observed state only, never from the consumer loop's closures. Sibling of
 ``relay_llm.AnthropicStreamAccumulator``; Bedrock and Codex follow the same contract.
@@ -47,7 +47,7 @@ class RelayChatAccumulator:
         if chunk.get("usage"):
             self._usage = chunk["usage"]
         choices = chunk.get("choices") or []
-        choice = choices[0] if choices else None  # Hermes never requests n>1
+        choice = choices[0] if choices else None  # Rabbit never requests n>1
         if not isinstance(choice, dict):
             return
         self._finish_reason = choice.get("finish_reason") or self._finish_reason
@@ -77,6 +77,6 @@ class RelayChatAccumulator:
             "refusal": "".join(self._refusal) or None,
             "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
-        # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
+        # "stop" also covers hosted-portal ``lastOne`` usage frames, which carry no finish_reason.
         return {"model": self._model, "usage": self._usage,
             "choices": [{"message": message, "finish_reason": self._finish_reason or "stop"}]}

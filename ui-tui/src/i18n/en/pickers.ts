@@ -24,7 +24,7 @@ export const pickersEn = {
       failedToSaveKey: 'failed to save key',
       // {0} = the provider's key env var name (e.g. OPENAI_API_KEY).
       pasteKeyToActivate: (keyEnv: string) => `paste ${keyEnv} to activate`,
-      runHermesModelToConfigure: 'run `hermes model` to configure',
+      runRabbitModelToConfigure: 'run `rabbit model` to configure',
       escQCancelHint: 'Esc/q cancel',
       reasoning: {
         none: 'none (disable reasoning)',
@@ -33,7 +33,7 @@ export const pickersEn = {
       key: {
         // {0} = provider display name.
         title: (providerName: string) => `Configure ${providerName}`,
-        pasteBelow: 'Paste your API key below (saved to ~/.hermes/.env)',
+        pasteBelow: 'Paste your API key below (saved to ~/.rabbit/.env)',
         empty: '(empty)',
         saving: 'saving…',
         hint: 'Enter save · Ctrl+U clear · Esc back'

@@ -1,4 +1,4 @@
-import type * as HermesSdk from '@hermes/plugin-sdk'
+import type * as RabbitSdk from '@rabbit/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, expect, it, vi } from 'vitest'
@@ -6,21 +6,21 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { I18nProvider, useI18n } from '@/i18n'
 import type { I18nContextValue } from '@/i18n'
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
-import { CreateRoutineDialog, RoutineDetailDialog } from '@/plugins/hermes-bots/cron'
-import { BOTS_LOCALES } from '@/plugins/hermes-bots/i18n'
-import { translateBotsIn } from '@/plugins/hermes-bots/i18n-test-helper'
+import { CreateRoutineDialog, RoutineDetailDialog } from '@/plugins/rabbit-bots/cron'
+import { BOTS_LOCALES } from '@/plugins/rabbit-bots/i18n'
+import { translateBotsIn } from '@/plugins/rabbit-bots/i18n-test-helper'
 
 const { request } = vi.hoisted(() => ({
   request: vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}))
 }))
 
-vi.mock('@hermes/plugin-sdk', async importOriginal => {
-  const sdk = await importOriginal<typeof HermesSdk>()
+vi.mock('@rabbit/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof RabbitSdk>()
 
   return { ...sdk, host: { ...sdk.host, request, notify: vi.fn() } }
 })
 // The bot desktop preview is outside the scheduling dialog under test.
-vi.mock('@/plugins/hermes-bots/screen-hero', () => ({ ScreenHero: () => null }))
+vi.mock('@/plugins/rabbit-bots/screen-hero', () => ({ ScreenHero: () => null }))
 let i18n: I18nContextValue
 let dispose: () => void
 
@@ -31,7 +31,7 @@ function Controls() {
 }
 
 function mount(children: React.ReactNode) {
-  dispose = registerPluginLocales('hermes-bots', BOTS_LOCALES)
+  dispose = registerPluginLocales('rabbit-bots', BOTS_LOCALES)
 
   return render(
     <I18nProvider configClient={null} initialLocale="zh">

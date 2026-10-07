@@ -2,7 +2,7 @@
 never become the active user turn after a completed assistant response.
 
 Failure mode (real report): assistant finished with ``finish_reason=stop``,
-Hermes inserted a standalone ``role=user`` ``[CONTEXT COMPACTION — REFERENCE
+Rabbit inserted a standalone ``role=user`` ``[CONTEXT COMPACTION — REFERENCE
 ONLY]`` handoff containing a Historical Task Snapshot, no new human request
 followed, and the agent immediately started a tool-calling turn that resumed
 the already-completed work.

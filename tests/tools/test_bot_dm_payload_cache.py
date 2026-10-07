@@ -47,8 +47,8 @@ class TestCleanupContract:
         assert bot_mode_dm.cleanup_bot_dm_cache() == 0
 
     def test_legacy_and_relay_prefixed_orphans_are_swept(self, temp_root):
-        legacy = temp_root / "hermes-dm-legacy.txt"
-        relay = temp_root / "hermes-relay-dm-orphan.txt"
+        legacy = temp_root / "rabbit-dm-legacy.txt"
+        relay = temp_root / "rabbit-relay-dm-orphan.txt"
         unrelated = temp_root / "other.txt"
         for f in (legacy, relay, unrelated):
             f.write_text("secret", encoding="utf-8")

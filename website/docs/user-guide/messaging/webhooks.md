@@ -1,12 +1,12 @@
 ---
 sidebar_position: 13
 title: "Webhooks"
-description: "Receive events from GitHub, GitLab, and other services to trigger Hermes agent runs"
+description: "Receive events from GitHub, GitLab, and other services to trigger Rabbit agent runs"
 ---
 
 # Webhooks
 
-Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Hermes agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
+Receive events from external services (GitHub, GitLab, JIRA, Stripe, etc.) and trigger Rabbit agent runs automatically. The webhook adapter runs an HTTP server that accepts POST requests, validates HMAC signatures, transforms payloads into agent prompts, and routes responses back to the source or to another configured platform.
 
 The agent processes the event and can respond by posting comments on PRs, sending messages to Telegram/Discord, or logging the result.
 
@@ -15,7 +15,7 @@ The agent processes the event and can respond by posting comments on PRs, sendin
 <div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
   <iframe
     src="https://www.youtube.com/embed/WNYe5mD4fY8"
-    title="Hermes Agent — Webhooks Tutorial"
+    title="Rabbit Agent — Webhooks Tutorial"
     style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0}}
     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
     allowFullScreen
@@ -26,8 +26,8 @@ The agent processes the event and can respond by posting comments on PRs, sendin
 
 ## Quick Start
 
-1. Enable via `hermes gateway setup` or environment variables
-2. Define routes in `config.yaml` **or** create them dynamically with `hermes webhook subscribe`
+1. Enable via `rabbit gateway setup` or environment variables
+2. Define routes in `config.yaml` **or** create them dynamically with `rabbit webhook subscribe`
 3. Point your service at `http://your-server:8644/webhooks/<route-name>`
 
 ---
@@ -39,14 +39,14 @@ There are two ways to enable the webhook adapter.
 ### Via setup wizard
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 Follow the prompts to enable webhooks, set the port, and set a global HMAC secret.
 
 ### Via environment variables
 
-Add to `~/.hermes/.env`:
+Add to `~/.rabbit/.env`:
 
 ```bash
 WEBHOOK_ENABLED=true
@@ -80,12 +80,12 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
-| `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
+| `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `rabbit webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
-| `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `script` | No | Filter/transform script under `~/.rabbit/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
 | `skills` | No | List of skill names to load for the agent run. |
-| `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
+| `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `rabbit webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant` (plugin), `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
@@ -143,12 +143,12 @@ platforms:
           secret: "todoist-secret"
           filters:
             - field: "payload.labels"
-              contains: "hermes"
+              contains: "rabbit"
             - any:
                 - field: "payload.priority"
                   equals: 4
                 - field: "payload.project_id"
-                  in_file: "~/.hermes/data/todoist/watchlist.json"
+                  in_file: "~/.rabbit/data/todoist/watchlist.json"
           prompt: "Todoist task changed: {payload.content}"
 ```
 
@@ -198,23 +198,23 @@ How it works:
 - When more than one event was coalesced, the prompt gets a short note telling the agent how many earlier events were superseded.
 - If the `key` does not resolve for an event (the payload lacks the field — e.g. an `issue_comment` event on a route keyed by `pull_request.number`), that event is **dispatched immediately** instead of being coalesced, so unrelated entities never collapse into one group. Pick a key present on every event type the route accepts.
 - Coalesced requests return HTTP 202 with `{"status": "coalesced"}`. Delivery-ID idempotency still runs first, so provider retries of the same delivery are dropped rather than counted.
-- Pending groups are flushed (dispatched immediately) when the adapter disconnects — a gateway reconnect or `hermes gateway stop` — not dropped. Buffered events live in memory, so a hard process kill loses at most the current window's buffered burst.
+- Pending groups are flushed (dispatched immediately) when the adapter disconnects — a gateway reconnect or `rabbit gateway stop` — not dropped. Buffered events live in memory, so a hard process kill loses at most the current window's buffered burst.
 - `coalesce` applies to agent-mode routes only; combining it with `deliver_only` or `cron_job` is rejected at startup.
 
 ### Script Filters and Transforms
 
-Use `script` when declarative filters are not enough. Scripts must live under `~/.hermes/scripts/` for the active profile; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash, and all other extensions run with the current Python interpreter.
+Use `script` when declarative filters are not enough. Scripts must live under `~/.rabbit/scripts/` for the active profile; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash, and all other extensions run with the current Python interpreter.
 
 The route payload is sent to stdin as JSON:
 
 ```python
-# ~/.hermes/scripts/todoist-hermes-label.py
+# ~/.rabbit/scripts/todoist-rabbit-label.py
 import json
 import sys
 
 payload = json.load(sys.stdin)
 labels = payload.get("payload", {}).get("labels", [])
-if "hermes" not in labels:
+if "rabbit" not in labels:
     print("[SILENT]")
     raise SystemExit(0)
 
@@ -226,7 +226,7 @@ Script outcomes:
 
 - JSON object stdout replaces the payload used by `prompt` and `deliver_extra`.
 - Non-JSON text stdout is added to the payload as `script_output`.
-- Empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
+- Empty stdout, exact `[SILENT]`, `{"__rabbit_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
 
 ### Prompt Templates
 
@@ -283,7 +283,7 @@ This walkthrough sets up automatic code review on every pull request.
 
 ### 2. Add the route config
 
-Add the `github-pr` route to your `~/.hermes/config.yaml` as shown in the example above.
+Add the `github-pr` route to your `~/.rabbit/config.yaml` as shown in the example above.
 
 ### 3. Ensure `gh` CLI is authenticated
 
@@ -295,7 +295,7 @@ gh auth login
 
 ### 4. Test it
 
-Open a pull request on the repository. The webhook fires, Hermes processes the event, and posts a review comment on the PR.
+Open a pull request on the repository. The webhook fires, Rabbit processes the event, and posts a review comment on the PR.
 
 ---
 
@@ -362,7 +362,7 @@ For cross-platform delivery, the target platform must also be enabled and connec
 
 ### Replying to a delivery {#replying-to-a-delivery}
 
-By default a delivery is fire-and-forget: each webhook event runs in its own session, so if you reply to the delivered message in that chat, the agent there has no record of what was sent. Set `mirror_to_session: true` on the route (or pass `--mirror-to-session` to `hermes webhook subscribe`) and the delivered text is also appended to the target chat's session as `[Webhook delivery: <route>]` followed by the message, so a follow-up ("so he's out?") has the context.
+By default a delivery is fire-and-forget: each webhook event runs in its own session, so if you reply to the delivered message in that chat, the agent there has no record of what was sent. Set `mirror_to_session: true` on the route (or pass `--mirror-to-session` to `rabbit webhook subscribe`) and the delivered text is also appended to the target chat's session as `[Webhook delivery: <route>]` followed by the message, so a follow-up ("so he's out?") has the context.
 
 - The mirror is best-effort: it never fails the delivery, and it is skipped when the chat has no gateway session yet (nobody has talked to the agent there).
 - On a `/p/<profile>/` route it is written into that profile's session for the chat, never another profile's.
@@ -414,7 +414,7 @@ Your Supabase edge function signs the payload with HMAC-SHA256 and POSTs to `htt
 ### Example: Dynamic subscription via CLI
 
 ```bash
-hermes webhook subscribe antenna-matches \
+rabbit webhook subscribe antenna-matches \
   --deliver telegram \
   --deliver-chat-id "123456789" \
   --deliver-only \
@@ -474,7 +474,7 @@ platforms:
 ### Via the CLI
 
 ```bash
-hermes webhook subscribe pr-feedback \
+rabbit webhook subscribe pr-feedback \
   --events "pull_request_review" \
   --cron-job "pr-review-sweeper" \
   --prompt "PR #{number} received feedback: {review.body}"
@@ -493,12 +493,12 @@ The job reference is validated when you create the subscription, so typos surfac
 
 ## Dynamic Subscriptions (CLI) {#dynamic-subscriptions}
 
-In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `hermes webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.
+In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `rabbit webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.
 
 ### Create a subscription
 
 ```bash
-hermes webhook subscribe github-issues \
+rabbit webhook subscribe github-issues \
   --events "issues" \
   --prompt "New issue #{issue.number}: {issue.title}\nBy: {issue.user.login}\n\n{issue.body}" \
   --deliver telegram \
@@ -511,25 +511,25 @@ This returns the webhook URL and an auto-generated HMAC secret. Configure your s
 ### List subscriptions
 
 ```bash
-hermes webhook list
+rabbit webhook list
 ```
 
 ### Remove a subscription
 
 ```bash
-hermes webhook remove github-issues
+rabbit webhook remove github-issues
 ```
 
 ### Test a subscription
 
 ```bash
-hermes webhook test github-issues
-hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
+rabbit webhook test github-issues
+rabbit webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
 ```
 
 ### How dynamic subscriptions work
 
-- Subscriptions are stored in `~/.hermes/webhook_subscriptions.json`
+- Subscriptions are stored in `~/.rabbit/webhook_subscriptions.json`
 - The webhook adapter hot-reloads a coherent snapshot of this file on each incoming request (stat-gated (mtime/size/inode), lock-free)
 - Static routes from `config.yaml` always take precedence over dynamic ones with the same name
 - Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)
@@ -539,7 +539,7 @@ hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "
 
 ### Agent-driven subscriptions
 
-The agent can create subscriptions via the terminal tool when guided by the `webhook-subscriptions` skill. Ask the agent to "set up a webhook for GitHub issues" and it will run the appropriate `hermes webhook subscribe` command.
+The agent can create subscriptions via the terminal tool when guided by the `webhook-subscriptions` skill. Ask the agent to "set up a webhook for GitHub issues" and it will run the appropriate `rabbit webhook subscribe` command.
 
 ---
 
@@ -562,7 +562,7 @@ platforms:
           deliver: "telegram"
 ```
 
-For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_subscriptions.json` directly:
+For dynamic subscriptions, add the `toolsets` key by editing `~/.rabbit/webhook_subscriptions.json` directly:
 
 ```json
 {
@@ -579,7 +579,7 @@ Behavior and safety properties:
 
 - The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
 - Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
-- `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
+- `rabbit webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
 - Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.
 
 ---
@@ -644,7 +644,7 @@ platforms:
 :::warning
 **HMAC validation authenticates the _sender_, not the _content_.** A valid signature only proves the request came from a party holding the route's secret (e.g. GitHub). It says nothing about who wrote the _business fields_ inside the payload — PR titles, commit messages, issue descriptions, and any other upstream text are authored by arbitrary third parties and must be treated as untrusted.
 
-This is the same trust model that applies to everything the agent reads: web pages, files, and tool output are all untrusted input. Hermes does not — and cannot reliably — sanitize untrusted text with a blocklist; phrasing, encoding, and translation make that trivially bypassable. **The trust boundary is the agent's capability surface, not the input channel.** Harden there:
+This is the same trust model that applies to everything the agent reads: web pages, files, and tool output are all untrusted input. Rabbit does not — and cannot reliably — sanitize untrusted text with a blocklist; phrasing, encoding, and translation make that trivially bypassable. **The trust boundary is the agent's capability surface, not the input channel.** Harden there:
 
 - **Sandbox the runtime.** Run the gateway with the Docker or SSH terminal backend (or in a VM) when exposed to the internet, so a hijacked turn cannot touch the host.
 - **Scope the toolset.** Disable `terminal`, `file`, and outbound-action tools on webhook-triggered sessions if the route only needs to read and summarize. Fewer capabilities means a smaller blast radius if a payload field carries injected instructions.
@@ -679,7 +679,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 ### Agent not responding
 
-- Run the gateway in foreground to see logs: `hermes gateway run`
+- Run the gateway in foreground to see logs: `rabbit gateway run`
 - Check that the prompt template is rendering correctly
 - Verify the delivery target is configured and connected
 

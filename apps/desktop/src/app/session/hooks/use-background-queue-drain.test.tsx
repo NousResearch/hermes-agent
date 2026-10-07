@@ -22,7 +22,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { useBackgroundQueueDrain } from './use-background-queue-drain'
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -76,7 +76,7 @@ describe('useBackgroundQueueDrain', () => {
     // The queue store merges over live localStorage on save (cross-window sync,
     // #46732) — stale persisted entries from an earlier test would be adopted
     // into the atom and drained here as if they were fresh queue state.
-    window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    window.localStorage.removeItem('rabbit.desktop.composerQueue.v1')
     resetFrozenQueuedTransportsForTests()
     // Production drain waits for the sidebar list. Tests that assert drain
     // behavior are post-load unless they opt into the loading gate.
@@ -430,13 +430,13 @@ describe('useBackgroundQueueDrain', () => {
   it('keeps the queued prompt when the session is reachable but its owner hint is ambiguous (#122083 review)', async () => {
     vi.useFakeTimers()
 
-    // Two routes for the same id (cloud gateway + local backend, or a profile
+    // Two routes for the same id (a remote gateway + local backend, or a profile
     // switch that re-stamped the route) make getSessionOwnerHint return
     // undefined — a POSITIVE liveness signal, not absence. Reading the
     // singular accessor as an existence test dropped the user's queued
     // prompt at drain exhaustion.
     setSessions([])
-    setSessionOwnerHint('stored-session-a', { connectionId: 'conn-cloud', profile: 'default' })
+    setSessionOwnerHint('stored-session-a', { connectionId: 'conn-remote', profile: 'default' })
     setSessionOwnerHint('stored-session-a', { connectionId: 'conn-local', profile: 'work' })
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => false)

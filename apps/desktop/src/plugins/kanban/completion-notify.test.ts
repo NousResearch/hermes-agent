@@ -3,11 +3,11 @@
  *
  * Each test starts from a FRESH module instance (vi.resetModules + dynamic
  * import) so the in-memory per-board cursor and rest binding match a fresh
- * renderer process. The @hermes/plugin-sdk host is mocked: notify/navigate
+ * renderer process. The @rabbit/plugin-sdk host is mocked: notify/navigate
  * calls are asserted, never really executed.
  */
 
-import type { PluginRestOptions } from '@hermes/plugin-sdk'
+import type { PluginRestOptions } from '@rabbit/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { CompletionEvent } from './completion-notify'
@@ -28,7 +28,7 @@ const { hostMock } = vi.hoisted(() => ({
   hostMock: { notify: vi.fn(), navigate: vi.fn() }
 }))
 
-vi.mock('@hermes/plugin-sdk', () => ({
+vi.mock('@rabbit/plugin-sdk', () => ({
   host: hostMock,
   // Pulled in transitively via ./i18n (the module reads its `en` bundle for
   // fallback titles); never called in these tests.

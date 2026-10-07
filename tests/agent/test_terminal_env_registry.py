@@ -32,7 +32,7 @@ class _Provider(TerminalEnvironmentProvider):
 
     @property
     def cache_path_base(self):
-        return "~/.hermes"
+        return "~/.rabbit"
 
     @property
     def strip_env_keys(self):
@@ -105,7 +105,7 @@ def test_provider_flag_reads_attributes():
     assert reg.provider_flag("testbox", "is_remote") is True
     assert reg.provider_flag("testbox", "is_container") is True
     assert reg.provider_flag("testbox", "session_isolated_when_nonpersistent") is True
-    assert reg.provider_flag("testbox", "cache_path_base", None) == "~/.hermes"
+    assert reg.provider_flag("testbox", "cache_path_base", None) == "~/.rabbit"
     assert reg.provider_flag("testbox", "skip_container_guards") is True
 
 

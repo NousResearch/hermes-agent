@@ -25,7 +25,7 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
-import hermes_time
+import rabbit_time
 from tools.cronjob_tools import _origin_from_env
 
 
@@ -41,10 +41,10 @@ class TestSlackSyntheticThreadCapture:
     def test_synthetic_slack_thread_not_captured(self):
         """thread_id == message_id on Slack = per-message session key: drop it."""
         env = {
-            "HERMES_SESSION_PLATFORM": "slack",
-            "HERMES_SESSION_CHAT_ID": "D0BJTDCSR7C",
-            "HERMES_SESSION_THREAD_ID": "1755043010.123456",
-            "HERMES_SESSION_MESSAGE_ID": "1755043010.123456",
+            "RABBIT_SESSION_PLATFORM": "slack",
+            "RABBIT_SESSION_CHAT_ID": "D0BJTDCSR7C",
+            "RABBIT_SESSION_THREAD_ID": "1755043010.123456",
+            "RABBIT_SESSION_MESSAGE_ID": "1755043010.123456",
         }
         with _session_env(env):
             origin = _origin_from_env()
@@ -56,10 +56,10 @@ class TestSlackSyntheticThreadCapture:
     def test_genuine_slack_thread_preserved(self):
         """A real in-thread creation (thread != own message id) keeps its thread."""
         env = {
-            "HERMES_SESSION_PLATFORM": "slack",
-            "HERMES_SESSION_CHAT_ID": "C0AGENERAL",
-            "HERMES_SESSION_THREAD_ID": "1755040000.000100",
-            "HERMES_SESSION_MESSAGE_ID": "1755043010.123456",
+            "RABBIT_SESSION_PLATFORM": "slack",
+            "RABBIT_SESSION_CHAT_ID": "C0AGENERAL",
+            "RABBIT_SESSION_THREAD_ID": "1755040000.000100",
+            "RABBIT_SESSION_MESSAGE_ID": "1755043010.123456",
         }
         with _session_env(env):
             origin = _origin_from_env()
@@ -69,10 +69,10 @@ class TestSlackSyntheticThreadCapture:
     def test_non_slack_platform_thread_untouched(self):
         """Telegram forum topics legitimately reuse ids; the rule is Slack-scoped."""
         env = {
-            "HERMES_SESSION_PLATFORM": "telegram",
-            "HERMES_SESSION_CHAT_ID": "-1003941067111",
-            "HERMES_SESSION_THREAD_ID": "2203",
-            "HERMES_SESSION_MESSAGE_ID": "2203",
+            "RABBIT_SESSION_PLATFORM": "telegram",
+            "RABBIT_SESSION_CHAT_ID": "-1003941067111",
+            "RABBIT_SESSION_THREAD_ID": "2203",
+            "RABBIT_SESSION_MESSAGE_ID": "2203",
         }
         with _session_env(env):
             origin = _origin_from_env()
@@ -82,9 +82,9 @@ class TestSlackSyntheticThreadCapture:
     def test_slack_no_message_id_keeps_thread(self):
         """Without a message id to compare, never guess: keep the thread."""
         env = {
-            "HERMES_SESSION_PLATFORM": "slack",
-            "HERMES_SESSION_CHAT_ID": "D0BJTDCSR7C",
-            "HERMES_SESSION_THREAD_ID": "1755040000.000100",
+            "RABBIT_SESSION_PLATFORM": "slack",
+            "RABBIT_SESSION_CHAT_ID": "D0BJTDCSR7C",
+            "RABBIT_SESSION_THREAD_ID": "1755040000.000100",
         }
         with _session_env(env):
             origin = _origin_from_env()
@@ -93,17 +93,17 @@ class TestSlackSyntheticThreadCapture:
 
 
 _TOP_LEVEL_SLACK = {
-    "HERMES_SESSION_PLATFORM": "slack",
-    "HERMES_SESSION_CHAT_ID": "C0AGENERAL",
+    "RABBIT_SESSION_PLATFORM": "slack",
+    "RABBIT_SESSION_CHAT_ID": "C0AGENERAL",
     # reply_in_thread default: the assistant's whole exchange lives in the thread keyed on the
     # asking message's own id (ts == thread_ts on the wire).
-    "HERMES_SESSION_THREAD_ID": "1755043010.123456",
-    "HERMES_SESSION_MESSAGE_ID": "1755043010.123456",
+    "RABBIT_SESSION_THREAD_ID": "1755043010.123456",
+    "RABBIT_SESSION_MESSAGE_ID": "1755043010.123456",
 }
 
 
 def _run_at_in(minutes: int) -> str:
-    return (hermes_time.now() + timedelta(minutes=minutes)).isoformat()
+    return (rabbit_time.now() + timedelta(minutes=minutes)).isoformat()
 
 
 class TestNearHorizonSlackThreadKept:
@@ -152,10 +152,10 @@ class TestNearHorizonSlackThreadKept:
         """A fire at this instant still happens inside the live conversation: the lower
         bound is inclusive on purpose. The clock is frozen so the boundary itself is
         tested, not the microseconds between two now() calls."""
-        frozen = hermes_time.now()
+        frozen = rabbit_time.now()
         with (
             _session_env(_TOP_LEVEL_SLACK),
-            patch("tools.cronjob_job_args.hermes_time") as frozen_clock,
+            patch("tools.cronjob_job_args.rabbit_time") as frozen_clock,
         ):
             frozen_clock.now.return_value = frozen
             origin = _origin_from_env({"kind": "once", "run_at": frozen.isoformat()})

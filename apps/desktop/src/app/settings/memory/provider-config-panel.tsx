@@ -3,10 +3,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/rabbit'
 import { SlidersHorizontal } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
-import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
+import type { MemoryProviderConfig, MemoryProviderField } from '@/types/rabbit'
 
 import { ListRow, Pill } from '../primitives'
 

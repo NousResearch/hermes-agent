@@ -6,7 +6,7 @@ dedupe, additive semantics, matcher rebuild), the
 plugin written at test time for the ``register()`` end-to-end path.
 
 All tests call ``redact_sensitive_text(..., force=True)`` so results
-don't depend on the HERMES_REDACT_SECRETS environment of the test run,
+don't depend on the RABBIT_REDACT_SECRETS environment of the test run,
 and reset the plugin registry around each test so module-global state
 never leaks between tests.
 """
@@ -121,7 +121,7 @@ def test_reset_restores_baseline():
 
 
 def test_plugin_context_method_registers():
-    import hermes_cli.plugins as plugins_mod
+    import rabbit_cli.plugins as plugins_mod
 
     manager = plugins_mod.PluginManager()
     manifest = plugins_mod.PluginManifest(name="test-redactor")
@@ -133,7 +133,7 @@ def test_plugin_context_method_registers():
 
 
 def test_plugin_context_method_never_raises(monkeypatch):
-    import hermes_cli.plugins as plugins_mod
+    import rabbit_cli.plugins as plugins_mod
 
     def _boom(patterns, source=""):
         raise RuntimeError("registry exploded")
@@ -212,7 +212,7 @@ def _load_synthetic_plugin(tmp_path):
 
 
 def test_plugin_register_end_to_end(tmp_path):
-    import hermes_cli.plugins as plugins_mod
+    import rabbit_cli.plugins as plugins_mod
 
     demo = _load_synthetic_plugin(tmp_path)
     manager = plugins_mod.PluginManager()

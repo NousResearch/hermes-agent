@@ -4,7 +4,7 @@ unicode61 + CJK character bigrams (Lucene CJKAnalyzer semantics). Fixes
 1-2 char Korean/Chinese/Japanese terms falling through to LIKE full-table
 scans in session search.
 
-Build & install to `~/.hermes/lib/`:
+Build & install to `~/.rabbit/lib/`:
 
     ./build.sh
 
@@ -15,10 +15,10 @@ Once the extension is installed, the next `SessionDB` open creates the
 `messages_fts_cjk` index (external-content, tool rows excluded — same v23
 storage discipline as the other indexes). On a populated database, run
 
-    hermes sessions optimize-storage
+    rabbit sessions optimize-storage
 
 to backfill it; new messages are indexed live either way. Set
-`sessions.cjk_fts: false` in `~/.hermes/config.yaml` to disable. Override
-the .so location with `HERMES_FTS5_CJK_SO`.
+`sessions.cjk_fts: false` in `~/.rabbit/config.yaml` to disable. Override
+the .so location with `RABBIT_FTS5_CJK_SO`.
 
 Contributed by Soju06 (PR #65544).

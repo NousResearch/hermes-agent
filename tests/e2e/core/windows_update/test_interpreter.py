@@ -3,10 +3,10 @@
 Failure class: interpreter. Real Windows machines carry two traps the managed runtime
 must ignore:
 
-* a different, standalone Python on PATH ahead of anything Hermes installed (#123185);
-* the pre-PM in-tree ``hermes-agent\\venv`` an older install left behind (#123965, #123972).
+* a different, standalone Python on PATH ahead of anything Rabbit installed (#123185);
+* the pre-PM in-tree ``rabbit-agent\\venv`` an older install left behind (#123965, #123972).
 
-After ``hermes update`` neither the gateway the user starts through ``hermes.exe`` nor a
+After ``rabbit update`` neither the gateway the user starts through ``rabbit.exe`` nor a
 CLI turn may add the stale venv to ``sys.path`` or publish it to its children, with the
 standalone Python first on PATH. The stale venv carries a ``.pth`` hook that
 drops a ``<pid>`` marker whenever any process adds its site dir, so "loaded the stale
@@ -91,7 +91,7 @@ def journey(tmp_path_factory):
                 update = j.step("update", machine.update)
                 if j.ok("update"):
                     j.step("update_ok", lambda: j.require("update", update.returncode == 0,
-                                                           f"hermes update exited {update.returncode}", update))
+                                                           f"rabbit update exited {update.returncode}", update))
                 if j.ok("update_ok"):
                     with machine.gateway_phase():
                         j.results["probe_present"] = (machine.install_dir / _PROBE).is_file()
@@ -123,7 +123,7 @@ def test_gateway_does_not_load_stale_in_tree_venv(journey: Journey) -> None:
     assert journey.results["probe_present"], fail_with(
         m, f"harness: the stale-venv probe {_PROBE} was gone before the gateway started")
     loaded = sorted(journey.results["loaded_by_gateway"])
-    log = m.hermes_home / "logs" / "gateway.log"
+    log = m.rabbit_home / "logs" / "gateway.log"
     deaths = _WORKER_DEATH.findall(log.read_text(encoding="utf-8", errors="replace")) if log.is_file() else []
     assert not loaded and not published, fail_with(
         m, f"the gateway loaded the stale pre-PM in-tree venv {stale} (site dir added by pids "

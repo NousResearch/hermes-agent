@@ -12,7 +12,7 @@ source: https://developers.asana.com/docs/integrating-with-asanas-mcp-server
 # https://mcp.asana.com/sse is retired. V2 does not support Dynamic Client
 # Registration: every client must be a user-owned, pre-registered Asana
 # "MCP app" (developer console), so the OAuth block below pins that client
-# and a fixed callback URL that the app must register verbatim. Hermes's MCP
+# and a fixed callback URL that the app must register verbatim. Rabbit's MCP
 # client + mcp_oauth_manager still handle discovery, PKCE, token exchange,
 # and refresh with the configured credentials.
 transport:
@@ -55,8 +55,8 @@ post_install: |
   values prompted above. The secret is stored in the profile's .env; the
   non-secret client id is inlined into config.yaml.
 
-  Then run `hermes mcp login asana` (or click Authorize in the dashboard /
+  Then run `rabbit mcp login asana` (or click Authorize in the dashboard /
   Desktop: the callback still arrives at http://localhost:27890/callback, so
-  the browser must run on the same machine as Hermes), approve access, and
-  restart (or `/reload-mcp`) the Hermes session or gateway that should
+  the browser must run on the same machine as Rabbit), approve access, and
+  restart (or `/reload-mcp`) the Rabbit session or gateway that should
   expose the Asana tools.

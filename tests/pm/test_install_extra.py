@@ -1,4 +1,4 @@
-"""`hermes pm install --extra NAME` is the one command every missing-extra hint names."""
+"""`rabbit pm install --extra NAME` is the one command every missing-extra hint names."""
 from types import SimpleNamespace
 
 import pytest

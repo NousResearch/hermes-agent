@@ -8,7 +8,7 @@ own; each cell then publishes a NEW upstream commit (or a new release record), s
 a real fetch, checkout and rebuild, never the "already current" branch.
 
 After the seed the sandbox loses the ``insteadOf`` rewrite: the checkout's origin is the official
-``https://github.com/NousResearch/hermes-agent.git`` again, and inside the namespace the only way
+``https://github.com/seven0070/Rabbit-.git`` again, and inside the namespace the only way
 to reach it is the test's proxy, which routes ``github.com`` to a git smart-HTTP server over the
 same bare origin. The partial clone (``--filter=blob:none``) makes every lazy blob fetch of the
 checkout cross that proxy too.
@@ -35,8 +35,8 @@ from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.network import _netedge as N
 
-ASSETS = "hermes-assets.nousresearch.com"
-REPOSITORY = "NousResearch/hermes-agent"
+ASSETS = "rabbit-assets.nousresearch.com"
+REPOSITORY = "seven0070/Rabbit-"
 # Hosts a correctly isolated update must never reach directly; with the proxy they appear in
 # the proxy log as "refused" (the proxy has no route for them).
 PUBLIC_INDEXES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org")
@@ -147,8 +147,8 @@ class Installed:
             bridge.close()
         return Result(cp, time.monotonic() - t0, edge)
 
-    def hermes(self, *args: str, edge: Edge | None, **kw) -> Result:
-        return self.run([self.sb.hermes, *args], edge=edge, **kw)
+    def rabbit(self, *args: str, edge: Edge | None, **kw) -> Result:
+        return self.run([self.sb.rabbit, *args], edge=edge, **kw)
 
     # -- observation -------------------------------------------------------------
     def state(self) -> dict:
@@ -157,7 +157,7 @@ class Installed:
         from pm.environments import install_key
 
         key = install_key(self.sb.checkout)
-        inst = self.sb.hermes_home / "installs" / key
+        inst = self.sb.rabbit_home / "installs" / key
 
         def read(p: Path) -> str:
             try:
@@ -165,7 +165,7 @@ class Installed:
             except OSError:
                 return "missing"
 
-        tools = self.sb.hermes_home / "tools"
+        tools = self.sb.rabbit_home / "tools"
         return {
             "head": self.head(),
             "facts": read(inst / "facts.json"),
@@ -175,14 +175,14 @@ class Installed:
 
     def logs_tail(self, lines: int = 40) -> str:
         out = []
-        for log in sorted((self.sb.hermes_home / "logs").glob("*.log")):
+        for log in sorted((self.sb.rabbit_home / "logs").glob("*.log")):
             text = log.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
             out.append(f"--- {log.name} (tail) ---\n" + "\n".join(text))
         return "\n".join(out) or "(no logs)"
 
     def version_works(self) -> Result:
-        """The next ``hermes`` invocation, offline: the install must still start."""
-        return self.hermes("--version", edge=None, timeout=120)
+        """The next ``rabbit`` invocation, offline: the install must still start."""
+        return self.rabbit("--version", edge=None, timeout=120)
 
 
 def seed_install(root: Path) -> Installed:
@@ -201,7 +201,7 @@ def seed_install(root: Path) -> Installed:
     (sb.home / ".gitconfig").write_text("", encoding="utf-8")
     gitroot = root / "gitroot"
     (gitroot / "NousResearch").mkdir(parents=True, exist_ok=True)
-    (gitroot / "NousResearch" / "hermes-agent.git").symlink_to(origin)
+    (gitroot / "NousResearch" / "rabbit-agent.git").symlink_to(origin)
     ca = N.TestCA(root / "corporate-ca")
     inst = Installed(root, sb, origin, gitroot, ca, ca.os_trust_store(root / "corporate-ca" / "etc-ssl-certs"))
     assert_isolated(inst)
@@ -213,7 +213,7 @@ def assert_isolated(inst: Installed) -> None:
     probe = (
         "import socket,sys\n"
         "bad=[]\n"
-        "for host in ('github.com','pypi.org','hermes-assets.nousresearch.com'):\n"
+        "for host in ('github.com','pypi.org','rabbit-assets.nousresearch.com'):\n"
         "    try: socket.getaddrinfo(host,443); bad.append('dns:'+host)\n"
         "    except OSError: pass\n"
         "for ip in ('140.82.112.3','1.1.1.1'):\n"
@@ -231,7 +231,7 @@ def assert_isolated(inst: Installed) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Release-channel records (the R2 objects under https://hermes-assets.nousresearch.com/).
+# Release-channel records (the R2 objects under https://rabbit-assets.nousresearch.com/).
 # ---------------------------------------------------------------------------
 
 def canonical(value: object) -> bytes:
@@ -240,9 +240,9 @@ def canonical(value: object) -> bytes:
 
 
 def _identity(name: str, token: str) -> dict:
-    pascal = f"HermesChannel{token}"
-    return {"token": token, "displayName": f"Hermes {name}", "appId": f"ai.hermes.channel.h{token}",
-            "appNamePascal": pascal, "artifactNamePascal": pascal, "cliName": f"hermes-{name}",
+    pascal = f"RabbitChannel{token}"
+    return {"token": token, "displayName": f"Rabbit {name}", "appId": f"ai.rabbit.channel.h{token}",
+            "appNamePascal": pascal, "artifactNamePascal": pascal, "cliName": f"rabbit-{name}",
             "windowsExecutableName": pascal, "msixAppIdWithOrg": f"NousResearch.{pascal}"}
 
 
@@ -258,7 +258,7 @@ def stable_objects(commit: str, *, version: str = "2099.1.1", build_id: str = "c
     manifest = {"schema": 1, "receiverProtocol": 1, "request": request, "packages": [
         {"platform": "darwin", "arch": "arm64", "variant": "bundled", "identity": identity["appId"],
          "version": version, "teamId": "ABCDEFGHIJ",
-         "artifact": {"key": prefix + "Hermes.dmg", "sha256": "d" * 64, "size": 100},
+         "artifact": {"key": prefix + "Rabbit.dmg", "sha256": "d" * 64, "size": 100},
          "feed": {"key": prefix + "stable-mac.yml", "channel": "stable"}}]}
     body = canonical(manifest)
     record = {"schema": 1, "name": "stable", "repository": repository, "policy": "stable-release",
@@ -326,7 +326,7 @@ def env_without(env: dict[str, str], *names: str) -> dict[str, str]:
 
 
 def installed_tool(inst: Installed, name: str) -> dict:
-    facts = json.loads((inst.sb.hermes_home / "tools" / "facts.json").read_text(encoding="utf-8"))
+    facts = json.loads((inst.sb.rabbit_home / "tools" / "facts.json").read_text(encoding="utf-8"))
     return facts["packages"][name]
 
 
@@ -335,7 +335,7 @@ def tool_missing(inst: Installed, name: str) -> Iterator[dict]:
     """A provisioned tool's store entry is gone (pruned or deleted), so PM must fetch it again.
     The entry is parked, not deleted, and put back afterwards unless the cell re-provisioned it."""
     tool = installed_tool(inst, name)
-    entry = inst.sb.hermes_home / "tools" / tool["entry"]
+    entry = inst.sb.rabbit_home / "tools" / tool["entry"]
     parked = inst.root / "parked" / tool["entry"]
     parked.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(entry), str(parked))
@@ -353,11 +353,11 @@ SUCCESS_BANNERS = ("Update complete", "Code updated", "Already up to date")
 
 def assert_nothing_changed(inst: Installed, before: dict, r: Result, what: str) -> None:
     """The failure contract: non-zero, says why, nothing reported as success, nothing moved,
-    and the next ``hermes`` still starts."""
+    and the next ``rabbit`` still starts."""
     assert r.rc != 0, f"{what}: the command reported success\n" + r.report(inst)
     claimed = [b for b in SUCCESS_BANNERS if b in r.out]
     assert not claimed, f"{what}: failed run printed a success banner {claimed}\n" + r.report(inst)
     after = inst.state()
     assert after == before, f"{what}: install state moved {before} -> {after}\n" + r.report(inst)
     v = inst.version_works()
-    assert v.rc == 0 and I.TRACEBACK not in v.out, f"{what}: `hermes --version` broken afterwards\n" + I.describe(v.cp)
+    assert v.rc == 0 and I.TRACEBACK not in v.out, f"{what}: `rabbit --version` broken afterwards\n" + I.describe(v.cp)

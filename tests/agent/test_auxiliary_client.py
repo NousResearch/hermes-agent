@@ -10,7 +10,6 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from agent.auxiliary_client import (
-    _NOUS_MODEL,
     CodexAuxiliaryClient,
     get_text_auxiliary_client,
     get_available_vision_backends,
@@ -26,7 +25,6 @@ from agent.auxiliary_client import (
     _is_model_not_found_error,
     _is_model_incompatible_error,
     _is_statusless_structured_provider_error,
-    _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
     _try_openrouter,
@@ -68,7 +66,7 @@ def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
-        "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
+        "OPENAI_MODEL", "LLM_MODEL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
         "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
@@ -91,7 +89,6 @@ class TestResolveTaskProviderModel:
         [
             "anthropic",
             "minimax-oauth",
-            "nous",
             "openai-codex",
             "qwen-oauth",
             "xai-oauth",
@@ -152,11 +149,11 @@ class TestResolveTaskProviderModel:
         }
         monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "rabbit_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: preset,
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -188,11 +185,11 @@ class TestResolveTaskProviderModel:
             lambda task: {"provider": "moa", "model": "opus-gpt"} if task == "title_generation" else {},
         )
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "rabbit_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: preset,
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -210,11 +207,11 @@ class TestResolveTaskProviderModel:
         (literal "moa") rather than crash resolve_provider_client() harder."""
         monkeypatch.setattr("agent.auxiliary_client._get_auxiliary_task_config", lambda task: {})
         monkeypatch.setattr(
-            "hermes_cli.moa_config.resolve_moa_preset",
+            "rabbit_cli.moa_config.resolve_moa_preset",
             lambda cfg, name: (_ for _ in ()).throw(KeyError("gone-preset")),
         )
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"moa": {}})
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: {"moa": {}})
+        monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: {"moa": {}})
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -244,16 +241,16 @@ class TestResolveTaskProviderModel:
 class TestMoaAggregatorSharedResolution:
     """The shared MoA→aggregator helper and the layers that consume it.
 
-    Real-config tests: write an actual config.yaml under a temp HERMES_HOME
+    Real-config tests: write an actual config.yaml under a temp RABBIT_HOME
     and exercise the genuine load_config() → resolve_moa_preset() boundary —
     no mocking of the configuration-resolution chain.
     """
 
     @staticmethod
     def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir(exist_ok=True)
         (home / "config.yaml").write_text(
             yaml.safe_dump(
@@ -286,13 +283,13 @@ class TestMoaAggregatorSharedResolution:
                 }
             )
         )
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         return home
 
     def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
         """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
         aggregator through the genuine load_config()/resolve_moa_preset() path."""
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
         cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -441,32 +438,7 @@ class TestBuildCallKwargsMaxTokens:
         assert "max_tokens" not in kw3
 
 
-class TestNousTagsScoping:
-    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
-        import agent.auxiliary_client as aux
 
-        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
-
-        kwargs = aux._build_call_kwargs(
-            provider="nous",
-            model="hermes-4",
-            messages=[{"role": "user", "content": "hi"}],
-        )
-
-        assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
-
-    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
-        import agent.auxiliary_client as aux
-
-        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
-
-        kwargs = aux._build_call_kwargs(
-            provider="gemini",
-            model="gemini-2.5-flash",
-            messages=[{"role": "user", "content": "hi"}],
-        )
-
-        assert "extra_body" not in kwargs
 
 
 class TestNormalizeAuxProvider:
@@ -482,8 +454,8 @@ class TestNormalizeAuxProvider:
         assert alias_model == canon_model
 
     def test_covers_every_alias_the_main_path_resolves(self):
-        """Every alias hermes_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
-        from hermes_cli.auth import _PROVIDER_ALIASES as auth_table
+        """Every alias rabbit_cli.auth resolves also resolves in aux — drift becomes a red test (#115006)."""
+        from rabbit_cli.auth import _PROVIDER_ALIASES as auth_table
         for alias, canonical in auth_table.items():
             assert _normalize_aux_provider(alias) == canonical, alias
 
@@ -492,9 +464,9 @@ class TestResolveCodexCredentialToken:
     """Token half of ``_resolve_codex_credential_and_base`` with no pool (auth.json only)."""
 
     def test_valid_auth_store(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {
                 "openai-codex": {
@@ -502,7 +474,7 @@ class TestResolveCodexCredentialToken:
                 },
             },
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == "tok-123"
@@ -518,9 +490,9 @@ class TestResolveCodexCredentialToken:
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
         expired_jwt = f"{header}.{payload}.fakesig"
 
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {
                 "openai-codex": {
@@ -528,7 +500,7 @@ class TestResolveCodexCredentialToken:
                 },
             },
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result is None, "Expired JWT should return None"
@@ -543,9 +515,9 @@ class TestResolveCodexCredentialToken:
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
         valid_jwt = f"{header}.{payload}.fakesig"
 
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {
                 "openai-codex": {
@@ -553,7 +525,7 @@ class TestResolveCodexCredentialToken:
                 },
             },
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _resolve_codex_credential_and_base()[0]
         assert result == valid_jwt
@@ -563,21 +535,21 @@ class TestResolveXaiOAuthForAux:
     def test_uses_pool_backed_credentials_without_singleton(self, tmp_path, monkeypatch):
         """Auxiliary xAI OAuth must see pool-only credentials.
 
-        ``hermes auth status`` already reports these as logged in; compression
+        ``rabbit auth status`` already reports these as logged in; compression
         should not fall through to "no auxiliary provider configured" just
         because the singleton auth-store entry is absent.
         """
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from rabbit_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {},
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+        monkeypatch.delenv("RABBIT_XAI_BASE_URL", raising=False)
         monkeypatch.delenv("XAI_BASE_URL", raising=False)
 
         pool = load_pool("xai-oauth")
@@ -600,16 +572,16 @@ class TestResolveXaiOAuthForAux:
 
     def test_pool_backed_credentials_honor_base_url_env_override(self, tmp_path, monkeypatch):
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from rabbit_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {},
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("HERMES_XAI_BASE_URL", "https://example.x.ai/v1/")
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+        monkeypatch.setenv("RABBIT_XAI_BASE_URL", "https://example.x.ai/v1/")
 
         pool = load_pool("xai-oauth")
         pool.add_entry(PooledCredential(
@@ -713,7 +685,7 @@ class TestBuildCodexClient:
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, entry)),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
-            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            monkeypatch.setenv("RABBIT_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import _build_codex_client
 
@@ -730,7 +702,7 @@ class TestBuildCodexClient:
             patch("agent.auxiliary_client._read_codex_singleton_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
-            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            monkeypatch.setenv("RABBIT_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
             mock_openai.return_value = MagicMock()
             from agent.auxiliary_client import resolve_provider_client
 
@@ -800,7 +772,7 @@ class TestResolveProviderClientUniversalModelFallback:
 
     Aux tasks (title generation, vision, session search, etc.) routinely
     reach this function without an explicit model — the user's main
-    provider was picked via ``hermes model``, no per-task override is
+    provider was picked via ``rabbit model``, no per-task override is
     set, and the expectation is "just use my main model for side tasks
     too."  The resolver fills in ``model`` from a 3-step universal
     fallback before any provider branch runs:
@@ -902,9 +874,9 @@ class TestExpiredCodexFallback:
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
         expired_jwt = f"{header}.{payload}.fakesig"
 
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir(parents=True, exist_ok=True)
-        (hermes_home / "auth.json").write_text(json.dumps({
+        rabbit_home = tmp_path / "rabbit"
+        rabbit_home.mkdir(parents=True, exist_ok=True)
+        (rabbit_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {
                 "openai-codex": {
@@ -912,7 +884,7 @@ class TestExpiredCodexFallback:
                 },
             },
         }))
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -988,7 +960,7 @@ class TestOpenRouterPaidLaneGuard:
         """
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("rabbit_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
@@ -1000,7 +972,7 @@ class TestOpenRouterPaidLaneGuard:
         """free_only=true + user-configured PAID model → OpenRouter skipped."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("rabbit_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                                "openrouter_model": "google/gemini-3.6-flash"}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1013,7 +985,7 @@ class TestOpenRouterPaidLaneGuard:
         """free_only=true + :free model → OpenRouter used with that model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("rabbit_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True,
                                               "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free"}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -1027,7 +999,7 @@ class TestOpenRouterPaidLaneGuard:
         """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("rabbit_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"openrouter_model": "some/vendor-model"}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1040,7 +1012,7 @@ class TestOpenRouterPaidLaneGuard:
         """Auxiliary.<task>.model (explicit) is also gated by free_only."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("rabbit_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _try_openrouter(model="google/gemini-3.6-flash")
         assert client is None
@@ -1051,7 +1023,7 @@ class TestOpenRouterPaidLaneGuard:
         """The concrete OpenRouter route gates the caller's model, not its default."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("rabbit_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
@@ -1066,7 +1038,7 @@ class TestOpenRouterPaidLaneGuard:
     def test_free_only_gate_does_not_mark_openrouter_unhealthy(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly",
+             patch("rabbit_cli.config.load_config_readonly",
                    return_value={"auxiliary": {"free_only": True}}), \
              patch("agent.auxiliary_client._mark_provider_unhealthy") as mark_unhealthy:
             client, model = resolve_provider_client(
@@ -1091,7 +1063,7 @@ class TestOpenRouterPaidLaneGuard:
         _paid_lane_warned.discard(_paid_model)
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
+             patch("rabbit_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_client = MagicMock(name="openrouter_client")
             mock_openai.return_value = mock_client
@@ -1102,7 +1074,7 @@ class TestOpenRouterPaidLaneGuard:
         assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
         # Second call logs nothing new.
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("hermes_cli.config.load_config_readonly", return_value=_paid_cfg), \
+             patch("rabbit_cli.config.load_config_readonly", return_value=_paid_cfg), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
@@ -1139,7 +1111,7 @@ class TestGetTextAuxiliaryClient:
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
             patch("agent.auxiliary_client.OpenAI"),
-            patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
+            patch("rabbit_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
         ):
             from agent.auxiliary_client import _build_codex_client
 
@@ -1154,8 +1126,7 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._resolve_codex_credential_and_base",
+        with patch("agent.auxiliary_client._resolve_codex_credential_and_base",
                    return_value=(None, "https://chatgpt.com/backend-api/codex")), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
@@ -1165,8 +1136,6 @@ class TestGetTextAuxiliaryClient:
     def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
         with patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
-             patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
              patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
@@ -1185,7 +1154,6 @@ class TestVisionClientFallback:
         """Active provider appears in available backends when credentials exist."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
         with (
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
             patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
             patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
@@ -1230,84 +1198,7 @@ class TestVisionClientFallback:
 
 class TestAuxiliaryPoolAwareness:
 
-    def test_try_nous_refreshes_stale_pool_entry(self):
-        stale_token = _jwt_with_claims({
-            "scope": "inference:invoke",
-            "exp": int(time.time() - 60),
-        })
-        fresh_token = _jwt_with_claims({
-            "scope": "inference:invoke",
-            "exp": int(time.time() + 3600),
-        })
 
-        class _Entry:
-            def __init__(self, token):
-                self.access_token = "pooled-access-token"
-                self.agent_key = token
-                self.agent_key_expires_at = "2099-01-01T00:00:00+00:00"
-                self.scope = "inference:invoke"
-                self.inference_base_url = "https://inference.pool.example/v1"
-
-        class _Pool:
-            refreshed = False
-
-            def has_credentials(self):
-                return True
-
-            def select(self):
-                return _Entry(stale_token)
-
-            def try_refresh_current(self):
-                self.refreshed = True
-                return _Entry(fresh_token)
-
-        pool = _Pool()
-        with (
-            patch("agent.auxiliary_client.load_pool", return_value=pool),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
-        ):
-            from agent.auxiliary_client import _try_nous
-
-            client, model = _try_nous()
-
-        assert pool.refreshed is True
-        assert client is not None
-        assert model == _NOUS_MODEL
-        assert mock_openai.call_args.kwargs["api_key"] == fresh_token
-        assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
-
-
-
-
-
-    def test_call_llm_retries_nous_after_401(self):
-        class _Auth401(Exception):
-            status_code = 401
-
-        stale_client = MagicMock()
-        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
-        stale_client.chat.completions.create.side_effect = _Auth401("stale nous key")
-
-        fresh_client = MagicMock()
-        fresh_client.base_url = "https://inference-api.nousresearch.com/v1"
-        fresh_client.chat.completions.create.return_value = {"ok": True}
-
-        with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
-            patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
-            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
-        ):
-            result = call_llm(
-                task="compression",
-                messages=[{"role": "user", "content": "hi"}],
-            )
-
-        assert result == {"ok": True}
-        assert stale_client.chat.completions.create.call_count == 1
-        assert fresh_client.chat.completions.create.call_count == 1
 
 
 
@@ -1422,7 +1313,6 @@ class TestIsModelNotFoundError:
         )
         exc.status_code = 404
         assert _is_model_not_found_error(exc) is False
-        assert _is_payment_error(exc) is True
 
     def test_out_of_funds_404_is_not_model_not_found(self):
         exc = Exception(
@@ -1467,30 +1357,7 @@ class TestIsModelIncompatibleError:
         assert _is_model_incompatible_error(exc) is False
 
 
-class TestRefreshNousRecommendedModel:
-    """_refresh_nous_recommended_model picks a fresh model after a stale 404."""
 
-
-
-    def test_falls_back_to_default_when_portal_unavailable(self, monkeypatch):
-        def _boom(**kw):
-            raise RuntimeError("portal down")
-        monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model", _boom)
-        out = _refresh_nous_recommended_model(
-            vision=False, stale_model="some/dead-model")
-        assert out == _NOUS_MODEL
-
-    def test_returns_none_when_no_distinct_alternative(self, monkeypatch):
-        """When the failed model IS the default and the Portal has nothing
-        else, there's no usable alternative."""
-        monkeypatch.setattr(
-            "hermes_cli.models.get_nous_recommended_aux_model",
-            lambda **kw: _NOUS_MODEL,
-        )
-        out = _refresh_nous_recommended_model(
-            vision=False, stale_model=_NOUS_MODEL)
-        assert out is None
 
 
 class TestIsRateLimitError:
@@ -1534,20 +1401,6 @@ class TestTryPaymentFallback:
         _aux_unhealthy_until.clear()
         _aux_unhealthy_logged_at.clear()
 
-    def test_skips_failed_provider(self):
-        """Discovery only walks with no selected main provider (``auto``); a selected provider that
-        fails never hops to another logged-in account (test_auxiliary_auto_never_guesses_provider)."""
-        mock_client = MagicMock()
-        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
-             patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
-            client, model, label = _try_payment_fallback("openrouter", task="compression")
-        assert client is mock_client
-        assert model == "nous-model"
-        assert label == "nous"
-
-
-
     def test_codex_not_in_fallback_chain(self):
         """Codex is deliberately NOT a fallback rung (shifting model allow-list).
 
@@ -1555,7 +1408,6 @@ class TestTryPaymentFallback:
         Codex is never tried with a guessed model.
         """
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
@@ -1935,7 +1787,7 @@ class TestAuxiliaryFallbackLayering:
 
 
     def test_fallback_entry_openai_codex_uses_oauth_pool_without_inline_key(self):
-        """Configured Codex fallback resolves through Hermes auth / credential pool."""
+        """Configured Codex fallback resolves through Rabbit auth / credential pool."""
         from agent.auxiliary_client import _resolve_fallback_entry
 
         pool_entry = MagicMock()
@@ -1997,7 +1849,7 @@ class TestTryMainAgentModelFallback:
 def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
     """_resolve_api_key_provider must not try anthropic when user never configured it."""
     from collections import OrderedDict
-    from hermes_cli.auth import ProviderConfig
+    from rabbit_cli.auth import ProviderConfig
 
     # Build a minimal registry with only "anthropic" so the loop is guaranteed
     # to reach it without being short-circuited by earlier providers.
@@ -2018,9 +1870,9 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
         return None, None
 
     monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("rabbit_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
+        "rabbit_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
@@ -2034,7 +1886,7 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
     """_resolve_api_key_provider must skip copilot when user never configured it (#114740)."""
     from collections import OrderedDict
-    from hermes_cli.auth import ProviderConfig
+    from rabbit_cli.auth import ProviderConfig
 
     fake_registry = OrderedDict({
         "copilot": ProviderConfig(
@@ -2053,9 +1905,9 @@ def test_resolve_api_key_provider_skips_unconfigured_copilot(monkeypatch):
         return False, None
 
     monkeypatch.setattr("agent.auxiliary_client._select_pool_entry", mock_select_pool_entry)
-    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr("rabbit_cli.auth.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured",
+        "rabbit_cli.auth.is_provider_explicitly_configured",
         lambda pid: False,
     )
 
@@ -2335,7 +2187,7 @@ class TestTransientTransportRetry:
 
 class TestAuxClientNoSdkRetries:
     """Auxiliary OpenAI clients are constructed with SDK-internal retries
-    disabled so Hermes owns the retry/timeout budget (issue #54465). The SDK
+    disabled so Rabbit owns the retry/timeout budget (issue #54465). The SDK
     default (max_retries=2 → 3 attempts) silently triples the effective wall
     time of every aux call against a slow/hung endpoint.
     """
@@ -2530,7 +2382,7 @@ class TestAuxiliaryTaskExtraBody:
 
     @pytest.mark.parametrize("task", ["session_search", "moa_reference", "moa_aggregator"])
     def test_generic_reasoning_fallback_clamps_ultra_for_auxiliary_and_moa_calls(self, task, monkeypatch):
-        """The OpenAI-compatible fallback must never put Hermes-only ``ultra`` on the wire."""
+        """The OpenAI-compatible fallback must never put Rabbit-only ``ultra`` on the wire."""
         from agent.auxiliary_client import _ProfileProjection, _build_call_kwargs
 
         monkeypatch.setattr(
@@ -2610,7 +2462,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
+        with patch("rabbit_cli.config.load_config", return_value=config), patch("rabbit_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -2641,7 +2493,7 @@ class TestAuxiliaryTaskExtraBody:
             }
         }
 
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), patch(
+        with patch("rabbit_cli.config.load_config", return_value=config), patch("rabbit_cli.config.load_config_readonly", return_value=config), patch(
             "agent.auxiliary_client._get_cached_client",
             return_value=(client, "glm-4.5-air"),
         ):
@@ -2667,7 +2519,7 @@ class TestAuxiliaryTaskExtraBody:
         from agent.auxiliary_client import _get_task_extra_body
 
         config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
-        with patch("hermes_cli.config.load_config", return_value=config), patch("hermes_cli.config.load_config_readonly", return_value=config), \
+        with patch("rabbit_cli.config.load_config", return_value=config), patch("rabbit_cli.config.load_config_readonly", return_value=config), \
              caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
             result = _get_task_extra_body(moa_task)
 
@@ -2746,11 +2598,11 @@ class TestAuxiliaryTaskExtraBody:
     def test_bare_custom_auth_error_does_not_fall_back_to_env_base_url(self, monkeypatch):
         """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
         return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
-        from hermes_cli.auth import AuthError
+        from rabbit_cli.auth import AuthError
         from agent.auxiliary_client import _resolve_custom_runtime
         monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+        with patch("rabbit_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
             assert _resolve_custom_runtime() == (None, None, None)
 
@@ -2994,9 +2846,9 @@ class TestAuxiliaryPoolRotationRetry:
 
 
 class TestAnthropicAuxiliaryReasoningTranslation:
-    """Native Anthropic aux adapters must receive normalized Hermes reasoning.
+    """Native Anthropic aux adapters must receive normalized Rabbit reasoning.
 
-    MoA slot reasoning is carried through call_llm as a Hermes
+    MoA slot reasoning is carried through call_llm as a Rabbit
     ``reasoning_config``. The native Anthropic Messages path cannot consume the
     generic OpenAI-style ``extra_body.reasoning`` fallback, so assert the final
     ``messages.create`` kwargs contain Anthropic's provider-aware wire shape.
@@ -3952,7 +3804,7 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
 class TestCodexAuxiliaryAdapterReservedToolAliases:
     """The aux adapter emits the same tool schemas as the main Responses transport: shared
     converter (``strict: False``) plus provider-reserved-name aliasing (OpenCode, Perplexity),
-    reversed on the parsed tool_calls before Hermes dispatch (#114260)."""
+    reversed on the parsed tool_calls before Rabbit dispatch (#114260)."""
 
     _TOOLS = [
         {"type": "function", "function": {"name": name, "description": name,
@@ -3979,7 +3831,7 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
         from agent.codex_responses_adapter import classify_responses_route
         from agent.transports.codex import ResponsesApiTransport
 
-        # Deterministic xAI branch: a non-xAI web backend keeps client dispatch under ``hermes_web_search``.
+        # Deterministic xAI branch: a non-xAI web backend keeps client dispatch under ``rabbit_web_search``.
         monkeypatch.setattr("agent.transports.codex._xai_prefers_native_web_search", lambda: False)
         adapter = _CodexCompletionsAdapter(SimpleNamespace(base_url=base_url), "m")
         resp_kwargs, _, _ = adapter._build_responses_kwargs(
@@ -3993,13 +3845,13 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
         assert resp_kwargs["tools"] == main_kwargs["tools"]
         assert all(t["strict"] is False for t in resp_kwargs["tools"])
         assert {t["name"] for t in resp_kwargs["tools"]} == {
-            f"hermes_{n}" if n in aliased else n
+            f"rabbit_{n}" if n in aliased else n
             for n in ("web_search", "search_files", "people_search", "read_file", "tool_search")
         }
         # Replayed history names the tool the way this request declares it; the alias map rides on the payload.
         history_names = [i["name"] for i in resp_kwargs["input"] if i.get("type") == "function_call"]
-        assert history_names == ["hermes_search_files" if "search_files" in aliased else "search_files"]
-        assert resp_kwargs.get("_wire_aliases", {}) == {f"hermes_{n}": n for n in aliased}
+        assert history_names == ["rabbit_search_files" if "search_files" in aliased else "search_files"]
+        assert resp_kwargs.get("_wire_aliases", {}) == {f"rabbit_{n}": n for n in aliased}
 
     def test_create_maps_aliases_back_and_never_sends_alias_map(self):
         sent = {}
@@ -4010,7 +3862,7 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
                 return SimpleNamespace(
                     status="completed", id="resp_1", usage=None,
                     output=[SimpleNamespace(type="function_call", call_id="c9", id="fc_9",
-                                            name="hermes_search_files", arguments='{"pattern": "x"}')],
+                                            name="rabbit_search_files", arguments='{"pattern": "x"}')],
                 )
 
         adapter = _CodexCompletionsAdapter(
@@ -4020,7 +3872,7 @@ class TestCodexAuxiliaryAdapterReservedToolAliases:
 
         wire_tools = sent.get("tools") or sent.get("extra_body", {}).get("tools")  # SDK transform bypass moves bulk fields
         assert "_wire_aliases" not in sent and "_wire_aliases" not in sent.get("extra_body", {})
-        assert "hermes_search_files" in {t["name"] for t in wire_tools}
+        assert "rabbit_search_files" in {t["name"] for t in wire_tools}
         assert [tc.function.name for tc in response.choices[0].message.tool_calls] == ["search_files"]
 
 
@@ -4034,7 +3886,7 @@ class TestAuxiliaryClientPoisonedCacheEviction:
     Otherwise the next auxiliary call (compression retry, memory flush,
     background review) reuses the closed httpx transport and fails with
     ``Connection error`` even though the main provider route is healthy.
-    See https://github.com/NousResearch/hermes-agent/issues/23432.
+    See https://github.com/seven0070/Rabbit-/issues/23432.
     """
 
 
@@ -4135,7 +3987,7 @@ class TestBuildCallKwargsToolDedup:
     Providers like Google Vertex, Azure, and Bedrock reject requests with
     duplicate tool names (HTTP 400).  This guard converts a hard failure into
     a warning log so agent turns succeed even if an upstream injection path
-    regresses.  See: https://github.com/NousResearch/hermes-agent/issues/18478
+    regresses.  See: https://github.com/seven0070/Rabbit-/issues/18478
     """
 
     def _make_tool(self, name: str) -> dict:
@@ -4189,7 +4041,7 @@ class TestNvidiaBillingHeaders:
         assert model == "nvidia/test-model"
         call_kwargs = mock_openai.call_args[1]
         headers = call_kwargs["default_headers"]
-        assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
+        assert headers["X-BILLING-INVOKE-ORIGIN"] == "RabbitAgent"
 
     def test_resolve_provider_client_local_nim_skips_billing_origin_header(self, monkeypatch):
         monkeypatch.setenv("NVIDIA_API_KEY", "nvidia-key")
@@ -4247,16 +4099,7 @@ class TestOpenRouterExplicitApiKey:
             )
 
 
-def test_pool_runtime_base_url_uses_nous_env_override(monkeypatch):
-    entry = SimpleNamespace(
-        provider="nous",
-        runtime_base_url="https://inference-api.nousresearch.com/v1",
-        inference_base_url="https://inference-api.nousresearch.com/v1",
-        base_url="https://inference-api.nousresearch.com/v1",
-    )
-    monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", "https://ai.wildebeest-newton.ts.net/v1")
 
-    assert _pool_runtime_base_url(entry) == "https://ai.wildebeest-newton.ts.net/v1"
 
 
 class TestAnthropicExplicitApiKey:
@@ -4323,30 +4166,6 @@ class TestAuxUnhealthyCache:
 
 
 
-
-    def test_payment_fallback_skips_unhealthy(self):
-        """_try_payment_fallback also consults the unhealthy cache so a 402
-        on OpenRouter doesn't cause a second OR call within the same chain
-        iteration if it gets re-entered."""
-        from agent.auxiliary_client import (
-            _try_payment_fallback,
-            _mark_provider_unhealthy,
-        )
-        nous_client = MagicMock()
-        # Mark BOTH the failed provider (openrouter) and a sibling (custom)
-        # unhealthy. The chain should still find nous.
-        _mark_provider_unhealthy("local/custom")
-        with patch("agent.auxiliary_client._read_main_provider", return_value="auto"), \
-             patch("agent.auxiliary_client._try_openrouter") as or_try, \
-             patch("agent.auxiliary_client._try_nous", return_value=(nous_client, "n-model")), \
-             patch("agent.auxiliary_client._try_custom_endpoint") as custom_try, \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
-            client, model, label = _try_payment_fallback("openrouter", task="compression")
-        assert client is nous_client
-        assert label == "nous"
-        # OR is skipped via skip_chain_labels (failed provider), custom via unhealthy cache.
-        or_try.assert_not_called()
-        custom_try.assert_not_called()
 
     def test_custom_health_url_identity_preserves_path_and_query_case(self):
         from agent.auxiliary_client import _is_provider_unhealthy, _mark_provider_unhealthy
@@ -4494,7 +4313,6 @@ class TestAuxiliaryMaxTokensParam:
         with (
             patch("agent.auxiliary_client._current_custom_base_url",
                   return_value="https://openrouter.ai/api/v1"),
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
         ):
             assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
 
@@ -4508,7 +4326,6 @@ class TestAuxiliaryMaxTokensParam:
         with (
             patch("agent.auxiliary_client._current_custom_base_url",
                   return_value="https://my-gateway.example.com/v1"),
-            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
@@ -4691,7 +4508,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("rabbit_cli.config.load_config", return_value=fake_config), patch("rabbit_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -4719,7 +4536,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("rabbit_cli.config.load_config", return_value=fake_config), patch("rabbit_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -4746,7 +4563,7 @@ class TestCustomEndpointApiKeyInheritance:
 
         with patch.object(ac, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key"), \
              patch.object(ac, "_RUNTIME_MAIN_BASE_URL", "https://gw.example.com/v1"), \
-             patch("hermes_cli.config.load_config", return_value={"model": {}}), patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}), \
+             patch("rabbit_cli.config.load_config", return_value={"model": {}}), patch("rabbit_cli.config.load_config_readonly", return_value={"model": {}}), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -4778,7 +4595,7 @@ class TestCustomEndpointApiKeyInheritance:
             captured.update(kwargs)
             return MagicMock()
 
-        with patch("hermes_cli.config.load_config", return_value=fake_config), patch("hermes_cli.config.load_config_readonly", return_value=fake_config), \
+        with patch("rabbit_cli.config.load_config", return_value=fake_config), patch("rabbit_cli.config.load_config_readonly", return_value=fake_config), \
              patch.object(ac, "_create_openai_client", side_effect=_capture_create):
             client, model = resolve_provider_client(
                 "custom",
@@ -4801,20 +4618,20 @@ class TestCustomEndpointApiKeyInheritance:
         the main key; the identical origin (default port spelled out) still does. A live main
         runtime (a /model switch to a keyless local server, a key_cmd) is the anchor, and
         config.yaml's key belongs to config.yaml's base_url, never to the live endpoint.
-        Real config.yaml under a temp HERMES_HOME, resolved through the task route."""
-        import hermes_yaml as yaml
+        Real config.yaml under a temp RABBIT_HOME, resolved through the task route."""
+        import rabbit_yaml as yaml
         from agent.auxiliary_client import reset_runtime_main, set_runtime_main
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir()
         (home / "config.yaml").write_text(yaml.safe_dump({
             "model": {"provider": "custom", "base_url": "https://gw.example.com/v1",
                       "api_key": "sk-main-config-key", "default": "main-model"},
             "auxiliary": {"compression": {"provider": "custom", "base_url": aux_base_url, "model": "aux-model"}},
         }))
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
         token = (None if live_key is None else
                  set_runtime_main("custom", "local-model", base_url="http://127.0.0.1:8080/v1", api_key=live_key))
         try:
@@ -4891,12 +4708,12 @@ class TestNoProgressTimeoutTaskConfigGating:
         CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
         from agent import auxiliary_client as aux
 
-        home = tmp_path / ".hermes"
+        home = tmp_path / ".rabbit"
         home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("RABBIT_HOME", str(home))
 
         def _run(task):
             captured = {}
@@ -5227,8 +5044,8 @@ class TestFastModelTier:
             "~openai/gpt-mini-latest": {},
             "stepfun/step-3.7-flash:free": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "~openai/gpt-mini-latest"
+        with patch("rabbit_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("openrouter") == "~openai/gpt-mini-latest"
 
     def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
         """Substring matching must not pick a thinker, a queue, or an encoder."""
@@ -5240,8 +5057,8 @@ class TestFastModelTier:
             "sentence-transformers/all-minilm-l6-v2": {},
             "google/gemini-3.6-flash": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
+        with patch("rabbit_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("openrouter") == "google/gemini-3.6-flash"
 
     def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
         """A provider names its speech and image endpoints after the chat model
@@ -5254,8 +5071,8 @@ class TestFastModelTier:
             "openai/gpt-4o-mini-search-preview": {},
             "openai/gpt-4o-mini": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
+        with patch("rabbit_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("openrouter") == "openai/gpt-4o-mini"
 
     def test_catalog_match_takes_the_newest_of_a_family(self):
         """The bare family rungs must land on the current generation.
@@ -5271,8 +5088,8 @@ class TestFastModelTier:
             "openai/gpt-9-mini": {},
             "openai/gpt-10-mini": {},
         }
-        with patch("hermes_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
-            assert ac._fast_model_from_catalog("nous") == "openai/gpt-10-mini"
+        with patch("rabbit_cli.models_pricing.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("openrouter") == "openai/gpt-10-mini"
 
     def test_catalog_fetch_is_authenticated(self):
         """Most /v1/models endpoints need a key; anonymously they 401.
@@ -5283,10 +5100,10 @@ class TestFastModelTier:
         from agent import auxiliary_client as ac
 
         with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            "rabbit_cli.auth.resolve_api_key_provider_credentials",
             return_value={"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
         ), patch(
-            "hermes_cli.models_pricing.fetch_models_with_pricing", return_value={}
+            "rabbit_cli.models_pricing.fetch_models_with_pricing", return_value={}
         ) as fetch:
             ac._fast_model_from_catalog("openai")
 
@@ -5331,7 +5148,7 @@ class TestFastModelTier:
         consulted ``_get_named_custom_provider`` — so a configured
         named provider was still downgraded to ``"custom"`` whenever the
         built-in catalog failed to load. The user's repro path
-        (Hermes desktop on Windows with a partial / early-startup
+        (Rabbit desktop on Windows with a partial / early-startup
         catalog state) hits this branch.
         """
         import agent.auxiliary_client as ac
@@ -5346,10 +5163,10 @@ class TestFastModelTier:
             "model": "agnes-2.5-flash",
         }
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "rabbit_cli.runtime_provider._get_named_custom_provider",
             return_value=fake_entry,
         ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_catalog_raises,
+            "rabbit_cli.providers.get_provider", side_effect=_catalog_raises,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5371,7 +5188,7 @@ class TestFastModelTier:
     def test_resolve_vision_provider_client_preserves_named_provider_via_config(self, tmp_path):
         """#76602 (review feedback) — integration test through the real
         ``resolve_vision_provider_client`` entry point with a real
-        ``HERMES_HOME`` config.yaml, mirroring the pattern from
+        ``RABBIT_HOME`` config.yaml, mirroring the pattern from
         ``tests/agent/test_auxiliary_named_custom_providers.py``.
 
         Before the fix the repro in the issue body returned
@@ -5379,11 +5196,11 @@ class TestFastModelTier:
         after the fix the named provider is preserved and the inline
         ``api_key`` from the providers: entry reaches the client.
         """
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        rabbit_home = tmp_path / ".rabbit"
+        rabbit_home.mkdir()
+        (rabbit_home / "config.yaml").write_text(yaml.safe_dump({
             "model": {"default": "test-model"},
             "providers": {
                 "agnes-ai.cn": {
@@ -5395,8 +5212,8 @@ class TestFastModelTier:
             },
         }))
         import os
-        old_home = os.environ.get("HERMES_HOME")
-        os.environ["HERMES_HOME"] = str(hermes_home)
+        old_home = os.environ.get("RABBIT_HOME")
+        os.environ["RABBIT_HOME"] = str(rabbit_home)
         try:
             from agent.auxiliary_client import resolve_vision_provider_client
 
@@ -5408,9 +5225,9 @@ class TestFastModelTier:
             )
         finally:
             if old_home is None:
-                os.environ.pop("HERMES_HOME", None)
+                os.environ.pop("RABBIT_HOME", None)
             else:
-                os.environ["HERMES_HOME"] = old_home
+                os.environ["RABBIT_HOME"] = old_home
 
         assert resolved_provider == "agnes-ai.cn", (
             "resolve_vision_provider_client must preserve a named "
@@ -5427,7 +5244,7 @@ class TestFastModelTier:
 # defined in the ``providers:`` section of config.yaml plus an explicit
 # ``base_url`` was being silently downgraded to ``"custom"`` because
 # ``_preserve_provider_with_base_url`` only consulted the built-in
-# provider registry (``hermes_cli.providers.get_provider``). The
+# provider registry (``rabbit_cli.providers.get_provider``). The
 # downgrade routed the call through the bare-custom branch in
 # ``resolve_provider_client`` with no key, producing 401s from
 # auth-required providers (e.g. agnes-ai.cn, nvidia-nim with key_env).
@@ -5463,10 +5280,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             "model": "agnes-2.5-flash",
         }
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "rabbit_cli.runtime_provider._get_named_custom_provider",
             return_value=fake_entry,
         ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
+            "rabbit_cli.providers.get_provider", return_value=None,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5492,7 +5309,7 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         import agent.auxiliary_client as ac
 
         with patch(
-            "hermes_cli.providers.get_provider",
+            "rabbit_cli.providers.get_provider",
             return_value={"name": "Anthropic", "api_key": "sk-anthropic"},
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
@@ -5517,10 +5334,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
         import agent.auxiliary_client as ac
 
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "rabbit_cli.runtime_provider._get_named_custom_provider",
             return_value=None,
         ), patch(
-            "hermes_cli.providers.get_provider", return_value=None,
+            "rabbit_cli.providers.get_provider", return_value=None,
         ):
             resolved_provider, _model, base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(
@@ -5550,10 +5367,10 @@ class TestPreserveNamedCustomProviderWithBaseUrl:
             raise RuntimeError("catalog unavailable")
 
         with patch(
-            "hermes_cli.runtime_provider._get_named_custom_provider",
+            "rabbit_cli.runtime_provider._get_named_custom_provider",
             side_effect=_boom,
         ), patch(
-            "hermes_cli.providers.get_provider", side_effect=_boom,
+            "rabbit_cli.providers.get_provider", side_effect=_boom,
         ):
             resolved_provider, _model, _base_url, _api_key, _api_mode = (
                 ac._resolve_task_provider_model(

@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.no_isolate
 def test_reconnect_adopts_changed_url_from_config_yaml(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from tools import mcp_tool_config
     from tools.mcp_tool import MCPServerTask
 
@@ -49,7 +49,7 @@ def test_reconnect_adopts_changed_url_from_config_yaml(monkeypatch, tmp_path):
 def test_unchanged_or_missing_definition_keeps_the_running_config(monkeypatch, tmp_path):
     """No rebuild churn when config.yaml agrees with the running dict (or no longer lists the
     server): the start-time config stays bound byte-for-byte."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     from tools import mcp_tool_config
     from tools.mcp_tool import MCPServerTask
 

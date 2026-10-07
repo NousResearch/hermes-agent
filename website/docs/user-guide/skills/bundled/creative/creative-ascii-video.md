@@ -17,7 +17,7 @@ ASCII video: convert video/audio to colored ASCII MP4/GIF.
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/ascii-video` |
 | Version | `1.0.0` |
-| Author | SHL0MS, Hermes Agent |
+| Author | SHL0MS, Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `ASCII`, `Video`, `FFmpeg`, `Terminal-Art` |
@@ -25,7 +25,7 @@ ASCII video: convert video/audio to colored ASCII MP4/GIF.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # ASCII Video Production Pipeline

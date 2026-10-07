@@ -71,7 +71,7 @@ test.runIf(process.platform === 'win32')('a cold payload signer provisions execu
     const signingBoundary = new Error('signing boundary reached')
     let requested
     // Stop before Azure. Downloads and SDK execution below are real.
-    await expect(batchSignAppTree(app, path.join(app, 'Hermes.exe'), {
+    await expect(batchSignAppTree(app, path.join(app, 'Rabbit.exe'), {
       env: {
         ELECTRON_BUILDER_CACHE: process.env.ELECTRON_BUILDER_CACHE,
         LOCALAPPDATA: root, USERPROFILE: root, TEMP: root,

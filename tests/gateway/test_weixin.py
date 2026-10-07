@@ -398,7 +398,7 @@ class TestWeixinOutboundMedia:
              patch("gateway.platforms.weixin.secrets.token_bytes", return_value=aes_key):
             message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
 
-        assert message_id.startswith("hermes-weixin-")
+        assert message_id.startswith("rabbit-weixin-")
         assert len(session.post_calls) == 1
         upload_url, upload_kwargs = session.post_calls[0]
         assert upload_url == "https://upload.example.com/media"
@@ -709,7 +709,7 @@ class TestWeixinPollLoopSyncBuf:
                 adapter._running = False
                 return {"ret": 0, "msgs": []}
 
-        def _save(hermes_home, account_id, sync_buf):
+        def _save(rabbit_home, account_id, sync_buf):
             saves.append((sync_buf, threading.get_ident()))
 
         monkeypatch.setattr(weixin, "_get_updates", _get_updates)
@@ -736,7 +736,7 @@ class TestWeixinPollLoopSyncBuf:
 class TestWeixinVoiceAlwaysDownloaded:
     """Regression tests for #27300: when WeChat (Weixin) returns a
     ``voice_item.text`` (Tencent Cloud's STT) we must still download
-    the raw audio and route it through Hermes' own STT pipeline.
+    the raw audio and route it through Rabbit' own STT pipeline.
 
     Non-Chinese users currently see garbled transcriptions because the
     existing code short-circuits in two places: the voice download
@@ -793,7 +793,7 @@ class TestWeixinVoiceAlwaysDownloaded:
 
         assert len(media_paths) == 1, (
             "_collect_media dropped the voice attachment because "
-            "voice_item.text was set — Hermes' STT never gets a "
+            "voice_item.text was set — Rabbit' STT never gets a "
             "chance to re-transcribe (#27300)."
         )
         assert media_types == ["audio/silk"]

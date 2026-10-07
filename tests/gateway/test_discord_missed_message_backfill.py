@@ -74,10 +74,10 @@ class FakeChannel:
 
 @pytest.fixture
 def adapter(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
-    bot_user = SimpleNamespace(id=999, bot=True, display_name="Hermes", name="hermes")
+    bot_user = SimpleNamespace(id=999, bot=True, display_name="Rabbit", name="rabbit")
     adapter._client = SimpleNamespace(user=bot_user, get_channel=lambda _id: None)
     adapter._ready_event.set()
     adapter._handle_message = AsyncMock(return_value=True)

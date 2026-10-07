@@ -25,12 +25,12 @@ description: "信息图：21种布局 × 21种风格（信息图, 可视化）"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # 信息图生成器
 
-改编自 [baoyu-infographic](https://github.com/JimLiu/baoyu-skills)，适配 Hermes Agent 的工具生态系统。
+改编自 [baoyu-infographic](https://github.com/JimLiu/baoyu-skills)，适配 Rabbit Agent 的工具生态系统。
 
 两个维度：**布局**（信息结构）× **风格**（视觉美学）。可自由组合任意布局与风格。
 

@@ -118,7 +118,7 @@ describe('formatFullChangelogText', () => {
   it('formats conventional commit lines', () => {
     const result = formatFullChangelogText([{ sha: 'abc', summary: 'feat: add login', author: 'Alice' }], 3, 'main')
 
-    expect(result).toContain('=== Hermes Update Changelog ===')
+    expect(result).toContain('=== Rabbit Update Changelog ===')
     expect(result).toContain('Behind by 3 commits on branch main')
     expect(result).toContain('feat: add login — Alice')
   })
@@ -164,6 +164,6 @@ describe('formatFullChangelogText', () => {
 
   it('handles empty commits list gracefully', () => {
     const result = formatFullChangelogText([], 0, 'main')
-    expect(result).toContain('=== Hermes Update Changelog ===')
+    expect(result).toContain('=== Rabbit Update Changelog ===')
   })
 })

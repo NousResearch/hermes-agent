@@ -1,8 +1,8 @@
-"""Real ``hermes serve`` backend + WebSocket JSON-RPC clients for the terminal lane E2E suites.
+"""Real ``rabbit serve`` backend + WebSocket JSON-RPC clients for the terminal lane E2E suites.
 
-One backend per test module: a real ``python -m hermes_cli.main serve --port 0`` subprocess (the
+One backend per test module: a real ``python -m rabbit_cli.main serve --port 0`` subprocess (the
 exact argv Desktop spawns, see ``apps/desktop/electron/backend-command.ts``) with an isolated
-HOME/HERMES_HOME, no inherited provider credentials, and only the recording fake LLM provider
+HOME/RABBIT_HOME, no inherited provider credentials, and only the recording fake LLM provider
 configured. Clients speak the Desktop wire protocol over ``/api/ws`` (newline JSON-RPC,
 ``gateway.ready`` on accept, ``client.capabilities`` to answer server→client requests), so every
 event, lease, reaper and approval path is the production one.
@@ -26,10 +26,10 @@ from typing import Any, Callable, Iterable
 
 from websockets.sync.client import connect as ws_connect
 
-from tests.fakes.fake_llm_provider import FakeLLMServer, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, write_rabbit_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-READY_RE = re.compile(r"HERMES_BACKEND_READY port=(\d+)")
+READY_RE = re.compile(r"RABBIT_BACKEND_READY port=(\d+)")
 
 
 class RpcError(AssertionError):
@@ -69,32 +69,32 @@ def _operator_home() -> str:
         return os.path.expanduser("~")
 
 
-def _minimal_env(home: Path, hermes_home: Path, token: str, extra: dict[str, str] | None) -> dict[str, str]:
-    """A clean child env: nothing Hermes-, provider- or credential-shaped leaks in from the test runner."""
+def _minimal_env(home: Path, rabbit_home: Path, token: str, extra: dict[str, str] | None) -> dict[str, str]:
+    """A clean child env: nothing Rabbit-, provider- or credential-shaped leaks in from the test runner."""
     env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "TERM", "SYSTEMROOT") if k in os.environ}
     tmpdir = home.parent / "tmp"
     tmpdir.mkdir(parents=True, exist_ok=True)
     env.update(
-        HOME=str(home), HERMES_HOME=str(hermes_home), PYTHONPATH=str(REPO_ROOT),
-        TMPDIR=str(tmpdir), HERMES_DASHBOARD_SESSION_TOKEN=token, PYTHONUNBUFFERED="1",
+        HOME=str(home), RABBIT_HOME=str(rabbit_home), PYTHONPATH=str(REPO_ROOT),
+        TMPDIR=str(tmpdir), RABBIT_DASHBOARD_SESSION_TOKEN=token, PYTHONUNBUFFERED="1",
         NO_COLOR="1",
-        # The child's HOME *is* the sandbox, so its "real" root (expanduser('~')/.hermes) is the tmp
+        # The child's HOME *is* the sandbox, so its "real" root (expanduser('~')/.rabbit) is the tmp
         # home and the pytest-ancestry live-DB guard would refuse every open. The guard exists to keep
         # tests off the operator's state.db; Backend.start() asserts the sandbox is outside it.
-        HERMES_STATE_DB_GUARD_BYPASS="1",
+        RABBIT_STATE_DB_GUARD_BYPASS="1",
     )
     env.update(extra or {})
     return env
 
 
 class Backend:
-    """One real ``hermes serve`` process wired to a :class:`FakeLLMServer`."""
+    """One real ``rabbit serve`` process wired to a :class:`FakeLLMServer`."""
 
     def __init__(self, root: Path, responder, *, extra_config: str = "", env: dict[str, str] | None = None,
                  aux=None) -> None:
         self.root = root
         self.home = root / "home"
-        self.hermes_home = self.home / ".hermes"
+        self.rabbit_home = self.home / ".rabbit"
         self.llm = FakeLLMServer(responder, aux=aux)
         self.extra_config = extra_config
         self.extra_env = env or {}
@@ -104,29 +104,29 @@ class Backend:
         self.clients: list[WSClient] = []
 
     def start(self, *, timeout: float = 90.0) -> "Backend":
-        operator_root = (Path(_operator_home()) / ".hermes").resolve()
-        assert operator_root not in (self.hermes_home.resolve(), *self.hermes_home.resolve().parents), (
-            f"sandbox {self.hermes_home} sits inside the operator's Hermes home {operator_root}")
+        operator_root = (Path(_operator_home()) / ".rabbit").resolve()
+        assert operator_root not in (self.rabbit_home.resolve(), *self.rabbit_home.resolve().parents), (
+            f"sandbox {self.rabbit_home} sits inside the operator's Rabbit home {operator_root}")
         self.llm.start()
-        write_hermes_home(self.hermes_home, self.llm.base_url, extra_config=self.extra_config)
+        write_rabbit_home(self.rabbit_home, self.llm.base_url, extra_config=self.extra_config)
         self._stdout = open(self.root / "serve.stdout.log", "wb")
         self._stderr = open(self.root / "serve.stderr.log", "wb")
         # Own process group: stop() signals exactly the tree this fixture spawned, never a pattern match.
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "hermes_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"],
-            cwd=str(self.root), env=_minimal_env(self.home, self.hermes_home, self.token, self.extra_env),
+            [sys.executable, "-m", "rabbit_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"],
+            cwd=str(self.root), env=_minimal_env(self.home, self.rabbit_home, self.token, self.extra_env),
             stdin=subprocess.DEVNULL, stdout=self._stdout, stderr=self._stderr, start_new_session=True)
 
         proc = self.proc
 
         def ready() -> int | None:
             if proc.poll() is not None:
-                raise AssertionError(f"hermes serve exited {proc.returncode} before ready:\n{self.logs()}")
+                raise AssertionError(f"rabbit serve exited {proc.returncode} before ready:\n{self.logs()}")
             match = READY_RE.search((self.root / "serve.stdout.log").read_text(errors="replace"))
             return int(match.group(1)) if match else None
 
         try:
-            self.port = poll_until(ready, timeout=timeout, interval=0.1, what="HERMES_BACKEND_READY")
+            self.port = poll_until(ready, timeout=timeout, interval=0.1, what="RABBIT_BACKEND_READY")
         except BaseException:
             self.stop()
             raise
@@ -144,7 +144,7 @@ class Backend:
     def logs(self, tail: int = 60) -> str:
         parts = []
         for path in (self.root / "serve.stdout.log", self.root / "serve.stderr.log",
-                     self.hermes_home / "logs" / "errors.log"):
+                     self.rabbit_home / "logs" / "errors.log"):
             name = path.name
             if path.exists():
                 lines = path.read_text(errors="replace").splitlines()[-tail:]
@@ -175,7 +175,7 @@ class Backend:
 
     # state.db, read-only (never a second writer next to the backend's)
     def db_rows(self, sql: str, args: Iterable[Any] = ()) -> list[tuple]:
-        path = self.hermes_home / "state.db"
+        path = self.rabbit_home / "state.db"
         if not path.exists():
             return []
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)

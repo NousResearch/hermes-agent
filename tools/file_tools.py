@@ -54,7 +54,7 @@ def _get_max_read_chars() -> int:
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
     would pin the launch profile's value under the multiplexed gateway."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         val = load_config_readonly().get("file_read_max_chars")
     except Exception:
         val = None
@@ -69,7 +69,7 @@ def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bo
     ``next_offset`` instead of rejecting the read. If not even the first line
     fits it is clamped mid-line so the read is never empty and the cursor advances.
 
-    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on ``read_file``). Where hermes
+    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on ``read_file``). Where rabbit
     previously hard-rejected an oversized read (forcing the model to guess a smaller ``limit`` and burn a
     round-trip returning nothing), this trims the content to the last *complete line* that fits within
     ``max_chars`` and reports how many lines were kept so the caller can offer a ``next_offset``
@@ -607,7 +607,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
     device-path blocklist (no I/O) → stat-based special-file guard (host only)
-    → Hermes internal denylist → document extraction → binary-extension guard
+    → Rabbit internal denylist → document extraction → binary-extension guard
     → negative-result cache → dedup stub → real read.
     """
     try:
@@ -641,7 +641,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
 
-        # Hermes internal denylist (prompt injection via catalog metadata,
+        # Rabbit internal denylist (prompt injection via catalog metadata,
         # credential stores). Runs BEFORE document extraction so a
         # protected SQLite store (state.db) cannot be read through the extractor. Pass the RESOLVED path: the denylist's own
         # resolve() uses the process cwd and would miss a relative "auth.json".
@@ -1261,7 +1261,7 @@ def _is_openai_family_main() -> bool:
 
     Provider-family-coarse on purpose (no per-model training-diet table to
     go stale): direct OpenAI providers always qualify; on aggregators
-    (openrouter/nous/azure...) the MODEL slug decides (gpt-*/o-series/
+    (openrouter/azure...) the MODEL slug decides (gpt-*/o-series/
     codex). Fail-closed to the universal replace-only schema.
     """
     try:
@@ -1318,7 +1318,7 @@ def _handle_write_file(args, **kw):
             "write_file: missing required field 'content'. The tool call included a "
             "path but no content argument — this is almost always a dropped-arg bug "
             "under context pressure. Re-emit the tool call with the full content "
-            "payload, or use execute_code with hermes_tools.write_file() for very "
+            "payload, or use execute_code with rabbit_tools.write_file() for very "
             "large files."
         )
     if not isinstance(args["content"], str):
@@ -1326,7 +1326,7 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+    from rabbit_cli.observability.shared_metrics_harness import record_file_edit
 
     return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
@@ -1336,7 +1336,7 @@ def _handle_write_file(args, **kw):
 
 
 def _handle_patch(args, **kw):
-    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+    from rabbit_cli.observability.shared_metrics_harness import record_file_edit
 
     tid = kw.get("task_id") or "default"
     mode = args.get("mode", "replace")

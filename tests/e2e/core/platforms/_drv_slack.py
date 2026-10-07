@@ -3,7 +3,7 @@
 Same surface as ``_drv_telegram.TelegramDriver`` (see its docstring). The child gateway runs the real
 ``plugins/platforms/slack`` adapter (slack_bolt Socket Mode + slack_sdk Web API); the
 ``slack_shim/sitecustomize.py`` module on the child's ``PYTHONPATH`` points slack_sdk at the stand-in
-(``HERMES_STANDIN_SLACK_API``). Chat ids are Slack channel ids: DMs are ``D<user>``, the group is a
+(``RABBIT_STANDIN_SLACK_API``). Chat ids are Slack channel ids: DMs are ``D<user>``, the group is a
 public channel ``C…``. Message ids are Slack ``ts`` strings.
 
 Known limits: ``document()`` delivers a real ``file_share`` event, but the adapter (by design) only
@@ -57,7 +57,7 @@ class SlackDriver:
     def gateway_env(self) -> Dict[str, str]:
         return {"SLACK_BOT_TOKEN": self.standin.bot_token, "SLACK_APP_TOKEN": self.standin.app_token,
                 "SLACK_ALLOWED_USERS": ",".join((self.user_id, *self.stream_users)), "SLACK_HOME_CHANNEL": self.home_channel,
-                "HERMES_STANDIN_SLACK_API": self.standin.api_base, "PYTHONPATH_PREPEND": str(_SHIM)}
+                "RABBIT_STANDIN_SLACK_API": self.standin.api_base, "PYTHONPATH_PREPEND": str(_SHIM)}
 
     def connected(self) -> bool:
         # auth.test proves the shim redirected the SDK; an open socket proves Socket Mode is live.

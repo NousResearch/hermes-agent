@@ -17,7 +17,7 @@ const read = vi.fn(() => new Promise<string>((resolve, reject) => reads.push({ r
 beforeEach(() => {
   reads = []
   read.mockClear()
-  vi.stubGlobal('hermesDesktop', { readFileDataUrl: read, api: vi.fn(() => read().then(dataUrl => ({ dataUrl }))) })
+  vi.stubGlobal('rabbitDesktop', { readFileDataUrl: read, api: vi.fn(() => read().then(dataUrl => ({ dataUrl }))) })
   $connection.set({ connectionId: 'geometry-local', mode: 'local', profile: 'a' } as never)
 })
 afterEach(() => {
@@ -186,7 +186,7 @@ it.each(['markdown', 'generated'])('%s dimensions follow owner and source, not s
   expect(mounted.container.textContent).toMatch(/Open image/i)
   mounted.rerender(view('owner-a', 'a'))
   expect(parseFloat(frame(mounted.container).style.aspectRatio)).toBeCloseTo(600 / 900)
-  expect(window.hermesDesktop.api).toHaveBeenLastCalledWith({
+  expect(window.rabbitDesktop.api).toHaveBeenLastCalledWith({
     connectionId: 'owner-a',
     profile: 'a',
     path: `/api/fs/read-data-url?path=${encodeURIComponent(path)}`

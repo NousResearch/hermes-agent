@@ -479,7 +479,7 @@ jobs:
             --version "$RELEASE_VERSION"
           actual="$(cargo metadata --no-deps --format-version 1 \
             --manifest-path "$tree/apps/bootstrap-installer/src-tauri/Cargo.toml" \
-            | jq -r '.packages[] | select(.name == "hermes-bootstrap") | .version')"
+            | jq -r '.packages[] | select(.name == "rabbit-bootstrap") | .version')"
           test "$actual" = "$RELEASE_VERSION" || {
             echo "::error::Bootstrap Cargo version $actual != $RELEASE_VERSION"
             exit 1

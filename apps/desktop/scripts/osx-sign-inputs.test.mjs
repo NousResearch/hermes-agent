@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url)
 const signerUtil = path.join(path.dirname(require.resolve('@electron/osx-sign')), 'util.js')
 
 test('the signing walk stays bounded on a truncated protobuf-like resource', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sign-input-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-sign-input-'))
 
   try {
     // The byte sample declares a large length, but the file ends immediately.

@@ -17,7 +17,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/requesting-code-review` |
 | Version | `2.1.0` |
-| Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
+| Author | adapted from obra/superpowers + MorAlekss |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
@@ -26,7 +26,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Pre-Commit Code Verification
@@ -142,7 +142,7 @@ Quick scan before dispatching the reviewer:
 
 ## Step 5 — Independent reviewer subagent
 
-**Interactive sessions only.** In a one-shot run (`hermes chat -q`, `--oneshot`, a
+**Interactive sessions only.** In a one-shot run (`rabbit chat -q`, `--oneshot`, a
 benchmark harness) there is no one to hand the verdict to and a fresh subagent re-pays
 the whole system prompt plus a repo re-read: skip Steps 5 and 7, apply the Step 4
 checklist to the diff yourself, run the tests, and go to Step 8.

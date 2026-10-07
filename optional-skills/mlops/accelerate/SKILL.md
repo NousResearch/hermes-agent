@@ -7,7 +7,7 @@ license: MIT
 dependencies: [accelerate, torch, transformers]
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [Distributed Training, HuggingFace, Accelerate, DeepSpeed, FSDP, Mixed Precision, PyTorch, DDP, Unified API, Simple]
 
 ---

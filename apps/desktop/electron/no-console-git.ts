@@ -1,6 +1,6 @@
 // Electron is a GUI-subsystem process, so a direct git.exe spawn allocates its
 // own console even when Node's windowsHide is set. windowsHide is SW_HIDE and,
-// from a console-less parent, does not stop that flash (hermes_cli/_subprocess_compat.py).
+// from a console-less parent, does not stop that flash (rabbit_cli/_subprocess_compat.py).
 //
 // The flag that does is CREATE_NO_WINDOW (0x08000000). A console-subsystem
 // python.exe started with that flag owns one hidden console; git is then
@@ -16,12 +16,12 @@ import path from 'node:path'
 export const CREATE_NO_WINDOW = 0x08000000
 
 export const NO_CONSOLE_GIT_SCRIPT = `import json, os, subprocess, sys
-git = json.loads(os.environ["HERMES_GIT_ARGV0"])
+git = json.loads(os.environ["RABBIT_GIT_ARGV0"])
 argv = [git, *sys.argv[1:]]
 kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
-if sys.platform == "win32" or os.environ.get("HERMES_GIT_NO_CONSOLE") == "1":
+if sys.platform == "win32" or os.environ.get("RABBIT_GIT_NO_CONSOLE") == "1":
     kwargs["creationflags"] = 0x08000000
-if os.environ.get("HERMES_GIT_DRY_RUN") == "1":
+if os.environ.get("RABBIT_GIT_DRY_RUN") == "1":
     sys.stdout.write(json.dumps({"argv": argv, "creationflags": kwargs.get("creationflags", 0)}))
     raise SystemExit(0)
 proc = subprocess.run(argv, **kwargs)
@@ -78,14 +78,14 @@ export function resolveNoConsolePython({
   }
 
   const candidates: string[] = []
-  const override = env.HERMES_DESKTOP_PYTHON
+  const override = env.RABBIT_DESKTOP_PYTHON
 
   if (override) {
     candidates.push(override)
   }
 
-  const hermesRoot = env.HERMES_DESKTOP_HERMES_ROOT
-  const searchRoots = hermesRoot ? [hermesRoot, ...roots] : roots
+  const rabbitRoot = env.RABBIT_DESKTOP_RABBIT_ROOT
+  const searchRoots = rabbitRoot ? [rabbitRoot, ...roots] : roots
 
   for (const root of searchRoots) {
     if (!root) {
@@ -114,7 +114,7 @@ export function resolveNoConsolePython({
 }
 
 export function ensureNoConsoleGitScript(dir = os.tmpdir()) {
-  const scriptPath = path.join(dir, 'hermes-no-console-git.py')
+  const scriptPath = path.join(dir, 'rabbit-no-console-git.py')
 
   try {
     if (fs.readFileSync(scriptPath, 'utf8') === NO_CONSOLE_GIT_SCRIPT) {
@@ -156,7 +156,7 @@ export function noConsoleGitEnv(base: NodeJS.ProcessEnv | undefined, gitBin: str
     }
   }
 
-  env.HERMES_GIT_ARGV0 = JSON.stringify(gitBin || 'git')
+  env.RABBIT_GIT_ARGV0 = JSON.stringify(gitBin || 'git')
 
   if (!env.GIT_TERMINAL_PROMPT) {
     env.GIT_TERMINAL_PROMPT = '0'

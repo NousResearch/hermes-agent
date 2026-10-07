@@ -63,7 +63,7 @@ def _replace(value: str, old: Path, new: Path) -> str:
 
 def adopt(previous: Path, selected: Path, running: Path) -> bool:
     """Swap this process from ``previous`` onto ``selected``; False means only a restart can load it."""
-    from hermes_cli.runtime_state import lease_generation
+    from rabbit_cli.runtime_state import lease_generation
 
     if running.resolve() != previous.resolve():
         return False  # An update landed under this process; its code no longer matches the selection.

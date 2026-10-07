@@ -13,10 +13,10 @@ import pytest
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     (home / "skills").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     import tools.skill_usage as usage
     import agent.curator as curator
     import agent.curator_backup as cb

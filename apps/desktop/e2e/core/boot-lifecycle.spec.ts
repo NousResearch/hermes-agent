@@ -1,9 +1,9 @@
 /**
  * C5 core: boot handshake and backend process lifecycle.
  *
- * Real Electron + real `hermes serve`; only the LLM is faked. Process facts
+ * Real Electron + real `rabbit serve`; only the LLM is faked. Process facts
  * come from a /proc census of every process carrying this sandbox's
- * HERMES_HOME (so an orphan reparented to init is still counted), sampled
+ * RABBIT_HOME (so an orphan reparented to init is still counted), sampled
  * continuously in the background so a transient extra spawn is seen too.
  *
  *  1. boot: composer interactive, exactly one backend, first turn completes
@@ -12,7 +12,7 @@
  *     (no crash-loop, no double spawn), and the app serves a new turn.
  *  3. quit while a turn is streaming and a tool subprocess is running: zero
  *     sandbox processes remain — no backend, no tool child, no Electron helper.
- *  4. relaunch the same HERMES_HOME repeatedly: each boot has exactly one
+ *  4. relaunch the same RABBIT_HOME repeatedly: each boot has exactly one
  *     backend, each quit leaves zero processes, and the transcript persisted
  *     by the first launch cold-hydrates exactly once every time.
  */
@@ -47,7 +47,7 @@ const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
 const TOOL_TAG = `core-orphan-${nonce}`
 
-/** Every live process whose command line carries `tag` (tool children may scrub HERMES_HOME). */
+/** Every live process whose command line carries `tag` (tool children may scrub RABBIT_HOME). */
 function taggedProcesses(tag: string): ProcInfo[] {
   const out: ProcInfo[] = []
 
@@ -75,7 +75,7 @@ function taggedProcesses(tag: string): ProcInfo[] {
 test('boot handshake, supervised respawn, and zero orphans on quit', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('boot')
-  writeProviderHome(sandbox.hermesHome, provider.url)
+  writeProviderHome(sandbox.rabbitHome, provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
   const ws = recordWebSockets(page)
   let closed = false
@@ -213,7 +213,7 @@ test('boot handshake, supervised respawn, and zero orphans on quit', async () =>
 test('relaunching the same home: one backend per boot, zero after each quit, transcript intact', async () => {
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('relaunch')
-  writeProviderHome(sandbox.hermesHome, provider.url)
+  writeProviderHome(sandbox.rabbitHome, provider.url)
   const session: OracleTarget = { sessionId: '', expectUserMarkers: [U(1)] }
   let live: Awaited<ReturnType<typeof launchCoreApp>> | null = null
 

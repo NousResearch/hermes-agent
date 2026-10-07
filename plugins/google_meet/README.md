@@ -1,6 +1,6 @@
 # google_meet plugin
 
-Let the hermes agent join a Google Meet call, transcribe it, optionally speak
+Let the rabbit agent join a Google Meet call, transcribe it, optionally speak
 in it, and do the followup work afterwards.
 
 ## What ships
@@ -14,7 +14,7 @@ in it, and do the followup work afterwards.
 ## Architecture
 
 ```
-┌─ gateway (Linux box, where hermes runs) ────────────────────────────┐
+┌─ gateway (Linux box, where rabbit runs) ────────────────────────────┐
 │                                                                      │
 │   agent → meet_join(url, mode='realtime', node='my-mac')             │
 │         │                                                            │
@@ -25,7 +25,7 @@ in it, and do the followup work afterwards.
                                    ▼
 ┌─ node host (user's Mac, signed-in Chrome lives here) ───────────────┐
 │                                                                      │
-│   NodeServer (from `hermes meet node run`)                           │
+│   NodeServer (from `rabbit meet node run`)                           │
 │     │                                                                │
 │     ├─ start_bot → process_manager.start() → spawns meet_bot         │
 │     │                                                                │
@@ -49,50 +49,50 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 | Path | Purpose |
 |---|---|
 | `plugin.yaml` | manifest |
-| `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `hermes meet` CLI |
+| `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `rabbit meet` CLI |
 | `meet_bot.py` | Playwright bot subprocess (standalone, `python -m plugins.google_meet.meet_bot`) |
 | `process_manager.py` | local bot lifecycle + `enqueue_say` |
 | `tools.py` | agent-facing tools + node-routing helper |
-| `cli.py` | `hermes meet setup / auth / join / status / transcript / say / stop / node ...` |
+| `cli.py` | `rabbit meet setup / auth / join / status / transcript / say / stop / node ...` |
 | `audio_bridge.py` | v2: PulseAudio null-sink (Linux) + BlackHole probe (macOS) |
 | `realtime/openai_client.py` | v2: `RealtimeSession` + `RealtimeSpeaker` (file-queue → OpenAI Realtime WS → PCM) |
 | `node/protocol.py` | v3: message envelope + validation |
-| `node/registry.py` | v3: `$HERMES_HOME/workspace/meetings/nodes.json` |
+| `node/registry.py` | v3: `$RABBIT_HOME/workspace/meetings/nodes.json` |
 | `node/server.py` | v3: `NodeServer` (runs on host machine) |
 | `node/client.py` | v3: `NodeClient` (used by tool handlers + CLI on gateway) |
-| `node/cli.py` | v3: `hermes meet node {run,list,approve,remove,status,ping}` |
+| `node/cli.py` | v3: `rabbit meet node {run,list,approve,remove,status,ping}` |
 | `SKILL.md` | agent usage guide |
 
 ## Local quick start
 
 ```bash
-hermes plugins enable google_meet
-hermes meet install                                      # pip + Chromium
-hermes meet setup                                        # preflight
-hermes meet auth                                         # optional
-hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
+rabbit plugins enable google_meet
+rabbit meet install                                      # pip + Chromium
+rabbit meet setup                                        # preflight
+rabbit meet auth                                         # optional
+rabbit meet join https://meet.google.com/abc-defg-hij    # transcribe
 ```
 
 ## Realtime mode
 
 Linux (preferred, most automated):
 ```bash
-hermes meet install --realtime                     # installs pulseaudio-utils
-echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
-hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
+rabbit meet install --realtime                     # installs pulseaudio-utils
+echo 'OPENAI_API_KEY=sk-...' >> ~/.rabbit/.env
+rabbit meet join https://meet.google.com/abc-defg-hij --mode realtime
 # then from the agent or CLI:
-hermes meet say "Good morning everyone, I'm the note-taker bot."
+rabbit meet say "Good morning everyone, I'm the note-taker bot."
 ```
 
 macOS:
 ```bash
-hermes meet install --realtime     # runs: brew install blackhole-2ch ffmpeg
+rabbit meet install --realtime     # runs: brew install blackhole-2ch ffmpeg
 # then — manually! — open System Settings → Sound → Input → BlackHole 2ch
-echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
-hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
+echo 'OPENAI_API_KEY=sk-...' >> ~/.rabbit/.env
+rabbit meet join https://meet.google.com/abc-defg-hij --mode realtime
 ```
 
-On macOS, hermes will **not** switch your system audio input automatically — the
+On macOS, rabbit will **not** switch your system audio input automatically — the
 user has to do it. This is deliberate: switching default input on a whim would
 be a surprising side effect.
 
@@ -100,23 +100,23 @@ Realtime mode is **speak-only**: `speaker.pcm` is streamed into the virtual mic 
 stdin-fed `paplay` / `ffmpeg` pump that follows the file as Realtime appends audio.
 Incoming speech is still the caption scrape (v1) — meeting audio is never sent to the
 Realtime session, so there is no barge-in on raw audio and no STT billing. After
-admission the bot unmutes itself if Meet seated it muted; `status.json` / `hermes meet
+admission the bot unmutes itself if Meet seated it muted; `status.json` / `rabbit meet
 status` report the result as `micState` (`unmuted`, `unmuted_clicked`, `unknown`).
 
 ## Remote node host
 
 On the node machine (e.g. user's Mac with a signed-in Chrome):
 ```bash
-hermes plugins enable google_meet
-hermes meet install
-hermes meet node run --display-name my-mac --host 0.0.0.0 --port 18789
+rabbit plugins enable google_meet
+rabbit meet install
+rabbit meet node run --display-name my-mac --host 0.0.0.0 --port 18789
 # prints the bearer token on first run; copy it
 ```
 
 On the gateway:
 ```bash
-hermes meet node approve my-mac ws://<mac-ip>:18789 <token>
-hermes meet node ping my-mac
+rabbit meet node approve my-mac ws://<mac-ip>:18789 <token>
+rabbit meet node ping my-mac
 # now any meet_* tool call accepts node='my-mac' (or 'auto')
 ```
 

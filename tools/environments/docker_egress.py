@@ -13,9 +13,9 @@ import logging
 
 logger = logging.getLogger("tools.environments.docker")
 
-_EGRESS_LABEL_KEY = "hermes-egress"
-_CONTAINER_CA = "/etc/ssl/certs/hermes-egress-ca.crt"
-_NODE_OPTIONS_SENTINEL = "_HERMES_EGRESS_NODE_OPTIONS_APPEND"
+_EGRESS_LABEL_KEY = "rabbit-egress"
+_CONTAINER_CA = "/etc/ssl/certs/rabbit-egress-ca.crt"
+_NODE_OPTIONS_SENTINEL = "_RABBIT_EGRESS_NODE_OPTIONS_APPEND"
 _CA_MODE_FLAGS = {"--use-openssl-ca", "--use-bundled-ca"}
 
 # Env names whose override would weaken or bypass enforced egress.
@@ -33,7 +33,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     otherwise it warns and continues. Only ImportError is swallowed — a broken config must
     fail visibly rather than silently disable enforcement."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         from agent.proxy_sources import iron_proxy as ip
     except ImportError as exc:
         logger.debug("Egress proxy plumbing unavailable: %s", exc)
@@ -55,24 +55,24 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     if not status.configured:
         return _degraded(
             "proxy.enabled is true but iron-proxy is not configured. "
-            "Run `hermes egress setup` to mint tokens and write proxy.yaml.")
+            "Run `rabbit egress setup` to mint tokens and write proxy.yaml.")
     if not (status.pid and status.listening):
         return _degraded(
             f"iron-proxy is enabled but not running on port {status.tunnel_port}. "
-            "Start it with `hermes egress start`.")
+            "Start it with `rabbit egress start`.")
     if status.ca_cert_path is None or not status.ca_cert_path.exists():
         # Configured a moment ago but the trust anchor vanished: proxy env vars
         # without the CA would make every TLS handshake fail.
         return _degraded(
             f"iron-proxy CA cert vanished from {status.ca_cert_path}. "
-            "Re-run `hermes egress setup` to regenerate it.")
+            "Re-run `rabbit egress setup` to regenerate it.")
     # Empty/corrupt mappings look like an upstream outage from inside the
     # sandbox (every request 403s); refuse rather than ship a broken sandbox.
     mappings = ip.load_mappings()
     if not mappings:
         return _degraded(
             "iron-proxy is configured but mappings.json is empty or "
-            "corrupt.  Re-run `hermes egress setup` to mint provider "
+            "corrupt.  Re-run `rabbit egress setup` to mint provider "
             "tokens before starting a sandbox.")
 
     volume_args = ["-v", f"{status.ca_cert_path}:{_CONTAINER_CA}:ro"]
@@ -97,14 +97,14 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
         "SSL_CERT_FILE": _CONTAINER_CA,
         "CURL_CA_BUNDLE": _CONTAINER_CA,
         "NODE_EXTRA_CA_CERTS": _CONTAINER_CA,
-        "HERMES_EGRESS_PROXY": "1",  # lets the in-sandbox agent know it is proxy-aware
+        "RABBIT_EGRESS_PROXY": "1",  # lets the in-sandbox agent know it is proxy-aware
         _NODE_OPTIONS_SENTINEL: "--use-openssl-ca"}
 
     # Proxy tokens under the standard provider env names (and their aliases) so
-    # SDKs work unchanged; HERMES_PROXY_TOKEN_* copies are for diagnostics.
+    # SDKs work unchanged; RABBIT_PROXY_TOKEN_* copies are for diagnostics.
     for m in mappings:
         env_overrides[m.real_env_name] = m.proxy_token
-        env_overrides[f"HERMES_PROXY_TOKEN_{m.real_env_name}"] = m.proxy_token
+        env_overrides[f"RABBIT_PROXY_TOKEN_{m.real_env_name}"] = m.proxy_token
         for alias in getattr(m, "alias_env_names", ()) or ():
             env_overrides[alias] = m.proxy_token
 
@@ -127,7 +127,7 @@ def _egress_reuse_fingerprint(
 def _egress_enforce_on_docker(default: bool = True) -> bool:
     """Read proxy.enforce_on_docker; any config failure fails safe to *default*."""
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         return bool((load_config().get("proxy") or {}).get("enforce_on_docker", default))
     except (ImportError, OSError):
         return default

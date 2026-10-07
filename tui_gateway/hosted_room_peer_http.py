@@ -280,15 +280,15 @@ class PeerRunsHTTPClient:
     def _request(
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
-        from hermes_cli.urllib_security import open_credentialed_url
+        from rabbit_cli.urllib_security import open_credentialed_url
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"
         request = urllib.request.Request(
             f"{self.base_url}{path}", method=method,
             data=None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8"),
             headers={
                 "Authorization": (
-                    f"HermesRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
-                "Content-Type": "application/json", "User-Agent": "Hermes-RoomLink/1.0",
+                    f"RabbitRoom {room_grant}" if room_grant else f"Bearer {self.api_key}"),
+                "Content-Type": "application/json", "User-Agent": "Rabbit-RoomLink/1.0",
                 **(headers or {})})
         try:
             with open_credentialed_url(request, timeout=self.timeout_seconds) as response:

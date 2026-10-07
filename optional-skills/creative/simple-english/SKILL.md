@@ -2,11 +2,11 @@
 name: simple-english
 description: "Rewrite text to ASD-STE100 Simplified Technical English."
 version: 1.2.0
-author: AminBlg (https://github.com/AminBlg/SimpleEnglish), ported by Hermes Agent
+author: AminBlg (https://github.com/AminBlg/SimpleEnglish), ported by Rabbit Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [writing, documentation, ste, asd-ste100, technical-writing, editing, anti-ai-slop]
     category: creative
     homepage: https://github.com/AminBlg/SimpleEnglish
@@ -20,7 +20,7 @@ Write technical text with the rules of ASD-STE100 Simplified Technical English. 
 
 Write for that tired reader. Each sentence must survive one read.
 
-## How to use it in Hermes
+## How to use it in Rabbit
 
 The text usually arrives one of three ways:
 

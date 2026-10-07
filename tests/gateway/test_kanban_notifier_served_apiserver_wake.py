@@ -24,11 +24,11 @@ from gateway.config import Platform, PlatformConfig
 from gateway.kanban_watchers_notifier import _adapter_for_subscription
 from gateway.profile_routing import parse_profile_routes
 from gateway.run import GatewayRunner, _profile_runtime_scope
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
-from hermes_constants import get_hermes_home
-from hermes_state import SessionDB
+from rabbit_cli import kanban_db as kb
+from rabbit_cli import kanban_db_connect as kbc
+from rabbit_cli import kanban_db_notify as kbn
+from rabbit_constants import get_rabbit_home
+from rabbit_state import SessionDB
 
 SESSION = "20260918_033413_0665eb"      # the originating (Relay/web-UI) session id
 WORKER_SESSION = "20260918_034333_945a5a"  # the dispatcher-spawned worker's own session
@@ -45,7 +45,7 @@ class RecordingApiServerAdapter:
         self.profiles = []
 
     async def run_internal_session_turn(self, *, session_id, text, profile, notification_category="result"):
-        self.homes.append(str(get_hermes_home()))
+        self.homes.append(str(get_rabbit_home()))
         self.profiles.append(profile)
         self.turns.append({"session_id": session_id, "text": text, "category": notification_category})
 
@@ -97,7 +97,7 @@ class _FakeHttpSession:
 @pytest.fixture
 def served(tmp_path, monkeypatch):
     """Default multiplex home serving a route-only secondary ``builder`` (no adapters, no key)."""
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     (root / "profiles" / "builder").mkdir(parents=True)
     (root / "profiles" / "atlas").mkdir(parents=True)
     (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
@@ -105,10 +105,10 @@ def served(tmp_path, monkeypatch):
     (root / "profiles" / "builder" / "config.yaml").write_text("{}\n", encoding="utf-8")
     # A route-only profile owns no API-server credential of its own.
     (root / "profiles" / "builder" / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    monkeypatch.setenv("RABBIT_KANBAN_DB", str(tmp_path / "board.db"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("rabbit_constants.get_default_rabbit_root", lambda: root)
     return SimpleNamespace(root=root, builder=root / "profiles" / "builder", atlas=root / "profiles" / "atlas")
 
 
@@ -216,12 +216,12 @@ def test_served_profile_wake_runs_in_process_only_for_the_session_it_owns(served
     _own_session(served.root, "default-origin", "default")
     default_adapter = RecordingApiServerAdapter()
     default_adapter._api_key, default_adapter._host = "k" * 20, "127.0.0.1"
-    default_adapter._port, default_adapter._model_name = 8642, "hermes"
+    default_adapter._port, default_adapter._model_name = 8642, "rabbit"
     runner = _make_runner(adapter=default_adapter)
     task = _subscription(chat_id="default-origin", profile="default")
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
     assert default_adapter.turns == []
-    assert [c["headers"]["X-Hermes-Session-Id"] for c in _FakeHttpSession.calls] == ["default-origin"]
+    assert [c["headers"]["X-Rabbit-Session-Id"] for c in _FakeHttpSession.calls] == ["default-origin"]
     assert _FakeHttpSession.calls[0]["url"].endswith("/v1/chat/completions")
     assert _unseen(task, chat_id="default-origin") == []
 
@@ -252,7 +252,7 @@ def test_internal_session_turn_targets_the_live_session_under_the_owner_profile(
 
     async def fake_run_agent(**kwargs):
         seen.update(kwargs)
-        seen["home"] = str(get_hermes_home())
+        seen["home"] = str(get_rabbit_home())
         seen["request_profile"] = _api_request_profile.get()
         return {}, {}
 

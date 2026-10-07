@@ -32,7 +32,7 @@ def test_mcp_config_reconciler_reconciles_every_tick_after_baseline(monkeypatch,
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools.mcp_oauth import _is_interactive
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("mcp_servers:\n  linear:\n    url: https://x/mcp\n")
     calls: list = []
     added: list = ["linear"]  # enabled in config, never connected, cooldown lapsed

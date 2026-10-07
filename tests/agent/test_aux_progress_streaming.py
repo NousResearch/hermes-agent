@@ -576,7 +576,7 @@ class TestProviderRequiresStream:
 
     def test_config_marker_matches_custom_endpoint(self):
         with patch(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             return_value={"auxiliary": {"stream_only_base_urls": ["my-proxy.example.com"]}},
         ):
             assert _provider_requires_stream(

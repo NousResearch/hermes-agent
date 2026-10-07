@@ -136,7 +136,7 @@ async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
     }
     runner._running_agents[sk] = running_agent
     runner._running_agents_ts[sk] = time.time() - 31_471
-    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+    monkeypatch.setenv("RABBIT_AGENT_TIMEOUT", "1800")
 
     result = await runner._handle_message(_make_event("/steer pause safely"))
 

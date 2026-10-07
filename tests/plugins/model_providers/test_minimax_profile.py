@@ -5,7 +5,7 @@ API, `minimax-oauth` browser OAuth) all advertise a `default_aux_model` on
 their `ProviderProfile`. The previous M2.7 / M2.7-highspeed values were
 stale relative to the current frontier model (M3, released 2026-06-01) and
 inconsistent with the `_PROVIDER_MODELS["minimax"]` catalog top entry in
-`hermes_cli/models.py`.
+`rabbit_cli/models.py`.
 
 This file pins the new defaults so the choice is reviewable and any future
 revert shows up in a failing test rather than silent behavior drift.
@@ -43,7 +43,7 @@ class TestMinimaxAuxModelM3:
     """MiniMax profile aux model is the new frontier M3, not the stale M2.7.
 
     The catalog top entry is ``MiniMax-M3`` in
-    ``hermes_cli.models._PROVIDER_MODELS['minimax']`` and the
+    ``rabbit_cli.models._PROVIDER_MODELS['minimax']`` and the
     user-facing ``model.default`` for a Token-Plan install is M3,
     so pinning the aux default to the same model keeps the runtime
     consistent (same auth, same billing pool, same rate limits, no

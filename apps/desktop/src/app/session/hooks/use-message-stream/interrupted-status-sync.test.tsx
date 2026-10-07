@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent } from '@rabbit/shared'
 // #81114: a Stop/interrupt seals the assistant bubble, but background work
 // keeps running and its completions still arrive. Those completions must
 // retire the status-stack rows (subagent/delegate) that have no poll to

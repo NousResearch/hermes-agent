@@ -1,4 +1,4 @@
-export function platformDefaultHermesHome(
+export function platformDefaultRabbitHome(
   home: string,
   env?: NodeJS.ProcessEnv,
   platform?: NodeJS.Platform,
@@ -6,7 +6,7 @@ export function platformDefaultHermesHome(
 
 export function resolveDesktopUserData(defaultPath: string, env?: NodeJS.ProcessEnv): string
 
-export interface HermesHomeOptions {
+export interface RabbitHomeOptions {
   home: string
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
@@ -14,4 +14,4 @@ export interface HermesHomeOptions {
   readWindowsHome?: () => string | null
 }
 
-export function resolveDesktopHermesHome(options: HermesHomeOptions): string
+export function resolveDesktopRabbitHome(options: RabbitHomeOptions): string

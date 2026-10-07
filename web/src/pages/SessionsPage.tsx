@@ -94,7 +94,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     oneshot: { icon: Terminal, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
-    hermes_flow: { icon: Play, color: "text-warning" },
+    rabbit_flow: { icon: Play, color: "text-warning" },
     vulcan_delegate: { icon: Play, color: "text-warning" },
     webhook: { icon: Globe, color: "text-warning" },
   };
@@ -105,12 +105,12 @@ const AUTOMATION_SESSION_SOURCES = [
   "oneshot",
   "api_server",
   "acp",
-  "hermes_flow",
+  "rabbit_flow",
   "vulcan_delegate",
   "webhook",
 ];
 const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
+const NO_MATCHING_SESSION_SOURCE = "__rabbit_dashboard_no_matching_source__";
 
 type SessionFilterCategory = "chats" | "automation" | "all";
 type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
@@ -154,8 +154,8 @@ function sourceLabel(source: string): string {
       return "Cron";
     case "tool":
       return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
+    case "rabbit_flow":
+      return "Rabbit Flow";
     case "vulcan_delegate":
       return "Vulcan delegate";
     case "webhook":
@@ -1507,9 +1507,9 @@ export default function SessionsPage() {
         const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
           credentials: "include",
           headers: {
-            "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
+            "X-Rabbit-Session-Token":
+              (window as unknown as { __RABBIT_SESSION_TOKEN__?: string })
+                .__RABBIT_SESSION_TOKEN__ ?? "",
           },
         });
         if (!res.ok) {
@@ -1791,7 +1791,7 @@ export default function SessionsPage() {
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">
                 {activeAction === "restart"
                   ? t.status.restartGateway
-                  : t.status.updateHermes}
+                  : t.status.updateRabbit}
               </span>
 
               <Badge

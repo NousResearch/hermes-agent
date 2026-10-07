@@ -10,7 +10,7 @@
  * ---------------
  * electron-builder's final packaging step copies the stock `electron`
  * binary into `release/<platform>-unpacked/` and then renames it to the
- * product name (`Hermes`). If a PREVIOUS `npm run pack` was interrupted
+ * product name (`Rabbit`). If a PREVIOUS `npm run pack` was interrupted
  * (Ctrl-C, OOM kill, crash, full disk) the unpacked directory is left in a
  * corrupted partial state: it keeps the already-renamed `LICENSE.electron.txt`
  * and the Chromium payload (.pak/.so/icudtl.dat/chrome-sandbox) but is MISSING
@@ -21,9 +21,9 @@
  * rename a `electron` file that no longer exists. The build dies with:
  *
  *   ENOENT: no such file or directory, rename
- *   '.../release/linux-unpacked/electron' -> '.../release/linux-unpacked/Hermes'
+ *   '.../release/linux-unpacked/electron' -> '.../release/linux-unpacked/Rabbit'
  *
- * This is a hard failure with no obvious cause for the user — `hermes desktop`
+ * This is a hard failure with no obvious cause for the user — `rabbit desktop`
  * just prints "Desktop GUI build failed" and the only fix is to manually
  * `rm -rf` the release directory, which a normal user has no way to know.
  *
@@ -34,7 +34,7 @@
  * on every pack; nothing else depends on its prior contents.
  *
  * Cross-platform: the same partial-state trap exists on macOS
- * (the mac-unpacked Hermes.app bundle) and Windows (win-unpacked), so we
+ * (the mac-unpacked Rabbit.app bundle) and Windows (win-unpacked), so we
  * clean whatever `appOutDir` electron-builder hands us regardless of platform.
  *
  * Best-effort: a cleanup failure must never mask the real build. We log and
@@ -89,7 +89,7 @@ export function cleanStaleAppOutDir(appOutDir) {
  * safe fallback and matches pre-#69179 behavior exactly.
  */
 /** @param {string | null | undefined} appOutDir @param {string} [productExeName] @returns {boolean} */
-export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe') {
+export function preserveRollbackBackup(appOutDir, productExeName = 'Rabbit.exe') {
   if (!appOutDir || typeof appOutDir !== 'string' || !existsSync(appOutDir)) {
     return false
   }
@@ -121,7 +121,7 @@ export default async function beforePack(context) {
     // post-build integrity gate (#69179) instead of destroying it. Falls
     // through to the plain wipe when the old tree is partial/corrupt or the
     // rename fails.
-    const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
+    const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Rabbit'}.exe`
     if (platformName === 'win32' && preserveRollbackBackup(appOutDir, productExe)) {
       console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
     } else if (cleanStaleAppOutDir(appOutDir)) {
@@ -138,6 +138,6 @@ export default async function beforePack(context) {
   if (!platform || !arch) return
   const app = context.packager.projectDir
   const source = path.resolve(app, '../..')
-  const nativeDeps = process.env.HERMES_PREPARED_NATIVE_DEPS || path.join(app, 'build/native-deps')
+  const nativeDeps = process.env.RABBIT_PREPARED_NATIVE_DEPS || path.join(app, 'build/native-deps')
   copyNativeInputs({ source, nativeDeps, out: path.join(app, 'dist/node_modules'), platform, arch })
 }

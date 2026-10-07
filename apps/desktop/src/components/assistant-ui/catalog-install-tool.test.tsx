@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { ConnectionOperationTarget, ConnectionRequestPayload } from '@hermes/shared'
+import type { ConnectionOperationTarget, ConnectionRequestPayload } from '@rabbit/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -28,7 +28,7 @@ const NVIDIA_APP: ConnectionOperationTarget = {
   kind: 'plugin',
   name: 'nvidia-app',
   platforms: ['windows'],
-  repo: 'https://github.com/NousResearch/hermes-nvidia',
+  repo: 'https://github.com/seven0070/rabbit-nvidia',
   sha: SHA,
   state: 'pending',
   subdir: 'nvidia-app',

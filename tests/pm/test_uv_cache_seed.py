@@ -10,7 +10,7 @@ import shutil
 
 import pytest
 
-from hermes_constants import get_default_hermes_root
+from rabbit_constants import get_default_rabbit_root
 from pm import packages
 from pm import paths
 
@@ -18,7 +18,7 @@ from pm import paths
 @pytest.fixture
 def payload_cache(tmp_path, monkeypatch):
     """A sealed payload shipping ``uv-cache/`` beside its store, and a machine cache that is empty."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     payload = tmp_path / "payload"
     entry = payload / "uv-cache" / "archive-v0" / "bucket"
     entry.mkdir(parents=True)
@@ -26,7 +26,7 @@ def payload_cache(tmp_path, monkeypatch):
     store = payload / "tools"
     store.mkdir()
     monkeypatch.setattr(paths, "store_root", lambda: store)
-    return get_default_hermes_root() / "cache" / "uv"
+    return get_default_rabbit_root() / "cache" / "uv"
 
 
 def test_partial_seed_is_retried_on_the_next_install(payload_cache, monkeypatch):

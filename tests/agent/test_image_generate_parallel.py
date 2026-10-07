@@ -38,7 +38,7 @@ def test_image_generate_parallel_worker_cap_can_be_configured_lower():
     ]
 
     with patch(
-        "hermes_cli.config.load_config",
+        "rabbit_cli.config.load_config",
         return_value={"image_gen": {"max_parallel_requests": 1}},
     ):
         assert tool_executor._max_workers_for_tool_batch(runnable_calls) == 1

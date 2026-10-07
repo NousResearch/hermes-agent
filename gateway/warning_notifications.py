@@ -38,7 +38,7 @@ def diagnostic_metadata(event) -> dict:
 
 def effective_user_config() -> dict:
     """The active profile's effective config, or ``{}`` when it cannot be read (presentation fails open)."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from rabbit_cli.config_effective import load_user_config_effective
     try:
         config = load_user_config_effective()
     except Exception:

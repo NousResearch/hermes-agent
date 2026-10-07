@@ -2,7 +2,7 @@
 
 Real ``python -m gateway.run`` with the API-server platform enabled through the profile ``.env``
 (``API_SERVER_ENABLED``/``API_SERVER_KEY``/host/port, as a user configures it), sandboxed
-HOME/HERMES_HOME, the model routed to ``FakeLLMServer`` — which records every request, so the cell
+HOME/RABBIT_HOME, the model routed to ``FakeLLMServer`` — which records every request, so the cell
 reads exactly what the model was sent.
 
 Contract for ``POST /api/sessions/{id}/chat``: a message either reaches the model whole (length
@@ -43,7 +43,7 @@ def gateway(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[Sandbox,
     sb = make_sandbox(root)
     gw = None
     try:
-        gw = GatewayApiServer(sb, sb.hermes_home, root / "gateway.log")
+        gw = GatewayApiServer(sb, sb.rabbit_home, root / "gateway.log")
         yield sb, gw
     finally:
         if gw is not None:

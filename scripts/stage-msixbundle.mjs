@@ -22,32 +22,32 @@ const { values } = parseArgs({ options: {
   'channel-request': { type: 'string' },
 } })
 const channelRequest = values['channel-request']
-  ? channelBuildRequest({ ...process.env, HERMES_DESKTOP_VARIANT: values.variant || 'bundled',
-    _HERMES_CHANNEL_REQUEST_JSON: fs.readFileSync(values['channel-request'], 'utf8') }) : null
+  ? channelBuildRequest({ ...process.env, RABBIT_DESKTOP_VARIANT: values.variant || 'bundled',
+    _RABBIT_CHANNEL_REQUEST_JSON: fs.readFileSync(values['channel-request'], 'utf8') }) : null
 const tag = values.tag
 const commitBuild = values.commit || ''
 const commitVersion = values.version || ''
 const noUpload = values['no-upload'] === true
 const candidate = values.candidate === true
-const variant = values.variant || process.env.HERMES_DESKTOP_VARIANT || 'bundled'
+const variant = values.variant || process.env.RABBIT_DESKTOP_VARIANT || 'bundled'
 
 if (channelRequest && (tag || commitBuild || values.version || candidate || variant !== 'bundled'
-    || process.env.HERMES_PAYLOAD_TAG || process.env.HERMES_BUILD_COMMIT)) {
+    || process.env.RABBIT_PAYLOAD_TAG || process.env.RABBIT_BUILD_COMMIT)) {
   throw new Error('Channel requests cannot select tag, commit, Store or candidate inputs')
 }
-if (commitBuild && (tag || process.env.HERMES_PAYLOAD_TAG || candidate)) {
+if (commitBuild && (tag || process.env.RABBIT_PAYLOAD_TAG || candidate)) {
   throw new Error('Commit builds cannot select a release tag or candidate mode')
 }
 if (!commitBuild && !channelRequest && (values.version !== undefined || noUpload)) {
   throw new Error('--version and --no-upload require --commit')
 }
 
-// product-identity.cjs keys the app name off HERMES_DESKTOP_VARIANT — the
-// artifact filenames (HermesBundled-*-win-x64.msix) carry the bundled
+// product-identity.cjs keys the app name off RABBIT_DESKTOP_VARIANT — the
+// artifact filenames (RabbitBundled-*-win-x64.msix) carry the bundled
 // identity, so the env var MUST match the variant or the msix lookup
 // fails. Set it before anything requires the identity.
-process.env.HERMES_DESKTOP_VARIANT = variant
-if (tag) process.env.HERMES_PAYLOAD_TAG = tag
+process.env.RABBIT_DESKTOP_VARIANT = variant
+if (tag) process.env.RABBIT_PAYLOAD_TAG = tag
 
 if (commitBuild) {
   if (!/^[a-f0-9]{40}$/.test(commitBuild)) {
@@ -66,8 +66,8 @@ if (commitBuild) {
     console.error('[stage-msixbundle] --commit and --tag are mutually exclusive')
     process.exit(1)
   }
-  process.env.HERMES_BUILD_COMMIT = commitBuild
-  process.env.HERMES_PAYLOAD_VERSION = commitVersion
+  process.env.RABBIT_BUILD_COMMIT = commitBuild
+  process.env.RABBIT_PAYLOAD_VERSION = commitVersion
 } else if (!tag && !channelRequest) {
   console.error('[stage-msixbundle] --tag=<vX.Y.Z> is required')
   process.exit(1)

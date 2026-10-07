@@ -3,7 +3,7 @@
 Reads one JSON request ``{"query": str, "safe_limit": int}`` from stdin, writes one
 envelope ``{"ok": true, "results": [...]}`` / ``{"ok": false, "error": str}`` to
 stdout, exits. Test hooks (``"test_hook": "sleep"|"gil"|"empty"``) are honored only
-when ``HERMES_DDGS_ALLOW_TEST_HOOKS=1``.
+when ``RABBIT_DDGS_ALLOW_TEST_HOOKS=1``.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def main() -> int:
         return _fail(f"invalid request: {exc}", 2)
     hook = request.get("test_hook")
     if hook:
-        if os.environ.get("HERMES_DDGS_ALLOW_TEST_HOOKS") != "1":
+        if os.environ.get("RABBIT_DDGS_ALLOW_TEST_HOOKS") != "1":
             return _fail("test_hook refused (hooks not enabled)", 3)
         fn = _TEST_HOOKS.get(str(hook))
         envelope = fn() if fn else {"ok": False, "error": f"unknown test_hook: {hook!r}"}

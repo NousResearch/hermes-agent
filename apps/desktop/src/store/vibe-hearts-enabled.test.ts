@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 
-const KEY = 'hermes.desktop.vibeHearts.v1'
+const KEY = 'rabbit.desktop.vibeHearts.v1'
 
 describe('vibe hearts enabled', () => {
   beforeEach(() => {

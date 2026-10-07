@@ -61,7 +61,7 @@ export class MacStrategy implements UpdaterStrategy {
     this.applying = true
 
     const progress = ({ percent }: { percent: number }): void => {
-      this.deps.emitProgress({ stage: 'fetch', message: 'Downloading the Hermes update.', percent })
+      this.deps.emitProgress({ stage: 'fetch', message: 'Downloading the Rabbit update.', percent })
     }
 
     this.deps.updater.on('download-progress', progress)
@@ -87,7 +87,7 @@ export class MacStrategy implements UpdaterStrategy {
           await stop()
           this.deps.emitProgress({
             stage: 'restart',
-            message: 'Restarting Hermes to install the update.',
+            message: 'Restarting Rabbit to install the update.',
             percent: 100
           })
           this.deps.updater.quitAndInstall()

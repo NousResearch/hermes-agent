@@ -1,8 +1,8 @@
-"""Local modifications through a real ``hermes update``: tracked edits, untracked files, local commits.
+"""Local modifications through a real ``rabbit update``: tracked edits, untracked files, local commits.
 
 One HEAD install (HEAD's ``scripts/install.sh``: a ``--filter=tree:0`` clone over smart HTTP) is
 shared by the cells; each cell starts from a clean ``main`` (``World.reset_clean``), makes the
-user's change, publishes one upstream release on top and runs ``hermes update --yes``.
+user's change, publishes one upstream release on top and runs ``rabbit update --yes``.
 
 The property is the user's: whatever the update does with their work, it is either back in the
 working tree or left behind a ref the output names, and the final banner / exit code never says

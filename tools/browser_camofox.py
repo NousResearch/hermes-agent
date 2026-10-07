@@ -5,7 +5,7 @@ server wrapping Camoufox (Firefox fork with C++ fingerprint spoofing); its REST 
 1:1 to our browser tool interface (accessibility snapshots with element refs, click/type/
 scroll by ref, screenshots). Setup: ``npm start`` in a checkout or ``docker run -p 9377:9377
 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser``, then ``CAMOFOX_URL=http://localhost:9377`` in
-``~/.hermes/.env`` (Docker: see ``CAMOFOX_REWRITE_LOOPBACK_URLS`` below).
+``~/.rabbit/.env`` (Docker: see ``CAMOFOX_REWRITE_LOOPBACK_URLS`` below).
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 import requests
 
 from agent.secret_scope import get_secret
-from hermes_cli.config import cfg_get, load_config, read_raw_config
-from hermes_constants import get_hermes_home_override, hermes_home_key
+from rabbit_cli.config import cfg_get, load_config, read_raw_config
+from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -49,7 +49,7 @@ _cmd_timeout_resolved = False
 def _get_command_timeout() -> int:
     """``browser.command_timeout`` (floor 5s, default 30s), cached per profile home after first read."""
     global _cached_cmd_timeout, _cmd_timeout_resolved
-    home = hermes_home_key()
+    home = rabbit_home_key()
     if _cached_cmd_timeout is None:
         _cached_cmd_timeout = {}
     if _cmd_timeout_resolved and home in _cached_cmd_timeout:
@@ -81,7 +81,7 @@ def _config_cdp_url() -> str:
     """Persistent ``browser.cdp_url`` from config.yaml, or "" (read here, not via
     ``browser_tool_cdp._get_cdp_override`` — circular import)."""
     try:
-        from hermes_cli.config import read_raw_config  # late-bound: tests patch the source module
+        from rabbit_cli.config import read_raw_config  # late-bound: tests patch the source module
         browser_cfg = read_raw_config().get("browser", {})
         if isinstance(browser_cfg, dict):
             return str(browser_cfg.get("cdp_url", "") or "").strip()
@@ -131,7 +131,7 @@ def check_camofox_available() -> bool:
     except Exception:
         return False
     if resp.status_code == 200:
-        if get_hermes_home_override() is not None:
+        if get_rabbit_home_override() is not None:
             if url not in _vnc_url_by_camofox_url:
                 _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
         elif not _vnc_url_checked:
@@ -142,7 +142,7 @@ def check_camofox_available() -> bool:
 
 def get_vnc_url() -> Optional[str]:
     """Return the VNC URL if the Camofox server exposes one, or None."""
-    if get_hermes_home_override() is not None:
+    if get_rabbit_home_override() is not None:
         url = get_camofox_url()
         if url not in _vnc_url_by_camofox_url:
             check_camofox_available()
@@ -175,7 +175,7 @@ def _env_or_cfg(env_name: str, camofox_cfg: Dict[str, Any], cfg_key: str, *, sec
 
 def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """Externally configured identity (integrations owning the visible Camofox browser
-    share a user ID so Hermes uses the same profile), or None."""
+    share a user ID so Rabbit uses the same profile), or None."""
     user_id = _env_or_cfg("CAMOFOX_USER_ID", camofox_cfg, "user_id", secret=True)
     if not user_id:
         return None
@@ -271,7 +271,7 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         if identity is None and _managed_persistence_enabled(camofox_cfg):
             identity = get_camofox_identity(task_id)
         if identity is None:
-            identity = {"user_id": f"hermes_{uuid.uuid4().hex[:10]}", "session_key": f"task_{task_id[:16]}"}
+            identity = {"user_id": f"rabbit_{uuid.uuid4().hex[:10]}", "session_key": f"task_{task_id[:16]}"}
             managed, adopt = False, False
         else:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
@@ -553,9 +553,9 @@ def _vision_llm_settings() -> tuple[float, float]:
 
 
 def _save_screenshot(content: bytes) -> str:
-    """Write PNG bytes under ``$HERMES_HOME/browser_screenshots`` and return the path."""
-    from hermes_constants import get_hermes_home
-    screenshots_dir = get_hermes_home() / "browser_screenshots"
+    """Write PNG bytes under ``$RABBIT_HOME/browser_screenshots`` and return the path."""
+    from rabbit_constants import get_rabbit_home
+    screenshots_dir = get_rabbit_home() / "browser_screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     screenshot_path = str(screenshots_dir / f"browser_screenshot_{uuid.uuid4().hex[:8]}.png")
     with open(screenshot_path, "wb") as f:

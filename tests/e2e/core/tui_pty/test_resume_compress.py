@@ -1,12 +1,12 @@
 """A long Ink TUI session renders every transcript word at most once after ``/compress`` and
-when it is resumed later (``hermes --tui --resume <id>`` and ``/resume <id>`` from a fresh TUI):
+when it is resumed later (``rabbit --tui --resume <id>`` and ``/resume <id>`` from a fresh TUI):
 a compressed-transcript block is never painted twice (#88906), the protected tail is on screen
 exactly once, the compaction summary is persisted exactly once (the TUI folds it away instead of
 painting it) and never painted twice, and ``/compress`` reports once. A ``/resume`` typed while a
 fresh TUI is still starting keeps the resumed transcript instead of losing it to the startup
 session (#121456).
 
-Real ``hermes --tui`` in tmux against the scripted fake provider (the compression summary is an
+Real ``rabbit --tui`` in tmux against the scripted fake provider (the compression summary is an
 auxiliary call answered by the fake). The session is compressed in place, then the TUI exits and
 fresh TUI processes reopen it from the same state.db.
 """
@@ -41,7 +41,7 @@ TAIL = [TURNS]  # the protected tail: the last turn survives compression verbati
 # to two thirds of landed attempts (it is decided on the gateway's RPC pool), so the pinned bug
 # almost always shows within these; a lucky run just passes, which the known-failure pin allows.
 STARTUP_TRIES = 8
-STARTING = "summoning hermes…"  # status bar before the gateway is up
+STARTING = "summoning rabbit…"  # status bar before the gateway is up
 
 CELLS = [
     "compress_happened", "compress_reported_once", "summary_persisted_once", "first_exits_clean",
@@ -130,7 +130,7 @@ def _first_tui(root, llm, cells, summaries: list[int]) -> str:
 
 
 def _startup_resume(root, llm, home_env: dict[str, str], sid: str, cells) -> None:
-    """/resume typed while the status bar still reads 'summoning hermes…' must stick."""
+    """/resume typed while the status bar still reads 'summoning rabbit…' must stick."""
     cells.phase = "slash_resume_at_startup"
     tui_dir = private_tui_dir(root / "startup")
     landed = 0
@@ -181,7 +181,7 @@ def _scenario(root) -> object:
             sid = _first_tui(root, llm, cells, summaries)
             if not sid:
                 return
-            home_env = {"HOME": str(root / "a" / "home"), "HERMES_HOME": str(root / "a" / "home" / ".hermes")}
+            home_env = {"HOME": str(root / "a" / "home"), "RABBIT_HOME": str(root / "a" / "home" / ".rabbit")}
             for how in ("resume_flag", "slash_resume"):
                 cells.phase = how
                 sub = root / how

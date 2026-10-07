@@ -1,24 +1,24 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
-"""Drive the Hermes TUI under HERMES_DEV_PERF and summarize the pipeline.
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-rabbit-env" python3 "$0" "$@"'
+"""Drive the Rabbit TUI under RABBIT_DEV_PERF and summarize the pipeline.
 
 Usage:
   scripts/profile-tui.py [--session SID] [--hold KEY] [--seconds N] [--rate HZ]
 
 Defaults: picks the session with the most messages, holds PageUp for 8s at
-~30 Hz (matching xterm key-repeat), summarizes ~/.hermes/perf.log on exit.
+~30 Hz (matching xterm key-repeat), summarizes ~/.rabbit/perf.log on exit.
 
 The --tui build must exist (run `npm run build` in ui-tui first). This script
-launches `node dist/entry.js` directly with HERMES_TUI_RESUME set so it
-bypasses the hermes_cli wrapper — we want repeatable timing, not the CLI's
+launches `node dist/entry.js` directly with RABBIT_TUI_RESUME set so it
+bypasses the rabbit_cli wrapper — we want repeatable timing, not the CLI's
 session-picker flow.
 
 Environment overrides:
-  HERMES_PERF_LOG     (default ~/.hermes/perf.log)
-  HERMES_PERF_NODE    (default node from $PATH)
-  HERMES_TUI_DIR      (default: <repo>/ui-tui relative to this script)
+  RABBIT_PERF_LOG     (default ~/.rabbit/perf.log)
+  RABBIT_PERF_NODE    (default node from $PATH)
+  RABBIT_TUI_DIR      (default: <repo>/ui-tui relative to this script)
 
 Exit code is 0 if the harness ran and parsed results, 2 if the TUI crashed
-or produced no perf data (suggests HERMES_DEV_PERF wiring is broken).
+or produced no perf data (suggests RABBIT_DEV_PERF wiring is broken).
 """
 
 from __future__ import annotations
@@ -39,18 +39,18 @@ from typing import Any
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 try:
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 except ImportError:
-    def get_hermes_home() -> Path:  # type: ignore[misc]
-        val = (os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+    def get_rabbit_home() -> Path:  # type: ignore[misc]
+        val = (os.environ.get("RABBIT_HOME") or "").strip()
+        return Path(val) if val else Path.home() / ".rabbit"
 
 DEFAULT_TUI_DIR = Path(
-    os.environ.get("HERMES_TUI_DIR")
+    os.environ.get("RABBIT_TUI_DIR")
     or str(Path(__file__).resolve().parent.parent / "ui-tui")
 )
-DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(get_hermes_home() / "perf.log")))
-DEFAULT_STATE_DB = get_hermes_home() / "state.db"
+DEFAULT_LOG = Path(os.environ.get("RABBIT_PERF_LOG", str(get_rabbit_home() / "perf.log")))
+DEFAULT_STATE_DB = get_rabbit_home() / "state.db"
 
 # Keystroke escape sequences.  Matches what xterm/VT220 send when the
 # terminal has bracketed-paste disabled and the key-repeat handler fires.
@@ -152,7 +152,7 @@ def format_report(data: dict[str, Any]) -> str:
 
     out.append("═══ React Profiler ═══")
     if not react:
-        out.append("  (no react events — HERMES_DEV_PERF wired? threshold too high?)")
+        out.append("  (no react events — RABBIT_DEV_PERF wired? threshold too high?)")
     else:
         by_id: dict[str, list[float]] = {}
         for r in react:
@@ -421,17 +421,17 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     since_ms = int(time.time() * 1000)
 
     env = os.environ.copy()
-    env["HERMES_DEV_PERF"] = "1"
-    env["HERMES_DEV_PERF_MS"] = str(args.threshold_ms)
-    env["HERMES_DEV_PERF_LOG"] = str(log)
-    env["HERMES_TUI_RESUME"] = sid
+    env["RABBIT_DEV_PERF"] = "1"
+    env["RABBIT_DEV_PERF_MS"] = str(args.threshold_ms)
+    env["RABBIT_DEV_PERF_LOG"] = str(log)
+    env["RABBIT_TUI_RESUME"] = sid
     env["COLUMNS"] = str(args.cols)
     env["LINES"] = str(args.rows)
     env["TERM"] = env.get("TERM", "xterm-256color")
 
     # Pass through extra flags the TUI wrapper recognizes (e.g. --no-fullscreen).
     # Stored on args as `extra_flags` list.
-    node = os.environ.get("HERMES_PERF_NODE", "node")
+    node = os.environ.get("RABBIT_PERF_NODE", "node")
     node_args = [node, str(entry), *getattr(args, "extra_flags", [])]
 
     pid, fd = pty.fork()
@@ -481,7 +481,7 @@ def main() -> int:
     p.add_argument("--seconds", type=float, default=8.0, help="how long to hold the key")
     p.add_argument("--rate", type=int, default=30, help="keystrokes per second")
     p.add_argument("--warmup", type=float, default=3.0, help="seconds to wait after launch before input")
-    p.add_argument("--threshold-ms", type=float, default=0.0, help="HERMES_DEV_PERF_MS (0 = capture all)")
+    p.add_argument("--threshold-ms", type=float, default=0.0, help="RABBIT_DEV_PERF_MS (0 = capture all)")
     p.add_argument("--cols", type=int, default=120)
     p.add_argument("--rows", type=int, default=40)
     p.add_argument("--keep-log", action="store_true", help="don't wipe perf.log before run")
@@ -537,7 +537,7 @@ def loop_mode(args: argparse.Namespace) -> int:
 
     tui_dir = Path(args.tui_dir).resolve()
     src_root = tui_dir / "src"
-    pkg_root = tui_dir / "packages" / "hermes-ink" / "src"
+    pkg_root = tui_dir / "packages" / "rabbit-ink" / "src"
 
     def collect_mtimes() -> dict[str, float]:
         mtimes: dict[str, float] = {}

@@ -53,7 +53,7 @@ An unreadable feed prevents pruning.
 ## Client lifecycle
 
 Checks never download automatically. Apply rechecks the release, downloads it,
-and waits for Squirrel.Mac to accept the signed app. Only then does Hermes stop
+and waits for Squirrel.Mac to accept the signed app. Only then does Rabbit stop
 its app-owned backends and request installation/relaunch. Unrelated quits do
 not trigger installation. Downloads and native-verification failures leave
 backends running. Concurrent checks cannot replace an apply operation's target.
@@ -81,7 +81,7 @@ conditional publication, and retention. They are not proof of a signed install
 or actual app replacement.
 
 Native macOS packaged-update drivers are part of the existing
-[install/update family](https://github.com/NousResearch/hermes-agent/blob/main/tests/install/BUNDLED_UPDATES.md). The stable gate
+[install/update family](https://github.com/seven0070/Rabbit-/blob/main/tests/install/BUNDLED_UPDATES.md). The stable gate
 requires signed-package transitions on both architectures. Each acceptance
 claim needs a successful native run for the exact old/new package pair.
 Workflow definitions and historical helper results do not establish acceptance

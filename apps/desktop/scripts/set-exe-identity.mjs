@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// set-exe-identity.mjs — stamp the Hermes icon + version metadata onto the
-// built Hermes.exe using rcedit, completely decoupled from electron-builder's
+// set-exe-identity.mjs — stamp the Rabbit icon + version metadata onto the
+// built Rabbit.exe using rcedit, completely decoupled from electron-builder's
 // signing path.
 //
 // WHY THIS EXISTS
@@ -13,7 +13,7 @@
 // try to extract winCodeSign.
 //
 // The cost of disabling signAndEditExecutable is that electron-builder also
-// skips rcedit, so the unpacked Hermes.exe keeps the stock Electron icon and
+// skips rcedit, so the unpacked Rabbit.exe keeps the stock Electron icon and
 // "Electron" taskbar name. This script restores the icon + identity by calling
 // rcedit DIRECTLY. rcedit is a pure PE resource editor: no signing, no certs,
 // no winCodeSign, no symlinks.
@@ -21,14 +21,14 @@
 // HOW IT RUNS
 // -----------
 // Primarily as an electron-builder `afterExtract` hook (scripts/after-extract.mjs),
-// so EVERY packed build — first install, `hermes desktop`, the installer's
+// so EVERY packed build — first install, `rabbit desktop`, the installer's
 // --update rebuild, or a dev's manual `npm run pack` — gets a branded exe from
 // one place. Previously this stamp lived only in install.ps1, so the update
-// path (which rebuilds via `hermes desktop --build-only`, never install.ps1)
+// path (which rebuilds via `rabbit desktop --build-only`, never install.ps1)
 // shipped a stock "Electron" exe. Keeping it in afterExtract closes that gap.
 //
 // Also runnable standalone for ad-hoc re-stamping:
-//   node scripts/set-exe-identity.mjs <path-to-Hermes.exe>
+//   node scripts/set-exe-identity.mjs <path-to-Rabbit.exe>
 //
 // Exits 0 on success, non-zero on failure when run as a CLI. As a hook,
 // stampExeIdentity() resolves on success and rejects on failure; the caller
@@ -62,7 +62,7 @@ function wait(delay) {
   return new Promise(resolve => setTimeout(resolve, delay))
 }
 
-// Stamp the Hermes icon + identity onto `exe`. Resolves on success, throws on
+// Stamp the Rabbit icon + identity onto `exe`. Resolves on success, throws on
 // failure. `desktopRoot` defaults to this script's package root so the icon and
 // the rcedit dependency resolve regardless of cwd.
 async function stampExeIdentity(
@@ -86,10 +86,10 @@ async function stampExeIdentity(
   const options = {
     icon,
     'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
-      CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+      ProductName: 'Rabbit',
+      FileDescription: 'Rabbit',
+      CompanyName: 'Sanath Patil',
+      LegalCopyright: 'Copyright (c) 2026 Sanath Patil'
     }
   }
 
@@ -107,7 +107,7 @@ async function stampExeIdentity(
     }
   }
 
-  console.log('[set-exe-identity] done — Hermes icon + identity stamped')
+  console.log('[set-exe-identity] done — Rabbit icon + identity stamped')
 }
 
 export { RCEDIT_COMMIT_RETRY_DELAYS_MS, stampExeIdentity }

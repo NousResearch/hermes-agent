@@ -1,6 +1,6 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
-import type { SessionResumeResult } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/rabbit'
 
 export interface PendingClarifyResumeState {
   authoritativeAbsent: boolean

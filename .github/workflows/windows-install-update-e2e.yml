@@ -2,7 +2,7 @@ name: Windows install + update E2E
 
 # PR-time native Windows install/update journey (tests/e2e/core/windows_update):
 # the real scripts/install.ps1 on a fresh fake user profile (git redirected to a local
-# bare clone, no git/python/uv on PATH), then the real `hermes update` HEAD -> NEXT,
+# bare clone, no git/python/uv on PATH), then the real `rabbit update` HEAD -> NEXT,
 # a running gateway across that update, and a turn against the loopback provider.
 # Each file walks one journey (one install) and asserts several user-visible cells;
 # tracked bugs are message-gated xfails (tests/e2e/core/_pending_fixes.py).
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   install-update:
-    name: Windows install.ps1 + hermes update E2E
+    name: Windows install.ps1 + rabbit update E2E
     runs-on: windows-latest-32-core
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
     timeout-minutes: 50
@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # serve.git is a bare clone of this checkout: the installer's treeless clone and
-          # `hermes update` need real history and release tags (version identity), as on GitHub.
+          # `rabbit update` need real history and release tags (version identity), as on GitHub.
           fetch-depth: 0
 
       - name: Set up locked Python and test dependencies
@@ -52,18 +52,18 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows_update/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
-          HERMES_E2E_WINDOWS_INSTALL: '1'
+          RABBIT_E2E_WINDOWS_INSTALL: '1'
           # Machine work dirs (serve.git, transcripts) stay short under runner.temp. The fake
           # user profiles live in C:\Users itself, where a real one does: the checkout carries
           # 159-character paths, so a deeper profile hits MAX_PATH where no user would (the
           # runner is disposable, so writing C:\Users is fine).
-          HERMES_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
-          HERMES_E2E_PROFILES_ROOT: C:\Users
-          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
+          RABBIT_E2E_MACHINE_ROOT: ${{ runner.temp }}\wm
+          RABBIT_E2E_PROFILES_ROOT: C:\Users
+          RABBIT_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
-          HERMES_TEST_WORKERS: '6'
-          HERMES_TEST_FILE_TIMEOUT: '2400'
-          HERMES_TEST_FILE_RETRIES: '0'
+          RABBIT_TEST_WORKERS: '6'
+          RABBIT_TEST_FILE_TIMEOUT: '2400'
+          RABBIT_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
@@ -77,15 +77,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: No leftover Python / Hermes processes
+      - name: No leftover Python / Rabbit processes
         # Backstop for each journey's teardown: nothing a machine started may outlive it.
         if: always()
         shell: pwsh
         run: |
-          $names = 'python.exe', 'pythonw.exe', 'hermes.exe', 'node.exe'
-          # Work dirs live under runner.temp\wm; profiles are C:\Users\*hermes-e2e-<id>.
+          $names = 'python.exe', 'pythonw.exe', 'rabbit.exe', 'node.exe'
+          # Work dirs live under runner.temp\wm; profiles are C:\Users\*rabbit-e2e-<id>.
           $root = "${{ runner.temp }}\wm".ToLower()
-          $profileMark = 'hermes-e2e-'
+          $profileMark = 'rabbit-e2e-'
           $deadline = (Get-Date).AddSeconds(20)
           do {
             $left = @(Get-CimInstance Win32_Process | Where-Object {

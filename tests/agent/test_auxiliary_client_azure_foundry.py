@@ -1,7 +1,7 @@
 """Tests for auxiliary client routing of the ``azure-foundry`` provider.
 
 Covers the dedicated branch in ``agent.auxiliary_client.resolve_provider_client``
-that delegates to :func:`hermes_cli.runtime_provider._resolve_azure_foundry_runtime`
+that delegates to :func:`rabbit_cli.runtime_provider._resolve_azure_foundry_runtime`
 instead of falling into the generic ``resolve_api_key_provider_credentials``
 path (which only knows about ``AZURE_FOUNDRY_API_KEY`` and would 401 for
 Entra ID users and miss ``model.base_url`` overrides for api-key users
@@ -70,11 +70,11 @@ def patch_load_config(monkeypatch):
     """Helper to set model_cfg seen by _try_azure_foundry."""
     def _apply(model_cfg):
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             lambda: {"model": model_cfg},
         )
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
+            "rabbit_cli.config.load_config_readonly",
             lambda: {"model": model_cfg},
         )
     return _apply
@@ -341,7 +341,7 @@ class TestResolveProviderClientAzureFoundry:
     ):
         """When azure-foundry is requested but cannot be resolved
         (e.g. no model + no key), we return (None, None) and log a
-        clear warning pointing at ``hermes doctor``."""
+        clear warning pointing at ``rabbit doctor``."""
         import logging
         from agent.auxiliary_client import resolve_provider_client
 
@@ -357,7 +357,7 @@ class TestResolveProviderClientAzureFoundry:
         assert client is None
         assert resolved is None
         assert any(
-            "azure-foundry" in rec.message and "hermes doctor" in rec.message
+            "azure-foundry" in rec.message and "rabbit doctor" in rec.message
             for rec in caplog.records
         )
 
@@ -382,8 +382,8 @@ class TestAzureFoundryResponsesAlias:
         from agent import auxiliary_client as _aux
 
         cfg = {"model": {"provider": "openrouter", "default": "x"}, "auxiliary": {"vision": dict(self._AUX_VISION)}}
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setattr("rabbit_cli.config.load_config_readonly", lambda: cfg)
+        monkeypatch.setattr("rabbit_cli.config.load_config", lambda: cfg)
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")
 
         provider, client, model = _aux.resolve_vision_provider_client()

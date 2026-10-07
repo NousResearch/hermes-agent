@@ -78,17 +78,17 @@ class TestClampTimeout:
 class TestResolveTimeout:
     def test_default_wins_when_nothing_configured(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.delenv("HERMES_TEST_DEADLINE_X", raising=False)
+        monkeypatch.delenv("RABBIT_TEST_DEADLINE_X", raising=False)
         assert (
-            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            resolve_timeout("a.b", default=42.0, env_var="RABBIT_TEST_DEADLINE_X")
             == 42.0
         )
 
     def test_env_var_beats_default(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
+        monkeypatch.setenv("RABBIT_TEST_DEADLINE_X", "17.5")
         assert (
-            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            resolve_timeout("a.b", default=42.0, env_var="RABBIT_TEST_DEADLINE_X")
             == 17.5
         )
 
@@ -96,9 +96,9 @@ class TestResolveTimeout:
         monkeypatch.setattr(
             "agent.deadline._timeouts_section", lambda: {"a": {"b": 99}}
         )
-        monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
+        monkeypatch.setenv("RABBIT_TEST_DEADLINE_X", "17.5")
         assert (
-            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            resolve_timeout("a.b", default=42.0, env_var="RABBIT_TEST_DEADLINE_X")
             == 99.0
         )
 
@@ -117,17 +117,17 @@ class TestResolveTimeout:
         monkeypatch.setattr(
             "agent.deadline._timeouts_section", lambda: {"a": {"b": "soon"}}
         )
-        monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "17.5")
+        monkeypatch.setenv("RABBIT_TEST_DEADLINE_X", "17.5")
         assert (
-            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            resolve_timeout("a.b", default=42.0, env_var="RABBIT_TEST_DEADLINE_X")
             == 17.5
         )
 
     def test_invalid_env_value_falls_through_to_default(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "banana")
+        monkeypatch.setenv("RABBIT_TEST_DEADLINE_X", "banana")
         assert (
-            resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X")
+            resolve_timeout("a.b", default=42.0, env_var="RABBIT_TEST_DEADLINE_X")
             == 42.0
         )
 
@@ -153,7 +153,7 @@ class TestResolveTimeout:
         def _boom():
             raise RuntimeError("config unreadable")
 
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", _boom)
+        monkeypatch.setattr("rabbit_cli.config.load_config_readonly", _boom)
         assert dl._timeouts_section() == {}
         assert resolve_timeout("a.b", default=5.0) == 5.0
 
@@ -515,12 +515,12 @@ class TestConcurrentToolTimeoutMigration:
 
     def test_env_var_still_works(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
+        monkeypatch.setenv("RABBIT_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 
     def test_env_zero_still_disables(self, monkeypatch):
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0")
+        monkeypatch.setenv("RABBIT_CONCURRENT_TOOL_TIMEOUT_S", "0")
         assert self._resolver()() is None
 
 
@@ -529,7 +529,7 @@ class TestConcurrentToolTimeoutMigration:
             "agent.deadline._timeouts_section",
             lambda: {"tools": {"concurrent_batch": 300}},
         )
-        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
+        monkeypatch.setenv("RABBIT_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 300.0
 
 
@@ -545,13 +545,13 @@ class TestSequentialToolTimeoutResolver:
         from agent import tool_executor
 
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.delenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
+        monkeypatch.delenv("RABBIT_CONCURRENT_TOOL_TIMEOUT_S", raising=False)
         assert self._resolver()() == tool_executor._resolve_concurrent_tool_timeout()
 
     def test_inherits_concurrent_env_bridge(self, monkeypatch):
         # No sequential-specific setting -> concurrent env var flows through.
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
-        monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "60")
+        monkeypatch.setenv("RABBIT_CONCURRENT_TOOL_TIMEOUT_S", "60")
         assert self._resolver()() == 60.0
 
     def test_own_config_key_wins_over_concurrent(self, monkeypatch):

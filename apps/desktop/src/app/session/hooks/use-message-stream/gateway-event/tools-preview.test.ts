@@ -1,4 +1,4 @@
-import { type GatewayEvent, JsonRpcGatewayClient } from '@hermes/shared'
+import { type GatewayEvent, JsonRpcGatewayClient } from '@rabbit/shared'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { type GatewayEventPayload, upsertToolPart } from '@/lib/chat-messages'

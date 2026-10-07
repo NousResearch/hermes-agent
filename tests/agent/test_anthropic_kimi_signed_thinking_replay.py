@@ -53,7 +53,7 @@ def test_moonshot_keeps_signed_thinking():
 def test_kimi_model_name_on_foreign_gateway_keeps_thinking():
     """A Kimi-family model slug replayed through a non-Kimi gateway hostname
     keeps its thinking blocks — upstream Kimi still enforces its replay
-    semantics no matter what host fronts it (hermes-agent#13848, #17057).
+    semantics no matter what host fronts it (rabbit-agent#13848, #17057).
     Covers both the named and bare Coding Plan slugs."""
     for model in ("kimi-k2.5", "k3"):
         assert _thinking_on_replay(DEEPSEEK, model=model), model

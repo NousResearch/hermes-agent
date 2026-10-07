@@ -13,11 +13,11 @@ MEMBERS = [{"kind": "bot", "id": "planner"}]
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    path = tmp_path / ".hermes"
+    path = tmp_path / ".rabbit"
     path.mkdir()
     (path / "profiles" / "ops").mkdir(parents=True)
     (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
-    monkeypatch.setenv("HERMES_HOME", str(path))
+    monkeypatch.setenv("RABBIT_HOME", str(path))
     methods_groups.stop_hosted_room_service(timeout=1.0)
     methods_groups.start_hosted_room_service()
     yield path
@@ -125,7 +125,7 @@ def test_demote_fences_local_room_against_newer_epoch(home):
                     {
                         "member_id": "default",
                         "profile": "default",
-                        "handle": "hermes",
+                        "handle": "rabbit",
                     },
                     {"member_id": "ops", "profile": "ops", "handle": "ops"},
                 ],

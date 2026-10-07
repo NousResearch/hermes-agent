@@ -14,7 +14,7 @@ Project launch video via Hyperframes, upstream-maintained.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/brag` |
+| Source | Optional — install with `rabbit skills install official/creative/brag` |
 | Path | `optional-skills/creative/brag` |
 | Version | `0.4.0` |
 | Author | Shunit Haviv Hakimi (shunithaviv) |
@@ -26,7 +26,7 @@ Project launch video via Hyperframes, upstream-maintained.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Brag (upstream-maintained)
@@ -34,7 +34,7 @@ The following is the complete skill definition that Hermes loads when this skill
 > **Catalog stub.** This entry is maintained upstream at
 > [latent-spaces/brag](https://github.com/latent-spaces/brag): the project
 > ships the skill directory (`skills/brag/`) with its step references, tone
-> presets, bundled music and SFX library, and cue-analysis script. `hermes
+> presets, bundled music and SFX library, and cue-analysis script. `rabbit
 > skills install official/creative/brag` pulls the current tree live from that
 > repo (quarantined and scanned like any hub install) — this directory holds
 > only the catalog metadata, so the vendored copy can never go stale.
@@ -57,7 +57,7 @@ invocation asks for `--full` or `--voice`.
 - The Hyperframes path (`--full`, `--voice`, or any model other than Opus 5.5)
   loads HeyGen's domain skills by name: `hyperframes-core`,
   `hyperframes-animation`, `hyperframes-creative`, `hyperframes-keyframes` and
-  `hyperframes-cli`, installed with `hermes skills install
+  `hyperframes-cli`, installed with `rabbit skills install
   heygen-com/hyperframes/skills/<name>`. The skills guard currently blocks four
   of the five on HTML comments and credential docs in their examples
   (`hyperframes-creative` scores dangerous, which `--force` cannot override),

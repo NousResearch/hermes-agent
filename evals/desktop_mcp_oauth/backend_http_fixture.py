@@ -182,11 +182,11 @@ def run_probe(repo, receipt):
     sys.path.insert(0, str(repo))
     logging.disable(logging.CRITICAL)
     import httpx
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from rabbit_constants import set_rabbit_home_override, reset_rabbit_home_override
     from tui_gateway import mcp_oauth_sessions as sessions
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import RabbitTokenStorage
 
-    owner = Path(os.environ["HERMES_HOME"])
+    owner = Path(os.environ["RABBIT_HOME"])
     other = owner.parent / "other-profile"
     other.mkdir()
     checks = receipt["checks"]
@@ -237,7 +237,7 @@ def run_probe(repo, receipt):
         check("disk_token_matches_provider", stored["access_token"] in provider.tokens)
         check("disk_refresh_token_and_absolute_expiry", bool(stored.get("refresh_token")) and stored["expires_at"] > time.time())
         check("token_file_private", token_path.stat().st_mode & 0o777 == 0o600)
-        reloaded = asyncio.run(HermesTokenStorage("positive", hermes_home=owner).get_tokens())
+        reloaded = asyncio.run(RabbitTokenStorage("positive", rabbit_home=owner).get_tokens())
         check("fresh_storage_reload", reloaded.access_token in provider.tokens)
         check("wrong_profile_has_no_token", not (other / "mcp-tokens" / "positive.json").exists())
         check("config_saved_to_owner", "positive" in (owner / "config.yaml").read_text(encoding="utf-8"))
@@ -269,12 +269,12 @@ def run_probe(repo, receipt):
         # Even possession of valid session/state cannot cross the resolved home.
         flow = begin("owner_boundary")
         browser.get(flow["auth_url"], follow_redirects=True)
-        override = set_hermes_home_override(other)
+        override = set_rabbit_home_override(other)
         try:
             foreign_poll = sessions.poll_flow(flow["session_id"], "owner_boundary")
             foreign_callback = sessions.deliver_callback_flow(flow["session_id"], "owner_boundary", **callback.callback)
         finally:
-            reset_hermes_home_override(override)
+            reset_rabbit_home_override(override)
         receipt["ownership_boundary"] = {
             "cancel_owner_enforced": checks["wrong_owner_cancel_rejected"],
             "cross_profile_poll_rejected": foreign_poll["status"] == "error",
@@ -305,18 +305,18 @@ def main():
     if args.cold_probe:
         sys.path.insert(0, str(repo))
         logging.disable(logging.CRITICAL)
-        from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+        from rabbit_cli.mcp_config import _get_mcp_servers, _probe_single_server
         from tools.mcp_oauth import suppress_interactive_oauth
         with suppress_interactive_oauth():
             tools = _probe_single_server("positive", _get_mcp_servers()["positive"])
         return 0 if any(name == "fixture_ping" for name, _ in tools) else 1
     output.parent.mkdir(parents=True, exist_ok=True)
     if not args.isolated_worker:
-        with tempfile.TemporaryDirectory(prefix="hermes-oauth-http-") as temp:
+        with tempfile.TemporaryDirectory(prefix="rabbit-oauth-http-") as temp:
             home = Path(temp)
-            (home / ".hermes").mkdir()
+            (home / ".rabbit").mkdir()
             env = {"PATH": os.environ.get("PATH", ""), "HOME": temp,
-                   "HERMES_HOME": str(home / ".hermes"), "LANG": "C.UTF-8", "TZ": "UTC",
+                   "RABBIT_HOME": str(home / ".rabbit"), "LANG": "C.UTF-8", "TZ": "UTC",
                    "PYTHONNOUSERSITE": "1"}
             completed = subprocess.run([sys.executable, str(Path(__file__).resolve()),
                 "--repo", str(repo), "--output", str(output), "--isolated-worker"],

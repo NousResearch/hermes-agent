@@ -10,7 +10,7 @@ vi.mock('@/components/ui/tooltip', () => ({
   Tip: ({ children }: { children: React.ReactNode }) => <>{children}</>
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   getLogs: vi.fn().mockResolvedValue({ lines: [] })
 }))
 

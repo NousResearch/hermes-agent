@@ -1,10 +1,10 @@
 name: langfuse
 version: "1.0.0"
-description: "Optional Langfuse observability for Hermes — traces conversations, LLM calls, and tool usage. Opt-in via `hermes plugins enable observability/langfuse` or `hermes tools → Langfuse Observability`."
+description: "Optional Langfuse observability for Rabbit — traces conversations, LLM calls, and tool usage. Opt-in via `rabbit plugins enable observability/langfuse` or `rabbit tools → Langfuse Observability`."
 author: NousResearch
 requires_env:
-  - HERMES_LANGFUSE_PUBLIC_KEY
-  - HERMES_LANGFUSE_SECRET_KEY
+  - RABBIT_LANGFUSE_PUBLIC_KEY
+  - RABBIT_LANGFUSE_SECRET_KEY
 provides_hooks:
   - pre_api_request
   - post_api_request

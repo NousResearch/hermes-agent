@@ -1,13 +1,13 @@
 name: fluxer-platform
-repo: https://github.com/elkimek/hermes-fluxer-plugin
+repo: https://github.com/elkimek/rabbit-fluxer-plugin
 sha: 6d2ef9767d0a0811a3ae26a76290b9b1e4636d4c
-description: Fluxer gateway adapter for Hermes Agent. Native Fluxer integration using Fluxer's bot REST
+description: Fluxer gateway adapter for Rabbit Agent. Native Fluxer integration using Fluxer's bot REST
   API for outbound messages, Gateway WebSocket events for inbound dispatches, message edits, agent-requested
   reactions, pins, reply references, media delivery, and channel-directory enumeration. Component button
 maintainer: elkimek
 tier: community
 category: platform
-docs_url: https://github.com/elkimek/hermes-fluxer-plugin#readme
+docs_url: https://github.com/elkimek/rabbit-fluxer-plugin#readme
 capabilities:
   provides_tools: []
   provides_hooks: []

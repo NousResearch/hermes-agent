@@ -3,7 +3,7 @@ by the public guard with no approval callback; a grep with a backtick operand mu
 
 Independent-review probe (written by the /review subagent for tracking issue #103563, adapted). It
 reproduced an approval bypass in the first version of the PR (approved, 0 callbacks). Runs the real
-public guard (check_dangerous_command) in a temp HERMES_HOME with approvals.mode=manual and executes a
+public guard (check_dangerous_command) in a temp RABBIT_HOME with approvals.mode=manual and executes a
 HARMLESS Bash witness (reboot shadowed by a function writing a marker) to prove reachability.
 
 Usage: python scanner_bypass_probe.py <repo_root> [<baseline_approval_detection.py>]
@@ -18,8 +18,8 @@ import tempfile
 ROOT=Path(sys.argv[1]).resolve()  # repo root under test
 sys.path.insert(0,str(ROOT))
 home=Path(tempfile.mkdtemp(prefix='review103492-confirm-'))
-os.environ['HERMES_HOME']=str(home)
-os.environ['HERMES_INTERACTIVE']='1'
+os.environ['RABBIT_HOME']=str(home)
+os.environ['RABBIT_INTERACTIVE']='1'
 (home/'config.yaml').write_text('approvals:\n  mode: manual\n  timeout: 1\n', encoding='utf-8')
 from tools import approval_detection as d
 from tools import approval as a

@@ -2,7 +2,7 @@
 //
 // A socket opening replays state that already existed: a session parked on an
 // approval re-emits its request so the UI can render the prompt. Those are not
-// things that just happened, so launching Hermes — or any reconnect, profile
+// things that just happened, so launching Rabbit — or any reconnect, profile
 // switch, or gateway-mode apply — would otherwise fire an OS notification for a
 // prompt the user has known about for an hour. The in-app surfaces (sidebar
 // row, inline approval bar) still show the prompt immediately; only the OS

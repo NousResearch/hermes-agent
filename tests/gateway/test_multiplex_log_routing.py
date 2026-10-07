@@ -13,27 +13,27 @@ from pathlib import Path
 
 import pytest
 
-import hermes_logging
+import rabbit_logging
 from gateway import run
 
 
 @pytest.fixture
 def clean_logging():
-    hermes_logging._reset_queued_handlers()
-    hermes_logging._logging_initialized = False
+    rabbit_logging._reset_queued_handlers()
+    rabbit_logging._logging_initialized = False
     yield
-    hermes_logging._reset_queued_handlers()
-    hermes_logging._logging_initialized = False
+    rabbit_logging._reset_queued_handlers()
+    rabbit_logging._logging_initialized = False
 
 
 def _emit_under(home: Path, name: str, level: int, msg: str) -> None:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
-    token = set_hermes_home_override(home)
+    token = set_rabbit_home_override(home)
     try:
         logging.getLogger(name).log(level, msg)
     finally:
-        reset_hermes_home_override(token)
+        reset_rabbit_home_override(token)
 
 
 def _contains(home: Path, filename: str, needle: str) -> bool:
@@ -50,7 +50,7 @@ def test_multiplex_gateway_routes_profile_records_to_their_own_logs(
     homes = [("default", default_home), ("beta", beta_home)]
     monkeypatch.setattr(run, "_multiplex_profile_homes", lambda _cfg: homes)
 
-    hermes_logging.setup_logging(hermes_home=default_home, mode="gateway")
+    rabbit_logging.setup_logging(rabbit_home=default_home, mode="gateway")
 
     # Single-profile gateway: wiring is inert and handlers stay static.
     assert run._enable_multiplex_log_routing(types.SimpleNamespace(multiplex_profiles=False)) is False
@@ -58,7 +58,7 @@ def test_multiplex_gateway_routes_profile_records_to_their_own_logs(
 
     _emit_under(beta_home, "gateway.run", logging.WARNING, "BETA-GATEWAY-WARN")
     _emit_under(default_home, "gateway.run", logging.INFO, "DEFAULT-GATEWAY-INFO")
-    hermes_logging.flush_log_queue()
+    rabbit_logging.flush_log_queue()
 
     for filename in ("agent.log", "errors.log", "gateway.log"):
         assert _contains(beta_home, filename, "BETA-GATEWAY-WARN"), filename

@@ -11,7 +11,7 @@ import time
 from contextvars import copy_context
 from pathlib import Path
 
-from hermes_constants import hermes_home_key
+from rabbit_constants import rabbit_home_key
 
 logger = logging.getLogger(__name__)
 _REPO = "sheeki03/tirith"
@@ -35,7 +35,7 @@ def _env_int(key: str, default: int) -> int:
 def _load_security_config() -> dict:
     """Security settings from config.yaml, with env var overrides."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from rabbit_cli.config import load_config_readonly
         cfg = load_config_readonly().get("security", {}) or {}
     except Exception:
         cfg = {}
@@ -137,7 +137,7 @@ _install_attempted: set[str] = set()
 def _claim_install_attempt() -> bool:
     """Share the one-attempt budget between cold scans and startup threads."""
     with _install_lock:
-        home = hermes_home_key()
+        home = rabbit_home_key()
         if home in _install_attempted:
             return False
         _install_attempted.add(home)
@@ -145,7 +145,7 @@ def _claim_install_attempt() -> bool:
 
 
 def _install_in_flight() -> threading.Thread | None:
-    thread = _install_threads.get(hermes_home_key())
+    thread = _install_threads.get(rabbit_home_key())
     return thread if thread is not None and thread.is_alive() else None
 
 
@@ -201,7 +201,7 @@ def _start_background_install(*, log_failures: bool) -> None:
             target=context.run, args=(_background_install,),
             kwargs={"log_failures": log_failures}, daemon=True,
         )
-        _install_threads[hermes_home_key()] = thread
+        _install_threads[rabbit_home_key()] = thread
         thread.start()
 
 

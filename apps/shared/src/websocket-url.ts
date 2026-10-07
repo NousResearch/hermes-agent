@@ -42,7 +42,7 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
 
   if (conn.authMode === 'oauth') {
     if (!mint) {
-      throw new Error('This Desktop build cannot refresh OAuth WebSocket tickets. Update Hermes Desktop and try again.')
+      throw new Error('This Desktop build cannot refresh OAuth WebSocket tickets. Update Rabbit Desktop and try again.')
     }
 
     try {
@@ -95,7 +95,7 @@ export async function resolveGatewayWsUrl(deps: ResolveGatewayWsUrlDeps, conn: G
 
 export type WebSocketAuthParam = readonly [name: string, value: string]
 
-export interface HermesWebSocketUrlOptions {
+export interface RabbitWebSocketUrlOptions {
   /** Dashboard or gateway-relative endpoint path, e.g. "/api/ws". */
   path: string
   /** Optional URL prefix when the backend is reverse-proxied below a subpath. */
@@ -132,7 +132,7 @@ function normalizeEndpointPath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`
 }
 
-export function buildHermesWebSocketUrl(options: HermesWebSocketUrlOptions): string {
+export function buildRabbitWebSocketUrl(options: RabbitWebSocketUrlOptions): string {
   const loc = readWindowLocation()
   const protocol = options.protocol ?? loc.protocol
   const host = options.host ?? loc.host

@@ -5,7 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type * as React from 'react'
 import { type FC, useEffect, useRef } from 'react'
 
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { type SidebarListRow } from '@/lib/session-date-groups'
 import { sessionBucketLabel } from '@/lib/time'

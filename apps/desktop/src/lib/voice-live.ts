@@ -1,16 +1,16 @@
 import { type OwnerScope, ownerScoped, profileScoped } from '@/api/client'
-import { hermesApi } from '@/hermes'
+import { rabbitApi } from '@/rabbit'
 
 /**
- * GPT-Live voice chat: the full-duplex voice frontend that DELEGATES to Hermes.
+ * GPT-Live voice chat: the full-duplex voice frontend that DELEGATES to Rabbit.
  *
  * `voice.voice_chat_mode: gpt-live` swaps the chained mic → STT → turn → TTS
  * loop for one OpenAI voice model (`gpt-live-1`) that listens and speaks at
  * the same time over WebRTC and has no tools of its own. Whenever the user
  * asks for real work it emits `session.delegation.created`; the desktop turns
- * that into an ordinary Hermes turn on the open session and streams the reply
+ * that into an ordinary Rabbit turn on the open session and streams the reply
  * back with `session.commentary.append`, which the voice paraphrases aloud.
- * Hermes keeps every capability — model choice, tools, memory, approvals.
+ * Rabbit keeps every capability — model choice, tools, memory, approvals.
  *
  * This module owns the transport only: session creation via the gateway
  * (the OpenAI key never reaches the renderer), the RTCPeerConnection, the
@@ -57,7 +57,7 @@ export interface LiveTranscriptFragment {
 }
 
 export interface VoiceLiveHandlers {
-  /** GPT-Live asked the backend (Hermes) for help. `context` is the recent
+  /** GPT-Live asked the backend (Rabbit) for help. `context` is the recent
    *  transcript window, newest last — the delegation itself carries no text. */
   onDelegation: (delegationId: string, context: LiveTranscriptFragment[]) => void
   /** Vendor-side error. `fatal` when the session is gone. */
@@ -80,7 +80,7 @@ const CONTEXT_MAX_FRAGMENTS = 80
 
 export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
   try {
-    const response = await hermesApi<{ ok: boolean } & VoiceLiveStatus>({
+    const response = await rabbitApi<{ ok: boolean } & VoiceLiveStatus>({
       ...profileScoped(),
       path: '/api/audio/voice-live/status'
     })
@@ -231,7 +231,7 @@ export class VoiceLiveSession {
   private audioContext: null | AudioContext = null
   private lastSpeaking = false
   sessionId: null | string = null
-  /** The delegation currently being answered by Hermes; late results for an
+  /** The delegation currently being answered by Rabbit; late results for an
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
@@ -323,7 +323,7 @@ export class VoiceLiveSession {
       throw new Error('Missing local SDP offer')
     }
 
-    const response = await hermesApi<{
+    const response = await rabbitApi<{
       ok: boolean
       session?: { id: string }
       transport?: { sdp: string; type: string }
@@ -447,7 +447,7 @@ export class VoiceLiveSession {
     }
   }
 
-  /** Quiet progress for the live model ("Hermes is running the tests…"). */
+  /** Quiet progress for the live model ("Rabbit is running the tests…"). */
   think(delegationId: null | string, content: string): void {
     const text = content.replace(/\s+/g, ' ').trim().slice(0, APPEND_CHAR_LIMIT)
 

@@ -49,7 +49,7 @@ from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecre
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
-from hermes_constants import get_hermes_dir
+from rabbit_constants import get_rabbit_dir
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +152,8 @@ def _optional_module(name: str, unavailable_log: str) -> Any:
         return None
 
 
-# Under the hermes dir so it survives restarts/reloads — same as the Baileys bridge.
-_INBOUND_MEDIA_CACHE = Path(get_hermes_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
+# Under the rabbit dir so it survives restarts/reloads — same as the Baileys bridge.
+_INBOUND_MEDIA_CACHE = Path(get_rabbit_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
 
 
 def check_whatsapp_cloud_requirements() -> bool:
@@ -266,7 +266,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         for ok, code, message in (
             (check_whatsapp_cloud_requirements(), "whatsapp_cloud_deps_missing",
-             "aiohttp and httpx are required for whatsapp_cloud — reinstall hermes-agent."),
+             "aiohttp and httpx are required for whatsapp_cloud — reinstall rabbit-agent."),
             (self._phone_number_id and self._access_token, "whatsapp_cloud_unconfigured",
              "WHATSAPP_CLOUD_PHONE_NUMBER_ID and WHATSAPP_CLOUD_ACCESS_TOKEN are required."),
         ):
@@ -612,7 +612,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Voice message: ``audio/ogg; codecs=opus`` renders as a voice bubble, so a
-        local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is."""
+        local MP3 (Rabbit TTS output) is converted via ffmpeg first; other audio is sent as-is."""
         mime_type: Optional[str] = None
         if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and os.path.exists(audio_path):
             opus_path = await self._convert_to_opus(audio_path)

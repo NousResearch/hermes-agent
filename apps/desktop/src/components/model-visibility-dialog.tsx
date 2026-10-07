@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
@@ -11,7 +11,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
 import { RowButton } from '@/components/ui/row-button'
 import { Switch } from '@/components/ui/switch'
-import type { HermesGateway } from '@/hermes'
+import type { RabbitGateway } from '@/rabbit'
 import { useI18n } from '@/i18n'
 import { Plus, Search, X } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -40,7 +40,7 @@ import {
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 
 interface ModelVisibilityDialogProps {
-  gw?: HermesGateway
+  gw?: RabbitGateway
   onOpenChange: (open: boolean) => void
   onOpenProviders: () => void
   open: boolean

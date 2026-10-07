@@ -1,6 +1,6 @@
 """Tests for Telegram topic/thread routing fallbacks.
 
-Supergroup forum topics route with ``message_thread_id``. Hermes-created
+Supergroup forum topics route with ``message_thread_id``. Rabbit-created
 private DM topic lanes are different: live Telegram testing showed they only
 stay in the expected lane when sends include both the private topic
 ``message_thread_id`` and a ``reply_to_message_id`` anchor to the triggering
@@ -302,7 +302,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
     """GatewayRunner's duplicate thread metadata must match the base helper."""
     from gateway import run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     GatewayRunner = gateway_run.GatewayRunner
 
     class BusyAdapter:

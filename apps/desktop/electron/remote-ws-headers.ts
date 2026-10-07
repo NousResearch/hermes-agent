@@ -55,7 +55,7 @@ export function collectRemoteHeaderSources(input: {
   const sources: RemoteHeaderSource[] = []
 
   for (const connection of input.connections || []) {
-    if (connection.kind && connection.kind !== 'remote' && connection.kind !== 'cloud') {
+    if (connection.kind && connection.kind !== 'remote') {
       continue
     }
 

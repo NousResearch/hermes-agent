@@ -103,7 +103,7 @@ class TestApprovalBridge:
     def test_session_less_gate_offers_only_once_and_deny(self):
         """allow_session=False collapses the editor menu to once/deny.
 
-        Hermes discards any scope broader than one operation for the
+        Rabbit discards any scope broader than one operation for the
         protected agent-instruction gate, so an editor that renders
         "Allow for session" would re-prompt on the next write (#81887).
         """

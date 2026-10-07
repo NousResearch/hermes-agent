@@ -14,7 +14,7 @@ lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/evaluating-llms-harness` |
+| Source | Optional — install with `rabbit skills install official/mlops/evaluating-llms-harness` |
 | Path | `optional-skills/mlops/evaluation/evaluating-llms-harness` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.).
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # lm-evaluation-harness - LLM Benchmarking
@@ -484,13 +484,13 @@ code execution.
 
 ## Advanced topics
 
-**Benchmark descriptions**: See [references/benchmark-guide.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/benchmark-guide.md) for detailed description of all 60+ tasks, what they measure, and interpretation.
+**Benchmark descriptions**: See [references/benchmark-guide.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/benchmark-guide.md) for detailed description of all 60+ tasks, what they measure, and interpretation.
 
-**Custom tasks**: See [references/custom-tasks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/custom-tasks.md) for creating domain-specific evaluation tasks.
+**Custom tasks**: See [references/custom-tasks.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/custom-tasks.md) for creating domain-specific evaluation tasks.
 
-**API evaluation**: See [references/api-evaluation.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/api-evaluation.md) for evaluating OpenAI, Anthropic, and other API models.
+**API evaluation**: See [references/api-evaluation.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/api-evaluation.md) for evaluating OpenAI, Anthropic, and other API models.
 
-**Multi-GPU strategies**: See [references/distributed-eval.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/distributed-eval.md) for data parallel and tensor parallel evaluation.
+**Multi-GPU strategies**: See [references/distributed-eval.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/evaluation/evaluating-llms-harness/references/distributed-eval.md) for data parallel and tensor parallel evaluation.
 
 ## Hardware requirements
 

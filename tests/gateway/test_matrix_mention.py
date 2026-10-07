@@ -23,7 +23,7 @@ def _make_adapter(tmp_path=None):
         token="syt_test_token",
         extra={
             "homeserver": "https://matrix.example.org",
-            "user_id": "@hermes:example.org",
+            "user_id": "@rabbit:example.org",
         },
     )
     adapter = MatrixAdapter(config)
@@ -87,15 +87,15 @@ class TestIsBotMentioned:
         self.adapter = _make_adapter()
 
     def test_full_user_id_in_body(self):
-        assert self.adapter._is_bot_mentioned("hey @hermes:example.org help")
+        assert self.adapter._is_bot_mentioned("hey @rabbit:example.org help")
 
     def test_localpart_in_body(self):
-        assert self.adapter._is_bot_mentioned("hermes can you help?")
+        assert self.adapter._is_bot_mentioned("rabbit can you help?")
 
 
     def test_matrix_pill_in_formatted_body(self):
-        html = '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> help'
-        assert self.adapter._is_bot_mentioned("Hermes help", html)
+        html = '<a href="https://matrix.to/#/@rabbit:example.org">Rabbit</a> help'
+        assert self.adapter._is_bot_mentioned("Rabbit help", html)
 
 
     # m.mentions.user_ids — MSC3952 / Matrix v1.7 authoritative mentions
@@ -108,13 +108,13 @@ class TestStripMention:
         self.adapter = _make_adapter()
 
     def test_strip_full_user_id(self):
-        result = self.adapter._strip_mention("@hermes:example.org help me")
+        result = self.adapter._strip_mention("@rabbit:example.org help me")
         assert result == "help me"
 
     def test_localpart_preserved(self):
         """Bare localpart (no @) is preserved — avoids false positives in paths."""
-        result = self.adapter._strip_mention("hermes help me")
-        assert result == "hermes help me"
+        result = self.adapter._strip_mention("rabbit help me")
+        assert result == "rabbit help me"
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ async def test_require_mention_default_processes_mentioned(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    event = _make_event("@hermes:example.org help me")
+    event = _make_event("@rabbit:example.org help me")
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
@@ -185,7 +185,7 @@ async def test_require_mention_m_mentions_user_ids(monkeypatch):
     # Body has NO mention, but m.mentions.user_ids includes the bot.
     event = _make_event(
         "please reply",
-        mention_user_ids=["@hermes:example.org"],
+        mention_user_ids=["@rabbit:example.org"],
     )
 
     await adapter._on_room_message(event)
@@ -218,7 +218,7 @@ async def test_dm_strips_full_mxid(monkeypatch):
 
     adapter = _make_adapter()
     _set_dm(adapter)
-    event = _make_event("@hermes:example.org help me")
+    event = _make_event("@rabbit:example.org help me")
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
@@ -234,7 +234,7 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    event = _make_event("@hermes:example.org")
+    event = _make_event("@rabbit:example.org")
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
@@ -244,11 +244,11 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mention_room, mention_body, claims, same_sync_batch", [
-    ("!room1:example.org", "@hermes:example.org", True, False),
-    ("!room2:example.org", "@hermes:example.org", False, False),
-    ("!room1:example.org", "@hermes:example.org hi", False, False),
-    ("!room1:example.org", "@hermes:example.org", True, True),
-    ("!room1:example.org", "@hermes:example.org", True, "two_voices"),
+    ("!room1:example.org", "@rabbit:example.org", True, False),
+    ("!room2:example.org", "@rabbit:example.org", False, False),
+    ("!room1:example.org", "@rabbit:example.org hi", False, False),
+    ("!room1:example.org", "@rabbit:example.org", True, True),
+    ("!room1:example.org", "@rabbit:example.org", True, "two_voices"),
 ])
 async def test_bare_mention_claims_parked_voice_only_in_same_room(
         monkeypatch, mention_room, mention_body, claims, same_sync_batch):
@@ -271,7 +271,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
     voice.content.update({"msgtype": "m.audio", "url": "mxc://example.org/v", "info": {"mimetype": "audio/ogg"},
                           "org.matrix.msc3245.voice": {}, "m.mentions": {}})
     mention = _make_event(mention_body, event_id="$text", room_id=mention_room,
-                          mention_user_ids=["@hermes:example.org"])
+                          mention_user_ids=["@rabbit:example.org"])
 
     if same_sync_batch:
         resolve_identity = adapter._resolve_room_identity
@@ -290,7 +290,7 @@ async def test_bare_mention_claims_parked_voice_only_in_same_room(
         await asyncio.gather(*(adapter._on_room_message(e) for e in batch))
         if same_sync_batch == "two_voices":
             await adapter._on_room_message(_make_event(
-                "@hermes:example.org", event_id="$text2", mention_user_ids=["@hermes:example.org"]))
+                "@rabbit:example.org", event_id="$text2", mention_user_ids=["@rabbit:example.org"]))
             dispatched = [m.args[0].message_id for m in adapter.handle_message.await_args_list]
             assert dispatched == ["$voice", "$voice2"]
             assert not adapter._parked_voices._parked and not adapter._parked_voices._inflight
@@ -364,7 +364,7 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
 
     adapter = _make_adapter()
     _set_dm(adapter)
-    event = _make_event("@hermes:example.org help me", event_id="$dm1")
+    event = _make_event("@rabbit:example.org help me", event_id="$dm1")
 
     with patch.object(adapter._threads, "_save"):
         await adapter._on_room_message(event)

@@ -32,7 +32,7 @@ def _make_runner(session_db=None):
     runner._voice_mode = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:
-        from hermes_state import AsyncSessionDB
+        from rabbit_state import AsyncSessionDB
         session_db = AsyncSessionDB(session_db)
     runner._session_db = session_db
 
@@ -56,7 +56,7 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_title_conflict(self, tmp_path):
         """Setting a title already used by another session returns error."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("other_session", "telegram")
         db.set_session_title("other_session", "Taken Title")
@@ -71,7 +71,7 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_title_control_chars_sanitized(self, tmp_path):
         """Control characters are stripped and sanitized title is stored."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("test_session_123", "telegram")
 
@@ -85,7 +85,7 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_set_title_propagates_to_telegram_topic_rename(self, tmp_path):
         """/title <name> also renames the visible Telegram topic, not just the DB."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("test_session_123", "telegram")
 
@@ -104,7 +104,7 @@ class TestHandleTitleCommand:
     @pytest.mark.asyncio
     async def test_show_title_does_not_rename_topic(self, tmp_path):
         """Showing the title (no arg) must not trigger a topic rename."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("test_session_123", "telegram")
         db.set_session_title("test_session_123", "Existing Title")

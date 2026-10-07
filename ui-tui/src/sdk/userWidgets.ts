@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { pathToFileURL } from 'url'
 
-import { Box, Text } from '@hermes/ink'
+import { Box, Text } from '@rabbit/ink'
 import * as React from 'react'
 
 import { Accordion } from '../components/accordion.js'
@@ -19,14 +19,14 @@ import { defineWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
 import { isCtrl } from './types.js'
 
 /**
- * User widget apps — Hermes authors its own TUI widgets, mirroring the
- * Python plugin contract: drop `<name>.mjs` into `$HERMES_HOME/tui-widgets/`,
+ * User widget apps — Rabbit authors its own TUI widgets, mirroring the
+ * Python plugin contract: drop `<name>.mjs` into `$RABBIT_HOME/tui-widgets/`,
  * default-export `register(sdk)`, and the app surfaces in `/` completions
  * and dispatch automatically (the registry is the catalog). Plain ESM so the
  * production bundle can import it — no bundler, no JSX; `sdk.h` is
  * React.createElement.
  *
- * Trust model matches `~/.hermes/plugins/`: files under HERMES_HOME execute
+ * Trust model matches `~/.rabbit/plugins/`: files under RABBIT_HOME execute
  * with the TUI's privileges. Load errors log and skip — a broken widget
  * never takes the TUI down.
  */
@@ -58,7 +58,7 @@ export const widgetSdk = {
 
 export type WidgetSdk = typeof widgetSdk
 
-const widgetsDir = () => join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'tui-widgets')
+const widgetsDir = () => join(process.env.RABBIT_HOME?.trim() || join(homedir(), '.rabbit'), 'tui-widgets')
 
 export interface UserWidgetLoadResult {
   /** App ids newly registered by this scan. */
@@ -156,7 +156,7 @@ export async function loadUserWidgets(dir = widgetsDir()): Promise<UserWidgetLoa
 let watching = false
 
 /** Generative-UI hot loading: watch the widgets directory and re-scan on
- *  every change, so a widget Hermes writes appears within ~a second — no
+ *  every change, so a widget Rabbit writes appears within ~a second — no
  *  `/widgets-reload`, no restart (GUI parity). Debounced (editors and
  *  write_file emit bursts); polls until the directory exists so the very
  *  first widget ever written also hot-loads. */
@@ -188,7 +188,7 @@ export function watchUserWidgets(dir = widgetsDir()): void {
   if (!attach()) {
     // Event-driven first-creation: watch the PARENT for the widgets dir to
     // appear, attach + scan the instant it does. The very first widget a
-    // user (or Hermes) ever writes must hot-load too — a 10s poll here read
+    // user (or Rabbit) ever writes must hot-load too — a 10s poll here read
     // as "requires a restart" in live use.
     try {
       const parent = watch(dirname(dir), () => {

@@ -1,7 +1,7 @@
 """Turn-end guard for kanban workers, which must end with a terminal board tool that hands
 the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
 ``kanban_request_review``, ``kanban_request_changes``). Some models narrate the next step
-and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` → dispatcher
+and stop with no tool calls; Rabbit treats that as a clean exit → ``rc=0`` → dispatcher
 ``protocol_violation``. Policy-only: return a bounded synthetic nudge so the loop continues
 instead of exiting.
 """
@@ -31,10 +31,10 @@ _DEFAULT_MAX_ATTEMPTS = 2
 
 
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
-    ``HERMES_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
+    """On when ``RABBIT_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
+    ``RABBIT_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
     inherit the env var but own no board task and carry no kanban toolset."""
-    if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
+    if (os.environ.get("RABBIT_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
     return bool(owned_kanban_task())
 
@@ -77,11 +77,11 @@ def build_kanban_stop_nudge(
     ):
         return None
 
-    tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+    tid = (task_id or os.environ.get("RABBIT_KANBAN_TASK") or "").strip() or "this task"
     # The transcript is the status source: this text is only reached when the session made no
     # handoff call, so it never tells a worker to close a card it already sent to review.
     return (
-        "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
+        "[System: You are a Rabbit kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
         f"Task `{tid}` has not been handed off: this session made no terminal board "
         "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "

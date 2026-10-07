@@ -1,8 +1,8 @@
 """Managed llama.cpp endpoint for auxiliary and fallback client resolution.
 
 A bare ``llamacpp`` / ``llama.cpp`` / ``llama-cpp`` alias (no base_url, no configured provider of
-that name) means "the local server Hermes manages for this profile" — exactly what the main ladder
-resolves in ``hermes_cli.runtime_provider_custom._resolve_llamacpp_runtime``. With no server
+that name) means "the local server Rabbit manages for this profile" — exactly what the main ladder
+resolves in ``rabbit_cli.runtime_provider_custom._resolve_llamacpp_runtime``. With no server
 running the answer is "unavailable", never the generic custom/API-key discovery: that handed the
 local model slug to whatever cloud provider held a key (#119227) or to the primary's own endpoint.
 """
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from rabbit_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 
 def bare_llamacpp_endpoint(provider: Optional[str], base_url: Optional[str],
@@ -25,9 +25,9 @@ def bare_llamacpp_endpoint(provider: Optional[str], base_url: Optional[str],
     alias = (provider or "").strip().lower()
     if alias not in LLAMACPP_ALIASES or base_url:
         return None
-    from hermes_cli.config import load_config
-    from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from rabbit_cli.config import load_config
+    from rabbit_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+    from rabbit_cli.runtime_provider import _get_named_custom_provider
     if _get_named_custom_provider(alias):
         return None
     endpoint = resolve_llamacpp_endpoint(config=load_config()) or {}

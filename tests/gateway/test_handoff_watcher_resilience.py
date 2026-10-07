@@ -254,7 +254,7 @@ async def test_reclaim_runs_per_profile_store(monkeypatch):
 
 def test_reclaim_stale_running_handoffs_flips_only_running_rows(tmp_path):
     """DB-level: only 'running' rows are touched, and their ids are returned."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     for sid, state in (
@@ -284,7 +284,7 @@ def test_reclaimed_session_can_request_handoff_again(tmp_path):
     ``request_handoff`` only accepts NULL/completed/failed, so a stranded
     'running' row is what permanently locks the session out.
     """
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("stuck", "cli")

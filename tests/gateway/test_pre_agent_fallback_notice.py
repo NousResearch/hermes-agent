@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session import Platform, SessionSource
 from gateway.turn_context import TurnContext
-from hermes_cli.auth import AuthError
+from rabbit_cli.auth import AuthError
 
 
 class _RecordingAgent:
@@ -77,8 +77,8 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
             raise AuthError("expired")
         return dict(fb)  # the fallback entry, walked by resolve_runtime_with_fallback
 
-    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=primary_auth_fails), \
-         patch("hermes_cli.runtime_provider._get_model_config",
+    with patch("rabbit_cli.runtime_provider.resolve_runtime_provider", side_effect=primary_auth_fails), \
+         patch("rabbit_cli.runtime_provider._get_model_config",
                return_value={"provider": "openai-codex", "default": "gpt-5.6-sol"}), \
          patch("gateway.run._load_gateway_config",
                return_value={"fallback_providers": [{"provider": "anthropic", "model": "claude-sonnet-5"}]}), \

@@ -160,7 +160,7 @@ CASES = {
     "nix + python → both": (["nix/checks.nix", "agent/x.py"], _lanes(python=True, scan=True, nix=True)),
     # Product Python can still break the flake (nine checks run the built
     # binary), but the flake meets it on main, not on the PR.
-    "product python → no nix on the PR": (["hermes_cli/config.py"], _lanes(python=True, scan=True)),
+    "product python → no nix on the PR": (["rabbit_cli/config.py"], _lanes(python=True, scan=True)),
     # tests/ is not packaged, so the built binary cannot change.
     "tests-only → no nix": (
         ["tests/agent/test_foo.py"],
@@ -175,7 +175,7 @@ CASES = {
     # The Windows desktop-update hand-off is a PowerShell integration surface:
     # its tests spawn the real script and poll its loopback server. They run
     # when the script, the Electron side that launches it, or their own test
-    # files change — not on every hermes_state.py PR.
+    # files change — not on every rabbit_state.py PR.
     "windows.ps1 → desktop_updater": (
         ["scripts/desktop-update/windows.ps1"],
         _lanes(python=True, desktop_updater=True, e2e_desktop_update=True),
@@ -257,7 +257,7 @@ CASES = {
         _lanes(python=True),
     ),
     "mcp_catalog.py → python + scan": (
-        ["hermes_cli/mcp_catalog.py"],
+        ["rabbit_cli/mcp_catalog.py"],
         _lanes(python=True, scan=True),
     ),
     "eslint config → frontend": (
@@ -298,8 +298,8 @@ CASES = {
         ["scripts/install.sh"],
         _lanes(python=True, bootstrap=True, python_prod=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
-    "setup-hermes.sh → bootstrap lane": (
-        ["setup-hermes.sh"],
+    "setup-rabbit.sh → bootstrap lane": (
+        ["setup-rabbit.sh"],
         _lanes(python=True, bootstrap=True, python_prod=True, e2e_upgrade=True),
     ),
     "tauri installer source → bootstrap + rust": (
@@ -322,13 +322,13 @@ CASES = {
         ["tests/e2e/core/sqlite/test_torture.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e=True),
     ),
-    "state db → e2e": (["hermes_state_wal.py"], _lanes(python=True, scan=True, e2e=True)),
+    "state db → e2e": (["rabbit_state_wal.py"], _lanes(python=True, scan=True, e2e=True)),
     "upgrade suite → e2e_upgrade, not e2e": (
         ["tests/e2e/core/upgrade/pm/test_pm_lifecycle.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e_upgrade=True),
     ),
     "updater → e2e_upgrade + desktop update": (
-        ["hermes_cli/update_cmd_git.py"],
+        ["rabbit_cli/update_cmd_git.py"],
         _lanes(python=True, scan=True, e2e_upgrade=True, e2e_desktop_update=True),
     ),
     "PM → e2e_upgrade + docker": (["pm/environments.py"], _lanes(python=True, scan=True, e2e_upgrade=True, docker=True)),
@@ -405,7 +405,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 
 def _yaml(rel: str) -> dict:
-    yaml = pytest.importorskip("hermes_yaml")
+    yaml = pytest.importorskip("rabbit_yaml")
     return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8"))
 
 
@@ -464,20 +464,20 @@ def _write_event(tmp_path, number: int | None = 88442) -> Path:
 
 def test_pull_request_changed_files_skips_non_pr_events(monkeypatch):
     monkeypatch.setenv("EVENT_NAME", "push")
-    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("REPO", "seven0070/Rabbit-")
     assert pull_request_changed_files() == []
 
 
 def test_pull_request_changed_files_skips_without_pr_number(tmp_path, monkeypatch):
     monkeypatch.setenv("EVENT_NAME", "pull_request")
-    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("REPO", "seven0070/Rabbit-")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path, number=None)))
     assert pull_request_changed_files() == []
 
 
 def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
     monkeypatch.setenv("EVENT_NAME", "pull_request")
-    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("REPO", "seven0070/Rabbit-")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))
 
     def fake_run(*args, **kwargs):
@@ -497,7 +497,7 @@ def test_pull_request_changed_files_parses_gh_output(tmp_path, monkeypatch):
 
 def test_pull_request_changed_files_returns_empty_when_gh_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("EVENT_NAME", "pull_request")
-    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("REPO", "seven0070/Rabbit-")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_event(tmp_path)))
 
     def fake_run(*args, **kwargs):
@@ -549,7 +549,7 @@ def test_pull_request_labels_prefers_the_live_labels_over_the_replayed_event(tmp
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"pull_request": {"number": 7, "labels": []}}), encoding="utf-8")
     monkeypatch.setenv("EVENT_NAME", "pull_request")
-    monkeypatch.setenv("REPO", "NousResearch/hermes-agent")
+    monkeypatch.setenv("REPO", "seven0070/Rabbit-")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
 
     live = subprocess.CompletedProcess([], 0, stdout="run-e2e\n", stderr="")

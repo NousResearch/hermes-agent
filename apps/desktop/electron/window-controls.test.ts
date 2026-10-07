@@ -118,7 +118,7 @@ describe('registerWindowControlIpc', () => {
       return win
     })
 
-    const handler = ipc.handlers.get('hermes:window-control')
+    const handler = ipc.handlers.get('rabbit:window-control')
 
     assert.ok(handler)
 
@@ -137,7 +137,7 @@ describe('registerWindowControlIpc', () => {
     const win = new FakeWindow()
 
     registerWindowControlIpc(ipc as Parameters<typeof registerWindowControlIpc>[0], () => win)
-    ipc.handlers.get('hermes:window-control')({ sender: {} }, { action: 'minimize' })
+    ipc.handlers.get('rabbit:window-control')({ sender: {} }, { action: 'minimize' })
     assert.equal(win.minimized, false)
   })
 })

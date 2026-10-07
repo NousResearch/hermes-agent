@@ -55,9 +55,9 @@ def _after_tool_call(base):
 
 
 def _prepared(monkeypatch, tmp_path, fanout="user_turn"):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".rabbit"
     _config(home, fanout)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
 

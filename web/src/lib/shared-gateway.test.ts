@@ -42,7 +42,7 @@ describe("servedProfileRefusal", () => {
 
 describe("gatewayActionFailedMessage", () => {
   it("does not double punctuation when the detail already ends a sentence", () => {
-    const text = gatewayActionFailedMessage("restart", "Is `hermes dashboard` still running?");
+    const text = gatewayActionFailedMessage("restart", "Is `rabbit dashboard` still running?");
     expect(text).not.toMatch(/[?!.]\./);
   });
 

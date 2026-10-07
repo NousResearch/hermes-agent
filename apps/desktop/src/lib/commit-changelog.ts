@@ -193,7 +193,7 @@ export function buildCommitChangelog(
 
 /** Format a full changelog text for clipboard copy.
  *
- *  Header: `=== Hermes Update Changelog ===`
+ *  Header: `=== Rabbit Update Changelog ===`
  *  Behind header: `Behind by N commits on branch X`
  *  Each commit: `type(scope)!: subject — author`
  *  Breaking commits use canonical `type(scope)!:` not `type!(scope):`.
@@ -203,7 +203,7 @@ export function formatFullChangelogText(
   behind: number,
   branch?: string
 ): string {
-  const lines: string[] = ['=== Hermes Update Changelog ===']
+  const lines: string[] = ['=== Rabbit Update Changelog ===']
 
   if (behind > 0) {
     lines.push(`Behind by ${behind} commit${behind === 1 ? '' : 's'}${branch ? ` on branch ${branch}` : ''}`)

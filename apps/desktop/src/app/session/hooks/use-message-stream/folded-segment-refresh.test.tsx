@@ -1,11 +1,11 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEventName } from '@rabbit/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { SessionMessage } from '@/types/hermes'
+import type { SessionMessage } from '@/types/rabbit'
 
 import { preserveLocalPendingTurnMessages } from '../use-session-actions/utils'
 

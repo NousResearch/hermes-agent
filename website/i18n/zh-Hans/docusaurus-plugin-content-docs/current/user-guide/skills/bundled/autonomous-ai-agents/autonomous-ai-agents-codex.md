@@ -17,21 +17,20 @@ description: "将编码任务委托给 OpenAI Codex CLI（功能开发、PR）"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/autonomous-ai-agents/codex` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Coding-Agent`, `Codex`, `OpenAI`, `Code-Review`, `Refactoring` |
-| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`hermes-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| 相关 skill | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`rabbit-agent`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-rabbit-agent) |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Codex CLI
 
-通过 Hermes 终端将编码任务委托给 [Codex](https://github.com/openai/codex)。Codex 是 OpenAI 的自主编码 agent CLI。
+通过 Rabbit 终端将编码任务委托给 [Codex](https://github.com/openai/codex)。Codex 是 OpenAI 的自主编码 agent CLI。
 
 ## 使用场景
 
@@ -49,7 +48,7 @@ description: "将编码任务委托给 OpenAI Codex CLI（功能开发、PR）"
 - **必须在 git 仓库内运行** — Codex 拒绝在 git 仓库外运行
 - 终端调用中使用 `pty=true` — Codex 是一个交互式终端应用
 
-对于 Hermes 本身，`model.provider: openai-codex` 会在执行 `hermes auth add openai-codex` 后使用 `~/.hermes/auth.json` 中 Hermes 管理的 Codex OAuth。对于独立的 Codex CLI，有效的 CLI OAuth 会话可能存储在 `~/.codex/auth.json` 中；不要仅凭缺少 `OPENAI_API_KEY` 就认为 Codex 认证缺失。
+对于 Rabbit 本身，`model.provider: openai-codex` 会在执行 `rabbit auth add openai-codex` 后使用 `~/.rabbit/auth.json` 中 Rabbit 管理的 Codex OAuth。对于独立的 Codex CLI，有效的 CLI OAuth 会话可能存储在 `~/.codex/auth.json` 中；不要仅凭缺少 `OPENAI_API_KEY` 就认为 Codex 认证缺失。
 
 ## 单次任务
 

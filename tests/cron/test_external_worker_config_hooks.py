@@ -24,7 +24,7 @@ def homes(tmp_path, monkeypatch):
     """A launch home with no hooks config and a profile home declaring both hook kinds."""
     launch = tmp_path / "launch"
     launch.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     profile = tmp_path / "profile"
     profile.mkdir()
     (profile / "config.yaml").write_text(
@@ -44,7 +44,7 @@ def homes(tmp_path, monkeypatch):
     yield launch, profile
     import agent.outbound_webhooks as outbound_webhooks
     import agent.shell_hooks as shell_hooks
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from rabbit_cli.plugins import _reset_plugin_managers_for_tests
 
     shell_hooks.reset_for_tests()
     outbound_webhooks.reset_for_tests()
@@ -56,7 +56,7 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
     import agent.outbound_webhooks as outbound_webhooks
     import agent.shell_hooks as shell_hooks
     import cron.scheduler as scheduler
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
 
     payload = tmp_path / "payload.json"
     payload.write_text(
@@ -72,7 +72,7 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
 
     assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True
     # Registered under the OWNING profile's home key, not the launch home's.
-    profile_key = hermes_home_key(profile)
+    profile_key = rabbit_home_key(profile)
     assert any(home == profile_key and event == "on_session_start" and command == HOOK_CMD
                for home, event, _matcher, command in shell_hooks._registered)
     assert any(home == profile_key and event == "on_session_end" and url == OUTBOUND_URL

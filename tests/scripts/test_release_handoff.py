@@ -175,7 +175,7 @@ def test_public_handoff_downloads_exact_staged_bytes_without_credentials(tmp_pat
         monkeypatch.delenv(key)
     r2_server.requests.clear()
     download = tmp_path / 'downloaded'
-    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    base = f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases'
     args = ['fetch', *identity, '--public-base', base, '--name', 'win32-x64',
             '--root', str(download), '--include', '*.msix']
     handoff.main(args)
@@ -231,7 +231,7 @@ def test_public_handoff_rejects_unsafe_origins_paths_and_redirects(tmp_path, r2_
     class Redirect(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(302)
-            self.send_header('Location', f'http://127.0.0.1:{r2_server.server_port}/hermes-releases/unwanted')
+            self.send_header('Location', f'http://127.0.0.1:{r2_server.server_port}/rabbit-releases/unwanted')
             self.send_header('Content-Length', '0')
             self.end_headers()
 

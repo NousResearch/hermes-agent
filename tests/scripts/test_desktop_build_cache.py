@@ -52,7 +52,7 @@ def test_stdlib_description_has_stable_allowlisted_paths_before_bootstrap(tmp_pa
     source = source_tree(tmp_path / "source with spaces")
     cache = tmp_path / "reusable inputs"
     home = tmp_path / "private-home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     description, outputs = describe(source, cache, tmp_path)
 
     expected = {str(cache / domain) for domain in (
@@ -127,8 +127,8 @@ def test_cache_roots_cannot_select_private_state_or_follow_workspace_symlinks(tm
 
     source = source_tree(tmp_path / "source")
     home = tmp_path / "home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    with pytest.raises(ValueError, match="HERMES_HOME"):
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    with pytest.raises(ValueError, match="RABBIT_HOME"):
         describe_cache(source, home, "test")
     with pytest.raises(ValueError, match="path"):
         describe_cache(source, tmp_path / "*", "test")
@@ -226,10 +226,10 @@ def test_private_home_and_source_cannot_be_children_of_cached_roots(tmp_path, mo
 
     source = source_tree(tmp_path / "source")
     cache = tmp_path / "cache"
-    monkeypatch.setenv("HERMES_HOME", str(cache / "native/private"))
-    with pytest.raises(ValueError, match="HERMES_HOME"):
+    monkeypatch.setenv("RABBIT_HOME", str(cache / "native/private"))
+    with pytest.raises(ValueError, match="RABBIT_HOME"):
         describe_cache(source, cache, "test")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     (cache / "tools").mkdir(parents=True)
     nested = source_tree(cache / "tools/source")
     with pytest.raises(ValueError, match="source"):

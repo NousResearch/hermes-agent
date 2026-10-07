@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 // Emit <repo>/locales/_keys.tui.json: the sorted flat key list of the bundled
-// TUI English catalog. `hermes plugins validate` checks a pack's `<lang>.tui.yaml`
+// TUI English catalog. `rabbit plugins validate` checks a pack's `<lang>.tui.yaml`
 // keys against this file, so it is regenerated on every `npm run build` and
 // committed. Run directly: `npm run i18n:keys` (add `--check` to verify only).
 

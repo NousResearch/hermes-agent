@@ -1,12 +1,12 @@
 name: prompt-tray
-repo: https://github.com/aydnOktay/hermes-prompt-tray
+repo: https://github.com/aydnOktay/rabbit-prompt-tray
 sha: e693e91f2c83031653a62fe286efb90d081f051b
-description: "Saved chat prompts — click a tray item to insert it into the Hermes composer. Review / Plan / Explain defaults, then your own. No API keys. Disclosure — inserts prompts through Hermes Desktop's internal hermes:composer-insert event (not a public SDK API); stores prompts in $HERMES_HOME/plugin-data/prompt-tray/prompts.json; no network."
+description: "Saved chat prompts — click a tray item to insert it into the Rabbit composer. Review / Plan / Explain defaults, then your own. No API keys. Disclosure — inserts prompts through Rabbit Desktop's internal rabbit:composer-insert event (not a public SDK API); stores prompts in $RABBIT_HOME/plugin-data/prompt-tray/prompts.json; no network."
 maintainer: aydnOktay
 tier: community
 category: desktop
-requires_hermes: ">=0.21"
-docs_url: https://github.com/aydnOktay/hermes-prompt-tray
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/aydnOktay/rabbit-prompt-tray
 version: "0.1.0"
 platforms: []
 capabilities:

@@ -124,7 +124,7 @@ describe('Voice-live toast copy', () => {
   })
 })
 
-describe('GPT-Live delegation → Hermes turn', () => {
+describe('GPT-Live delegation → Rabbit turn', () => {
   it('sends the latest user words as the turn and the exchange as model-only context', () => {
     // The delegation event carries no text: both are reconstructed from
     // transcript deltas, fragments of one speaker concatenated as received.

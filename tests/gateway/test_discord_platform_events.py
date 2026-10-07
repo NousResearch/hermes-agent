@@ -125,7 +125,7 @@ def _thread_obj(*, thread_id=321, name="my thread", owner_id=777, parent_id=555)
 
 @pytest.fixture(autouse=True)
 def _observer_available(monkeypatch):
-    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+    monkeypatch.setattr("rabbit_cli.lifecycle.has_hook", lambda _name: True)
 
 
 def _capture(a):
@@ -203,7 +203,7 @@ class TestMessageEdited:
         a.set_platform_event_handler(handler)
         a._thread_id_and_chat_for_channel = MagicMock()
 
-        import hermes_cli.lifecycle as lifecycle
+        import rabbit_cli.lifecycle as lifecycle
         orig = lifecycle.has_hook
         lifecycle.has_hook = lambda _n: False
         try:
@@ -354,7 +354,7 @@ class TestRunnerBoundaryIntegration:
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        import hermes_cli.lifecycle as lifecycle
+        import rabbit_cli.lifecycle as lifecycle
         orig_invoke = lifecycle.invoke_hook
         lifecycle.invoke_hook = invoked
         try:
@@ -373,7 +373,7 @@ class TestRunnerBoundaryIntegration:
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
 
-        import hermes_cli.lifecycle as lifecycle
+        import rabbit_cli.lifecycle as lifecycle
         orig_invoke = lifecycle.invoke_hook
         lifecycle.invoke_hook = invoked
         try:

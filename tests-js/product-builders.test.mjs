@@ -45,16 +45,16 @@ function webSource(source) {
 test('product outputs exclude the source tree except supported generated destinations', async () => {
   const inputs = ['ui-tui', 'apps/shared', 'node_modules']
   // Only call the read-only validator on real source paths: never publish here.
-  for (const name of ['pm', 'hermes_cli', 'scripts', 'pyproject.toml', '.git', 'tools', '.build', 'apps/desktop/build/products']) {
+  for (const name of ['pm', 'rabbit_cli', 'scripts', 'pyproject.toml', '.git', 'tools', '.build', 'apps/desktop/build/products']) {
     expect(() => productOutput(repo, path.join(repo, name), inputs), name).toThrow(/output/i)
   }
   const base = fixture()
   const source = path.join(base, 'source')
   mkdirSync(source)
-  for (const name of ['new-source-file', 'pm/generated', 'hermes_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'hermes_cli/web_dist/assets']) {
+  for (const name of ['new-source-file', 'pm/generated', 'rabbit_cli/web_dist-copy', 'apps/desktop/dist-copy', 'apps/desktop/build/native-deps-copy', 'rabbit_cli/web_dist/assets']) {
     expect(() => productOutput(source, path.join(source, name), inputs), name).toThrow(/output/i)
   }
-  for (const name of ['hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
+  for (const name of ['rabbit_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps', 'apps/desktop/build/products/tui', 'apps/desktop/build/products/web', '.build/web', '.build/termux/tui']) {
     const out = path.join(source, name)
     expect(productOutput(source, out, inputs).out).toBe(out)
     expect(existsSync(out)).toBe(false)
@@ -118,7 +118,7 @@ test('publication replaces only builder-owned directories and rechecks ownership
 
 test('existing npm build directories can be rebuilt without adopting arbitrary outputs', async () => {
   const source = fixture()
-  for (const name of ['ui-tui/dist', 'hermes_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps']) {
+  for (const name of ['ui-tui/dist', 'rabbit_cli/web_dist', 'apps/desktop/dist', 'apps/desktop/build/native-deps']) {
     const out = path.join(source, name)
     put(out, 'old-output', 'previous compiler output')
     await withProduct(out, product => put(product, 'new-output', 'rebuilt'), { source })
@@ -183,8 +183,8 @@ test('web rejects missing icons and compiler failures without publishing stale s
 function tuiSource(source) {
   put(source, 'package.json', '{"private":true}')
   put(source, 'ui-tui/package.json', '{"type":"module"}')
-  put(source, 'ui-tui/src/entry.tsx', '#!/usr/bin/env node\nimport { answer } from "@hermes/ink"; console.log(answer);')
-  put(source, 'ui-tui/packages/hermes-ink/src/entry-exports.ts', 'import devtools from "react-devtools-core"; devtools.initialize(); export const answer: string = "prepared source";')
+  put(source, 'ui-tui/src/entry.tsx', '#!/usr/bin/env node\nimport { answer } from "@rabbit/ink"; console.log(answer);')
+  put(source, 'ui-tui/packages/rabbit-ink/src/entry-exports.ts', 'import devtools from "react-devtools-core"; devtools.initialize(); export const answer: string = "prepared source";')
 }
 
 test('TUI uses prepared workspace-local tools from an unrelated cwd and publishes a relocatable module product', () => {
@@ -277,7 +277,7 @@ test('built TUI stays current after documentation, test and unrelated recipe cha
   const before = readFileSync(entry)
   for (const name of [
     'ui-tui/README.md', 'ui-tui/src/__tests__/new.test.ts', 'ui-tui/src/value.spec.ts',
-    'ui-tui/packages/hermes-ink/src/value.test.ts', 'apps/shared/src/value.test.ts',
+    'ui-tui/packages/rabbit-ink/src/value.test.ts', 'apps/shared/src/value.test.ts',
     'apps/shared/README.md', 'scripts/build/web.mjs', 'scripts/build/desktop.mjs',
     'scripts/build/README.md', 'scripts/build/node-deps.mjs',
   ]) {
@@ -325,9 +325,9 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   }
   for (const name of [
     'ui-tui/src/value.ts', 'apps/shared/src/value.ts',
-    'ui-tui/packages/hermes-ink/src/entry-exports.ts',
-    'ui-tui/tsconfig.json', 'ui-tui/packages/hermes-ink/tsconfig.json', 'apps/shared/tsconfig.json',
-    'ui-tui/package.json', 'ui-tui/packages/hermes-ink/package.json', 'apps/shared/package.json',
+    'ui-tui/packages/rabbit-ink/src/entry-exports.ts',
+    'ui-tui/tsconfig.json', 'ui-tui/packages/rabbit-ink/tsconfig.json', 'apps/shared/tsconfig.json',
+    'ui-tui/package.json', 'ui-tui/packages/rabbit-ink/package.json', 'apps/shared/package.json',
     'tsconfig.json', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
     'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
   ]) {

@@ -3,7 +3,7 @@
 Build the real image and verify the actual runtime behavior:
 
   1. Root-owned top-level state files (auth.json, state.db, gateway.lock,
-     gateway_state.json) are chowned to hermes on boot
+     gateway_state.json) are chowned to rabbit on boot
   2. Non-allowlisted host-owned files are NOT touched (targeted, not
      blanket find -user root sweep)
   3. Symlinked allowlisted files are NOT chowned through the symlink
@@ -33,7 +33,7 @@ ALLOWLISTED_FILES = ("auth.json", "state.db", "gateway.lock", "gateway_state.jso
 def test_root_owned_state_files_repaired_on_boot(
     built_image: str, container_name: str,
 ) -> None:
-    """Root-owned top-level state files must be chowned to hermes on boot."""
+    """Root-owned top-level state files must be chowned to rabbit on boot."""
     start_container(built_image, container_name)
 
     # Create root-owned state files to simulate docker exec (root) writes
@@ -55,15 +55,15 @@ def test_root_owned_state_files_repaired_on_boot(
     # Restart - stage2 should repair ownership
     restart_container(container_name)
 
-    # Verify files are now hermes-owned
+    # Verify files are now rabbit-owned
     r = docker_exec_sh(
         container_name,
         " ".join(f'stat -c %U /opt/data/{f}' for f in ALLOWLISTED_FILES),
         timeout=5,
     )
     for line in r.stdout.split():
-        assert line == "hermes", (
-            f"expected hermes-owned after restart, got: {line}"
+        assert line == "rabbit", (
+            f"expected rabbit-owned after restart, got: {line}"
         )
 
 
@@ -72,7 +72,7 @@ def test_non_allowlisted_host_file_not_touched(
 ) -> None:
     """A non-allowlisted host-owned file must NOT be chowned, even if
     root-owned. Regression guard for #19788 / #19795: a bind-mounted
-    $HERMES_HOME may contain host-owned files Hermes does not manage."""
+    $RABBIT_HOME may contain host-owned files Rabbit does not manage."""
     start_container(built_image, container_name)
 
     # Create a non-allowlisted file as root
@@ -162,7 +162,7 @@ def test_symlinked_allowlisted_file_not_chowned(
             f"expected symlink refusal warning for auth.json in docker logs: {combined}"
         )
     finally:
-        # Clean up root/hermes-owned files left by stage2 chown
+        # Clean up root/rabbit-owned files left by stage2 chown
         if host_data is not None:
             subprocess.run(
                 ["docker", "rm", "-f", container_name],

@@ -2,7 +2,7 @@
 
 When delegate_task's child subagent times out without having made any API
 call, a structured diagnostic file is written under
-``~/.hermes/logs/subagent-timeout-<sid>-<ts>.log``. This gives users a
+``~/.rabbit/logs/subagent-timeout-<sid>-<ts>.log``. This gives users a
 concrete artifact to inspect (worker thread stack, system prompt size,
 tool schema bytes, credential pool state, etc.) instead of the previous
 opaque "subagent timed out" error.
@@ -24,10 +24,10 @@ import pytest
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    home = tmp_path / ".rabbit"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     return home
 
 
@@ -87,11 +87,11 @@ class TestDumpSubagentTimeoutDiagnostic:
 
 
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
-        # Point HERMES_HOME at an unwritable path so logs/ can't be created
+        # Point RABBIT_HOME at an unwritable path so logs/ can't be created
         # (simulates permission-denied). Helper must not raise.
         from tools.delegate_tool import _dump_subagent_timeout_diagnostic
-        bogus = tmp_path / "does-not-exist" / ".hermes"
-        monkeypatch.setenv("HERMES_HOME", str(bogus))
+        bogus = tmp_path / "does-not-exist" / ".rabbit"
+        monkeypatch.setenv("RABBIT_HOME", str(bogus))
         child = _StubChild()
 
         # Make the logs dir itself unwritable by creating it as a FILE
@@ -112,7 +112,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         # We assert no exception propagates — the return value is advisory.
         assert result is None or Path(result).exists()
 
-    def test_timeout_diagnostic_marks_long_goal_as_non_original(self, hermes_home):
+    def test_timeout_diagnostic_marks_long_goal_as_non_original(self, rabbit_home):
         # #121572: an elided goal must carry the non-imitable counted marker,
         # never the bare "...[truncated]" the model could copy.
         from agent.compression_marker import _COMPRESSION_MARKER_RE
@@ -154,7 +154,7 @@ class TestRunSingleChildTimeoutDump:
             parent_agent=parent,
         )
 
-    def test_zero_api_calls_writes_dump_and_surfaces_path(self, hermes_home, monkeypatch):
+    def test_zero_api_calls_writes_dump_and_surfaces_path(self, rabbit_home, monkeypatch):
         child = _StubChild(api_call_count=0, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
@@ -163,7 +163,7 @@ class TestRunSingleChildTimeoutDump:
         assert result["diagnostic_path"] is not None
         dump_path = Path(result["diagnostic_path"])
         assert dump_path.is_file()
-        assert dump_path.parent == hermes_home / "logs"
+        assert dump_path.parent == rabbit_home / "logs"
 
         # Error message surfaces the path and the "no API call" phrasing
         assert "without making any API call" in result["error"]
@@ -174,7 +174,7 @@ class TestRunSingleChildTimeoutDump:
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────
 
 
-    def test_non_timeout_error_has_null_timeout_metadata(self, hermes_home, monkeypatch):
+    def test_non_timeout_error_has_null_timeout_metadata(self, rabbit_home, monkeypatch):
         """The metadata fields are timeout-specific — a child that raises
         must report them as None so consumers can key on presence."""
         from tools import delegate_tool

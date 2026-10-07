@@ -15,13 +15,13 @@ _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
     # A PM-activated developer shell runs sys.prefix's python against a dependency generation
-    # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
-    # interpreter's installation, not Hermes state.
+    # whose site-packages sits under the (real) Rabbit home; third-party imports from it are the
+    # interpreter's installation, not Rabbit state.
     Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
 } | {
     # The default install checks the repo out INSIDE the home (install.sh:
-    # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
-    # checkout's own .venv is not Hermes state; without this every run from a default install
+    # INSTALL_DIR=$RABBIT_HOME/rabbit-agent). Reading test data, sources for tracebacks, or the
+    # checkout's own .venv is not Rabbit state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
 })
@@ -82,20 +82,20 @@ class HomeIOGuard:
                 return
             resolved = self._refuse_installed_app_change(value, absolute) if destructive else None
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
-            # Resolving the root itself (get_default_hermes_root's relative_to
+            # Resolving the root itself (get_default_rabbit_root's relative_to
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
-            # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
-            # command lookup, not reading Hermes state. CI has no such entries.
+            # PM's tool store (~/.rabbit/tools/...) on PATH; probing an executable there is
+            # command lookup, not reading Rabbit state. CI has no such entries.
             if metadata:
                 path = os.environ.get("PATH", "")
                 cwd = os.getcwd() if self._relative_path_entries(path) else None
                 if os.path.dirname(absolute) in self._path_entries(path, cwd):
                     return
-            # The interpreter's own installation (a PM-managed python under ~/.hermes/tools):
-            # stdlib source reads (linecache, traceback) are not Hermes state either, nor is
+            # The interpreter's own installation (a PM-managed python under ~/.rabbit/tools):
+            # stdlib source reads (linecache, traceback) are not Rabbit state either, nor is
             # realpath() walking up through its ancestors.
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
@@ -131,15 +131,15 @@ class HomeIOGuard:
                 import pytest  # noqa: PLC0415
                 # pytest.fail, not AssertionError: removal helpers catch Exception and would log
                 # the refusal as a warning while the test passed.
-                pytest.fail(f"TEST BUG: changing the REAL installed Hermes desktop app: {value}\n"
-                            "Stub hermes_cli.gui_uninstall.packaged_gui_app_paths to a temporary path.")
+                pytest.fail(f"TEST BUG: changing the REAL installed Rabbit desktop app: {value}\n"
+                            "Stub rabbit_cli.gui_uninstall.packaged_gui_app_paths to a temporary path.")
         return resolved
 
     @staticmethod
     def refuse(value):
         raise AssertionError(
-            f"TEST BUG: file I/O against the REAL hermes home: {value}\n"
-            "Use the isolated HERMES_HOME or a temporary fixture instead."
+            f"TEST BUG: file I/O against the REAL rabbit home: {value}\n"
+            "Use the isolated RABBIT_HOME or a temporary fixture instead."
         )
 
     @staticmethod

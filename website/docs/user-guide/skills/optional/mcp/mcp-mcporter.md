@@ -14,7 +14,7 @@ List, auth, and call MCP servers/tools from the terminal.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mcp/mcporter` |
+| Source | Optional — install with `rabbit skills install official/mcp/mcporter` |
 | Path | `optional-skills/mcp/mcporter` |
 | Version | `1.0.0` |
 | Author | community |
@@ -25,7 +25,7 @@ List, auth, and call MCP servers/tools from the terminal.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # mcporter
@@ -86,7 +86,7 @@ mcporter call --stdio "bun run ./server.ts" scrape url=https://example.com
 # JSON payload
 mcporter call <server.tool> --args '{"limit": 5}'
 
-# Machine-readable output (recommended for Hermes)
+# Machine-readable output (recommended for Rabbit)
 mcporter call <server.tool> key=value --output json
 ```
 

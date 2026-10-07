@@ -26,7 +26,7 @@ from agent.trace_upload import (
 
 def _sample_messages():
     return [
-        {"role": "system", "content": "you are hermes"},
+        {"role": "system", "content": "you are rabbit"},
         {"role": "user", "content": "list files"},
         {"role": "assistant", "content": "Listing.", "tool_calls": [
             {"id": "call_1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}},
@@ -101,7 +101,7 @@ def test_converter_keeps_secrets_when_redact_disabled():
 def test_load_session_messages_closes_database_on_failure(monkeypatch):
     db = MagicMock()
     db.resolve_session_id.side_effect = RuntimeError("read failed")
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: db)
+    monkeypatch.setattr("rabbit_state.SessionDB", lambda db_path=None: db)
 
     with pytest.raises(RuntimeError, match="read failed"):
         load_session_messages("s1")
@@ -150,12 +150,12 @@ def test_upload_happy_path_mocked(monkeypatch):
         msg = upload_session_trace("20260531_abc", cwd="/tmp")
 
     # Returned a viewer URL
-    assert "huggingface.co/datasets/alice/hermes-traces" in msg
+    assert "huggingface.co/datasets/alice/rabbit-traces" in msg
 
     # Created private dataset repo
     fake_api.create_repo.assert_called_once()
     _, kwargs = fake_api.create_repo.call_args
-    assert kwargs["repo_id"] == "alice/hermes-traces"
+    assert kwargs["repo_id"] == "alice/rabbit-traces"
     assert kwargs["repo_type"] == "dataset"
     assert kwargs["private"] is True
 
@@ -163,7 +163,7 @@ def test_upload_happy_path_mocked(monkeypatch):
     fake_api.upload_file.assert_called_once()
     _, ukwargs = fake_api.upload_file.call_args
     assert ukwargs["path_in_repo"] == "sessions/20260531_abc.jsonl"
-    assert ukwargs["repo_id"] == "alice/hermes-traces"
+    assert ukwargs["repo_id"] == "alice/rabbit-traces"
     body = ukwargs["path_or_fileobj"]
     if isinstance(body, bytes):
         body = body.decode("utf-8")

@@ -1,4 +1,4 @@
-import type { SessionInfo } from '@/hermes'
+import type { SessionInfo } from '@/rabbit'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $messages, setMessages } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'

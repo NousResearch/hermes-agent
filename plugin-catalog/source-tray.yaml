@@ -1,14 +1,14 @@
 name: source-tray
-repo: https://github.com/aydnOktay/hermes-source-tray
+repo: https://github.com/aydnOktay/rabbit-source-tray
 sha: e64f7d2ad56f922410071e2096a40ceab421a392
-description: Session source tray — URLs the Hermes agent opened via web_search,
+description: Session source tray — URLs the Rabbit agent opened via web_search,
   web_extract, or browser_navigate. Desktop pane and /sources. No search backend
   of its own and no API keys.
 maintainer: aydnOktay
 tier: community
 category: web
-requires_hermes: ">=0.21"
-docs_url: https://github.com/aydnOktay/hermes-source-tray
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/aydnOktay/rabbit-source-tray
 version: "0.1.1"
 platforms: []
 capabilities:

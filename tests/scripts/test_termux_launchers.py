@@ -23,11 +23,11 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
         "import json, os, sys\n"
         "def main():\n"
         "    print(json.dumps({'argv': sys.argv[1:], 'env': {k: os.environ.get(k) for k in "
-        "['HERMES_NODE', 'HERMES_PYTHON', 'HERMES_RUNTIME_DIR', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONPYCACHEPREFIX']}}))\n",
+        "['RABBIT_NODE', 'RABBIT_PYTHON', 'RABBIT_RUNTIME_DIR', 'PYTHONPATH', 'PYTHONHOME', 'PYTHONPYCACHEPREFIX']}}))\n",
         encoding="utf-8",
     )
     (tmp_path / "json.py").write_text("raise RuntimeError('cwd shadowed stdlib')\n", encoding="utf-8")
-    entries = {name: "capture_entry:main" for name in ("hermes", "hermes-agent", "hermes-acp")}
+    entries = {name: "capture_entry:main" for name in ("rabbit", "rabbit-agent", "rabbit-acp")}
     write_launchers(payload, entries, python="venv/bin/python", repo="app",
                     site="venv/lib/python3.14/site-packages", target="linux-arm64-bionic")
     bin_dir = tmp_path / "prefix/bin"
@@ -43,9 +43,9 @@ def test_launchers_forward_arguments_and_export_payload_environment(tmp_path):
         data = json.loads(result.stdout)
         assert data["argv"] == ["one two", "$(not-executed)", ""]
         env = data["env"]
-        assert Path(env["HERMES_PYTHON"]).resolve() == Path(sys.executable).resolve()
-        assert Path(env["HERMES_NODE"]) == payload / "tools/node/data/data/com.termux/files/usr/bin/node"
-        assert Path(env["HERMES_RUNTIME_DIR"]) == payload / "tools"
+        assert Path(env["RABBIT_PYTHON"]).resolve() == Path(sys.executable).resolve()
+        assert Path(env["RABBIT_NODE"]) == payload / "tools/node/data/data/com.termux/files/usr/bin/node"
+        assert Path(env["RABBIT_RUNTIME_DIR"]) == payload / "tools"
         assert env["PYTHONPATH"].split(os.pathsep)[0] == str(payload / "app")
         assert env["PYTHONHOME"] is None
         assert not Path(env["PYTHONPYCACHEPREFIX"]).is_relative_to(payload)
@@ -57,15 +57,15 @@ def test_postinst_refuses_foreign_path_and_prerm_preserves_it(tmp_path):
 
     control = tmp_path / "DEBIAN"
     control.mkdir()
-    write_maintainer_scripts(control, ["hermes"])
+    write_maintainer_scripts(control, ["rabbit"])
     prefix = tmp_path / "prefix"
     bin_dir = prefix / "bin"
     bin_dir.mkdir(parents=True)
-    link = bin_dir / "hermes"
+    link = bin_dir / "rabbit"
     env = {**os.environ, "PREFIX": str(prefix)}
     command = [shutil.which("sh"), str(control / "postinst"), "configure"]
     subprocess.run(command, check=True, env=env)
-    assert os.readlink(link) == "../lib/hermes-agent/bin/hermes"
+    assert os.readlink(link) == "../lib/rabbit-agent/bin/rabbit"
     subprocess.run(command, check=True, env=env)
     link.unlink()
     link.write_text("foreign launcher", encoding="utf-8")

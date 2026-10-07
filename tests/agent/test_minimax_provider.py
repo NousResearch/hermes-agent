@@ -16,7 +16,7 @@ class TestMinimaxM3StaleCacheGuard:
 
 
     def test_m2_cache_not_clobbered(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         import importlib
         import agent.model_metadata as mm
         importlib.reload(mm)
@@ -119,7 +119,7 @@ class TestMinimaxApiMode:
     """
 
     def test_minimax_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
+        from rabbit_cli.providers import determine_api_mode
         assert determine_api_mode("minimax") == "anthropic_messages"
 
 

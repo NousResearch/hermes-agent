@@ -1,39 +1,39 @@
 ---
 sidebar_position: 5
-title: "Using Hermes as a Python Library"
+title: "Using Rabbit as a Python Library"
 description: "Embed AIAgent in your own Python scripts, web apps, or automation pipelines — no CLI required"
 ---
 
-# Using Hermes as a Python Library
+# Using Rabbit as a Python Library
 
-Hermes isn't just a CLI tool. You can import `AIAgent` directly and use it programmatically in your own Python scripts, web applications, or automation pipelines. This guide shows you how.
+Rabbit isn't just a CLI tool. You can import `AIAgent` directly and use it programmatically in your own Python scripts, web applications, or automation pipelines. This guide shows you how.
 
 ---
 
 ## Installation
 
-Clone Hermes and prepare its source environment through PM. The Bash recipe is:
+Clone Rabbit and prepare its source environment through PM. The Bash recipe is:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
+git clone https://github.com/seven0070/Rabbit-.git
+cd rabbit-agent
 source ./activate
 ```
 
 Run your application with `python your_app.py` from that activated checkout.
 For PowerShell preparation or an independent interpreter, see the
 [PM developer workflow](../reference/package-management.md#developer-workflow).
-Hermes does not publish a supported wheel or source distribution for `requirements.txt` installs.
+Rabbit does not publish a supported wheel or source distribution for `requirements.txt` installs.
 
 :::tip
-The same environment variables used by the CLI are required when using Hermes as a library. At minimum, set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` if using direct provider access).
+The same environment variables used by the CLI are required when using Rabbit as a library. At minimum, set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` if using direct provider access).
 :::
 
 ---
 
 ## Basic Usage
 
-The simplest way to use Hermes is the `chat()` method — pass a message, get a string back:
+The simplest way to use Rabbit is the `chat()` method — pass a message, get a string back:
 
 ```python
 from run_agent import AIAgent
@@ -49,7 +49,7 @@ print(response)
 `chat()` handles the full conversation loop internally — tool calls, retries, everything — and returns just the final text response.
 
 :::warning
-Always set `quiet_mode=True` when embedding Hermes in your own code. Without it, the agent prints CLI spinners, progress indicators, and other terminal output that will clutter your application's output.
+Always set `quiet_mode=True` when embedding Rabbit in your own code. Without it, the agent prints CLI spinners, progress indicators, and other terminal output that will clutter your application's output.
 :::
 
 ---
@@ -182,7 +182,7 @@ This is ideal for building specialized agents — a code reviewer, a documentati
 
 ## Batch Processing
 
-For running many prompts in parallel, Hermes includes `batch_runner.py`. It manages concurrent `AIAgent` instances with proper resource isolation:
+For running many prompts in parallel, Rabbit includes `batch_runner.py`. It manages concurrent `AIAgent` instances with proper resource isolation:
 
 ```bash
 python batch_runner.py --input prompts.jsonl --output results.jsonl
@@ -261,7 +261,7 @@ client = discord.Client(intents=discord.Intents.default())
 async def on_message(message):
     if message.author == client.user:
         return
-    if message.content.startswith("!hermes "):
+    if message.content.startswith("!rabbit "):
         query = message.content[8:]
         agent = AIAgent(
             model="anthropic/claude-sonnet-4",
@@ -306,7 +306,7 @@ print(review)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `str` | `""` | Model in OpenRouter format (defaults to empty; resolved from your hermes config at runtime) |
+| `model` | `str` | `""` | Model in OpenRouter format (defaults to empty; resolved from your rabbit config at runtime) |
 | `quiet_mode` | `bool` | `False` | Suppress CLI output |
 | `enabled_toolsets` | `List[str]` | `None` | Whitelist specific toolsets |
 | `disabled_toolsets` | `List[str]` | `None` | Blacklist specific toolsets |

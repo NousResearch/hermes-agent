@@ -234,7 +234,7 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
     # Fallback compaction (no LLM summary) + SQLite reload between cycles:
     # the active request must be recognized from persisted content alone.
     from agent.conversation_compression import _ensure_compressed_has_user_turn
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)

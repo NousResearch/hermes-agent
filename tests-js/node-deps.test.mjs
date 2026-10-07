@@ -59,11 +59,11 @@ test('read-only dependency preparation reuses complete receipts but refuses miss
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
   expect(existsSync(join(source, 'node_modules'))).toBe(false)
   prepareNodeDependencies(options)
-  const receipt = readFileSync(join(source, 'node_modules/.hermes-node-deps'))
+  const receipt = readFileSync(join(source, 'node_modules/.rabbit-node-deps'))
   prepareNodeDependencies({ ...options, install: false })
   rmSync(join(source, 'node_modules/web-only'), { recursive: true })
   expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
-  expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
+  expect(readFileSync(join(source, 'node_modules/.rabbit-node-deps'))).toEqual(receipt)
 }, 30000)
 
 test('native toolchain admission rejects a changed compiler without breaking ordinary builders', async () => {

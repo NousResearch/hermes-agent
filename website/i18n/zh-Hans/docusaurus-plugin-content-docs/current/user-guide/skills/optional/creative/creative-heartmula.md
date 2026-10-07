@@ -14,7 +14,7 @@ HeartMuLa：基于歌词与标签的类 Suno 歌曲生成。
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/creative/heartmula` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/creative/heartmula` 安装 |
 | 路径 | `optional-skills/creative/heartmula` |
 | 版本 | `1.0.0` |
 | 平台 | linux, macos, windows |
@@ -24,7 +24,7 @@ HeartMuLa：基于歌词与标签的类 Suno 歌曲生成。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # HeartMuLa - 开源音乐生成

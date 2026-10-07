@@ -25,7 +25,7 @@ Himalaya CLI：从终端收发 IMAP/SMTP 邮件。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Himalaya 邮件 CLI
@@ -100,7 +100,7 @@ folder.aliases.trash = "Trash"
 
 > **关于别名语法的注意事项。** v1.2.0 之前的文档使用 `[accounts.NAME.folder.alias]` 子节（单数 `alias`）。v1.2.0 会静默忽略该形式——TOML 解析正常，但别名解析器从不读取它，因此每次查找都会回退到规范名称。在 Gmail 上，这意味着 SMTP 投递成功*之后*保存到已发送文件夹会失败，且 `himalaya message send` 以非零状态退出。任何在该退出码上重试的调用方（agent、脚本、用户）都会重新执行整个发送流程——包括 SMTP——从而向收件人产生重复邮件。请始终使用 `folder.aliases.X`（复数、点分键，直接位于 `[accounts.NAME]` 下）。
 
-## Hermes 集成说明
+## Rabbit 集成说明
 
 - **读取、列出、搜索、移动、删除**均可直接通过终端工具完成
 - **撰写/回复/转发**——推荐使用管道输入（`cat << EOF | himalaya template send`）以确保可靠性。交互式 `$EDITOR` 模式可配合 `pty=true` + 后台 + 进程工具使用，但需要了解编辑器及其命令
@@ -157,7 +157,7 @@ himalaya message export 42 --full
 
 ### 回复邮件
 
-在 Hermes 中非交互式回复，请读取原始邮件、撰写回复并通过管道发送：
+在 Rabbit 中非交互式回复，请读取原始邮件、撰写回复并通过管道发送：
 
 ```bash
 # 获取回复模板，编辑后发送
@@ -192,7 +192,7 @@ himalaya template forward 42 | sed 's/^To:.*/To: newrecipient@example.com/' | hi
 
 ### 撰写新邮件
 
-**非交互式（在 Hermes 中使用此方式）**——通过 stdin 管道传入邮件：
+**非交互式（在 Rabbit 中使用此方式）**——通过 stdin 管道传入邮件：
 
 ```bash
 cat << 'EOF' | himalaya template send

@@ -20,7 +20,7 @@ from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 @pytest.fixture
 def upstream(dl_server, monkeypatch):
-    from hermes_cli import urllib_security
+    from rabbit_cli import urllib_security
 
     calls = []
     failures = {}
@@ -53,8 +53,8 @@ def test_resolution_reuses_successful_responses_but_refreshes_next_operation(ups
     package = get_package(name)
     targets = [t for t in ALL_TARGETS if package.missing_reason(t) is None]
     for generation in (1, 2):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / f"profile-{generation}"))
-        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / f"store-{generation}"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / f"profile-{generation}"))
+        monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / f"store-{generation}"))
         monkeypatch.setenv("GH_TOKEN", f"github-{generation}")
         monkeypatch.setenv("HF_TOKEN", f"huggingface-{generation}")
         calls.clear()
@@ -196,7 +196,7 @@ def test_llama_real_index_fallback(upstream, monkeypatch, pointer, tree, expecte
 
 def test_pinning_hashes_new_npm_url_once_and_keeps_existing_rows(upstream, tmp_path, monkeypatch):
     calls, failures = upstream
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "store"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "store"))
     package = packages.Npm()
     version = "2.0.0"
     artifact_url = package.fetch_url(version, ALL_TARGETS[0])

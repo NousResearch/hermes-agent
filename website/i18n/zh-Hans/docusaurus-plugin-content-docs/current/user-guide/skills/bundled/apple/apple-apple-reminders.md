@@ -17,7 +17,6 @@ description: "通过 remindctl 管理 Apple Reminders：添加、列出、完成
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/apple/apple-reminders` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent |
 | 许可证 | MIT |
 | 平台 | macos |
 | 标签 | `Reminders`, `tasks`, `todo`, `macOS`, `Apple` |
@@ -25,7 +24,7 @@ description: "通过 remindctl 管理 Apple Reminders：添加、列出、完成
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Apple Reminders

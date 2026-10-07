@@ -115,7 +115,7 @@ export function useBackgroundQueueDrain({
           // authoritative — but only when they can actually PROVE absence.
           // "Maybe" must never mean delete:
           // - getSessionOwnerHint is undefined both for "no route" AND for
-          //   "two or more routes" (a cloud gateway plus a local backend);
+          //   "two or more routes" (a remote gateway plus a local backend);
           //   the plural accessor keeps those apart, and ≥1 route is alive.
           // - $sessions is one PAGE of the sidebar list. A session that fell
           //   off the loaded window ($sessionProfilesTruncated) is unknown

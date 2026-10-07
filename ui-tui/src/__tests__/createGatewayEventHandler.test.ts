@@ -1,4 +1,4 @@
-import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
+import type { ConnectionOperationTarget } from '@rabbit/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -17,7 +17,7 @@ import { ZERO } from '../domain/usage.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
-// Mock the external-URL opener so the billing.step_up.verification test can
+// Mock the external-URL opener so the billing-dialog test can
 // assert it's invoked without spawning a real browser process.
 const openExternalUrlMock = vi.fn((_url: string) => true)
 vi.mock('../lib/openExternalUrl.js', () => ({
@@ -225,7 +225,7 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
-  it('opens a billing confirm dialog routing Nous to /topup', () => {
+  it('opens a billing confirm dialog falling back to /model with no billing URL', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
     const onEvent = createGatewayEventHandler(ctx)
@@ -234,11 +234,10 @@ describe('createGatewayEventHandler', () => {
       payload: {
         billing: {
           billing_url: null,
-          is_nous: true,
           message: 'out of credits',
           model: 'm',
-          provider: 'nous',
-          provider_label: 'Nous Portal'
+          provider: 'custom',
+          provider_label: 'Custom'
         },
         text: 'Billing or credits exhausted: ...'
       },
@@ -248,7 +247,7 @@ describe('createGatewayEventHandler', () => {
     const { confirm } = getOverlayState()
 
     confirm!.onConfirm()
-    expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('/topup')
+    expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('/model')
   })
 
   it('deep-links a third-party provider billing page from the confirm dialog', () => {
@@ -261,7 +260,6 @@ describe('createGatewayEventHandler', () => {
       payload: {
         billing: {
           billing_url: 'https://openrouter.ai/settings/credits',
-          is_nous: false,
           message: 'out of credits',
           model: 'm',
           provider: 'openrouter',
@@ -388,11 +386,11 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({
-      payload: { text: "💾 Self-improvement review: Skill 'hermes-release' patched" },
+      payload: { text: "💾 Self-improvement review: Skill 'rabbit-release' patched" },
       type: 'review.summary'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'hermes-release' patched")
+    expect(ctx.system.sys).toHaveBeenCalledWith("💾 Self-improvement review: Skill 'rabbit-release' patched")
   })
 
   it('ignores review.summary events with empty or missing text', () => {
@@ -663,7 +661,7 @@ describe('createGatewayEventHandler', () => {
         cwd: '/repo',
         python: '/opt/venv/bin/python',
         stderr_tail:
-          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.hermes/config.yaml'
+          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.rabbit/config.yaml'
       },
       type: 'gateway.start_timeout'
     } as any)
@@ -682,10 +680,10 @@ describe('createGatewayEventHandler', () => {
   it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const raw = 'Hermes here.\n\nLine two.'
+    const raw = 'Rabbit here.\n\nLine two.'
     // Rich-rendered ANSI (`final_response_markdown: render`) used to win,
     // which left visible escape codes in Ink output. Raw text must win.
-    const rendered = '\u001b[33mHermes here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
+    const rendered = '\u001b[33mRabbit here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
 
     onEvent({ payload: { rendered, text: raw }, type: 'message.complete' } as any)
 
@@ -924,7 +922,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({
       payload: {
         message:
-          'agent init failed: No LLM provider configured. Run `hermes model` to select a provider, or run `hermes setup` for first-time configuration.'
+          'agent init failed: No LLM provider configured. Run `rabbit model` to select a provider, or run `rabbit setup` for first-time configuration.'
       },
       type: 'error'
     } as any)
@@ -953,12 +951,12 @@ describe('createGatewayEventHandler', () => {
     }
 
     // Dark terminal (clean env): the dark-authored `colors` block wins.
-    vi.stubEnv('HERMES_TUI_BACKGROUND', '')
+    vi.stubEnv('RABBIT_TUI_BACKGROUND', '')
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#00FF88')
 
     // Light terminal: the hand-tuned light_colors block wins over adaptation.
-    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    vi.stubEnv('RABBIT_TUI_BACKGROUND', '#ffffff')
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#8B0000')
     vi.unstubAllEnvs()
@@ -1095,7 +1093,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'old-session' })
 
     createGatewayEventHandler(ctx)({
-      payload: { phrase: 'hey hermes', start_new_session: true },
+      payload: { phrase: 'hey rabbit', start_new_session: true },
       type: 'wake.detected'
     } as any)
 
@@ -1114,7 +1112,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'current-session' })
 
     createGatewayEventHandler(ctx)({
-      payload: { phrase: 'hey hermes', start_new_session: false },
+      payload: { phrase: 'hey rabbit', start_new_session: false },
       type: 'wake.detected'
     } as any)
 
@@ -1327,7 +1325,7 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { line: 'INFO hermes.mcp: 3 servers discovered' }, type: 'gateway.stderr' } as any)
+    onEvent({ payload: { line: 'INFO rabbit.mcp: 3 servers discovered' }, type: 'gateway.stderr' } as any)
     onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
     serverRequest('approval', { command: 'rm -rf /tmp/nope', description: 'dangerous command' })
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
@@ -2217,35 +2215,6 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
-  describe('billing.step_up.verification', () => {
-    beforeEach(() => {
-      openExternalUrlMock.mockClear()
-    })
-
-    it('renders the verification link + code and opens the browser', () => {
-      const ctx = buildCtx([])
-      const onEvent = createGatewayEventHandler(ctx)
-
-      onEvent({
-        payload: { user_code: 'WXYZ-9999', verification_url: 'https://portal.example/device?code=WXYZ' },
-        type: 'billing.step_up.verification'
-      } as any)
-
-      const printed = (ctx.system.sys as ReturnType<typeof vi.fn>).mock.calls.map(c => c[0]).join('\n')
-      expect(printed).toContain('https://portal.example/device?code=WXYZ')
-      expect(printed).toContain('WXYZ-9999')
-      expect(openExternalUrlMock).toHaveBeenCalledWith('https://portal.example/device?code=WXYZ')
-    })
-
-    it('no-ops on a missing verification_url (never opens a browser)', () => {
-      const ctx = buildCtx([])
-      const onEvent = createGatewayEventHandler(ctx)
-
-      onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
-
-      expect(openExternalUrlMock).not.toHaveBeenCalled()
-    })
-  })
 
   describe('session.usage', () => {
     it('merges a live usage tick into uiState (payload.usage shape, see tui_gateway _start_usage_ticker)', () => {

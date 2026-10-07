@@ -1,6 +1,6 @@
 // The desktop product identity — THE single source for every name-shaped
-// value a variant owns. HERMES_DESKTOP_VARIANT=light builds "Hermes
-// Light", the remote-only client; everything else is full "Hermes".
+// value a variant owns. RABBIT_DESKTOP_VARIANT=light builds "Rabbit
+// Light", the remote-only client; everything else is full "Rabbit".
 //
 // Consumed at build time by electron-builder.config.cjs (packaging
 // identity). electron/product-identity.ts is the typed runtime accessor.
@@ -9,22 +9,22 @@
 'use strict'
 
 const variants = {
-  '': { display: 'Hermes', kebab: 'hermes', pascal: 'Hermes' },
+  '': { display: 'Rabbit', kebab: 'rabbit', pascal: 'Rabbit' },
   light: {
-    display: 'Hermes Light',
-    kebab: 'hermes-light',
-    pascal: 'HermesLight'
+    display: 'Rabbit Light',
+    kebab: 'rabbit-light',
+    pascal: 'RabbitLight'
   },
   bundled: {
-    display: 'Hermes Agent',
-    kebab: 'hermes-bundled',
-    pascal: 'HermesBundled'
+    display: 'Rabbit Agent',
+    kebab: 'rabbit-bundled',
+    pascal: 'RabbitBundled'
   }
 }
 
-const variant = process.env.HERMES_DESKTOP_VARIANT || ''
+const variant = process.env.RABBIT_DESKTOP_VARIANT || ''
 if (!['', 'light', 'bundled', 'store'].includes(variant)) {
-  throw new Error(`Unknown HERMES_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
+  throw new Error(`Unknown RABBIT_DESKTOP_VARIANT ${variant}. expected one of (empty), light, bundled, store`)
 }
 
 // 'store' is a Store-submission packaging identity layered on the bundled
@@ -40,11 +40,11 @@ const name = variants[store ? 'bundled' : (variant || '')]
 // stable tags write latest.yml / light.yml. Keyed on the payload tag so
 // the one release workflow serves both channels — a canary build can
 // never overwrite the stable feed file, and vice versa.
-const canary = /\+canary\.20\d{6}T\d{6}Z$/.test(process.env.HERMES_PAYLOAD_TAG || '')
+const canary = /\+canary\.20\d{6}T\d{6}Z$/.test(process.env.RABBIT_PAYLOAD_TAG || '')
 
 // Nonstable installs own their package family and local desktop state. The
 // seven-character commit suffix also names the CLI and fits MSIX's name cap.
-const buildCommitEnv = process.env.HERMES_BUILD_COMMIT || ''
+const buildCommitEnv = process.env.RABBIT_BUILD_COMMIT || ''
 const buildCommit = /^[a-f0-9]{40}$/.test(buildCommitEnv) ? buildCommitEnv.slice(0, 7) : null
 const displayName = buildCommit
   ? `${name.display} ${buildCommit}`
@@ -54,7 +54,7 @@ const displayName = buildCommit
 
 const kebabSuffix = buildCommit ? `-${buildCommit}` : canary ? '-canary' : ''
 const pascalSuffix = buildCommit ? `Commit${buildCommit}` : canary ? 'Canary' : ''
-const cliName = `${light ? 'hermes-light' : 'hermes'}${kebabSuffix}`
+const cliName = `${light ? 'rabbit-light' : 'rabbit'}${kebabSuffix}`
 if (store && (canary || buildCommit)) {
   throw new Error('Store packaging is only eligible for stable releases')
 }
@@ -66,22 +66,22 @@ const identity = {
   store,
   light,
   displayName,
-  appId: `com.nousresearch.${name.kebab}${kebabSuffix}`,
+  appId: `com.seven0070.${name.kebab}${kebabSuffix}`,
   // Store and commit builds do not publish a release feed.
   channel: store || buildCommit ? null : light ? (canary ? 'light-canary' : 'light') : (canary ? 'canary' : 'latest'),
   appNamePascal: `${name.pascal}${pascalSuffix}`,
   artifactNamePascal: name.pascal,
   windowsExecutableName: kebabSuffix ? cliName : displayName,
   cliName,
-  msixAppIdWithOrg: `NousResearch.${name.pascal}${pascalSuffix}`,
+  msixAppIdWithOrg: `Seven0070.${name.pascal}${pascalSuffix}`,
   ...(store
     ? {
         storeMsix: {
           // Partner Center publisher identity (the account's publisher ID) —
           // validated + re-signed by the Store on submission.
-          identityName: 'NousResearchInc.HermesAgent',
-          publisher: 'CN=EE6D86E4-606F-4E38-B940-AD7248C9D519',
-          publisherDisplayName: 'Nous Research Inc.'
+          identityName: 'Seven0070.RabbitAgent',
+          publisher: 'CN=Seven0070',
+          publisherDisplayName: 'Sanath Patil'
         }
       }
     : {})

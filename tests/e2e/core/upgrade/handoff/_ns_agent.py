@@ -1,9 +1,9 @@
 """In-sandbox command agent for the hand-off suite (stdlib only, run as a plain script).
 
 The hand-off cells need several long-lived processes (gateway, dashboard, cron ticker, kanban
-dispatcher) and the real ``hermes update`` to share ONE PID namespace, exactly as they share one
+dispatcher) and the real ``rabbit update`` to share ONE PID namespace, exactly as they share one
 machine for a user: the updater's process scans must see the gateway it restarts, and a relaunched
-gateway must be findable by the next ``hermes gateway status``. ``_helpers.sandbox_argv`` gives every
+gateway must be findable by the next ``rabbit gateway status``. ``_helpers.sandbox_argv`` gives every
 command its own namespace, so this agent is started once inside the sandbox and runs every command
 of a cell on request.
 
@@ -61,7 +61,7 @@ def _procs() -> list[dict]:
         env = {}
         for item in _read(f"/proc/{pid}/environ").split(b"\0"):
             key, sep, value = item.partition(b"=")
-            if sep and key in (b"HERMES_HOME", b"INVOCATION_ID", b"HERMES_E2E_UNIT"):
+            if sep and key in (b"RABBIT_HOME", b"INVOCATION_ID", b"RABBIT_E2E_UNIT"):
                 env[key.decode()] = value.decode(errors="replace")
         rows.append({
             "pid": pid, "state": fields[0], "ppid": int(fields[1]), "start": int(fields[19]),

@@ -2,7 +2,7 @@
 
 When FTS5 corruption blocks ``INSERT INTO messages``, ``_pending_messages`` and the live
 ``agent._session_messages`` are the only surviving copies; shutdown ``.clear()`` would drop them.
-All hooks write atomic JSON payloads under ``<hermes_home>/pending_messages/``:
+All hooks write atomic JSON payloads under ``<rabbit_home>/pending_messages/``:
 ``flush_pending_to_file`` / ``flush_overflow_to_file`` (queue head / FIFO tail, before clear),
 ``recover_pending_to_db`` (after ``runner.start()``; replays via ``SessionDB.append_message``,
 deletes each file on success), ``flush_agent_history_to_file`` (DB flush raised),
@@ -32,10 +32,10 @@ _TRANSCRIPT_SPOOL_SEQ = itertools.count()
 
 
 def _get_flush_dir():
-    """Return the pending-messages flush directory under the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    flush_dir = get_hermes_home() / "pending_messages"
-    from hermes_constants import assert_named_profile_home_live
+    """Return the pending-messages flush directory under the active RABBIT_HOME."""
+    from rabbit_constants import get_rabbit_home
+    flush_dir = get_rabbit_home() / "pending_messages"
+    from rabbit_constants import assert_named_profile_home_live
     assert_named_profile_home_live(flush_dir)
     flush_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name == "posix":
@@ -118,7 +118,7 @@ def spool_dropped_transcript_message(session_id: str, message: Dict[str, Any]) -
     """Spool a cap-evicted transcript message; ``None`` on failure (callers degrade to drop+log).
 
     Uses the same on-disk pending spool as :func:`flush_pending_to_file` (one atomic JSON payload per
-    message under ``<hermes_home>/pending_messages/``), so a runtime cap rotation no longer silently
+    message under ``<rabbit_home>/pending_messages/``), so a runtime cap rotation no longer silently
     discards user data while the process stays up (#78182).
     """
     try:
@@ -221,7 +221,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         return 0
     own_db = session_db is None
     if own_db:
-        from hermes_state_registry import acquire
+        from rabbit_state_registry import acquire
         session_db = acquire()
     recovered = 0
     try:
@@ -245,7 +245,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     finally:
         if own_db:  # shutdown cancellation/interrupt must not strand an owned DB
             with contextlib.suppress(Exception):
-                from hermes_state_registry import release_or_close
+                from rabbit_state_registry import release_or_close
                 release_or_close(session_db)
     if recovered:
         logger.info("Recovered %d pending message(s) from shutdown flush", recovered)

@@ -417,7 +417,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
     )
     platform_registry.register(entry)
     platform = Platform(platform_name)
-    # Simulate a fresh `hermes send` process: the dynamic Platform member
+    # Simulate a fresh `rabbit send` process: the dynamic Platform member
     # is known from config, but plugin discovery has not registered its
     # adapter entry yet.
     platform_registry.unregister(platform_name)
@@ -434,7 +434,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
                  return_value=None,
              ), \
              patch(
-                 "hermes_cli.plugins.discover_plugins",
+                 "rabbit_cli.plugins.discover_plugins",
                  side_effect=lambda: platform_registry.register(entry),
              ) as discover_mock, \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
@@ -590,10 +590,10 @@ def test_unknown_platform_that_left_core_names_its_install_command(tmp_path, mon
     from tools.send_message_targets import resolve_send_target
     from tools.send_message_tool import _resolve_platform_config
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     _, _, _, err = _resolve_platform_config("homeassistant", GatewayConfig())
-    assert "unregistered plugin platform: homeassistant" in err and "`hermes plugins install homeassistant`" in err
+    assert "unregistered plugin platform: homeassistant" in err and "`rabbit plugins install homeassistant`" in err
     _, _, err = resolve_send_target("homeassistant", "living room")
-    assert "`hermes plugins install homeassistant`" in err
+    assert "`rabbit plugins install homeassistant`" in err
     _, _, _, err = _resolve_platform_config("nosuchplatform", GatewayConfig())
     assert err == "Unknown or unregistered plugin platform: nosuchplatform"

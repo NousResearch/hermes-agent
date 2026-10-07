@@ -1,12 +1,12 @@
 """SQLite torture chamber: state.db integrity under real multi-process load (issue class C1).
 
-One ``state.db`` per journal mode Hermes deploys — WAL, and DELETE (what it runs on a WAL-reset-vulnerable
+One ``state.db`` per journal mode Rabbit deploys — WAL, and DELETE (what it runs on a WAL-reset-vulnerable
 SQLite and on network/FUSE homes; selected by the production ``apply_wal_with_fallback`` through a pinned
 version probe in every child, see ``_helpers``); every role is its own OS process running the production
 ``SessionDB``:
 a gateway-like writer, a TUI-like writer, a dashboard-like reader that opens at startup and lives across
 episodes, short-lived openers (production ``SessionDB`` and bare ``sqlite3``, plus the real
-``hermes sessions list`` / ``sessions stats`` CLI), FTS rebuild/optimize maintenance, and
+``rabbit sessions list`` / ``sessions stats`` CLI), FTS rebuild/optimize maintenance, and
 ``repair_state_db_schema``. Each episode injects one fault class — ``kill -9`` mid-write, SIGTERM graceful
 close, POSIX lock cancellation by a stray in-process open/close, chmod flips, concurrent FTS rebuilds,
 repair against a live and an offline store, FTS corruption, a whole-fleet SIGKILL — and then asserts the
@@ -26,7 +26,7 @@ SAME invariants:
   open/close churner's fd counts stay bounded.
 
 Randomness (ack thresholds, kill points) is seeded per episode; the seed is in every failure message and
-``HERMES_SQLITE_TORTURE_SEED`` replays a run.
+``RABBIT_SQLITE_TORTURE_SEED`` replays a run.
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ def ep_sigterm_graceful_close(ch, ep, rng):
 
 
 def ep_lock_cancellation(ch, ep, rng):
-    """Plugins, tool reads of ~/.hermes and header probes open+close state.db inside the writer process,
+    """Plugins, tool reads of ~/.rabbit and header probes open+close state.db inside the writer process,
     which cancels its POSIX locks; a sibling's last close must still not end the writer's WAL generation.
     Field topology: the gateway (+ a TUI) are the only long-lived holders — no dashboard reader pinning the
     file — so a short-lived CLI's close is the last close SQLite can see."""

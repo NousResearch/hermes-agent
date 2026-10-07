@@ -67,7 +67,7 @@ class SystemdWatchdog:
         except RuntimeError:
             return False
         self._stopping = self._unhealthy = self._stopping_notified = False
-        self._task = asyncio.create_task(self._run(), name="hermes-systemd-watchdog")
+        self._task = asyncio.create_task(self._run(), name="rabbit-systemd-watchdog")
         return True
 
     def ready(self, status: str = "Gateway running") -> bool:

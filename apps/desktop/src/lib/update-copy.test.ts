@@ -4,20 +4,20 @@ import { resolveUpdateCopy } from './update-copy'
 
 const copy = {
   availableTitle: 'New update available',
-  availableBody: 'A new version of Hermes is ready to install.',
+  availableBody: 'A new version of Rabbit is ready to install.',
   availableTitleBackend: 'Backend update available',
-  availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
+  availableBodyBackend: 'A newer version of the connected Rabbit backend is ready to install.',
   availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
-  availableBodyRelease: (tag: string) => `Hermes ${tag} is ready to install.`,
+  availableBodyRelease: (tag: string) => `Rabbit ${tag} is ready to install.`,
   availableBodyAppInstaller:
-    'A new version of Hermes is ready. Hermes will close, Windows will finish the update, and Hermes will reopen on its own.'
+    'A new version of Rabbit is ready. Rabbit will close, Windows will finish the update, and Rabbit will reopen on its own.'
 }
 
 describe('resolveUpdateCopy', () => {
   it('client target with commits: client title + client body', () => {
     const r = resolveUpdateCopy({ target: 'client', shownItems: 5, copy })
     expect(r.title).toBe('New update available')
-    expect(r.body).toBe('A new version of Hermes is ready to install.')
+    expect(r.body).toBe('A new version of Rabbit is ready to install.')
   })
 
   it('backend target with commits: names the backend in title and body', () => {
@@ -48,7 +48,7 @@ describe('resolveUpdateCopy', () => {
       copy
     })
 
-    expect(r.body).toBe('Hermes v0.18.0 is ready to install.')
+    expect(r.body).toBe('Rabbit v0.18.0 is ready to install.')
   })
 
   it('stable channel without a tag falls back to the generic release body', () => {
@@ -73,7 +73,7 @@ describe('resolveUpdateCopy', () => {
       copy
     })
 
-    expect(r.body).toBe('Hermes v0.18.3 is ready to install.')
+    expect(r.body).toBe('Rabbit v0.18.3 is ready to install.')
   })
 
   it('other mechanisms keep the commit vocabulary', () => {

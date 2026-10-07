@@ -35,14 +35,14 @@ def test_user_pinned_profile_wins(tmp_path, monkeypatch):
     assert browser.profile_dir() == tmp_path / "mine"
 
 
-def test_pinned_profile_honours_tilde_and_resolves_relative_paths_against_hermes_home(tmp_path, monkeypatch):
+def test_pinned_profile_honours_tilde_and_resolves_relative_paths_against_rabbit_home(tmp_path, monkeypatch):
     """Regression for #110029: the docs say setting AGENT_BROWSER_PROFILE pins your own user-data-dir, but only
     an absolute value was honoured — `~/pin` and `pin` silently fell back to the default and the human's dock
     browser and the agent's browser could end up on different jars. A relative path is anchored where the rest
-    of this profile's screen state lives (its HERMES_HOME), so two profiles never share one 'pin'."""
-    home = tmp_path / "hermes-home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(runtime, "get_hermes_home", lambda: home)
+    of this profile's screen state lives (its RABBIT_HOME), so two profiles never share one 'pin'."""
+    home = tmp_path / "rabbit-home"
+    monkeypatch.setenv("RABBIT_HOME", str(home))
+    monkeypatch.setattr(runtime, "get_rabbit_home", lambda: home)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "user")
     monkeypatch.setenv("HOME", str(tmp_path / "user"))
 
@@ -133,7 +133,7 @@ def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):
         pw_exe.write_text("#!/bin/sh\n", encoding="utf-8")
         pw_exe.chmod(0o755)
     monkeypatch.setattr(
-        "hermes_cli.browser_runtime.chromium_executable",
+        "rabbit_cli.browser_runtime.chromium_executable",
         lambda *, allow_override=True: str(pw_exe) if playwright else None,
     )
     sys_exe = tmp_path / "bin" / "chromium"
@@ -216,14 +216,14 @@ def test_status_reports_the_headed_browser_or_its_absence(monkeypatch):
 
 def test_dock_exec_line_survives_spaces_in_the_executable_and_profile_paths():
     """The launcher used to split the shell line on the first space to find the executable, so a
-    Chromium under '/opt/Google Chrome/' or a profile under a spaced HERMES_HOME broke the dock icon.
+    Chromium under '/opt/Google Chrome/' or a profile under a spaced RABBIT_HOME broke the dock icon.
     Exec= follows the Desktop Entry spec: each argument double-quoted, with the reserved characters
     backslash-escaped inside the quotes."""
     exe = "/opt/Google Chrome/chrome"
-    profile = '/home/a b/.hermes/browser "x"/profile'
+    profile = '/home/a b/.rabbit/browser "x"/profile'
     line = browser.dock_exec_line(exe, profile)
     assert line.startswith('Exec="/opt/Google Chrome/chrome" ')
-    assert r'"--user-data-dir=/home/a b/.hermes/browser \\"x\\"/profile"' in line  # spec: \" quoted, then \ string-escaped
+    assert r'"--user-data-dir=/home/a b/.rabbit/browser \\"x\\"/profile"' in line  # spec: \" quoted, then \ string-escaped
     assert "--remote-debugging-port=0" in line
 
 
@@ -247,7 +247,7 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
 
 def test_headless_override_does_not_hide_pm_headed_browser(tmp_path, monkeypatch):
     import pm
-    from hermes_cli.browser_runtime import chromium_executable
+    from rabbit_cli.browser_runtime import chromium_executable
 
     headless = tmp_path / "chrome-headless-shell"
     headed = tmp_path / "chrome"

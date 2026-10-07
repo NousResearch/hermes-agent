@@ -1,9 +1,9 @@
-// Multiplex-only, Desktop half: ONE `hermes serve` per HOST serves every
+// Multiplex-only, Desktop half: ONE `rabbit serve` per HOST serves every
 // profile, so a local profile never gets a backend process of its own.
 //
 // `backend-discovery.ts` + `host-backend-attach.ts` made the PRIMARY backend
 // attach to a backend the host is already running. This module removes the
-// other producer of `hermes serve` children: the per-profile backend pool.
+// other producer of `rabbit serve` children: the per-profile backend pool.
 // Every local profile now resolves onto the same host backend and carries its
 // own `profile` on the wire — the server binds a SESSION to a profile home
 // (`session.create {profile}` -> `profile_home`) and a sessionless RPC to the
@@ -11,9 +11,9 @@
 // one process genuinely serves N homes.
 //
 // Two things are deliberately NOT collapsed:
-//   * `HERMES_DESKTOP_ISOLATED_BACKEND=1` — the escape hatch that gives this
+//   * `RABBIT_DESKTOP_ISOLATED_BACKEND=1` — the escape hatch that gives this
 //     app a private backend instead of the host's.
-//   * Remote / SSH / Cloud backends — a DIFFERENT host. Its ownership proof
+//   * Remote / SSH backends — a DIFFERENT host. Its ownership proof
 //     (`remote-lifecycle.ts` isolated_count === 1) is about that machine's
 //     process, not ours, and stays pooled.
 //
@@ -21,7 +21,7 @@
 
 /** Everything the collapse decision needs about one profile's routing. */
 export interface HostBackendCollapseOptions {
-  /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: this app wants its own backend. */
+  /** `RABBIT_DESKTOP_ISOLATED_BACKEND=1`: this app wants its own backend. */
   isolated?: boolean
   /** This profile points at its own remote host (connection.json / SSH). */
   profileRemoteOverride?: boolean
@@ -30,7 +30,7 @@ export interface HostBackendCollapseOptions {
   /**
    * This request MUTATES state the server cannot profile-scope
    * (`connection-config.ts::unscopableMutatingRequest`). The pooled backend's
-   * own `HERMES_HOME` is then the only scope there is, so the collapse must
+   * own `RABBIT_HOME` is then the only scope there is, so the collapse must
    * not swallow it — and the spawn guard below must not refuse it.
    */
   unscopableRequest?: boolean
@@ -55,8 +55,8 @@ export class SecondLocalBackendError extends Error {
 
   constructor(poolKey: string) {
     super(
-      `Refusing to start a second local Hermes backend for "${poolKey}": one backend serves every profile on this host. ` +
-        'Set HERMES_DESKTOP_ISOLATED_BACKEND=1 for a private backend.'
+      `Refusing to start a second local Rabbit backend for "${poolKey}": one backend serves every profile on this host. ` +
+        'Set RABBIT_DESKTOP_ISOLATED_BACKEND=1 for a private backend.'
     )
     this.name = 'SecondLocalBackendError'
     this.poolKey = poolKey
@@ -67,7 +67,7 @@ export class SecondLocalBackendError extends Error {
  * The single enforcement point for "never spawn a second backend".
  *
  * Routing is what normally prevents a pooled local spawn; this guard sits at
- * the one place a local `hermes serve` child is actually started, so a future
+ * the one place a local `rabbit serve` child is actually started, so a future
  * caller that reaches it through a path routing does not cover fails loudly
  * instead of quietly reintroducing a process per profile.
  */

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 
 /**
- * Range-aware responses for local audio/video served through `hermes-media://stream/…`.
+ * Range-aware responses for local audio/video served through `rabbit-media://stream/…`.
  *
  * The media protocol used to delegate local files to `net.fetch(file://…)` and forward the
  * renderer's `Range` header, expecting a `206 Partial Content` back. In practice Electron's
@@ -176,7 +176,7 @@ export async function buildLocalMediaResponse(
 }
 
 /**
- * Production `fetchLocal` for `hermes-media://stream/…`.
+ * Production `fetchLocal` for `rabbit-media://stream/…`.
  *
  * Electron's `file://` loader ignores `Range` and answers `200` with the whole body, so Chromium
  * reports `video.seekable` as `[0, 0]`. Pass this into the media-protocol handler instead.

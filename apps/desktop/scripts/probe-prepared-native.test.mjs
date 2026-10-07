@@ -29,7 +29,7 @@ test.runIf(process.platform === 'win32')('the Electron PTY probe exits after its
     const result = JSON.parse(child.stdout)
     assert.equal(result.arch, process.arch)
     assert.equal(result.exitCode, 0)
-    assert.match(result.marker, /^hermes-pty-/)
+    assert.match(result.marker, /^rabbit-pty-/)
   } finally {
     fs.rmSync(out, { recursive: true, force: true })
   }

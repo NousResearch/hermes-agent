@@ -14,9 +14,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-if (!process.env.HERMES_E2E_RUN_TMP) {
+if (!process.env.RABBIT_E2E_RUN_TMP) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pw-'))
-  process.env.HERMES_E2E_RUN_TMP = root
+  process.env.RABBIT_E2E_RUN_TMP = root
   process.env.TMPDIR = root
   process.env.TEMP = root
   process.env.TMP = root

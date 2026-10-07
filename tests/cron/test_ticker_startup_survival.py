@@ -31,7 +31,7 @@ def test_ticker_survives_a_corrupt_ledger_at_startup(tmp_path, monkeypatch):
     ``start()`` before the guarded loop and end the thread: gateway up, no job ever fires."""
     from cron.scheduler_provider import InProcessCronScheduler
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "cron").mkdir()
     (tmp_path / "cron" / "executions.db").write_bytes(b"not a sqlite database" * 64)
     ticks = []
@@ -108,7 +108,7 @@ def test_housekeeping_restarts_a_dead_ticker(monkeypatch):
 
 
 def test_supervisor_leaves_a_returning_external_provider_alone():
-    """An external provider's start() (Chronos) arms remote one-shots and RETURNS by design; the
+    """An external provider's start() arms remote one-shots and RETURNS by design; the
     supervisor must not read that as a dead ticker and re-run start() every housekeeping tick
     (each rerun re-reconciles against NAS and logs a spurious "died without a stop request")."""
     from cron.scheduler_thread import SupervisedTickerThread

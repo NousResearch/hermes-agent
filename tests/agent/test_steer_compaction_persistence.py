@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from agent.prompt_builder import steer_user_row
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 

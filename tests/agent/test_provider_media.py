@@ -36,7 +36,7 @@ def _stub_fetch(monkeypatch, handler):
 
 
 def test_save_url_forwards_headers_and_streams_to_cache(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     calls = []
 
     import httpx
@@ -61,7 +61,7 @@ def test_save_url_forwards_headers_and_streams_to_cache(monkeypatch, tmp_path):
 
 
 def test_save_url_strict_content_type_rejects_non_video(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     import httpx
 
     _stub_fetch(
@@ -82,7 +82,7 @@ def test_save_url_redirect_scopes_caller_headers_to_first_hop_and_fails_closed(m
     """Caller auth headers (provider base_url fetches) go to the first hop only — a
     redirect target must never receive them — and a 3xx without ``Location`` is an
     error, never a cached body."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     calls = []
 
     import httpx
@@ -121,8 +121,8 @@ def test_save_url_trusted_origin_skips_private_check_on_first_hop_only(monkeypat
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    monkeypatch.delenv("RABBIT_ALLOW_PRIVATE_URLS", raising=False)
     hits = []
 
     class Handler(BaseHTTPRequestHandler):

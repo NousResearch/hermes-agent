@@ -66,7 +66,7 @@ class MonitoringEmitter:
         with self._lock:
             if self._started:
                 return
-            self._thread = threading.Thread(target=self._run, name="hermes-monitoring-dispatch", daemon=True)
+            self._thread = threading.Thread(target=self._run, name="rabbit-monitoring-dispatch", daemon=True)
             self._thread.start()
             self._started = True
 
@@ -119,7 +119,7 @@ class MonitoringEmitter:
             self._q.join()
             finished.set()
 
-        threading.Thread(target=_wait_for_completion, name="hermes-monitoring-flush", daemon=True).start()
+        threading.Thread(target=_wait_for_completion, name="rabbit-monitoring-flush", daemon=True).start()
         finished.wait(timeout=timeout)
 
     def stats(self) -> Dict[str, int]:

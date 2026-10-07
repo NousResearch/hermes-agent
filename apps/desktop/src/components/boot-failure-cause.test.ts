@@ -17,11 +17,11 @@ describe('local boot failure classification', () => {
   it('classifies the raw main-process failures into plain causes', () => {
     expect(
       classifyLocalBootFailure(
-        'Hermes backend exited before it became ready (1).\nRecent backend output:\nTraceback (most recent call last):\n  File "x.py"'
+        'Rabbit backend exited before it became ready (1).\nRecent backend output:\nTraceback (most recent call last):\n  File "x.py"'
       )
     ).toBe('exitedEarly')
-    expect(classifyLocalBootFailure('Timed out connecting to Hermes backend after 45000ms')).toBe('timedOut')
-    expect(classifyLocalBootFailure("EACCES: permission denied, open '/home/x/.hermes/state.db'")).toBe('permission')
+    expect(classifyLocalBootFailure('Timed out connecting to Rabbit backend after 45000ms')).toBe('timedOut')
+    expect(classifyLocalBootFailure("EACCES: permission denied, open '/home/x/.rabbit/state.db'")).toBe('permission')
     expect(classifyLocalBootFailure('OSError: [Errno 28] No space left on device')).toBe('diskFull')
     expect(classifyLocalBootFailure('listen EADDRINUSE: address already in use 127.0.0.1:9191')).toBe('portInUse')
     expect(classifyLocalBootFailure(null)).toBeNull()
@@ -29,7 +29,7 @@ describe('local boot failure classification', () => {
 
   it('keeps the raw output out of the headline and behind details', () => {
     const raw =
-      'Hermes backend exited before it became ready (1).\nRecent backend output:\nTraceback (most recent call last):'
+      'Rabbit backend exited before it became ready (1).\nRecent backend output:\nTraceback (most recent call last):'
 
     const copy = localBootFailureCopy(raw, CAUSES)
 

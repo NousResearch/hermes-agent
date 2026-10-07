@@ -1,5 +1,5 @@
 name: wiki-ref
-repo: https://github.com/EloquentBrush0x/hermes-context-refs
+repo: https://github.com/EloquentBrush0x/rabbit-context-refs
 sha: 0154f6bfaafc837cc4af78742e6db7c087d5b5a7
 subdir: wiki-ref
 description: >-
@@ -11,10 +11,10 @@ description: >-
 maintainer: EloquentBrush0x
 tier: community
 category: web
-requires_hermes: ">=0.21"
-docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/wiki-ref
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/rabbit-context-refs/tree/main/wiki-ref
 version: "1.1.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/0154f6bfaafc837cc4af78742e6db7c087d5b5a7/docs/card.png
+image: https://raw.githubusercontent.com/EloquentBrush0x/rabbit-context-refs/0154f6bfaafc837cc4af78742e6db7c087d5b5a7/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []

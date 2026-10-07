@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Custom MSIX manifest for Hermes desktop.
+<!-- Custom MSIX manifest for Rabbit desktop.
 
     Forked from app-builder-lib's templates/msix/appxmanifest.xml. The PM
     payload console-script aliases are uap5 extensions. The package root
@@ -31,7 +31,7 @@
     <Description>${description}</Description>
     <Logo>${logo}</Logo>
     ${packageIntegrity}
-    <!-- Hermes owns durable state in %LOCALAPPDATA% and shares it with the
+    <!-- Rabbit owns durable state in %LOCALAPPDATA% and shares it with the
          unpackaged CLI/gateway. Do not give MSIX a package-private AppData
          view or the Store and sideloaded builds will split the user's state. -->
     <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>

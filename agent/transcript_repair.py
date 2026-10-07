@@ -11,9 +11,9 @@ from typing import Any, Callable, Dict, List, Mapping
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
-from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+from rabbit_state_common import _id_chunks, _placeholders
+from rabbit_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
+from rabbit_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,

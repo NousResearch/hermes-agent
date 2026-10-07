@@ -23,7 +23,7 @@ def _get_exa_client() -> Any:
     def _factory(api_key: str) -> Any:
         from exa_py import Exa  # deliberately lazy
         client = Exa(api_key=api_key)
-        client.headers["x-exa-integration"] = "hermes-agent"
+        client.headers["x-exa-integration"] = "rabbit-agent"
         return client
 
     return cached_sdk_client("_exa_client", "EXA_API_KEY", _MISSING_KEY, "exa", _factory)

@@ -212,7 +212,7 @@ export function ApprovalQueue({
       }}
       surfaceClassName={cn(
         'rounded-xl border bg-(--ui-chat-surface-background)',
-        floating ? 'border-(--stroke-nous) shadow-nous' : 'border-(--ui-stroke-secondary)'
+        floating ? 'border-(--stroke-rabbit) shadow-rabbit' : 'border-(--ui-stroke-secondary)'
       )}
       swipeDirections={['left']}
     >
@@ -241,7 +241,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
   const submittingRef = useRef(false)
-  // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
+  // "Always allow" persists the pattern to ~/.rabbit/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
 

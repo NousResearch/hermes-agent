@@ -83,7 +83,7 @@ export const $contextMenu = atom<null | OpenContextMenu>(null)
  *  late-fact pattern as spellcheck. Guarded by identity: a stale read
  *  never flags a newer menu. */
 function probeClipboard(opened: Extract<OpenContextMenu, { kind: 'terminal' }>): void {
-  void window.hermesDesktop
+  void window.rabbitDesktop
     ?.readClipboard?.()
     .then((text: string) => {
       const current = $contextMenu.get()

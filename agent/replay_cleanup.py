@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_context import drop_stale_api_content
-from hermes_cli.timefmt import coerce_epoch
+from rabbit_cli.timefmt import coerce_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ _INTERRUPTED_NOTICES = (
     "[Orphan recovery: interrupted read-only tool did not complete.]",
 )
 _DANGLING_NOTICES = (
-    "[Orphan recovery: this tool may have executed before Hermes stopped; its effect is UNKNOWN. Inspect current state before retrying.]",
+    "[Orphan recovery: this tool may have executed before Rabbit stopped; its effect is UNKNOWN. Inspect current state before retrying.]",
     "[Orphan recovery: this read-only tool did not complete and had no effect.]",
 )
 

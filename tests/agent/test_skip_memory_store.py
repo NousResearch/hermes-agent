@@ -61,7 +61,7 @@ def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
     """
     import json
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "hm"))
     agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=True)
 
     # Provider sync/prefetch must remain skipped: skip_memory still gates the
@@ -100,7 +100,7 @@ def test_skip_memory_disabled_toolset_does_not_load_store(monkeypatch, tmp_path)
     still lists memory while the denylist hides the tool.
     """
     home = tmp_path / "hm"
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     mem_dir = home / "memories"
     mem_dir.mkdir(parents=True)
     secret = "cron-should-never-see-this-memory"

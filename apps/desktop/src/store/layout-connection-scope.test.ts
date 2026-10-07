@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import type { HermesConnection } from '@/global'
+import type { RabbitConnection } from '@/global'
 import { readKey } from '@/lib/storage'
 
 import { $pinnedSessionIds, $sidebarSessionOrderIds, $sidebarSessionOrderManual, pinSession } from './layout'
@@ -17,19 +17,19 @@ const localConn = {
   baseUrl: 'http://127.0.0.1:8000',
   mode: 'local',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RabbitConnection
 
 const remoteA = {
   baseUrl: 'https://vps-a.example:8443',
   mode: 'remote',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RabbitConnection
 
 const remoteB = {
   baseUrl: 'https://vps-b.example:8443',
   mode: 'remote',
   profile: 'default'
-} as unknown as HermesConnection
+} as unknown as RabbitConnection
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -85,11 +85,11 @@ describe('connection-scoped sidebar lists (#77318)', () => {
     pinSession('a-1')
 
     // The bare key still belongs to the local connection.
-    expect(readKey('hermes.desktop.pinnedSessions')).toBe(JSON.stringify(['local-1']))
+    expect(readKey('rabbit.desktop.pinnedSessions')).toBe(JSON.stringify(['local-1']))
 
     // The remote pin landed under its own gateway scope, not the shared key
     // and not a per-profile fragment.
-    const scoped = readKey(`hermes.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}`)
+    const scoped = readKey(`rabbit.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}`)
 
     expect(scoped).toBe(JSON.stringify(['a-1']))
   })
@@ -122,7 +122,7 @@ describe('connection-scoped sidebar lists (#77318)', () => {
     $sidebarSessionOrderIds.set(['s1'])
     $sidebarSessionOrderManual.set(true)
 
-    setConnection({ ...remoteA, profile: 'k9' } as unknown as HermesConnection)
+    setConnection({ ...remoteA, profile: 'k9' } as unknown as RabbitConnection)
 
     expect($pinnedSessionIds.get()).toEqual(['a-1'])
     expect($sidebarSessionOrderIds.get()).toEqual([])

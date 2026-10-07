@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from acp_adapter.server import HermesACPAgent
+from acp_adapter.server import RabbitACPAgent
 from acp_adapter.session import SessionState
 
 
@@ -35,7 +35,7 @@ async def _noop_coro(*args, **kwargs):
 
 
 def _make_server():
-    server = HermesACPAgent.__new__(HermesACPAgent)
+    server = RabbitACPAgent.__new__(RabbitACPAgent)
     server.session_manager = SimpleNamespace(save_session=lambda sid: None)
     server._conn = None
     drained = []

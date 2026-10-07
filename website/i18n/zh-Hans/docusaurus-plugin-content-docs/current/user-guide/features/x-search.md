@@ -17,8 +17,8 @@ sidebar_position: 7
 
 | 凭据 | 来源 | 配置方式 |
 |------|------|---------|
-| **SuperGrok / X Premium+ OAuth**（推荐） | 在 `accounts.x.ai` 浏览器登录，自动刷新 | `hermes auth add xai-oauth` — 参见 [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
-| **`XAI_API_KEY`** | 付费 xAI API 密钥 | 在 `~/.hermes/.env` 中设置 |
+| **SuperGrok / X Premium+ OAuth**（推荐） | 在 `accounts.x.ai` 浏览器登录，自动刷新 | `rabbit auth add xai-oauth` — 参见 [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
+| **`XAI_API_KEY`** | 付费 xAI API 密钥 | 在 `~/.rabbit/.env` 中设置 |
 
 两者使用相同的 endpoint 和相同的请求体，区别仅在于 bearer token。**当两者同时配置时，SuperGrok OAuth 优先**，x_search 将消耗你的订阅配额而非付费 API 用量。
 
@@ -26,10 +26,10 @@ sidebar_position: 7
 
 ## 启用工具
 
-当 xAI 凭据（OAuth token 或 `XAI_API_KEY`）存在时自动启用。如不需要，可通过 `hermes tools` → Search → x_search 显式禁用。
+当 xAI 凭据（OAuth token 或 `XAI_API_KEY`）存在时自动启用。如不需要，可通过 `rabbit tools` → Search → x_search 显式禁用。
 
 ```bash
-hermes tools
+rabbit tools
 # → 🐦 X (Twitter) Search   (press space to toggle on)
 ```
 
@@ -43,7 +43,7 @@ hermes tools
 ## 配置
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 x_search:
   # 用于 Responses 调用的 xAI 模型。
   # grok-4.5 是推荐的默认值；任何支持
@@ -117,7 +117,7 @@ agent 将：
 
 ### "No xAI credentials available"
 
-当两种认证路径均失败时，工具会显示此错误。请在 `~/.hermes/.env` 中设置 `XAI_API_KEY`，或运行 `hermes auth add xai-oauth` 并完成浏览器登录。然后重启会话，让 agent 重新加载工具注册表。
+当两种认证路径均失败时，工具会显示此错误。请在 `~/.rabbit/.env` 中设置 `XAI_API_KEY`，或运行 `rabbit auth add xai-oauth` 并完成浏览器登录。然后重启会话，让 agent 重新加载工具注册表。
 
 ### "`x_search` is not enabled for this model"
 
@@ -127,8 +127,8 @@ agent 将：
 
 可能有两个原因：
 
-1. **工具集未启用。** 运行 `hermes tools`，确认 `🐦 X (Twitter) Search` 已勾选。
-2. **无 xAI 凭据。** `check_fn` 返回 False，schema 保持隐藏。运行 `hermes auth status` 确认 xai-oauth 登录状态，并检查 `XAI_API_KEY` 是否已设置（如使用 API 密钥路径）。
+1. **工具集未启用。** 运行 `rabbit tools`，确认 `🐦 X (Twitter) Search` 已勾选。
+2. **无 xAI 凭据。** `check_fn` 返回 False，schema 保持隐藏。运行 `rabbit auth status` 确认 xai-oauth 登录状态，并检查 `XAI_API_KEY` 是否已设置（如使用 API 密钥路径）。
 
 ### `degraded: true` — 回答无引用来源
 

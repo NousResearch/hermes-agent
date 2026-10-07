@@ -50,7 +50,7 @@ jobs:
         run: curl -fsS --retry 3 --retry-delay 10 -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
 
   deploy-docs:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'seven0070/Rabbit-'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
@@ -149,7 +149,7 @@ jobs:
 
           echo "Downloading currently live skills index"
           if curl -fsSL --retry 3 --retry-delay 5 \
-            "https://hermes-agent.nousresearch.com/docs/api/skills-index.json" \
+            "https://github.com/seven0070/Rabbit-/tree/main/website/docs/api/skills-index.json" \
             -o "$INDEX_PATH" && validate_index; then
             exit 0
           fi
@@ -185,16 +185,16 @@ jobs:
         run: npm run build
         working-directory: website
         env:
-          # prebuild renders icons on a Hermes runtime interpreter; the ci-tools
-          # step above re-exports HERMES_PYTHON to a tools-only environment.
-          HERMES_PYTHON: ${{ steps.pm.outputs.python-path }}
+          # prebuild renders icons on a Rabbit runtime interpreter; the ci-tools
+          # step above re-exports RABBIT_PYTHON to a tools-only environment.
+          RABBIT_PYTHON: ${{ steps.pm.outputs.python-path }}
 
       - name: Stage deployment
         run: |
           mkdir -p _site/docs
           cp -r website/build/* _site/docs/
           # llms.txt / llms-full.txt are also published at the site root
-          # (https://hermes-agent.nousresearch.com/llms.txt) because some
+          # (https://github.com/seven0070/Rabbit-/llms.txt) because some
           # agents and IDE plugins probe the classic root-level path rather
           # than /docs/llms.txt. Same file, two URLs, one source of truth.
           if [ -f website/build/llms.txt ]; then

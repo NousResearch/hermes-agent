@@ -112,7 +112,7 @@ class TestFutureDatedClaims:
         jobs = load_jobs()
         for j in jobs:
             if j["id"] == job["id"]:
-                future = jobs_mod._hermes_now() + timedelta(hours=6)
+                future = jobs_mod._rabbit_now() + timedelta(hours=6)
                 j["fire_claim"] = {"at": future.isoformat(), "by": "other-host:1"}
         save_jobs(jobs)
 
@@ -131,7 +131,7 @@ class TestFutureDatedClaims:
         jobs = load_jobs()
         for j in jobs:
             if j["id"] == job["id"]:
-                past = jobs_mod._hermes_now() - timedelta(hours=6)
+                past = jobs_mod._rabbit_now() - timedelta(hours=6)
                 j["fire_claim"] = {"at": past.isoformat(), "by": "other-host:1"}
         save_jobs(jobs)
         assert claim_job_for_fire(job["id"]) is True

@@ -56,7 +56,7 @@ class TestKimiReasoningWireShape:
         ],
     )
     def test_effort_mapped_to_k3_vocabulary(self, kimi_profile, effort, expected):
-        """Hermes' wider effort vocabulary is mapped onto K3's low/high/max."""
+        """Rabbit' wider effort vocabulary is mapped onto K3's low/high/max."""
         extra_body, top_level = kimi_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort}
         )

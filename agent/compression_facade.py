@@ -202,10 +202,10 @@ def _mirror_result_onto_live_lists(agent, result, messages, *, direct_path: bool
 
 def _rebind_caller_session_context(agent) -> None:
     """Propagate a rotated session id to the CALLER's thread/ContextVar (idempotent otherwise).
-    The worker thread rotated hermes_logging's thread-local id; post-compression tools must resolve
-    HERMES_SESSION_ID to the child id."""
+    The worker thread rotated rabbit_logging's thread-local id; post-compression tools must resolve
+    RABBIT_SESSION_ID to the child id."""
     with contextlib.suppress(Exception):
-        from hermes_logging import set_session_context
+        from rabbit_logging import set_session_context
         set_session_context(agent.session_id)
     try:
         from gateway.session_context import set_current_session_id
@@ -243,7 +243,7 @@ class CompressionFacadeMixin:
             resolve_context_compression_timeouts,
         )
         reset_context_compression_timeout_outcome(self)
-        from agent.portal_tags import (
+        from agent.conversation_context import (
             get_affinity_scope, get_conversation_context, reset_affinity_scope, reset_conversation_context,
             set_affinity_scope, set_conversation_context,
         )

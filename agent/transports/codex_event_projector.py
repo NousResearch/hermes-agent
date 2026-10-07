@@ -21,7 +21,7 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
 
 
 def _format_tool_args(d: dict) -> str:
-    """Format a dict as JSON the way Hermes' existing tool_calls path does."""
+    """Format a dict as JSON the way Rabbit' existing tool_calls path does."""
     return json.dumps(d, ensure_ascii=False, sort_keys=True)
 
 
@@ -80,7 +80,7 @@ class CodexEventProjector:
     @staticmethod
     def _project_user_message(item: dict) -> ProjectionResult:
         # userMessage content is a list of UserInput variants; flatten text
-        # fragments and drop non-text parts (Hermes' messages store text only).
+        # fragments and drop non-text parts (Rabbit' messages store text only).
         text_parts = [
             (fragment.get("text") or "") if fragment.get("type") == "text" else str(fragment["text"])
             for fragment in item.get("content") or []
@@ -148,7 +148,7 @@ class CodexEventProjector:
     @staticmethod
     def _web_search_spec(item: dict) -> tuple[str, str, dict, str]:
         # Codex ran the search itself; the result names it so a later non-Codex
-        # turn does not read this as a Hermes web_search call.
+        # turn does not read this as a Rabbit web_search call.
         result = {"provider": "codex"}
         if item.get("status"):
             result["status"] = item["status"]

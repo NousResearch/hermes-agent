@@ -70,7 +70,7 @@ export function usePreviewGuestOffscreen(webviewRef: RefObject<null | OffscreenG
     const id = guestId(webviewRef.current)
 
     if (id !== null) {
-      window.hermesDesktop?.setPreviewGuestHidden?.(id, hidden)
+      window.rabbitDesktop?.setPreviewGuestHidden?.(id, hidden)
     }
   }, [attachedId, hidden, webviewRef])
 

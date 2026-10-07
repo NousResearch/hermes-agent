@@ -1,15 +1,15 @@
-import type { ModelOptionProvider } from '@hermes/shared'
+import type { ModelOptionProvider } from '@rabbit/shared'
 import { atom } from 'nanostores'
 
 import { persistString, storedString } from '@/lib/storage'
 
-const STORAGE_KEY = 'hermes.desktop.visible-models'
+const STORAGE_KEY = 'rabbit.desktop.visible-models'
 
 /** Every `provider::model` key the user has had a chance to judge — snapshotted
  *  each time the visible set is persisted. A model absent from here appeared
  *  AFTER the user last curated (plugin update, catalog refresh, new release), so
  *  it falls through to the curated default rule instead of defaulting to hidden. */
-const KNOWN_STORAGE_KEY = 'hermes.desktop.known-models'
+const KNOWN_STORAGE_KEY = 'rabbit.desktop.known-models'
 
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
@@ -136,7 +136,7 @@ function persistKnownModels(known: Set<string>): void {
  *  allowlist" is ambiguous: a deliberate hide and a model that arrived after
  *  the user last curated look identical. Recording everything in the catalog
  *  as judged therefore strands catalog-present defaults behind a stale
- *  allowlist forever (https://github.com/NousResearch/hermes-agent/issues/122053)
+ *  allowlist forever (https://github.com/seven0070/Rabbit-/issues/122053)
  *  — so the curated defaults the old allowlist does NOT contain stay unknown,
  *  and the default rule re-admits them on the next resolve. The one-time cost
  *  is that a deliberately hidden default comes back once; the user's next save

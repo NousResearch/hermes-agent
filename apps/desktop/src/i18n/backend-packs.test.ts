@@ -1,4 +1,4 @@
-import { JsonRpcGatewayError } from '@hermes/shared'
+import { JsonRpcGatewayError } from '@rabbit/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type BackendLocaleRequest, syncBackendLocalePacks } from './backend-packs'
@@ -39,7 +39,7 @@ describe('syncBackendLocalePacks', () => {
       {
         languages: [
           { id: 'en', endonym: 'English', rtl: false, source: 'bundled' },
-          { id: 'pl', endonym: 'Polski', rtl: false, source: 'plugin:hermes-lang-pl' }
+          { id: 'pl', endonym: 'Polski', rtl: false, source: 'plugin:rabbit-lang-pl' }
         ]
       },
       { pl: { 'common.save': 'Zapisz', 'connectorsPage.searchPlaceholder': '{0} wyników' } },

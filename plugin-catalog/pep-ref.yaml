@@ -1,5 +1,5 @@
 name: pep-ref
-repo: https://github.com/EloquentBrush0x/hermes-context-refs
+repo: https://github.com/EloquentBrush0x/rabbit-context-refs
 sha: 20c7a0e1f56d6fea9761077f6994ab7b3d174b99
 subdir: pep-ref
 description: >-
@@ -13,10 +13,10 @@ description: >-
 maintainer: EloquentBrush0x
 tier: community
 category: web
-requires_hermes: ">=0.21"
-docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/pep-ref
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/EloquentBrush0x/rabbit-context-refs/tree/main/pep-ref
 version: "1.0.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/20c7a0e1f56d6fea9761077f6994ab7b3d174b99/docs/pep-ref-card.png
+image: https://raw.githubusercontent.com/EloquentBrush0x/rabbit-context-refs/20c7a0e1f56d6fea9761077f6994ab7b3d174b99/docs/pep-ref-card.png
 platforms: []
 capabilities:
   provides_tools: []

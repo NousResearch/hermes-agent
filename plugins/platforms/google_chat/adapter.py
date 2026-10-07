@@ -203,7 +203,7 @@ def ensure_google_chat_deps() -> bool:
         return True
     from pm import InstallError, ensure_import
     # Request BOTH extras before surfacing a failure: a successful install raises
-    # InstallError("restart Hermes to activate…") for the first extra, and aborting
+    # InstallError("restart Rabbit to activate…") for the first extra, and aborting
     # there would leave the second uninstalled — the restart would land back here.
     failures: list[InstallError] = []
     for extra in ("google", "google-chat"):
@@ -394,7 +394,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._project_id = self._subscription_path = self._bot_user_id = None  # bot id is users/{id}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        # The profile scope this adapter was connected under (multiplex: HERMES_HOME override + secret
+        # The profile scope this adapter was connected under (multiplex: RABBIT_HOME override + secret
         # scope). Pub/Sub callbacks arrive on the gRPC SubscriberClient's own threads with an EMPTY
         # context, and ``run_coroutine_threadsafe`` copies THAT context onto the loop task — so
         # ``_dispatch_message`` and everything it reaches (attachment cache, per-user OAuth token
@@ -414,8 +414,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Last inbound thread per space: DMs get a NEW thread per top-level message but users
         # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
         self._last_inbound_thread: Dict[str, str] = {}
-        from hermes_constants import get_hermes_home as _get_hermes_home
-        self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
+        from rabbit_constants import get_rabbit_home as _get_rabbit_home
+        self._thread_count_store = _ThreadCountStore(_get_rabbit_home() / "google_chat_thread_counts.json")
         # In-flight typing-card creates per chat_id: reserved BEFORE the API call so
         # concurrent _keep_typing calls wait instead of duplicating cards.
         self._typing_card_inflight: Dict[str, asyncio.Event] = {}
@@ -529,8 +529,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # -- bot identity --------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Resolved at call time so multiplexed profiles don't share one cache file."""
-        from hermes_constants import get_hermes_home as _get_hermes_home
-        return _get_hermes_home() / "google_chat_bot_id.json"
+        from rabbit_constants import get_rabbit_home as _get_rabbit_home
+        return _get_rabbit_home() / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
         try:
@@ -904,7 +904,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return await handle_setup_files_command(self, chat_id, thread_id, raw_text, sender_email)
 
     async def _build_message_event(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> Optional[MessageEvent]:
-        """Parse a Chat API message into a hermes MessageEvent."""
+        """Parse a Chat API message into a rabbit MessageEvent."""
         space = envelope.get("space") or msg.get("space") or {}
         space_name = space.get("name") or ""  # "spaces/XXX"
         space_type = (space.get("type") or space.get("spaceType") or "").upper()
@@ -1119,7 +1119,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
 
         def _button(text: str, choice: str) -> Dict[str, Any]:
-            return {"text": text, "action": "hermes_clarify", "parameters": {"clarify_id": clarify_id, "choice": choice}}
+            return {"text": text, "action": "rabbit_clarify", "parameters": {"clarify_id": clarify_id, "choice": choice}}
         buttons: List[Dict[str, Any]] = []
         for choice in choices:
             choice_text = str(choice).strip()
@@ -1268,7 +1268,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=resp.get("name"))
 
     async def send_typing(self, chat_id: str, metadata: Any = None) -> None:
-        """Post a visible 'Hermes is thinking…' marker (Chat has no typing API); ``send()``
+        """Post a visible 'Rabbit is thinking…' marker (Chat has no typing API); ``send()``
         PATCHes it with the reply, ``on_processing_complete`` reaps it otherwise. Created in
         the user's thread (patch cannot move it). ``_keep_typing`` wraps this in
         ``wait_for(timeout=1.5)``: a cancelled create would still land an unrecorded card and
@@ -1612,7 +1612,7 @@ and a Service Account with Pub/Sub Subscriber on the subscription.
 Walkthrough:
   1. Create or select a GCP project; enable Google Chat API + Cloud Pub/Sub API.
   2. Create a Service Account (no project-level IAM role needed).
-  3. Create a Pub/Sub topic (e.g. hermes-chat-events) and a Pull subscription.
+  3. Create a Pub/Sub topic (e.g. rabbit-chat-events) and a Pull subscription.
   4. On the TOPIC: add chat-api-push@system.gserviceaccount.com as Pub/Sub Publisher.
   5. On the SUBSCRIPTION: grant your Service Account Pub/Sub Subscriber.
   6. Download the Service Account JSON key.
@@ -1625,10 +1625,10 @@ Full guide: website/docs/user-guide/messaging/google_chat.md
 
 
 def interactive_setup() -> None:
-    """``hermes setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.hermes/.env``."""
-    from hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.setup_platforms import declines_reconfigure
+    """``rabbit setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.rabbit/.env``."""
+    from rabbit_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
+    from rabbit_cli.config import get_env_value, save_env_value
+    from rabbit_cli.setup_platforms import declines_reconfigure
     if declines_reconfigure("Google Chat", "Reconfigure Google Chat?", "GOOGLE_CHAT_SUBSCRIPTION_NAME"):
         return
     for line in _SETUP_WALKTHROUGH.splitlines():
@@ -1662,8 +1662,8 @@ def interactive_setup() -> None:
     if home:
         save_env_value("GOOGLE_CHAT_HOME_CHANNEL", home.strip())
     print()
-    print_success("Google Chat configuration saved to ~/.hermes/.env")
-    print_info("Restart the gateway: hermes gateway restart")
+    print_success("Google Chat configuration saved to ~/.rabbit/.env")
+    print_info("Restart the gateway: rabbit gateway restart")
 
 
 # Strict resource-name patterns: anything outside Chat's documented character set
@@ -1692,7 +1692,7 @@ async def _standalone_send(
     media_files: Optional[List[str]] = None, force_document: bool = False,
 ) -> Dict[str, Any]:
     """POST one Chat message via REST without the SDK (``send_message_tool`` when the
-    gateway runner is not in-process, e.g. ``hermes cron``). Needs SA credentials and a
+    gateway runner is not in-process, e.g. ``rabbit cron``). Needs SA credentials and a
     validated space name; ``media_files`` / ``force_document`` are signature parity only."""
     if not chat_id:
         return _standalone_error("chat_id (space resource) is required")
@@ -1758,7 +1758,7 @@ def register(ctx) -> None:
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=["GOOGLE_CHAT_SERVICE_ACCOUNT_JSON"],
-        install_hint="Run `hermes setup` to install Google Chat support.",
+        install_hint="Run `rabbit setup` to install Google Chat support.",
         setup_fn=interactive_setup,
         env_enablement_fn=_env_enablement,
         cron_deliver_env_var="GOOGLE_CHAT_HOME_CHANNEL",
@@ -1777,7 +1777,7 @@ def register(ctx) -> None:
             "in your response. Native file attachments require the user to run /setup-files once in their own DM — "
             "until they do, file requests fall back to a text notice with the host path. Do NOT generate interactive "
             "Card v2 buttons — Google Chat interactivity is not yet supported by this gateway; ask for typed "
-            "confirmations instead. While you are generating a response, a 'Hermes is thinking…' marker message "
+            "confirmations instead. While you are generating a response, a 'Rabbit is thinking…' marker message "
             "appears in the space and is deleted once your response is ready. You do NOT have access to Google "
             "Chat-specific APIs — you cannot search space history, list space members, or manage spaces. Do not "
             "promise to perform these actions; explain that you can only read messages sent directly to you and "

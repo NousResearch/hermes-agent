@@ -1,5 +1,5 @@
-import type { InputEvent, Key } from '@hermes/ink'
-import * as Ink from '@hermes/ink'
+import type { InputEvent, Key } from '@rabbit/ink'
+import * as Ink from '@rabbit/ink'
 import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
@@ -488,7 +488,7 @@ export function killToLineEnd(value: string, cursor: number): { value: string; c
  * boundary rather than delete a single word.
  *
  * Only the *super* bit qualifies. It is tempting to reuse `isActionMod`,
- * but that accepts `key.meta` on macOS — and hermes-ink reports Option as
+ * but that accepts `key.meta` on macOS — and rabbit-ink reports Option as
  * `meta`, so Option+Backspace (delete-word, the macOS standard) would be
  * swallowed. On Linux/Windows `isActionMod` is `key.ctrl`, and
  * Ctrl+Backspace is delete-word there too. `super` is set only by kitty
@@ -669,7 +669,7 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
   // off by default in Termux mode; allow explicit opt-in for local debugging.
   if (isTermuxTuiMode(env)) {
-    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '')
+    const override = String(env.RABBIT_TUI_TERMUX_FAST_ECHO ?? '')
       .trim()
       .toLowerCase()
 
@@ -1537,7 +1537,7 @@ export function TextInput({
         c = wordRight(v, c)
       } else if (wordMod && inp === 'd') {
         // meta+d (readline kill-word). The web dashboard maps Ctrl+Delete to
-        // ESC d, which hermes-ink decodes as meta+'d'; without this branch it
+        // ESC d, which rabbit-ink decodes as meta+'d'; without this branch it
         // fell through to the printable path and typed a literal "d".
         if (range) {
           v = v.slice(0, range.start) + v.slice(range.end)

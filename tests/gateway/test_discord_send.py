@@ -52,7 +52,7 @@ from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 async def test_send_rejects_whitespace_and_records_failed_final_reply(
     caplog, monkeypatch, tmp_path
 ):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "true")
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     channel = SimpleNamespace(send=AsyncMock())

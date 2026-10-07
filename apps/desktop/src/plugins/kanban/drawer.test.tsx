@@ -1,4 +1,4 @@
-import type { PluginRestOptions } from '@hermes/plugin-sdk'
+import type { PluginRestOptions } from '@rabbit/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,7 +18,7 @@ import { TaskDrawer } from './drawer'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { KanbanTaskDetail } from './types'
 
-vi.mock('@/hermes', () => ({ setApiRequestProfile: vi.fn() }))
+vi.mock('@/rabbit', () => ({ setApiRequestProfile: vi.fn() }))
 
 const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
   task: { id: 't_example', title: 'Example task', body: 'Keep this description readable.', status: 'todo' },
@@ -96,7 +96,7 @@ function openDrawer() {
 describe('task attachment compatibility', () => {
   it('downloads the persisted attachment through its original remote owner', async () => {
     const save = vi.fn().mockResolvedValue({ saved: true })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile: save })
     setApiRequestConnection('remote-owner')
     setApiRequestProfile('research')
     detail = {
@@ -121,11 +121,11 @@ describe('task attachment compatibility', () => {
 
   it('keeps a local-backend attachment on this computer after switching to a remote', async () => {
     const save = vi.fn().mockResolvedValue({ saved: true })
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile: save })
     setApiRequestConnection('local')
     detail = {
       ...legacyDetail,
-      attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.hermes/kanban/notes.txt' }]
+      attachments: [{ id: 7, filename: 'notes.txt', stored_path: '/home/me/.rabbit/kanban/notes.txt' }]
     }
     openDrawer()
     const download = await screen.findByRole('button', { name: 'Download notes.txt' })
@@ -134,7 +134,7 @@ describe('task attachment compatibility', () => {
     await waitFor(() =>
       expect(save).toHaveBeenCalledWith({
         connectionId: 'local',
-        path: '/home/me/.hermes/kanban/notes.txt',
+        path: '/home/me/.rabbit/kanban/notes.txt',
         suggestedName: 'notes.txt'
       })
     )
@@ -149,7 +149,7 @@ describe('task attachment compatibility', () => {
 
   it('reports a failed download and allows retry', async () => {
     const save = vi.fn().mockRejectedValue(new Error('File not found'))
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile: save })
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'gone.md', stored_path: '/persisted/gone.md' }] }
     openDrawer()
     const button = await screen.findByRole('button', { name: 'Download gone.md' })
@@ -177,7 +177,7 @@ describe('task attachment compatibility', () => {
         })
     )
 
-    vi.stubGlobal('hermesDesktop', { saveGatewayFile: save })
+    vi.stubGlobal('rabbitDesktop', { saveGatewayFile: save })
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'report.md', stored_path: '/persisted/report.md' }] }
     openDrawer()
     const button = await screen.findByRole('button', { name: 'Download report.md' })
@@ -273,7 +273,7 @@ describe('task modal dialog', () => {
   })
 
   it('shows the workspace path as its own value, not prefixed with the raw kind', async () => {
-    const path = '/Users/example/.hermes/kanban/workspaces/a_very_long_directory_name_that_must_wrap'
+    const path = '/Users/example/.rabbit/kanban/workspaces/a_very_long_directory_name_that_must_wrap'
     detail = {
       ...legacyDetail,
       attachments: [],

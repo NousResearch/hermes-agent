@@ -20,17 +20,17 @@ afterEach((): void => {
   $updateOverlayOpen.set(false)
   $updateStatus.set(null)
   resetUpdateApplyState()
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  Reflect.deleteProperty(window, 'rabbitDesktop')
   vi.restoreAllMocks()
 })
 
 it('shows manual recovery guidance without claiming the help command installs an update', async (): Promise<void> => {
   const message: string = 'Choose the intended branch or channel before updating this older checkout.'
-  window.hermesDesktop = {
+  window.rabbitDesktop = {
     updates: {
-      apply: async (): Promise<unknown> => ({ ok: true, manual: true, command: 'hermes update --help', message })
+      apply: async (): Promise<unknown> => ({ ok: true, manual: true, command: 'rabbit update --help', message })
     }
-  } as unknown as Window['hermesDesktop']
+  } as unknown as Window['rabbitDesktop']
   $updateOverlayTarget.set('client')
   $updateOverlayOpen.set(true)
   $updateStatus.set({ supported: false, reason: 'source-probe-unavailable', message })
@@ -44,12 +44,12 @@ it('shows manual recovery guidance without claiming the help command installs an
     )
   })
   expect(screen.getByText(message)).toBeTruthy()
-  expect(screen.getByText('hermes update --help')).toBeTruthy()
+  expect(screen.getByText('rabbit update --help')).toBeTruthy()
   expect(screen.queryByText(en.updates.manualPickedUp)).toBeNull()
 })
 
 it('titles a command-less backend refusal honestly and offers nothing to copy', async (): Promise<void> => {
-  const message: string = 'Hermes updates are managed outside this dashboard in containerized environments.'
+  const message: string = 'Rabbit updates are managed outside this dashboard in containerized environments.'
   $updateOverlayTarget.set('backend')
   $updateOverlayOpen.set(true)
   $backendUpdateApply.set({
@@ -83,7 +83,7 @@ it('names the backend, not a local install, when a remote refusal carries a bare
     message: '',
     percent: null,
     error: null,
-    command: 'docker pull nousresearch/hermes-agent:latest',
+    command: 'docker pull seven0070/Rabbit-:latest',
     log: []
   })
   await act(async (): Promise<void> => {
@@ -93,7 +93,7 @@ it('names the backend, not a local install, when a remote refusal carries a bare
       </I18nProvider>
     )
   })
-  expect(screen.getByText('docker pull nousresearch/hermes-agent:latest')).toBeTruthy()
+  expect(screen.getByText('docker pull seven0070/Rabbit-:latest')).toBeTruthy()
   expect(screen.getByText(en.updates.manualBodyBackend)).toBeTruthy()
   expect(screen.getByText(en.updates.manualPickedUpBackend)).toBeTruthy()
   expect(screen.queryByText(en.updates.manualBody)).toBeNull()
@@ -105,7 +105,7 @@ it('keeps the client title for a command-less client manual stage', async (): Pr
   $updateApply.set({
     applying: false,
     stage: 'manual',
-    message: 'Hermes will pick up the new version next time you launch it.',
+    message: 'Rabbit will pick up the new version next time you launch it.',
     percent: null,
     error: null,
     command: null,

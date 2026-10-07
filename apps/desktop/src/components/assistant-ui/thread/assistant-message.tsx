@@ -58,7 +58,6 @@ import {
   Loader2Icon,
   RefreshCwIcon,
   SmilePlusIcon,
-  Upload,
   VolumeXIcon,
   XIcon
 } from '@/lib/icons'
@@ -68,12 +67,10 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
-import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
 import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { sessionApprovalRequest } from '@/store/prompts'
-import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -820,8 +817,8 @@ const ErrorRecoveryActions: FC = () => {
   const model = useStore($currentModel)
   const connection = useStore($connection)
 
-  // Open Logs reveals the LOCAL Electron profile's HERMES_HOME/logs. On a
-  // remote/cloud connection the failed turn's gateway+agent logs live on the
+  // Open Logs reveals the LOCAL Electron profile's RABBIT_HOME/logs. On a
+  // remote connection the failed turn's gateway+agent logs live on the
   // remote box — the local folder only holds Desktop-side transport logs, so
   // the label says "Open Desktop logs" there instead of implying it opens the
   // runtime's logs.
@@ -847,15 +844,8 @@ const ErrorRecoveryActions: FC = () => {
     startManualProviderOAuth(surface.provider, key === 'default' ? undefined : key)
   }, [gatewayProfile, surface])
 
-  // The free tier's door: the same dialog the status-bar chip and the first-launch
-  // intro open. Signing in is free and lifts every free-tier refusal.
-  const signInFreeTier = useCallback(() => {
-    triggerHaptic('submit')
-    openFreeTierSignIn()
-  }, [])
-
   // Reveal a local folder through Electron; `logsRoot` is the profile's
-  // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
+  // RABBIT_HOME/logs, and its parent is the Rabbit data folder itself (what
   // the user needs to see to free space after a disk-full failure). Resolved
   // for the profile that OWNS this session (a tile / Bot chat names it in its
   // composer scope), not the pooled backend's launch profile (#119080).
@@ -864,7 +854,7 @@ const ErrorRecoveryActions: FC = () => {
   const openLocalDir = useCallback(
     async (resolve: (logsRoot: string) => string, failedMessage: string) => {
       try {
-        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
+        const root = await window.rabbitDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
 
         if (!root) {
           notifyError(new Error('logs root unavailable'), failedMessage)
@@ -872,7 +862,7 @@ const ErrorRecoveryActions: FC = () => {
           return
         }
 
-        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+        const result = await window.rabbitDesktop?.openDir?.(resolve(root))
 
         if (result && !result.ok) {
           notifyError(new Error(result.error || 'open failed'), failedMessage)
@@ -889,9 +879,9 @@ const ErrorRecoveryActions: FC = () => {
     [copy.errorOpenLogsFailed, openLocalDir]
   )
 
-  const openHermesFolder = useCallback(
-    () => openLocalDir(root => root.replace(/[\\/]+logs[\\/]*$/, ''), copy.errorOpenHermesFolderFailed),
-    [copy.errorOpenHermesFolderFailed, openLocalDir]
+  const openRabbitFolder = useCallback(
+    () => openLocalDir(root => root.replace(/[\\/]+logs[\\/]*$/, ''), copy.errorOpenRabbitFolderFailed),
+    [copy.errorOpenRabbitFolderFailed, openLocalDir]
   )
 
   const diagnosticsText = useCallback(
@@ -914,7 +904,7 @@ const ErrorRecoveryActions: FC = () => {
     setModelPickerOpen(true)
   }, [])
 
-  const localFolders = Boolean(window.hermesDesktop?.logsRoot)
+  const localFolders = Boolean(window.rabbitDesktop?.logsRoot)
   // The provider's own reset moment (429 Retry-After / resets_at), so the user knows WHEN
   // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
   const limitReset = formatLimitReset(surface?.resetsAt)
@@ -939,12 +929,6 @@ const ErrorRecoveryActions: FC = () => {
           {copy.errorSignInAgain(surface.providerLabel || surface.provider)}
         </button>
       )}
-      {plan.signInFreeTier && (
-        <button className="aui-error-action" onClick={signInFreeTier} type="button">
-          <KeyRound className="size-3" />
-          {copy.errorSignInFreeTier}
-        </button>
-      )}
       {plan.updateApiKey && inRouter && (
         <SettingsLinkAction
           icon={<KeyRound className="size-3" />}
@@ -952,9 +936,9 @@ const ErrorRecoveryActions: FC = () => {
           to={updateApiKeyRoute(surface)}
         />
       )}
-      {plan.openHermesFolder && localFolders && (
-        <button className="aui-error-action" onClick={() => void openHermesFolder()} type="button">
-          {copy.errorOpenHermesFolder}
+      {plan.openRabbitFolder && localFolders && (
+        <button className="aui-error-action" onClick={() => void openRabbitFolder()} type="button">
+          {copy.errorOpenRabbitFolder}
         </button>
       )}
       {plan.retry && (
@@ -984,10 +968,6 @@ const ErrorRecoveryActions: FC = () => {
           {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
         </button>
       )}
-      <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
-        <Upload className="size-3" />
-        {copy.errorSendDiagnostics}
-      </button>
       <CopyButton
         appearance="inline"
         className="aui-error-action"

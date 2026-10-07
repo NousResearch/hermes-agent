@@ -31,7 +31,7 @@ def test_child_env_from_environ_is_flagged_and_the_scoped_builder_is_not():
 
         def delivery_env(author):
             env = dict(os.environ)
-            env["HERMES_TURN_AUTHOR"] = author
+            env["RABBIT_TURN_AUTHOR"] = author
             return env
 
         def run(cmd):
@@ -43,7 +43,7 @@ def test_child_env_from_environ_is_flagged_and_the_scoped_builder_is_not():
 
         def delivery_env(author, profile_home):
             env = served_profile_child_env(target_home=profile_home, inherit_credentials=True)
-            env["HERMES_TURN_AUTHOR"] = author
+            env["RABBIT_TURN_AUTHOR"] = author
             return env
 
         def run(cmd, env):

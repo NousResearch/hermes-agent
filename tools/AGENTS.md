@@ -19,7 +19,7 @@ string.**
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
-For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
+For custom/local-only tools do NOT edit core: create `~/.rabbit/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
 toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
 
@@ -34,23 +34,23 @@ toggled without touching `tools/` or `toolsets.py` (`plugins/AGENTS.md`).
        handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
        check_fn=check_requirements, requires_env=["EXAMPLE_API_KEY"])
    ```
-2. `toolsets.py`: add the name to `_HERMES_CORE_TOOLS` (all platforms) or a new toolset. **Required**
+2. `toolsets.py`: add the name to `_RABBIT_CORE_TOOLS` (all platforms) or a new toolset. **Required**
    — discovery registers the schema, but a tool is only exposed if a toolset names it.
-   `_HERMES_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
+   `_RABBIT_CORE_TOOLS` is the default bundle every platform's base toolset inherits, not dead code.
 
 Rules for tool code:
 - **Schema descriptions must not name tools from other toolsets** (`browser_navigate` saying "prefer
   web_search"). Those tools may be unavailable (missing key, disabled toolset) and the model
   hallucinates calls to them. Cross-references are added dynamically in `get_tool_definitions()` in
   `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks.
-- **Paths in schema descriptions use `display_hermes_home()`** (schema is built at import; under
-  multiplex it shows the launch home, which is display-only). **State files use `get_hermes_home()`**
-  at call time, never `Path.home()/.hermes` and never a module constant, so each served profile gets
+- **Paths in schema descriptions use `display_rabbit_home()`** (schema is built at import; under
+  multiplex it shows the launch home, which is display-only). **State files use `get_rabbit_home()`**
+  at call time, never `Path.home()/.rabbit` and never a module constant, so each served profile gets
   its own state.
 - **No `offset`/`limit` on instructional tools** (skills, prompts, playbooks) — models read page 1
   and skip the rest (root rubric).
 - **`check_fn` answers reachability/opt-in for the profile it runs under, never surface.** Results
-  are TTL-cached in `registry.py::_check_fn_cache` keyed by `hermes_home_key()`, and one process
+  are TTL-cached in `registry.py::_check_fn_cache` keyed by `rabbit_home_key()`, and one process
   serves many sessions AND many profiles: a probe reads credentials through
   `agent.secret_scope.get_secret`, never bare `os.getenv` (that answers with the launch profile's
   `.env` for everyone). The registry classifies an `UnscopedSecretError` from
@@ -61,8 +61,8 @@ Rules for tool code:
   `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
 - **`_last_resolved_tool_names`** is a process-global in `model_tools.py`; `_run_single_child()` in
   `delegate_tool.py` saves/restores it around child runs — readers may see it stale mid-delegation.
-- New tools integrate with existing setup UX (`hermes tools`, `hermes setup`, auto-install) rather
-  than a raw env var; secrets go in `OPTIONAL_ENV_VARS` (`hermes_cli/AGENTS.md`).
+- New tools integrate with existing setup UX (`rabbit tools`, `rabbit setup`, auto-install) rather
+  than a raw env var; secrets go in `OPTIONAL_ENV_VARS` (`rabbit_cli/AGENTS.md`).
 
 ## Toolsets (`toolsets.py`)
 
@@ -70,7 +70,7 @@ Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, 
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
 kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
-`hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
+`rabbit tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
 replaces the other browser tools when `browser.backend` is `browser-use`.
 
 ## Backends and providers inside tools/
@@ -93,9 +93,9 @@ and its default cap applies only inside `agent.delegation_context.is_delegated_c
 Put new embed-cost rules there, never a second counter in a tool.
 
 **Every spawn goes through one env builder.** `environments/local.py::build_subprocess_env` (+
-`hermes_constants.apply_subprocess_home_env`, `env_passthrough.py::resolve_passthrough_value`) is
+`rabbit_constants.apply_subprocess_home_env`, `env_passthrough.py::resolve_passthrough_value`) is
 how a terminal, `execute_code`, background process, delegation child, ACP or MCP stdio child gets
-its environment; a child that acts FOR the served profile (`hermes -p X` workers, `key_cmd`
+its environment; a child that acts FOR the served profile (`rabbit -p X` workers, `key_cmd`
 helpers, browser drivers, Bot Chat relay turns) uses `environments/local.py::
 served_profile_child_env(target_home=, inherit_credentials=)`: launch-profile `.env` /
 `TERMINAL_*` residue dropped (`strip_launch_profile_env`), the target home pinned, only the
@@ -152,27 +152,27 @@ interrupted entry's `summary` is the child's last real assistant text (`_build_r
 `tests/tools/`. Test the handler through the registry (real dispatch), not the bare function only;
 assert contracts ("every registered tool has a toolset", "no schema description names a tool from
 another toolset") rather than tool counts. Approval/security-boundary tools are E2E'd with real
-imports against a temp `HERMES_HOME` (see `tests/tools/test_approval_config_readonly.py`).
+imports against a temp `RABBIT_HOME` (see `tests/tools/test_approval_config_readonly.py`).
 
 ## Surface capability is a property of the SESSION, never of the process env
 
 A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
 message reactions, Projects) must resolve availability from the **session's own source**, not
 from an env var on the backend. Client and backend are separate machines: the desktop app may
-drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
-only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
+drive a locally spawned backend, one over SSH, one behind URL + token, or Rabbit Cloud, and
+only the first two carry `RABBIT_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
 topologies — the tool is stripped from the schema while the platform hint tells the model it
-is "inside the Hermes desktop app". The pattern:
+is "inside the Rabbit desktop app". The pattern:
 
-- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
+- **The toolset is the surface gate.** Keep such tools off `_RABBIT_CORE_TOOLS` and in a named
   toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
   folds it in when the session's platform says GUI. One resolver, every topology.
 - **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
   "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
   (`tools/registry.py`); a per-session answer does not belong there.
-- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
+- **Ask which identity you mean.** `RABBIT_DESKTOP=1` legitimately means "this backend was
   spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
-  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
+  the embedded terminal pane (`rabbit --tui` against that backend) is the counterexample.
 
 Test: if the capability still makes sense with the client on another machine, it is
 session-scoped. Assert the GUI session gets the tool **with the env var absent**.

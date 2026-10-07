@@ -2,7 +2,7 @@
 
 MCP servers can emit ``notifications/message`` logging notifications
 (RFC 5424 syslog levels). The MCP SDK's default ``logging_callback``
-silently discards them; Hermes now passes ``_make_logging_callback()``
+silently discards them; Rabbit now passes ``_make_logging_callback()``
 to ``ClientSession`` so server-side diagnostics land in agent.log,
 tagged with the server name.
 """
@@ -33,7 +33,7 @@ class TestLogLevelMap:
 
 class TestLoggingCallback:
     @pytest.mark.asyncio
-    async def test_routes_to_hermes_logger_with_server_tag(self, caplog):
+    async def test_routes_to_rabbit_logger_with_server_tag(self, caplog):
         server = MCPServerTask("log_srv")
         callback = server._make_logging_callback()
         with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):

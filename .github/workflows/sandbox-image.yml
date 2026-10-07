@@ -1,9 +1,9 @@
 name: Sandbox desktop image
 
-# nousresearch/hermes-sandbox:desktop is the terminal-backend sandbox base
+# nousresearch/rabbit-sandbox:desktop is the terminal-backend sandbox base
 # (nikolaik/python-nodejs) plus a display stack; Bot Screen, computer_use and
 # the bot's browser run inside it when terminal.backend is docker/ssh/etc.
-# It contains NO Hermes code, so it does not need to track main: it changes
+# It contains NO Rabbit code, so it does not need to track main: it changes
 # when its Dockerfile changes, not when the agent changes.
 #
 # Triggers: a PR that edits the Dockerfile/smoke (build + smoke, no push),
@@ -34,12 +34,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-sandbox
+  IMAGE_NAME: nousresearch/rabbit-sandbox
 
 jobs:
   # PR code: secret-free build + smoke per arch.
   build:
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'seven0070/Rabbit-'
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +75,7 @@ jobs:
 
   # Trusted source only; the sole Docker Hub credential boundary.
   publish:
-    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: github.repository == 'seven0070/Rabbit-' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish))
     needs: [build]
     environment: container-publish
     strategy:
@@ -129,7 +129,7 @@ jobs:
 
   # Registry-side stitch of the two digests into one tagged manifest list.
   merge:
-    if: ${{ !cancelled() && github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
+    if: ${{ !cancelled() && github.repository == 'seven0070/Rabbit-' && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     needs: [publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -18,7 +18,7 @@ def configured_transport():
 
 @pytest.mark.parametrize("suppress", [False, True])
 def test_failure_queue_settles_without_claiming_a_suppressed_send(tmp_path, monkeypatch, suppress):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "queue.db")
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: false}\n")
     job = {"id": "fixture", "name": "fixture", "deliver": "telegram:chat", "execution_id": "run"}
@@ -33,7 +33,7 @@ def test_failure_queue_settles_without_claiming_a_suppressed_send(tmp_path, monk
 
 
 def test_success_content_and_explicit_destination_override_survive(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    telegram:\n      suppress_warning_notifications: false\n")
     job = {"id": "fixture", "deliver": "telegram:chat"}
     with patch("cron.scheduler_delivery._deliver_standalone") as send:
@@ -43,7 +43,7 @@ def test_success_content_and_explicit_destination_override_survive(tmp_path, mon
 
 
 def test_mixed_target_queue_is_not_reported_wholly_suppressed(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "queue.db")
     (tmp_path / "config.yaml").write_text("display:\n  suppress_warning_notifications: true\n  platforms:\n    telegram:\n      suppress_warning_notifications: false\n")
     job = {"id": "fixture", "deliver": ["slack:muted", "telegram:allowed"]}

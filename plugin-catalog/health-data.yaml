@@ -1,11 +1,11 @@
 name: health-data
-repo: https://github.com/Infinite-Labs-AI/hermes-health-apollo
+repo: https://github.com/Infinite-Labs-AI/rabbit-health-apollo
 sha: 9f2db670a2669c9f3401fecb3b547ed52bcb2c3b
-description: Local health and daily-context data store for Hermes.
+description: Local health and daily-context data store for Rabbit.
 maintainer: Infinite-Labs-AI
 tier: community
 category: tools
-docs_url: https://github.com/Infinite-Labs-AI/hermes-health-apollo#readme
+docs_url: https://github.com/Infinite-Labs-AI/rabbit-health-apollo#readme
 capabilities:
   provides_tools:
   - health_analysis_catalog

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # When true, StdioTransport skips ``stream.flush`` after writing: on a half-closed pipe (TUI Node parent quit
 # while the gateway still emits) flush can block long enough to starve the worker pool. Python text stdout is
 # fully buffered on a pipe, so this ONLY makes sense with ``-u``/``PYTHONUNBUFFERED=1``; otherwise the TUI hangs.
-_DISABLE_FLUSH = (os.environ.get("HERMES_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+_DISABLE_FLUSH = (os.environ.get("RABBIT_TUI_GATEWAY_NO_FLUSH", "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 @runtime_checkable
 class Transport(Protocol):
@@ -46,7 +46,7 @@ class Transport(Protocol):
 
 
 _current_transport: contextvars.ContextVar[Optional[Transport]] = contextvars.ContextVar(
-    "hermes_gateway_transport", default=None
+    "rabbit_gateway_transport", default=None
 )
 
 

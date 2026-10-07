@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { setApiRequestConnection, setApiRequestProfile } from '@/rabbit'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
@@ -13,7 +13,7 @@ import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { makeSessionInfo } from '../../../test/session-info'
 import { sessionRoute } from '../../routes'
@@ -61,8 +61,8 @@ vi.mock('@/store/windows', async importOriginal => {
 // We import the hook and drive it with explicit rx-stores/props to exercise the
 // profile-ready gate, ownership validation, and legacy-key discard.
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
-const initialHermesDesktop = desktopWindow.hermesDesktop
+const desktopWindow = window as unknown as { rabbitDesktop?: Window['rabbitDesktop'] }
+const initialRabbitDesktop = desktopWindow.rabbitDesktop
 
 const session = (over: Partial<SessionInfo> = {}): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 
@@ -82,8 +82,8 @@ describe('useDesktopIntegrations', () => {
 
     // Stub the desktop bridge so the hook's useEffect callbacks don't try to
     // reach real Electron IPC. The established desktop-test pattern assigns a
-    // plain object to window.hermesDesktop rather than using vi.spyOn.
-    desktopWindow.hermesDesktop = {
+    // plain object to window.rabbitDesktop rather than using vi.spyOn.
+    desktopWindow.rabbitDesktop = {
       setPreviewShortcutActive: vi.fn(),
       onOpenUpdatesRequested: vi.fn(),
       onFocusSession: vi.fn(),
@@ -93,17 +93,17 @@ describe('useDesktopIntegrations', () => {
       signalDeepLinkReady: vi.fn(),
       onClosePreviewRequested: vi.fn(),
       onOpenFolderRequested: vi.fn(),
-      // getSession() rides hermesDesktop.api; tests that exercise the
+      // getSession() rides rabbitDesktop.api; tests that exercise the
       // remembered-session resolution stub this per-test.
       api: vi.fn(async () => {
         throw new Error('no api stub for this test')
       })
-    } as unknown as Window['hermesDesktop']
+    } as unknown as Window['rabbitDesktop']
   })
 
   afterEach(() => {
-    if (initialHermesDesktop) {
-      desktopWindow.hermesDesktop = initialHermesDesktop
+    if (initialRabbitDesktop) {
+      desktopWindow.rabbitDesktop = initialRabbitDesktop
     }
 
     vi.restoreAllMocks()
@@ -169,8 +169,8 @@ describe('useDesktopIntegrations', () => {
   describe('profile-ready gate', () => {
     it('does NOT restore before profileReady is true', () => {
       // Set remembered state, but profileReady=false.
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       render({ profileReady: false })
 
@@ -179,7 +179,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('restores on profileReady when remembered route exists and owns the session', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
 
       const sessions = [session({ id: 'remembered-session', profile: 'default' })]
 
@@ -189,7 +189,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('restores remembered session id when no remembered route exists', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       const sessions = [session({ id: 'remembered-session', profile: 'default' })]
 
@@ -200,7 +200,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('announces the restored session so the pre-session draft follows the cold-start navigation', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
       // Typed on the fresh chat while the backend was still coming up.
       stashSessionDraft(null, 'typed while booting', [])
 
@@ -213,12 +213,12 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('waits for sessions before validating a remembered session route', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
 
       const result = render({ profileReady: true, sessions: [] })
 
       expect(navigate).not.toHaveBeenCalled()
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/remembered-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBe('/remembered-session')
 
       result.rerender({
         activeProfile: 'default',
@@ -241,22 +241,22 @@ describe('useDesktopIntegrations', () => {
       // must boot into its own blank fresh-draft chat, not the session the
       // primary window has open.
       peerWindowMock.mockReturnValue(true)
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
 
       expect(navigate).not.toHaveBeenCalled()
       // The remembered values stay intact for the primary window's next boot.
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/remembered-session')
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('remembered-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBe('/remembered-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('remembered-session')
     })
   })
 
   describe('display.resume_last_session', () => {
     it('stays on the fresh chat when the setting is off, and keeps remembering the open chat', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       const sessions = [session({ id: 'remembered-session', profile: 'default' })]
       const result = render({ profileReady: true, resumeLastSession: false, sessions })
@@ -275,11 +275,11 @@ describe('useDesktopIntegrations', () => {
         sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('other-session')
     })
 
     it('holds the restore until the config record answers, then restores when on', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       const sessions = [session({ id: 'remembered-session', profile: 'default' })]
       const result = render({ profileReady: true, resumeLastSession: null, sessions })
@@ -302,7 +302,7 @@ describe('useDesktopIntegrations', () => {
 
   describe('delegate subagent sessions', () => {
     const stubGetSession = (row: Partial<SessionInfo>) => {
-      vi.mocked(desktopWindow.hermesDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
+      vi.mocked(desktopWindow.rabbitDesktop!.api as ReturnType<typeof vi.fn>).mockImplementation(
         async (request: { path?: string }) => {
           if (request.path?.startsWith('/api/sessions/')) {
             return session({ profile: 'default', ...row })
@@ -315,7 +315,7 @@ describe('useDesktopIntegrations', () => {
 
     it('repairs a remembered delegate child to its parent on restore', async () => {
       // Written by an older build (or a list slice that served the child).
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'delegate-child')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'delegate-child')
       stubGetSession({ id: 'delegate-child', parent_session_id: 'parent-session', source: 'subagent' })
 
       const sessions = [session({ id: 'parent-session', profile: 'default' })]
@@ -323,7 +323,7 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions })
 
       await waitFor(() => expect(navigate).toHaveBeenCalledWith('/parent-session', { replace: true }))
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('parent-session')
     })
 
     it('remembers the parent, never the delegate child, when routed to one', () => {
@@ -335,8 +335,8 @@ describe('useDesktopIntegrations', () => {
 
       render({ locationPathname: '/delegate-child', profileReady: true, routedSessionId: 'delegate-child', sessions })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('parent-session')
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/parent-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('parent-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBe('/parent-session')
     })
 
     it('keeps remembering a /branch child: source, not parenthood, is the discriminator', () => {
@@ -346,15 +346,15 @@ describe('useDesktopIntegrations', () => {
 
       render({ locationPathname: '/branch-child', profileReady: true, routedSessionId: 'branch-child', sessions })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('branch-child')
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBe('/branch-child')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('branch-child')
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBe('/branch-child')
     })
   })
 
   describe('resume-exhausted write barrier (#98467)', () => {
     it('does not re-persist an exhausted session on a session-list refresh', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted-session')
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'exhausted-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/exhausted-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'exhausted-session')
 
       const sessions = [session({ id: 'exhausted-session', profile: 'default' })]
 
@@ -383,14 +383,14 @@ describe('useDesktopIntegrations', () => {
         sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBeNull()
     })
   })
 
   describe('ownership validation', () => {
     it('refuses to restore a session route owned by another profile', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/ai-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/ai-session')
 
       const sessions = [session({ id: 'ai-session', profile: 'ai-engineer' })]
 
@@ -402,8 +402,8 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('refuses to restore a session id owned by another profile', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'ai-session')
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/ai-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'ai-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/ai-session')
 
       const sessions = [session({ id: 'ai-session', profile: 'ai-engineer' })]
 
@@ -414,7 +414,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('clears stale remembered route owned by wrong profile', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.ai-engineer', '/ai-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.ai-engineer', '/ai-session')
 
       const sessions = [session({ id: 'ai-session', profile: 'ai-engineer' })]
 
@@ -427,7 +427,7 @@ describe('useDesktopIntegrations', () => {
 
   describe('two profiles with distinct sessions', () => {
     it('restores profile A session when profile A is active', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.coder', '/coder-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.coder', '/coder-session')
 
       const sessions = [
         session({ id: 'coder-session', profile: 'coder' }),
@@ -440,7 +440,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('does NOT bleed profile A session into profile B', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.coder', '/coder-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.coder', '/coder-session')
 
       const sessions = [session({ id: 'coder-session', profile: 'coder' })]
 
@@ -462,8 +462,8 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('does NOT restore remembered navigation on a blank new-chat route', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/remembered-session')
 
       render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
 
@@ -480,12 +480,12 @@ describe('useDesktopIntegrations', () => {
         sessions: [session({ id: 'live', profile: 'default' })]
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBeNull()
     })
 
     it('does not restore the remembered session id either', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'remembered-session')
 
       render({ profileReady: true, sessions: [session({ id: 'remembered-session', profile: 'default' })] })
 
@@ -496,8 +496,8 @@ describe('useDesktopIntegrations', () => {
   describe('legacy key behavior', () => {
     it('discards legacy global keys on read and does NOT restore from them', () => {
       // Simulate a pre-per-profile install.
-      window.localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
-      window.localStorage.setItem('hermes.desktop.lastRoute', '/session/legacy-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId', 'legacy-session')
+      window.localStorage.setItem('rabbit.desktop.lastRoute', '/session/legacy-session')
 
       // Profile contexts without matching sessions.
       const sessions = [session({ id: 'legacy-session', profile: 'default' })]
@@ -505,8 +505,8 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions })
 
       // Legacy keys must be discarded.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId')).toBeNull()
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute')).toBeNull()
 
       // And no navigation should happen (the per-profile keys were empty).
       expect(navigate).not.toHaveBeenCalled()
@@ -517,14 +517,14 @@ describe('useDesktopIntegrations', () => {
     let closeRequested: (() => void) | undefined
 
     function mountWithCloseIpc() {
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onClosePreviewRequested: (cb: () => void) => {
           closeRequested = cb
 
           return () => undefined
         }
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       render({ profileReady: true, sessions: [] })
     }
@@ -616,7 +616,7 @@ describe('useDesktopIntegrations', () => {
       })
 
       // The coder session should be persisted under coder's key.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.coder')).toBe('coder-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.coder')).toBe('coder-session')
 
       // Now switch to ops.
       rerender({
@@ -630,10 +630,10 @@ describe('useDesktopIntegrations', () => {
       })
 
       // The ops session should now be persisted under ops's key.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.ops')).toBe('ops-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.ops')).toBe('ops-session')
 
       // Coder's remembered session should still be there.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.coder')).toBe('coder-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.coder')).toBe('coder-session')
     })
 
     it('does NOT overwrite remembered state when session ownership fails validation', () => {
@@ -651,13 +651,13 @@ describe('useDesktopIntegrations', () => {
       })
 
       // No session should be remembered for the active profile.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.ops')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.ops')).toBeNull()
     })
   })
 
   describe('route-scoped restoration', () => {
     it('restores a non-session route like /capabilities', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/capabilities')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/capabilities')
 
       const sessions = [session({ id: 'some-session', profile: 'default' })]
 
@@ -668,7 +668,7 @@ describe('useDesktopIntegrations', () => {
     })
 
     it('does NOT restore overlay routes (settings/command-center)', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/settings')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/settings')
 
       render({ profileReady: true, sessions: [] })
 
@@ -697,13 +697,13 @@ describe('useDesktopIntegrations', () => {
       })
 
       // Overlay routes must NOT be persisted.
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBeNull()
     })
   })
 
   describe('exhausted session cleanup', () => {
     it('clears remembered session id when the exhausted session matches', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'exhausted')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'exhausted')
 
       const sessions = [session({ id: 'exhausted', profile: 'default' })]
 
@@ -713,11 +713,11 @@ describe('useDesktopIntegrations', () => {
         sessions
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBeNull()
     })
 
     it('clears remembered route when it carries the exhausted session', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/exhausted')
+      window.localStorage.setItem('rabbit.desktop.lastRoute.profile.default', '/exhausted')
 
       const sessions = [session({ id: 'exhausted', profile: 'default' })]
 
@@ -727,11 +727,11 @@ describe('useDesktopIntegrations', () => {
         sessions
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.default')).toBeNull()
+      expect(window.localStorage.getItem('rabbit.desktop.lastRoute.profile.default')).toBeNull()
     })
 
     it('does NOT clear exhausted when profileReady is false', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'exhausted')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'exhausted')
 
       render({
         profileReady: false,
@@ -740,11 +740,11 @@ describe('useDesktopIntegrations', () => {
       })
 
       // profileReady=false gates the cleanup effect.
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('exhausted')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('exhausted')
     })
 
     it('does NOT clear remembered state when exhausted id does not match', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'other-session')
+      window.localStorage.setItem('rabbit.desktop.lastSessionId.profile.default', 'other-session')
 
       render({
         profileReady: true,
@@ -752,55 +752,55 @@ describe('useDesktopIntegrations', () => {
         sessions: [session({ id: 'other-session', profile: 'default' })]
       })
 
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
+      expect(window.localStorage.getItem('rabbit.desktop.lastSessionId.profile.default')).toBe('other-session')
     })
   })
 
   describe('notification activate + plugin deep links', () => {
     it('navigates when a plugin notification activate payload arrives', () => {
       let activate: ((payload: { activate?: string }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onNotificationActivate: (cb: (payload: { activate?: string }) => void) => {
           activate = cb
 
           return () => undefined
         }
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       render({ profileReady: true, sessions: [] })
       activate?.({ activate: '/index-network/intent/1' })
       expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
     })
 
-    it('navigates hermes://index-network/intent/1 deep links through the same path vocabulary', () => {
+    it('navigates rabbit://index-network/intent/1 deep links through the same path vocabulary', () => {
       let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
           deepLink = cb
 
           return () => undefined
         },
         signalDeepLinkReady: vi.fn()
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       render({ profileReady: true, sessions: [] })
       deepLink?.({ kind: 'index-network', name: 'intent/1', params: {} })
       expect(navigate).toHaveBeenCalledWith('/index-network/intent/1')
     })
 
-    it('routes hermes://mcp/install to the pending-install dialog, not navigation', () => {
+    it('routes rabbit://mcp/install to the pending-install dialog, not navigation', () => {
       let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
           deepLink = cb
 
           return () => undefined
         },
         signalDeepLinkReady: vi.fn()
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       render({ profileReady: true, sessions: [] })
       deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
@@ -808,17 +808,17 @@ describe('useDesktopIntegrations', () => {
       expect(navigate).not.toHaveBeenCalled()
     })
 
-    it('routes hermes://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
+    it('routes rabbit://plugin/install?catalog= to the catalog lookup, not the git-path modal', () => {
       let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
           deepLink = cb
 
           return () => undefined
         },
         signalDeepLinkReady: vi.fn()
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       render({ profileReady: true, sessions: [] })
       deepLink?.({ kind: 'plugin', name: 'install', params: { catalog: 'weather', repo: 'evil/repo' } })
@@ -832,7 +832,7 @@ describe('useDesktopIntegrations', () => {
     function listen() {
       render({ profileReady: true, resumeLastSession: false })
 
-      return vi.mocked(window.hermesDesktop.onDeepLink!).mock.calls[0]![0]
+      return vi.mocked(window.rabbitDesktop.onDeepLink!).mock.calls[0]![0]
     }
 
     afterEach(() => {
@@ -870,7 +870,7 @@ describe('useDesktopIntegrations', () => {
         return {}
       })
 
-      desktopWindow.hermesDesktop = { ...desktopWindow.hermesDesktop, api } as unknown as Window['hermesDesktop']
+      desktopWindow.rabbitDesktop = { ...desktopWindow.rabbitDesktop, api } as unknown as Window['rabbitDesktop']
       const deepLink = listen()
       const installs = () => api.mock.calls.filter(([r]) => r.path === '/api/skills/hub/install')
       const identifier = 'skills-sh/owner/repo/skill'
@@ -936,14 +936,14 @@ describe('useDesktopIntegrations', () => {
   describe('notification click -> focus-session id translation', () => {
     function withFocusSession(): (sessionId: string) => void {
       let handler: ((sessionId: string) => void) | undefined
-      desktopWindow.hermesDesktop = {
-        ...desktopWindow.hermesDesktop,
+      desktopWindow.rabbitDesktop = {
+        ...desktopWindow.rabbitDesktop,
         onFocusSession: (cb: (sessionId: string) => void) => {
           handler = cb
 
           return () => undefined
         }
-      } as unknown as Window['hermesDesktop']
+      } as unknown as Window['rabbitDesktop']
 
       return sessionId => handler?.(sessionId)
     }

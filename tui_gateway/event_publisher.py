@@ -1,6 +1,6 @@
 """Best-effort WebSocket publisher transport for the PTY-side gateway.
 
-The dashboard's `/api/pty` spawns `hermes --tui`, which spawns ``tui_gateway.entry`` — three
+The dashboard's `/api/pty` spawns `rabbit --tui`, which spawns ``tui_gateway.entry`` — three
 processes from the dashboard server. To surface events in the sidebar (`/api/events`), that gateway
 opens a back-WS to the dashboard at startup and mirrors every emit through this transport as
 newline-framed JSON (no JSON-RPC envelope; ``/api/pub`` rebroadcasts bytes verbatim). Failure mode:
@@ -46,7 +46,7 @@ class WsPublisherTransport:
             _log.debug("event publisher connect failed: %s", exc)
             self._dead = True
             return
-        self._worker = threading.Thread(target=self._drain, name="hermes-ws-pub", daemon=True)
+        self._worker = threading.Thread(target=self._drain, name="rabbit-ws-pub", daemon=True)
         self._worker.start()
 
     def _drain(self) -> None:

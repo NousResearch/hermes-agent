@@ -3,11 +3,11 @@
  *
  * Each watch is owned by the WebContents that registered it. Change events
  * must go back to THAT renderer — secondary windows filter
- * `hermes:preview-file-changed` by their own watch id, so delivering only to
+ * `rabbit:preview-file-changed` by their own watch id, so delivering only to
  * the main window drops the event.
  */
 
-export const PREVIEW_FILE_CHANGED_CHANNEL = 'hermes:preview-file-changed'
+export const PREVIEW_FILE_CHANGED_CHANNEL = 'rabbit:preview-file-changed'
 
 /** The events a watch needs from the WebContents that registered it. */
 export type PreviewWatchOwner = Pick<Electron.WebContents, 'isDestroyed' | 'send'> & {

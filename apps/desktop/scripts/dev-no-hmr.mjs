@@ -5,7 +5,7 @@
 // throws "$RefreshReg$ is not defined" on every TSX module → React tree
 // never mounts.
 //
-// We're not trying to use HMR while profiling typing lag anyway. Hermes desktop
+// We're not trying to use HMR while profiling typing lag anyway. Rabbit desktop
 // boots, you type, profiler measures. HMR off is fine.
 //
 // Usage: node apps/desktop/scripts/dev-no-hmr.mjs

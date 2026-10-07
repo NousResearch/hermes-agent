@@ -1,5 +1,4 @@
-"""The provider call for the conversation turn's retry loop: ``nous_rate_limit_guard`` (skip
-the attempt while another session's Nous Portal rate limit is active), ``perform_api_call``
+"""The provider call for the conversation turn's retry loop: ``perform_api_call``
 (streaming decision, MoA prepared-request handshake, LLM execution middleware wrapper, the
 redirect ``_model_request_active`` bracket and the response-vs-redirect crossing check) and
 ``handle_api_interrupt`` (``InterruptedError`` mid-call). Nothing here imports
@@ -52,7 +51,7 @@ def _should_stream(agent: Any) -> bool:
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from rabbit_cli.runtime_provider_backends import _is_external_process_provider
 
     if _base.startswith(("acp://", "acp+tcp://")) or _is_external_process_provider(agent.provider):
         return False
@@ -119,7 +118,7 @@ def perform_api_call(
             defer_logical_completion=True,
         )
 
-    from hermes_cli.middleware import run_llm_execution_middleware
+    from rabbit_cli.middleware import run_llm_execution_middleware
 
     # The ``_model_request_active`` bracket is taken under the redirect lock when one exists,
     # so redirect() can't observe a half-toggled flag.
@@ -212,81 +211,3 @@ def handle_api_interrupt(
         final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
     agent._persist_session(messages, conversation_history)
     return ApiInterruptVerdict("break", thinking_spinner, interrupted, final_response)
-
-
-@dataclass
-class NousRateGuardVerdict:
-    """``action``: ``"fallthrough"`` (no active limit — make the call), ``"break"``
-    (fallback armed on ``_retry``) or ``"return"`` (``result``: no fallback available)."""
-
-    action: str
-    active_system_prompt: Any
-    retry_count: Any
-    compression_attempts: Any
-    result: Optional[Dict[str, Any]] = None
-
-
-def nous_rate_limit_guard(
-    agent: Any, *, _retry: Any, api_messages: Any, messages: Any, conversation_history: Any,
-    active_system_prompt: Any, retry_count: Any, compression_attempts: Any, api_call_count: Any,
-) -> NousRateGuardVerdict:
-    """Skip the call if another session recorded a Nous Portal rate limit: every attempt (incl.
-    SDK retries) counts against RPH. Never lets the guard itself break the agent loop."""
-    from agent.conversation_loop import _arm_fallback_restart
-
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> NousRateGuardVerdict:
-        return NousRateGuardVerdict(
-            action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
-            compression_attempts=compression_attempts, result=result,
-        )
-
-    if agent.provider == "nous":
-        # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
-        # (and the config default, when it still names the free tier's model) before the next call.
-        try:
-            from hermes_cli.anon_auth import apply_model_switch
-            apply_model_switch(agent)
-        except Exception:
-            pass
-        try:
-            from agent.nous_rate_guard import (
-                nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
-            )
-            from hermes_cli import anon_auth
-            _anonymous = anon_auth.is_anonymous_agent(agent)
-            _nous_remaining = nous_rate_limit_remaining(anonymous=_anonymous)
-            if _nous_remaining is not None and _nous_remaining > 0:
-                reset = _fmt_nous_remaining(_nous_remaining)
-                if _anonymous:
-                    _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
-                        reset=anon_auth.friendly_wait(_nous_remaining))
-                else:
-                    _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
-                agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
-                agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
-                if agent._try_activate_fallback():
-                    active_system_prompt = _arm_fallback_restart(
-                        agent, api_messages, active_system_prompt, _retry)
-                    retry_count = 0
-                    compression_attempts = 0
-                    return _verdict("break")
-                # No fallback — surface the buffered rate-limit context that led here.
-                agent._flush_status_buffer()
-                agent._persist_session(messages, conversation_history)
-                # The free tier's sentence already says what to do (wait, or sign in); the
-                # fallback-provider advice is for an install that runs its own providers.
-                return _verdict("return", stamp_failure({
-                    "final_response": (f"⏳ {_nous_msg}" if _anonymous
-                                       else f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}"),
-                    "messages": messages,
-                    "api_calls": api_call_count,
-                    "completed": False,
-                    "failed": True,
-                    "error": _nous_msg,
-                    # The free tier's card body and its sign-in door (agent/error_surface.py).
-                    **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
-                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
-                }, FailoverReason.rate_limit.value, True))
-        except Exception:
-            pass  # Never let rate guard break the agent loop
-    return _verdict("fallthrough")

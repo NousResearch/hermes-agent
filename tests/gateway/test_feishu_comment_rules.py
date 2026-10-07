@@ -156,18 +156,18 @@ class TestPairingStore(unittest.TestCase):
 
 class TestRulesFollowActiveProfile(unittest.TestCase):
     """The multiplexed gateway serves every profile from one process: the rules/pairing files and
-    their mtime caches must follow the context-local HERMES_HOME override, one slot per profile."""
+    their mtime caches must follow the context-local RABBIT_HOME override, one slot per profile."""
 
     def test_rules_and_pairing_follow_home_override(self):
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
         from plugins.platforms.feishu import feishu_comment_rules as fcr
 
         def under(home, fn):
-            token = set_hermes_home_override(str(home))
+            token = set_rabbit_home_override(str(home))
             try:
                 return fn()
             finally:
-                reset_hermes_home_override(token)
+                reset_rabbit_home_override(token)
 
         with tempfile.TemporaryDirectory() as tmp:
             prof_a, prof_b = Path(tmp) / "A", Path(tmp) / "B"

@@ -4,7 +4,7 @@
 Mirrors ``extract-skills.py``: imports the single-source-of-truth blueprint
 definitions from ``cron/blueprint_catalog.py`` and emits a flat JSON array the
 docs page renders into cards (description, schedule, copy-paste slash command,
-and a ``hermes://`` "Send to App" deep-link).
+and a ``rabbit://`` "Send to App" deep-link).
 
 Output: ``website/static/api/automation-blueprints-index.json`` (served at
 ``/docs/api/automation-blueprints-index.json``). Run automatically by

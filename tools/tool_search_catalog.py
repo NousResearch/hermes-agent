@@ -235,7 +235,7 @@ def _listing_group_label(source_name: str) -> str:
 
 def hidden_declared_sources() -> List[Dict[str, Any]]:
     """Return deterministic summaries for declared MCP servers hidden by their check."""
-    from hermes_platform import declaration
+    from rabbit_platform import declaration
     from tools.mcp_liveness import unavailable_details
     from tools.registry import registry
 

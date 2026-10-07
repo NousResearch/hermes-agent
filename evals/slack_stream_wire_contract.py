@@ -52,7 +52,7 @@ async def run(repo: str, out: str):
 
     sys.path.insert(0, repo)
     for m in list(sys.modules):
-        if m.startswith(("gateway", "plugins", "tools", "hermes", "agent")):
+        if m.startswith(("gateway", "plugins", "tools", "rabbit", "agent")):
             del sys.modules[m]
     from slack_sdk.web.async_client import AsyncWebClient
     from gateway.config import PlatformConfig
@@ -80,10 +80,10 @@ async def run(repo: str, out: str):
     # --- Task-card rail (the bug): start + append(chunks) + stop
     r1 = await adapter.send_native_task_card_progress(
         "C1", [{"id": "call-1", "title": "terminal - ls", "status": "in_progress"}],
-        metadata=metadata, fallback_text="Hermes is working\n- terminal - ls - running")
+        metadata=metadata, fallback_text="Rabbit is working\n- terminal - ls - running")
     r2 = await adapter.send_native_task_card_progress(
         "C1", [{"id": "call-1", "title": "terminal - ls", "status": "complete"}],
-        metadata=metadata, fallback_text="Hermes is working\n- terminal - ls - complete")
+        metadata=metadata, fallback_text="Rabbit is working\n- terminal - ls - complete")
     await adapter.stop_native_task_card_progress("C1", metadata=metadata)
     results["task_card"] = {"first": {"success": r1.success, "error": r1.error},
                             "second": {"success": r2.success, "error": r2.error}}
@@ -122,8 +122,8 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    os.environ.setdefault("HERMES_HOME", os.path.join(os.path.dirname(a.out), "hermes-home-probe"))
-    os.makedirs(os.environ["HERMES_HOME"], exist_ok=True)
+    os.environ.setdefault("RABBIT_HOME", os.path.join(os.path.dirname(a.out), "rabbit-home-probe"))
+    os.makedirs(os.environ["RABBIT_HOME"], exist_ok=True)
     sys.exit(asyncio.run(run(os.path.abspath(a.repo), a.out)))
 
 

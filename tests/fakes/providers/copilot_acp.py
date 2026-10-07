@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Fake ACP agent executable standing in for ``copilot --acp --stdio`` (provider ``copilot-acp``).
 
-Hermes' ``copilot-acp`` provider spawns an external agent process per model call and speaks the
+Rabbit' ``copilot-acp`` provider spawns an external agent process per model call and speaks the
 Agent Client Protocol to it: JSON-RPC 2.0, one JSON object per line over stdio
 (https://agentclientprotocol.com/protocol/overview). This module is that process. It
 
-* answers ``<cmd> --help`` with a usage text advertising ``--acp`` (Hermes probes it before spawning);
+* answers ``<cmd> --help`` with a usage text advertising ``--acp`` (Rabbit probes it before spawning);
 * validates every client request against the published ACP schema (the ``agent-client-protocol``
   package's pydantic models, ``acp.schema``) plus the spec rules the models do not encode
   (initialize-first, absolute ``cwd``, no custom root fields, known ``sessionId``) and REJECTS
@@ -87,8 +87,8 @@ def crash(exit_code: int = 1, stderr: str = "fatal: agent crashed") -> dict[str,
     return {"type": "crash", "code": exit_code, "stderr": stderr}
 
 
-def hermes_tool_call(call_id: str, name: str, args: dict[str, Any]) -> str:
-    """Text a model behind ACP emits to call a Hermes tool (ACP has no OpenAI tools channel)."""
+def rabbit_tool_call(call_id: str, name: str, args: dict[str, Any]) -> str:
+    """Text a model behind ACP emits to call a Rabbit tool (ACP has no OpenAI tools channel)."""
     body = {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
     return f"<tool_call>{json.dumps(body)}</tool_call>"
 
@@ -110,9 +110,9 @@ class AcpFake:
         self.launcher.chmod(0o755)
 
     def env(self) -> dict[str, str]:
-        """Env vars that point Hermes' copilot-acp client at this fake."""
-        return {"HERMES_COPILOT_ACP_COMMAND": str(self.launcher),
-                "HERMES_COPILOT_ACP_ARGS": f"--acp --stdio --state {self.state_dir}"}
+        """Env vars that point Rabbit' copilot-acp client at this fake."""
+        return {"RABBIT_COPILOT_ACP_COMMAND": str(self.launcher),
+                "RABBIT_COPILOT_ACP_ARGS": f"--acp --stdio --state {self.state_dir}"}
 
     def records(self) -> list[dict[str, Any]]:
         path = self.state_dir / "transcript.jsonl"
@@ -125,7 +125,7 @@ class AcpFake:
         return [r for r in self.records() if r["dir"] == "in" and (method is None or r["msg"].get("method") == method)]
 
     def main_prompts(self) -> list[dict[str, Any]]:
-        """Main-turn ``session/prompt`` records (those carrying Hermes' tool bridge)."""
+        """Main-turn ``session/prompt`` records (those carrying Rabbit' tool bridge)."""
         return [r for r in self.inbound("session/prompt") if r.get("main")]
 
     def aux_prompts(self) -> list[dict[str, Any]]:
@@ -150,7 +150,7 @@ def prompt_text(record: dict[str, Any]) -> str:
 
 
 class Agent:
-    """One spawned agent process (one Hermes model call)."""
+    """One spawned agent process (one Rabbit model call)."""
 
     def __init__(self, state_dir: Path):
         import acp.schema as schema  # validation/building uses the published ACP models

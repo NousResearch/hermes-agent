@@ -104,7 +104,7 @@ def adapter():
         tree=FakeTree(),
         get_channel=lambda _id: None,
         fetch_channel=AsyncMock(),
-        user=SimpleNamespace(id=99999, name="HermesBot"),
+        user=SimpleNamespace(id=99999, name="RabbitBot"),
     )
     adapter._text_batch_delay_seconds = 0  # disable batching for tests
     # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
@@ -180,7 +180,7 @@ async def test_auto_registers_plugin_commands_for_discord(adapter):
     adapter._run_simple_slash = AsyncMock()
 
     with patch(
-        "hermes_cli.plugins.get_plugin_commands",
+        "rabbit_cli.plugins.get_plugin_commands",
         return_value={
             "metricas": {
                 "handler": lambda _a: "ok",
@@ -209,7 +209,7 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     adapter._run_simple_slash = AsyncMock()
 
     with patch(
-        "hermes_cli.plugins.get_plugin_commands",
+        "rabbit_cli.plugins.get_plugin_commands",
         return_value={
             "status": {
                 "handler": lambda _a: "plugin-status",
@@ -263,7 +263,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
         for i in range(200)
     }
 
-    with patch("hermes_cli.plugins.get_plugin_commands", return_value=many_plugins):
+    with patch("rabbit_cli.plugins.get_plugin_commands", return_value=many_plugins):
         adapter._register_slash_commands()
 
     tree_names = set(adapter._client.tree.commands.keys())
@@ -445,7 +445,7 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     assert result is True
     thread.edit.assert_awaited_once_with(
         name="Semantic Session Title",
-        reason="Hermes semantic session title",
+        reason="Rabbit semantic session title",
     )
 
 
@@ -530,7 +530,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     ]
 
     with patch(
-        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
+        "rabbit_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(mock_categories, mock_uncategorized, 0),
     ):
         adapter._register_slash_commands()
@@ -580,7 +580,7 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         ]
 
     with patch(
-        "hermes_cli.commands_platforms.discord_skill_commands_by_category",
+        "rabbit_cli.commands_platforms.discord_skill_commands_by_category",
         return_value=(large_categories, [], 0),
     ):
         adapter._register_slash_commands()

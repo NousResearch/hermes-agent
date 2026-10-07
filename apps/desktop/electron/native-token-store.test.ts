@@ -323,7 +323,7 @@ test('an encrypt that returns null is refused rather than blanking the stored en
 // userinfo, so a configured gateway URL can carry `user:password@` into this
 // store. It must stay intact as the store KEY and never reach a log line.
 
-const CRED_GATEWAY = 'https://alice:supersecret@gw.example.com/hermes'
+const CRED_GATEWAY = 'https://alice:supersecret@gw.example.com/rabbit'
 
 test('a decryption failure logs the gateway host and path but not its credentials', () => {
   const first = createFakeDisk()
@@ -335,7 +335,7 @@ test('a decryption failure logs the gateway host and path but not its credential
 
   assert.equal(loadNativeTokenSet(CRED_GATEWAY, locked.io), null)
   // Still identifies which gateway failed...
-  assert.match(locked.logs[0], /failed to decrypt stored tokens for https:\/\/gw\.example\.com\/hermes/)
+  assert.match(locked.logs[0], /failed to decrypt stored tokens for https:\/\/gw\.example\.com\/rabbit/)
   assert.match(locked.logs[0], /keeping stored entry for retry/)
   // ...without the userinfo.
   assert.doesNotMatch(locked.logs[0], /alice/)
@@ -349,7 +349,7 @@ test('a parsing failure logs the gateway host and path but not its credentials',
   const disk = createFakeDisk(JSON.stringify({ [CRED_GATEWAY]: { encoding: 'safeStorage', value: 'bm90LWpzb24=' } }))
 
   assert.equal(loadNativeTokenSet(CRED_GATEWAY, disk.io), null)
-  assert.match(disk.logs[0], /failed to load stored tokens for https:\/\/gw\.example\.com\/hermes/)
+  assert.match(disk.logs[0], /failed to load stored tokens for https:\/\/gw\.example\.com\/rabbit/)
   assert.doesNotMatch(disk.logs[0], /alice/)
   assert.doesNotMatch(disk.logs[0], /supersecret/)
 })
@@ -363,7 +363,7 @@ test('the credential-bearing base URL stays the exact store key', () => {
   // The original key still round-trips a full set after a restart.
   assert.deepEqual(loadNativeTokenSet(CRED_GATEWAY, createFakeDisk(first.fileText()).io), TOKENS)
   // The redacted form is a log string, never a lookup key.
-  assert.equal(loadNativeTokenSet('https://gw.example.com/hermes', createFakeDisk(first.fileText()).io), null)
+  assert.equal(loadNativeTokenSet('https://gw.example.com/rabbit', createFakeDisk(first.fileText()).io), null)
 })
 
 test('an unparseable gateway URL logs a fixed placeholder rather than the raw value', () => {

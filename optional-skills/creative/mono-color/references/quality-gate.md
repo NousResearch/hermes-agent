@@ -26,7 +26,7 @@ Always exclude:
 
 ## Generation and Inspection
 
-1. Generate the image from the compiled prompt (Hermes `image_generate`).
+1. Generate the image from the compiled prompt (Rabbit `image_generate`).
 2. Inspect at full size and thumbnail size.
 3. Regenerate once when any of these fail:
    - a one-ink composition shows a second ink, or a two-ink composition shows a third printing ink;

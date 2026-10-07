@@ -5,7 +5,7 @@ description: Rescues oversized MCP and web tool results before they flood contex
 maintainer: Sahil-SS9
 tier: community
 category: tools
-requires_hermes: ">=0.21"
+requires_rabbit: ">=0.21"
 docs_url: https://github.com/Sahil-SS9/Toolaria
 platforms: []
 capabilities:

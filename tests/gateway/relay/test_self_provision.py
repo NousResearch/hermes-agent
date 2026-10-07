@@ -6,8 +6,8 @@ relay_route_keys() config readers. The connector HTTP POST is monkeypatched
 TRIGGER logic, in-process env wiring, and fail-soft boot behaviour.
 
 The trigger is deliberately NOT is_managed() (that means NixOS/package-manager-
-managed, which is False on a NAS-hosted Fly agent). The real gate is
-"relay_url set + no pinned secret + a resolvable NAS token".
+managed, which is False on a self-hosted agent). The real gate is
+"relay_url set + no pinned secret + a resolvable identity token".
 """
 
 from __future__ import annotations
@@ -55,14 +55,14 @@ def _stub_post(captured: dict):
 
 
 def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token"):
-    """Arm the real trigger: a relay URL + a resolvable NAS token.
+    """Arm the real trigger: a relay URL + a resolvable identity token.
 
     Note there is intentionally no `managed` knob — self-provision no longer
-    consults is_managed(). A test that wants the "no NAS identity" branch
-    monkeypatches resolve_nous_access_token to raise instead.
+    consults is_managed(). A test that wants the "no identity" branch
+    monkeypatches relay._resolve_relay_identity_token to raise instead.
     """
     monkeypatch.setattr(relay, "relay_url", lambda: url)
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", lambda: token)
 
 
 # ─────────────────────────── config readers ───────────────────────────
@@ -207,16 +207,16 @@ def test_forwards_wake_url_to_provision(monkeypatch):
 
 # ─────────────────────────── fail-soft ───────────────────────────
 
-def test_no_nas_token_is_non_fatal(monkeypatch):
-    """A self-hosted box with a relay URL but no resolvable NAS identity skips
+def test_no_identity_token_is_non_fatal(monkeypatch):
+    """A self-hosted box with a relay URL but no resolvable identity skips
     quietly (this is the branch that replaces the old is_managed() gate for the
-    non-NAS case)."""
+    non-IdP case)."""
     monkeypatch.setattr(relay, "relay_url", lambda: "wss://connector.example/relay")
 
     def _boom():
         raise RuntimeError("no token")
 
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
+    monkeypatch.setattr(relay, "_resolve_relay_identity_token", _boom)
     # Must not raise; returns False; no creds set.
     assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)
@@ -226,16 +226,16 @@ def test_no_nas_token_is_non_fatal(monkeypatch):
 
 
 def test_relay_display_name_suppresses_stock_brand(monkeypatch):
-    """The default 'Hermes Agent' brand is identical on every install — forwarding
+    """The default 'Rabbit Agent' brand is identical on every install — forwarding
     it would shadow the connector's linked-owner fallback (which actually
     disambiguates) with a uniform label. Only customized names are forwarded."""
     monkeypatch.delenv("GATEWAY_RELAY_DISPLAY_NAME", raising=False)
 
     class _Skin:
         def get_branding(self, key, fallback=""):
-            return "Hermes Agent" if key == "agent_name" else fallback
+            return "Rabbit Agent" if key == "agent_name" else fallback
 
-    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
+    monkeypatch.setattr("rabbit_cli.skin_engine.get_active_skin", lambda: _Skin())
     assert relay.relay_display_name() is None
 
 

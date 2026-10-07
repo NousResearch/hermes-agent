@@ -8,7 +8,7 @@ retroactively extend earlier test receipts.
 
 For current implementation contracts, use [Package management](../reference/package-management.md),
 [shared bundle builds](shared-bundle-builds.md), [stable releases](stable-releases.md),
-and [bundled update acceptance](https://github.com/NousResearch/hermes-agent/blob/main/tests/install/BUNDLED_UPDATES.md).
+and [bundled update acceptance](https://github.com/seven0070/Rabbit-/blob/main/tests/install/BUNDLED_UPDATES.md).
 
 This change integrates repairs from the aggregate branch audit. It is not a
 release certificate. The audit compared `49945b14029e09fef608db9ede899377cdb54e11`
@@ -70,7 +70,7 @@ in `pm/environments.py`.
 
 | Contract | Owner and proof |
 | --- | --- |
-| Interrupted publication | `hermes_cli/runtime_state.py` journals the old config and the proposed config hash. Startup recovers before dependency activation. Recovery refuses to overwrite unrelated edits. Real subprocess tests terminate before and after facts publication. |
+| Interrupted publication | `rabbit_cli/runtime_state.py` journals the old config and the proposed config hash. Startup recovers before dependency activation. Recovery refuses to overwrite unrelated edits. Real subprocess tests terminate before and after facts publication. |
 | Live-generation collection | Startup holds a generation lease under the publication lock. `pm gc` removes only unselected, lease-managed generations without live readers. Tests keep a real reader alive while collection runs. |
 | Receipt correlation | PM completions carry the invoking update ID. The updater embeds that completion, including failed steps and refusal reasons. Nested commands and copied contexts cannot finalize an enclosing receipt. |
 | Warning surfaces | Doctor uses the update checker's local provenance rules. The desktop reads sync status and distinguishes a healthy no-op from an embedded failure. |
@@ -106,7 +106,7 @@ in `pm/environments.py`.
 
 - A separate fresh bundled MSIX was produced from payload tree `60c9fb44...`.
   The unpacked artifact's own CLI ran, imports resolved inside its payload,
-  and `hermes serve` answered HTTP 200. The Sandbox deployment attempt failed
+  and `rabbit serve` answered HTTP 200. The Sandbox deployment attempt failed
   on an incorrect unpacked path. It does not prove bundled installation.
 - Plugin checks now run from the first housekeeping tick, with the configured
   interval gate controlling network checks. A real isolated gateway wrote two
@@ -197,7 +197,7 @@ PR #95281 was closed as superseded by #102765, following the triage request
 for one canonical PM PR. The duplicate label was removed. No approval
 label was self-applied.
 
-[Verified CI at a27cd5902a](https://github.com/NousResearch/hermes-agent/actions/runs/34059149746).
+[Verified CI at a27cd5902a](https://github.com/seven0070/Rabbit-/actions/runs/34059149746).
 The exact-head validation uses the same workflow on an upstream validation
 branch. Earlier GitHub graph failures reported
 `resource_exhausted: gitmon refuses to schedule us: fail-fast:network`.

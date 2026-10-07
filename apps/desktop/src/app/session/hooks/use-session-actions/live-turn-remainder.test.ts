@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest'
 
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
+import type { SessionMessage, SessionResumeResult } from '@/types/rabbit'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'

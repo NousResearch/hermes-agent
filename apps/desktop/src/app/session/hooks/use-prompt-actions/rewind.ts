@@ -12,7 +12,7 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 
 import type { ClientSessionState } from '@/app/types'
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/rabbit'
 import {
   branchGroupForUser,
   type ChatMessage,

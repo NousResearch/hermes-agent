@@ -1,12 +1,12 @@
 /**
  * Harness for the Desktop install/update suite: a REAL local install (made by
- * scripts/install.sh + `hermes desktop --build-only` in the upgrade suite's
+ * scripts/install.sh + `rabbit desktop --build-only` in the upgrade suite's
  * sandbox, see seed.py), a local bare origin standing in for GitHub, the
  * packaged app that install built, and the core suite's scripted provider.
  *
  * The one fake per external edge: the git server (a local bare repo behind a
  * url.insteadOf rewrite) and the LLM provider (e2e/core/provider.ts). Nothing
- * inside Hermes is mocked.
+ * inside Rabbit is mocked.
  *
  * Synchronisation rule (same as e2e/core): wait on an observable fact — a log
  * line, a pid, a file, a DOM state — with a deadline, never a fixed sleep.
@@ -30,21 +30,21 @@ export const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
 const SEED = path.join(import.meta.dirname, 'seed.py')
 
 /** Where the seeded install lives. Short on purpose: the install bakes it into AF_UNIX socket paths. */
-export const UPDATE_ROOT = process.env.HERMES_E2E_UPDATE_ROOT || path.join(os.tmpdir(), 'hdu-e2e')
+export const UPDATE_ROOT = process.env.RABBIT_E2E_UPDATE_ROOT || path.join(os.tmpdir(), 'hdu-e2e')
 
 export interface InstallFacts {
   sandboxRoot: string
   home: string
-  hermesHome: string
+  rabbitHome: string
   checkout: string
-  hermes: string
+  rabbit: string
   origin: string
   env: Record<string, string>
   headSha: string
 }
 
 function python(): string {
-  return process.env.HERMES_E2E_PYTHON || 'python3'
+  return process.env.RABBIT_E2E_PYTHON || 'python3'
 }
 
 function seed(args: string[], timeoutMs = 60_000): string {
@@ -144,13 +144,13 @@ export function releaseDir(facts: InstallFacts): string {
   return path.join(facts.checkout, 'apps', 'desktop', 'release', 'linux-unpacked')
 }
 
-/** The packaged executable `hermes desktop` built into the install (electron-builder names it after productName). */
+/** The packaged executable `rabbit desktop` built into the install (electron-builder names it after productName). */
 export function packagedExe(facts: InstallFacts): string {
   const dir = releaseDir(facts)
-  const name = fs.readdirSync(dir).find(entry => /^hermes$/i.test(entry))
+  const name = fs.readdirSync(dir).find(entry => /^rabbit$/i.test(entry))
 
   if (!name) {
-    throw new Error(`no packaged Hermes executable in ${dir}: ${fs.readdirSync(dir).join(', ')}`)
+    throw new Error(`no packaged Rabbit executable in ${dir}: ${fs.readdirSync(dir).join(', ')}`)
   }
 
   return path.join(dir, name)
@@ -184,8 +184,8 @@ function displayEnv(): Record<string, string> {
 
 /**
  * The environment a user's desktop session hands the app: the install's HOME /
- * HERMES_HOME / PATH (with the git URL rewrite that points "GitHub" at the
- * local origin) plus the display. No HERMES_DESKTOP_HERMES_ROOT: the app must
+ * RABBIT_HOME / PATH (with the git URL rewrite that points "GitHub" at the
+ * local origin) plus the display. No RABBIT_DESKTOP_RABBIT_ROOT: the app must
  * find the install the way it does for a real user.
  */
 export function appEnv(facts: InstallFacts, extra: Record<string, string> = {}): Record<string, string> {
@@ -199,17 +199,17 @@ export function appEnv(facts: InstallFacts, extra: Record<string, string> = {}):
   return {
     ...facts.env,
     ...displayEnv(),
-    HERMES_DESKTOP_USER_DATA_DIR: userDataDir(facts),
-    HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
-    HERMES_DESKTOP_CDP_PORT: 'off',
+    RABBIT_DESKTOP_USER_DATA_DIR: userDataDir(facts),
+    RABBIT_DESKTOP_SKIP_QUIT_CONFIRM: '1',
+    RABBIT_DESKTOP_CDP_PORT: 'off',
     ...extra
   }
 }
 
 /** A user who configured a custom OpenAI-compatible endpoint (the scripted provider). */
 export function configureProvider(facts: InstallFacts, providerUrl: string): void {
-  fs.writeFileSync(path.join(facts.hermesHome, 'config.yaml'), providerConfigYaml(providerUrl))
-  fs.writeFileSync(path.join(facts.hermesHome, '.env'), 'MOCK_API_KEY=update-e2e-key\n')
+  fs.writeFileSync(path.join(facts.rabbitHome, 'config.yaml'), providerConfigYaml(providerUrl))
+  fs.writeFileSync(path.join(facts.rabbitHome, '.env'), 'MOCK_API_KEY=update-e2e-key\n')
 }
 
 export interface LaunchedApp {
@@ -250,7 +250,7 @@ export async function launchInstalledApp(facts: InstallFacts, env: Record<string
 // ─── Observation ───────────────────────────────────────────────────────
 
 export function installProcesses(facts: InstallFacts): ProcInfo[] {
-  return sandboxProcesses({ hermesHome: facts.hermesHome } as CoreSandbox)
+  return sandboxProcesses({ rabbitHome: facts.rabbitHome } as CoreSandbox)
 }
 
 function exeOf(pid: number): string {
@@ -270,7 +270,7 @@ export function desktopMainProcesses(facts: InstallFacts): ProcInfo[] {
   )
 }
 
-/** The `hermes serve` backend(s) of this install (children of the backend excluded). */
+/** The `rabbit serve` backend(s) of this install (children of the backend excluded). */
 export function backendServeProcesses(facts: InstallFacts): ProcInfo[] {
   const serve = installProcesses(facts).filter(
     proc =>
@@ -291,11 +291,11 @@ export function readText(file: string): string {
 }
 
 export function desktopLog(facts: InstallFacts): string {
-  return readText(path.join(facts.hermesHome, 'logs', 'desktop.log'))
+  return readText(path.join(facts.rabbitHome, 'logs', 'desktop.log'))
 }
 
 export function handoffLog(facts: InstallFacts): string {
-  return readText(path.join(facts.hermesHome, 'logs', 'desktop-update-handoff.log'))
+  return readText(path.join(facts.rabbitHome, 'logs', 'desktop-update-handoff.log'))
 }
 
 function tail(text: string, n: number): string {
@@ -304,7 +304,7 @@ function tail(text: string, n: number): string {
 
 /** Everything a red cell needs to explain itself. */
 export function diagnostics(facts: InstallFacts, extra = ''): string {
-  const logsDir = path.join(facts.hermesHome, 'logs')
+  const logsDir = path.join(facts.rabbitHome, 'logs')
   const parts: string[] = [extra]
 
   try {
@@ -320,7 +320,7 @@ export function diagnostics(facts: InstallFacts, extra = ''): string {
     }
   }
 
-  const receipts = path.join(facts.hermesHome, 'update-receipts')
+  const receipts = path.join(facts.rabbitHome, 'update-receipts')
 
   if (fs.existsSync(receipts)) {
     for (const name of fs.readdirSync(receipts).slice(-3)) {
@@ -337,7 +337,7 @@ export function diagnostics(facts: InstallFacts, extra = ''): string {
   return parts.filter(Boolean).join('\n')
 }
 
-/** SIGKILL every process that carries this install's HERMES_HOME (end of every spec). */
+/** SIGKILL every process that carries this install's RABBIT_HOME (end of every spec). */
 export function killInstallProcesses(facts: InstallFacts | null): void {
   if (!facts) {
     return
@@ -378,11 +378,11 @@ export async function waitFor<T>(
 
 /** Copy of the first-run chooser / bootstrap installer overlay (the screens a healthy install must never show). */
 export const FIRST_RUN_SCREENS = [
-  'Set up Hermes Desktop',
-  'Hermes needs a one-time install',
-  'Setting up Hermes Agent',
-  'Install Hermes locally',
-  'Use Hermes on this computer'
+  'Set up Rabbit Desktop',
+  'Rabbit needs a one-time install',
+  'Setting up Rabbit Agent',
+  'Install Rabbit locally',
+  'Use Rabbit on this computer'
 ]
 
 /**
@@ -498,8 +498,8 @@ export interface UpdateStatus {
 export async function checkForUpdates(page: Page): Promise<null | UpdateStatus> {
   return page.evaluate(() => {
     const bridge = (
-      window as unknown as { hermesDesktop: { updates: { check(o: { force: boolean }): Promise<unknown> } } }
-    ).hermesDesktop
+      window as unknown as { rabbitDesktop: { updates: { check(o: { force: boolean }): Promise<unknown> } } }
+    ).rabbitDesktop
 
     return bridge.updates.check({ force: true }) as Promise<null | UpdateStatus>
   })

@@ -55,7 +55,7 @@ class TestFlushAfterCompression:
         After the fix, conversation_history is cleared to None after compression,
         so flush_from = max(0, 0) = 0, and ALL compressed messages are written.
         """
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -103,7 +103,7 @@ class TestFlushAfterCompression:
 
     def test_flush_with_stale_history_loses_messages(self):
         """Stale conversation_history no longer causes data loss."""
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -140,7 +140,7 @@ class TestFlushAfterCompression:
         the compacted dicts again, doubling live context.
         """
         from agent.conversation_compression import conversation_history_after_compression
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -200,7 +200,7 @@ class TestFlushAfterCompression:
             compress_context,
             conversation_history_after_compression,
         )
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         class SuccessCompressor:
             _last_compress_aborted = False
@@ -281,7 +281,7 @@ class TestFlushAfterCompression:
     def test_rotation_child_session_flushes_full_compressed_transcript_with_markers(self):
         """Regression for #57491: live cached-agent markers must not block child flush."""
         from agent.conversation_compression import compress_context
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -472,7 +472,7 @@ class TestStoredPromptCwdDrift:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         from run_agent import AIAgent
         from agent.system_prompt import build_system_prompt_parts
 

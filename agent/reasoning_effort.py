@@ -1,6 +1,6 @@
 """Canonical reasoning-effort vocabulary and wire clamping.
 
-Hermes' internal effort ladder (``VALID_REASONING_EFFORTS`` plus ``none``) is wider than any
+Rabbit' internal effort ladder (``VALID_REASONING_EFFORTS`` plus ``none``) is wider than any
 single provider wire accepts; hand-rolled per-transport maps leaked new levels (``ultra``) to
 wires that 400 and inverted the ladder (unknown → weak default). Single source of truth:
 :data:`EFFORT_LADDER` (low→high), :func:`clamp_effort` (verbatim if supported, else the
@@ -20,11 +20,11 @@ from typing import Optional, Sequence
 _KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
 
 # Canonical low→high ordering for nearest-level clamping. Includes "none" so an explicit
-# disable can be clamped when a provider publishes it as a level. ``ultra`` is Hermes-internal
+# disable can be clamped when a provider publishes it as a level. ``ultra`` is Rabbit-internal
 # (the Codex product tier): no wire accepts it, every declared set stops at ``max``.
 EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
-#: Widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal).
+#: Widest OpenAI-compatible wire vocabulary (OpenRouter).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 #: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
@@ -91,7 +91,7 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def is_astra_model(model: Optional[str]) -> bool:
-    """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
+    """``gpt-6-astra`` or its Rabbit-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.
     The single home for the slug set: picker gating, effort vocabulary and the request sanitizer all
     key off it, so a new Astra alias is one edit."""
     return (model or "").strip().lower().rsplit("/", 1)[-1] in ASTRA_MODEL_IDS
@@ -172,7 +172,7 @@ def effort_display_label(
     api_mode: Optional[str] = None,
 ) -> str:
     """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
-    it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
+    it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Rabbit-internal step such as
     ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
     requested = str(effort or "").strip().lower()
     clamped = clamp_effort(requested, route_supported_efforts(provider, model, api_mode))
@@ -191,7 +191,7 @@ def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence
     """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
     configs without an effort pass through untouched).
 
-    The entry clamp for an OpenAI-compatible chat-completions request builder: Hermes-internal
+    The entry clamp for an OpenAI-compatible chat-completions request builder: Rabbit-internal
     ``ultra`` never reaches a wire (#89503 main transport, #112010 aux/MoA), while provider
     profiles with narrower vocabularies clamp again downstream. Unset stays unset.
     """

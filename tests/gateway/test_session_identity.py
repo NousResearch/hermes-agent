@@ -1,7 +1,7 @@
 """Invariants for ``gateway/session_identity.py`` (#88715 phase 1).
 
 One frozen ``RoutingIdentity`` per inbound event, resolved by the real ``GatewayRunner`` resolvers
-(no patched predicates) against a temp ``HERMES_HOME`` with two served profiles.
+(no patched predicates) against a temp ``RABBIT_HOME`` with two served profiles.
 """
 
 import dataclasses
@@ -62,15 +62,15 @@ def mux(tmp_path, monkeypatch):
     home = tmp_path / "hh"
     for name in ("ops", "team_b"):
         (home / "profiles" / name).mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
     rig = _runner(home, multiplex=True, routes=[
         {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
         {"name": "ghost", "platform": "telegram", "profile": "ghost", "chat_id": "4040"},
     ])
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+    with patch("rabbit_cli.profiles.profiles_to_serve", return_value=served), \
+            patch("rabbit_cli.profiles.get_profile_dir", side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
+            patch("rabbit_cli.profiles.profile_exists", return_value=True):
         yield rig
 
 
@@ -119,7 +119,7 @@ def test_unresolved_under_multiplex_raises_and_never_means_default(mux, tmp_path
 
     solo_home = tmp_path / "solo"
     solo_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(solo_home))
+    monkeypatch.setenv("RABBIT_HOME", str(solo_home))
     solo = _runner(solo_home, multiplex=False)
     source = solo.primary.build_source(chat_id="4040", chat_type="dm", user_id="4040")
     identity = resolve_identity(source, runner=solo.runner)

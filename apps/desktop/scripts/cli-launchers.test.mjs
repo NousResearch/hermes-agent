@@ -14,10 +14,10 @@ test('one MSIX extension consumes the launchers declared by the payload', () => 
 })
 
 test('manifest fragments escape every interpolated attribute value', () => {
-  const xml = appExecutionAliasApplications(['odd"&<name'], { appNamePascal: 'Hermes', displayName: 'Hermes & "Friends" <beta>' })
+  const xml = appExecutionAliasApplications(['odd"&<name'], { appNamePascal: 'Rabbit', displayName: 'Rabbit & "Friends" <beta>' })
   const values = [...xml.matchAll(/="([^"]*)"/g)].map((m) => m[1].replace(/&#\d+;/g, ''))
   assert.ok(values.length > 0 && values.every((v) => !/[&<>"']/.test(v)), xml)
-  assert.ok(xml.includes('DisplayName="Hermes &#38; &#34;Friends&#34; &#60;beta&#62;"'))
+  assert.ok(xml.includes('DisplayName="Rabbit &#38; &#34;Friends&#34; &#60;beta&#62;"'))
   assert.ok(xml.includes('Alias="odd&#34;&#38;&#60;name.exe"'))
   assert.equal(xmlAttribute('plain-name'), 'plain-name')
 })

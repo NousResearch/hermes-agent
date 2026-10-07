@@ -3,8 +3,8 @@
 Re-running ``install.sh`` / ``install.ps1`` over an existing checkout (desktop
 bootstrap and its update retry do this) falls back to
 ``reset --hard origin/<branch>`` when a fast-forward fails. Commits made on that
-branch must survive behind a ``refs/hermes-update-backups/`` rescue ref, the same
-namespace ``hermes update`` uses, and the installer must print the ref.
+branch must survive behind a ``refs/rabbit-update-backups/`` rescue ref, the same
+namespace ``rabbit update`` uses, and the installer must print the ref.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _diverged_managed_checkout(tmp_path: Path) -> tuple[Path, str]:
     upstream.mkdir()
     _git(upstream, "init", "-q", "-b", "main")
     _commit(upstream, "shared.txt")
-    managed = tmp_path / "hermes-agent"
+    managed = tmp_path / "rabbit-agent"
     _git(tmp_path, "clone", "-q", str(upstream), str(managed))
     local_sha = _commit(managed, "local-fix.txt")
     _commit(upstream, "upstream-only.txt")
@@ -58,9 +58,9 @@ def _assert_local_commit_parked(repo: Path, local_sha: str, output: str) -> None
     refs = dict(
         line.split()[::-1] for line in _git(
             repo, "for-each-ref", "--format=%(refname) %(objectname)",
-            "refs/hermes-update-backups/").splitlines())
+            "refs/rabbit-update-backups/").splitlines())
     ref = refs.get(local_sha)
-    assert ref and ref.startswith("refs/hermes-update-backups/diverged-main-"), refs
+    assert ref and ref.startswith("refs/rabbit-update-backups/diverged-main-"), refs
     assert ref in output, "the installer must print where the commits went"
     assert _git(repo, "log", "--format=%H", f"origin/main..{ref}").split() == [local_sha]
 
@@ -73,8 +73,8 @@ def _assert_local_commit_parked(repo: Path, local_sha: str, output: str) -> None
 def test_install_sh_repository_stage_parks_local_commits_before_reset(tmp_path: Path) -> None:
     managed, local_sha = _diverged_managed_checkout(tmp_path)
     env = os.environ | {
-        "HERMES_HOME": str(tmp_path / "hermes-home"),
-        "HERMES_INSTALL_DIR": str(managed),
+        "RABBIT_HOME": str(tmp_path / "rabbit-home"),
+        "RABBIT_INSTALL_DIR": str(managed),
     }
 
     result = subprocess.run(
@@ -107,7 +107,7 @@ def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path:
         assert git is not None
         (cmd / "git.exe").symlink_to(git)
         (cmd / "git").symlink_to(git)
-        env["HERMES_RUNTIME_DIR"] = str(store)
+        env["RABBIT_RUNTIME_DIR"] = str(store)
         env["PATH"] = str(cmd) + os.pathsep + env["PATH"]
 
     result = subprocess.run(
@@ -115,7 +115,7 @@ def test_install_ps1_repository_stage_parks_local_commits_before_reset(tmp_path:
             POWERSHELL, "-NoProfile", "-File", str(INSTALL_PS1),
             "-Stage", "repository", "-NonInteractive",
             "-InstallDir", str(managed),
-            "-HermesHome", str(tmp_path / "hermes-home"),
+            "-RabbitHome", str(tmp_path / "rabbit-home"),
         ],
         cwd=tmp_path, env=env, capture_output=True, text=True,
     )

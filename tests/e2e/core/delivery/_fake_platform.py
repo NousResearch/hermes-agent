@@ -18,7 +18,7 @@ The gateway runs in a CHILD process (``python -m tests.e2e.core.delivery._fake_p
 <spool>``), controlled over a JSON-lines TCP socket. That keeps it isolated from the per-test
 autouse fixtures of this suite's conftest (which close every SessionDB and reset plugin singletons
 after each test), lets one ~15 s gateway boot serve a whole scenario matrix, and makes a real
-``kill -9`` + restart on the same HERMES_HOME possible.
+``kill -9`` + restart on the same RABBIT_HOME possible.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ POLL = 0.02
 DEADLINE = 120.0
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# Per-platform send/edit semantics (what the real service enforces, not what Hermes believes).
+# Per-platform send/edit semantics (what the real service enforces, not what Rabbit believes).
 PROFILES: Dict[str, Dict[str, Any]] = {
     "telegram": {"max_len": 4096, "edits": True, "threads": False},
     "discord": {"max_len": 2000, "edits": True, "threads": True},
@@ -490,14 +490,14 @@ class GatewayProcess:
 
     def __init__(self, root: Path, *, platforms: Dict[str, str], llm_base_url: str,
                  extra_config: str = "", ledger_backoff=(0.5, 1.0)) -> None:
-        from tests.fakes.fake_llm_provider import write_hermes_home
+        from tests.fakes.fake_llm_provider import write_rabbit_home
 
         self.root = root
         self.home = root / "home"
-        self.hermes_home = self.home / ".hermes"
+        self.rabbit_home = self.home / ".rabbit"
         self.spool = root / "spool"
         self.spool.mkdir(parents=True, exist_ok=True)
-        write_hermes_home(self.hermes_home, llm_base_url, extra_config=extra_config)
+        write_rabbit_home(self.rabbit_home, llm_base_url, extra_config=extra_config)
         (self.spool / "config.json").write_text(json.dumps(
             {"platforms": platforms, "ledger_backoff": list(ledger_backoff)}))
         self.proc: Optional[subprocess.Popen] = None
@@ -508,7 +508,7 @@ class GatewayProcess:
 
     @property
     def db_path(self) -> Path:
-        return self.hermes_home / "state.db"
+        return self.rabbit_home / "state.db"
 
     @property
     def log(self) -> Path:
@@ -517,14 +517,14 @@ class GatewayProcess:
     def env(self) -> Dict[str, str]:
         env = {k: os.environ[k] for k in _KEEP_ENV if k in os.environ}
         env.update({
-            "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home),
-            # The child's HOME is itself a throwaway tmp dir, so ~/.hermes IS the temp home here; the
+            "HOME": str(self.home), "RABBIT_HOME": str(self.rabbit_home),
+            # The child's HOME is itself a throwaway tmp dir, so ~/.rabbit IS the temp home here; the
             # live-system guard (armed by the inherited isolation marker) would refuse it.
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",
-            "HERMES_GATEWAY_LOCK_DIR": str(self.root / "gateway-locks"),
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",
+            "RABBIT_GATEWAY_LOCK_DIR": str(self.root / "gateway-locks"),
             "TZ": "UTC", "PYTHONHASHSEED": "0", "PYTHONUNBUFFERED": "1", "C12_PARENT_PID": str(os.getpid()),
-            "HERMES_DISABLE_LAZY_INSTALLS": "1", "TIRITH_ENABLED": "false",
-            "AWS_EC2_METADATA_DISABLED": "true", "HERMES_HONCHO_HOST": "hermes",
+            "RABBIT_DISABLE_LAZY_INSTALLS": "1", "TIRITH_ENABLED": "false",
+            "AWS_EC2_METADATA_DISABLED": "true", "RABBIT_HONCHO_HOST": "rabbit",
             "PYTHONPATH": f"{REPO_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}".rstrip(os.pathsep),
         })
         return env

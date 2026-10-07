@@ -88,7 +88,7 @@ async def test_cache_media_bytes_async_runs_off_loop_and_forwards_kwargs(monkeyp
 @pytest.mark.asyncio
 async def test_async_cache_wrapper_uses_active_profile_home(monkeypatch, tmp_path):
     profile_home = tmp_path / "profile"
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setenv("RABBIT_HOME", str(profile_home))
 
     cached = await base.cache_image_from_bytes_async(
         b"\x89PNG\r\n\x1a\nminimal", ".png"

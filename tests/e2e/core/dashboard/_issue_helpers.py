@@ -1,7 +1,7 @@
 """Shared bits for the dashboard lane's open-issue cells (#120527, #120937).
 
 * ``PtyDashboard``: the lane's ``Dashboard`` harness, but spawned with a pseudo-terminal slave as
-  stdin — the shape of ``hermes serve`` / ``hermes dashboard`` launched from an interactive
+  stdin — the shape of ``rabbit serve`` / ``rabbit dashboard`` launched from an interactive
   terminal. The master end is held open and never written to (nobody watches that console).
   Teardown SIGKILLs the whole process group: a server wedged in a worker thread never finishes
   a graceful shutdown (the default executor is joined on exit).
@@ -54,7 +54,7 @@ class Issue120937(KnownIssue):
 
 
 class PtyDashboard(Dashboard):
-    """``hermes dashboard`` whose stdin is a pty slave (interactive-terminal launch); ``tty=False``
+    """``rabbit dashboard`` whose stdin is a pty slave (interactive-terminal launch); ``tty=False``
     gives the same process with stdin=/dev/null (service / desktop-spawned launch) as a control."""
 
     def __init__(self, sb: Sandbox, log_path: Path, extra_env: dict[str, str] | None = None,
@@ -66,11 +66,11 @@ class PtyDashboard(Dashboard):
             self.pty_master, slave = os.openpty()
         else:
             self.pty_master, slave = -1, os.open(os.devnull, os.O_RDONLY)
-        env = sb.env({"HERMES_WEB_DIST": str(sb.root / "web_dist"), "TERM": "xterm-256color",
+        env = sb.env({"RABBIT_WEB_DIST": str(sb.root / "web_dist"), "TERM": "xterm-256color",
                       **(extra_env or {})})
         try:
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "hermes_cli.main", "dashboard", "--no-open", "--skip-build",
+                [sys.executable, "-m", "rabbit_cli.main", "dashboard", "--no-open", "--skip-build",
                  "--host", "127.0.0.1", "--port", "0"],
                 cwd=str(sb.home), env=env, stdin=slave, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True,
@@ -90,8 +90,8 @@ class PtyDashboard(Dashboard):
         threading.Thread(target=pump, daemon=True, name="dash-pty-stdout").start()
         try:
             self.port = poll(lambda: port_box[0] if port_box else (self.proc.poll() is not None and -1), 120,
-                             "hermes dashboard (tty stdin) to report its port")
-            assert self.port > 0, f"hermes dashboard exited rc={self.proc.returncode}:\n{self.log_tail()}"
+                             "rabbit dashboard (tty stdin) to report its port")
+            assert self.port > 0, f"rabbit dashboard exited rc={self.proc.returncode}:\n{self.log_tail()}"
             self.base = f"http://127.0.0.1:{self.port}"
             self.http = httpx.Client(base_url=self.base, timeout=30.0, trust_env=False)
             index = self.http.get("/")
@@ -160,10 +160,10 @@ def http_json(method: str, url: str, *, key: str | None = None, body: Any = None
 class GatewayApiServer:
     """``python -m gateway.run`` serving the API-server platform on 127.0.0.1:<port>."""
 
-    def __init__(self, sb: Sandbox, hermes_home: Path, log_path: Path, ready_timeout: float = 120.0) -> None:
-        self.sb, self.hermes_home, self.log_path = sb, hermes_home, log_path
+    def __init__(self, sb: Sandbox, rabbit_home: Path, log_path: Path, ready_timeout: float = 120.0) -> None:
+        self.sb, self.rabbit_home, self.log_path = sb, rabbit_home, log_path
         self.key = secrets.token_hex(32)
-        env_path = hermes_home / ".env"
+        env_path = rabbit_home / ".env"
         env_before = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
         for _ in range(PORT_ATTEMPTS):
             port = _free_port()
@@ -172,7 +172,7 @@ class GatewayApiServer:
                 "API_SERVER_HOST": "127.0.0.1", "API_SERVER_PORT": str(port)}.items()), encoding="utf-8")
             self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in stop()
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "gateway.run"], cwd=str(sb.home), env=sb.env({"HERMES_HOME": str(hermes_home)}),
+                [sys.executable, "-m", "gateway.run"], cwd=str(sb.home), env=sb.env({"RABBIT_HOME": str(rabbit_home)}),
                 stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT, start_new_session=True,
             )
             self.base = f"http://127.0.0.1:{port}"

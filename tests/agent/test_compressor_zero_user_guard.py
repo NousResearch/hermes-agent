@@ -12,7 +12,7 @@ api_messages``). There ``last_head_role`` defaults to ``"user"`` and the
 summary is emitted as ``role="assistant"``.
 
 On a session whose only genuine user turn falls into the compressed
-middle — the canonical shape being a ``hermes kanban`` worker seeded with
+middle — the canonical shape being a ``rabbit kanban`` worker seeded with
 a single short ``"work kanban task <id>"`` prompt followed by nothing but
 assistant/tool turns — the compressed output then contains no user-role
 message at all. OpenAI-compatible backends (vLLM/Qwen) reject such a

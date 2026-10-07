@@ -41,7 +41,7 @@ class _TestableEnv(BaseEnvironment):
 
 def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
-    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
     env = _TestableEnv()
     monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: True)
 

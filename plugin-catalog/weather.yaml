@@ -1,12 +1,12 @@
 name: weather
-repo: https://github.com/FahrenheitResearch/hermes-weather-plugin
+repo: https://github.com/FahrenheitResearch/rabbit-weather-plugin
 sha: d474493ef4ffeefabad9dbf0188f72bce3b47b67
 description: Weather data, radar/model imagery, and verified meteorological calculations. Built on metrust,
   rusbie, wrf-rust, rustdar, and ecape-rs.
 maintainer: FahrenheitResearch
 tier: community
 category: tools
-docs_url: https://github.com/FahrenheitResearch/hermes-weather-plugin#readme
+docs_url: https://github.com/FahrenheitResearch/rabbit-weather-plugin#readme
 capabilities:
   provides_tools:
   - wx_alerts

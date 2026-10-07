@@ -1,23 +1,22 @@
 ---
-title: "电话功能 — 无需修改核心工具即可赋予 Hermes 电话能力"
+title: "电话功能 — 无需修改核心工具即可赋予 Rabbit 电话能力"
 sidebar_label: "Telephony"
-description: "无需修改核心工具即可赋予 Hermes 电话能力"
+description: "无需修改核心工具即可赋予 Rabbit 电话能力"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Telephony
 
-无需修改核心工具即可赋予 Hermes 电话能力。配置并持久化 Twilio 号码，收发 SMS/MMS，直接拨打电话，以及通过 Bland.ai 或 Vapi 发起 AI 驱动的外呼。
+无需修改核心工具即可赋予 Rabbit 电话能力。配置并持久化 Twilio 号码，收发 SMS/MMS，直接拨打电话，以及通过 Bland.ai 或 Vapi 发起 AI 驱动的外呼。
 
 ## Skill 元数据
 
 | | |
 |---|---|
-| 来源 | 可选 — 使用 `hermes skills install official/productivity/telephony` 安装 |
+| 来源 | 可选 — 使用 `rabbit skills install official/productivity/telephony` 安装 |
 | 路径 | `optional-skills/productivity/telephony` |
 | 版本 | `1.0.0` |
-| 作者 | Nous Research |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `telephony`, `phone`, `sms`, `mms`, `voice`, `twilio`, `bland.ai`, `vapi`, `calling`, `texting` |
@@ -26,15 +25,15 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时看到的指令内容。
 :::
 
 # Telephony — 无需修改核心工具即可使用号码、通话和短信
 
-此可选 skill 为 Hermes 提供实用的电话能力，同时将电话功能保留在核心工具列表之外。
+此可选 skill 为 Rabbit 提供实用的电话能力，同时将电话功能保留在核心工具列表之外。
 
 它附带一个辅助脚本 `scripts/telephony.py`，可以：
-- 将服务商凭据保存到 `~/.hermes/.env`
+- 将服务商凭据保存到 `~/.rabbit/.env`
 - 搜索并购买 Twilio 电话号码
 - 记住已拥有的号码以供后续会话使用
 - 从已拥有的号码发送 SMS / MMS
@@ -53,7 +52,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 - 在会话之间保留该号码及相关 ID
 - 为入站 SMS 轮询和其他自动化提供面向未来的电话身份
 
-它**不会**将 Hermes 变成实时入站电话网关（gateway）。入站 SMS 通过轮询 Twilio REST API 处理。这对许多工作流已经足够，包括通知和部分一次性验证码获取，无需添加核心 webhook 基础设施。
+它**不会**将 Rabbit 变成实时入站电话网关（gateway）。入站 SMS 通过轮询 Twilio REST API 处理。这对许多工作流已经足够，包括通知和部分一次性验证码获取，无需添加核心 webhook 基础设施。
 
 ## 安全规则 — 强制执行
 
@@ -61,7 +60,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 2. 禁止拨打紧急号码。
 3. 禁止将电话功能用于骚扰、垃圾信息、冒充他人或任何违法行为。
 4. 将第三方电话号码视为敏感操作数据：
-   - 不要将其保存到 Hermes 记忆中
+   - 不要将其保存到 Rabbit 记忆中
    - 除非用户明确要求，否则不要将其包含在 skill 文档、摘要或后续笔记中
 5. 持久化**agent 拥有的 Twilio 号码**是允许的，因为这是用户配置的一部分。
 6. VoIP 号码**不保证**适用于所有第三方双因素认证流程。请谨慎使用，并向用户明确说明预期。
@@ -70,7 +69,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 
 使用以下逻辑，而非硬编码的服务商路由：
 
-### 1）"我希望 Hermes 拥有一个真实的电话号码"
+### 1）"我希望 Rabbit 拥有一个真实的电话号码"
 使用 **Twilio**。
 
 原因：
@@ -115,13 +114,13 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 
 原因：
 - 播放自定义 MP3 的最简方式
-- 与 Hermes `text_to_speech` 加公开文件托管或隧道配合良好
+- 与 Rabbit `text_to_speech` 加公开文件托管或隧道配合良好
 
 ## 文件与持久化状态
 
 此 skill 在两个位置持久化电话状态：
 
-### `~/.hermes/.env`
+### `~/.rabbit/.env`
 用于长期存储的服务商凭据和已拥有号码的 ID，例如：
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
@@ -132,7 +131,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 - `VAPI_PHONE_NUMBER_ID`
 - `PHONE_PROVIDER`（AI 外呼服务商：bland 或 vapi）
 
-### `~/.hermes/telephony_state.json`
+### `~/.rabbit/telephony_state.json`
 用于仅限 skill 使用的、应在会话间保留的状态，例如：
 - 记住的默认 Twilio 号码 / SID
 - 记住的 Vapi 电话号码 ID
@@ -147,7 +146,7 @@ description: "无需修改核心工具即可赋予 Hermes 电话能力"
 安装此 skill 后，按如下方式定位脚本：
 
 ```bash
-SCRIPT="$(find ~/.hermes/skills -path '*/telephony/scripts/telephony.py' -print -quit)"
+SCRIPT="$(find ~/.rabbit/skills -path '*/telephony/scripts/telephony.py' -print -quit)"
 ```
 
 如果 `SCRIPT` 为空，说明 skill 尚未安装。
@@ -157,8 +156,8 @@ SCRIPT="$(find ~/.hermes/skills -path '*/telephony/scripts/telephony.py' -print 
 这是一个官方可选 skill，从 Skills Hub 安装：
 
 ```bash
-hermes skills search telephony
-hermes skills install official/productivity/telephony
+rabbit skills search telephony
+rabbit skills install official/productivity/telephony
 ```
 
 ## 服务商配置
@@ -168,7 +167,7 @@ hermes skills install official/productivity/telephony
 注册地址：
 - https://www.twilio.com/try-twilio
 
-然后将凭据保存到 Hermes：
+然后将凭据保存到 Rabbit：
 
 ```bash
 python3 "$SCRIPT" save-twilio ACXXXXXXXXXXXXXXXXXXXXXXXXXXXX your_auth_token_here
@@ -258,7 +257,7 @@ python3 "$SCRIPT" save-twilio AC... auth_token_here
 python3 "$SCRIPT" twilio-search --country US --area-code 702 --limit 10
 ```
 
-3. 购买并保存到 `~/.hermes/.env` 及状态文件：
+3. 购买并保存到 `~/.rabbit/.env` 及状态文件：
 ```bash
 python3 "$SCRIPT" twilio-buy "+17025551234" --save-env
 ```
@@ -300,15 +299,15 @@ python3 "$SCRIPT" twilio-inbox --since-last --mark-seen
 ### D. 使用内置 TTS 直接拨打 Twilio 电话
 
 ```bash
-python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes calling with your status update." --voice Polly.Joanna
+python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Rabbit calling with your status update." --voice Polly.Joanna
 ```
 
 ### E. 使用预录/自定义语音消息拨打电话
 
-这是复用 Hermes 现有 `text_to_speech` 支持的主要路径。
+这是复用 Rabbit 现有 `text_to_speech` 支持的主要路径。
 
 适用场景：
-- 希望通话使用 Hermes 配置的 TTS 语音，而非 Twilio `<Say>`
+- 希望通话使用 Rabbit 配置的 TTS 语音，而非 Twilio `<Say>`
 - 需要单向语音传递（简报、告警、提醒、状态更新）
 - **不**需要实时对话式电话通话
 
@@ -318,14 +317,14 @@ python3 "$SCRIPT" twilio-call "+15551230000" --message "Hello! This is Hermes ca
 python3 "$SCRIPT" twilio-call "+155****0000" --audio-url "https://example.com/briefing.mp3"
 ```
 
-推荐的 Hermes TTS -> Twilio Play 工作流：
+推荐的 Rabbit TTS -> Twilio Play 工作流：
 
-1. 使用 Hermes `text_to_speech` 生成音频。
+1. 使用 Rabbit `text_to_speech` 生成音频。
 2. 使生成的 MP3 可公开访问。
 3. 使用 `--audio-url` 拨打 Twilio 电话进行传递。
 
 示例 agent 流程：
-- 让 Hermes 使用 `text_to_speech` 创建消息音频
+- 让 Rabbit 使用 `text_to_speech` 创建消息音频
 - 如有需要，通过临时静态托管/隧道/对象存储 URL 暴露文件
 - 使用 `twilio-call --audio-url ...` 通过电话传递
 
@@ -335,9 +334,9 @@ MP3 的推荐托管方式：
 - 电话服务商可直接获取的任意 HTTPS URL
 
 重要说明：
-- Hermes TTS 非常适合预录外呼消息
+- Rabbit TTS 非常适合预录外呼消息
 - Bland/Vapi 更适合**实时对话式 AI 通话**，因为它们自行处理实时电话音频栈
-- 此处单独使用 Hermes STT/TTS 并非作为全双工电话对话引擎；那将需要比此 skill 所要引入的更重量级的流式/webhook 集成
+- 此处单独使用 Rabbit STT/TTS 并非作为全双工电话对话引擎；那将需要比此 skill 所要引入的更重量级的流式/webhook 集成
 
 ### F. 使用 Twilio 直接通话导航电话树 / IVR
 
@@ -395,7 +394,7 @@ python3 "$SCRIPT" ai-status <call_id> --provider vapi
 4. 在拨号或发送短信前与用户确认。
 5. 使用正确的命令。
 6. 如有需要，轮询结果。
-7. 总结结果，不要将第三方电话号码持久化到 Hermes 记忆中。
+7. 总结结果，不要将第三方电话号码持久化到 Rabbit 记忆中。
 
 ## 此 skill 仍不支持的功能
 
@@ -412,7 +411,7 @@ python3 "$SCRIPT" ai-status <call_id> --provider vapi
 - `twilio-inbox` 轮询 REST API；不是即时推送传递。
 - Vapi 外呼仍依赖于拥有有效的已导入号码。
 - Bland 最简单，但音质不一定最佳。
-- 不要将任意第三方电话号码存储在 Hermes 记忆中。
+- 不要将任意第三方电话号码存储在 Rabbit 记忆中。
 
 ## 验证清单
 
@@ -420,7 +419,7 @@ python3 "$SCRIPT" ai-status <call_id> --provider vapi
 
 1. `diagnose` 显示服务商就绪状态和记住的状态
 2. 搜索并购买 Twilio 号码
-3. 将该号码持久化到 `~/.hermes/.env`
+3. 将该号码持久化到 `~/.rabbit/.env`
 4. 从已拥有的号码发送 SMS
 5. 之后轮询已拥有号码的入站短信
 6. 拨打直接 Twilio 电话

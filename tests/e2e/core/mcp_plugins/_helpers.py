@@ -1,11 +1,11 @@
 """Shared harness for the MCP + plugin conformance suite.
 
-Every test drives a REAL Hermes process (``hermes chat -q`` or the ``tui_gateway``
+Every test drives a REAL Rabbit process (``rabbit chat -q`` or the ``tui_gateway``
 stdio host) against the recording fake LLM provider and one or more REAL MCP
 servers built with the installed ``mcp`` SDK (``mcp_fixture_server.py``), over
 stdio or streamable HTTP. Fakes sit only at boundaries we do not own (the LLM
 vendor, the MCP server); assertions read what the MCP server received, what the
-next provider request carried, or what the Hermes process printed/persisted.
+next provider request carried, or what the Rabbit process printed/persisted.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
-from tests.e2e.core.parity._helpers import hermes_argv, kill_tagged, tagged_pids, wait_until
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home
+from tests.e2e.core.parity._helpers import rabbit_argv, kill_tagged, tagged_pids, wait_until
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_rabbit_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_SERVER = Path(__file__).with_name("mcp_fixture_server.py")
@@ -78,26 +78,26 @@ def tool_names(body: dict[str, Any]) -> set[str]:
 class E2EHome:
     root: Path
     home: Path
-    hermes_home: Path
+    rabbit_home: Path
     project: Path
     tag: str
     extra_env: dict[str, str] = field(default_factory=dict)
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        """Hermetic child env: fake HOME (so no ``~/.hermes`` of the real user is reachable)."""
+        """Hermetic child env: fake HOME (so no ``~/.rabbit`` of the real user is reachable)."""
         import pwd  # the suite is Linux-gated
 
-        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".hermes").resolve()  # windows-footgun: ok — module is skipif(not linux)
-        fixture = self.hermes_home.resolve()
+        real_root = Path(pwd.getpwuid(os.getuid()).pw_dir, ".rabbit").resolve()  # windows-footgun: ok — module is skipif(not linux)
+        fixture = self.rabbit_home.resolve()
         assert fixture != real_root and fixture.parent != real_root / "profiles", fixture
-        assert fixture == (self.home / ".hermes").resolve(), fixture
+        assert fixture == (self.home / ".rabbit").resolve(), fixture
         env = {k: v for k, v in os.environ.items()
                if (k in _PASSTHROUGH_ENV or k.startswith("LC_")) and not k.endswith(_SECRET_ENV_SUFFIXES)}
         env.update({
-            "HOME": str(self.home), "HERMES_HOME": str(self.hermes_home), "PYTHONPATH": str(REPO_ROOT),
+            "HOME": str(self.home), "RABBIT_HOME": str(self.rabbit_home), "PYTHONPATH": str(REPO_ROOT),
             "PYTHONUNBUFFERED": "1", "NO_COLOR": "1", "TERM": "dumb",
             "PARITY_TREE_TAG": self.tag,  # orphan-scan tag inherited by the whole tree
-            "HERMES_STATE_DB_GUARD_BYPASS": "1",  # child HOME is tmp_path by construction
+            "RABBIT_STATE_DB_GUARD_BYPASS": "1",  # child HOME is tmp_path by construction
         })
         env.update(self.extra_env)
         env.update(extra or {})
@@ -105,7 +105,7 @@ class E2EHome:
 
     @property
     def config_path(self) -> Path:
-        return self.hermes_home / "config.yaml"
+        return self.rabbit_home / "config.yaml"
 
     def update_config(self, mutate: Callable[[dict], None]) -> None:
         cfg = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
@@ -116,18 +116,18 @@ class E2EHome:
 def _select_test_dependencies(eh: E2EHome) -> None:
     from tests.e2e.core._pm_dependencies import select_test_dependencies
 
-    select_test_dependencies(eh.hermes_home, REPO_ROOT)
+    select_test_dependencies(eh.rabbit_home, REPO_ROOT)
 
 
 def build_home(root: Path, base_url: str, *, mcp_servers: dict[str, dict] | None = None,
                extra: dict[str, Any] | None = None) -> E2EHome:
     home = root / "home"
-    hermes_home = home / ".hermes"
+    rabbit_home = home / ".rabbit"
     project = root / "project"
-    for d in (hermes_home, project):
+    for d in (rabbit_home, project):
         d.mkdir(parents=True, exist_ok=True)
-    eh = E2EHome(root=root, home=home, hermes_home=hermes_home, project=project, tag=uuid.uuid4().hex)
-    write_hermes_home(hermes_home, base_url)
+    eh = E2EHome(root=root, home=home, rabbit_home=rabbit_home, project=project, tag=uuid.uuid4().hex)
+    write_rabbit_home(rabbit_home, base_url)
     cfg = yaml.safe_load(eh.config_path.read_text(encoding="utf-8"))
     cfg["mcp_servers"] = dict(mcp_servers or {})
     # Discovery must be complete before the first agent build (interactive surfaces
@@ -238,7 +238,7 @@ def call_tool(body: dict[str, Any], name: str, args: dict[str, Any] | str) -> To
 
 def run_chat_q(eh: E2EHome, prompt: str, *, timeout: float = TURN_TIMEOUT,
                env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(hermes_argv("chat", "-q", prompt, "-Q"), cwd=eh.project, env=eh.env(env),
+    return subprocess.run(rabbit_argv("chat", "-q", prompt, "-Q"), cwd=eh.project, env=eh.env(env),
                           capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
 

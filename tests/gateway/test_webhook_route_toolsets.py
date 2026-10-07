@@ -23,7 +23,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.webhook import WebhookAdapter
 from gateway.run import GatewayRunner
-from hermes_cli.tools_config import _get_platform_tools
+from rabbit_cli.tools_config import _get_platform_tools
 
 
 class _Src:

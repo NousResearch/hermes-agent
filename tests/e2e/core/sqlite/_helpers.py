@@ -1,11 +1,11 @@
 """Harness for the multi-process SQLite torture chamber (issue class C1: state.db integrity).
 
-One real ``state.db`` under ``tmp_path``, in either journal mode Hermes deploys (see ``JOURNAL_MODES``); every
+One real ``state.db`` under ``tmp_path``, in either journal mode Rabbit deploys (see ``JOURNAL_MODES``); every
 role is a separate OS process running ``_roles.py`` against it (see that module for the journal/report
 protocol). This module owns:
 
 * journal-mode selection through the PRODUCTION decision path: the ``delete`` arm pins the version the
-  children's ``hermes_state_wal.is_sqlite_wal_reset_vulnerable()`` probe sees to a WAL-reset-vulnerable
+  children's ``rabbit_state_wal.is_sqlite_wal_reset_vulnerable()`` probe sees to a WAL-reset-vulnerable
   SQLite (the one CI's uv CPython 3.11.14 bundles), so ``apply_wal_with_fallback`` itself picks DELETE
   exactly as it does for every user on such a build — the same DELETE store its network/FUSE fallbacks end
   in; nothing in the harness issues a journal-mode pragma;
@@ -15,7 +15,7 @@ protocol). This module owns:
   (a store swapped under a live holder) and, in WAL mode, any ``(deleted)`` ``-wal``/``-shm`` — the
   kernel-level signature of a WAL generation unlinked under a live holder;
 * the invariant checks, done in the test process with short-lived bare ``sqlite3`` connections only (the
-  test process never imports ``hermes_state``, so it never becomes a foreign holder of the file).
+  test process never imports ``rabbit_state``, so it never becomes a foreign holder of the file).
 
 Reuses the conformance harness's deadline polling / SIGKILL reaping (``tests/conformance/persistence``).
 """
@@ -34,17 +34,17 @@ import time
 import zlib
 from pathlib import Path
 
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+from rabbit_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 from tests.conformance.persistence._harness import REPO_ROOT, kill9_and_reap, wait_for
 
 ROLES = Path(__file__).with_name("_roles.py")
 DEFAULT_SEED = 20260923
-SEED_ENV = "HERMES_SQLITE_TORTURE_SEED"
+SEED_ENV = "RABBIT_SQLITE_TORTURE_SEED"
 
 JOURNAL_MODES = ("wal", "delete")
 # Read ONLY by _roles.py in each child: the SQLite version its production version probe reports.
-SQLITE_PIN_ENV = "HERMES_E2E_SQLITE_VERSION_PIN"
-VULNERABLE_SQLITE = "3.50.4"  # bundled by uv's CPython 3.11.14 (the unit CI job): Hermes runs DELETE there
+SQLITE_PIN_ENV = "RABBIT_E2E_SQLITE_VERSION_PIN"
+VULNERABLE_SQLITE = "3.50.4"  # bundled by uv's CPython 3.11.14 (the unit CI job): Rabbit runs DELETE there
 # DELETE mode holds an EXCLUSIVE lock for every commit's journal+db fsyncs and has no writer fairness: an unpaced
 # append loop starves every other writer and reader. Gateway/TUI writers are paced by turns in the field.
 DELETE_WRITER_PACE = 0.02
@@ -56,11 +56,11 @@ def linked_sqlite_is_wal_capable() -> bool:
 
 
 def skip_unless_deployable(journal: str) -> None:
-    """WAL is not what Hermes runs on a vulnerable SQLite, so that arm is not deployable there; DELETE always is."""
+    """WAL is not what Rabbit runs on a vulnerable SQLite, so that arm is not deployable there; DELETE always is."""
     if journal == "wal" and not linked_sqlite_is_wal_capable():
         import pytest
 
-        pytest.skip(f"linked SQLite {sqlite3.sqlite_version} runs Hermes in DELETE mode; the delete arm covers it")
+        pytest.skip(f"linked SQLite {sqlite3.sqlite_version} runs Rabbit in DELETE mode; the delete arm covers it")
 
 
 def base_seed() -> int:
@@ -71,37 +71,37 @@ def episode_seed(label: str) -> int:
     return base_seed() + zlib.crc32(label.encode())
 
 
-def child_env(home: Path, hermes_home: Path) -> dict:
-    """Probe hygiene: private HOME/HERMES_HOME, no provider credentials, repo importable."""
+def child_env(home: Path, rabbit_home: Path) -> dict:
+    """Probe hygiene: private HOME/RABBIT_HOME, no provider credentials, repo importable."""
     env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
     env.update({
         "HOME": str(home),
-        "HERMES_HOME": str(hermes_home),
+        "RABBIT_HOME": str(rabbit_home),
         "PYTHONUNBUFFERED": "1",
-        # The child's HERMES_HOME *is* this chamber's private home, which the live-DB guard reads as
-        # "the real Hermes root"; HOME/HERMES_HOME above already keep it off the production install.
-        "HERMES_STATE_DB_GUARD_BYPASS": "1",
+        # The child's RABBIT_HOME *is* this chamber's private home, which the live-DB guard reads as
+        # "the real Rabbit root"; HOME/RABBIT_HOME above already keep it off the production install.
+        "RABBIT_STATE_DB_GUARD_BYPASS": "1",
         "PYTHONPATH": os.pathsep.join(p for p in (str(REPO_ROOT), os.environ.get("PYTHONPATH", "")) if p),
     })
     return env
 
 
 class Chamber:
-    """A private HERMES_HOME + state.db plus the processes playing roles against it."""
+    """A private RABBIT_HOME + state.db plus the processes playing roles against it."""
 
     def __init__(self, root: Path, *, journal: str = "wal"):
         assert journal in JOURNAL_MODES, journal
         self.root = root
         self.mode = journal
         self.home = root / "home"
-        self.hermes_home = self.home / ".hermes"
-        self.hermes_home.mkdir(parents=True, exist_ok=True)
+        self.rabbit_home = self.home / ".rabbit"
+        self.rabbit_home.mkdir(parents=True, exist_ok=True)
         # The config default in BOTH arms: the delete arm is a default-config user on a vulnerable SQLite.
-        (self.hermes_home / "config.yaml").write_text("database:\n  journal_mode: wal\n", encoding="utf-8")
-        self.db = self.hermes_home / "state.db"
+        (self.rabbit_home / "config.yaml").write_text("database:\n  journal_mode: wal\n", encoding="utf-8")
+        self.db = self.rabbit_home / "state.db"
         self.work = root / "work"
         self.work.mkdir(exist_ok=True)
-        self.env = child_env(self.home, self.hermes_home)
+        self.env = child_env(self.home, self.rabbit_home)
         if journal == "delete" and linked_sqlite_is_wal_capable():
             self.env[SQLITE_PIN_ENV] = VULNERABLE_SQLITE
         self.writer_pace = DELETE_WRITER_PACE if journal == "delete" else 0.0
@@ -137,7 +137,7 @@ class Chamber:
         return proc
 
     def spawn_cli(self, name: str, *argv: str) -> subprocess.Popen:
-        """A real `hermes …` CLI subprocess against this HERMES_HOME (``hermes_cli.main`` run as ``__main__``
+        """A real `rabbit …` CLI subprocess against this RABBIT_HOME (``rabbit_cli.main`` run as ``__main__``
         by ``_roles.py cli`` so the journal-mode seam applies to it too)."""
         stderr = open(self.work / f"{name}.stderr", "wb")  # noqa: SIM115 - closed in reap()
         payload = {"workdir": str(self.work), "name": name, "argv": list(argv)}

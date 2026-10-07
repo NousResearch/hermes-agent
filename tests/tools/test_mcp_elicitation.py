@@ -140,7 +140,7 @@ class TestElicitationHandlerFailureModes:
 
 class TestElicitationHandlerContextBridge:
     """The MCP recv-loop task that fires elicitation callbacks does NOT
-    inherit the agent's contextvars (HERMES_SESSION_PLATFORM etc.). The
+    inherit the agent's contextvars (RABBIT_SESSION_PLATFORM etc.). The
     handler reads the ``call_context`` thunk's snapshot -- a snapshot captured
     by the MCP tool wrapper around ``session.call_tool`` -- and replays
     it before invoking the approval router so gateway-session detection
@@ -188,7 +188,7 @@ class TestElicitationHandlerContextBridge:
         """With the default call_context (or one whose task has not entered a tool
         call) the handler must still invoke the consent router -- just
         without the contextvar replay. Otherwise CLI/TUI sessions, which
-        don't set HERMES_SESSION_PLATFORM, would break."""
+        don't set RABBIT_SESSION_PLATFORM, would break."""
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
 

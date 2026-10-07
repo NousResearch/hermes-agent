@@ -1,4 +1,3 @@
-import type { UsageModelData } from '@hermes/shared/billing'
 import type {
   ConnectionRequestPayload,
   GatewayEvent,
@@ -6,14 +5,14 @@ import type {
   InflightTurn,
   TranscriptMessage,
   Usage
-} from '@hermes/shared/gateway-events'
-import type { HermesSkin } from '@hermes/shared/skin'
+} from '@rabbit/shared/gateway-events'
+import type { RabbitSkin } from '@rabbit/shared/skin'
 
 import type { SessionInfo, SlashCategory } from './types.js'
 
-/** The cross-surface skin contract (canonical shape in `@hermes/shared`).
+/** The cross-surface skin contract (canonical shape in `@rabbit/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
-export type GatewaySkin = HermesSkin
+export type GatewaySkin = RabbitSkin
 
 /** Distributive form of the shared `GatewayEvent<K>` so `switch (ev.type)`
  *  narrows `ev.payload` per case (the generic-defaulted interface does not). */
@@ -49,26 +48,10 @@ export interface SlashExecResponse {
   warning?: string
 }
 
-// ── Remote Spending (Phase 2b) ───────────────────────────────────────
+// ── Billing wall (provider credit exhaustion) ─────────────────────────
 
-// Wire shapes now live in @hermes/shared for reuse by TypeScript clients.
-export type {
-  BillingAutoReload,
-  BillingBlock,
-  BillingCardInfo,
-  BillingChargeResponse,
-  BillingChargeStatusResponse,
-  BillingErrorPayload,
-  BillingMonthlyCap,
-  BillingMutationResponse,
-  BillingStateResponse,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse,
-  SubscriptionTierOption,
-  SubscriptionUpgradeResponse,
-  UsageBarData,
-  UsageModelData
-} from '@hermes/shared/billing'
+// Wire shapes now live in @rabbit/shared for reuse by TypeScript clients.
+export type { BillingBlock } from '@rabbit/shared/billing'
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -260,14 +243,10 @@ export interface SessionUsageResponse {
   context_used?: number
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
-  credits_lines?: string[]
   input?: number
   model?: string
   output?: number
   total?: number
-  // Shared dollar usage model (two-bar view) so /usage renders the same bars
-  // as /subscription. Dollars only — never "credits".
-  usage?: UsageModelData
 }
 
 export interface SessionStatusResponse {

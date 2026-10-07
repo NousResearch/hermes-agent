@@ -14,7 +14,7 @@ description: "使用 HyperFrames 创建基于 HTML 的视频合成、动画标�
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/creative/hyperframes` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/creative/hyperframes` 安装 |
 | 路径 | `optional-skills/creative/hyperframes` |
 | 版本 | `1.0.0` |
 | 作者 | heygen-com |
@@ -26,7 +26,7 @@ description: "使用 HyperFrames 创建基于 HTML 的视频合成、动画标�
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发本技能时加载的完整技能定义。这是 agent 在技能激活时所看到的指令内容。
+以下是 Rabbit 在触发本技能时加载的完整技能定义。这是 agent 在技能激活时所看到的指令内容。
 :::
 
 # HyperFrames
@@ -64,12 +64,12 @@ npx hyperframes doctor                      # 诊断环境问题
 
 渲染参数：`--quality draft|standard|high` · `--fps 24|30|60` · `--format mp4|webm` · `--docker`（可复现）· `--strict`。
 
-完整 CLI 参考：[references/cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/cli.md)。
+完整 CLI 参考：[references/cli.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/cli.md)。
 
 ## 初始设置（一次性）
 
 ```bash
-bash "$(dirname "$(find ~/.hermes/skills -path '*/hyperframes/SKILL.md' 2>/dev/null | head -1)")/scripts/setup.sh"
+bash "$(dirname "$(find ~/.rabbit/skills -path '*/hyperframes/SKILL.md' 2>/dev/null | head -1)")/scripts/setup.sh"
 ```
 
 该脚本执行以下操作：
@@ -78,7 +78,7 @@ bash "$(dirname "$(find ~/.hermes/skills -path '*/hyperframes/SKILL.md' 2>/dev/n
 3. 通过 Puppeteer 预缓存 `chrome-headless-shell` — **必需**，用于通过 Chrome 的 `HeadlessExperimental.beginFrame` 捕获路径实现最高质量渲染。
 4. 运行 `npx hyperframes doctor` 并报告结果。
 
-若设置失败，请参阅 [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md)。
+若设置失败，请参阅 [references/troubleshooting.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md)。
 
 ## 操作流程
 
@@ -115,7 +115,7 @@ npx hyperframes init my-video --non-interactive
 
 只有在主帧看起来正确之后，才添加 `gsap.from()` 入场动画（**向** CSS 位置动画）和 `gsap.to()` 退场动画（**从** CSS 位置动画）。
 
-完整的 data 属性 schema 和合成规则见 [references/composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/composition.md)。
+完整的 data 属性 schema 和合成规则见 [references/composition.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/composition.md)。
 
 ### 4. 使用 GSAP 制作动画
 
@@ -126,7 +126,7 @@ npx hyperframes init my-video --non-interactive
 - 具有确定性 — 禁止 `Math.random()`、`Date.now()` 或挂钟逻辑。如需伪随机数，使用带种子的 PRNG。
 - 同步构建 — 时间轴构建过程中禁止 `async`/`await`、`setTimeout` 或 Promise。
 
-核心 GSAP API（tween、ease、stagger、timeline）见 [references/gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/gsap.md)。
+核心 GSAP API（tween、ease、stagger、timeline）见 [references/gsap.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/gsap.md)。
 
 ### 5. 场景间转场
 
@@ -162,11 +162,11 @@ npx hyperframes render --quality high --output final.mp4     # 最终交付
 
 ### 8. 网站转视频（若用户提供 URL）
 
-使用 [references/website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md) 中的 7 步捕获转视频工作流：捕获 → DESIGN.md → SCRIPT.md → 分镜 → 合成 → 渲染 → 交付。
+使用 [references/website-to-video.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md) 中的 7 步捕获转视频工作流：捕获 → DESIGN.md → SCRIPT.md → 分镜 → 合成 → 渲染 → 交付。
 
 ## 常见陷阱
 
-- **`HeadlessExperimental.beginFrame' wasn't found`** — Chromium 147+ 移除了此协议。确保使用 `hyperframes@>=0.4.2`（自动检测并回退到截图模式）。应急方案：`export PRODUCER_FORCE_SCREENSHOT=true`。参见 [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294) 和 [references/troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md)。
+- **`HeadlessExperimental.beginFrame' wasn't found`** — Chromium 147+ 移除了此协议。确保使用 `hyperframes@>=0.4.2`（自动检测并回退到截图模式）。应急方案：`export PRODUCER_FORCE_SCREENSHOT=true`。参见 [hyperframes#294](https://github.com/heygen-com/hyperframes/issues/294) 和 [references/troubleshooting.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md)。
 - **系统 Chrome（非 `chrome-headless-shell`）** — 渲染会挂起 120 秒后超时。运行 `npx puppeteer browsers install chrome-headless-shell`（setup.sh 已处理此步骤）。`hyperframes doctor` 会报告将使用哪个二进制文件。
 - **任何地方出现 `repeat: -1`** — 会破坏捕获引擎。始终计算有限的 repeat 次数。
 - **在稍后入场的 clip 元素上使用 `gsap.set()`** — 页面加载时该元素不存在。改为在时间轴内使用 `tl.set(selector, vars, timePosition)`，位置在该 clip 的 `data-start` 处或之后。
@@ -197,9 +197,9 @@ npx hyperframes render --quality high --output final.mp4     # 最终交付
 
 ## 参考资料
 
-- [composition.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/composition.md) — data 属性、时间轴契约、不可违反的规则、排版/资源规则
-- [cli.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/cli.md) — 所有 CLI 命令（init、capture、lint、validate、inspect、preview、render、transcribe、tts、doctor、browser、info、upgrade、benchmark）
-- [gsap.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/gsap.md) — HyperFrames 的 GSAP 核心 API（tween、ease、stagger、timeline、matchMedia）
-- [features.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/features.md) — 字幕、TTS、音频响应、标记高亮、转场（按需加载）
-- [website-to-video.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md) — 7 步捕获转视频工作流
-- [troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md) — OpenClaw 修复、环境变量、常见渲染错误
+- [composition.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/composition.md) — data 属性、时间轴契约、不可违反的规则、排版/资源规则
+- [cli.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/cli.md) — 所有 CLI 命令（init、capture、lint、validate、inspect、preview、render、transcribe、tts、doctor、browser、info、upgrade、benchmark）
+- [gsap.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/gsap.md) — HyperFrames 的 GSAP 核心 API（tween、ease、stagger、timeline、matchMedia）
+- [features.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/features.md) — 字幕、TTS、音频响应、标记高亮、转场（按需加载）
+- [website-to-video.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/website-to-video.md) — 7 步捕获转视频工作流
+- [troubleshooting.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/creative/hyperframes/references/troubleshooting.md) — OpenClaw 修复、环境变量、常见渲染错误

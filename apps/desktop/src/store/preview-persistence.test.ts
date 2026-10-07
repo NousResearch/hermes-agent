@@ -4,7 +4,7 @@ import { decodePreviewTabs } from './preview'
 
 describe('persisted preview migration', () => {
   it('upgrades a pre-PDF remote tab from binary to pdf', () => {
-    const source = '/remote/.hermes/desktop-attachments/spec.pdf'
+    const source = '/remote/.rabbit/desktop-attachments/spec.pdf'
 
     const [restored] = decodePreviewTabs(
       JSON.stringify([

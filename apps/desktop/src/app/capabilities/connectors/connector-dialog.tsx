@@ -7,15 +7,13 @@ import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { connectorIconUrl } from '@/lib/connector-tools'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { CatalogMark } from './catalog-mark'
 import { connectorKindWord, showsCatalogMark } from './connector-kind'
 import { type InstallField, LocalInstall } from './local-server-control'
-import type { ConnectorCardModel, ConnectorState, ConnectorVerb, ConnectorWayHosted, ConnectorWayLocal } from './types'
-import { type WayChoice, WaysSection } from './ways-section'
+import type { ConnectorCardModel, ConnectorState, ConnectorVerb, ConnectorWayLocal } from './types'
 
 type BadgeVariant = 'default' | 'destructive' | 'muted' | 'success' | 'warn'
 
@@ -29,50 +27,25 @@ const STATE_BADGE = {
   unknown: 'muted'
 } satisfies Record<ConnectorState, BadgeVariant>
 
-const RULEABLE = {
-  available: false,
-  broken: true,
-  connected: true,
-  connecting: false,
-  expired: true,
-  off: true,
-  unknown: true
-} satisfies Record<ConnectorState, boolean>
-
-const ruleable = (way: ConnectorWayHosted | null): boolean => way !== null && way.connected && RULEABLE[way.state]
-
 export interface ConnectorDialogProps {
   advanced?: ReactNode
   card: ConnectorCardModel
-  connectElement?: ReactNode
   cost?: { tokensPerCall?: string; usesPerMonth?: string }
   installFields?: readonly InstallField[]
   installing?: boolean
   menu?: ReactNode
   onAuthenticate?: () => void
-  onConnect?: () => void
-  onDisconnect?: () => void
   onInstall?: (env: Record<string, string>) => void
-  onOpenAdmin?: () => void
   onOpenChange: (open: boolean) => void
-  onReconnect?: () => void
   onServerToggle?: (next: boolean) => void
-  onToggleForMe?: (next: boolean) => void
-  onVerb?: () => void
-  onWayChange?: (way: WayChoice) => void
   open: boolean
-  orgDisabledCount?: number
-  rulesReadOnly?: boolean
-  togglePending?: boolean
   tools: ReactNode
-  way?: WayChoice
 }
 
-const localTarget = (card: ConnectorCardModel): string | undefined => card.ways.local?.target
+const localTarget = (card: ConnectorCardModel): string | undefined => card.ways.target
 
 export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: ConnectorDialogProps) {
   const { t } = useI18n()
-  const local = card.residency === 'local'
   const titleRef = useRef<HTMLHeadingElement>(null)
 
   return (
@@ -89,11 +62,11 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
         <Header card={card} titleRef={titleRef} {...rest} />
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {card.ways.hosted ? <HostedLead card={card} {...rest} /> : <LocalLead card={card} {...rest} />}
+          <LocalLead card={card} {...rest} />
 
           {tools}
 
-          {local ? <LocalFoot card={card} {...rest} /> : <HostedFoot card={card} {...rest} />}
+          <LocalFoot card={card} {...rest} />
         </div>
 
         <span className="sr-only">{t.connectorsPage.title}</span>
@@ -107,13 +80,12 @@ type PartProps = Omit<ConnectorDialogProps, 'onOpenChange' | 'open' | 'tools'>
 function Header({ card, titleRef, ...rest }: PartProps & { titleRef: RefObject<HTMLHeadingElement | null> }) {
   const { t } = useI18n()
   const copy = t.connectorsPage.card
-  const local = card.residency === 'local'
 
   return (
     <header className="flex shrink-0 items-center gap-2.5 border-b border-(--ui-stroke-tertiary) px-5 py-3">
       <ConnectorLogo
         className="size-9 shrink-0 rounded-[9px]"
-        connector={{ iconUrl: local ? undefined : connectorIconUrl(card.slug), name: card.slug, title: card.name }}
+        connector={{ name: card.slug, title: card.name }}
       />
 
       <div className="grid min-w-0 flex-1 gap-0.5">
@@ -143,30 +115,17 @@ function Header({ card, titleRef, ...rest }: PartProps & { titleRef: RefObject<H
 
 function HeaderActions({
   card,
-  connectElement,
   installFields,
   installing,
   menu,
   onAuthenticate,
   onInstall,
-  onServerToggle,
-  onToggleForMe,
-  onVerb,
-  rulesReadOnly = false,
-  togglePending = false
+  onServerToggle
 }: PartProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage.card
-  const local = card.residency === 'local'
-  const hosted = card.ways.hosted
-  const localWay = card.ways.local
-  const appSwitch = ruleable(hosted) && onToggleForMe !== undefined
-
-  const action = hosted
-    ? localWay
-      ? undefined
-      : leadVerb({ appSwitch, card, hasElement: connectElement !== undefined, onVerb })
-    : localAction({ installFields, installing, onAuthenticate, onInstall, way: localWay })
+  const localWay = card.ways
+  const action = localAction({ installFields, installing, onAuthenticate, onInstall, way: localWay })
 
   return (
     <div className="flex shrink-0 items-center gap-2">
@@ -176,21 +135,11 @@ function HeaderActions({
         </Button>
       ) : null}
 
-      {local && !hosted && localWay?.installed === true && card.plugin === undefined && onServerToggle ? (
+      {localWay.installed === true && card.plugin === undefined && onServerToggle ? (
         <Switch
           aria-label={localWay.serverEnabled === true ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
           checked={localWay.serverEnabled ?? false}
           onCheckedChange={onServerToggle}
-          size="xs"
-        />
-      ) : null}
-
-      {appSwitch && hosted && onToggleForMe ? (
-        <Switch
-          aria-label={t.connectorsPage.dialog.appSwitch(card.name)}
-          checked={hosted.state !== 'off'}
-          disabled={card.offBy === 'org' || togglePending || rulesReadOnly}
-          onCheckedChange={onToggleForMe}
           size="xs"
         />
       ) : null}
@@ -223,12 +172,8 @@ function localAction({
   installing?: boolean
   onAuthenticate?: () => void
   onInstall?: (env: Record<string, string>) => void
-  way: ConnectorWayLocal | null
+  way: ConnectorWayLocal
 }): LeadVerb | undefined {
-  if (!way) {
-    return undefined
-  }
-
   if (way.installed === false) {
     return onInstall && (installFields ?? []).length === 0
       ? { busy: installing, run: () => onInstall({}), verb: 'install' }
@@ -238,104 +183,10 @@ function localAction({
   return way.verb === 'authenticate' && onAuthenticate ? { run: onAuthenticate, verb: 'authenticate' } : undefined
 }
 
-function leadVerb({
-  appSwitch,
-  card,
-  hasElement,
-  onVerb
-}: {
-  appSwitch: boolean
-  card: ConnectorCardModel
-  hasElement: boolean
-  onVerb?: () => void
-}): LeadVerb | undefined {
-  const verb = card.verb
-
-  if (
-    hasElement ||
-    verb === undefined ||
-    verb === 'stopWaiting' ||
-    onVerb === undefined ||
-    (verb === 'turnBackOn' && appSwitch)
-  ) {
-    return undefined
-  }
-
-  return { run: onVerb, verb }
-}
-
-function HostedLead({
-  card,
-  connectElement,
-  installFields,
-  installing,
-  onAuthenticate,
-  onConnect,
-  onInstall,
-  onOpenAdmin,
-  onReconnect,
-  onServerToggle,
-  onToggleForMe,
-  onVerb,
-  onWayChange,
-  orgDisabledCount = 0,
-  way = 'hosted'
-}: PartProps) {
-  const { t } = useI18n()
-  const waiting = card.verb === 'stopWaiting' && connectElement === undefined ? onVerb : undefined
-  const reason = card.reason ? (card.reason.text ?? t.connectorsPage.card.reason[card.reason.key]) : undefined
-  const paired = card.ways.local !== null
-  const showsReason = reason !== undefined && connectElement === undefined && (!paired || waiting !== undefined)
-
-  if (!paired && connectElement === undefined && !showsReason && orgDisabledCount <= 0) {
-    return null
-  }
-
-  return (
-    <div className="grid shrink-0 gap-3 border-b border-(--ui-stroke-tertiary) px-3.5 py-3">
-      {connectElement}
-
-      {showsReason ? (
-        <div className="flex items-center gap-3">
-          <p className="min-w-0 flex-1 text-[0.72rem] text-(--ui-text-secondary)">{reason}</p>
-          {waiting ? (
-            <Button onClick={waiting} size="inline" variant="textStrong">
-              {t.connectorsPage.card.verb.stopWaiting}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
-      <OrgNote count={orgDisabledCount} onOpenAdmin={onOpenAdmin} />
-
-      {onWayChange ? (
-        <WaysSection
-          card={card}
-          installFields={installFields}
-          installing={installing}
-          onAuthenticate={onAuthenticate}
-          onChange={onWayChange}
-          onConnect={onConnect}
-          onInstall={onInstall}
-          onReconnect={onReconnect}
-          onServerToggle={card.plugin === undefined ? onServerToggle : undefined}
-          onToggleForMe={onToggleForMe}
-          value={way}
-        />
-      ) : null}
-    </div>
-  )
-}
-
-function HostedFoot({ card }: PartProps) {
-  const { t } = useI18n()
-
-  return card.ways.hosted ? <FootLine>{t.connectorsPage.dialog.nousLine}</FootLine> : null
-}
 
 function LocalLead({ card, installFields = [], installing, onInstall }: PartProps) {
-  const local = card.ways.local
-  const install = local?.installed === false && installFields.length > 0 ? onInstall : undefined
+  const local = card.ways
+  const install = local.installed === false && installFields.length > 0 ? onInstall : undefined
 
   if (!install) {
     return null
@@ -383,34 +234,6 @@ function LocalFoot({ advanced, cost }: PartProps) {
           </summary>
           <div className="pt-2">{advanced}</div>
         </details>
-      ) : null}
-    </div>
-  )
-}
-
-function FootLine({ children }: { children: string }) {
-  return (
-    <p className="shrink-0 border-t border-(--ui-stroke-tertiary) px-3.5 py-2 text-[0.7rem] text-(--ui-text-tertiary)">
-      {children}
-    </p>
-  )
-}
-
-function OrgNote({ count, onOpenAdmin }: { count: number; onOpenAdmin?: () => void }) {
-  const { t } = useI18n()
-  const copy = t.connectorsPage.dialog
-
-  if (count <= 0) {
-    return null
-  }
-
-  return (
-    <div className="grid gap-1 rounded-md bg-(--ui-orange)/8 p-2.5">
-      <p className="text-[0.7rem] text-(--ui-text-secondary)">{copy.orgNote(count)}</p>
-      {onOpenAdmin ? (
-        <Button className="justify-self-start" onClick={onOpenAdmin} size="inline" variant="textStrong">
-          {copy.orgLink}
-        </Button>
       ) : null}
     </div>
   )

@@ -1,7 +1,7 @@
 /**
  * In-app update mutual-exclusion marker (#50238).
  *
- * The Tauri updater writes HERMES_HOME/.hermes-update-in-progress for the whole
+ * The Tauri updater writes RABBIT_HOME/.rabbit-update-in-progress for the whole
  * duration of an `--update` run (see apps/bootstrap-installer/src-tauri/src/
  * update.rs `UpdateMarkerGuard`). The marker body is two lines: the updater's
  * pid and the unix-seconds it started.
@@ -9,7 +9,7 @@
  * Why: if the user relaunches the desktop mid-update — the window vanished with
  * no progress and looks crashed — a fresh instance must NOT spawn its own local
  * backend. That backend re-locks the venv shim, the updater's straggler cleanup
- * (`force_kill_other_hermes`, taskkill /IM hermes.exe) kills it, the launch
+ * (`force_kill_other_rabbit`, taskkill /IM rabbit.exe) kills it, the launch
  * fails with the 45s "backend didn't come up" timeout, and the user relaunches
  * into the same trap — an infinite respawn/kill loop. The desktop gates local
  * backend startup on this marker and parks until the update finishes.
@@ -30,8 +30,8 @@ import path from 'path'
 // recycled the pid onto an unrelated process), so the gate self-heals.
 export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
 
-export function markerPath(hermesHome) {
-  return path.join(hermesHome, '.hermes-update-in-progress')
+export function markerPath(rabbitHome) {
+  return path.join(rabbitHome, '.rabbit-update-in-progress')
 }
 
 // True only if a host process with this pid is currently alive. Signal 0 does
@@ -117,7 +117,7 @@ function isZombieState(state: string | null | undefined): boolean {
  * clock for tests.
  */
 export function readLiveUpdateMarker(
-  hermesHome,
+  rabbitHome,
   {
     kill,
     now = Date.now,
@@ -131,7 +131,7 @@ export function readLiveUpdateMarker(
     processState?: (pid: number) => string | null
   } = {}
 ) {
-  const file = markerPath(hermesHome)
+  const file = markerPath(rabbitHome)
   let raw
 
   try {
@@ -163,7 +163,7 @@ export function readLiveUpdateMarker(
  * Write the update-in-progress marker *from the desktop* before handing off
  * to the detached updater.
  *
- * The Tauri-based hermes-setup.exe takes several seconds to initialise its
+ * The Tauri-based rabbit-setup.exe takes several seconds to initialise its
  * window and reach the Rust `run_update` entry point where it writes the
  * marker itself. During that gap the desktop's `app.quit()` teardown kills
  * the backend child, the renderer's WebSocket drops, and the renderer
@@ -183,7 +183,7 @@ export function readLiveUpdateMarker(
  * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
  */
 export function writeUpdateMarker(
-  hermesHome,
+  rabbitHome,
   pid,
   {
     kill,
@@ -197,9 +197,9 @@ export function writeUpdateMarker(
     startedAt?: number
   } = {}
 ) {
-  const file = markerPath(hermesHome)
+  const file = markerPath(rabbitHome)
   const nowMs = now()
-  const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
+  const owner = readLiveUpdateMarker(rabbitHome, { kill, maxAgeMs, now: () => nowMs })
 
   const acquiredAt =
     typeof startedAt === 'number' && Number.isInteger(startedAt)
@@ -223,7 +223,7 @@ export function writeUpdateMarker(
  * `writeUpdateMarker` unconditionally overwrites the marker file. Called
  * before every hand-off with no conflict check, a user who clicks "Update"
  * again while a prior updater is still parked mid-run (e.g. "waiting for
- * Hermes to exit…") clobbers that still-running updater's claim: the
+ * Rabbit to exit…") clobbers that still-running updater's claim: the
  * retry's pre-write now names the NEW child, so the OLD process — alive
  * and mutating the checkout — is no longer recorded as the owner. A second
  * live updater can then run over the same tree unrecorded, the exact
@@ -236,14 +236,14 @@ export function writeUpdateMarker(
  * `readLiveUpdateMarker`.
  */
 export function updateHandoffConflict(
-  hermesHome,
+  rabbitHome,
   opts: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
   } = {}
 ) {
-  const owner = readLiveUpdateMarker(hermesHome, opts)
+  const owner = readLiveUpdateMarker(rabbitHome, opts)
 
   if (!owner) {
     return null

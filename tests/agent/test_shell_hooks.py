@@ -121,7 +121,7 @@ class TestCallbackSubprocess:
         """Registering via register_from_config makes
         get_pre_tool_call_block_message surface the block — the real
         end-to-end control flow used by run_agent._invoke_tool."""
-        from hermes_cli import plugins
+        from rabbit_cli import plugins
 
         script = _write_script(
             tmp_path, "block.sh",
@@ -129,8 +129,8 @@ class TestCallbackSubprocess:
             'printf \'{"decision": "block", "reason": "blocked-by-shell"}\\n\'\n',
         )
 
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_ACCEPT_HOOKS", "1")
 
         # Fresh manager
         plugins._plugin_manager = plugins.PluginManager()
@@ -154,15 +154,15 @@ class TestCallbackSubprocess:
     def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
         """End to end: a shell hook's approve directive escalates to request_tool_approval with its
         message and rule_key, and the gate's denial blocks the tool (#92553)."""
-        from hermes_cli import plugins
+        from rabbit_cli import plugins
 
         script = _write_script(
             tmp_path, "approve.sh",
             "#!/usr/bin/env bash\n"
             'printf \'{"action": "approve", "message": "risky", "rule_key": "terminal:rm"}\\n\'\n',
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_ACCEPT_HOOKS", "1")
         plugins._plugin_manager = plugins.PluginManager()
         cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
         assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
@@ -308,12 +308,12 @@ class TestParseHooksBlock:
 
 class TestIdempotentRegistration:
     def test_double_call_registers_once(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins
+        from rabbit_cli import plugins
 
         script = _write_script(tmp_path, "h.sh",
                                "#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_ACCEPT_HOOKS", "1")
 
         plugins._plugin_manager = plugins.PluginManager()
 
@@ -332,12 +332,12 @@ class TestIdempotentRegistration:
     ):
         """Same script used for different matchers under one event must
         register both callbacks — dedupe keys on (event, matcher, command)."""
-        from hermes_cli import plugins
+        from rabbit_cli import plugins
 
         script = _write_script(tmp_path, "h.sh",
                                "#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_ACCEPT_HOOKS", "1")
 
         plugins._plugin_manager = plugins.PluginManager()
 
@@ -368,7 +368,7 @@ class TestAllowlistConcurrency:
     def test_save_allowlist_uses_unique_tmp_paths(self, tmp_path, monkeypatch):
         """Two save_allowlist calls in flight must use distinct tmp files
         so the loser's os.replace does not ENOENT on the winner's sweep."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
         p = shell_hooks.allowlist_path()
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -640,7 +640,7 @@ class TestFailSemanticsEndToEnd:
 
     @pytest.mark.platforms("linux")
     def test_run_once_reflects_exit_2_block(self, tmp_path):
-        """hermes hooks test must mirror production semantics."""
+        """rabbit hooks test must mirror production semantics."""
         script = _write_script(
             tmp_path, "exit2.sh",
             "#!/usr/bin/env bash\n"
@@ -680,27 +680,27 @@ class TestFailSemanticsEndToEnd:
 class TestRoutedProfileEnv:
     @pytest.mark.platforms("linux")
     def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
-        """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
+        """Under multiplexing the child gets the ROUTED RABBIT_HOME, the default profile's secrets
         stay out of its env, and the payload names the firing profile."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         launch, routed = tmp_path / "launch", tmp_path / "routed"
         launch.mkdir(); routed.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("RABBIT_HOME", str(launch))
         monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
         monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
         script = _write_script(
             tmp_path, "env_dump.sh",
             "#!/usr/bin/env bash\ncat > /dev/null\n"
-            'printf \'{"home": "%s", "key": "%s"}\\n\' "$HERMES_HOME" "${OPENAI_API_KEY:-}"\n',
+            'printf \'{"home": "%s", "key": "%s"}\\n\' "$RABBIT_HOME" "${OPENAI_API_KEY:-}"\n',
         )
         spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
-        token = set_hermes_home_override(str(routed))
+        token = set_rabbit_home_override(str(routed))
         try:
             result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
             payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
         finally:
-            reset_hermes_home_override(token)
+            reset_rabbit_home_override(token)
         seen = json.loads(result["stdout"])
         assert seen["home"] == str(routed)
         assert seen["key"] == ""

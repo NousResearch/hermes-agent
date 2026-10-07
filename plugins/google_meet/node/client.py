@@ -40,7 +40,7 @@ class NodeClient:
             raise RuntimeError("response missing payload dict")
         return payload_out
 
-    def start_bot(self, url: str, guest_name: str = "Hermes Agent", duration: Optional[str] = None,
+    def start_bot(self, url: str, guest_name: str = "Rabbit Agent", duration: Optional[str] = None,
                   headed: bool = False, mode: str = "transcribe") -> Dict[str, Any]:
         payload: Dict[str, Any] = {"url": url, "guest_name": guest_name, "headed": bool(headed), "mode": mode}
         if duration is not None:

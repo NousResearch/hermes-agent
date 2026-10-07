@@ -82,18 +82,15 @@ export interface Translations {
     installId: string
     consentWindow: string
     readDocs: string
-    share: string
     local: string
     off: string
     changeLater: string
     saveFailed: string
     collectLabel: string
     collectDesc: string
-    sendLabel: string
-    sendDesc: string
     unavailable: string
     stripBody: string
-    stripChoices: { share: string; local: string; off: string }
+    stripChoices: { local: string; off: string }
     stripDetails: string
   }
   externalOpenFailed: {
@@ -224,10 +221,7 @@ export interface Translations {
       matchesElsewhere: (count: number) => string
       showAllMatches: string
       segmentNoMatch: (segment: string) => string
-      freeTierNote: string
-      signInLine: string
       signIn: string
-      managedUnavailable: string
       writeFailed: string
       refreshFailed: string
       disconnectNoAccount: string
@@ -282,7 +276,6 @@ export interface Translations {
       turnOffLocal: string
       providedByPlugin: (plugin: string) => string
       openPlugins: string
-      nousLine: string
       rulesReadOnly: string
       rulesAppOff: (name: string) => string
       rulesSignIn: string
@@ -469,13 +462,13 @@ export interface Translations {
       loadingSessions: string
       retryingRemoteBackend: string
       startingDesktopConnection: string
-      startingHermesDesktop: string
+      startingRabbitDesktop: string
     }
     errors: {
       backgroundExited: string
       backgroundExitedDuringStartup: string
       backendStopped: string
-      restartHermes: string
+      restartRabbit: string
       openLogs: string
       desktopBootFailed: string
       gatewayConnectionLost: string
@@ -513,11 +506,6 @@ export interface Translations {
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
-      cloudDownTitle: string
-      cloudDownDescription: string
-      cloudDownHint: string
-      cloudDownCheckPortal: string
-      cloudDownDiscord: string
       hideRecentLogs: string
       showRecentLogs: string
       signedInTitle: string
@@ -549,7 +537,7 @@ export interface Translations {
     desktopOutOfDateMessage: string
     updateDesktopApp: string
     installMethodUnsupportedTitle: string
-    updateHermes: string
+    updateRabbit: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
@@ -578,10 +566,10 @@ export interface Translations {
       openaiTtsNeedsKey: string
       codeSkewRestartRequired: string
       rpcOutOfSync: string
-      restartHermesFailed: string
+      restartRabbitFailed: string
     }
     actions: {
-      restartHermes: string
+      restartRabbit: string
       openKeys: string
       openGateways: string
       openMaintenance: string
@@ -636,34 +624,12 @@ export interface Translations {
   }
 
   billingBlock: {
-    titleNous: string
     titleProvider: (provider: string) => string
     fallbackMessage: string
-    openBilling: string
     addCredits: string
     dismiss: string
   }
 
-  sendDiagnostics: {
-    title: string
-    privacyNotice: string
-    upload: string
-    uploading: string
-    cancel: string
-    close: string
-    copyLink: string
-    uploadIdFallback: (id: string) => string
-    doneTitle: string
-    doneDescription: string
-    failedTitle: string
-    failedHint: string
-    handoffLead: string
-    links: {
-      discord: string
-      github: string
-      portal: string
-    }
-  }
 
   titlebar: {
     hideSidebar: string
@@ -1053,7 +1019,7 @@ export interface Translations {
     uninstallSection: {
       dangerZone: string
       checkingInstalled: string
-      uninstallHermes: string
+      uninstallRabbit: string
       chooseHowMuch: string
       confirmUninstall: string
       confirmBody: (what: string) => string
@@ -1244,14 +1210,11 @@ export interface Translations {
       updateAllRunning: string
       updateAllDone: string
       updateAllFailed: string
-      updateSkippedCloud: string
       kindLocal: string
       kindRemote: string
-      kindCloud: string
       kindSsh: string
       kindLocalDesc: string
       kindRemoteDesc: string
-      kindCloudDesc: string
       kindSshDesc: string
       labelTitle: string
       labelDesc: string
@@ -1269,7 +1232,6 @@ export interface Translations {
       duplicateSsh: (label: string) => string
       sameBackendHint: (label: string) => string
       localAddHint: string
-      cloudAddHint: string
       save: string
       saving: string
       cancel: string
@@ -1307,37 +1269,6 @@ export interface Translations {
       remoteTitle: string
       remoteDesc: string
       remoteAuthHint: string
-      cloudTitle: string
-      cloudDesc: string
-      cloudSignInTitle: string
-      cloudSignIn: string
-      cloudSignedIn: string
-      cloudNeedsSignIn: string
-      cloudSignedInDesc: string
-      cloudAgentsTitle: string
-      cloudOrgPickerTitle: string
-      cloudOrgSelect: string
-      cloudOrgChange: string
-      cloudOrgRole: (role: string) => string
-      cloudLoadingAgents: string
-      cloudNoAgents: { before: string; linkText: string; after: string }
-      cloudRefresh: string
-      cloudConnect: string
-      cloudSavedTitle: string
-      cloudSavedDesc: string
-      cloudUseSaved: string
-      cloudActive: string
-      cloudConnecting: string
-      cloudDiscoverFailed: string
-      cloudConnectFailed: string
-      cloudSignInFailed: string
-      cloudSignedOutTitle: string
-      cloudSignedOutMessage: string
-      cloudConnectedTitle: string
-      cloudConnectedPill: string
-      cloudConnectedTo: (name: string) => string
-      cloudAgentProvisioning: string
-      cloudStatusLabel: (status: string) => string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string
@@ -1406,9 +1337,9 @@ export interface Translations {
       sshPortDesc: string
       sshKeyTitle: string
       sshKeyDesc: string
-      sshHermesPathTitle: string
-      sshHermesPathDesc: string
-      sshHermesPathPlaceholder: string
+      sshRabbitPathTitle: string
+      sshRabbitPathDesc: string
+      sshRabbitPathPlaceholder: string
       sshTestConnection: string
       sshConnect: string
       sshButtonsHint: string
@@ -1649,218 +1580,6 @@ export interface Translations {
       deleted: (model: string) => string
       deleteFailed: string
     }
-    billing: {
-      perMonth: (amount: string) => string
-      creditsPerMonth: (amount: string) => string
-      usageLabel: (label: string) => string
-      freeTier: {
-        signIn: string
-        title: string
-        message: string
-        caption: string
-        name: string
-        footnote: string
-        plan: string
-        model: string
-        connectors: string
-        included: string
-      }
-      amountValidation: {
-        reloadTo: string
-        greaterThanThreshold: string
-        decimal: (label: string) => string
-        positive: (label: string) => string
-        minimum: (label: string, amount: string) => string
-        maximum: (label: string, amount: string) => string
-      }
-      stepUp: {
-        openVerification: string
-        dismiss: string
-        waiting: string
-        verify: string
-        deniedTitle: string
-        deniedBody: string
-        successTitle: string
-        successBody: string
-      }
-      charge: {
-        added: (amount: string) => string
-        failedTitle: string
-        unconfirmedTitle: string
-        unconfirmedBody: (message: string) => string
-        checkTitle: string
-        checkBody: string
-        untrackedTitle: string
-        untrackedBody: string
-        timeoutTitle: string
-        timeoutBody: string
-        authenticationRequired: string
-        expired: string
-        declined: string
-        failedBody: (reason: string) => string
-      }
-      title: string
-      preview: string
-      summary: {
-        balance: string
-        plan: string
-        autoRefill: string
-      }
-      sections: {
-        invoices: string
-
-        plan: string
-        paymentAndCredits: string
-        usage: string
-      }
-      usage: {
-        title: string
-      }
-      buyCredits: {
-        customAmount: string
-        title: string
-        buyButton: string
-        processing: string
-        added: (amount: string) => string
-        retry: string
-        openPortal: string
-      }
-      plan: {
-        title: string
-        changePlan: string
-        viewPlans: string
-        backAria: string
-        current: string
-        scheduled: string
-        empty: string
-        undo: string
-        undoing: string
-        downgrade: string
-        confirmDowngrade: string
-        tryAgain: string
-        checkingChange: string
-        cannotChange: string
-        alreadyOn: (name: string) => string
-        notScheduleable: string
-        scheduling: string
-        cancel: string
-        effectScheduled: (targetName: string, effectiveAt: string, creditsDelta: string) => string
-      }
-      autoReload: {
-        threshold: string
-        thresholdAria: string
-        reloadTo: string
-        reloadToAria: string
-        turnOffConfirm: string
-        turnOff: string
-        disable: string
-        updated: string
-        turnedOff: string
-        manage: string
-        save: string
-        saving: string
-        cancel: string
-      }
-      state: {
-        notice: {
-          loggedOut: { title: string; message: string; action: string }
-          openPortal: string
-          noCard: { title: string; message: string; action: string }
-        }
-        paymentMethod: {
-          title: string
-          description: string
-          addAction: string
-          updateAction: string
-          provenance: {
-            autoRefill: string
-            customerDefault: string
-            subPin: string
-            suffix: (label: string) => string
-          }
-        }
-        buyCredits: {
-          description: string
-        }
-        autoRefill: {
-          title: string
-          genericDescription: string
-          offPill: string
-          enabledPill: string
-          notAvailablePill: string
-          manageCaption: string
-          turnOnCaption: string
-          chargesDescription: (reloadTo: string, threshold: string) => string
-          distinctCardCaption: (cardLabel: string) => string
-          distinctCardFallback: string
-          reconcileAction: string
-        }
-        usage: {
-          subscriptionCredits: {
-            title: string
-            barLabel: string
-            captionResets: (date: string) => string
-            valueOf: (remaining: string, monthly: string) => string
-            valueOver: (remaining: string, monthly: string, over: string) => string
-          }
-          topupCredits: {
-            title: string
-            caption: string
-          }
-          monthlyCap: {
-            title: string
-            barLabel: string
-            captionDefault: string
-            captionSpending: string
-            valueUsed: (spent: string, limit: string) => string
-          }
-        }
-        planCard: {
-          freeTier: string
-          chooseAction: string
-          adjustPlanAction: string
-          unavailableCaption: string
-          downgradeCaption: (tierName: string, when: string) => string
-          cancellationCaption: (when: string) => string
-          renewsCaption: (date: string) => string
-          noSubscriptionCaption: string
-        }
-      }
-      errors: {
-        consentRequired: { title: string; message: string }
-        insufficientScope: { title: string; message: string }
-        remoteSpendingRevoked: {
-          title: string
-          messageByAdmin: string
-          messageBySelf: string
-        }
-        remoteSpendingReconnect: (who: string) => string
-        sessionRevoked: { title: string; message: string }
-        cliBillingDisabled: { title: string; message: string }
-        roleRequired: { title: string; message: string }
-        idempotencyConflict: { title: string; message: string }
-        noPaymentMethod: { title: string; message: string }
-        orgAccessDenied: { title: string; message: string }
-        monthlyCapExceeded: {
-          title: string
-          messageReached: string
-          messageHeadroom: (remaining: string) => string
-        }
-        rateLimited: {
-          title: string
-          message: (mins: number) => string
-        }
-        stripeUnavailable: {
-          title: string
-          message: (mins: number) => string
-        }
-        upgradeCapExceeded: { title: string; message: string }
-        endpointUnavailable: { title: string; message: string }
-        timeout: { title: string; message: string }
-        transport: { title: string; message: string }
-        default: { title: string; message: string }
-      }
-    }
     providers: {
       connectAccount: string
       haveApiKey: string
@@ -1942,15 +1661,6 @@ export interface Translations {
       activeBackend: string
       activeBackendHint: string
       useBackend: string
-      nousIncluded: string
-      nousAuthNeededTitle: string
-      nousAuthNeededMessage: (provider: string) => string
-      nousAuthSignIn: string
-      nousAuthDoneTitle: string
-      nousAuthDoneMessage: string
-      nousAuthFailed: string
-      nousAuthFailedMessage: string
-      nousAuthTryAgain: string
       noApiKeyRequired: string
       postSetupHint: (step: string) => string
       postSetupInstalledHint: string
@@ -2122,7 +1832,7 @@ export interface Translations {
       serverStates: {
         connected: string
         app_not_running: string
-        hermes_not_connected: string
+        rabbit_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2239,7 +1949,6 @@ export interface Translations {
     loading: string
     emptyTitle: string
     emptyDesc: string
-    share: string
     shareHint: string
     shareTitle: string
     sharePlaceholder: string
@@ -2387,7 +2096,7 @@ export interface Translations {
     noSessions: string
     gatewayRunning: string
     gatewayStopped: string
-    hermesActiveSessions: (version: string, count: number) => string
+    rabbitActiveSessions: (version: string, count: number) => string
     restartGateway: string
     openBrowser: string
     toggleBrowser: string
@@ -2396,7 +2105,7 @@ export interface Translations {
     sharedGatewayRestartDescription: (bots: string) => string
     sharedGatewayRestartConfirm: string
     sharedGatewayRestarted: (count: number) => string
-    updateHermes: string
+    updateRabbit: string
     reloadWindow: string
     actionRunning: string
     actionDone: string
@@ -3739,7 +3448,6 @@ export interface Translations {
     reopenVerification: string
     copy: string
     defaultModel: string
-    freeTier: string
     pro: string
     free: string
     price: (input: string, output: string) => string
@@ -3748,76 +3456,6 @@ export interface Translations {
     docs: (provider: string) => string
   }
 
-  freeTier: {
-    /** Settings › Providers row title while the Nous identity is the free tier. */
-    providerRowTitle: string
-    /** The featured row's pitch while the identity is the free tier: what signing in adds. */
-    providerRowPitch: string
-    // First-launch introduction (ready screen + composer strip).
-    readyTitle: string
-    readyCaption: string
-    begin: string
-    signInInstead: string
-    otherProviders: string
-    stripTitle: string
-    stripBody: string
-    openModelPicker: string
-    dismiss: string
-    // Statusbar chip.
-    /** The status-bar chip's label: the provider name alone; the model id and the sign-in follow it. */
-    providerName: string
-    statusLabel: (model: string) => string
-    // Sign-in dialog.
-    signIn: string
-    signInHeading: string
-    settingUp: string
-    codeBody: string
-    copyLink: string
-    doNotShare: string
-    waiting: string
-    finishingHeading: string
-    finishingBody: string
-    signedInAs: (email: string) => string
-    signedIn: string
-    completedBody: string
-    defaultModel: string
-    change: string
-    done: string
-    notNow: string
-    tryAgain: string
-    startAgain: string
-    didNotComplete: string
-    rejectedBody: string
-    supersededBody: string
-    timedOutHeading: string
-    timedOutBody: string
-    retiredBody: string
-    errorBody: string
-    /** The account service asked for a short wait mid sign-in (a busy account, a rate limit, the ops pause). */
-    busyHeading: string
-    busyBody: (wait: string) => string
-    /** The account service could not be reached or errored mid sign-in. */
-    unreachableBody: string
-    alreadySignedInHeading: string
-    alreadySignedInBody: string
-    // First-launch set-up failure notice: the free tier could not be created at boot.
-    // One sentence per backend code (`hermes_cli/anon_auth.py::ANON_*`); the copy never says
-    // the free MODEL is off — what is unavailable is using Hermes without signing in.
-    setupFailed: {
-      gateClosed: string
-      paused: string
-      rateLimited: (wait: string) => string
-      unreachable: string
-      serverError: string
-      powRequired: string
-      locked: string
-      generic: string
-      /** The sign-in door, when the account service is reachable: the Nous row sits right below. */
-      signInBelow: string
-      tryAgain: string
-      retrying: string
-    }
-  }
 
   modelPicker: {
     title: string
@@ -3834,7 +3472,6 @@ export interface Translations {
     pro: string
     proNeedsSubscription: string
     free: string
-    freeTier: string
     priceTitle: string
     wasPrice: string
     customModel: string
@@ -4339,14 +3976,13 @@ export interface Translations {
       errorChooseModel: string
       errorCompressConversation: string
       errorCompressFailed: string
-      errorOpenHermesFolder: string
-      errorOpenHermesFolderFailed: string
+      errorOpenRabbitFolder: string
+      errorOpenRabbitFolderFailed: string
       errorUpdateApiKey: string
       /** One-click recovery for an expired/revoked OAuth grant: re-runs that
        *  provider's sign-in flow (auth layer, authKind 'oauth'). */
       errorSignInAgain: (provider: string) => string
       /** Free-tier refusals: opens the free sign-in dialog (signing in is free and lifts the refusal). */
-      errorSignInFreeTier: string
       /** Explains WHY the turn failed for an OAuth 401 — the raw body
        *  ("HTTP 401: User not found.") doesn't say "sign in again". */
       errorOauthExpired: (provider: string) => string
@@ -4354,7 +3990,6 @@ export interface Translations {
       errorOpenLogsFailed: string
       errorOpenDesktopLogs: string
       errorCopyDiagnostics: string
-      errorSendDiagnostics: string
       filesChanged: (count: number) => string
       reviewChanges: string
       readAloudFailed: string
@@ -4668,7 +4303,6 @@ export interface Translations {
     boundaryTitle: string
     boundaryDesc: string
     boundaryDetails: string
-    sendDiagnostics: string
     reloadWindow: string
     openLogs: string
   }

@@ -19,33 +19,33 @@ from tools.environments.local import build_subprocess_env
 
 @pytest.fixture(autouse=True)
 def _isolate_session_context():
-    saved_env = os.environ.get("HERMES_SESSION_ID")
+    saved_env = os.environ.get("RABBIT_SESSION_ID")
     saved_ctx = _SESSION_ID.get()
     _SESSION_ID.set(_UNSET)
-    os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("RABBIT_SESSION_ID", None)
     try:
         yield
     finally:
         _SESSION_ID.set(saved_ctx)
         if saved_env is None:
-            os.environ.pop("HERMES_SESSION_ID", None)
+            os.environ.pop("RABBIT_SESSION_ID", None)
         else:
-            os.environ["HERMES_SESSION_ID"] = saved_env
+            os.environ["RABBIT_SESSION_ID"] = saved_env
 
 
 def _construct_child(session_id: str) -> tuple[object, str | None]:
     """Model the session mutation performed by AIAgent.__init__."""
     with delegated_child_context():
         set_current_session_id(session_id)
-        return _SESSION_ID.get(), os.environ.get("HERMES_SESSION_ID")
+        return _SESSION_ID.get(), os.environ.get("RABBIT_SESSION_ID")
 
 
 def test_root_agent_keeps_contextvar_and_environment_in_sync():
     set_current_session_id("parent-session")
 
     assert _SESSION_ID.get() == "parent-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
-    assert get_session_env("HERMES_SESSION_ID") == "parent-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
+    assert get_session_env("RABBIT_SESSION_ID") == "parent-session"
 
 
 def test_child_construction_restores_both_parent_id_paths():
@@ -56,8 +56,8 @@ def test_child_construction_restores_both_parent_id_paths():
     assert inside_context == "child-session"
     assert inside_environment == "parent-session"
     assert _SESSION_ID.get() == "parent-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
-    assert get_session_env("HERMES_SESSION_ID") == "parent-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
+    assert get_session_env("RABBIT_SESSION_ID") == "parent-session"
 
 
 def test_child_execution_binds_own_id_then_restores_parent():
@@ -65,12 +65,12 @@ def test_child_execution_binds_own_id_then_restores_parent():
 
     with delegated_child_context("child-session"):
         assert _SESSION_ID.get() == "child-session"
-        assert get_session_env("HERMES_SESSION_ID") == "child-session"
-        assert os.environ["HERMES_SESSION_ID"] == "parent-session"
+        assert get_session_env("RABBIT_SESSION_ID") == "child-session"
+        assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
 
     assert _SESSION_ID.get() == "parent-session"
-    assert get_session_env("HERMES_SESSION_ID") == "parent-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
+    assert get_session_env("RABBIT_SESSION_ID") == "parent-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
 
 
 def test_child_subprocess_environment_receives_child_id():
@@ -78,11 +78,11 @@ def test_child_subprocess_environment_receives_child_id():
 
     with delegated_child_context("child-session"):
         child_env = build_subprocess_env(
-            base={"HERMES_SESSION_ID": "foreign-session"},
+            base={"RABBIT_SESSION_ID": "foreign-session"},
         )
 
-    assert child_env["HERMES_SESSION_ID"] == "child-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
+    assert child_env["RABBIT_SESSION_ID"] == "child-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
     assert _SESSION_ID.get() == "parent-session"
 
 
@@ -94,9 +94,9 @@ def test_parallel_children_keep_parent_environment_and_own_contexts():
         with delegated_child_context(child_id):
             observed_context = str(_SESSION_ID.get())
             observed_subprocess = build_subprocess_env(base={}).get(
-                "HERMES_SESSION_ID"
+                "RABBIT_SESSION_ID"
             )
-            observed_environment = os.environ.get("HERMES_SESSION_ID")
+            observed_environment = os.environ.get("RABBIT_SESSION_ID")
         return (
             observed_context,
             str(observed_subprocess),
@@ -117,20 +117,20 @@ def test_parallel_children_keep_parent_environment_and_own_contexts():
         assert after_context is _UNSET
 
     assert _SESSION_ID.get() == "parent-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
 
 
 def test_nested_child_scope_restores_outer_child_then_parent():
     set_current_session_id("parent-session")
 
     with delegated_child_context("child-outer"):
-        assert get_session_env("HERMES_SESSION_ID") == "child-outer"
+        assert get_session_env("RABBIT_SESSION_ID") == "child-outer"
         with delegated_child_context("child-inner"):
-            assert get_session_env("HERMES_SESSION_ID") == "child-inner"
-        assert get_session_env("HERMES_SESSION_ID") == "child-outer"
+            assert get_session_env("RABBIT_SESSION_ID") == "child-inner"
+        assert get_session_env("RABBIT_SESSION_ID") == "child-outer"
 
-    assert get_session_env("HERMES_SESSION_ID") == "parent-session"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-session"
+    assert get_session_env("RABBIT_SESSION_ID") == "parent-session"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-session"
 
 
 def test_root_rotation_still_updates_both_paths_after_child():
@@ -140,4 +140,4 @@ def test_root_rotation_still_updates_both_paths_after_child():
     set_current_session_id("parent-v2")
 
     assert _SESSION_ID.get() == "parent-v2"
-    assert os.environ["HERMES_SESSION_ID"] == "parent-v2"
+    assert os.environ["RABBIT_SESSION_ID"] == "parent-v2"

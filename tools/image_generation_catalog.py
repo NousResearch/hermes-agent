@@ -84,7 +84,7 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     "fal-ai/nano-banana-pro": _model(
         "Nano Banana Pro (Gemini 3 Pro Image)", "~8s", "Gemini 3 Pro, reasoning depth, text rendering", "$0.15/image (1K)",
         style="aspect_ratio",
-        # "1K" is the cheapest tier; 4K doubles the per-image cost (Nous Subscription billing).
+        # "1K" is the cheapest tier; 4K doubles the per-image cost.
         defaults={
             "num_images": 1, "output_format": "png", "safety_tolerance": "5",
             "resolution": "1K",

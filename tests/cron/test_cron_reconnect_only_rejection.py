@@ -21,7 +21,7 @@ from gateway.platforms.base import SendResult
 
 @pytest.fixture(autouse=True)
 def _fresh_ledger(tmp_path, monkeypatch):
-    home = tmp_path / "hermes"
+    home = tmp_path / "rabbit"
     home.mkdir()
     monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)

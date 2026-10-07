@@ -1,7 +1,7 @@
 /**
  * Regression for #37718: macOS microphone entitlement must be inherited.
  *
- * Hermes Desktop signs with ``hardenedRuntime: true`` and points
+ * Rabbit Desktop signs with ``hardenedRuntime: true`` and points
  * electron-builder at two entitlement files (see ``apps/desktop/package.json``):
  *
  * - ``entitlements`` → ``electron/entitlements.mac.plist`` (the main app), and
@@ -90,8 +90,8 @@ test('bootstrap installer carries microphone entitlement for launcher attributio
     config.bundle?.macOS?.entitlements,
     'entitlements.plist',
     'the macOS bootstrap installer must sign with its entitlements.plist. ' +
-      'When /Applications/Hermes.app is the setup launcher, macOS TCC treats ' +
-      'com.nousresearch.hermes.setup as the responsible process for the desktop ' +
+      'When /Applications/Rabbit.app is the setup launcher, macOS TCC treats ' +
+      'com.seven0070.rabbit.setup as the responsible process for the desktop ' +
       'app it opens; without audio-input on the setup app, microphone access is ' +
       'denied before a permission prompt can appear.'
   )

@@ -1,4 +1,4 @@
-import { isRecord } from '@hermes/shared/i18n'
+import { isRecord } from '@rabbit/shared/i18n'
 import { atom } from 'nanostores'
 
 import { DEFAULT_LOCALE } from './languages'

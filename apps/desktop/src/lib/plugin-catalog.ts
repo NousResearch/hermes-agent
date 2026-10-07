@@ -1,10 +1,10 @@
 /**
- * The curated Hermes plugin catalog as the Desktop sees it.
+ * The curated Rabbit plugin catalog as the Desktop sees it.
  *
  * The Capabilities → Plugins tab embeds the docs-site catalog page
  * (`CATALOG_PICKER_URL`) as a one-click picker; that page renders
  * `PLUGIN_CATALOG_URL` (`/docs/api/plugins.json`, generated from the repo's
- * `plugin-catalog/` directory at site build). A `hermes://plugin/install?catalog=<name>`
+ * `plugin-catalog/` directory at site build). A `rabbit://plugin/install?catalog=<name>`
  * deep link resolves against the SAME document so a link and an in-app pick
  * always agree on the repo, subdir and reviewed pin for a name.
  *
@@ -12,7 +12,7 @@
  * Plugin dialog, which still requires the user's explicit confirmation.
  */
 
-export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
+export const CATALOG_ORIGIN = 'https://github.com/seven0070/Rabbit-'
 export const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
 export const PLUGIN_CATALOG_URL = `${CATALOG_ORIGIN}/docs/api/plugins.json`
 

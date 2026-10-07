@@ -14,16 +14,16 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from hermes_cli.config import load_config, save_config
-from hermes_cli.plugins import get_plugin_manager
+from rabbit_cli.config import load_config, save_config
+from rabbit_cli.plugins import get_plugin_manager
 from tui_gateway import server
 
 
 def _fake_install_core(identifier, *, force=False, ref=None):
     """Stand-in for the git clone: a portable plugin (mcp.json + a skill) under the sandbox plugins dir,
     returning ``(target, manifest, name)`` like the real core."""
-    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
-    from hermes_cli.plugins_cmd import _plugins_dir, _read_manifest
+    from rabbit_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+    from rabbit_cli.plugins_cmd import _plugins_dir, _read_manifest
     target = _plugins_dir() / "late-mcp"
     (target / "skills" / "late").mkdir(parents=True)
     (target / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "late-mcp"}))
@@ -41,14 +41,14 @@ def _commit_plugin_selection(enabled, disabled, **_kwargs):
 
 
 def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_servers():
-    (Path(os.environ["HERMES_HOME"]) / "plugins").mkdir(exist_ok=True)
+    (Path(os.environ["RABBIT_HOME"]) / "plugins").mkdir(exist_ok=True)
     manager = get_plugin_manager()
     manager.discover_and_load()  # the serve process booted long before the install
     events: list = []
     manager.on_plugin_loaded(events.append)
-    with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
-         patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
-         patch("hermes_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
+    with patch("rabbit_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
+         patch("rabbit_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
+         patch("rabbit_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
          patch("gateway.control_socket.reload_gateway_plugins", return_value=None), \
          patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
          patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server

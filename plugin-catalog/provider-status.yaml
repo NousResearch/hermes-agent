@@ -1,5 +1,5 @@
 name: provider-status
-repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+repo: https://github.com/apoapostolov/rabbit-agent-awesome-plugins
 sha: 953732a9fb52b6fd89e73fc96d910aab63163e07
 subdir: public/provider-status
 description: >-
@@ -7,15 +7,15 @@ description: >-
   GLM (z.ai), OpenRouter, Grok (xAI), Codex (OpenAI), OpenAI, Anthropic, Groq,
   Cerebras, Moonshot Kimi, MiniMax, Google Gemini, Hugging Face, Mistral, and
   Qwen. DeepSeek and GLM show peak/off-peak gauges and countdowns. Includes
-  OAuth and multi-key pools. This edition does not rotate Hermes environment
+  OAuth and multi-key pools. This edition does not rotate Rabbit environment
   keys on exhaust. Codex and Grok checks use their CLI client identity and
   user-agent.
 maintainer: apoapostolov
 tier: community
 category: desktop
-docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/provider-status
+docs_url: https://github.com/apoapostolov/rabbit-agent-awesome-plugins/tree/main/public/provider-status
 version: "1.5.12"
-image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/953732a9fb52b6fd89e73fc96d910aab63163e07/public/provider-status/docs/hero.png
+image: https://raw.githubusercontent.com/apoapostolov/rabbit-agent-awesome-plugins/953732a9fb52b6fd89e73fc96d910aab63163e07/public/provider-status/docs/hero.png
 platforms: []
 capabilities:
   provides_tools: []

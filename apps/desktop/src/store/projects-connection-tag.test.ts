@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { hermesApi } from '@/hermes'
+import { rabbitApi } from '@/rabbit'
 import { $gateway, activeGateway, activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
 import { $sessions } from '@/store/session'
@@ -19,10 +19,10 @@ vi.mock('@/store/gateway', () => ({
   ensureActiveGatewayOpen: vi.fn()
 }))
 vi.mock('@/i18n', () => ({ translateNow: (key: string) => key }))
-vi.mock('@/hermes', () => ({
-  getHermesConfig: vi.fn(),
+vi.mock('@/rabbit', () => ({
+  getRabbitConfig: vi.fn(),
   getProfiles: vi.fn(),
-  hermesApi: vi.fn(),
+  rabbitApi: vi.fn(),
   setApiRequestProfile: vi.fn(),
   STARTUP_REQUEST_TIMEOUT_MS: 1000
 }))
@@ -117,7 +117,7 @@ describe('project session connection provenance', () => {
       })
 
       connect(request)
-      vi.mocked(hermesApi).mockImplementation(request as never)
+      vi.mocked(rabbitApi).mockImplementation(request as never)
       setShowAllProfiles(surface === 'all-profiles')
 
       const result = surface === 'hydrated' ? fetchProjectSessions('project') : refreshProjectTree()
@@ -138,7 +138,7 @@ describe('project session connection provenance', () => {
   it('tags the all-profiles tree without replacing each row profile', async () => {
     const project = treeProject()
     project.previewSessions![0].profile = 'coder'
-    vi.mocked(hermesApi).mockResolvedValue({ projects: [project], scoped_session_ids: [] })
+    vi.mocked(rabbitApi).mockResolvedValue({ projects: [project], scoped_session_ids: [] })
     selectConnection('local')
     setShowAllProfiles(true)
 
@@ -170,7 +170,7 @@ describe('project session connection provenance', () => {
       row.connection_id = 'elsewhere'
     }
 
-    vi.mocked(hermesApi).mockResolvedValue({ projects: [project], scoped_session_ids: [] })
+    vi.mocked(rabbitApi).mockResolvedValue({ projects: [project], scoped_session_ids: [] })
     selectConnection(active)
     setShowAllProfiles(true)
 

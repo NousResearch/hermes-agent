@@ -19,7 +19,7 @@ from plugins.platforms.wecom.adapter import WeComAdapter
 
 @pytest.fixture(params=[None, False, True, "override"])
 def policy(request, tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     setting = request.param
     if setting is not None:
         display = {"suppress_warning_notifications": setting is True}

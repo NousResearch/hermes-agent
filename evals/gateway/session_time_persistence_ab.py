@@ -7,10 +7,10 @@ from pathlib import Path
 from datetime import datetime, timedelta
 home = Path(tempfile.mkdtemp(prefix="idle-time-ab-"))
 for key in list(os.environ):
-    if key.startswith("HERMES_") or key.endswith(("_API_KEY", "_TOKEN")):
+    if key.startswith("RABBIT_") or key.endswith(("_API_KEY", "_TOKEN")):
         os.environ.pop(key, None)
 os.environ["HOME"] = str(home)
-os.environ["HERMES_HOME"] = str(home / ".hermes")
+os.environ["RABBIT_HOME"] = str(home / ".rabbit")
 sys.path.insert(0, sys.argv[1])
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionStore, SessionSource

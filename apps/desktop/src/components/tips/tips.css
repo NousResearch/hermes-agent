@@ -16,7 +16,7 @@
 [data-tip-target] {
   outline: 2px solid var(--dt-primary);
   outline-offset: 3px;
-  animation: hermes-tip-outline-pulse 1.8s ease-in-out infinite;
+  animation: rabbit-tip-outline-pulse 1.8s ease-in-out infinite;
 }
 
 /* A region is a whole area — a nav row, the sidebar, the composer — and those
@@ -28,7 +28,7 @@
   outline-offset: -2px;
 }
 
-@keyframes hermes-tip-outline-pulse {
+@keyframes rabbit-tip-outline-pulse {
   50% {
     outline-color: color-mix(in srgb, var(--dt-primary) 45%, transparent);
   }

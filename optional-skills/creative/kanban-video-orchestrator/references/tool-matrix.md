@@ -1,13 +1,13 @@
 # Tool Matrix — Skills + Toolsets per Role
 
-Maps each role archetype to the Hermes skills it should `always_load` and the
-toolsets it needs. Only references skills that ship in the public hermes-agent
+Maps each role archetype to the Rabbit skills it should `always_load` and the
+toolsets it needs. Only references skills that ship in the public rabbit-agent
 repository (under `skills/` or `optional-skills/`). External APIs and CLIs are
 called from the terminal toolset; they don't appear in `always_load`.
 
-## Hermes skills relevant to video production
+## Rabbit skills relevant to video production
 
-### Visual / rendering skills (`hermes-agent/skills/creative/`)
+### Visual / rendering skills (`rabbit-agent/skills/creative/`)
 
 | Skill | What it does | Best fit for |
 |-------|--------------|--------------|
@@ -16,13 +16,13 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `manim-video` | Manim CE animations — math, algorithms, 3Blue1Brown-style explainers | Renderer for math, algorithm walkthroughs, technical concept explainers |
 | `p5js` | p5.js sketches — generative art, shaders, interactive, 3D | Renderer for generative art, particle systems, organic motion, web-canvas content |
 | `comfyui` | Generate images, video, audio with ComfyUI workflows (image-to-image, image-to-video, etc.) | image-generator, image-to-video-generator, or general renderer for AI-generated content |
-| `touchdesigner-mcp` (via the `touchdesigner` plugin: `hermes plugins install touchdesigner`) | Control a running TouchDesigner instance — real-time visuals, audio-reactive installation art, VJ | Renderer for real-time/audio-reactive content; installation art; live performance |
+| `touchdesigner-mcp` (via the `touchdesigner` plugin: `rabbit plugins install touchdesigner`) | Control a running TouchDesigner instance — real-time visuals, audio-reactive installation art, VJ | Renderer for real-time/audio-reactive content; installation art; live performance |
 | `pixel-art` | Pixel art with era palettes (NES, Game Boy, PICO-8) | Renderer for retro game aesthetic; concept artist for pixel-style frames |
 | `baoyu-comic` | Knowledge-comic generation (educational, biography, tutorial) | Renderer for comic-style narrative; explainer in panel form |
 | `baoyu-infographic` | Infographic generation | Renderer for data-driven explainer scenes |
 | `meme-generation` *(optional)* | Generate meme images by overlaying text on templates | Generator for satirical/social content; meme-style stills |
 
-### Design / pre-production skills (`hermes-agent/skills/creative/`)
+### Design / pre-production skills (`rabbit-agent/skills/creative/`)
 
 | Skill | What it does | Best fit for |
 |-------|--------------|--------------|
@@ -37,7 +37,7 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `creative-ideation` | Constraint-driven project ideation | Director / cinematographer when the brief is wide-open and needs framing |
 | `humanizer` | Strip AI-isms from text, add real voice | Writer / copywriter post-process to avoid AI-tells in scripts and VO copy |
 
-### Audio / media skills (`hermes-agent/skills/creative/` + `skills/media/`)
+### Audio / media skills (`rabbit-agent/skills/creative/` + `skills/media/`)
 
 | Skill | What it does | Best fit for |
 |-------|--------------|--------------|
@@ -58,7 +58,7 @@ no kanban skill to load; the guidance is always present for kanban workers.
 
 ## External tools (called from terminal toolset)
 
-These are **not** Hermes skills but external CLIs / APIs that profiles invoke.
+These are **not** Rabbit skills but external CLIs / APIs that profiles invoke.
 They don't appear in `always_load`; instead the role's terminal commands hit
 them directly.
 
@@ -75,14 +75,14 @@ them directly.
 | Manim CE (`manim`) | Math animation render (driven by `manim-video` skill's recipes) | renderer-manim |
 | Blender (`blender -b`) | 3D rendering (headless scripting) | renderer-3d |
 
-## Built-in Hermes tools for media review
+## Built-in Rabbit tools for media review
 
-These are native Hermes tools — not invoked via terminal but through their own
+These are native Rabbit tools — not invoked via terminal but through their own
 toolsets. Enable them per-profile by adding the toolset to the profile config.
 
 | Tool | Toolset | What it does | Profile that uses it |
 |------|---------|--------------|----------------------|
-| `video_analyze` | `video` (opt-in — `hermes tools enable video`) | Native video understanding — sends full clip to a multimodal LLM (Gemini via OpenRouter) for review without frame extraction. Supports mp4, webm, mov, avi, mkv. 50 MB cap. Model: `AUXILIARY_VIDEO_MODEL` env → `AUXILIARY_VISION_MODEL` fallback. | reviewer, cinematographer, editor |
+| `video_analyze` | `video` (opt-in — `rabbit tools enable video`) | Native video understanding — sends full clip to a multimodal LLM (Gemini via OpenRouter) for review without frame extraction. Supports mp4, webm, mov, avi, mkv. 50 MB cap. Model: `AUXILIARY_VIDEO_MODEL` env → `AUXILIARY_VISION_MODEL` fallback. | reviewer, cinematographer, editor |
 | `vision_analyze` | `vision` (core — enabled by default) | Image/frame analysis — review stills, thumbnails, exported frames. Already available to all profiles without opt-in. | reviewer, cinematographer, concept-artist |
 
 ## Standard toolset configurations per role
@@ -266,7 +266,7 @@ skills:
 ## API key requirements
 
 Track these in the project setup. The setup script should verify each required
-key is present in `${HERMES_HOME:-~/.hermes}/.env` (or macOS Keychain) before firing the kanban.
+key is present in `${RABBIT_HOME:-~/.rabbit}/.env` (or macOS Keychain) before firing the kanban.
 
 | Service | Env var | Used by |
 |---------|---------|---------|
@@ -280,10 +280,10 @@ key is present in `${HERMES_HOME:-~/.hermes}/.env` (or macOS Keychain) before fi
 | Luma | `LUMA_API_KEY` | image-to-video-generator (alternate) |
 | Suno | `SUNO_API_KEY` | music-supervisor (paired with `songwriting-and-ai-music`) |
 | Spotify | `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` | music-supervisor (paired with `spotify` skill) |
-| Anthropic | `ANTHROPIC_API_KEY` | every Hermes profile (Claude) |
+| Anthropic | `ANTHROPIC_API_KEY` | every Rabbit profile (Claude) |
 
 If a key is missing, prompt the user to add it. Storage methods, in order of
-preference: macOS Keychain → `${HERMES_HOME:-~/.hermes}/.env` → environment variable.
+preference: macOS Keychain → `${RABBIT_HOME:-~/.rabbit}/.env` → environment variable.
 
 ## Skill version pinning
 
@@ -292,7 +292,7 @@ If a specific skill version is desired, pass it via the per-task
 
 ## Adding a new skill to the matrix
 
-When a new Hermes-public video skill ships:
+When a new Rabbit-public video skill ships:
 
 1. Add a row to the relevant table at the top of this file
 2. If it warrants a specialized renderer variant, add to `role-archetypes.md`

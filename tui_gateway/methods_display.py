@@ -2,7 +2,7 @@
 
 ``display.status`` reports runtime + lease; ``display.start`` / ``display.stop`` manage the Xvnc/Xfce
 process; ``display.observe`` mints a single-use ticket the renderer redeems on ``/api/display/ws``
-(``hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
+(``rabbit_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
 Take over / Hand back. ``display.install`` runs the distro package install on the gateway host: sudo
 privilege is asked for through the masked ``display.install.sudo`` server→client request (same ``_ask``
 bridge as the terminal tool's sudo prompt), stdout streams as ``display.install.log`` and the run ends with
@@ -29,10 +29,10 @@ _lease_listener_installed = threading.Event()
 
 
 def _display_snapshot() -> dict:
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     st = _bd_runtime.status()
-    return {**st.as_dict(), "lease": _bd_lease.public_view(_bd_lease.get()), "profile_key": hermes_home_key()}
+    return {**st.as_dict(), "lease": _bd_lease.public_view(_bd_lease.get()), "profile_key": rabbit_home_key()}
 
 
 def _install_lease_listener() -> None:
@@ -152,8 +152,8 @@ def _(rid, params: dict) -> dict:
     """Mint a single-use, 30 s ticket for ``/api/display/ws``. The ticket carries the profile home so
     the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
-    from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from rabbit_constants import get_rabbit_home
+    from rabbit_cli.dashboard_auth.ws_tickets import mint_ticket
     from tools.bot_desktop import runtime as _bd_runtime
     try:
         # The bridge dials either the host RFB socket or the sandbox relay; neither exists before start.
@@ -161,7 +161,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, _DISPLAY_ERR, "this profile's Bot Desktop is not running; call display.start first")
         viewer_id = _mint_viewer_id(str(params.get("viewer_id") or "").strip())
         ticket = mint_ticket(user_id=f"display:{viewer_id}", provider="bot-desktop",
-                             extra={"hermes_home": str(get_hermes_home()), "viewer_id": viewer_id})
+                             extra={"rabbit_home": str(get_rabbit_home()), "viewer_id": viewer_id})
         return _ok(rid, {"ticket": ticket, "path": "/api/display/ws", "viewer_id": viewer_id,
                          **_display_snapshot()})
     except Exception as e:
@@ -174,7 +174,7 @@ def _(rid, params: dict) -> dict:
     """The Screen pane's answer to the pending default-image switch: ``approve`` true pins the new
     image (the container is recreated on the next terminal call), false pins the current one. Both
     end the offer. Refused when nothing is pending, so a stale pane cannot rewrite the config."""
-    from hermes_cli.sandbox_image_switch import decide, pending
+    from rabbit_cli.sandbox_image_switch import decide, pending
     sw = pending()
     if sw is None:
         return _err(rid, _DISPLAY_ERR, "no sandbox image switch is pending for this profile")
@@ -187,17 +187,17 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Start the package install in the background; the renderer follows ``display.install.log`` /
     ``display.install.done``. Refused while one is already running for this profile."""
-    from hermes_constants import hermes_home_key
+    from rabbit_constants import rabbit_home_key
     from tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
     if not _bd_runtime.is_supported_host():
         return _err(rid, _DISPLAY_ERR, "Bot Desktop runs on Linux gateway hosts only")
     if _bd_runtime.in_sandbox():
         return _err(rid, _DISPLAY_ERR, "this profile's screen lives inside the terminal backend's sandbox; give that "
-                                       "sandbox an image with the desktop stack (nousresearch/hermes-sandbox:desktop) "
+                                       "sandbox an image with the desktop stack (nousresearch/rabbit-sandbox:desktop) "
                                        "instead of installing on the gateway host")
     if _bd_runtime.install_command() is None:
         return _err(rid, _DISPLAY_ERR, "no supported package manager (apt-get, dnf, pacman) on this host")
-    profile_key = hermes_home_key()
+    profile_key = rabbit_home_key()
 
     def _ask_password() -> str:
         # App-level card, no session: it reaches the connection that clicked Install through the

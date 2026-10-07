@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 import type { SessionTile } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/rabbit'
 
 import { tileOwnerRoute } from './session-tile-owner'
 

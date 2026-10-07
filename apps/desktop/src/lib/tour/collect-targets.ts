@@ -1,7 +1,7 @@
 /**
  * TOUR TARGET COLLECTOR — discovers what a tour can point at.
  *
- * Fully generic: works on ANY document (the Hermes app's own DOM or an
+ * Fully generic: works on ANY document (the Rabbit app's own DOM or an
  * arbitrary page in the preview webview) by scanning for the things that make
  * an element addressable — explicit `data-tour` markers first, then the
  * standard affordances (aria-labels, roles, headings, labelled interactive

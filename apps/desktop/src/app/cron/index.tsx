@@ -1,4 +1,4 @@
-import { createCronTriggerController, type CronTriggerController } from '@hermes/shared'
+import { createCronTriggerController, type CronTriggerController } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -43,7 +43,7 @@ import {
   resumeCronJob,
   type SessionInfo,
   updateCronJob
-} from '@/hermes'
+} from '@/rabbit'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
@@ -885,7 +885,7 @@ function formatRunTime(seconds?: null | number): string {
 
 // Script-only (no_agent) jobs have no agent sessions; the runs endpoint
 // surfaces their per-fire output docs as rows with source='cron_output'
-// (see _list_cron_output_runs in hermes_cli/web_routers/cron.py).
+// (see _list_cron_output_runs in rabbit_cli/web_routers/cron.py).
 function isSyntheticCronOutputRun(run: SessionInfo): boolean {
   return run.source === 'cron_output'
 }

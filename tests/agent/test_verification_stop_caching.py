@@ -22,7 +22,7 @@ import pytest
 def _restore_sys_modules():
     """``_fresh_run_agent`` wipes the agent stack out of ``sys.modules``. Put the original
     module objects back afterwards: sibling test files hold module-level references into
-    ``hermes_cli.*`` / ``tools.*`` and their monkeypatches would otherwise land on modules
+    ``rabbit_cli.*`` / ``tools.*`` and their monkeypatches would otherwise land on modules
     the app no longer imports."""
     saved = dict(sys.modules)
     yield
@@ -43,9 +43,9 @@ def _restore_modules(saved):
                 pass
 
 
-def _fresh_run_agent(hermes_home):
+def _fresh_run_agent(rabbit_home):
     for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
+        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("rabbit_"):
             del sys.modules[mod]
     import run_agent  # noqa: F401
     return sys.modules["run_agent"]
@@ -75,7 +75,7 @@ def _make_agent(ra, session_id, tmp_path):
 def test_db_flush_drops_only_nudge_keeps_candidate(tmp_path, monkeypatch):
     """The assistant candidate is NOT flagged synthetic, so it persists.
     Only the nudge (flagged synthetic) is dropped from the DB flush."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
     ra = _fresh_run_agent(tmp_path)
     agent = _make_agent(ra, "sess_db", tmp_path)
 

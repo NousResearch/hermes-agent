@@ -20,7 +20,7 @@ export const TEXT_DIRECTIONS = ['auto', 'rtl', 'ltr'] as const satisfies readonl
 // Scope: global to this desktop install (every window and profile). It is a
 // reading preference about the person at the keyboard, not about a backend,
 // profile or session, so no connection/profile segment belongs in the key.
-const STORAGE_KEY = 'hermes.desktop.textDirection'
+const STORAGE_KEY = 'rabbit.desktop.textDirection'
 
 // Auto is stored as absence, so users who never touch the setting keep an
 // untouched storage record as well as today's rendering.

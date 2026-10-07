@@ -49,22 +49,22 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     core.mkdir()
     home = tmp_path / "home"
     home.mkdir()
-    hermes_home = home / ".hermes"
+    rabbit_home = home / ".rabbit"
     runtime = tmp_path / "runtime"
     scratch = tmp_path / "tmp"
     scratch.mkdir()
     env = {
-        "PATH": os.environ["PATH"], "HOME": str(home), "HERMES_HOME": str(hermes_home),
-        "HERMES_RUNTIME_DIR": str(runtime), "SHELL": bash, "TMPDIR": str(scratch),
+        "PATH": os.environ["PATH"], "HOME": str(home), "RABBIT_HOME": str(rabbit_home),
+        "RABBIT_RUNTIME_DIR": str(runtime), "SHELL": bash, "TMPDIR": str(scratch),
         "XDG_CONFIG_HOME": str(home / ".config"), "XDG_CACHE_HOME": str(home / ".cache"),
         "LANG": "C.UTF-8", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1",
         "UV_CACHE_DIR": str(home / ".cache" / "uv"), "UV_PYTHON_DOWNLOADS": "never",
     }
-    for name in ("activate", "setup-hermes.sh", "hermes_constants.py", "hermes_yaml.py", "utils.py",
+    for name in ("activate", "setup-rabbit.sh", "rabbit_constants.py", "rabbit_yaml.py", "utils.py",
                  "scripts/_activation.sh"):
         (core / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / name, core / name)
-    for name in ("pm", "hermes_cli"):
+    for name in ("pm", "rabbit_cli"):
         shutil.copytree(REPO / name, core / name, ignore=shutil.ignore_patterns("__pycache__"))
     # Plugin selection imports the real CLI config reader even with no plugins.
     # Supply its installed YAML dependency, not a stub parser or config module.
@@ -72,13 +72,13 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     shutil.copytree(Path(ruamel.yaml.__file__).parent, core / "ruamel" / "yaml", ignore=shutil.ignore_patterns("__pycache__"))
 
     # Never copy real user files: these are deliberately public fixture sentinels.
-    protected = [core / ".env", home / ".local" / "bin", hermes_home / "skills",
+    protected = [core / ".env", home / ".local" / "bin", rabbit_home / "skills",
                  home / ".bashrc", home / ".bash_profile", home / ".zshrc"]
-    for path in (home / ".local" / "bin" / "hermes", hermes_home / "skills" / "keep.md",
+    for path in (home / ".local" / "bin" / "rabbit", rabbit_home / "skills" / "keep.md",
                  home / ".bashrc", home / ".bash_profile", home / ".zshrc"):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("user-owned fixture\n", encoding="utf-8")
-    (hermes_home / "skills").chmod(0o755)
+    (rabbit_home / "skills").chmod(0o755)
     (core / ".env.example").write_text("FIXTURE_ONLY=example\n", encoding="utf-8")
     (core / "skills").mkdir()
     (core / "skills" / "bundled.md").write_text("must not be seeded\n", encoding="utf-8")
@@ -122,7 +122,7 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
     )
     assert seeded.returncode == 0, seeded.stdout + seeded.stderr
     shutil.rmtree(seed)
-    assert not (hermes_home / "installs").exists()
+    assert not (rabbit_home / "installs").exists()
 
     docroot, base_url = served
     # Both the shell bootstrap and PM's fallback downloader stay on loopback.
@@ -170,12 +170,12 @@ status=$?
 if [ "$status" != 0 ]; then
     test "$PATH" = "$prior_path" || exit 91
     test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 92
-    test -z "${__HERMES_ACTIVATED-}" || exit 93
+    test -z "${__RABBIT_ACTIVATED-}" || exit 93
     printf 'CALLER_SURVIVED:%s\\n' "$status"
     exit "$status"
 fi
 python3 -c 'import activation_dep, json, os; print(json.dumps({"version": activation_dep.__version__, "module": activation_dep.__file__, "pythonpath": os.environ["PYTHONPATH"]}))' || exit 94
-"$__HERMES_TEST_PYTHON" -c 'import dev_fixture, test_fixture' || exit 97
+"$__RABBIT_TEST_PYTHON" -c 'import dev_fixture, test_fixture' || exit 97
 python3 -c 'import importlib.util; assert importlib.util.find_spec("dev_fixture") is None' || exit 98
 deactivate
 test "$PATH" = "$prior_path" || exit 95
@@ -190,7 +190,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
         return result
 
     def selection():
-        records = list(hermes_home.glob("installs/*/facts.json"))
+        records = list(rabbit_home.glob("installs/*/facts.json"))
         assert len(records) == 1
         return json.loads(records[0].read_text())["packages"]["venv"]
 
@@ -208,7 +208,7 @@ test "${PYTHONPATH-}" = "$prior_pythonpath" || exit 96
     assert Path(probe["module"]).is_relative_to(Path(first["environment"]))
     assert probe["pythonpath"].split(os.pathsep)[0] == str(core)
     # Cold activation builds both PM's isolated runtime and the app environment.
-    assert "Preparing the isolated Hermes runtime" in cold.stderr
+    assert "Preparing the isolated Rabbit runtime" in cold.stderr
     assert len(app_syncs()) == 1
     facts = json.loads((runtime / "facts.json").read_text())["packages"]
     assert facts["python"]["artifacts"] == [first_digest]

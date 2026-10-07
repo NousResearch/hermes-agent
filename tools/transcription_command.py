@@ -33,7 +33,7 @@ logger = logging.getLogger("tools.transcription_tools")
 # Mirrors the TTS command-provider registry (same placeholder grammar, quote-aware
 # rendering, process-tree termination on timeout). Resolution order: built-in name
 # (always wins) > stt.providers.<name> command > plugin TranscriptionProvider >
-# "No STT provider available". The single-env-var HERMES_LOCAL_STT_COMMAND escape
+# "No STT provider available". The single-env-var RABBIT_LOCAL_STT_COMMAND escape
 # hatch stays untouched via the built-in ``local_command`` path.
 # Lets any whisper CLI / ASR CLI / curl pipeline become an STT backend with zero Python. 1. Built-in
 # (``local``, ``local_command``, ``groq``, ``openai``, ``mistral``, ``xai``)              → native handler.
@@ -90,7 +90,7 @@ def _transcribe_command_stt(
     language = (language_override or config.get("language")
                 or _resolve_stt_language(provider_name, stt_config) or DEFAULT_COMMAND_STT_LANGUAGE)
     try:
-        with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
+        with tempfile.TemporaryDirectory(prefix=f"rabbit-cmd-stt-{provider_name}-") as tmpdir:
             output_path = Path(tmpdir) / f"transcript.{output_format}"
             command = _render_command_stt_template(command_template, {
                 "input_path": str(audio.resolve()), "output_path": str(output_path),
@@ -118,7 +118,7 @@ def _unregistered_stt_provider_error(provider: str) -> Dict[str, Any]:
     key = str(provider or "").strip()
     return _error_result(
         f"stt.provider='{key}' is set but no built-in, command, or plugin "
-        "provider registered that name. Run `hermes plugins list` to see "
+        "provider registered that name. Run `rabbit plugins list` to see "
         "installed STT plugins, or configure a command provider under "
         f"`stt.providers.{key}.command`.",
         provider=key,
@@ -144,7 +144,7 @@ def _dispatch_to_plugin_provider(
         return None
     try:
         from agent.transcription_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from rabbit_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:
@@ -223,7 +223,7 @@ def _apply_pre_transcription_hook(
     wins). ``language_override`` is None unless a hook explicitly set ``language``, so backends keep
     their own config/env resolution."""
     try:
-        from hermes_cli.plugins import has_hook, invoke_hook
+        from rabbit_cli.plugins import has_hook, invoke_hook
         if not has_hook("pre_transcription"):
             return model, None, prompt
         hook_results = invoke_hook(

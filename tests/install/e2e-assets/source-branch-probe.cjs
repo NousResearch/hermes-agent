@@ -11,8 +11,8 @@ function sourceProbeGit(userData, realGit, stagedUrl, platform = process.platfor
   if (!/^file:\/\/[^\s]+$/.test(stagedUrl)) throw new Error('source check must use a staged file:// Git origin')
   const file = path.join(userData, platform === 'win32' ? 'source-probe-git.cmd' : 'source-probe-git.sh')
   const args = [
-    `url.${stagedUrl}.insteadOf=https://github.com/NousResearch/hermes-agent.git`,
-    `url.${stagedUrl}.insteadOf=git@github.com:NousResearch/hermes-agent.git`,
+    `url.${stagedUrl}.insteadOf=https://github.com/seven0070/Rabbit-.git`,
+    `url.${stagedUrl}.insteadOf=git@github.com:seven0070/Rabbit-.git`,
   ]
   if (platform === 'win32') {
     const quote = value => `"${value.replace(/"/g, '""')}"`
@@ -26,7 +26,7 @@ function sourceProbeGit(userData, realGit, stagedUrl, platform = process.platfor
 
 function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv, launchEnv) {
   if (!realGit || !path.isAbsolute(realGit) || !fs.existsSync(realGit)) {
-    throw new Error('source app-update requires HERMES_E2E_REAL_GIT for staged main')
+    throw new Error('source app-update requires RABBIT_E2E_REAL_GIT for staged main')
   }
   const install = path.resolve(root)
   const staged = childProcess.execFileSync(realGit, ['-C', install, 'remote', 'get-url', 'origin'], {
@@ -39,23 +39,23 @@ function prepareSourceBranchEnvironment(root, expectedSha, realGit, capturedEnv,
   if (advertised !== expectedSha) {
     throw new Error(`staged Git main ${advertised} does not match expected ${expectedSha}`)
   }
-  launchEnv.HERMES_E2E_SOURCE_ROOT = install
-  launchEnv.HERMES_E2E_SOURCE_URL = staged
-  launchEnv.HERMES_E2E_SOURCE_REAL_GIT = realGit
-  launchEnv.HERMES_E2E_SOURCE_GIT = sourceProbeGit(launchEnv.HERMES_DESKTOP_USER_DATA_DIR, realGit, staged)
+  launchEnv.RABBIT_E2E_SOURCE_ROOT = install
+  launchEnv.RABBIT_E2E_SOURCE_URL = staged
+  launchEnv.RABBIT_E2E_SOURCE_REAL_GIT = realGit
+  launchEnv.RABBIT_E2E_SOURCE_GIT = sourceProbeGit(launchEnv.RABBIT_DESKTOP_USER_DATA_DIR, realGit, staged)
   launchEnv.NODE_OPTIONS = `--require=${JSON.stringify(__filename)}`
   if (process.platform !== 'win32') {
     // Packaged Electron ignores NODE_OPTIONS=--require. Select the branch at
     // the isolated installation's launcher instead, leaving product code and
     // every non-checker invocation untouched.
-    const launcher = path.join(install, '.hermes', 'bin', 'hermes')
+    const launcher = path.join(install, '.rabbit', 'bin', 'rabbit')
     const original = `${launcher}.e2e-original`
     // Historical venv installs have no PM launcher. Their Electron-side probe
     // handles the branch selection; only PM source checks need this wrapper.
     const launcherStat = fs.lstatSync(launcher, { throwIfNoEntry: false })
     if (!launcherStat) {
       if (!fs.existsSync(path.join(install, 'pm', 'lock.json'))
-          && fs.existsSync(path.join(install, 'venv', 'bin', 'hermes'))
+          && fs.existsSync(path.join(install, 'venv', 'bin', 'rabbit'))
           && !fs.existsSync(original)) return
       throw new Error('source app-update requires an unmodified installation launcher')
     }
@@ -72,8 +72,8 @@ check_root() {
   done
   return 1
 }
-if [ "$1" = '--run-module' ] && [ "$2" = 'hermes_cli.source_check' ] && check_root "$@"; then
-  exec ${quote(original)} "$@" --git ${quote(launchEnv.HERMES_E2E_SOURCE_GIT)} --branch main
+if [ "$1" = '--run-module' ] && [ "$2" = 'rabbit_cli.source_check' ] && check_root "$@"; then
+  exec ${quote(original)} "$@" --git ${quote(launchEnv.RABBIT_E2E_SOURCE_GIT)} --branch main
 fi
 exec ${quote(original)} "$@"
 `, { mode: 0o700 })
@@ -99,7 +99,7 @@ function branchProbeArgs(args, root, realGit) {
     if (
       typeof command !== 'string' ||
       /["%&|<>^\r\n]/.test(realGit) ||
-      !/^""[^"\r\n]+\.cmd" "--run-module" "hermes_cli\.source_check" /i.test(command) ||
+      !/^""[^"\r\n]+\.cmd" "--run-module" "rabbit_cli\.source_check" /i.test(command) ||
       !command.includes(`"--install-root" "${root}"`) ||
       command.includes('"--branch"') ||
       !command.endsWith('"') ||
@@ -109,8 +109,8 @@ function branchProbeArgs(args, root, realGit) {
     return [...args.slice(0, 4), selected]
   }
   const legacy = args[0] === '-c' && args[1]?.includes('runpy.run_path(str(p))')
-    && args[1]?.includes('hermes_cli/source_check.py')
-  const managed = args[0] === '--run-module' && args[1] === 'hermes_cli.source_check'
+    && args[1]?.includes('rabbit_cli/source_check.py')
+  const managed = args[0] === '--run-module' && args[1] === 'rabbit_cli.source_check'
   if (!(legacy || managed)
       || args[args.indexOf('--install-root') + 1] !== root
       || !args.includes('--git') || args.includes('--branch')) return args
@@ -119,10 +119,10 @@ function branchProbeArgs(args, root, realGit) {
   return [...selected, '--branch', 'main']
 }
 
-if (process.env.HERMES_E2E_SOURCE_ROOT && process.env.HERMES_E2E_SOURCE_GIT) {
+if (process.env.RABBIT_E2E_SOURCE_ROOT && process.env.RABBIT_E2E_SOURCE_GIT) {
   const original = childProcess.execFile
   const select = args => {
-    const selected = branchProbeArgs(args, process.env.HERMES_E2E_SOURCE_ROOT, process.env.HERMES_E2E_SOURCE_GIT)
+    const selected = branchProbeArgs(args, process.env.RABBIT_E2E_SOURCE_ROOT, process.env.RABBIT_E2E_SOURCE_GIT)
     if (selected !== args) process.stderr.write('[source-branch-probe] checking staged Git main explicitly\n')
     return selected
   }
@@ -147,21 +147,21 @@ if (process.env.HERMES_E2E_SOURCE_ROOT && process.env.HERMES_E2E_SOURCE_GIT) {
   // v2026.9.21 does its source check in Electron: remote get-url selects
   // GitHub's public REST API unless its real Git process sees staged origin.
   // Redirect only the legacy check's two Git reads, not arbitrary subprocesses.
-  if (process.env.HERMES_E2E_SOURCE_URL) {
+  if (process.env.RABBIT_E2E_SOURCE_URL) {
     const spawn = childProcess.spawn
-    const staged = process.env.HERMES_E2E_SOURCE_URL
+    const staged = process.env.RABBIT_E2E_SOURCE_URL
     childProcess.spawn = function (file, args, options) {
       const actual = args?.[0] === '-c' && args[1] === 'windows.appendAtomically=false' ? args.slice(2) : args
       if (/^git(?:\.exe)?$/i.test(path.basename(file)) &&
-          path.resolve(options?.cwd || '') === process.env.HERMES_E2E_SOURCE_ROOT &&
+          path.resolve(options?.cwd || '') === process.env.RABBIT_E2E_SOURCE_ROOT &&
           (actual?.join(' ') === 'remote get-url origin' ||
             (actual?.[0] === 'ls-remote' && actual[1] === 'origin' && actual[2] === 'refs/heads/main'))) {
         process.stderr.write('[source-branch-probe] historical Desktop checking staged Git origin\n')
         // The driver shadows git with a fork-detection shim that always
         // reports the official URL for remote get-url, even with -c flags.
-        return spawn.call(this, process.env.HERMES_E2E_SOURCE_REAL_GIT, [
-          '-c', `url.${staged}.insteadOf=https://github.com/NousResearch/hermes-agent.git`,
-          '-c', `url.${staged}.insteadOf=git@github.com:NousResearch/hermes-agent.git`,
+        return spawn.call(this, process.env.RABBIT_E2E_SOURCE_REAL_GIT, [
+          '-c', `url.${staged}.insteadOf=https://github.com/seven0070/Rabbit-.git`,
+          '-c', `url.${staged}.insteadOf=git@github.com:seven0070/Rabbit-.git`,
           ...args,
         ], options)
       }

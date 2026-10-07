@@ -1,13 +1,13 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import type { HermesReviewFile } from '@/global'
+import type { RabbitReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $reviewFiles, $reviewScope, $reviewShipInfo } from '@/store/review'
 
 import { ReviewShipBar } from './ship-bar'
 
-const file = (path: string): HermesReviewFile => ({
+const file = (path: string): RabbitReviewFile => ({
   added: 1,
   path,
   removed: 0,

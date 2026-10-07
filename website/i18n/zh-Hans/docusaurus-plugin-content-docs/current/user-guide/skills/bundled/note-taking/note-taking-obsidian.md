@@ -21,7 +21,7 @@ description: "在 Obsidian 知识库中读取、搜索、创建和编辑笔记"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # Obsidian 知识库
@@ -32,7 +32,7 @@ description: "在 Obsidian 知识库中读取、搜索、创建和编辑笔记"
 
 在调用文件工具之前，先确定已知或已解析的知识库路径。
 
-知识库路径的约定文档为 `OBSIDIAN_VAULT_PATH` 环境变量，例如来自 `~/.hermes/.env`。若未设置，则使用 `~/Documents/Obsidian Vault`。
+知识库路径的约定文档为 `OBSIDIAN_VAULT_PATH` 环境变量，例如来自 `~/.rabbit/.env`。若未设置，则使用 `~/Documents/Obsidian Vault`。
 
 文件工具不会展开 shell 变量。不要将包含 `$OBSIDIAN_VAULT_PATH` 的路径传递给 `read_file`、`write_file`、`patch` 或 `search_files`；应先解析知识库路径，再传入具体的绝对路径。知识库路径可能包含空格，这也是优先使用文件工具而非 shell 命令的另一个原因。
 

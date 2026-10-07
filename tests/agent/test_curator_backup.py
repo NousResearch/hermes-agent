@@ -15,16 +15,16 @@ import pytest
 
 @pytest.fixture
 def backup_env(monkeypatch, tmp_path):
-    """Isolate HERMES_HOME + reload modules so every test starts clean."""
-    home = tmp_path / ".hermes"
+    """Isolate RABBIT_HOME + reload modules so every test starts clean."""
+    home = tmp_path / ".rabbit"
     home.mkdir()
     (home / "skills").mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Reload so get_hermes_home picks up the env var fresh.
-    import hermes_constants
-    importlib.reload(hermes_constants)
+    # Reload so get_rabbit_home picks up the env var fresh.
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
     from agent import curator_backup
     importlib.reload(curator_backup)
     return {"home": home, "skills": home / "skills", "cb": curator_backup}
@@ -199,7 +199,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
     skills = backup_env["skills"]
     _write_skill(skills, "alpha")
 
-    # Reload curator module against the freshly-env'd hermes_constants
+    # Reload curator module against the freshly-env'd rabbit_constants
     from agent import curator
     importlib.reload(curator)
 
@@ -231,7 +231,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
 
 
 def _write_cron_jobs(home: Path, jobs: list) -> Path:
-    """Write a synthetic cron/jobs.json under HERMES_HOME. Returns the path.
+    """Write a synthetic cron/jobs.json under RABBIT_HOME. Returns the path.
     Mirrors cron.jobs.save_jobs() wrapper shape: `{"jobs": [...], "updated_at": ...}`.
     """
     cron_dir = home / "cron"
@@ -245,9 +245,9 @@ def _write_cron_jobs(home: Path, jobs: list) -> Path:
 
 
 def _reload_cron_jobs(home: Path):
-    """Reload cron.jobs so its module-level HERMES_DIR picks up the tmp HOME."""
-    import hermes_constants
-    importlib.reload(hermes_constants)
+    """Reload cron.jobs so its module-level RABBIT_DIR picks up the tmp HOME."""
+    import rabbit_constants
+    importlib.reload(rabbit_constants)
     if "cron.jobs" in sys.modules:
         import cron.jobs as _cj
         importlib.reload(_cj)

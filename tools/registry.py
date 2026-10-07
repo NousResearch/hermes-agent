@@ -1,4 +1,4 @@
-"""Central registry for all hermes-agent tools: each tool file calls ``registry.register()``
+"""Central registry for all rabbit-agent tools: each tool file calls ``registry.register()``
 at import to declare schema, handler, toolset membership and availability check;
 ``model_tools.py`` queries the registry instead of keeping parallel data structures.
 Cycle-safe import chain: this module imports nothing from model_tools or tool files;
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from hermes_constants import hermes_home_key, normalize_scope
+from rabbit_constants import rabbit_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +145,8 @@ def _discovery_cache_path() -> Optional[Path]:
     """Path of the tool-discovery verdict cache, or None if unresolvable."""
     try:
         # Deferred import keeps tools/registry.py a no-deps leaf at import time.
-        from hermes_constants import get_hermes_home
-        return Path(get_hermes_home()) / "cache" / "tool_discovery_cache.json"
+        from rabbit_constants import get_rabbit_home
+        return Path(get_rabbit_home()) / "cache" / "tool_discovery_cache.json"
     except Exception:
         return None
 
@@ -171,8 +171,8 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         return
     try:
         from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        from hermes_constants import mkdir_under_hermes_home
-        mkdir_under_hermes_home(path.parent)
+        from rabbit_constants import mkdir_under_rabbit_home
+        mkdir_under_rabbit_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
@@ -213,7 +213,7 @@ _OVERRIDE_DENIED_MSG = (
 
 # ---- check_fn TTL cache ----------------------------------------------------
 # check_fns probe external state (Docker, Modal SDK, playwright) that changes on human
-# timescales, so results are cached ~30 s: env-var flips via ``hermes tools`` still land
+# timescales, so results are cached ~30 s: env-var flips via ``rabbit tools`` still land
 # within a turn or two. Transient-failure suppression: a flapping probe (``docker version``
 # timing out under load) would silently strip a whole toolset from the agent being built —
 # most visibly a subagent reporting "Tool read_file does not exist" — so a failure within a
@@ -233,9 +233,9 @@ _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
 _BROWSER_IDENTITY_KEYS = (
-    "HERMES_SESSION_ID",
-    "HERMES_BROWSER_CONTROL_PRINCIPAL",
-    "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+    "RABBIT_SESSION_ID",
+    "RABBIT_BROWSER_CONTROL_PRINCIPAL",
+    "RABBIT_BROWSER_CONTROL_TRANSPORT_FAMILY")
 
 
 def no_cache_check_fn(fn: Callable) -> Callable:
@@ -265,7 +265,7 @@ def check_fn_cache_scope() -> Optional[str]:
     availability is request-bound (changes on every attach/detach), so a fully bound
     browser-control request bypasses this cache AND model_tools' outer definition cache (same
     sentinel) — one Browser session's live tools must not leak into another. Single-profile
-    processes keep the process-wide cache; a multiplex gateway installs a Hermes-home override
+    processes keep the process-wide cache; a multiplex gateway installs a Rabbit-home override
     per profile turn, so the canonical profile key is the boundary."""
     try:
         from gateway.session_context import get_session_env
@@ -280,10 +280,10 @@ def check_fn_cache_scope() -> Optional[str]:
         pass
     try:
         from agent.secret_scope import serves_routed_profile
-        from hermes_constants import get_hermes_home_override
+        from rabbit_constants import get_rabbit_home_override
         if not serves_routed_profile():
             return None
-        override = get_hermes_home_override()
+        override = get_rabbit_home_override()
         return str(Path(override).expanduser().resolve()) if override else CHECK_FN_CACHE_BYPASS
     except Exception:
         # Fail closed: bypass both cache layers rather than aliasing requests
@@ -386,10 +386,10 @@ def _check_fn_cached(fn: Callable) -> bool:
 
 
 def _core_tools_gated_by(fn: Callable) -> Set[str]:
-    """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
+    """Names of ``_RABBIT_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
     try:
-        from toolsets import _HERMES_CORE_TOOLS
-        core = frozenset(_HERMES_CORE_TOOLS)
+        from toolsets import _RABBIT_CORE_TOOLS
+        core = frozenset(_RABBIT_CORE_TOOLS)
     except Exception:
         return set()
     return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
@@ -403,7 +403,7 @@ def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
 
 
 def invalidate_check_fn_cache() -> None:
-    """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    """Drop all cached ``check_fn`` results (after config changes like ``rabbit tools enable``)."""
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
@@ -429,7 +429,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}  # built-in / process-global registrations
-        # Plugin overlays keyed by resolved HERMES_HOME; a profile sees its overlay first.
+        # Plugin overlays keyed by resolved RABBIT_HOME; a profile sees its overlay first.
         self._scoped_tools: Dict[str, Dict[str, ToolEntry]] = {}
         # Plugin namespace -> operator opt-in for built-in override (lifecycle-managed);
         # scope attribution stays durable after policy removal so delayed callbacks
@@ -445,7 +445,7 @@ class ToolRegistry:
 
     @staticmethod
     def current_scope_key() -> str:
-        return hermes_home_key()
+        return rabbit_home_key()
 
     @staticmethod
     def _grouped(entries: List[ToolEntry]) -> Dict[str, List[ToolEntry]]:
@@ -470,7 +470,7 @@ class ToolRegistry:
 
     def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(hermes_home_key(scope), {})}
+        return {**self._tools, **self._scoped_tools.get(rabbit_home_key(scope), {})}
 
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
@@ -624,7 +624,7 @@ class ToolRegistry:
                 return max(matches, key=len)
         # Also gate plugin modules currently loading but not yet policy-recorded
         # (defensive: a handler defined in the plugin namespace is plugin code).
-        if module_namespace.startswith("hermes_plugins."):
+        if module_namespace.startswith("rabbit_plugins."):
             return ".".join(module_namespace.split(".")[:2])
         return None
 
@@ -772,10 +772,10 @@ class ToolRegistry:
                 return
             if not entry.toolset.startswith("mcp-"):
                 owner = self._plugin_owner_of(entry.handler)
-                # Ownership binds to the plugin package root (``hermes_plugins.{name}``), not
+                # Ownership binds to the plugin package root (``rabbit_plugins.{name}``), not
                 # the exact module: a submodule's handler is still the package's to remove.
-                # A handler defined in ``hermes_plugins.pkg.handlers`` is still owned by the
-                # ``hermes_plugins.pkg`` package — exact string equality would wrongly block root-module
+                # A handler defined in ``rabbit_plugins.pkg.handlers`` is still owned by the
+                # ``rabbit_plugins.pkg`` package — exact string equality would wrongly block root-module
                 # cleanup code from removing tools registered by a submodule of the same plugin (egilewski
                 # review on #55840).
                 same_plugin = bool(owner and caller_owner == owner)
@@ -842,7 +842,7 @@ class ToolRegistry:
 
     def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
         """OpenAI-format schemas for the requested tools whose ``check_fn`` passes (or is
-        absent). Probes use the ~30 s TTL cache so ``hermes tools enable`` lands quickly."""
+        absent). Probes use the ~30 s TTL cache so ``rabbit tools enable`` lands quickly."""
         result = []
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}

@@ -27,7 +27,7 @@ export class OverlayErrorBoundary extends Component<{ children: ReactNode; label
     // the main process for windows with a console hook, is minified, and loses
     // the component stack.
     try {
-      window.hermesDesktop?.reportRendererError?.({
+      window.rabbitDesktop?.reportRendererError?.({
         boundary: this.props.label,
         componentStack: info.componentStack ?? '',
         label: new URLSearchParams(window.location.search).get('win') ?? 'overlay',

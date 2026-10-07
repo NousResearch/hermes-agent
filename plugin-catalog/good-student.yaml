@@ -1,5 +1,5 @@
 name: good-student
-repo: https://github.com/harrylabsj/hermes-plugin-good-student
+repo: https://github.com/harrylabsj/rabbit-plugin-good-student
 sha: 021375cf1cf0dad73d7a81b997f9a383be98c1ed
 description: 'Wrong-question diagnosis and study-action loop for parents and students —
   deterministic local core (SQLite, no cloud), host-model recognition gated by parent

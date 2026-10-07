@@ -19,8 +19,8 @@ def test_auto_tier_follows_session_pace():
 def test_real_agent_resolves_auto_from_its_platform(tmp_path, monkeypatch):
     """A real AIAgent under ``cache_ttl: auto``: a CLI session lands on 1h, a cron session on 5m, and
     caching itself stays enabled on both (auto is a tier choice, never a disable)."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.delenv("RABBIT_SESSION_SOURCE", raising=False)
     (tmp_path / "config.yaml").write_text(
         "prompt_caching:\n  cache_ttl: auto\nmodel:\n  default: anthropic/claude-sonnet-4.6\n", encoding="utf-8")
     from run_agent import AIAgent

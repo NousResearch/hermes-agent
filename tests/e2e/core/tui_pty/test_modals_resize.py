@@ -3,7 +3,7 @@ and approval cards stay on screen exactly once while the window is resized, the 
 after the resize reaches the tool (read back from the next wire request the agent sends), and the
 transcript around them keeps every word exactly once.
 
-Real ``hermes --tui`` in a private tmux server, ``approvals.mode: manual`` (the shipped default,
+Real ``rabbit --tui`` in a private tmux server, ``approvals.mode: manual`` (the shipped default,
 never yolo), local terminal backend, scripted fake provider issuing ``clarify`` /
 ``terminal(rm -rf <victim>)`` / a slow printing ``terminal`` command whose output the TUI shows
 once ``/verbose verbose`` is on: every printed line is on screen exactly once after the drags.

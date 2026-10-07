@@ -14,10 +14,9 @@ Generate wiki docs + Mermaid diagrams for any codebase.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/software-development/code-wiki` |
+| Source | Optional — install with `rabbit skills install official/software-development/code-wiki` |
 | Path | `optional-skills/software-development/code-wiki` |
 | Version | `0.1.0` |
-| Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documentation`, `Mermaid`, `Architecture`, `Diagrams`, `Wiki`, `Code-Analysis` |
@@ -26,12 +25,12 @@ Generate wiki docs + Mermaid diagrams for any codebase.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Code Wiki Skill
 
-Generate a full wiki for any codebase — overview, architecture, per-module deep-dives, Mermaid class and sequence diagrams. Inspired by Google CodeWiki, but works on local repos, private repos, and any language. Uses only existing Hermes tools (`terminal`, `read_file`, `search_files`, `write_file`); no Docker, no external services, no extra dependencies.
+Generate a full wiki for any codebase — overview, architecture, per-module deep-dives, Mermaid class and sequence diagrams. Inspired by Google CodeWiki, but works on local repos, private repos, and any language. Uses only existing Rabbit tools (`terminal`, `read_file`, `search_files`, `write_file`); no Docker, no external services, no extra dependencies.
 
 This skill produces **reference documentation** (what/how). It does not produce strategic narrative (why — that's a different skill).
 
@@ -56,7 +55,7 @@ Do NOT use this for:
 
 ## How to Run
 
-Invoke through the `terminal` tool from the target repo's root, then use `read_file` / `search_files` / `write_file` to produce the wiki. Default output location is `~/.hermes/wikis/<repo-name>/`. Only write into the repo (`docs/wiki/`) when the user explicitly requests it.
+Invoke through the `terminal` tool from the target repo's root, then use `read_file` / `search_files` / `write_file` to produce the wiki. Default output location is `~/.rabbit/wikis/<repo-name>/`. Only write into the repo (`docs/wiki/`) when the user explicitly requests it.
 
 ## Quick Reference
 
@@ -100,7 +99,7 @@ REPO_NAME=$(basename "$PWD")
 Then set the output dir:
 
 ```bash
-OUTPUT_DIR="$HOME/.hermes/wikis/$REPO_NAME"
+OUTPUT_DIR="$HOME/.rabbit/wikis/$REPO_NAME"
 mkdir -p "$OUTPUT_DIR/modules" "$OUTPUT_DIR/diagrams"
 ```
 
@@ -165,24 +164,24 @@ reader has the source README.>
 
 ## Entry Points
 
-- [`path/to/main.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <what runs when you start it>
-- [`path/to/cli.py`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <CLI surface>
+- [`path/to/main.py`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>) — <what runs when you start it>
+- [`path/to/cli.py`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>) — <CLI surface>
 
 ## High-Level Architecture
 
 <2-3 sentences. Detail goes in architecture.md.>
 
-See [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/architecture.md).
+See [architecture.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/architecture.md).
 
 ## Module Map
 
 | Module | Purpose |
 |---|---|
-| [`<module>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md) | <one-line purpose> |
+| [`<module>`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md) | <one-line purpose> |
 
 ## Getting Started
 
-See [getting-started.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/getting-started.md).
+See [getting-started.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/getting-started.md).
 ````
 
 For link targets in local mode use relative paths. For cloned repos use `https://github.com/<owner>/<repo>/blob/<sha>/<path>` so links survive future commits.
@@ -197,7 +196,7 @@ where it exits, where state lives.>
 
 ## Components
 
-- **<Component>** — <1-2 sentences>. See [`modules/<module>.md`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md).
+- **<Component>** — <1-2 sentences>. See [`modules/<module>.md`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/modules/<module>.md).
 
 ## System Diagram
 
@@ -211,8 +210,8 @@ flowchart TD
 
 ## Data Flow
 
-1. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
-2. **<Step>** — [`<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
+1. **<Step>** — [`<file>`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>)
+2. **<Step>** — [`<file>`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>)
 
 ## Key Design Decisions
 
@@ -244,7 +243,7 @@ For each selected module, inspect its layout with `ls`, identify 3–5 most impo
 
 ## Key Files
 
-- [`<module>/<file>`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>) — <what it does>
+- [`<module>/<file>`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>) — <what it does>
 
 ## Public API
 
@@ -325,8 +324,8 @@ sequenceDiagram
 
 ### Walkthrough
 
-1. **User input** — [`cli.py:HermesCLI.run_session`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
-2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/<link>)
+1. **User input** — [`cli.py:RabbitCLI.run_session`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>)
+2. **Message dispatch** — [`run_agent.py:AIAgent.chat`](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/<link>)
 ````
 
 Don't invent participants. Every box must correspond to a real component the reader can find in the code.
@@ -364,8 +363,8 @@ Don't invent participants. Every box must correspond to a real component the rea
 
 ## Where to Go Next
 
-- Architecture: [architecture.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/architecture.md)
-- Module reference: [README.md#module-map](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/software-development/code-wiki/README.md#module-map)
+- Architecture: [architecture.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/architecture.md)
+- Module reference: [README.md#module-map](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/software-development/code-wiki/README.md#module-map)
 ````
 
 ### 10. Write `api.md` (skip if not applicable)
@@ -385,7 +384,7 @@ cat > "$OUTPUT_DIR/.codewiki-state.json" <<EOF
   "source_path": "$PWD",
   "source_sha": "$REPO_SHA",
   "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "generator": "hermes-agent code-wiki skill v0.1.0",
+  "generator": "rabbit-agent code-wiki skill v0.1.0",
   "modules_documented": []
 }
 EOF
@@ -396,7 +395,7 @@ EOF
 State exactly what was generated and where:
 
 ```
-Generated wiki at ~/.hermes/wikis/<repo-name>/:
+Generated wiki at ~/.rabbit/wikis/<repo-name>/:
   README.md                   project overview, module map
   architecture.md             system architecture + flowchart
   getting-started.md          setup, first run, workflows
@@ -436,7 +435,7 @@ Full incremental-regeneration is a future enhancement — for now, regenerating 
 - **Restating code as prose.** A module doc that says "the `process` function processes things by calling `process_item` on each item" is worse than just linking to the function.
 - **Mermaid > 50 nodes.** They don't render legibly. Split them.
 - **Documenting tests, generated code, or vendored deps as if they were product code.** Skip them.
-- **In-repo output without asking.** Default is `~/.hermes/wikis/`. Only write into the repo when the user explicitly requests it.
+- **In-repo output without asking.** Default is `~/.rabbit/wikis/`. Only write into the repo when the user explicitly requests it.
 - **Mermaid special chars need quotes:** `A["Tool / Agent"]` not `A[Tool / Agent]`. `<br>` for line breaks inside a node.
 - **Nested code fences in SKILL.md.** When writing a markdown example that contains a Mermaid block, use 4-backtick outer fences so the 3-backtick inner ` ```mermaid ` doesn't close the outer. (This SKILL.md does it.)
 - **classDiagram generics** render as `~T~` (e.g. `List~Tool~`), not `<T>`.

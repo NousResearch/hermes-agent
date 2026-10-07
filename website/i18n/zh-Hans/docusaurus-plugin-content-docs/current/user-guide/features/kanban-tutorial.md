@@ -1,16 +1,16 @@
 # Kanban 教程
 
-Hermes Kanban 系统所设计的四个使用场景的完整演示，需在浏览器中打开 dashboard。如果你还没有阅读 [Kanban 概述](./kanban)，请先从那里开始——本文假设你已了解 task（任务）、run（运行）、assignee（负责人）和 dispatcher（调度器）的概念。
+Rabbit Kanban 系统所设计的四个使用场景的完整演示，需在浏览器中打开 dashboard。如果你还没有阅读 [Kanban 概述](./kanban)，请先从那里开始——本文假设你已了解 task（任务）、run（运行）、assignee（负责人）和 dispatcher（调度器）的概念。
 
 ## 准备工作
 
 ```bash
-hermes kanban init           # 可选；首次执行 `hermes kanban <任何命令>` 会自动初始化
-hermes dashboard             # 在浏览器中打开 http://127.0.0.1:9119
+rabbit kanban init           # 可选；首次执行 `rabbit kanban <任何命令>` 会自动初始化
+rabbit dashboard             # 在浏览器中打开 http://127.0.0.1:9119
 # 点击左侧导航栏中的 Kanban
 ```
 
-dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent worker 不会看到 dashboard 或 CLI——它们通过专用的 `kanban_*` [工具集](./kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_list`、`kanban_complete`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`、`kanban_unblock`）来操作看板。三个界面——dashboard、CLI、worker 工具——都通过同一个每看板独立的 SQLite 数据库（默认看板为 `~/.hermes/kanban.db`，后续创建的任意看板为 `~/.hermes/kanban/boards/<slug>/kanban.db`）进行路由，因此无论变更来自哪一侧，每个看板的数据始终一致。
+dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent worker 不会看到 dashboard 或 CLI——它们通过专用的 `kanban_*` [工具集](./kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_list`、`kanban_complete`、`kanban_block`、`kanban_heartbeat`、`kanban_comment`、`kanban_create`、`kanban_link`、`kanban_unblock`）来操作看板。三个界面——dashboard、CLI、worker 工具——都通过同一个每看板独立的 SQLite 数据库（默认看板为 `~/.rabbit/kanban.db`，后续创建的任意看板为 `~/.rabbit/kanban/boards/<slug>/kanban.db`）进行路由，因此无论变更来自哪一侧，每个看板的数据始终一致。
 
 本教程全程使用 `default` 看板。如果你需要多个隔离队列（每个项目/仓库/领域一个），请参阅概述中的[看板（多项目）](./kanban#boards-multi-project)——相同的 CLI/dashboard/worker 流程适用于每个看板，且 worker 在物理上无法看到其他看板上的任务。
 
@@ -22,7 +22,7 @@ dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent 
 
 从左到右共六列：
 
-- **Triage（分类）** — 原始想法。默认情况下，dispatcher 会对此处的任务自动运行**分解器**（orchestrator 驱动的扇出）：它读取你的 profile 名册和描述，生成一张子任务图，将任务路由给最合适的专家，同时保持原始任务作为父任务存活，以便在所有子任务完成后 orchestrator 重新唤醒来判断完成情况。点击 kanban 页面顶部的 **Orchestration: Auto/Manual** 切换按钮来切换模式。在 Manual 模式下（或没有 orchestrator profile 的配置中），点击卡片上的 **⚗ Decompose**，或运行 `hermes kanban decompose <id>` / `/kanban decompose <id>`。对于不需要扇出的单个任务，**✨ Specify** 会进行一次性规格重写（目标、方法、验收标准）并将任务提升到 `todo`。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置相关模型。参见主 Kanban 指南中的[自动与手动编排](./kanban#auto-vs-manual-orchestration)。
+- **Triage（分类）** — 原始想法。默认情况下，dispatcher 会对此处的任务自动运行**分解器**（orchestrator 驱动的扇出）：它读取你的 profile 名册和描述，生成一张子任务图，将任务路由给最合适的专家，同时保持原始任务作为父任务存活，以便在所有子任务完成后 orchestrator 重新唤醒来判断完成情况。点击 kanban 页面顶部的 **Orchestration: Auto/Manual** 切换按钮来切换模式。在 Manual 模式下（或没有 orchestrator profile 的配置中），点击卡片上的 **⚗ Decompose**，或运行 `rabbit kanban decompose <id>` / `/kanban decompose <id>`。对于不需要扇出的单个任务，**✨ Specify** 会进行一次性规格重写（目标、方法、验收标准）并将任务提升到 `todo`。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置相关模型。参见主 Kanban 指南中的[自动与手动编排](./kanban#auto-vs-manual-orchestration)。
 - **Todo（待办）** — 已创建但等待依赖项，或尚未分配。
 - **Ready（就绪）** — 已分配，等待 dispatcher 认领。
 - **In progress（进行中）** — worker 正在主动执行任务。开启"Lanes by profile"（默认开启）时，此列按负责人分组，让你一眼看出每个 worker 正在做什么。
@@ -42,18 +42,18 @@ dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent 
 你正在开发一个功能。经典流程：设计 schema、实现 API、编写测试。三个任务，具有父→子依赖关系。
 
 ```bash
-SCHEMA=$(hermes kanban create "Design auth schema" \
+SCHEMA=$(rabbit kanban create "Design auth schema" \
     --assignee backend-dev --tenant auth-project --priority 2 \
     --body "Design the user/session/token schema for the auth module." \
     --json | jq -r .id)
 
-API=$(hermes kanban create "Implement auth API endpoints" \
+API=$(rabbit kanban create "Implement auth API endpoints" \
     --assignee backend-dev --tenant auth-project --priority 2 \
     --parent $SCHEMA \
     --body "POST /register, POST /login, POST /refresh, POST /logout." \
     --json | jq -r .id)
 
-hermes kanban create "Write auth integration tests" \
+rabbit kanban create "Write auth integration tests" \
     --assignee qa-dev --tenant auth-project --priority 2 \
     --parent $API \
     --body "Cover happy path, wrong password, expired token, concurrent refresh."
@@ -61,7 +61,7 @@ hermes kanban create "Write auth integration tests" \
 
 由于 `API` 以 `SCHEMA` 为父任务，`tests` 以 `API` 为父任务，只有 `SCHEMA` 从 `ready` 状态开始。其他两个任务在 `todo` 中等待，直到其父任务完成。这正是依赖提升引擎在发挥作用——在有 API 可测试之前，不会有其他 worker 去接手测试编写工作。
 
-在下一次 dispatcher tick 时（默认 60 秒，或点击 **Nudge dispatcher** 立即触发），`backend-dev` profile 会以 `HERMES_KANBAN_TASK=$SCHEMA` 作为环境变量生成一个 worker。以下是该 worker 在 agent 内部的工具调用循环：
+在下一次 dispatcher tick 时（默认 60 秒，或点击 **Nudge dispatcher** 立即触发），`backend-dev` profile 会以 `RABBIT_KANBAN_TASK=$SCHEMA` 作为环境变量生成一个 worker。以下是该 worker 在 agent 内部的工具调用循环：
 
 ```python
 # worker tool calls — NOT commands you run
@@ -84,7 +84,7 @@ kanban_complete(
 )
 ```
 
-`kanban_show` 默认将 `task_id` 设为 `$HERMES_KANBAN_TASK`，因此 worker 无需知道自己的 id。`kanban_complete` 将 summary 和 metadata 写入当前 `task_runs` 行，关闭该 run，并将任务转换为 `done`——全部通过 `kanban_db` 以原子方式完成。
+`kanban_show` 默认将 `task_id` 设为 `$RABBIT_KANBAN_TASK`，因此 worker 无需知道自己的 id。`kanban_complete` 将 summary 和 metadata 写入当前 `task_runs` 行，关闭该 run，并将任务转换为 `done`——全部通过 `kanban_db` 以原子方式完成。
 
 当 `SCHEMA` 进入 `done` 状态时，依赖引擎会自动将 `API` 提升为 `ready`。API worker 认领任务后，调用 `kanban_show()` 时会看到 `SCHEMA` 的 summary 和 metadata 附加在父任务交接信息中——因此它无需重新阅读冗长的设计文档就能了解 schema 的决策。
 
@@ -97,8 +97,8 @@ kanban_complete(
 你可以随时在终端检查相同的数据——以下命令是**你**查看看板，而非 worker 执行：
 
 ```bash
-hermes kanban show $SCHEMA
-hermes kanban runs $SCHEMA
+rabbit kanban show $SCHEMA
+rabbit kanban runs $SCHEMA
 # #  OUTCOME       PROFILE       ELAPSED  STARTED
 # 1  completed     backend-dev        0s  2026-04-27 19:34
 #     → users(id, email, pw_hash), sessions(id, user_id, jti, expires_at); refresh tokens ...
@@ -112,15 +112,15 @@ hermes kanban runs $SCHEMA
 
 ```bash
 for lang in Spanish French German; do
-    hermes kanban create "Translate homepage to $lang" \
+    rabbit kanban create "Translate homepage to $lang" \
         --assignee translator --tenant content-ops
 done
 for i in 1 2 3 4 5; do
-    hermes kanban create "Transcribe Q3 customer call #$i" \
+    rabbit kanban create "Transcribe Q3 customer call #$i" \
         --assignee transcriber --tenant content-ops
 done
 for sku in 1001 1002 1003 1004; do
-    hermes kanban create "Generate product description: SKU-$sku" \
+    rabbit kanban create "Generate product description: SKU-$sku" \
         --assignee copywriter --tenant content-ops
 done
 ```
@@ -129,7 +129,7 @@ done
 在同一个 kanban.db 上处理三个专家 profile 的任务：
 
 ```bash
-hermes gateway start
+rabbit gateway start
 ```
 
 现在将看板筛选到 `content-ops`（或直接搜索"Transcribe"），你会看到：
@@ -211,12 +211,12 @@ reviewer 卡的 `worker_context` 包含已完成实现的 handoff。这是独立
 一个因 profile 环境中未设置 `AWS_ACCESS_KEY_ID` 而无法生成 worker 的部署任务：
 
 ```bash
-hermes kanban create "Deploy to staging (missing creds)" \
+rabbit kanban create "Deploy to staging (missing creds)" \
     --assignee deploy-bot --tenant ops \
     --max-retries 3
 ```
 
-dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。dispatcher 释放认领，递增失败计数器，并在下一次 tick 重试。由于本示例设置了 `--max-retries 3`，在三次连续失败后熔断器触发：任务进入 `blocked` 状态，outcome 为 `gave_up`。如果省略该标志，Hermes 使用 `kanban.failure_limit`（默认值：2）。在人工解除阻塞之前不再重试。
+dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。dispatcher 释放认领，递增失败计数器，并在下一次 tick 重试。由于本示例设置了 `--max-retries 3`，在三次连续失败后熔断器触发：任务进入 `blocked` 状态，outcome 为 `gave_up`。如果省略该标志，Rabbit 使用 `kanban.failure_limit`（默认值：2）。在人工解除阻塞之前不再重试。
 
 点击被阻塞的任务：
 
@@ -227,7 +227,7 @@ dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID
 在终端：
 
 ```bash
-hermes kanban runs t_ef5d
+rabbit kanban runs t_ef5d
 # #   OUTCOME        PROFILE        ELAPSED  STARTED
 # 1   spawn_failed   deploy-bot          0s  2026-04-27 19:34
 #       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
@@ -268,14 +268,14 @@ Run 1 — `crashed`，错误为 `OOM kill at row 2.3M (process 99999 gone)`。Ru
 
 这取代了平面 kanban 系统中"翻查评论和工作输出"的繁琐流程。PM 在规格说明的 metadata 中编写验收标准，工程师的 worker 在父任务交接中以结构化形式看到它们。工程师记录运行了哪些测试以及通过了多少，审查者的 worker 在打开 diff 之前就已掌握该列表。
 
-批量关闭保护的存在正是因为这些数据是按 run 存储的。`hermes kanban complete a b c --summary X`（你，从 CLI 执行）会被拒绝——将相同的 summary 复制粘贴到三个任务几乎总是错误的。不带交接标志的批量关闭仍然适用于常见的"我完成了一堆行政任务"场景。工具界面根本不提供批量变体；`kanban_complete` 始终是单任务操作，原因相同。
+批量关闭保护的存在正是因为这些数据是按 run 存储的。`rabbit kanban complete a b c --summary X`（你，从 CLI 执行）会被拒绝——将相同的 summary 复制粘贴到三个任务几乎总是错误的。不带交接标志的批量关闭仍然适用于常见的"我完成了一堆行政任务"场景。工具界面根本不提供批量变体；`kanban_complete` 始终是单任务操作，原因相同。
 
 ## 已完成卡片的后续工作 — 通过父任务链接进行 CI 修复
 
 场景一的实现卡片已经 `done`。两小时后，合并分支上的 CI 失败了。不要重开已完成的卡片——已完成的卡片是历史，它的交接内容会向前流动。创建一张以该卡片为**父任务**的修复卡片：
 
 ```bash
-hermes kanban create "Fix CI: test_backoff_jitter flakes on 3.11" \
+rabbit kanban create "Fix CI: test_backoff_jitter flakes on 3.11" \
     --assignee backend-dev \
     --parent t_impl \
     --workspace worktree --branch wt/ci-fix-backoff \
@@ -303,6 +303,6 @@ Acceptance: tests/test_retry.py green on 3.11 and 3.12."
 ## 后续步骤
 
 - [Kanban 概述](./kanban) — 完整的数据模型、事件词汇表和 CLI 参考。
-- `hermes kanban --help` — 所有子命令，所有标志。
-- `hermes kanban watch --kinds completed,gave_up,timed_out` — 在整个看板上实时流式输出终端事件。
-- `hermes kanban notify-subscribe <task> --platform telegram --chat-id <id>` — 当特定任务完成时通过 gateway 接收推送通知。
+- `rabbit kanban --help` — 所有子命令，所有标志。
+- `rabbit kanban watch --kinds completed,gave_up,timed_out` — 在整个看板上实时流式输出终端事件。
+- `rabbit kanban notify-subscribe <task> --platform telegram --chat-id <id>` — 当特定任务完成时通过 gateway 接收推送通知。

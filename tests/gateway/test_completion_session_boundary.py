@@ -29,7 +29,7 @@ from tools.process_registry import ProcessRegistry, ProcessSession
 
 @pytest.fixture(autouse=True)
 def isolated_registry(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     import tools.process_registry as pr_module
 
     monkeypatch.setattr(pr_module, "CHECKPOINT_PATH", tmp_path / "processes.json")

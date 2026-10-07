@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 from tui_gateway import server as tui_server
 
 class _Agent:
@@ -25,14 +25,14 @@ class _Agent:
         self._seen = seen
 
     def _persist_session(self, _messages):
-        self._seen.append(str(get_hermes_home()))
+        self._seen.append(str(get_rabbit_home()))
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     launch, served = tmp_path / "launch", tmp_path / "served"
     for home in (launch, served):
         home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
     return launch, served
 
 def _install_session(monkeypatch, session):
@@ -52,7 +52,7 @@ def test_incremental_flush_persists_into_the_sessions_own_home(homes, monkeypatc
 def test_exit_flush_never_waits_on_an_external_secret_source(homes, monkeypatch):
     """A slow ``op run`` / ``bws`` source must not cost the transcript the exit flush exists to save."""
     _launch, served = homes
-    from hermes_cli import env_loader
+    from rabbit_cli import env_loader
 
     def _slow_source(_home):
         time.sleep(2.0)  # a real secret CLI gets a 30s budget; this whole flush gets 1s

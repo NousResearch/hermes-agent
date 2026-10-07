@@ -42,9 +42,9 @@ def test_small_summaries_pass_through_untouched():
 
 
 def test_batch_overflow_trimmed_and_spilled_losslessly(monkeypatch):
-    # Isolate spill directory to a temp HERMES_HOME.
+    # Isolate spill directory to a temp RABBIT_HOME.
     with tempfile.TemporaryDirectory() as td:
-        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        monkeypatch.setenv("RABBIT_HOME", os.path.join(td, ".rabbit"))
         # Distinct head + tail markers so we can prove the tail survives.
         big = "HEAD_MARKER\n" + ("X" * 50_000) + "\nTAIL_MARKER"
         # Parent nearly full (120k/131k) → tiny headroom → aggressive trim.

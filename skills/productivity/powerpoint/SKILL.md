@@ -1,12 +1,12 @@
 ---
+author: Nous Research
 name: powerpoint
 description: Create, read, edit .pptx decks with python-pptx.
 version: 1.1.0
-author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  rabbit:
     tags: [pptx, powerpoint, presentations, slides, office, python-pptx]
     category: productivity
     related_skills: [docx, xlsx, pdf]

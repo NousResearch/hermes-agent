@@ -10,7 +10,7 @@ import pytest
 
 @pytest.mark.no_isolate
 def test_parked_self_probe_skips_disabled_or_deleted_entry(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
 
     from tools import mcp_tool
     from tools import mcp_tool_config as _config
@@ -95,7 +95,7 @@ def test_parked_self_probe_skips_disabled_or_deleted_entry(monkeypatch, tmp_path
             f"(transport_calls={state['transport_calls']})"
         )
 
-        # An explicit reconnect (manual refresh, `hermes mcp login`) still revives
+        # An explicit reconnect (manual refresh, `rabbit mcp login`) still revives
         # regardless of the config gate.
         task._reconnect_event.set()
         revived_at = state["transport_calls"]

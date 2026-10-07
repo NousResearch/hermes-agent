@@ -8,7 +8,7 @@
 import { atom } from 'nanostores'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const MODE_KEY = 'hermes.desktop.interfaceMode.v1'
+const MODE_KEY = 'rabbit.desktop.interfaceMode.v1'
 
 const loadStore = () => import('./interface-mode')
 

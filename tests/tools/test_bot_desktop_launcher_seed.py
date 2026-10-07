@@ -35,11 +35,11 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "", profile_
     env = {
         "PATH": str(bindir),
         "HOME": str(tmp_path),
-        "HERMES_BD_PROFILE": "t", "HERMES_BD_DISPLAY_NUM": "99",
-        "HERMES_BD_SOCKET": str(tmp_path / "rfb.sock"), "HERMES_BD_XAUTH": str(tmp_path / "Xauthority"),
-        "HERMES_BD_ENV_FILE": str(tmp_path / "env"), "HERMES_BD_CONFIG_HOME": str(cfg),
-        "HERMES_BD_SEED_ONLY": "1",
-        **({"HERMES_BD_BROWSER_EXEC": browser_exec, "HERMES_BD_BROWSER_EXEC_LINE": f"Exec={browser_exec} --user-data-dir={profile_dir or f'{tmp_path}/bp'}"} if browser_exec else {}),
+        "RABBIT_BD_PROFILE": "t", "RABBIT_BD_DISPLAY_NUM": "99",
+        "RABBIT_BD_SOCKET": str(tmp_path / "rfb.sock"), "RABBIT_BD_XAUTH": str(tmp_path / "Xauthority"),
+        "RABBIT_BD_ENV_FILE": str(tmp_path / "env"), "RABBIT_BD_CONFIG_HOME": str(cfg),
+        "RABBIT_BD_SEED_ONLY": "1",
+        **({"RABBIT_BD_BROWSER_EXEC": browser_exec, "RABBIT_BD_BROWSER_EXEC_LINE": f"Exec={browser_exec} --user-data-dir={profile_dir or f'{tmp_path}/bp'}"} if browser_exec else {}),
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
@@ -53,7 +53,7 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
     execs = sorted(
         line.split("=", 1)[1]
         for pid in launcher_ids
-        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "hermes.desktop").read_text(encoding="utf-8-sig").splitlines()
+        for line in (cfg / "xfce4/panel" / pid.replace("plugin-", "launcher-") / "rabbit.desktop").read_text(encoding="utf-8-sig").splitlines()
         if line.startswith("Exec=")
     )
     assert execs == [f"{chrome} --user-data-dir={tmp_path}/bp", "xfce4-terminal"]
@@ -61,7 +61,7 @@ def test_dock_lists_only_programs_present_on_path(tmp_path):
 
 def test_browser_launcher_follows_the_profile_without_reseeding_the_panel(tmp_path):
     """The panel layout is seeded once (the human may have rearranged it), but the Browser entry's Exec=
-    binds the bot's user-data-dir by absolute path: after `hermes profile rename` the dock must open the
+    binds the bot's user-data-dir by absolute path: after `rabbit profile rename` the dock must open the
     renamed profile's cookie jar, the same one agent-browser now drives, while the layout stays untouched."""
     chrome = tmp_path / "bin" / "chrome"
     cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/old name/bp")
@@ -70,7 +70,7 @@ def test_browser_launcher_follows_the_profile_without_reseeding_the_panel(tmp_pa
     shutil.rmtree(tmp_path / "bin")
     _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/new name/bp")
     execs = [
-        line for d in (cfg / "xfce4/panel").glob("launcher-*/hermes.desktop")
+        line for d in (cfg / "xfce4/panel").glob("launcher-*/rabbit.desktop")
         for line in d.read_text(encoding="utf-8-sig").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
     ]
     assert execs == [f"Exec={chrome} --user-data-dir=/new name/bp"]
@@ -78,16 +78,16 @@ def test_browser_launcher_follows_the_profile_without_reseeding_the_panel(tmp_pa
 
 
 def test_browser_launcher_seeded_before_the_marker_still_follows_a_rename(tmp_path):
-    """Profiles seeded by an earlier launcher have the Browser entry but no `.hermes-browser-launcher`;
+    """Profiles seeded by an earlier launcher have the Browser entry but no `.rabbit-browser-launcher`;
     a rename must still reach their Exec= (the marker is recovered from our own entry), not leave them
     opening the old profile's empty cookie jar forever."""
     chrome = tmp_path / "bin" / "chrome"
     cfg = _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/old name/bp")
-    (cfg / "xfce4/panel/.hermes-browser-launcher").unlink()
+    (cfg / "xfce4/panel/.rabbit-browser-launcher").unlink()
     shutil.rmtree(tmp_path / "bin")
     _seed(tmp_path, ["xfce4-terminal", "chrome"], browser_exec=str(chrome), profile_dir="/new name/bp")
     execs = [
-        line for d in (cfg / "xfce4/panel").glob("launcher-*/hermes.desktop")
+        line for d in (cfg / "xfce4/panel").glob("launcher-*/rabbit.desktop")
         for line in d.read_text(encoding="utf-8-sig").splitlines() if line.startswith("Exec=") and "user-data-dir" in line
     ]
     assert execs == [f"Exec={chrome} --user-data-dir=/new name/bp"]

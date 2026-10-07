@@ -2,7 +2,7 @@
 
 Regression tests for the cleared-contextvar bug (#57049, #36685): the
 post-handler auto-TTS block in ``BasePlatformAdapter._process_message_background``
-runs AFTER ``_clear_session_env`` wiped ``HERMES_SESSION_PLATFORM``, so the
+runs AFTER ``_clear_session_env`` wiped ``RABBIT_SESSION_PLATFORM``, so the
 TTS tool's contextvar-based ``want_opus`` detection always resolved False on
 that path and Opus platforms received MP3 (audio attachment, not a native
 voice bubble). The fix passes an explicit output path from

@@ -118,7 +118,7 @@ class _StreamingAiohttpSession:
 def _discord_entry():
     """Return the live Discord PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
-    from hermes_cli.plugins import discover_plugins
+    from rabbit_cli.plugins import discover_plugins
     from gateway.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("discord")
@@ -168,7 +168,7 @@ class _patch_discord_sender:
 def _slack_entry():
     """Return the live Slack PlatformEntry, importing lazily so plugin
     discovery is forced exactly once and patches survive across tests."""
-    from hermes_cli.plugins import discover_plugins
+    from rabbit_cli.plugins import discover_plugins
     from gateway.platform_registry import platform_registry
     discover_plugins()
     return platform_registry.get("slack")
@@ -283,7 +283,7 @@ class TestSendMessageTool:
 
     def test_ntfy_topic_target_bypasses_channel_directory(self):
         ntfy_platform = Platform("ntfy")
-        ntfy_cfg = SimpleNamespace(enabled=True, token=None, extra={"topic": "hermes-in"})
+        ntfy_cfg = SimpleNamespace(enabled=True, token=None, extra={"topic": "rabbit-in"})
         config = SimpleNamespace(
             platforms={ntfy_platform: ntfy_cfg},
             get_home_channel=lambda _platform: None,
@@ -323,8 +323,8 @@ class TestSendMessageTool:
         # not auto-accepted by the trust window. (Recency trust is covered
         # in test_platform_base.py. The public default flipped to non-strict
         # in 2026-05; this test pins strict on explicitly.)
-        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        monkeypatch.setenv("RABBIT_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("RABBIT_MEDIA_TRUST_RECENT_FILES", "0")
         config, telegram_cfg = _make_config()
         secret = tmp_path / "secret.pdf"
         secret.write_bytes(b"%PDF secret")
@@ -358,13 +358,13 @@ class TestSendMessageTool:
             force_document=False,
         )
 
-    def test_missing_media_is_reported_to_the_caller_and_hermes_send_exits_nonzero(self, tmp_path, monkeypatch):
+    def test_missing_media_is_reported_to_the_caller_and_rabbit_send_exits_nonzero(self, tmp_path, monkeypatch):
         """#115908: a MEDIA path that does not exist on the host was dropped with only a host-side
-        warning while ``hermes send`` printed success:true and exited 0. The surviving attachment is
+        warning while ``rabbit send`` printed success:true and exited 0. The surviving attachment is
         still sent; the payload names the drop and the CLI exit code follows it."""
-        from hermes_cli.send_cmd import _emit_result
+        from rabbit_cli.send_cmd import _emit_result
 
-        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        monkeypatch.setenv("RABBIT_MEDIA_DELIVERY_STRICT", "0")
         config, telegram_cfg = _make_config()
         report = tmp_path / "report.pdf"
         report.write_bytes(b"%PDF report")
@@ -528,7 +528,7 @@ class TestSendToPlatformChunking:
     def test_signal_long_message_is_chunked(self, monkeypatch):
         """Standalone Signal sends split at the adapter's 8000-char limit.
 
-        The standalone path (hermes send / cron / MCP) speaks raw JSON-RPC via
+        The standalone path (rabbit send / cron / MCP) speaks raw JSON-RPC via
         _send_signal and bypasses SignalAdapter.send(), so the shared
         truncate_message() pass in _send_to_platform must know Signal's limit
         (regression for #67279 / #57929 — long sends were rejected whole).
@@ -892,7 +892,7 @@ class TestParseTargetRef:
              "!HLOQwxYGgFPMPJUSNR:matrix.org", "$thread123:matrix.org"),
             ("matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org",
              "!HLOQwxYGgFPMPJUSNR:matrix.org", None),
-            ("matrix", "@hermes:matrix.org", "@hermes:matrix.org", None),
+            ("matrix", "@rabbit:matrix.org", "@rabbit:matrix.org", None),
             # Phone platforms: E.164 keeps its '+' for signal-cli; groups and
             # bare digits also resolve.
             ("signal", "+41791234567", "+41791234567", None),
@@ -1494,8 +1494,8 @@ class _FakePlatform:
 class TestSendViaAdapterStandaloneFallback:
     """Coverage for the out-of-process plugin-platform send path.
 
-    When the gateway runner is not in this process (e.g. ``hermes cron``
-    runs separately from ``hermes gateway``), ``_send_via_adapter`` should
+    When the gateway runner is not in this process (e.g. ``rabbit cron``
+    runs separately from ``rabbit gateway``), ``_send_via_adapter`` should
     fall through to the plugin's ``standalone_sender_fn`` registered on
     its ``PlatformEntry``.  Without the hook, the existing error string
     is returned (with a more helpful tail).
@@ -1621,26 +1621,26 @@ class TestSendTelegramThreadNotFoundRetry:
 
 def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path, monkeypatch):
     """The 'not configured' error names the files this process actually read (resolved home, not a
-    hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
+    hardcoded ``~/.rabbit``) and what each source held, so a Windows/profile home user can fix the right file."""
     from gateway.config import GatewayConfig
     from tools.send_message_tool import _resolve_platform_config
 
-    home = tmp_path / "AppData" / "Local" / "hermes"
+    home = tmp_path / "AppData" / "Local" / "rabbit"
     home.mkdir(parents=True)
     (home / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
     (home / "config.yaml").write_text("platforms:\n  discord:\n    enabled: false\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
 
     _, _, _, err = _resolve_platform_config("discord", GatewayConfig())
 
-    assert "~/.hermes" not in err
+    assert "~/.rabbit" not in err
     assert str(home / ".env") in err
     assert str(home / "config.yaml") in err
 
 
 def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_path, monkeypatch):
-    """Under ``HERMES_HOME=<root>/profiles/<p>`` the error says a live gateway from the default root has the
+    """Under ``RABBIT_HOME=<root>/profiles/<p>`` the error says a live gateway from the default root has the
     platform connected (its credentials never came from this profile's ``.env``) and lists external secret
     sources by name only (#114272 step 5)."""
     import json
@@ -1649,7 +1649,7 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     from gateway.config import GatewayConfig
     from tools.send_message_tool import _resolve_platform_config
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     profile = root / "profiles" / "coder"
     profile.mkdir(parents=True)
     (root / "gateway_state.json").write_text(
@@ -1657,7 +1657,7 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     (profile / ".env").write_text("FIRECRAWL_API_KEY=x\n", encoding="utf-8")
     (profile / "config.yaml").write_text(
         "secrets:\n  bitwarden:\n    enabled: false\n    session_token: SECRET-VALUE\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("RABBIT_HOME", str(profile))
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
 
     _, _, _, err = _resolve_platform_config("discord", GatewayConfig())

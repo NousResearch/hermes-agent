@@ -28,6 +28,6 @@ describe('chatBits catalog', () => {
 
     resetLocale()
 
-    expect(messages().chatBits.entry.noTty).toBe('hermes-tui: no TTY')
+    expect(messages().chatBits.entry.noTty).toBe('rabbit-tui: no TTY')
   })
 })

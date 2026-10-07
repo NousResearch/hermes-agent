@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
-from hermes_constants import get_hermes_home
+from rabbit_constants import get_rabbit_home
 
 
 DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"
@@ -28,7 +28,7 @@ def _utc_now_iso() -> str:
 def resolve_teams_pipeline_store_path(path: str | Path | None = None) -> Path:
     explicit = str(path).strip() if path is not None else ""
     env_path = os.getenv("MSGRAPH_WEBHOOK_STORE_PATH", "").strip()
-    return Path(explicit or env_path) if (explicit or env_path) else get_hermes_home() / DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
+    return Path(explicit or env_path) if (explicit or env_path) else get_rabbit_home() / DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
 
 class TeamsPipelineStore:

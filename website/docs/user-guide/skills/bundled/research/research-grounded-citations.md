@@ -17,7 +17,6 @@ Ground answers and documents in cited, verifiable sources.
 | Source | Bundled (installed by default) |
 | Path | `skills/research/grounded-citations` |
 | Version | `1.2.0` |
-| Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Citations`, `Grounding`, `Sources`, `Web`, `Reports` |
@@ -26,7 +25,7 @@ Ground answers and documents in cited, verifiable sources.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Grounded Citations
@@ -67,13 +66,13 @@ None beyond the standard toolset. `scripts/sources.py` is stdlib-only Python 3.
 Retrieval comes from whatever is configured: `web_search`, `web_extract`,
 `browser_navigate`, or `terminal` (curl, CLIs).
 
-Ledger location: `$HERMES_HOME/cache/citations/ledger.json` (profile-aware).
-Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
+Ledger location: `$RABBIT_HOME/cache/citations/ledger.json` (profile-aware).
+Override per task with `--ledger <path>` or `RABBIT_CITATION_LEDGER`.
 
 ## How to Run
 
 ```bash
-S=~/.hermes/skills/research/grounded-citations/scripts/sources.py
+S=~/.rabbit/skills/research/grounded-citations/scripts/sources.py
 
 python "$S" reset                                  # start a clean ledger
 python "$S" add https://example.com/a --title "A"  # prints: [1]
@@ -159,8 +158,8 @@ with every claim attributed to the platform it came from:
 | X/Twitter | `xurl` (needs API access) | announcements, developer chatter |
 
 The `reddit-reading` and `rss-feeds` skills are optional. If absent, install with
-`hermes skills install official/social-media/reddit-reading` or
-`hermes skills install official/research/rss-feeds` before using them.
+`rabbit skills install official/social-media/reddit-reading` or
+`rabbit skills install official/research/rss-feeds` before using them.
 
 Register every URL from every route in the ledger as it arrives (step ②). Keep
 opinion and measurement apart: a Reddit thread is evidence that users *report*
@@ -248,7 +247,7 @@ and read the `info: stats:` line to see the counts before picking a number.
 - **Citing the ledger in code/config artifacts.** Source comments belong in
   prose deliverables and doc headers, not inside generated code.
 - **Parallel subagents.** Each subagent has its own working directory; point
-  them all at one ledger with `--ledger` (or `HERMES_CITATION_LEDGER`) if their
+  them all at one ledger with `--ledger` (or `RABBIT_CITATION_LEDGER`) if their
   outputs get merged, otherwise their ids will collide.
 - **Quoting from a snippet instead of the page.** Evidence quotes must come
   from the extracted page text, not a search-result description — `web_extract`

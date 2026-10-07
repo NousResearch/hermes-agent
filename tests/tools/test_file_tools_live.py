@@ -178,13 +178,13 @@ class TestExpandPath:
 
     def test_tilde_injection_blocked(self, ops):
         """Paths like ~; rm -rf / must NOT execute shell commands."""
-        malicious = "~; echo PWNED > /tmp/_hermes_injection_test"
+        malicious = "~; echo PWNED > /tmp/_rabbit_injection_test"
         result = ops._expand_path(malicious)
         # The invalid username (contains ";") should prevent shell expansion.
         # The path should be returned as-is (no expansion).
         assert result == malicious
         # Verify the injected command did NOT execute
-        assert not os.path.exists("/tmp/_hermes_injection_test")
+        assert not os.path.exists("/tmp/_rabbit_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):
         """~root/file.txt should attempt expansion (valid username)."""

@@ -1,0 +1,14 @@
+name: rabbit-memory-ui
+repo: https://github.com/xraysight/rabbit-memory-ui
+sha: 9472bed7e20a51ac4f6c48f882bd9f80ea54d4ee
+description: Read-only Rabbit Dashboard and Desktop plugin for inspecting built-in, holographic, Mem0,
+  Honcho, Mnemosyne, Hindsight, and ByteRover memory.
+maintainer: xraysight
+tier: community
+category: desktop
+docs_url: https://github.com/xraysight/rabbit-memory-ui#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

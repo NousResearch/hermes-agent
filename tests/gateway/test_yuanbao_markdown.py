@@ -2,7 +2,7 @@
 test_yuanbao_markdown.py - Unit tests for yuanbao_markdown.py
 
 Run (no pytest needed):
-    cd /root/.openclaw/workspace/hermes-agent
+    cd /root/.openclaw/workspace/rabbit-agent
     python3 tests/gateway/test_yuanbao_markdown.py -v
 
 Or with pytest if available:

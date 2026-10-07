@@ -14,7 +14,7 @@ On-demand GPU cloud instances for ML training.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/lambda-labs` |
+| Source | Optional — install with `rabbit skills install official/mlops/lambda-labs` |
 | Path | `optional-skills/mlops/lambda-labs` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ On-demand GPU cloud instances for ML training.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Lambda Labs GPU Cloud
@@ -556,8 +556,8 @@ python inference.py \
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/lambda-labs/references/advanced-usage.md)** - Multi-node training, API automation
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/lambda-labs/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/lambda-labs/references/advanced-usage.md)** - Multi-node training, API automation
+- **[Troubleshooting](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/lambda-labs/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

@@ -520,7 +520,7 @@ class TestBatchedDescribe:
 
 class TestConfigAndSchema:
     def test_limit_default_within_cap(self):
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from rabbit_cli.config_defaults import DEFAULT_CONFIG
         from tools.tool_search import ToolSearchConfig
 
         cfg = ToolSearchConfig.from_raw(DEFAULT_CONFIG["tools"]["tool_search"])

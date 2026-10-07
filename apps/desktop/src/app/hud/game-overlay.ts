@@ -18,7 +18,7 @@ export function useHudGameOverlay(): boolean {
   const [active, setActive] = useState(false)
 
   useEffect(() => {
-    const off = window.hermesDesktop?.hud?.onGameOverlay?.(state => setActive(state.active))
+    const off = window.rabbitDesktop?.hud?.onGameOverlay?.(state => setActive(state.active))
 
     return () => off?.()
   }, [])

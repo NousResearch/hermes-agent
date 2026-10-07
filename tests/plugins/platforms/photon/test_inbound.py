@@ -209,7 +209,7 @@ def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch, tmp_pa
     from plugins.platforms.photon import adapter as adapter_mod
 
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))
+    monkeypatch.setenv("RABBIT_RUNTIME_DIR", str(tmp_path / "missing-store"))
     assert adapter_mod.check_requirements() is False
 
 

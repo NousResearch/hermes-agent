@@ -14,7 +14,7 @@ description: "使用 mcporter CLI 列出、配置、认证并直接调用 MCP �
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mcp/mcporter` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mcp/mcporter` 安装 |
 | 路径 | `optional-skills/mcp/mcporter` |
 | 版本 | `1.0.0` |
 | 作者 | community |
@@ -25,7 +25,7 @@ description: "使用 mcporter CLI 列出、配置、认证并直接调用 MCP �
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 skill 激活时 agent 所看到的指令内容。
 :::
 
 # mcporter
@@ -86,7 +86,7 @@ mcporter call --stdio "bun run ./server.ts" scrape url=https://example.com
 # JSON 载荷
 mcporter call <server.tool> --args '{"limit": 5}'
 
-# 机器可读输出（推荐用于 Hermes）
+# 机器可读输出（推荐用于 Rabbit）
 mcporter call <server.tool> key=value --output json
 ```
 

@@ -9,7 +9,7 @@ import { runBootstrap } from './bootstrap-runner'
 
 for (const boundary of ['resolution', 'manifest'] as const) {
   test.skipIf(process.platform === 'win32')(`quit during ${boundary} cancels bootstrap before stages`, async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-bootstrap-quit-'))
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-bootstrap-quit-'))
     const controller = new AbortController()
     const marker = path.join(home, 'manifest-started')
     let manifestPid: number | undefined
@@ -17,7 +17,7 @@ for (const boundary of ['resolution', 'manifest'] as const) {
     fs.mkdirSync(path.join(home, 'scripts'))
     fs.writeFileSync(
       path.join(home, 'scripts/install.sh'),
-      `#!/usr/bin/env bash\nprintf started > "$HERMES_HOME/manifest-started"\nprintf 'manifest-pid=%s\\n' "$$"\nwhile :; do :; done\n`
+      `#!/usr/bin/env bash\nprintf started > "$RABBIT_HOME/manifest-started"\nprintf 'manifest-pid=%s\\n' "$$"\nwhile :; do :; done\n`
     )
 
     try {
@@ -25,7 +25,7 @@ for (const boundary of ['resolution', 'manifest'] as const) {
         installStamp: null,
         activeRoot: path.join(home, 'agent'),
         sourceRepoRoot: home,
-        hermesHome: home,
+        rabbitHome: home,
         abortSignal: controller.signal,
         onEvent: event => {
           if (boundary === 'resolution' && event.line?.includes('using local')) {

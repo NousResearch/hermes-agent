@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Telegram"
-description: "将 Hermes Agent 设置为 Telegram 机器人"
+description: "将 Rabbit Agent 设置为 Telegram 机器人"
 ---
 
 # Telegram 设置
 
-Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接后，你可以从任何设备与 Agent 聊天、发送自动转录的语音备忘录、接收定时任务结果，并在群聊中使用 Agent。该集成基于 [python-telegram-bot](https://python-telegram-bot.org/) 构建，支持文本、语音、图片和文件附件。
+Rabbit Agent 与 Telegram 集成，作为功能完整的对话机器人。连接后，你可以从任何设备与 Agent 聊天、发送自动转录的语音备忘录、接收定时任务结果，并在群聊中使用 Agent。该集成基于 [python-telegram-bot](https://python-telegram-bot.org/) 构建，支持文本、语音、图片和文件附件。
 
 ## 第一步：通过 BotFather 创建机器人
 
@@ -14,8 +14,8 @@ Hermes Agent 与 Telegram 集成，作为功能完整的对话机器人。连接
 
 1. 打开 Telegram，搜索 **@BotFather**，或访问 [t.me/BotFather](https://t.me/BotFather)
 2. 发送 `/newbot`
-3. 选择一个**显示名称**（例如 "Hermes Agent"）——可以是任意名称
-4. 选择一个**用户名**——必须唯一且以 `bot` 结尾（例如 `my_hermes_bot`）
+3. 选择一个**显示名称**（例如 "Rabbit Agent"）——可以是任意名称
+4. 选择一个**用户名**——必须唯一且以 `bot` 结尾（例如 `my_rabbit_bot`）
 5. BotFather 会回复你的 **API token**，格式如下：
 
 ```
@@ -103,7 +103,7 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 ## 第四步：获取你的用户 ID
 
-Hermes Agent 使用 Telegram 数字用户 ID 来控制访问权限。你的用户 ID **不是**你的用户名——它是一个类似 `123456789` 的数字。
+Rabbit Agent 使用 Telegram 数字用户 ID 来控制访问权限。你的用户 ID **不是**你的用户名——它是一个类似 `123456789` 的数字。
 
 **方法一（推荐）：** 向 [@userinfobot](https://t.me/userinfobot) 发送消息——它会立即回复你的用户 ID。
 
@@ -111,19 +111,19 @@ Hermes Agent 使用 Telegram 数字用户 ID 来控制访问权限。你的用�
 
 保存这个数字，下一步会用到。
 
-## 第五步：配置 Hermes
+## 第五步：配置 Rabbit
 
 ### 方式 A：交互式设置（推荐）
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 在提示时选择 **Telegram**。向导会询问你的机器人 token 和允许的用户 ID，然后为你写入配置。
 
 ### 方式 B：手动配置
 
-将以下内容添加到 `~/.hermes/.env`：
+将以下内容添加到 `~/.rabbit/.env`：
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
@@ -133,7 +133,7 @@ TELEGRAM_ALLOWED_USERS=123456789    # 多个用户用逗号分隔
 ### 启动 Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 机器人应在几秒内上线。在 Telegram 上向它发送消息以验证。
@@ -154,14 +154,14 @@ hermes gateway
 terminal:
   backend: docker
   docker_volumes:
-    - "/home/user/.hermes/cache/documents:/output"
+    - "/home/user/.rabbit/cache/documents:/output"
 ```
 
 然后：
 
 - 在 Docker 内将文件写入 `/output/...`
 - 在 `MEDIA:` 中使用**宿主机可见**的路径，例如：
-  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+  `MEDIA:/home/user/.rabbit/cache/documents/report.txt`
 
 如果你已有 `docker_volumes:` 部分，将新挂载添加到同一列表中。YAML 重复键会静默覆盖之前的值。
 
@@ -183,7 +183,7 @@ gateway 从 Agent 回复中提取 `MEDIA:/path/to/file` 标签，并将引用的
 
 ## Webhook 模式
 
-默认情况下，Hermes 使用**长轮询**连接 Telegram——gateway 向 Telegram 服务器发出出站请求以获取新更新。这对本地和常驻部署效果良好。
+默认情况下，Rabbit 使用**长轮询**连接 Telegram——gateway 向 Telegram 服务器发出出站请求以获取新更新。这对本地和常驻部署效果良好。
 
 对于**云部署**（Fly.io、Railway、Render 等），**webhook 模式**更具成本效益。这些平台可以在入站 HTTP 流量时自动唤醒休眠的机器，但无法通过出站连接唤醒。由于轮询是出站的，轮询机器人永远无法休眠。Webhook 模式反转了方向——Telegram 将更新推送到你的机器人 HTTPS URL，从而实现空闲时休眠的部署。
 
@@ -196,7 +196,7 @@ gateway 从 Agent 回复中提取 `MEDIA:/path/to/file` 标签，并将引用的
 
 ### 配置
 
-将以下内容添加到 `~/.hermes/.env`：
+将以下内容添加到 `~/.rabbit/.env`：
 
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
@@ -207,7 +207,7 @@ TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # 必填
 | 变量 | 是否必填 | 说明 |
 |----------|----------|-------------|
 | `TELEGRAM_WEBHOOK_URL` | 是 | Telegram 发送更新的公开 HTTPS URL。URL 路径会自动提取（例如上例中的 `/telegram`）。 |
-| `TELEGRAM_WEBHOOK_SECRET` | **是**（设置 `TELEGRAM_WEBHOOK_URL` 时） | Telegram 在每个 webhook 请求中回显的密钥 token，用于验证。gateway 在没有该密钥时拒绝启动——参见 [GHSA-3vpc-7q5r-276h](https://github.com/NousResearch/hermes-agent/security/advisories/GHSA-3vpc-7q5r-276h)。使用 `openssl rand -hex 32` 生成。 |
+| `TELEGRAM_WEBHOOK_SECRET` | **是**（设置 `TELEGRAM_WEBHOOK_URL` 时） | Telegram 在每个 webhook 请求中回显的密钥 token，用于验证。gateway 在没有该密钥时拒绝启动——参见 [GHSA-3vpc-7q5r-276h](https://github.com/seven0070/Rabbit-/security/advisories/GHSA-3vpc-7q5r-276h)。使用 `openssl rand -hex 32` 生成。 |
 | `TELEGRAM_WEBHOOK_PORT` | 否 | webhook 服务器监听的本地端口（默认：`8443`）。 |
 
 设置 `TELEGRAM_WEBHOOK_URL` 后，gateway 会启动 HTTP webhook 服务器而非轮询。未设置时使用轮询模式——与之前版本行为无变化。
@@ -266,7 +266,7 @@ TELEGRAM_PROXY=socks5://127.0.0.1:1080
 
 在任意 Telegram 聊天（私聊或群组）中使用 `/sethome` 命令，将其指定为**主频道**。定时任务（cron 任务）的结果会投递到此频道。
 
-也可以在 `~/.hermes/.env` 中手动设置：
+也可以在 `~/.rabbit/.env` 中手动设置：
 
 ```bash
 TELEGRAM_HOME_CHANNEL=-1001234567890
@@ -291,25 +291,25 @@ TELEGRAM_CRON_THREAD_ID=<topic_thread_id>
 
 ### 接收语音（语音转文字）
 
-你在 Telegram 上发送的语音消息会由 Hermes 配置的 STT（语音转文字）提供商自动转录，并作为文本注入对话。
+你在 Telegram 上发送的语音消息会由 Rabbit 配置的 STT（语音转文字）提供商自动转录，并作为文本注入对话。
 
-- `local` 在运行 Hermes 的机器上使用 `faster-whisper`——无需 API 密钥
+- `local` 在运行 Rabbit 的机器上使用 `faster-whisper`——无需 API 密钥
 - `groq` 使用 Groq Whisper，需要 `GROQ_API_KEY`
 - `openai` 使用 OpenAI Whisper，需要 `VOICE_TOOLS_OPENAI_KEY`
 
 #### 跳过 STT：将原始音频文件传递给 Agent
 
-如果你希望由 **Agent 本身**处理音频——用于说话人分离、自定义转录工具或仅存档录音——请在 `~/.hermes/config.yaml` 中设置 `stt.enabled: false`：
+如果你希望由 **Agent 本身**处理音频——用于说话人分离、自定义转录工具或仅存档录音——请在 `~/.rabbit/config.yaml` 中设置 `stt.enabled: false`：
 
 ```yaml
 stt:
   enabled: false
 ```
 
-禁用 STT 后，gateway 仍会将语音/音频附件下载到 Hermes 的音频缓存中，但**不进行转录**。Agent 收到的消息带有如下标记：
+禁用 STT 后，gateway 仍会将语音/音频附件下载到 Rabbit 的音频缓存中，但**不进行转录**。Agent 收到的消息带有如下标记：
 
 ```
-[The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]
+[The user sent a voice message: /home/<user>/.rabbit/cache/audio/<hash>.ogg]
 ```
 
 你的工具或技能可以直接读取该路径（例如，将其传递给本地说话人分离管道、更丰富的转录模型，或上传到长期存储）。文件扩展名反映 Telegram 投递的原始格式（语音备忘录为 `.ogg`，音频附件为 `.mp3`/`.m4a` 等）。
@@ -337,7 +337,7 @@ brew install ffmpeg
 
 ## 通过本地 Bot API 服务器处理大文件（>20MB）
 
-Telegram 的**公共** Bot API 将 `getFile` 下载限制为 **20 MB**，因此任何超过该大小的语音备忘录、音频文件、视频或文档都会被 Hermes 静默拒绝并回复"文件过大"。官方解决方案是运行本地 [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) 守护进程——与 Telegram 使用的相同服务器软件，但运行在你的网络上。本地服务器将文件上限提升至 **2 GB**，Hermes 在检测到自定义 `base_url` 配置时会自动解除自身内部限制。
+Telegram 的**公共** Bot API 将 `getFile` 下载限制为 **20 MB**，因此任何超过该大小的语音备忘录、音频文件、视频或文档都会被 Rabbit 静默拒绝并回复"文件过大"。官方解决方案是运行本地 [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) 守护进程——与 Telegram 使用的相同服务器软件，但运行在你的网络上。本地服务器将文件上限提升至 **2 GB**，Rabbit 在检测到自定义 `base_url` 配置时会自动解除自身内部限制。
 
 这解锁了以下工作流：
 
@@ -402,9 +402,9 @@ curl "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/getMe"
 # 预期响应：{"ok":true,"result":{"id":...,"is_bot":true,...}}
 ```
 
-### 第四步：将 Hermes 指向本地服务器
+### 第四步：将 Rabbit 指向本地服务器
 
-在 `~/.hermes/config.yaml` 的 `platforms.telegram.extra` 下添加 URL：
+在 `~/.rabbit/config.yaml` 的 `platforms.telegram.extra` 下添加 URL：
 
 ```yaml
 platforms:
@@ -413,14 +413,14 @@ platforms:
       base_url: "http://127.0.0.1:8081/bot"
       base_file_url: "http://127.0.0.1:8081/file/bot"
       local_mode: true        # 见下方第五步——仅在机器人数据目录
-                              # 对 Hermes 进程可读时设置此项
+                              # 对 Rabbit 进程可读时设置此项
 ```
 
 :::caution 使用 `platforms.telegram.extra`，而非 `telegram.extra`
 目前只有 `platforms.<name>.extra` 形式会深度合并到平台配置中。直接放在顶层 `telegram.extra` 块下的键会被静默丢弃。
 :::
 
-设置 `base_url` 后，Hermes 会：
+设置 `base_url` 后，Rabbit 会：
 
 - 基于本地服务器构建 python-telegram-bot 客户端
 - 自动将内部文档/音频大小上限从 20 MB 提升至 2 GB
@@ -429,8 +429,8 @@ platforms:
 重启 gateway 并查找确认日志行：
 
 ```bash
-hermes gateway restart
-grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.hermes/logs/gateway.log | tail
+rabbit gateway restart
+grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.rabbit/logs/gateway.log | tail
 ```
 
 ### 第五步：`local_mode`——磁盘上的文件访问
@@ -438,35 +438,35 @@ grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.hermes/log
 本地服务器有**两种**投递文件的方式：
 
 1. **不使用 `--local`**（默认）：文件通过 HTTP 在 `/file/bot<TOKEN>/<path>` 提供，与公共 Bot API 相同。20MB 上限仍然有效。仅作为网络修复使用（例如 `api.telegram.org` 不可达但你可以自托管）；这不是你想要的大小提升方式。
-2. **使用 `--local`**（通过上方的 `TELEGRAM_LOCAL=1` 设置）：文件写入服务器文件系统，`getFile` 响应返回**绝对路径**而非 HTTP URL。20MB 上限被解除。Hermes 必须**从磁盘**读取字节，而非通过 HTTP。
+2. **使用 `--local`**（通过上方的 `TELEGRAM_LOCAL=1` 设置）：文件写入服务器文件系统，`getFile` 响应返回**绝对路径**而非 HTTP URL。20MB 上限被解除。Rabbit 必须**从磁盘**读取字节，而非通过 HTTP。
 
-要使磁盘读取路径正常工作，请在上方配置中设置 `local_mode: true`，**并**确保 Hermes 进程能读取服务器返回的路径。两种场景：
+要使磁盘读取路径正常工作，请在上方配置中设置 `local_mode: true`，**并**确保 Rabbit 进程能读取服务器返回的路径。两种场景：
 
-- **同一台机器**——telegram-bot-api 和 Hermes 运行在同一宿主机上。将数据卷绑定挂载到 Hermes 可读的目录（例如 `/var/lib/telegram-bot-api`），并确保文件所有权匹配。容器会降权到其内部的 `telegram-bot-api` 用户（uid 因镜像而异）；最简单的解决方法是在 compose 服务中添加 `user: "<UID>:<GID>"`，使文件归 Hermes 已运行的 uid 所有。
-- **不同机器**——机器人服务器运行在一台主机上（例如 NAS、独立虚拟机），Hermes 运行在另一台上。服务器的数据目录必须以服务器报告的**相同绝对路径**（通常为 `/var/lib/telegram-bot-api`）共享给 Hermes 机器。NFS 效果良好；如果你不想在文件系统级别处理 uid 不匹配问题，带 `uid=` 挂载重映射的 CIFS/SMB 更友好。
+- **同一台机器**——telegram-bot-api 和 Rabbit 运行在同一宿主机上。将数据卷绑定挂载到 Rabbit 可读的目录（例如 `/var/lib/telegram-bot-api`），并确保文件所有权匹配。容器会降权到其内部的 `telegram-bot-api` 用户（uid 因镜像而异）；最简单的解决方法是在 compose 服务中添加 `user: "<UID>:<GID>"`，使文件归 Rabbit 已运行的 uid 所有。
+- **不同机器**——机器人服务器运行在一台主机上（例如 NAS、独立虚拟机），Rabbit 运行在另一台上。服务器的数据目录必须以服务器报告的**相同绝对路径**（通常为 `/var/lib/telegram-bot-api`）共享给 Rabbit 机器。NFS 效果良好；如果你不想在文件系统级别处理 uid 不匹配问题，带 `uid=` 挂载重映射的 CIFS/SMB 更友好。
 
-如果设置了 `local_mode: true` 但 Hermes 无法 `stat` 返回的文件路径（权限问题或挂载错误），python-telegram-bot 会静默回退到对本地服务器的 HTTP `getFile`——在 `--local` 模式下会响应 `404 Not Found`。症状在 `gateway.log` 中表现为：
+如果设置了 `local_mode: true` 但 Rabbit 无法 `stat` 返回的文件路径（权限问题或挂载错误），python-telegram-bot 会静默回退到对本地服务器的 HTTP `getFile`——在 `--local` 模式下会响应 `404 Not Found`。症状在 `gateway.log` 中表现为：
 
 ```
 [Telegram] Failed to cache voice: Not Found
 telegram.error.InvalidToken: Not Found
 ```
 
-如果你看到这个，说明大小提升正在工作，但文件共享没有。以 gateway 运行用户的身份从 Hermes 宿主机执行 `ls -la /var/lib/telegram-bot-api/<TOKEN>/voice/`，并确认单个文件可以 `cat` 而不出现权限错误。
+如果你看到这个，说明大小提升正在工作，但文件共享没有。以 gateway 运行用户的身份从 Rabbit 宿主机执行 `ls -la /var/lib/telegram-bot-api/<TOKEN>/voice/`，并确认单个文件可以 `cat` 而不出现权限错误。
 
 ### 第六步：测试
 
 向机器人发送一个超过 20 MB 的语音备忘录或音频文件。查看 gateway 日志：
 
 ```bash
-tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
+tail -f ~/.rabbit/logs/gateway.log | grep -iE "telegram|cache"
 ```
 
-你应该看到 `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` 行，且**没有**"文件过大"拒绝。结合上方的 `stt.enabled: false`，原始音频文件的路径会出现在 Agent 的入站消息中，供下游处理使用。
+你应该看到 `[Telegram] Cached user voice at /home/<user>/.rabbit/cache/audio/...` 行，且**没有**"文件过大"拒绝。结合上方的 `stt.enabled: false`，原始音频文件的路径会出现在 Agent 的入站消息中，供下游处理使用。
 
 ## 群聊使用
 
-Hermes Agent 在 Telegram 群聊中工作时有几点注意事项：
+Rabbit Agent 在 Telegram 群聊中工作时有几点注意事项：
 
 - **隐私模式**决定机器人能看到哪些消息（见[第三步](#step-3-privacy-mode-critical-for-groups)）
 - `TELEGRAM_ALLOWED_USERS` 仍然适用——即使在群组中，也只有授权用户才能触发机器人
@@ -476,13 +476,13 @@ Hermes Agent 在 Telegram 群聊中工作时有几点注意事项：
   - `@botusername` 提及
   - `/command@botusername`（包含机器人名称的 Telegram 机器人菜单命令形式）
   - 与 `telegram.mention_patterns` 中配置的正则唤醒词匹配的内容
-- 在有多个 Hermes 机器人的群组中，`telegram.exclusive_bot_mentions` 使路由具有确定性。当消息明确提及一个或多个 Telegram 机器人用户名时，只有被提及的机器人配置文件处理该消息；其他 Hermes 机器人在回复和唤醒词回退运行之前忽略它。此功能默认启用。
-- 使用 `telegram.ignored_threads` 使 Hermes 在特定 Telegram 论坛话题中保持沉默，即使群组本来允许自由响应或提及触发的回复
-- 如果 `telegram.require_mention` 未设置或为 false，Hermes 保持之前的开放群组行为，响应它能看到的普通群组消息
+- 在有多个 Rabbit 机器人的群组中，`telegram.exclusive_bot_mentions` 使路由具有确定性。当消息明确提及一个或多个 Telegram 机器人用户名时，只有被提及的机器人配置文件处理该消息；其他 Rabbit 机器人在回复和唤醒词回退运行之前忽略它。此功能默认启用。
+- 使用 `telegram.ignored_threads` 使 Rabbit 在特定 Telegram 论坛话题中保持沉默，即使群组本来允许自由响应或提及触发的回复
+- 如果 `telegram.require_mention` 未设置或为 false，Rabbit 保持之前的开放群组行为，响应它能看到的普通群组消息
 
-### 同一群组中的多个 Hermes 机器人
+### 同一群组中的多个 Rabbit 机器人
 
-如果你在同一个 Telegram 群组中运行多个 Hermes 配置文件，请为每个配置文件创建一个 Telegram 机器人 token，并为每个配置文件启动一个 gateway。不要在多个运行中的 gateway 中重用同一个机器人 token；Telegram 会拒绝对同一 token 的并发轮询。
+如果你在同一个 Telegram 群组中运行多个 Rabbit 配置文件，请为每个配置文件创建一个 Telegram 机器人 token，并为每个配置文件启动一个 gateway。不要在多个运行中的 gateway 中重用同一个机器人 token；Telegram 会拒绝对同一 token 的并发轮询。
 
 推荐的群组配置：
 
@@ -493,7 +493,7 @@ telegram:
   mention_patterns: []
 ```
 
-使用此设置，群组消息如 `@research_bot @ops_bot summarize this` 只由 `research_bot` 和 `ops_bot` 处理。群组中的其他 Hermes 机器人保持沉默，即使该消息是对其早期消息的回复或与共享唤醒词匹配。
+使用此设置，群组消息如 `@research_bot @ops_bot summarize this` 只由 `research_bot` 和 `ops_bot` 处理。群组中的其他 Rabbit 机器人保持沉默，即使该消息是对其早期消息的回复或与共享唤醒词匹配。
 
 仅在旧版群组中（明确提及不应覆盖回复和唤醒词触发）才将 `exclusive_bot_mentions: false`。
 
@@ -501,33 +501,33 @@ telegram:
 
 ```bash
 # 默认配置文件
-hermes gateway start
-hermes gateway status
-hermes gateway stop
+rabbit gateway start
+rabbit gateway status
+rabbit gateway stop
 
 # 命名配置文件
-hermes -p research gateway start
-hermes -p research gateway status
-hermes -p research gateway stop
+rabbit -p research gateway start
+rabbit -p research gateway status
+rabbit -p research gateway stop
 ```
 
-对于小型固定机器人集群，使用 shell 循环或脚本，对默认配置文件调用 `hermes gateway <action>`，对每个命名配置文件调用 `hermes -p <profile> gateway <action>`。这比假设单个进程级命令在每个服务管理器上控制所有命名配置文件更可靠。
+对于小型固定机器人集群，使用 shell 循环或脚本，对默认配置文件调用 `rabbit gateway <action>`，对每个命名配置文件调用 `rabbit -p <profile> gateway <action>`。这比假设单个进程级命令在每个服务管理器上控制所有命名配置文件更可靠。
 
 ### 故障排除：私聊正常但群组无响应
 
 如果机器人在私聊中响应但在群组中保持沉默，请按顺序检查以下关卡：
 
-1. **Telegram 投递：** 关闭 BotFather 隐私模式、将机器人提升为管理员，或直接提及机器人。Hermes 无法响应 Telegram 从未投递给机器人的群组消息。
+1. **Telegram 投递：** 关闭 BotFather 隐私模式、将机器人提升为管理员，或直接提及机器人。Rabbit 无法响应 Telegram 从未投递给机器人的群组消息。
 2. **更改隐私后重新加入：** 更改 BotFather 隐私设置后，将机器人从群组中移除并重新添加。Telegram 可能对现有成员保留旧的投递行为。
-3. **Hermes 授权：** 确保发送者在 `TELEGRAM_ALLOWED_USERS` 或 `TELEGRAM_GROUP_ALLOWED_USERS` 中，或通过 `TELEGRAM_GROUP_ALLOWED_CHATS` 允许该群聊。
+3. **Rabbit 授权：** 确保发送者在 `TELEGRAM_ALLOWED_USERS` 或 `TELEGRAM_GROUP_ALLOWED_USERS` 中，或通过 `TELEGRAM_GROUP_ALLOWED_CHATS` 允许该群聊。
 4. **提及过滤器：** 如果设置了 `telegram.require_mention: true`，普通群组消息会被忽略，除非消息是斜杠命令、对机器人的回复、`@botusername` 提及或配置的 `mention_patterns` 匹配。
-5. **多机器人路由：** 如果群组包含多个机器人，确保每个 Hermes 配置文件使用唯一的机器人 token，并保持 `exclusive_bot_mentions` 启用，除非你有意使用旧版共享触发行为。
+5. **多机器人路由：** 如果群组包含多个机器人，确保每个 Rabbit 配置文件使用唯一的机器人 token，并保持 `exclusive_bot_mentions` 启用，除非你有意使用旧版共享触发行为。
 
 Telegram 群组和超级群组的负数聊天 ID 是正常的。如果你使用聊天范围的授权，请将这些 ID 放在 `TELEGRAM_GROUP_ALLOWED_CHATS` 中，而非发送者用户白名单中。
 
 ### 群组触发配置示例
 
-将以下内容添加到 `~/.hermes/config.yaml`：
+将以下内容添加到 `~/.rabbit/config.yaml`：
 
 ```yaml
 telegram:
@@ -553,7 +553,7 @@ Telegram 话题 `31` 和 `42` 中的消息在提及和自由响应检查运行�
 
 ## 私聊话题（Bot API 9.4）
 
-Telegram Bot API 9.4（2026 年 2 月）引入了**私聊话题**——机器人可以直接在一对一私聊中创建论坛风格的话题线程，无需超级群组。这让你可以在与 Hermes 的现有私聊中运行多个隔离的工作区。
+Telegram Bot API 9.4（2026 年 2 月）引入了**私聊话题**——机器人可以直接在一对一私聊中创建论坛风格的话题线程，无需超级群组。这让你可以在与 Rabbit 的现有私聊中运行多个隔离的工作区。
 
 ### 使用场景
 
@@ -570,14 +570,14 @@ Telegram Bot API 9.4（2026 年 2 月）引入了**私聊话题**——机器人
 :::caution 前提条件
 在配置中添加话题之前，用户必须在与机器人的私聊中**启用话题模式**：
 
-1. 在 Telegram 中打开与 Hermes 机器人的私聊
+1. 在 Telegram 中打开与 Rabbit 机器人的私聊
 2. 点击顶部的机器人名称打开聊天信息
 3. 启用**话题**（将聊天转换为论坛的开关）
 
-没有此设置，Hermes 会在启动时记录 `The chat is not a forum` 并跳过话题创建。这是 Telegram 客户端设置——机器人无法以编程方式启用它。
+没有此设置，Rabbit 会在启动时记录 `The chat is not a forum` 并跳过话题创建。这是 Telegram 客户端设置——机器人无法以编程方式启用它。
 :::
 
-在 `~/.hermes/config.yaml` 的 `platforms.telegram.extra.dm_topics` 下添加话题：
+在 `~/.rabbit/config.yaml` 的 `platforms.telegram.extra.dm_topics` 下添加话题：
 
 ```yaml
 platforms:
@@ -607,7 +607,7 @@ platforms:
 
 ### 工作原理
 
-1. gateway 启动时，Hermes 为每个尚未有 `thread_id` 的话题调用 `createForumTopic`
+1. gateway 启动时，Rabbit 为每个尚未有 `thread_id` 的话题调用 `createForumTopic`
 2. `thread_id` 会自动保存回 `config.yaml`——后续重启会跳过 API 调用
 3. 每个话题映射到一个隔离的会话键：`agent:main:telegram:dm:{chat_id}:{thread_id}`
 4. 每个话题中的消息都有自己的对话历史、内存刷新和上下文窗口
@@ -641,7 +641,7 @@ platforms:
 
 ## 多会话私聊模式（`/topic`）
 
-ChatGPT 风格的多会话私聊——一个机器人，多个并行对话。与上方运营商策划的 `extra.dm_topics` 不同，此模式是**用户驱动**的：无需配置，无需预先声明话题名称。终端用户通过 `/topic` 开启，然后点击 Telegram 的 **+** 按钮创建任意数量的话题，每个话题都是完全独立的 Hermes 会话。
+ChatGPT 风格的多会话私聊——一个机器人，多个并行对话。与上方运营商策划的 `extra.dm_topics` 不同，此模式是**用户驱动**的：无需配置，无需预先声明话题名称。终端用户通过 `/topic` 开启，然后点击 Telegram 的 **+** 按钮创建任意数量的话题，每个话题都是完全独立的 Rabbit 会话。
 
 ### `/topic` 子命令
 
@@ -662,7 +662,7 @@ ChatGPT 风格的多会话私聊——一个机器人，多个并行对话。与
 |---|---|---|
 | 谁激活 | 运营商，在 `config.yaml` 中 | 终端用户，通过发送 `/topic` |
 | 话题列表 | 配置中声明的固定集合 | 用户自由创建/删除话题 |
-| 话题名称 | 由运营商选择 | 由用户选择；自动重命名以匹配 Hermes 会话标题 |
+| 话题名称 | 由运营商选择 | 由用户选择；自动重命名以匹配 Rabbit 会话标题 |
 | 根私聊行为 | 正常聊天（若 `ignore_root_dm: true` 则为大厅） | 变为系统大厅（非命令消息被拒绝） |
 | 主要使用场景 | 带可选技能绑定的永久工作区 | 临时并行会话 |
 | 持久化 | 配置中的 `extra.dm_topics` | `telegram_dm_topic_mode` + `telegram_dm_topic_bindings` SQLite 表 |
@@ -676,7 +676,7 @@ ChatGPT 风格的多会话私聊——一个机器人，多个并行对话。与
 1. 开启 **Threaded Mode**（启用 `has_topics_enabled`）
 2. **不要**禁用用户创建话题（保持 `allows_users_to_create_topics` 开启）
 
-当用户首次运行 `/topic` 时，Hermes 调用 `getMe` 验证两个标志。如果任一标志关闭，Hermes 会发送 BotFather Threads Settings 页面的截图并说明需要切换什么——在满足前提条件之前不会激活。
+当用户首次运行 `/topic` 时，Rabbit 调用 `getMe` 验证两个标志。如果任一标志关闭，Rabbit 会发送 BotFather Threads Settings 页面的截图并说明需要切换什么——在满足前提条件之前不会激活。
 
 ### 激活流程
 
@@ -686,7 +686,7 @@ ChatGPT 风格的多会话私聊——一个机器人，多个并行对话。与
 /topic
 ```
 
-Hermes 将：
+Rabbit 将：
 
 1. 检查 `getMe().has_topics_enabled` 和 `allows_users_to_create_topics`
 2. 如果两者都为 true，为此私聊启用多会话话题模式
@@ -700,13 +700,13 @@ Hermes 将：
 1. 在 Telegram 中打开机器人私聊
 2. 点击机器人界面顶部的 **All Messages**，然后发送任意消息
 3. Telegram 为该消息创建一个新话题
-4. Hermes 在该话题内响应——该话题现在是一个独立会话
+4. Rabbit 在该话题内响应——该话题现在是一个独立会话
 
 每个话题都有自己的对话历史、模型状态、工具执行和会话 ID。隔离键为 `agent:main:telegram:dm:{chat_id}:{thread_id}`——与配置驱动的私聊话题隔离相同。
 
 ### 自动重命名话题
 
-当 Hermes 为话题生成会话标题时（通过自动标题管道，在第一次交换后），Telegram 话题本身会被重命名以匹配——例如"New Topic"变为"Database migration plan"。重命名是尽力而为的：失败会被记录但不会中断会话。
+当 Rabbit 为话题生成会话标题时（通过自动标题管道，在第一次交换后），Telegram 话题本身会被重命名以匹配——例如"New Topic"变为"Database migration plan"。重命名是尽力而为的：失败会被记录但不会中断会话。
 
 要禁用此功能并保留你手动选择的话题名称，请设置：
 
@@ -718,11 +718,11 @@ gateway:
         disable_topic_auto_rename: true
 ```
 
-启用此标志后，Hermes 仍会生成内部会话标题（供 `hermes sessions`、TUI 等使用），但永远不会编辑 Telegram 话题名称。当你在 BotFather Threaded Mode 下手动整理话题，且不希望每次第一次回复都覆盖标题时，此功能很有用。
+启用此标志后，Rabbit 仍会生成内部会话标题（供 `rabbit sessions`、TUI 等使用），但永远不会编辑 Telegram 话题名称。当你在 BotFather Threaded Mode 下手动整理话题，且不希望每次第一次回复都覆盖标题时，此功能很有用。
 
 ### 话题内的 `/new`
 
-重置当前话题的会话（新会话 ID，全新历史记录），而不影响其他话题。Hermes 回复提醒，对于并行工作，创建另一个话题（通过 **All Messages**）通常才是你想要的。
+重置当前话题的会话（新会话 ID，全新历史记录），而不影响其他话题。Rabbit 回复提醒，对于并行工作，创建另一个话题（通过 **All Messages**）通常才是你想要的。
 
 ### 恢复之前的会话
 
@@ -732,14 +732,14 @@ gateway:
 /topic <session-id>
 ```
 
-这会将当前话题绑定到现有 Hermes 会话，而非重新开始。适用于继续在启用话题模式之前开始的对话。限制：
+这会将当前话题绑定到现有 Rabbit 会话，而非重新开始。适用于继续在启用话题模式之前开始的对话。限制：
 
 - 目标会话必须属于同一 Telegram 用户
 - 目标会话不能已绑定到另一个话题
 
-Hermes 会确认会话标题，并重放最后一条助手消息以提供上下文。
+Rabbit 会确认会话标题，并重放最后一条助手消息以提供上下文。
 
-要发现会话 ID，在根私聊发送 `/topic`（无参数）——Hermes 会列出用户未链接的 Telegram 会话。
+要发现会话 ID，在根私聊发送 `/topic`（无参数）——Rabbit 会列出用户未链接的 Telegram 会话。
 
 ### 话题内的 `/topic`（无参数）
 
@@ -762,19 +762,19 @@ Hermes 会确认会话标题，并重放最后一条助手消息以提供上下�
 
 ### 禁用多会话模式
 
-在根私聊发送 `/topic off`。Hermes 将该行翻转为关闭，清除聊天的 `(thread_id → session_id)` 绑定，根私聊恢复为正常 Hermes 聊天。Telegram 中现有的话题不会被删除——它们只是不再作为独立会话被管控。之后重新运行 `/topic` 可重新开启。
+在根私聊发送 `/topic off`。Rabbit 将该行翻转为关闭，清除聊天的 `(thread_id → session_id)` 绑定，根私聊恢复为正常 Rabbit 聊天。Telegram 中现有的话题不会被删除——它们只是不再作为独立会话被管控。之后重新运行 `/topic` 可重新开启。
 
 如果你需要手动清理（例如跨多个聊天的批量重置），直接删除行：
 
 ```bash
-sqlite3 ~/.hermes/state.db \
+sqlite3 ~/.rabbit/state.db \
   "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
    DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
 ```
 
-### 降级 Hermes
+### 降级 Rabbit
 
-如果你降级到早于 `/topic` 的 Hermes 版本，该功能会停止工作——`telegram_dm_topic_mode` 和 `telegram_dm_topic_bindings` 表保留在 `state.db` 中，但被旧代码忽略。私聊恢复为原生的每线程隔离（每个 `message_thread_id` 仍通过 `build_session_key` 获得自己的会话），因此你现有的 Telegram 话题继续作为并行会话工作。根私聊不再是大厅——消息像以前一样进入 Agent。重新升级会在原来的位置精确恢复多会话模式。
+如果你降级到早于 `/topic` 的 Rabbit 版本，该功能会停止工作——`telegram_dm_topic_mode` 和 `telegram_dm_topic_bindings` 表保留在 `state.db` 中，但被旧代码忽略。私聊恢复为原生的每线程隔离（每个 `message_thread_id` 仍通过 `build_session_key` 获得自己的会话），因此你现有的 Telegram 话题继续作为并行会话工作。根私聊不再是大厅——消息像以前一样进入 Agent。重新升级会在原来的位置精确恢复多会话模式。
 
 ## 群组论坛话题技能绑定
 
@@ -790,7 +790,7 @@ sqlite3 ~/.hermes/state.db \
 
 ### 配置
 
-在 `~/.hermes/config.yaml` 的 `platforms.telegram.extra.group_topics` 下添加话题绑定：
+在 `~/.rabbit/config.yaml` 的 `platforms.telegram.extra.group_topics` 下添加话题绑定：
 
 ```yaml
 platforms:
@@ -821,7 +821,7 @@ platforms:
 
 ### 工作原理
 
-1. 当消息到达已映射的群组话题时，Hermes 在 `group_topics` 配置中查找 `chat_id` 和 `thread_id`
+1. 当消息到达已映射的群组话题时，Rabbit 在 `group_topics` 配置中查找 `chat_id` 和 `thread_id`
 2. 如果匹配条目有 `skill` 字段，该技能会为会话自动加载——与私聊话题技能绑定完全相同
 3. 没有 `skill` 键的话题只获得会话隔离（现有行为，不变）
 4. 未映射的 `thread_id` 值或 `chat_id` 值会静默通过——无错误，无技能
@@ -831,7 +831,7 @@ platforms:
 | | 私聊话题 | 群组话题 |
 |---|---|---|
 | 配置键 | `extra.dm_topics` | `extra.group_topics` |
-| 话题创建 | 如果缺少 `thread_id`，Hermes 通过 API 创建话题 | 管理员在 Telegram UI 中创建话题 |
+| 话题创建 | 如果缺少 `thread_id`，Rabbit 通过 API 创建话题 | 管理员在 Telegram UI 中创建话题 |
 | `thread_id` | 创建后自动填充 | 必须手动设置 |
 | `icon_color` / `icon_custom_emoji_id` | 支持 | 不适用（管理员控制外观） |
 | 技能绑定 | ✓ | ✓ |
@@ -843,13 +843,13 @@ platforms:
 
 ## 近期 Bot API 功能
 
-- **Bot API 9.4（2026 年 2 月）：** 私聊话题——机器人可以通过 `createForumTopic` 在一对一私聊中创建论坛话题。Hermes 将此用于两个不同功能：运营商策划的[私聊话题](#private-chat-topics-bot-api-94)（配置驱动，固定话题列表）和用户驱动的[多会话私聊模式](#multi-session-dm-mode-topic)（通过 `/topic` 激活，用户创建的无限话题）。
+- **Bot API 9.4（2026 年 2 月）：** 私聊话题——机器人可以通过 `createForumTopic` 在一对一私聊中创建论坛话题。Rabbit 将此用于两个不同功能：运营商策划的[私聊话题](#private-chat-topics-bot-api-94)（配置驱动，固定话题列表）和用户驱动的[多会话私聊模式](#multi-session-dm-mode-topic)（通过 `/topic` 激活，用户创建的无限话题）。
 - **隐私政策：** Telegram 现在要求机器人有隐私政策。通过 BotFather 的 `/setprivacy_policy` 设置，或 Telegram 可能自动生成占位符。如果你的机器人面向公众，这一点尤为重要。
-- **Bot API 9.5（2026 年 3 月）：通过 `sendMessageDraft` 实现原生流式传输。** Hermes 支持 Telegram 的原生流式草稿 API，作为私聊的可选传输方式。默认仍使用旧版 `editMessageText` 路径，因为草稿预览在某些 Telegram 客户端上可能出现明显的折叠和重新渲染。
+- **Bot API 9.5（2026 年 3 月）：通过 `sendMessageDraft` 实现原生流式传输。** Rabbit 支持 Telegram 的原生流式草稿 API，作为私聊的可选传输方式。默认仍使用旧版 `editMessageText` 路径，因为草稿预览在某些 Telegram 客户端上可能出现明显的折叠和重新渲染。
 
 ### 流式传输（`gateway.streaming.transport`）
 
-启用流式传输（`gateway.streaming.enabled: true`）时，Hermes 从四种传输方式中选择一种：
+启用流式传输（`gateway.streaming.enabled: true`）时，Rabbit 从四种传输方式中选择一种：
 
 | 值 | 行为 |
 |---|---|
@@ -858,7 +858,7 @@ platforms:
 | `edit` | 对所有聊天类型使用旧版渐进式 `editMessageText` 轮询。 |
 | `off` | 完全禁用流式传输（仅最终回复，无渐进更新）。 |
 
-在 `~/.hermes/config.yaml` 中：
+在 `~/.rabbit/config.yaml` 中：
 
 ```yaml
 gateway:
@@ -881,7 +881,7 @@ gateway:
 
 当内容超过 32,768 字符的富文本上限时，富消息路径会自动跳过；Telegram 的任何拒绝（较旧 `python-telegram-bot` 不支持该端点、解析错误、块/列过多）都会**透明回退**到 MarkdownV2 路径——消息绝不会丢失。瞬时/网络错误**不会**被静默重发（不会产生重复的最终消息）。
 
-**MarkdownV2 回退。** 当某条消息无法使用富消息路径时，Hermes 会将 markdown 转换为 MarkdownV2。由于 MarkdownV2 没有原生表格语法，管道表格会被规范化：
+**MarkdownV2 回退。** 当某条消息无法使用富消息路径时，Rabbit 会将 markdown 转换为 MarkdownV2。由于 MarkdownV2 没有原生表格语法，管道表格会被规范化：
 
 - **小表格**被展平为**行组项目符号**——每行在列标题下变为可读的项目符号列表。适合 2-4 列和短单元格。
 - **较大或较宽的表格**回退为带对齐列的**围栏代码块**，以防内容折叠。
@@ -898,7 +898,7 @@ gateway:
         allow_cjk_rich_messages: false
 ```
 
-这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。`rich_drafts` 控制私聊流式预览是否使用富渲染（`sendRichMessageDraft`），默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧；关闭时，预览以纯文本流式显示，最终消息仍以原生富消息送达。
+这个设置用于客户端渲染/复制兼容性；当 Telegram 拒绝富消息 API 调用时，Rabbit 已经会自动回退。`rich_drafts` 控制私聊流式预览是否使用富渲染（`sendRichMessageDraft`），默认关闭，因为 Telegram Desktop/macOS 可能在聊天重绘前视觉叠加富草稿帧；关闭时，预览以纯文本流式显示，最终消息仍以原生富消息送达。
 
 CJK 文本（中文、日文、韩文以及罕见汉字扩展）默认仍走旧版 MarkdownV2 路径，因为受影响的 Telegram Desktop/macOS 客户端曾将 Bot API 富消息渲染成重叠的 CJK 字形。如果你使用不受影响的客户端，并希望 CJK 内容里的表格、任务列表、折叠详情和公式走原生富渲染，可以在 `rich_messages: true` 旁显式设置 `allow_cjk_rich_messages: true`，接受该客户端侧风险。
 
@@ -914,7 +914,7 @@ gateway:
         disable_link_previews: true
 ```
 
-启用后，Hermes 为每条出站消息附加 Telegram 的 `LinkPreviewOptions(is_disabled=True)`，并在旧版 `python-telegram-bot` 版本上回退到旧版 `disable_web_page_preview` 参数。
+启用后，Rabbit 为每条出站消息附加 Telegram 的 `LinkPreviewOptions(is_disabled=True)`，并在旧版 `python-telegram-bot` 版本上回退到旧版 `disable_web_page_preview` 参数。
 
 ## 群组白名单
 
@@ -1041,7 +1041,7 @@ gateway:
 
 ## 交互式模型选择器
 
-在 Telegram 聊天中不带参数发送 `/model` 时，Hermes 会显示用于切换模型的交互式内联键盘：
+在 Telegram 聊天中不带参数发送 `/model` 时，Rabbit 会显示用于切换模型的交互式内联键盘：
 
 1. **提供商选择** — 显示每个可用提供商及模型数量的按钮（例如，"OpenAI (15)"、"✓ Anthropic (12)"表示当前提供商）。
 2. **模型选择** — 带 **Prev**/**Next** 导航的分页模型列表，**Back** 按钮返回提供商，以及 **Cancel**。
@@ -1071,7 +1071,7 @@ gateway:
 TELEGRAM_FALLBACK_IPS=149.154.167.220,149.154.167.221
 ```
 
-或在 `~/.hermes/config.yaml` 中：
+或在 `~/.rabbit/config.yaml` 中：
 
 ```yaml
 platforms:
@@ -1104,19 +1104,19 @@ platforms:
 
 ```bash
 export HTTPS_PROXY=http://proxy.example.com:8080
-hermes gateway
+rabbit gateway
 ```
 
-或添加到 `~/.hermes/.env`：
+或添加到 `~/.rabbit/.env`：
 
 ```bash
 HTTPS_PROXY=http://proxy.example.com:8080
 ```
 
-代理同时适用于主传输和所有备用 IP 传输。无需额外的 Hermes 配置——如果设置了环境变量，它会自动被使用。
+代理同时适用于主传输和所有备用 IP 传输。无需额外的 Rabbit 配置——如果设置了环境变量，它会自动被使用。
 
 :::note
-这涵盖了 Hermes 用于 Telegram 连接的自定义备用传输层。其他地方使用的标准 `httpx` 客户端已经原生支持代理环境变量。
+这涵盖了 Rabbit 用于 Telegram 连接的自定义备用传输层。其他地方使用的标准 `httpx` 客户端已经原生支持代理环境变量。
 :::
 
 ## 消息反应
@@ -1175,10 +1175,10 @@ telegram:
 
 | 问题 | 解决方案 |
 |---------|----------|
-| 机器人完全不响应 | 验证 `TELEGRAM_BOT_TOKEN` 是否正确。检查 `hermes gateway` 日志中的错误。 |
+| 机器人完全不响应 | 验证 `TELEGRAM_BOT_TOKEN` 是否正确。检查 `rabbit gateway` 日志中的错误。 |
 | 机器人回复"unauthorized" | 你的用户 ID 不在 `TELEGRAM_ALLOWED_USERS` 中。用 @userinfobot 再次确认。 |
 | 机器人忽略群组消息 | 隐私模式可能已开启。禁用它（第三步）或将机器人设为群组管理员。**记住更改隐私设置后要移除并重新添加机器人。** |
-| 语音消息未转录 | 验证 STT 是否可用：安装 `faster-whisper` 进行本地转录，或在 `~/.hermes/.env` 中设置 `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`。 |
+| 语音消息未转录 | 验证 STT 是否可用：安装 `faster-whisper` 进行本地转录，或在 `~/.rabbit/.env` 中设置 `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY`。 |
 | 语音回复是文件而非气泡 | 安装 `ffmpeg`（Edge TTS Opus 转换所需）。 |
 | 机器人 token 被撤销/无效 | 通过 BotFather 的 `/revoke` 然后 `/newbot` 或 `/token` 生成新 token。更新你的 `.env` 文件。 |
 | Webhook 未接收更新 | 验证 `TELEGRAM_WEBHOOK_URL` 是否可公开访问（用 `curl` 测试）。确保你的平台/反向代理将来自 URL 端口的入站 HTTPS 流量路由到 `TELEGRAM_WEBHOOK_PORT` 配置的本地监听端口（两者不需要是相同的数字）。确保 SSL/TLS 已激活——Telegram 只向 HTTPS URL 发送。检查防火墙规则。 |
@@ -1202,7 +1202,7 @@ telegram:
 
 点击按钮回答，或点击 **Other** 输入自由形式的回复（你发送的下一条消息成为答案）。开放式 `clarify` 调用（无预设选项）跳过按钮，直接捕获你的下一条消息。
 
-通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
+通过 `~/.rabbit/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，Agent 会以哨兵消息解除阻塞并适应，而不是挂起。
 
 ## 推送通知音量
 
@@ -1213,7 +1213,7 @@ Telegram 对机器人发送的每条消息都会触发推送通知。对于发�
 | `important`（默认） | 只有**最终响应**、**审批 prompt** 和**斜杠命令确认**会响铃。工具进度、流式块和状态消息以 `disable_notification=true` 投递。 |
 | `all` | 每条出站消息都触发推送通知。旧版行为；如果你确实想听到每次工具调用，请选择此项。 |
 
-在 `~/.hermes/config.yaml` 中配置：
+在 `~/.rabbit/config.yaml` 中配置：
 
 ```yaml
 display:
@@ -1225,7 +1225,7 @@ display:
 环境变量覆盖（便于快速 A/B 测试）：
 
 ```bash
-HERMES_TELEGRAM_NOTIFICATIONS=all
+RABBIT_TELEGRAM_NOTIFICATIONS=all
 ```
 
 未知值会记录警告并回退到 `important`。

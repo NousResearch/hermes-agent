@@ -19,7 +19,7 @@ def test_optional_catalog_fetch_preserves_a_usable_property_recipe(tmp_path, mon
     assert bundle is not None
     from tools.skills_tool import skill_view
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     destination = tmp_path / "skills" / bundle.name
     destination.mkdir(parents=True)
     for name, data in bundle.files.items():

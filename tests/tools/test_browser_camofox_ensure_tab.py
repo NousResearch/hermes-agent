@@ -14,7 +14,7 @@ def test_ensure_tab_sends_list_item_id():
     from tools import browser_camofox as mod
 
     fake_session = {
-        "user_id": "hermes_test123",
+        "user_id": "rabbit_test123",
         "tab_id": None,
         "session_key": "task_my-session",
         "managed": False,
@@ -39,7 +39,7 @@ def test_ensure_tab_sends_list_item_id():
     assert "listItemId" in body, f"Expected 'listItemId' in POST body, got: {body}"
     assert "sessionKey" not in body, f"'sessionKey' should not be in POST body: {body}"
     assert body["listItemId"] == "task_my-session"
-    assert body["userId"] == "hermes_test123"
+    assert body["userId"] == "rabbit_test123"
     assert body["url"] == "https://example.com"
 
     # Verify tab_id was set from response
@@ -51,7 +51,7 @@ def test_ensure_tab_skips_creation_when_tab_exists():
     from tools import browser_camofox as mod
 
     fake_session = {
-        "user_id": "hermes_test123",
+        "user_id": "rabbit_test123",
         "tab_id": "existing-tab",
         "session_key": "task_my-session",
         "managed": False,

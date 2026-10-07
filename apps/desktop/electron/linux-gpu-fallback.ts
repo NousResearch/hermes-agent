@@ -17,8 +17,8 @@
  * mid-boot aborts, or a sticky marker from a prior recovery.
  *
  * Skipped when software rendering is already on (remote-display path,
- * NVIDIA SwiftShader path, `HERMES_DESKTOP_DISABLE_GPU=1`, `--disable-gpu`),
- * and never when `HERMES_DESKTOP_DISABLE_GPU=0` keeps the GPU on.
+ * NVIDIA SwiftShader path, `RABBIT_DESKTOP_DISABLE_GPU=1`, `--disable-gpu`),
+ * and never when `RABBIT_DESKTOP_DISABLE_GPU=0` keeps the GPU on.
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  * `--disable-gpu` argv helpers are reused from windows-stack-cookie-fallback
@@ -28,7 +28,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { alreadyHasDisableGpu, isHermesDesktopGpuOverrideOff } from './windows-stack-cookie-fallback'
+import { alreadyHasDisableGpu, isRabbitDesktopGpuOverrideOff } from './windows-stack-cookie-fallback'
 
 export const LINUX_GPU_FALLBACK_MARKER_FILENAME = 'linux-gpu-fallback.json'
 
@@ -202,7 +202,7 @@ export function decideLinuxGpuLaunch(
   // the recovery path this file documents, so it must not leave the stale fallback marker
   // behind: keeping it makes `main.ts` sticky again, the next override-free launch re-engages
   // software rendering (`sticky-fallback`) and only an app-version change would clear it.
-  if (isHermesDesktopGpuOverrideOff(env)) {
+  if (isRabbitDesktopGpuOverrideOff(env)) {
     return { enable: false, reason: null, nextMarker: { state: 'booting' } }
   }
 
@@ -360,7 +360,7 @@ export function linuxGpuChildDeathPath(options: {
 }
 
 /**
- * #97616: `HERMES_DESKTOP_DISABLE_GPU=1` must fully prevent the GPU process,
+ * #97616: `RABBIT_DESKTOP_DISABLE_GPU=1` must fully prevent the GPU process,
  * not just compositing. `disableHardwareAcceleration()` alone provably still
  * spawns a GPU child (which then fails error_code=1002 on AMD/Mesa). The
  * remote-display detection reasons keep their long-standing compositing-only

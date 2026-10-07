@@ -12,10 +12,10 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
-import hermes_yaml
+import rabbit_yaml
 import pytest
 
-from hermes_cli.release_channels import canonical_json
+from rabbit_cli.release_channels import canonical_json
 from scripts.releases import channel_publish, handoff, r2
 from scripts.releases.channels import preview_identity
 from scripts.releases.versioning import tag_record
@@ -33,13 +33,13 @@ def request_for(base):
     return {"schema": 1, "buildId": "a" * 32, "channel": "unknown-at-build-time", "sequence": 7,
             "repository": "fixture/repo", "commit": "b" * 40, "sourceVersion": "1.2.3",
             "version": "0.0.7", "windowsVersion": "0.0.7.0", "identity": preview_identity("unknown-at-build-time", "c" * 16),
-            "bundleEnv": {"HERMES_GUEST_ONBOARDING": "different from the prior request"}, "publicBase": base}
+            "bundleEnv": {"RABBIT_GUEST_ONBOARDING": "different from the prior request"}, "publicBase": base}
 
 
 @pytest.fixture
 def staged_channel(tmp_path, r2_server, request, monkeypatch):
     from scripts.releases.r2_scope import R2Scope
-    base = f"http://127.0.0.1:{r2_server.server_port}/hermes-releases"
+    base = f"http://127.0.0.1:{r2_server.server_port}/rabbit-releases"
     if getattr(request, "param", ""):
         monkeypatch.setenv("R2_DISPOSABLE_RUN", "98765" if request.param == "receiver" else request.param)
         monkeypatch.setenv("GITHUB_REPOSITORY_ID", "12345")
@@ -109,13 +109,13 @@ def test_channel_handoff_binds_full_request_and_feed_bytes(tmp_path, r2_server, 
     xml = ET.parse(next(p for p in feeds if p.suffix == ".appinstaller")).getroot()
     assert xml.find("{*}UpdateSettings") is None
     assert xml.find("{*}MainBundle").get("Name") == request["identity"]["msixAppIdWithOrg"]
-    feed = hermes_yaml.safe_load(next(p for p in feeds if p.suffix == ".yml").read_text(encoding="utf-8"))
+    feed = rabbit_yaml.safe_load(next(p for p in feeds if p.suffix == ".yml").read_text(encoding="utf-8"))
     assert feed["version"] == request["version"]
     for file in feed["files"]:
         filename = file["url"].rsplit("/", 1)[-1]
         assert file["size"] == (build / filename).stat().st_size
     changed = copy.deepcopy(request)
-    changed["bundleEnv"]["HERMES_GUEST_ONBOARDING"] = "other packaging input"
+    changed["bundleEnv"]["RABBIT_GUEST_ONBOARDING"] = "other packaging input"
     with pytest.raises(ValueError, match="identity"):
         handoff.fetch_channel_build(changed, ["win32-x64"], tmp_path / "wrong", public_base=request["publicBase"])
     assert not (tmp_path / "wrong").exists()
@@ -168,7 +168,7 @@ def test_scoped_receiver_publication_preserves_existing_head_and_requires_smoke(
 
 
 def workflow_step(workflow, job, name):
-    doc = hermes_yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8"))
+    doc = rabbit_yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8"))
     return next(step["run"] for step in doc["jobs"][job]["steps"] if step.get("name") == name)
 
 
@@ -309,7 +309,7 @@ def test_real_publication_cas_and_manifest_summary(tmp_path, r2_server, staged_c
     puts = [path for method, path, _ in r2_server.requests if method == "PUT"]
     assert puts[-1].endswith(channel_key)
     if scope.prefix:
-        assert all(path.startswith("/hermes-releases/" + scope.prefix) for path in puts)
+        assert all(path.startswith("/rabbit-releases/" + scope.prefix) for path in puts)
         assert r2_server.store["releases/channels/stable.json"][0] == b"production sentinel"
         smoke_env = {**env, "SMOKE_ROOT": str(tmp_path / "scoped-smoke"), "PUBLIC_BASE": request["publicBase"],
                      "RELEASE_TAG": "", "RELEASE_COMMIT": request["commit"], "COMMIT_BUILD": "false",
@@ -351,7 +351,7 @@ def test_channel_windows_record_stage_and_assembly_handoff_shell(tmp_path, r2_se
     request_file.write_text(json.dumps(request), encoding="utf-8")
     env = {"GITHUB_WORKSPACE": str(tmp_path), "RUNNER_TEMP": str(tmp_path), "TARGET": "win32-x64",
            "RELEASE_COMMIT": request["commit"], "CHANNEL_BUILD": request["buildId"],
-           "HERMES_PAYLOAD_TAG": "", "HERMES_BUILD_COMMIT": ""}
+           "RABBIT_PAYLOAD_TAG": "", "RABBIT_BUILD_COMMIT": ""}
     # This test owns the first metadata publication for this leg; the setup's
     # transport metadata is deliberately not a native recorder output.
     prefix = handoff.channel_prefix(request)
@@ -365,10 +365,10 @@ def test_channel_windows_record_stage_and_assembly_handoff_shell(tmp_path, r2_se
     # provenance, not selection — the channel stage must accept it.
     for key in ("metadata-windows-x64.json", "handoff-win32-x64.json"):
         r2_server.store.pop(prefix + key)
-    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT=request["commit"]))
+    result = run_shell(tmp_path, r2_server, script, dict(env, RABBIT_BUILD_COMMIT=request["commit"]))
     assert result.returncode == 0, result.stdout + result.stderr
     # A different commit stays an override attempt (and stages nothing).
-    result = run_shell(tmp_path, r2_server, script, dict(env, HERMES_BUILD_COMMIT="d" * 40))
+    result = run_shell(tmp_path, r2_server, script, dict(env, RABBIT_BUILD_COMMIT="d" * 40))
     assert result.returncode != 0 and "another commit" in result.stderr
     receipt_key = handoff.channel_prefix(request) + "handoff-win32-x64.json"
     receipt = json.loads(r2_server.store[receipt_key][0])
@@ -464,7 +464,7 @@ def test_receiver_allocation_uses_official_identity_only_inside_scope(tmp_path):
         scope = R2Scope("ci-disposable/12345/17/")
         pub.store.scope = scope
         pub.public_base += "/" + scope.prefix.rstrip("/")
-        from hermes_cli.release_channels import ChannelReader
+        from rabbit_cli.release_channels import ChannelReader
         pub.reader = ChannelReader(pub.public_base, pub.repository)
         receivers = allocate_receivers(pub, "a" * 40, "1.2.3", "a" * 40)
         assert set(receivers) == {"S", "T"}
@@ -495,7 +495,7 @@ def test_tag_and_commit_staging_never_runs_for_a_pinned_channel_build():
     ``channel_build.dispatch_command`` sends both ``channel`` and
     ``build_commit``, so the tag/commit staging steps — gated on
     ``inputs.build_commit != ''`` — would run inside a channel build, where a
-    pinned request makes both HERMES_PAYLOAD_TAG and HERMES_BUILD_COMMIT
+    pinned request makes both RABBIT_PAYLOAD_TAG and RABBIT_BUILD_COMMIT
     empty. The step then falls through to tag mode and handoff refuses the
     empty tag. Staging a channel build belongs to the pinned-request step
     alone, so every other handoff staging step must be gated off whenever a

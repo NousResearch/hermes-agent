@@ -1,42 +1,42 @@
 ---
 sidebar_position: 3
 title: "Discord"
-description: "将 Hermes Agent 设置为 Discord 机器人"
+description: "将 Rabbit Agent 设置为 Discord 机器人"
 ---
 
 # Discord 设置
 
-Hermes Agent 以机器人形式与 Discord 集成，让你可以通过私信或服务器频道与 AI 助手对话。机器人接收你的消息，通过 Hermes Agent 管道（包括工具调用、记忆和推理）进行处理，并实时响应。它支持文本、语音消息、文件附件和斜杠命令。
+Rabbit Agent 以机器人形式与 Discord 集成，让你可以通过私信或服务器频道与 AI 助手对话。机器人接收你的消息，通过 Rabbit Agent 管道（包括工具调用、记忆和推理）进行处理，并实时响应。它支持文本、语音消息、文件附件和斜杠命令。
 
-在开始设置之前，先介绍大多数人最想了解的内容：Hermes 进入服务器后的行为方式。
+在开始设置之前，先介绍大多数人最想了解的内容：Rabbit 进入服务器后的行为方式。
 
-## Hermes 的行为方式
+## Rabbit 的行为方式
 
 | 上下文 | 行为 |
 |---------|----------|
-| **私信（DM）** | Hermes 响应每条消息，无需 `@提及`。每个私信有独立的会话。 |
-| **服务器频道** | 默认情况下，Hermes 仅在被 `@提及` 时响应。如果你在频道中发帖但未提及它，Hermes 会忽略该消息。 |
+| **私信（DM）** | Rabbit 响应每条消息，无需 `@提及`。每个私信有独立的会话。 |
+| **服务器频道** | 默认情况下，Rabbit 仅在被 `@提及` 时响应。如果你在频道中发帖但未提及它，Rabbit 会忽略该消息。 |
 | **自由响应频道** | 你可以通过 `DISCORD_FREE_RESPONSE_CHANNELS` 将特定频道设为无需提及，或通过 `DISCORD_REQUIRE_MENTION=false` 全局禁用提及要求。这些频道中的消息会直接回复——自动创建线程功能会被跳过，使频道保持轻量级聊天状态。 |
-| **线程（Thread）** | Hermes 在同一线程中回复。提及规则仍然适用，除非该线程或其父频道被配置为自由响应。线程的会话历史与父频道相互隔离。 |
-| **多用户共享频道** | 默认情况下，Hermes 为安全和清晰起见，在频道内按用户隔离会话历史。在同一频道中交谈的两个人不会共享同一份对话记录，除非你明确禁用该功能。 |
-| **提及其他用户的消息** | 当 `DISCORD_IGNORE_NO_MENTION` 为 `true`（默认值）时，如果消息 @提及了其他用户但**未**提及机器人，Hermes 保持沉默。这可防止机器人介入针对其他人的对话。如果你希望机器人响应所有消息而不管提及了谁，请设置为 `false`。此设置仅适用于服务器频道，不适用于私信。 |
+| **线程（Thread）** | Rabbit 在同一线程中回复。提及规则仍然适用，除非该线程或其父频道被配置为自由响应。线程的会话历史与父频道相互隔离。 |
+| **多用户共享频道** | 默认情况下，Rabbit 为安全和清晰起见，在频道内按用户隔离会话历史。在同一频道中交谈的两个人不会共享同一份对话记录，除非你明确禁用该功能。 |
+| **提及其他用户的消息** | 当 `DISCORD_IGNORE_NO_MENTION` 为 `true`（默认值）时，如果消息 @提及了其他用户但**未**提及机器人，Rabbit 保持沉默。这可防止机器人介入针对其他人的对话。如果你希望机器人响应所有消息而不管提及了谁，请设置为 `false`。此设置仅适用于服务器频道，不适用于私信。 |
 
 :::tip
-如果你想要一个普通的机器人帮助频道，让用户无需每次都 @标记就能与 Hermes 对话，请将该频道添加到 `DISCORD_FREE_RESPONSE_CHANNELS`。
+如果你想要一个普通的机器人帮助频道，让用户无需每次都 @标记就能与 Rabbit 对话，请将该频道添加到 `DISCORD_FREE_RESPONSE_CHANNELS`。
 :::
 
 ### Discord Gateway（网关）模型
 
-Hermes 在 Discord 上不是无状态回复的 webhook（网络钩子）。它通过完整的消息网关运行，这意味着每条传入消息都会经过：
+Rabbit 在 Discord 上不是无状态回复的 webhook（网络钩子）。它通过完整的消息网关运行，这意味着每条传入消息都会经过：
 
 1. 授权验证（`DISCORD_ALLOWED_USERS`）
 2. 提及 / 自由响应检查
 3. 会话查找
 4. 会话记录加载
-5. 正常的 Hermes agent 执行，包括工具、记忆和斜杠命令
+5. 正常的 Rabbit agent 执行，包括工具、记忆和斜杠命令
 6. 将响应发送回 Discord
 
-这一点很重要，因为在繁忙服务器中的行为取决于 Discord 路由和 Hermes 会话策略两者。
+这一点很重要，因为在繁忙服务器中的行为取决于 Discord 路由和 Rabbit 会话策略两者。
 
 ### Discord 中的会话模型
 
@@ -46,7 +46,7 @@ Hermes 在 Discord 上不是无状态回复的 webhook（网络钩子）。它�
 - 每个服务器线程有独立的会话命名空间
 - 共享频道中的每个用户在该频道内有独立的会话
 
-因此，如果 Alice 和 Bob 都在 `#research` 中与 Hermes 对话，即使他们使用的是同一个可见的 Discord 频道，Hermes 默认也会将其视为独立的对话。
+因此，如果 Alice 和 Bob 都在 `#research` 中与 Rabbit 对话，即使他们使用的是同一个可见的 Discord 频道，Rabbit 默认也会将其视为独立的对话。
 
 这由 `config.yaml` 控制：
 
@@ -68,7 +68,7 @@ group_sessions_per_user: false
 
 ### 中断与并发
 
-Hermes 按会话键跟踪正在运行的 agent。
+Rabbit 按会话键跟踪正在运行的 agent。
 
 使用默认的 `group_sessions_per_user: true` 时：
 
@@ -84,7 +84,7 @@ Hermes 按会话键跟踪正在运行的 agent。
 
 ### Discord Gateway WebSocket 健康
 
-Discord REST 与 Gateway WebSocket 是独立传输。REST 请求成功不代表机器人仍能接收 Gateway 事件。Hermes 会组合检查 ready 状态、client/socket 关闭状态、socket 是否打开、heartbeat ACK 年龄和有限 heartbeat latency。
+Discord REST 与 Gateway WebSocket 是独立传输。REST 请求成功不代表机器人仍能接收 Gateway 事件。Rabbit 会组合检查 ready 状态、client/socket 关闭状态、socket 是否打开、heartbeat ACK 年龄和有限 heartbeat latency。
 
 连续异常达到阈值后，适配器只上报一次可重试失败；现有 Gateway 重连器创建新适配器，不会启动第二个无限重连循环。
 
@@ -105,7 +105,7 @@ discord:
 
 1. 前往 [Discord 开发者门户](https://discord.com/developers/applications) 并使用你的 Discord 账号登录。
 2. 点击右上角的 **New Application**。
-3. 输入应用名称（例如"Hermes Agent"）并接受开发者服务条款。
+3. 输入应用名称（例如"Rabbit Agent"）并接受开发者服务条款。
 4. 点击 **Create**。
 
 你将进入 **General Information** 页面。记下 **Application ID**——稍后构建邀请 URL 时需要用到。
@@ -155,7 +155,7 @@ discord:
 
 ## 第四步：获取机器人 Token
 
-机器人 token（令牌）是 Hermes Agent 用于以你的机器人身份登录的凭据。仍在 **Bot** 页面：
+机器人 token（令牌）是 Rabbit Agent 用于以你的机器人身份登录的凭据。仍在 **Bot** 页面：
 
 1. 在 **Token** 部分，点击 **Reset Token**。
 2. 如果你的 Discord 账号启用了双重身份验证，请输入你的 2FA 代码。
@@ -228,11 +228,11 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 你需要在 Discord 服务器上拥有 **Manage Server** 权限才能邀请机器人。如果你在下拉菜单中看不到你的服务器，请让服务器管理员使用邀请链接。
 :::
 
-授权后，机器人将出现在你服务器的成员列表中（在你启动 Hermes 网关之前，它会显示为离线）。
+授权后，机器人将出现在你服务器的成员列表中（在你启动 Rabbit 网关之前，它会显示为离线）。
 
 ## 第七步：找到你的 Discord 用户 ID
 
-Hermes Agent 使用你的 Discord 用户 ID 来控制谁可以与机器人交互。查找方式：
+Rabbit Agent 使用你的 Discord 用户 ID 来控制谁可以与机器人交互。查找方式：
 
 1. 打开 Discord（桌面或网页应用）。
 2. 前往 **Settings** → **Advanced** → 将 **Developer Mode** 切换为 **ON**。
@@ -245,21 +245,21 @@ Hermes Agent 使用你的 Discord 用户 ID 来控制谁可以与机器人交互
 开发者模式还允许你以相同方式复制**频道 ID** 和**服务器 ID**——右键点击频道或服务器名称并选择 Copy ID。如果你想手动设置主频道，将需要频道 ID。
 :::
 
-## 第八步：配置 Hermes Agent
+## 第八步：配置 Rabbit Agent
 
 ### 方式 A：交互式设置（推荐）
 
 运行引导式设置命令：
 
 ```bash
-hermes gateway setup
+rabbit gateway setup
 ```
 
 在提示时选择 **Discord**，然后在询问时粘贴你的机器人 token 和用户 ID。
 
 ### 方式 B：手动配置
 
-将以下内容添加到你的 `~/.hermes/.env` 文件：
+将以下内容添加到你的 `~/.rabbit/.env` 文件：
 
 ```bash
 # 必填
@@ -273,18 +273,18 @@ DISCORD_ALLOWED_USERS=284102345871466496
 然后启动网关：
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
 机器人应在几秒钟内在 Discord 中上线。发送一条消息——私信或在它可以看到的频道中——进行测试。
 
 :::tip
-你可以在后台运行 `hermes gateway` 或将其作为 systemd 服务以持续运行。详情请参阅部署文档。
+你可以在后台运行 `rabbit gateway` 或将其作为 systemd 服务以持续运行。详情请参阅部署文档。
 :::
 
 ## 配置参考
 
-Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环境级开关，**`~/.hermes/config.yaml`** 用于结构化设置。当两者都设置时，环境变量始终优先于 config.yaml 的值。
+Discord 行为通过两个文件控制：**`~/.rabbit/.env`** 用于凭据和环境级开关，**`~/.rabbit/config.yaml`** 用于结构化设置。当两者都设置时，环境变量始终优先于 config.yaml 的值。
 
 ### 环境变量（`.env`）
 
@@ -301,7 +301,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 否 | — | 机器人无需 `@提及` 即可响应的频道 ID，逗号分隔，即使 `DISCORD_REQUIRE_MENTION` 为 `true` 也适用。 |
 | `DISCORD_IGNORE_NO_MENTION` | 否 | `true` | 为 `true` 时，如果消息 `@提及` 了其他用户但**未**提及机器人，机器人保持沉默。防止机器人介入针对其他人的对话。仅适用于服务器频道，不适用于私信。 |
 | `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，自动为文本频道中的每次 `@提及` 创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。 |
-| `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。 |
+| `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Rabbit 的机器人消息。`"all"` — 接受所有机器人消息。 |
 | `DISCORD_REACTIONS` | 否 | `true` | 为 `true` 时，机器人在处理过程中为消息添加 emoji 反应（开始时 👀，成功时 ✅，出错时 ❌）。设置为 `false` 可完全禁用反应。 |
 | `DISCORD_IGNORED_CHANNELS` | 否 | — | 机器人**永不**响应的频道 ID，逗号分隔，即使被 `@提及` 也不响应。优先于所有其他频道设置。 |
 | `DISCORD_ALLOWED_CHANNELS` | 否 | — | 频道 ID，逗号分隔。设置后，机器人**仅**在这些频道（以及允许的私信）中响应。覆盖 `config.yaml` 中的 `discord.allowed_channels`。与 `DISCORD_IGNORED_CHANNELS` 结合使用可表达允许/拒绝规则。 |
@@ -316,12 +316,12 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_PROXY` | 否 | — | Discord 连接的代理 URL（HTTP、WebSocket、REST）。覆盖 `HTTPS_PROXY`/`ALL_PROXY`。支持 `http://`、`https://` 和 `socks5://` 协议。 |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | 否 | `false` | 为 `true` 时，机器人接受任何文件类型的附件（不仅限于内置的 PDF/文本/zip/office 允许列表）。未知类型会被缓存到磁盘，并以 `application/octet-stream` MIME 类型作为本地路径提供给 agent，以便它可以使用 `terminal` / `read_file` / `ffprobe` 等工具检查。 |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | 否 | `33554432` | 网关将下载并缓存的每个附件的最大字节数。默认 32 MiB。设置为 `0` 表示无上限（附件在写入时保存在内存中，因此无限制会带来真实的内存成本）。 |
-| `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | 否 | `0.6` | 适配器在刷新排队文本块之前等待的宽限窗口。用于平滑流式输出。 |
-| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 否 | `2.0` | 当单条消息超过 Discord 长度限制时，分割块之间的延迟。 |
+| `RABBIT_DISCORD_TEXT_BATCH_DELAY_SECONDS` | 否 | `0.6` | 适配器在刷新排队文本块之前等待的宽限窗口。用于平滑流式输出。 |
+| `RABBIT_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | 否 | `2.0` | 当单条消息超过 Discord 长度限制时，分割块之间的延迟。 |
 
 ### 配置文件（`config.yaml`）
 
-`~/.hermes/config.yaml` 中的 `discord` 部分与上述环境变量对应。config.yaml 设置作为默认值应用——如果已设置等效的环境变量，则环境变量优先。
+`~/.rabbit/config.yaml` 中的 `discord` 部分与上述环境变量对应。config.yaml 设置作为默认值应用——如果已设置等效的环境变量，则环境变量优先。
 
 ```yaml
 # Discord 特定设置
@@ -466,7 +466,7 @@ discord:
 
 行为：
 - 精确的线程/频道 ID 匹配优先。
-- 如果消息到达线程或论坛帖子内，且该线程没有明确条目，Hermes 会回退到父频道/论坛 ID。
+- 如果消息到达线程或论坛帖子内，且该线程没有明确条目，Rabbit 会回退到父频道/论坛 ID。
 - Prompt 在运行时临时应用，因此更改后立即影响后续轮次，无需重写过去的会话历史。
 
 #### `discord.history_backfill`
@@ -514,7 +514,7 @@ discord:
 
 **类型：** 对象 — **默认值：** 禁用
 
-Discord 的 WebSocket 恢复窗口可能在重启或网络中断时过期。在此期间发送的消息不会作为实时网关事件交付。启用后，Hermes 会在 Discord 重连后扫描一组有界的频道与线程历史记录，并将尚未处理的消息交给与实时事件相同的授权、提及、频道、去重和分发流程。
+Discord 的 WebSocket 恢复窗口可能在重启或网络中断时过期。在此期间发送的消息不会作为实时网关事件交付。启用后，Rabbit 会在 Discord 重连后扫描一组有界的频道与线程历史记录，并将尚未处理的消息交给与实时事件相同的授权、提及、频道、去重和分发流程。
 
 ```yaml
 discord:
@@ -526,7 +526,7 @@ discord:
     max_dispatches: 10
 ```
 
-如果 `channels` 留空，Hermes 会使用 `discord.free_response_channels`。只有当机器人确实需要检查所有可访问的服务器文字频道时才设置为 `"*"`。恢复账本按配置文件存储在 `gateway/discord_message_recovery.db`，避免已成功回复的消息在后续重启时再次执行。
+如果 `channels` 留空，Rabbit 会使用 `discord.free_response_channels`。只有当机器人确实需要检查所有可访问的服务器文字频道时才设置为 `"*"`。恢复账本按配置文件存储在 `gateway/discord_message_recovery.db`，避免已成功回复的消息在后续重启时再次执行。
 
 #### `group_sessions_per_user`
 
@@ -534,7 +534,7 @@ discord:
 
 这是一个全局网关设置（非 Discord 专用），控制同一频道中的用户是否获得隔离的会话历史。
 
-为 `true` 时：Alice 和 Bob 在 `#research` 中交谈，各自与 Hermes 有独立的对话。为 `false` 时：整个频道共享一份对话记录和一个正在运行的 agent 槽位。
+为 `true` 时：Alice 和 Bob 在 `#research` 中交谈，各自与 Rabbit 有独立的对话。为 `false` 时：整个频道共享一份对话记录和一个正在运行的 agent 槽位。
 
 ```yaml
 group_sessions_per_user: true
@@ -622,18 +622,18 @@ gateway:
 
 ## 技能的原生斜杠命令
 
-Hermes 自动将已安装的技能注册为**原生 Discord 应用命令**。这意味着技能会出现在 Discord 的自动补全 `/` 菜单中，与内置命令并列。
+Rabbit 自动将已安装的技能注册为**原生 Discord 应用命令**。这意味着技能会出现在 Discord 的自动补全 `/` 菜单中，与内置命令并列。
 
 - 每个技能成为一个 Discord 斜杠命令（例如 `/code-review`、`/ascii-art`）
 - 技能接受一个可选的 `args` 字符串参数
 - Discord 每个机器人有 100 个应用命令的限制——如果你的技能数量超过可用槽位，多余的技能会被跳过并在日志中显示警告
 - 技能在机器人启动时与内置命令（如 `/model`、`/reset` 和 `/bg`）一起注册
 
-无需额外配置——通过 `hermes skills install` 安装的任何技能都会在下次网关重启时自动注册为 Discord 斜杠命令。
+无需额外配置——通过 `rabbit skills install` 安装的任何技能都会在下次网关重启时自动注册为 Discord 斜杠命令。
 
 ### 禁用斜杠命令注册
 
-如果你针对同一个 Discord 应用运行多个 Hermes 网关（例如测试环境 + 生产环境），只有其中一个应该拥有全局斜杠命令注册——否则最后启动的那个会覆盖之前的注册，导致注册状态不稳定。在"从属"网关上关闭斜杠注册：
+如果你针对同一个 Discord 应用运行多个 Rabbit 网关（例如测试环境 + 生产环境），只有其中一个应该拥有全局斜杠命令注册——否则最后启动的那个会覆盖之前的注册，导致注册状态不稳定。在"从属"网关上关闭斜杠注册：
 
 ```yaml
 gateway:
@@ -657,7 +657,7 @@ Discord 适配器通过 `send_message` 工具和 agent 发出的内联 `MEDIA:/p
 | 音频 / 语音 | `send_voice` — 尽可能使用原生语音消息，否则使用文件附件 |
 | 文档（PDF/ZIP/docx 等） | `send_document` — 带下载按钮的原生附件 |
 
-Discord 的每次上传大小限制取决于服务器的加成等级（免费 25 MB，最高 500 MB）。如果 Hermes 收到 HTTP 413，适配器会回退到指向本地缓存路径的链接，而不是静默失败。
+Discord 的每次上传大小限制取决于服务器的加成等级（免费 25 MB，最高 500 MB）。如果 Rabbit 收到 HTTP 413，适配器会回退到指向本地缓存路径的链接，而不是静默失败。
 
 ## 接收任意文件类型
 
@@ -674,7 +674,7 @@ discord:
   max_attachment_bytes: 33554432   # 字节；0 = 无限制
 ```
 
-启用该标志后，任何上传的文件都会被下载、缓存到 `~/.hermes/cache/documents/` 下，并以 `application/octet-stream` MIME 类型的 `DOCUMENT` 类型消息事件提供给 agent。Agent 收到指向本地路径的上下文说明（通过 `to_agent_visible_cache_path` 为 Docker/Modal 沙盒终端自动转换），可以使用 `terminal`（`ffprobe`、`unzip`、`file`、`strings` 等）或 `read_file` 检查文件。文件内容**不会**内联到 prompt 中——只有路径——因此二进制上传不会撑爆上下文窗口。
+启用该标志后，任何上传的文件都会被下载、缓存到 `~/.rabbit/cache/documents/` 下，并以 `application/octet-stream` MIME 类型的 `DOCUMENT` 类型消息事件提供给 agent。Agent 收到指向本地路径的上下文说明（通过 `to_agent_visible_cache_path` 为 Docker/Modal 沙盒终端自动转换），可以使用 `terminal`（`ffprobe`、`unzip`、`file`、`strings` 等）或 `read_file` 检查文件。文件内容**不会**内联到 prompt 中——只有路径——因此二进制上传不会撑爆上下文窗口。
 
 已在允许列表中的已知文本格式（`.txt`、`.md`、`.log`）继续自动注入最多 100 KiB 的内容；启用该标志后此行为不变。
 
@@ -694,7 +694,7 @@ discord:
 
 点击编号按钮作答，或点击**其他**输入自由格式的响应（你在该频道中发送的下一条消息将成为答案）。开放式的 `clarify` 调用（没有预设选项）会跳过按钮，直接捕获你的下一条消息。
 
-按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
+按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.rabbit/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
 
 ## 主频道
 
@@ -706,7 +706,7 @@ discord:
 
 ### 手动配置
 
-将以下内容添加到你的 `~/.hermes/.env`：
+将以下内容添加到你的 `~/.rabbit/.env`：
 
 ```bash
 DISCORD_HOME_CHANNEL=123456789012345678
@@ -717,19 +717,19 @@ DISCORD_HOME_CHANNEL_NAME="#bot-updates"
 
 ## 语音消息
 
-Hermes Agent 支持 Discord 语音消息：
+Rabbit Agent 支持 Discord 语音消息：
 
 - **传入语音消息**使用配置的 STT 提供商自动转录：本地 `faster-whisper`（无需密钥）、Groq Whisper（`GROQ_API_KEY`）或 OpenAI Whisper（`VOICE_TOOLS_OPENAI_KEY`）。
 - **文字转语音**：使用 `/voice tts` 让机器人在文字回复的同时发送语音音频响应。
-- **Discord 语音频道**：Hermes 还可以加入语音频道，聆听用户说话，并在频道中回话。
+- **Discord 语音频道**：Rabbit 还可以加入语音频道，聆听用户说话，并在频道中回话。
 
 完整的设置和操作指南，请参阅：
 - [语音模式](../features/voice-mode.md)
-- [与 Hermes 使用语音模式](../../guides/use-voice-mode-with-hermes.md)
+- [与 Rabbit 使用语音模式](../../guides/use-voice-mode-with-rabbit.md)
 
 ## 论坛频道
 
-Discord 论坛频道（类型 15）不接受直接消息——论坛中的每个帖子都必须是线程。Hermes 自动检测论坛频道，并在需要发送消息时创建新的线程帖子，因此 `send_message`、TTS、图片、语音消息和文件附件都无需 agent 进行特殊处理即可正常工作。
+Discord 论坛频道（类型 15）不接受直接消息——论坛中的每个帖子都必须是线程。Rabbit 自动检测论坛频道，并在需要发送消息时创建新的线程帖子，因此 `send_message`、TTS、图片、语音消息和文件附件都无需 agent 进行特殊处理即可正常工作。
 
 - **线程名称**从消息的第一行派生（去除 markdown 标题前缀，上限 100 个字符）。当消息仅包含附件时，文件名用作备用线程名称。
 - **附件**随新线程的起始消息一起发送——无需单独上传步骤，不会出现部分发送。
@@ -766,21 +766,21 @@ Discord 论坛频道（类型 15）不接受直接消息——论坛中的每个
 
 ### 机器人离线
 
-**原因**：Hermes 网关未运行，或 token 不正确。
+**原因**：Rabbit 网关未运行，或 token 不正确。
 
-**解决方法**：检查 `hermes gateway` 是否正在运行。验证 `.env` 文件中的 `DISCORD_BOT_TOKEN`。如果你最近重置了 token，请更新它。
+**解决方法**：检查 `rabbit gateway` 是否正在运行。验证 `.env` 文件中的 `DISCORD_BOT_TOKEN`。如果你最近重置了 token，请更新它。
 
 ### "User not allowed" / 机器人忽略你
 
 **原因**：你的用户 ID 不在 `DISCORD_ALLOWED_USERS` 中。
 
-**解决方法**：将你的用户 ID 添加到 `~/.hermes/.env` 中的 `DISCORD_ALLOWED_USERS` 并重启网关。
+**解决方法**：将你的用户 ID 添加到 `~/.rabbit/.env` 中的 `DISCORD_ALLOWED_USERS` 并重启网关。
 
 ### 同一频道中的用户意外共享上下文
 
 **原因**：`group_sessions_per_user` 被禁用，或平台无法为该上下文中的消息提供用户 ID。
 
-**解决方法**：在 `~/.hermes/config.yaml` 中进行以下设置并重启网关：
+**解决方法**：在 `~/.rabbit/config.yaml` 中进行以下设置并重启网关：
 
 ```yaml
 group_sessions_per_user: true
@@ -799,7 +799,7 @@ group_sessions_per_user: true
 对于通过角色而非个人用户列表管理访问权限的服务器（管理团队、支持人员、内部工具），使用 `DISCORD_ALLOWED_ROLES`——逗号分隔的角色 ID 列表。拥有其中任一角色的成员即被授权。
 
 ```bash
-# ~/.hermes/.env — 与 DISCORD_ALLOWED_USERS 配合使用或替代使用
+# ~/.rabbit/.env — 与 DISCORD_ALLOWED_USERS 配合使用或替代使用
 DISCORD_ALLOWED_ROLES=987654321098765432,876543210987654321
 ```
 
@@ -814,12 +814,12 @@ DISCORD_ALLOWED_ROLES=987654321098765432,876543210987654321
 
 ### 提及控制
 
-默认情况下，Hermes 会阻止机器人 ping `@everyone`、`@here` 和角色提及，即使其回复中包含这些 token 也不例外。这可防止措辞不当的 prompt 或回显的用户内容向整个服务器发送垃圾消息。个人 `@user` ping 和回复引用 ping（"回复……"小标签）保持启用，以便正常对话仍然有效。
+默认情况下，Rabbit 会阻止机器人 ping `@everyone`、`@here` 和角色提及，即使其回复中包含这些 token 也不例外。这可防止措辞不当的 prompt 或回显的用户内容向整个服务器发送垃圾消息。个人 `@user` ping 和回复引用 ping（"回复……"小标签）保持启用，以便正常对话仍然有效。
 
 你可以通过环境变量或 `config.yaml` 放宽这些默认值：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 discord:
   allow_mentions:
     everyone: false      # 允许机器人 ping @everyone / @here
@@ -829,7 +829,7 @@ discord:
 ```
 
 ```bash
-# ~/.hermes/.env — 环境变量优先于 config.yaml
+# ~/.rabbit/.env — 环境变量优先于 config.yaml
 DISCORD_ALLOW_MENTION_EVERYONE=false
 DISCORD_ALLOW_MENTION_ROLES=false
 DISCORD_ALLOW_MENTION_USERS=true
@@ -840,4 +840,4 @@ DISCORD_ALLOW_MENTION_REPLIED_USER=true
 除非你确切知道为什么需要，否则将 `everyone` 和 `roles` 保持为 `false`。LLM 很容易在看似正常的响应中生成字符串 `@everyone`；没有此保护，这将通知你服务器的每个成员。
 :::
 
-有关保护 Hermes Agent 部署的更多信息，请参阅[安全指南](../security.md)。
+有关保护 Rabbit Agent 部署的更多信息，请参阅[安全指南](../security.md)。

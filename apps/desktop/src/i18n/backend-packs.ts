@@ -1,6 +1,6 @@
 /**
- * Backend-delivered language packs. A Hermes language-pack plugin (or a user
- * overlay under `$HERMES_HOME/locales/`) ships `<lang>.desktop.yaml`; the
+ * Backend-delivered language packs. A Rabbit language-pack plugin (or a user
+ * overlay under `$RABBIT_HOME/locales/`) ships `<lang>.desktop.yaml`; the
  * gateway serves the flattened strings over `i18n.catalog {lang, surface:
  * 'desktop'}` and the selectable languages over `i18n.languages`. Both land
  * in the app-locale registry under source `backend`, merged over the bundled
@@ -11,7 +11,7 @@
  * leaves whatever the registry already holds (never blank the UI over i18n).
  */
 
-import { isRecord } from '@hermes/shared/i18n'
+import { isRecord } from '@rabbit/shared/i18n'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 

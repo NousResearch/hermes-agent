@@ -375,8 +375,8 @@ def test_plugin_error_containing_conflict_text_is_not_misclassified(
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
-        assert "Hermes Relay plugin initialization failed" in caplog.text
-        assert "already active outside Hermes native ownership" not in caplog.text
+        assert "Rabbit Relay plugin initialization failed" in caplog.text
+        assert "already active outside Rabbit native ownership" not in caplog.text
     finally:
         host.shutdown()
 
@@ -414,8 +414,8 @@ def test_legacy_exporter_env_warns_without_disabling_ambient_discovery(
     caplog,
 ):
     monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
-    monkeypatch.setenv("HERMES_NEMO_RELAY_ATOF_ENABLED", "1")
-    monkeypatch.setenv("HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S", "30")
+    monkeypatch.setenv("RABBIT_NEMO_RELAY_ATOF_ENABLED", "1")
+    monkeypatch.setenv("RABBIT_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S", "30")
     relay = _FakeRelay()
 
     with caplog.at_level("WARNING"):
@@ -429,8 +429,8 @@ def test_legacy_exporter_env_warns_without_disabling_ambient_discovery(
         )
         assert relay.events == [("plugin.initialize", {})]
         assert relay.initialized_from == [None]
-        assert "HERMES_NEMO_RELAY_ATOF_ENABLED" in caplog.text
-        assert "HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S" in caplog.text
+        assert "RABBIT_NEMO_RELAY_ATOF_ENABLED" in caplog.text
+        assert "RABBIT_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S" in caplog.text
         assert "standard user or system plugins.toml still applies" in caplog.text
     finally:
         host.shutdown()
@@ -597,7 +597,7 @@ def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     assert (
         caplog.text.count(
             "The Relay plugin host is active process-wide and applies to all "
-            "profiles hosted by this Hermes process."
+            "profiles hosted by this Rabbit process."
         )
         == 1
     )
@@ -887,7 +887,7 @@ def test_session_close_does_not_flush_during_concurrent_managed_publication(
 
     event_loop_thread = threading.Thread(
         target=run_on_event_loop_thread,
-        name="hermes-relay-session-close-regression",
+        name="rabbit-relay-session-close-regression",
         daemon=True,
     )
     event_loop_thread.start()
@@ -1007,7 +1007,7 @@ manifest_ref = "relay-plugin.toml"
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
         assert relay.events == []
-        assert "Hermes [[dynamic_plugins]] records are unsupported" in caplog.text
+        assert "Rabbit [[dynamic_plugins]] records are unsupported" in caplog.text
         assert "use Relay [[plugins.dynamic]] records" in caplog.text
     finally:
         host.shutdown()
@@ -1058,7 +1058,7 @@ mode = "strict"
             host._plugin_configuration_state
             is relay_runtime._RelayPluginConfigurationState.FAILED
         )
-        assert "Hermes Relay plugin initialization failed" in caplog.text
+        assert "Rabbit Relay plugin initialization failed" in caplog.text
         assert "relay-plugin.toml" in caplog.text
     finally:
         host.shutdown()
@@ -1263,7 +1263,7 @@ mode = "overwrite"
 enabled = true
 output_directory = "{atif_dir.as_posix()}"
 filename_template = "trajectory-{{session_id}}.json"
-agent_name = "Hermes Native Test"
+agent_name = "Rabbit Native Test"
 agent_version = "test"
 """.strip(),
         encoding="utf-8",
@@ -1279,7 +1279,7 @@ agent_version = "test"
     try:
         for profile in ("profile-a", "profile-b"):
             session_id = f"native-export-{profile}"
-            monkeypatch.setenv("HERMES_HOME", str(tmp_path / profile))
+            monkeypatch.setenv("RABBIT_HOME", str(tmp_path / profile))
             profile_key = relay_runtime.current_profile_key()
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=profile_key,

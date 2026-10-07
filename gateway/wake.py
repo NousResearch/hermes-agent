@@ -1,7 +1,7 @@
 """Wake an existing agent session from a background completion event. Push-capable adapters
 (``supports_async_delivery``) get a synthetic ``MessageEvent(internal=True)`` via handle_message;
 stateless adapters (API server) would run that under a ``build_session_key()`` key that never
-matches the raw ``X-Hermes-Session-Id`` real turns use (invisible parallel session), so we self-POST
+matches the raw ``X-Rabbit-Session-Id`` real turns use (invisible parallel session), so we self-POST
 ``/v1/chat/completions`` with the raw id header to resume the REAL session. Exception:
 async-delegation completions: the CLIENT owns the next turn, so they are never self-POSTed as a
 new ``role=user`` prompt (could cross a pending human-confirmation gate); instead
@@ -60,7 +60,7 @@ def session_owned_by_profile(config: Any, profile: Optional[str], session_id: An
         home = dict(_multiplex_profile_homes(config)).get(profile)
         if home is None:
             return False
-        from hermes_state import SessionDB
+        from rabbit_state import SessionDB
         db = SessionDB(Path(home) / "state.db", read_only=True)
     except Exception as exc:
         logger.debug("wake: session ownership check unavailable for %s/%s: %s", profile, session_id, exc)
@@ -91,7 +91,7 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
                        notification_category: str = "result", profile: Optional[str] = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
-    (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
+    (``X-Rabbit-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
     ``SessionSource`` for the synthetic event — required for push-capable adapters. ``profile``
     names the served profile that canonically owns a non-push destination; a non-default value is
     delivered in-process under the caller's profile scope (see ``_self_post_chat_completion``).
@@ -186,7 +186,7 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
                                       notification_category: str = "result",
                                       profile: Optional[str] = None) -> None:
     """POST the wake text to the in-pod API server as a normal session turn, using the adapter's
-    own bind host/port/key. Session continuation via ``X-Hermes-Session-Id`` is 403-gated on
+    own bind host/port/key. Session continuation via ``X-Rabbit-Session-Id`` is 403-gated on
     ``API_SERVER_KEY``, so a missing key is a hard error rather than a wake in a fresh session
     nobody watches.
 
@@ -214,16 +214,16 @@ async def _self_post_chat_completion(adapter: Any, *, text: str, session_id: str
     api_key = str(getattr(adapter, "_api_key", "") or "")
     if not api_key:
         raise RuntimeError("wake self-post requires API_SERVER_KEY: session continuation via "
-                           "X-Hermes-Session-Id is rejected (403) on an unauthenticated API "
+                           "X-Rabbit-Session-Id is rejected (403) on an unauthenticated API "
                            "server, so the wake cannot reach the target session")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"  # bare IPv6 literal
     url = f"http://{host}:{port}/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "X-Hermes-Session-Id": session_id}
-    payload = {"model": str(getattr(adapter, "_model_name", "") or "hermes-agent"),
+    headers = {"Authorization": f"Bearer {api_key}", "X-Rabbit-Session-Id": session_id}
+    payload = {"model": str(getattr(adapter, "_model_name", "") or "rabbit-agent"),
                "messages": [{"role": "user", "content": text}], "stream": False}
     if notification_category == "diagnostic":
-        payload["hermes_notification_category"] = "diagnostic"
+        payload["rabbit_notification_category"] = "diagnostic"
     last_err: Optional[BaseException] = None
     attempts = 1 + len(_RETRY_DELAYS_SECONDS)
     for attempt in range(attempts):

@@ -1,5 +1,5 @@
 """Shared helpers for the bundled ``image_gen`` provider plugins. Providers are loaded by path
-(``hermes_plugins.image_gen__<name>``) and resolve this via the repo root on ``sys.path``;
+(``rabbit_plugins.image_gen__<name>``) and resolve this via the repo root on ``sys.path``;
 not a plugin itself (the scanner only looks at directories)."""
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def load_image_gen_config(sub: Optional[str] = None) -> Dict[str, Any]:
     """Read ``image_gen`` (or ``image_gen.<sub>``) from config.yaml; ``{}`` on any failure."""
     label = "image_gen" if sub is None else f"image_gen.{sub}"
     try:
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
 
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None

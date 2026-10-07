@@ -76,7 +76,7 @@ def test_unanswered_probe_returns_an_actionable_error(session, bridge):
     result = json.loads(server._preview_action_request("s1", {"action": "elements"}))
 
     assert result["success"] is False
-    assert "Update the Hermes Desktop app" in result["error"]
+    assert "Update the Rabbit Desktop app" in result["error"]
 
 
 def test_repeat_actions_short_circuit_instead_of_stalling_again(session, bridge):
@@ -144,7 +144,7 @@ def test_a_window_decline_answer_passes_through(session, bridge):
     """The fast "no window is showing this chat" refusal (#119333) settles as
     a non-empty answer: it must reach the tool verbatim, not be re-labelled
     bridge-unavailable."""
-    decline = json.dumps({"success": False, "error": "No Hermes Desktop window is showing this chat."})
+    decline = json.dumps({"success": False, "error": "No Rabbit Desktop window is showing this chat."})
     bridge.answers = [decline]
 
     assert server._preview_action_request("s1", {"action": "elements"}) == decline

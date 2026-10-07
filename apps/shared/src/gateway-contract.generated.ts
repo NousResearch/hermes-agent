@@ -3,461 +3,6 @@
 // tests/tui_gateway/contracts/test_generated.py fails when this file is stale.
 /* eslint-disable */
 // ── Types ──
-/** Any method the desktop may route to a named profile (``requestGatewayForProfile`` adds ``profile``). */
-export interface ProfileParams {
-  profile?: string | null
-}
-/** ``_serialize_usage_model`` — also embedded as ``usage`` in the billing / subscription states, where the fail-open form is a bare ``{available: false}`` (no ``ok``). */
-export interface UsageModel {
-  ok?: boolean | null
-  available: boolean
-  status?: string | null
-  plan_name?: string | null
-  renews_at?: string | null
-  renews_display?: string | null
-  subscription_remaining_display?: string | null
-  topup_remaining_display?: string | null
-  total_spendable_display?: string | null
-  has_topup?: boolean | null
-  plan_bar?: UsageBar | null
-  topup_bar?: UsageBar | null
-}
-/** ``_serialize_usage_bar``: one bar, magnitudes pre-formatted; ``pct_used`` only for ``plan``. */
-export interface UsageBar {
-  kind: UsageBarKind
-  remaining_display: string
-  total_display: string
-  spent_display: string
-  pct_used?: number | null
-  fill_fraction: number
-}
-export type UsageBarKind = 'plan' | 'topup'
-/** ``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only ``ok / logged_in / free_tier_account / error``, so everything else is optional. */
-export interface BillingStateResult {
-  ok: boolean
-  logged_in: boolean
-  free_tier_account?: boolean
-  free_tier_model?: string | null
-  org_name?: string | null
-  org_slug?: string | null
-  role?: string | null
-  is_admin?: boolean | null
-  can_change_plan?: boolean | null
-  can_charge?: boolean | null
-  balance_usd?: string | null
-  balance_display?: string | null
-  cli_billing_enabled?: boolean | null
-  charge_presets?: string[] | null
-  charge_presets_display?: string[] | null
-  min_usd?: string | null
-  max_usd?: string | null
-  card?: BillingCardInfo | null
-  payment_method?: BillingPaymentMethod | null
-  monthly_cap?: BillingMonthlyCap | null
-  auto_reload?: BillingAutoReload | null
-  portal_url?: string | null
-  error?: string | null
-  usage?: UsageModel | null
-}
-export interface BillingCardInfo {
-  brand: string
-  last4: string
-  masked: string
-  display?: string | null
-  resolved_via?: string | null
-}
-/** ``_serialize_payment_method``: each kind emits only its own fields (a ``card`` never carries ``email``; ``unknown`` carries what the server called it in ``raw_kind``). */
-export interface BillingPaymentMethod {
-  kind: PaymentMethodKind
-  brand?: string | null
-  last4?: string | null
-  wallet?: string | null
-  email?: string | null
-  raw_kind?: string | null
-  resolved_via?: string | null
-}
-export type PaymentMethodKind = 'card' | 'link' | 'unknown'
-export interface BillingMonthlyCap {
-  limit_usd?: string | null
-  limit_display: string
-  spent_this_month_usd?: string | null
-  spent_display: string
-  is_default_ceiling: boolean
-}
-export interface BillingAutoReload {
-  enabled: boolean
-  threshold_usd?: string | null
-  threshold_display: string
-  reload_to_usd?: string | null
-  reload_to_display: string
-  card?: BillingAutoReloadCard | null
-}
-/** Only ``distinct`` carries the payment-method identity. */
-export interface BillingAutoReloadCard {
-  kind: AutoReloadCardKind
-  payment_method_id?: string | null
-  brand?: string | null
-  last4?: string | null
-}
-export type AutoReloadCardKind = 'canonical' | 'distinct' | 'none'
-/** ``_serialize_subscription_state``; the view's fallback emits only ``ok / logged_in / error``. */
-export interface SubscriptionStateResult {
-  ok: boolean
-  logged_in: boolean
-  is_admin?: boolean | null
-  can_change_plan?: boolean | null
-  org_name?: string | null
-  org_id?: string | null
-  role?: string | null
-  context?: SubscriptionContext | null
-  current?: CurrentSubscription | null
-  tiers?: SubscriptionTierOption[] | null
-  portal_url?: string | null
-  error?: string | null
-  usage?: UsageModel | null
-}
-export type SubscriptionContext = 'personal' | 'team'
-export interface CurrentSubscription {
-  tier_id?: string | null
-  tier_name?: string | null
-  monthly_credits?: string | null
-  credits_remaining?: string | null
-  cycle_ends_at?: string | null
-  pending_downgrade_tier_name?: string | null
-  pending_downgrade_at?: string | null
-  pending_downgrade_display?: string | null
-  cancel_at_period_end: boolean
-  cancellation_effective_at?: string | null
-  cancellation_effective_display?: string | null
-}
-export interface SubscriptionTierOption {
-  tier_id: string
-  name: string
-  tier_order: number
-  dollars_per_month_display: string
-  monthly_credits?: string | null
-  is_current: boolean
-  is_enabled: boolean
-}
-export interface SubscriptionPreviewParams {
-  profile?: string | null
-  subscription_type_id?: string | null
-}
-/** ``_serialize_subscription_preview`` on success; ``effect`` drives the confirm copy. */
-export interface SubscriptionPreviewResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-  effect?: SubscriptionChangeEffect | null
-  reason?: string | null
-  current_tier_id?: string | null
-  current_tier_name?: string | null
-  target_tier_id?: string | null
-  target_tier_name?: string | null
-  monthly_credits_delta?: string | null
-  amount_due_now_cents?: number | null
-  effective_at?: string | null
-}
-export type SubscriptionChangeEffect = 'charge_now' | 'scheduled' | 'no_op' | 'blocked'
-/** Either a target tier (downgrade / same-price change) or ``cancel`` (period-end cancellation). */
-export interface SubscriptionChangeParams {
-  profile?: string | null
-  subscription_type_id?: string | null
-  cancel?: boolean
-}
-/** ``_billing_pending_change``: ``message`` + the raw NAS body in ``payload`` on success. */
-export interface BillingPendingChangeResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-}
-export interface SubscriptionUpgradeParams {
-  profile?: string | null
-  subscription_type_id?: string | null
-  idempotency_key?: string | null
-}
-/** The money route: ``status`` separates a completed upgrade from an SCA / decline that must finish in the portal at ``recovery_url``; ``idempotency_key`` is echoed (also on error) so a retry reuses it. */
-export interface SubscriptionUpgradeResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-  status?: string | null
-  target_tier_name?: string | null
-  recovery_url?: string | null
-  reason?: string | null
-  idempotency_key?: string | null
-}
-export interface BillingChargeParams {
-  profile?: string | null
-  amount_usd?: number | string | null
-  idempotency_key?: string | null
-}
-/** ``202 {chargeId}`` — money is not confirmed yet; poll ``billing.charge_status``. */
-export interface BillingChargeResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-  charge_id?: string | null
-  idempotency_key?: string | null
-}
-export interface BillingChargeStatusParams {
-  profile?: string | null
-  charge_id?: string | null
-}
-/** Single status read (pending | settled | failed); the caller drives the poll cadence. */
-export interface BillingChargeStatusResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-  status?: string | null
-  amount_usd?: string | number | null
-  settled_at?: string | null
-  reason?: string | null
-}
-export interface BillingAutoReloadParams {
-  profile?: string | null
-  enabled?: boolean
-  threshold?: number | string | null
-  top_up_amount?: number | string | null
-}
-/** A write with no success payload beyond ``ok``. */
-export interface BillingMutationResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-}
-export interface BillingStepUpParams {
-  profile?: string | null
-  session_id?: string | null
-}
-/** ``granted`` false when the server downscopes (also on every error envelope). */
-export interface BillingStepUpResult {
-  ok: boolean
-  error?: string | null
-  message?: string | null
-  portal_url?: string | null
-  retry_after?: number | null
-  payload?: Record<string, unknown> | null
-  actor?: string | null
-  code?: string | null
-  recovery?: string | null
-  granted?: boolean | null
-}
-export interface DelegationStatusResult {
-  active: ActiveSubagent[]
-  paused: boolean
-  max_spawn_depth: number
-  max_concurrent_children: number
-}
-/** One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record is extended by the child runner — ``missed_steer`` etc. — so it stays open). */
-export interface ActiveSubagent {
-  subagent_id: string
-  parent_id?: string | null
-  depth?: number | null
-  goal?: string | null
-  delegation_id?: string | null
-  model?: string | null
-  started_at?: number | null
-  status?: string | null
-  tool_count?: number | null
-  owner_agent_session_id?: string | null
-  [key: string]: unknown
-}
-export interface DelegationPauseParams {
-  profile?: string | null
-  paused?: boolean
-}
-export interface DelegationPauseResult {
-  paused: boolean
-}
-export interface SubagentSteerParams {
-  session_id: string
-  profile?: string | null
-  subagent_id: string
-  text: string
-}
-/** ``queued`` is not ``delivered``: a child past its final tool batch surfaces ``missed_steer``. */
-export interface SubagentSteerResult {
-  status: SteerStatus
-  subagent_id: string
-  text: string
-}
-export type SteerStatus = 'queued' | 'rejected'
-export interface HandoffRequestParams {
-  session_id: string
-  profile?: string | null
-  platform: string
-}
-export interface HandoffRequestResult {
-  queued: boolean
-  session_key: string
-  platform: string
-  home_name: string
-}
-/** Any method addressed at one live session. */
-export interface SessionParams {
-  session_id: string
-  profile?: string | null
-}
-/** ``state`` is pending | running | completed | failed, or '' when nothing was requested. */
-export interface HandoffStateResult {
-  state: string
-  platform: string
-  error: string
-}
-export interface HandoffFailParams {
-  session_id: string
-  profile?: string | null
-  error?: string | null
-}
-/** ``failed`` false when the watcher already claimed the row; ``state`` is what it is now. */
-export interface HandoffFailResult {
-  failed: boolean
-  state: string
-}
-/** ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead. ``emoji`` null clears; the same emoji again retracts. */
-export interface MessageReactParams {
-  session_id: string
-  profile?: string | null
-  row_id?: number | null
-  newest_role?: string | null
-  emoji?: string | null
-  author?: ReactionAuthor | null
-}
-export type ReactionAuthor = 'user' | 'agent'
-export interface MessageReactResult {
-  row_id: number
-  reactions: MessageReaction[]
-}
-/** One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is stamped once announced. */
-export interface MessageReaction {
-  emoji: string
-  author: string
-  at?: number | null
-  seen?: boolean | null
-  [key: string]: unknown
-}
-export interface PetCancelParams {
-  profile?: string | null
-  token?: string | null
-}
-export interface PetCancelResult {
-  ok: boolean
-}
-export interface PetGenerateStatusResult {
-  available: boolean
-  providers: PetGenProvider[]
-}
-/** ``agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
-export interface PetGenProvider {
-  name: string
-  label: string
-  default: boolean
-}
-/** ``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one). */
-export interface PetGenerateParams {
-  profile?: string | null
-  prompt?: string | null
-  referenceImage?: string | null
-  count?: number | null
-  style?: string | null
-  provider?: string | null
-}
-export interface PetGenerateResult {
-  ok: boolean
-  token: string
-  drafts: PetDraft[]
-}
-export interface PetDraft {
-  index: number
-  dataUri: string
-}
-export interface PetHatchParams {
-  profile?: string | null
-  token: string
-  name: string
-  cancelToken?: string | null
-  index?: number | null
-  description?: string | null
-  prompt?: string | null
-  style?: string | null
-  provider?: string | null
-}
-/** The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards). */
-export interface PetHatchResult {
-  ok: boolean
-  slug: string
-  displayName: string
-  warnings?: unknown[]
-  pet: PetSpritePayload
-}
-export interface PetSpritePayload {
-  slug?: string | null
-  displayName?: string | null
-  mime?: string | null
-  spritesheetBase64?: string | null
-  spritesheetRevision?: string | null
-  frameW?: number | null
-  frameH?: number | null
-  framesPerState?: number | null
-  framesByState?: Record<string, number> | null
-  framesByRow?: Record<string, number> | null
-  loopMs?: number | null
-  scale?: number | null
-  stateRows?: string[] | null
-}
-export interface ProjectFactsParams {
-  profile?: string | null
-  cwd?: string | null
-}
-/** ``facts`` null outside a workspace (or when detection failed). */
-export interface ProjectFactsResult {
-  facts?: ProjectFacts | null
-}
-/** ``agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection. */
-export interface ProjectFacts {
-  root: string
-  manifests: string[]
-  packageManagers: string[]
-  verifyCommands: string[]
-  contextFiles: string[]
-}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -481,7 +26,7 @@ export interface ConfigGetResult {
   mtime?: number | null
   mcp_rev?: string | null
 }
-/** ``hermes_cli/models.py::list_available_providers`` row. */
+/** ``rabbit_cli/models.py::list_available_providers`` row. */
 export interface ConfigProviderRef {
   id: string
   label: string
@@ -588,12 +133,14 @@ export interface McpServerStatus {
   error?: string | null
   [key: string]: unknown
 }
-/** ``provider_configured`` is the loose answer; the boot record's fields (``ready``, ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
+/** Any method the desktop may route to a named profile (``requestGatewayForProfile`` adds ``profile``). */
+export interface ProfileParams {
+  profile?: string | null
+}
+/** ``provider_configured`` is the loose answer; ``ready`` / ``other_providers`` / ``inference_provider`` ride along on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``. */
 export interface SetupStatusResult {
   provider_configured?: boolean | null
   ready?: boolean | null
-  free_tier_account?: boolean | null
-  free_tier_route?: boolean | null
   other_providers?: boolean | null
   inference_provider?: string | null
   profile?: string | null
@@ -607,60 +154,21 @@ export interface SetupRuntimeCheckParams {
   profile?: string | null
   provider?: string | null
 }
-/** ``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the selected route is the welcome host. */
+/** ``ok=False`` + ``error`` when the resolved model can't be served. */
 export interface SetupRuntimeCheckResult {
   ok: boolean
   provider?: string | null
   model?: string | null
   source?: string | null
   error?: string | null
-  free_tier_route?: boolean | null
   profile?: string | null
 }
-export interface DiagnosticsShareNousParams {
-  error_context?: string | null
-  extra_files?: Record<string, string> | null
-  log_lines?: number | null
-}
-/** Structured envelope: ``ok=False`` + ``error`` renders inline instead of failing the RPC. */
-export interface DiagnosticsShareNousResult {
-  ok: boolean
-  view_url?: string | null
-  upload_id?: string | null
-  expires_at?: string | null
-  error?: string | null
-}
-/** ``available`` = an identity exists AND the tier is on; whether inference runs on it is ``setup.runtime_check.free_tier_route``'s question. */
-export interface FreeTierStatusResult {
-  has_guest: boolean
-  enabled: boolean
-  available: boolean
-  notice_pending: boolean
-  model: string
-  label: string
-  error?: string | null
-  error_code?: string | null
-  retryable?: boolean | null
-  retry_after?: number | null
-}
-export interface FreeTierProvisionResult {
-  has_guest: boolean
-  enabled: boolean
-  error?: string | null
-  error_code?: string | null
-  retryable?: boolean | null
-  retry_after?: number | null
-}
-export interface FreeTierAckNoticeResult {
-  acked: boolean
-}
-/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer). */
+/** The focused profile's ``telemetry.shared_metrics`` collection opt-in. ``decided`` = the key is written in config.yaml (the shipped defaults are not an answer). */
 export interface SharedMetricsConsentResult {
   enabled: boolean
-  send: boolean
   decided: boolean
 }
-/** ``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer. */
+/** ``first_run`` marks the Desktop first-run answer. A legacy ``send`` key from the upload era is accepted and ignored; collection is local-only. */
 export interface SharedMetricsSetParams {
   profile?: string | null
   enabled: boolean
@@ -676,7 +184,7 @@ export interface SharedMetricsSlashCommandParams {
 export interface SharedMetricsSlashCommandResult {
   ok: boolean
 }
-/** ``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The client names its surface because a Desktop may attach to a URL/cloud backend where ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection. ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a reconnect re-sending the same launch counts once while a new launch counts again. */
+/** ``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The client names its surface because a Desktop may attach to a URL/cloud backend where ``RABBIT_DESKTOP`` is unset; without it the backend falls back to its own client detection. ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a reconnect re-sending the same launch counts once while a new launch counts again. */
 export interface SharedMetricsStartupLatencyParams {
   profile?: string | null
   elapsed_ms: number
@@ -686,7 +194,7 @@ export interface SharedMetricsStartupLatencyParams {
 export interface SharedMetricsStartupLatencyResult {
   ok: boolean
 }
-/** One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout hand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the backend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage`` download|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall time, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known. */
+/** One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout hand-offs run ``rabbit update`` and are counted from its receipt, never here. Raw words; the backend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage`` download|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall time, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known. */
 export interface SharedMetricsUpdateRunParams {
   profile?: string | null
   outcome: string
@@ -758,7 +266,7 @@ export interface ModelOptionsResult {
   model?: string
   provider?: string
 }
-/** One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path). */
+/** One ``rabbit_cli/inventory.py::build_models_payload`` provider row (the union of every field the builder sets; ``pricing_pending`` marks the cached-only path). */
 export interface ModelOptionProvider {
   slug: string
   name: string
@@ -777,20 +285,17 @@ export interface ModelOptionProvider {
   capabilities?: Record<string, ModelCapabilities> | null
   pricing?: Record<string, ModelPricing> | null
   pricing_pending?: boolean | null
-  free_tier?: boolean | null
-  free_tier_pending?: boolean | null
-  free_tier_row?: boolean | null
   unavailable_models?: string[] | null
   [key: string]: unknown
 }
-/** ``hermes_cli/inventory.py::_apply_capabilities``. */
+/** ``rabbit_cli/inventory.py::_apply_capabilities``. */
 export interface ModelCapabilities {
   fast: boolean
   ultrafast?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
-/** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
+/** ``rabbit_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are hosted-portal-only. */
 export interface ModelPricing {
   input: string
   output: string
@@ -845,7 +350,7 @@ export interface GoalSnapshot {
   last_reason?: string | null
   wait_barrier?: WaitBarrierUntil | WaitBarrierTarget | null
 }
-/** ``hermes_cli/goals.py::GoalContract.to_dict``. */
+/** ``rabbit_cli/goals.py::GoalContract.to_dict``. */
 export interface GoalContractSnapshot {
   outcome?: string
   verification?: string
@@ -954,6 +459,185 @@ export interface VerificationEvidenceRow {
   output_summary?: string | null
   [key: string]: unknown
 }
+export interface DelegationStatusResult {
+  active: ActiveSubagent[]
+  paused: boolean
+  max_spawn_depth: number
+  max_concurrent_children: number
+}
+/** One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record is extended by the child runner — ``missed_steer`` etc. — so it stays open). */
+export interface ActiveSubagent {
+  subagent_id: string
+  parent_id?: string | null
+  depth?: number | null
+  goal?: string | null
+  delegation_id?: string | null
+  model?: string | null
+  started_at?: number | null
+  status?: string | null
+  tool_count?: number | null
+  owner_agent_session_id?: string | null
+  [key: string]: unknown
+}
+export interface DelegationPauseParams {
+  profile?: string | null
+  paused?: boolean
+}
+export interface DelegationPauseResult {
+  paused: boolean
+}
+export interface SubagentSteerParams {
+  session_id: string
+  profile?: string | null
+  subagent_id: string
+  text: string
+}
+/** ``queued`` is not ``delivered``: a child past its final tool batch surfaces ``missed_steer``. */
+export interface SubagentSteerResult {
+  status: SteerStatus
+  subagent_id: string
+  text: string
+}
+export type SteerStatus = 'queued' | 'rejected'
+export interface HandoffRequestParams {
+  session_id: string
+  profile?: string | null
+  platform: string
+}
+export interface HandoffRequestResult {
+  queued: boolean
+  session_key: string
+  platform: string
+  home_name: string
+}
+/** Any method addressed at one live session. */
+export interface SessionParams {
+  session_id: string
+  profile?: string | null
+}
+/** ``state`` is pending | running | completed | failed, or '' when nothing was requested. */
+export interface HandoffStateResult {
+  state: string
+  platform: string
+  error: string
+}
+export interface HandoffFailParams {
+  session_id: string
+  profile?: string | null
+  error?: string | null
+}
+/** ``failed`` false when the watcher already claimed the row; ``state`` is what it is now. */
+export interface HandoffFailResult {
+  failed: boolean
+  state: string
+}
+/** ``row_id`` is ``messages.id``; a not-yet-persisted live message names ``newest_role`` instead. ``emoji`` null clears; the same emoji again retracts. */
+export interface MessageReactParams {
+  session_id: string
+  profile?: string | null
+  row_id?: number | null
+  newest_role?: string | null
+  emoji?: string | null
+  author?: ReactionAuthor | null
+}
+export type ReactionAuthor = 'user' | 'agent'
+export interface MessageReactResult {
+  row_id: number
+  reactions: MessageReaction[]
+}
+/** One persisted reaction row (``rabbit_state_messages.set_message_reaction``); ``seen`` is stamped once announced. */
+export interface MessageReaction {
+  emoji: string
+  author: string
+  at?: number | null
+  seen?: boolean | null
+  [key: string]: unknown
+}
+export interface PetCancelParams {
+  profile?: string | null
+  token?: string | null
+}
+export interface PetCancelResult {
+  ok: boolean
+}
+export interface PetGenerateStatusResult {
+  available: boolean
+  providers: PetGenProvider[]
+}
+/** ``agent/pet/generate/imagegen.py::list_sprite_providers`` row. */
+export interface PetGenProvider {
+  name: string
+  label: string
+  default: boolean
+}
+/** ``prompt`` or a ``referenceImage`` data URL is required (the handler answers 4004 without one). */
+export interface PetGenerateParams {
+  profile?: string | null
+  prompt?: string | null
+  referenceImage?: string | null
+  count?: number | null
+  style?: string | null
+  provider?: string | null
+}
+export interface PetGenerateResult {
+  ok: boolean
+  token: string
+  drafts: PetDraft[]
+}
+export interface PetDraft {
+  index: number
+  dataUri: string
+}
+export interface PetHatchParams {
+  profile?: string | null
+  token: string
+  name: string
+  cancelToken?: string | null
+  index?: number | null
+  description?: string | null
+  prompt?: string | null
+  style?: string | null
+  provider?: string | null
+}
+/** The hatched pet is installed but NOT active (``pet.select`` adopts, ``pet.remove`` discards). */
+export interface PetHatchResult {
+  ok: boolean
+  slug: string
+  displayName: string
+  warnings?: unknown[]
+  pet: PetSpritePayload
+}
+export interface PetSpritePayload {
+  slug?: string | null
+  displayName?: string | null
+  mime?: string | null
+  spritesheetBase64?: string | null
+  spritesheetRevision?: string | null
+  frameW?: number | null
+  frameH?: number | null
+  framesPerState?: number | null
+  framesByState?: Record<string, number> | null
+  framesByRow?: Record<string, number> | null
+  loopMs?: number | null
+  scale?: number | null
+  stateRows?: string[] | null
+}
+export interface ProjectFactsParams {
+  profile?: string | null
+  cwd?: string | null
+}
+/** ``facts`` null outside a workspace (or when detection failed). */
+export interface ProjectFactsResult {
+  facts?: ProjectFacts | null
+}
+/** ``agent/coding_context.py::project_facts_for`` — the system prompt's coding-context detection. */
+export interface ProjectFacts {
+  root: string
+  manifests: string[]
+  packageManagers: string[]
+  verifyCommands: string[]
+  contextFiles: string[]
+}
 export interface ConnectionOperationParams {
   profile?: string | null
   owner: SessionOwner | AccountOwner
@@ -1026,7 +710,7 @@ export interface CatalogScan {
   summary: string
 }
 export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
-/** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
+/** The desktop app a catalog plugin drives, from its ``rabbit_platform`` declaration. */
 export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
 export interface ConnectionWakeResult {
   status: 'ok'
@@ -2196,7 +1880,7 @@ export interface SessionForeignListResult {
   host: string
   unreadable?: number
 }
-/** ``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque handle, never a path. */
+/** ``rabbit_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque handle, never a path. */
 export interface ForeignSessionRow {
   id: string
   source: ForeignSource
@@ -2279,7 +1963,7 @@ export interface ProjectsPayload {
   projects: ProjectInfo[]
   active_id?: string | null
 }
-/** ``hermes_cli/projects_db.py::Project.to_dict`` — one stored project with its folders. */
+/** ``rabbit_cli/projects_db.py::Project.to_dict`` — one stored project with its folders. */
 export interface ProjectInfo {
   id: string
   slug: string
@@ -2293,7 +1977,7 @@ export interface ProjectInfo {
   created_at: number
   folders?: ProjectFolder[]
 }
-/** ``hermes_cli/projects_db.py::ProjectFolder.to_dict``. */
+/** ``rabbit_cli/projects_db.py::ProjectFolder.to_dict``. */
 export interface ProjectFolder {
   path: string
   label?: string | null
@@ -3950,7 +3634,7 @@ export interface SkillHubHit {
   name: string
   description: string
 }
-/** ``hermes_cli.skills_hub.browse_skills`` row. */
+/** ``rabbit_cli.skills_hub.browse_skills`` row. */
 export interface SkillBrowseItem {
   name?: string
   description?: string
@@ -3959,7 +3643,7 @@ export interface SkillBrowseItem {
   identifier?: string | null
   [key: string]: unknown
 }
-/** ``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere. */
+/** ``rabbit_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere. */
 export interface SkillInspectInfo {
   name?: string | null
   description?: string | null
@@ -4230,7 +3914,7 @@ export interface PluginsManageParams {
   values?: Record<string, unknown> | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``rabbit_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4284,8 +3968,8 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unsupported_gpu' | 'unknown'
-/** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
+export type PluginServerState = 'connected' | 'app_not_running' | 'rabbit_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unsupported_gpu' | 'unknown'
+/** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``rabbit_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
   type: PluginSettingFieldType
@@ -4299,7 +3983,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
+/** What a plugin loaded mid-run does NOW vs later (``rabbit_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>`` language-pack layers), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
 export interface PluginActivation {
   name: string
   key: string
@@ -4506,7 +4190,7 @@ export interface GatewayReadyPayload {
   replay_epoch: string
   heartbeat?: boolean | null
 }
-/** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
+/** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``RabbitSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {
   name?: string
   description?: string
@@ -4518,21 +4202,6 @@ export interface SkinPayload {
   banner_hero?: string
   tool_prefix?: string
   help_header?: string
-  [key: string]: unknown
-}
-/** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
-export interface SetupReadyPayload {
-  provider_configured: boolean
-  inference_provider: string
-  free_tier_account: boolean
-  free_tier_route: boolean
-  has_identity: boolean
-  other_providers: boolean
-  error?: string
-  error_code?: string | null
-  retryable?: boolean | null
-  retry_after?: number | null
-  finished_at: number
   [key: string]: unknown
 }
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */
@@ -4581,7 +4250,6 @@ export interface BillingBlock {
   provider_label: string
   model: string
   billing_url: string | null
-  is_nous: boolean
   message: string
   unverified?: boolean | null
 }
@@ -4708,11 +4376,6 @@ export interface ApprovalCancelledPayload {
 }
 export interface SessionControlUpdatePayload {
   control: SessionControlSnapshot
-}
-/** ``methods_session`` billing.step_up on_verification. */
-export interface BillingStepUpVerificationPayload {
-  verification_url: string
-  user_code: string
 }
 /** ``methods_prompt._spawn_side_agent``: ``{task_id, **extra, text}``; btw adds ``question``. */
 export interface SideAgentCompletePayload {
@@ -4877,7 +4540,7 @@ export interface PetHatchProgressPayload {
 }
 /** ``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed. */
 export type ChangeSignalPayload = Record<string, unknown>
-export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_NOUS_AUTH' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
+export type ConnectorErrorReason = 'INVALID_PARAMS' | 'NOT_OWNER' | 'UNSUPPORTED_RUNTIME' | 'CONNECTOR_REQUEST_FAILED' | 'INVALID_CONNECTOR_RESPONSE' | 'UNKNOWN_TARGET' | 'LINK_STILL_VALID' | 'REISSUE_REFUSED' | 'UNKNOWN_OPERATION' | 'INVALID_ANSWER' | 'NEEDS_SIGN_IN' | 'CONNECTOR_NOT_FOUND' | 'TOOLS_UNAVAILABLE' | 'CONNECTORS_UNAVAILABLE' | 'CATALOG_UNAVAILABLE' | 'ACCOUNTS_UNAVAILABLE' | 'CONNECTION_NOT_FOUND' | 'POLICY_UNAVAILABLE' | 'POLICY_CONFLICT' | 'FORBIDDEN_SCOPE' | 'ORG_REQUIRED' | 'ORG_ACCESS_DENIED' | 'INVALID_POLICY'
 
 // ── Client→server methods ──
 export interface RpcMethods {
@@ -4889,16 +4552,6 @@ export interface RpcMethods {
   'approval.received': { params: ApprovalReceivedParams; result: ApprovalReceivedResult }
   /** Deliver the user's decision on a dangerous command (falls back to durable identity on a stale sid). */
   'approval.respond': { params: ApprovalRespondParams; result: ApprovalRespondResult }
-  /** Enable/disable auto top-up with its threshold and reload amount (billing:manage). */
-  'billing.auto_reload': { params: BillingAutoReloadParams; result: BillingMutationResult }
-  /** Start a one-off top-up charge (billing:manage, idempotent). */
-  'billing.charge': { params: BillingChargeParams; result: BillingChargeResult }
-  /** Poll one charge by id. */
-  'billing.charge_status': { params: BillingChargeStatusParams; result: BillingChargeStatusResult }
-  /** Read-only billing view (no scope); the Nous free tier is answered locally without a portal call. */
-  'billing.state': { params: ProfileParams; result: BillingStateResult }
-  /** Run the billing:manage device flow; the URL/code arrive via billing.step_up.verification. */
-  'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
   /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
@@ -4919,7 +4572,7 @@ export interface RpcMethods {
   'browser.manage': { params: BrowserManageParams; result: BrowserManageResult }
   /** Lock one answer of a batch clarify request (editable until every question is locked). */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
-  /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
+  /** Run ``rabbit <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
   /** What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send. */
   'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
@@ -4955,7 +4608,7 @@ export interface RpcMethods {
   'connectors.list': { params: ConnectorsListParams; result: ConnectorsListResult }
   /** The current snapshot of one open session or account operation. */
   'connectors.operation.status': { params: ConnectionOperationParams; result: ConnectionOperationStatus }
-  /** The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick. */
+  /** The browser leg came back (rabbit://connections/done): read the accounts now, not at the next tick. */
   'connectors.operation.wake': { params: ConnectionOperationParams; result: ConnectionWakeResult }
   /** Policy layers for the scoped member, from organization to member scope. */
   'connectors.policy.get': { params: ProfileParams; result: ConnectorPolicyGetResult }
@@ -4969,8 +4622,6 @@ export interface RpcMethods {
   'delegation.pause': { params: DelegationPauseParams; result: DelegationPauseResult }
   /** Running subagent tree plus the spawn pause flag and limits. */
   'delegation.status': { params: ProfileParams; result: DelegationStatusResult }
-  /** Upload a force-redacted debug bundle to Nous-internal diagnostics storage. */
-  'diagnostics.share_nous': { params: DiagnosticsShareNousParams; result: DiagnosticsShareNousResult }
   /** Run the distro package install on the gateway host; progress streams as display.install.log/.done. */
   'display.install': { params: ProfileParams; result: DisplayInstallResult }
   /** Take over: the human named by a viewer id this connection minted controls the screen. */
@@ -4991,12 +4642,6 @@ export interface RpcMethods {
   'display.thumbnail': { params: ProfileParams; result: DisplayThumbnailResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
   'file.attach': { params: FileAttachParams; result: FileAttachResult }
-  /** Mark the one-time availability notice as shown on the free-tier identity. */
-  'free_tier.ack_notice': { params: ProfileParams; result: FreeTierAckNoticeResult }
-  /** Explicit retry of the free-tier identity mint when the boot bootstrap could not create it. */
-  'free_tier.provision': { params: ProfileParams; result: FreeTierProvisionResult }
-  /** Pure read of the focused profile's free-tier identity state (no network, no side effects). */
-  'free_tier.status': { params: ProfileParams; result: FreeTierStatusResult }
   /** What THIS build enforces (a client withholds a feature unless advertised). */
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
@@ -5201,7 +4846,7 @@ export interface RpcMethods {
   'prompt.btw': { params: SideAgentParams; result: TaskIdResult }
   /** Send a user turn to a live session; busy sessions queue / steer / redirect instead of refusing. */
   'prompt.submit': { params: PromptSubmitParams; result: PromptSubmitResult }
-  /** Re-read ~/.hermes/.env (CLI /reload parity); built agents keep their pool until /new. */
+  /** Re-read ~/.rabbit/.env (CLI /reload parity); built agents keep their pool until /new. */
   'reload.env': { params: ReloadEnvParams; result: ReloadEnvResult }
   /** Tear down and rediscover MCP servers for every live session (prompt cache is invalidated). */
   'reload.mcp': { params: ReloadMcpParams; result: ReloadMcpResult }
@@ -5263,7 +4908,7 @@ export interface RpcMethods {
   'session.redirect': { params: SessionCorrectionParams; result: SessionCorrectionResult }
   /** Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild. */
   'session.resume': { params: SessionResumeParams; result: SessionResumeResult }
-  /** Export the transcript to ~/.hermes/sessions/saved (classic /save). */
+  /** Export the transcript to ~/.rabbit/sessions/saved (classic /save). */
   'session.save': { params: SessionSaveParams; result: SessionSaveResult }
   /** Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage. */
   'session.set_hidden': { params: SessionSetHiddenParams; result: SessionSetHiddenResult }
@@ -5275,7 +4920,7 @@ export interface RpcMethods {
   'session.title': { params: SessionTitleParams; result: SessionTitleResult }
   /** Drop the last user turn (and everything after it) from an idle session. */
   'session.undo': { params: SessionUndoParams; result: SessionUndoResult }
-  /** Token / context / cost counters for the session (+ Nous credit lines when available). */
+  /** Token / context / cost counters for the session (+ hosted credit lines when available). */
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
   /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }
@@ -5293,13 +4938,13 @@ export interface RpcMethods {
   'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
   /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
   'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
-  /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
+  /** Write the shared-metrics collection opt-in (a legacy ``send`` key is accepted and ignored). */
   'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
   /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
   'shared_metrics.slash_command': { params: SharedMetricsSlashCommandParams; result: SharedMetricsSlashCommandResult }
   /** Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on). */
   'shared_metrics.startup_latency': { params: SharedMetricsStartupLatencyParams; result: SharedMetricsStartupLatencyResult }
-  /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
+  /** Pure read of the focused profile's shared-metrics collection opt-in (answered or not). */
   'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
   /** Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on). */
   'shared_metrics.update_run': { params: SharedMetricsUpdateRunParams; result: SharedMetricsUpdateRunResult }
@@ -5325,16 +4970,6 @@ export interface RpcMethods {
   'subagent.steer': { params: SubagentSteerParams; result: SubagentSteerResult }
   /** Last 16KB of an owned child's live transcript. */
   'subagent.tail': { params: SubagentIdParams; result: SubagentTailResult }
-  /** Schedule a downgrade / same-price change or a period-end cancellation. */
-  'subscription.change': { params: SubscriptionChangeParams; result: BillingPendingChangeResult }
-  /** Chargeless quote of what a plan change would do (billing:manage). */
-  'subscription.preview': { params: SubscriptionPreviewParams; result: SubscriptionPreviewResult }
-  /** Clear a scheduled downgrade / cancellation (re-enables recurring spend). */
-  'subscription.resume': { params: ProfileParams; result: BillingPendingChangeResult }
-  /** Current plan, tier catalog and usage for the picker; fail-open when logged out. */
-  'subscription.state': { params: ProfileParams; result: SubscriptionStateResult }
-  /** Prorate, charge and flip the plan (billing:manage, idempotent). */
-  'subscription.upgrade': { params: SubscriptionUpgradeParams; result: SubscriptionUpgradeResult }
   /** Host battery for the status bar; always resolves, ``available: false`` when unreadable. */
   'system.battery': { params: SystemBatteryParams; result: SystemBatteryResult }
   /** Record the client's column width for server-side rendering. */
@@ -5347,8 +4982,6 @@ export interface RpcMethods {
   'tools.show': { params: _SessionScoped; result: ToolsShowResult }
   /** Toolset summaries (no tool names) for the desktop Toolsets tab. */
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
-  /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
-  'usage.bars': { params: ProfileParams; result: UsageModel }
   /** Add a login / payment / address item to the local vault. */
   'vault.add': { params: VaultAddParams; result: VaultAddResult }
   /** Metadata-only listing across the local vault and every unlocked password manager. */
@@ -5390,11 +5023,6 @@ export const RPC_METHODS = [
   'approval.pending',
   'approval.received',
   'approval.respond',
-  'billing.auto_reload',
-  'billing.charge',
-  'billing.charge_status',
-  'billing.state',
-  'billing.step_up',
   'bot_relay.deliver',
   'bot_relay.outbox.drain',
   'bot_relay.reply',
@@ -5430,7 +5058,6 @@ export const RPC_METHODS = [
   'cron.manage',
   'delegation.pause',
   'delegation.status',
-  'diagnostics.share_nous',
   'display.install',
   'display.lease.acquire',
   'display.lease.release',
@@ -5441,9 +5068,6 @@ export const RPC_METHODS = [
   'display.switchSandboxImage',
   'display.thumbnail',
   'file.attach',
-  'free_tier.ack_notice',
-  'free_tier.provision',
-  'free_tier.status',
   'gateway.capabilities',
   'groups.approve',
   'groups.capabilities',
@@ -5608,18 +5232,12 @@ export const RPC_METHODS = [
   'subagent.list',
   'subagent.steer',
   'subagent.tail',
-  'subscription.change',
-  'subscription.preview',
-  'subscription.resume',
-  'subscription.state',
-  'subscription.upgrade',
   'system.battery',
   'terminal.resize',
   'tools.configure',
   'tools.list',
   'tools.show',
   'toolsets.list',
-  'usage.bars',
   'vault.add',
   'vault.list',
   'vault.lock',
@@ -5693,8 +5311,6 @@ export interface BackendGatewayEventMap {
   'approval.cancelled': ApprovalCancelledPayload
   /** A /background side agent finished. */
   'background.complete': SideAgentCompletePayload
-  /** Device-flow URL + code for the billing scope step-up; the client opens the browser. */
-  'billing.step_up.verification': BillingStepUpVerificationPayload
   /** A bot-relay outbox envelope is queued; drain it. */
   'bot_relay.outbox.pending': ChangeSignalPayload
   /** Withdraw a pending controller command. */
@@ -5717,7 +5333,7 @@ export interface BackendGatewayEventMap {
   'display.install.log': DisplayInstallLogPayload
   /** The takeover lease changed hands; every client repaints. */
   'display.lease': DisplayLeasePayload
-  /** This profile's screen started or stopped (also for transitions made outside hermes serve). */
+  /** This profile's screen started or stopped (also for transitions made outside rabbit serve). */
   'display.status': DisplayStatusPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
   error: ErrorPayload
@@ -5795,8 +5411,6 @@ export interface BackendGatewayEventMap {
   'session.usage': SessionUsagePayload
   /** state.db moved; refetch the session list. */
   'sessions.changed': ChangeSignalPayload
-  /** The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record. */
-  'setup.ready': SetupReadyPayload
   /** The active skin moved (name switch or live colour edit); repaint from this palette. */
   'skin.changed': SkinPayload
   /** Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …). */
@@ -5843,7 +5457,6 @@ export const GATEWAY_EVENT_TYPES = [
   'agent.terminal.output',
   'approval.cancelled',
   'background.complete',
-  'billing.step_up.verification',
   'bot_relay.outbox.pending',
   'browser.controller.cancel',
   'browser.controller.command',
@@ -5894,7 +5507,6 @@ export const GATEWAY_EVENT_TYPES = [
   'session.title',
   'session.usage',
   'sessions.changed',
-  'setup.ready',
   'skin.changed',
   'status.update',
   'subagent.complete',

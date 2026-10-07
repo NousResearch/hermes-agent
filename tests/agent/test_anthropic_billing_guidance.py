@@ -79,7 +79,7 @@ def test_confirmed_guidance_stays_assertive_without_the_caveat():
     content-filter lore that only applies to the ambiguous 400 body."""
     lowered = _anthropic_msg(unverified=False).lower()
     assert "content filter" not in lowered
-    assert "hermes auth reset" not in lowered
+    assert "rabbit auth reset" not in lowered
 
 
 def test_content_filter_caveat_is_anthropic_only():
@@ -93,4 +93,4 @@ def test_content_filter_caveat_is_anthropic_only():
         unverified=True,
     ).lower()
     assert "content filter" not in msg
-    assert "hermes auth reset" not in msg
+    assert "rabbit auth reset" not in msg

@@ -16,15 +16,15 @@ FIXTURE_ANTHROPIC_401 = (
     "'message': 'Your API key is invalid, blocked or out of funds...'}}"
 )
 FIXTURE_NO_PROVIDER = (
-    "agent init failed: No LLM provider configured. Run `hermes model` to select "
-    "a provider, or run `hermes setup` for first-time configuration."
+    "agent init failed: No LLM provider configured. Run `rabbit model` to select "
+    "a provider, or run `rabbit setup` for first-time configuration."
 )
 FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal login."
 # Target-scope spawn refusals, verbatim from a relay ledger (the named-secret spelling is built live).
 FIXTURE_TARGET_SCOPE = (
-    "Hermes could not read this profile's API key (an internal profile-scoping bug on the "
-    "multiplexed gateway, not your configuration). Run `hermes gateway restart`; if it keeps "
-    "happening, report it with `hermes debug share`."
+    "Rabbit could not read this profile's API key (an internal profile-scoping bug on the "
+    "multiplexed gateway, not your configuration). Run `rabbit gateway restart`; if it keeps "
+    "happening, report it with `rabbit debug share`."
 )
 FIXTURE_TARGET_SCOPE_DETAILED = (
     "served_profile_child_env(inherit_credentials=True) called with no target home and no profile "

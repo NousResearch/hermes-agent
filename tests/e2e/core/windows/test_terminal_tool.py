@@ -1,4 +1,4 @@
-"""The real terminal tool on native Windows, driven by a model turn through ``hermes chat -q``.
+"""The real terminal tool on native Windows, driven by a model turn through ``rabbit chat -q``.
 
 On Windows the terminal tool runs every command through Git Bash (``_find_bash``). The
 model reaches native shells from there, so each case is one scripted turn:
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.core.windows._helpers import (
-    hermes,
+    rabbit,
     make_home,
     nonce,
     parse_tool_json,
@@ -46,7 +46,7 @@ def test_terminal_round_trip_persists_output_and_exit_code(shell: str, tmp_path:
         # `powershell -Command` is flagged as script execution; with no user present to approve,
         # -q blocks it. The documented opt-in keeps this about the tool round trip, not approvals.
         home = make_home(tmp_path, srv.base_url, extra_config="approvals:\n  single_query_mode: approve\n")
-        res = hermes(home, "chat", "-q", f"Run the {shell} check.", "-Q")
+        res = rabbit(home, "chat", "-q", f"Run the {shell} check.", "-Q")
         assert res.returncode == 0, res.tail()
         assert answer in res.stdout, f"final answer not delivered:\n{res.tail()}"
         results = tool_results(srv)

@@ -17,7 +17,7 @@ Environment:
     BENCH_CDP_URL      CDP endpoint both arms drive (default http://127.0.0.1:9333)
     OPENROUTER_API_KEY provider credential for the runs
 
-The run gets a throwaway HERMES_HOME so no local config leaks in, and the
+The run gets a throwaway RABBIT_HOME so no local config leaks in, and the
 web-fetch credential env vars are stripped so every arm must actually drive
 the browser (no web_extract shortcuts).
 
@@ -43,7 +43,7 @@ TASKS = json.load(open(TASKS_PATH, encoding="utf-8"))
 task = TASKS[TASK_KEY]
 
 home = tempfile.mkdtemp(prefix=f"buhome-{ARM}-")
-hh = os.path.join(home, ".hermes")
+hh = os.path.join(home, ".rabbit")
 os.makedirs(os.path.join(hh, "logs"), exist_ok=True)
 cdp = os.environ.get("BENCH_CDP_URL", "http://127.0.0.1:9333")
 browser_cfg = (
@@ -57,14 +57,14 @@ cfg = {
     "display": {"quiet": True},
 }
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 with open(os.path.join(hh, "config.yaml"), "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f)
-os.environ["HERMES_HOME"] = hh
+os.environ["RABBIT_HOME"] = hh
 # Strip web-fetch shortcuts: every arm must drive the browser.
 os.environ.pop("BROWSER_USE_API_KEY", None)
-for k in ("FIRECRAWL_API_KEY", "NOUS_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"):
+for k in ("FIRECRAWL_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"):
     os.environ.pop(k, None)
 os.environ["BU_CDP_URL"] = cdp
 os.environ["PATH"] = (
@@ -92,27 +92,16 @@ if ARM == "prns":
 
 from run_agent import AIAgent  # noqa: E402
 
-# Provider resolution: default openrouter (original battery), but allow the
-# Nous-subscription path on boxes without an OpenRouter key. Credentials are
-# resolved through the product's own auth state, never printed.
+# Provider resolution: openrouter (original battery). Credentials come from the
+# environment, never printed.
 _or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-if _or_key:
-    _agent_auth = dict(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=_or_key,
-        provider="openrouter",
-    )
-else:
-    # Resolved by the orchestrator BEFORE HERMES_HOME is redirected to the
-    # throwaway home (auth state lives in the real profile). Never printed.
-    _tok = os.environ.get("BUBENCH_NOUS_TOKEN", "").strip()
-    if not _tok:
-        raise SystemExit("no OPENROUTER_API_KEY and no Nous auth available")
-    _agent_auth = dict(
-        base_url=os.environ.get("BUBENCH_NOUS_BASE_URL", "https://inference-api.nousresearch.com/v1"),
-        api_key=_tok,
-        provider="nous",
-    )
+if not _or_key:
+    raise SystemExit("no OPENROUTER_API_KEY available")
+_agent_auth = dict(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=_or_key,
+    provider="openrouter",
+)
 
 agent = AIAgent(
     **_agent_auth,

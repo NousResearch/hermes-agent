@@ -10,7 +10,7 @@ the default profile's bot, to the default profile's chat, while persisting a
 false positive that looks fine in the database and is wrong on the wire.
 
 This was caught by an adversarial review reading gateway.log, not by the
-end-to-end test — the log line showed ``hermes_plugins.telegram_platform``
+end-to-end test — the log line showed ``rabbit_plugins.telegram_platform``
 (primary) instead of the secondary's ``..._home_<hash>`` adapter module.
 """
 

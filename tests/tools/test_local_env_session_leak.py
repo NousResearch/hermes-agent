@@ -1,8 +1,8 @@
-"""Cross-session HERMES_SESSION_* leak guard for the local terminal backend.
+"""Cross-session RABBIT_SESSION_* leak guard for the local terminal backend.
 
 Regression coverage for the bug where a terminal subprocess could observe a
-*different concurrent session's* ``HERMES_SESSION_KEY`` (and the other
-``HERMES_SESSION_*`` vars).
+*different concurrent session's* ``RABBIT_SESSION_KEY`` (and the other
+``RABBIT_SESSION_*`` vars).
 
 Root cause: the session vars have a process-global ``os.environ`` mirror (written
 last-writer-wins as a CLI/cron fallback, never cleared), while the
@@ -16,7 +16,7 @@ child — so e.g. ``bug_thread.py whoami`` read another session's thread id.
 The fix: once the session-context machinery is engaged in this process (any
 concurrent host — gateway, ACP, API server, TUI, cron — has called
 ``set_session_vars``), the session vars are ContextVar-authoritative. The
-subprocess-env bridge resolves each ``HERMES_SESSION_*`` from the ContextVar and,
+subprocess-env bridge resolves each ``RABBIT_SESSION_*`` from the ContextVar and,
 when it is ``_UNSET``, STRIPS the var from the child env rather than inheriting
 the process-global value that may belong to another session. A pure
 single-process CLI/one-shot that never engaged the session-context system keeps
@@ -29,7 +29,7 @@ import pytest
 
 import gateway.session_context as sc
 from gateway.session_context import _VAR_MAP, clear_session_vars, set_session_vars
-from tools.environments.local import _make_run_env, _sanitize_subprocess_env, hermes_subprocess_env
+from tools.environments.local import _make_run_env, _sanitize_subprocess_env, rabbit_subprocess_env
 
 # The full set of session vars the bridge owns.
 SESSION_VARS = list(_VAR_MAP.keys())
@@ -70,20 +70,20 @@ def test_engaged_unset_contextvar_strips_foreign_session_key(monkeypatch):
     """Engaged host + UNSET ContextVar must NOT inherit a foreign global.
 
     This is the production hijack: a concurrent session wrote
-    os.environ["HERMES_SESSION_KEY"], this task's ContextVar is unset, and the
+    os.environ["RABBIT_SESSION_KEY"], this task's ContextVar is unset, and the
     subprocess must see NO key rather than the foreign one.
     """
     _engage()
     monkeypatch.setenv(
-        "HERMES_SESSION_KEY",
+        "RABBIT_SESSION_KEY",
         "agent:main:discord:thread:FOREIGN_CONCURRENT:FOREIGN_CONCURRENT",
     )
 
     env = _make_run_env({})
 
-    assert "HERMES_SESSION_KEY" not in env, (
+    assert "RABBIT_SESSION_KEY" not in env, (
         "Foreign concurrent session key leaked into subprocess env: "
-        f"{env.get('HERMES_SESSION_KEY')!r}"
+        f"{env.get('RABBIT_SESSION_KEY')!r}"
     )
 
 
@@ -94,7 +94,7 @@ def test_set_session_vars_engages_and_overrides_foreign_global(monkeypatch):
     and binds the ContextVar, so the bound value overrides the foreign global.
     """
     monkeypatch.setenv(
-        "HERMES_SESSION_KEY",
+        "RABBIT_SESSION_KEY",
         "agent:main:discord:thread:FOREIGN:FOREIGN",
     )
 
@@ -109,34 +109,34 @@ def test_set_session_vars_engages_and_overrides_foreign_global(monkeypatch):
     finally:
         clear_session_vars(tokens)
 
-    assert env.get("HERMES_SESSION_KEY") == "agent:main:discord:group:MY_BUGS_ROOT:111"
+    assert env.get("RABBIT_SESSION_KEY") == "agent:main:discord:group:MY_BUGS_ROOT:111"
 
 
 def test_unengaged_process_preserves_os_environ_fallback(monkeypatch):
     """A process that never engaged the session-context system keeps the fallback.
 
-    Pure single-process CLI/one-shot sets HERMES_SESSION_* directly in os.environ
+    Pure single-process CLI/one-shot sets RABBIT_SESSION_* directly in os.environ
     and relies on the subprocess inheriting them; there is no concurrency to leak
     across, so the strip must NOT apply.
     """
     # _isolate_session_context already forced engaged=False.
-    monkeypatch.setenv("HERMES_SESSION_KEY", "cli-session-key")
-    monkeypatch.setenv("HERMES_SESSION_ID", "cli-session-id")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "cli-session-key")
+    monkeypatch.setenv("RABBIT_SESSION_ID", "cli-session-id")
 
     env = _make_run_env({})
 
-    assert env.get("HERMES_SESSION_KEY") == "cli-session-key"
-    assert env.get("HERMES_SESSION_ID") == "cli-session-id"
+    assert env.get("RABBIT_SESSION_KEY") == "cli-session-key"
+    assert env.get("RABBIT_SESSION_ID") == "cli-session-id"
 
 
 def test_explicit_empty_thread_id_overrides_stale_value(monkeypatch):
     """A bound-but-empty thread id must override a stale inherited value.
 
     This is the complementary case (the #38507 scenario): a top-level post with
-    no thread id binds HERMES_SESSION_THREAD_ID="" and that empty value must win
+    no thread id binds RABBIT_SESSION_THREAD_ID="" and that empty value must win
     over an older non-empty value left in os.environ.
     """
-    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "stale-thread-from-prior-turn")
+    monkeypatch.setenv("RABBIT_SESSION_THREAD_ID", "stale-thread-from-prior-turn")
 
     tokens = set_session_vars(
         session_key="mm:chan",
@@ -149,11 +149,11 @@ def test_explicit_empty_thread_id_overrides_stale_value(monkeypatch):
     finally:
         clear_session_vars(tokens)
 
-    assert env.get("HERMES_SESSION_THREAD_ID") == "", (
+    assert env.get("RABBIT_SESSION_THREAD_ID") == "", (
         "Bound-empty thread id did not override the stale value: "
-        f"{env.get('HERMES_SESSION_THREAD_ID')!r}"
+        f"{env.get('RABBIT_SESSION_THREAD_ID')!r}"
     )
-    assert env.get("HERMES_SESSION_KEY") == "mm:chan"
+    assert env.get("RABBIT_SESSION_KEY") == "mm:chan"
 
 
 # --------------------------------------------------------------------------- #
@@ -170,23 +170,23 @@ def test_sanitize_subprocess_env_strips_foreign_session_key_when_engaged(monkeyp
     _engage()
     stale_base = {
         "PATH": "/usr/bin:/bin",
-        "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN_BG:FOREIGN_BG",
-        "HERMES_SESSION_THREAD_ID": "FOREIGN_BG",
+        "RABBIT_SESSION_KEY": "agent:main:discord:thread:FOREIGN_BG:FOREIGN_BG",
+        "RABBIT_SESSION_THREAD_ID": "FOREIGN_BG",
     }
 
     sanitized = _sanitize_subprocess_env(stale_base)
 
-    assert "HERMES_SESSION_KEY" not in sanitized, (
-        f"Background subprocess inherited foreign key: {sanitized.get('HERMES_SESSION_KEY')!r}"
+    assert "RABBIT_SESSION_KEY" not in sanitized, (
+        f"Background subprocess inherited foreign key: {sanitized.get('RABBIT_SESSION_KEY')!r}"
     )
-    assert "HERMES_SESSION_THREAD_ID" not in sanitized
+    assert "RABBIT_SESSION_THREAD_ID" not in sanitized
 
 
 def test_sanitize_subprocess_env_set_contextvar_wins_when_engaged():
     """Background path: a SET ContextVar overrides the foreign global base."""
     stale_base = {
         "PATH": "/usr/bin:/bin",
-        "HERMES_SESSION_KEY": "agent:main:discord:thread:FOREIGN_BG:FOREIGN_BG",
+        "RABBIT_SESSION_KEY": "agent:main:discord:thread:FOREIGN_BG:FOREIGN_BG",
     }
     tokens = set_session_vars(
         session_key="agent:main:discord:group:REAL_BG:222",
@@ -198,36 +198,36 @@ def test_sanitize_subprocess_env_set_contextvar_wins_when_engaged():
     finally:
         clear_session_vars(tokens)
 
-    assert sanitized.get("HERMES_SESSION_KEY") == "agent:main:discord:group:REAL_BG:222"
+    assert sanitized.get("RABBIT_SESSION_KEY") == "agent:main:discord:group:REAL_BG:222"
 
 
 # --------------------------------------------------------------------------- #
-# Non-terminal spawn surface (hermes_subprocess_env) — sibling path
+# Non-terminal spawn surface (rabbit_subprocess_env) — sibling path
 # --------------------------------------------------------------------------- #
 
-def test_hermes_subprocess_env_strips_foreign_session_key_when_engaged(monkeypatch):
-    """hermes_subprocess_env (browser/ACP/CLI/TUI-host spawns) must not leak a
+def test_rabbit_subprocess_env_strips_foreign_session_key_when_engaged(monkeypatch):
+    """rabbit_subprocess_env (browser/ACP/CLI/TUI-host spawns) must not leak a
     foreign session key either. cli.exec spawns via this helper WITHOUT re-binding
     the session identity, so an UNSET ContextVar under an engaged host must strip
     the inherited global rather than hand the child another session's identity.
     """
     _engage()
     monkeypatch.setenv(
-        "HERMES_SESSION_KEY",
+        "RABBIT_SESSION_KEY",
         "agent:main:discord:thread:FOREIGN_CONCURRENT:FOREIGN_CONCURRENT",
     )
 
-    env = hermes_subprocess_env()
+    env = rabbit_subprocess_env()
 
-    assert "HERMES_SESSION_KEY" not in env, (
+    assert "RABBIT_SESSION_KEY" not in env, (
         "Foreign concurrent session key leaked into non-terminal spawn env: "
-        f"{env.get('HERMES_SESSION_KEY')!r}"
+        f"{env.get('RABBIT_SESSION_KEY')!r}"
     )
 
 
-def test_hermes_subprocess_env_unengaged_preserves_fallback(monkeypatch):
+def test_rabbit_subprocess_env_unengaged_preserves_fallback(monkeypatch):
     """A pure single-process CLI (never engaged) keeps the inherited fallback."""
-    monkeypatch.setenv("HERMES_SESSION_KEY", "cli-fallback-key")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "cli-fallback-key")
     # not engaged (autouse fixture leaves _session_context_engaged False)
-    env = hermes_subprocess_env()
-    assert env.get("HERMES_SESSION_KEY") == "cli-fallback-key"
+    env = rabbit_subprocess_env()
+    assert env.get("RABBIT_SESSION_KEY") == "cli-fallback-key"

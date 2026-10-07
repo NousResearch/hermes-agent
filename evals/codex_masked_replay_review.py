@@ -1,6 +1,6 @@
 """Local HTTP contract review of masked-error recovery; NOT live-provider proof.
 
-Run in an isolated HOME/HERMES_HOME under the campaign test lock. Responses are
+Run in an isolated HOME/RABBIT_HOME under the campaign test lock. Responses are
 explicit synthetic fixtures; the client, transport, and AIAgent loop are real.
 """
 import copy
@@ -122,7 +122,7 @@ def scenario(name, provider="openai-codex", replay=True):
 
 def main():
     print(json.dumps({"run_agent": run_agent.__file__, "classifier": error_classifier.__file__,
-                      "home": os.environ["HERMES_HOME"]}))
+                      "home": os.environ["RABBIT_HOME"]}))
     results = [scenario("success"), scenario("masked_replay"), scenario("explicit_encrypted"),
                scenario("unrelated_block"), scenario("unrelated_block", replay=False),
                scenario("masked_replay", provider="custom"), scenario("failed_frame"), scenario("failed_frame", replay=False)]

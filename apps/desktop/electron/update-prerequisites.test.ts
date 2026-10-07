@@ -16,8 +16,8 @@ test('PM update prerequisites use the exact published launcher, not checkout ven
 
   try {
     fs.mkdirSync(path.join(root, 'pm'))
-    fs.mkdirSync(path.join(root, '.hermes', 'bin'), { recursive: true })
-    const launcher: string = path.join(root, '.hermes', 'bin', 'hermes.cmd')
+    fs.mkdirSync(path.join(root, '.rabbit', 'bin'), { recursive: true })
+    const launcher: string = path.join(root, '.rabbit', 'bin', 'rabbit.cmd')
     fs.writeFileSync(launcher, '@echo off')
     assert.equal(resolveInstallationLauncher(root, true), launcher)
     assert.equal(windowsUpdatePrerequisiteError(root), null)
@@ -41,12 +41,12 @@ test('earlier PM user-bin launchers are accepted only for the reported source tr
     const root: string = path.join(base, 'checkout')
     const other: string = path.join(base, 'other')
     const home: string = path.join(base, 'home')
-    fs.mkdirSync(path.join(root, 'hermes_cli'), { recursive: true })
+    fs.mkdirSync(path.join(root, 'rabbit_cli'), { recursive: true })
     fs.mkdirSync(path.join(root, 'pm'))
     fs.mkdirSync(other)
-    fs.writeFileSync(path.join(root, 'hermes_cli', '_launchers.py'), '')
+    fs.writeFileSync(path.join(root, 'rabbit_cli', '_launchers.py'), '')
     fs.mkdirSync(path.join(home, 'bin'), { recursive: true })
-    const launcher: string = path.join(home, 'bin', process.platform === 'win32' ? 'hermes.cmd' : 'hermes')
+    const launcher: string = path.join(home, 'bin', process.platform === 'win32' ? 'rabbit.cmd' : 'rabbit')
 
     const body = (reported: string): string =>
       process.platform === 'win32'
@@ -73,7 +73,7 @@ test.skipIf(process.platform !== 'win32')(
     const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'cmd-meta-launcher-'))
 
     try {
-      const launcher: string = path.join(root, 'a&b', 'hermes.cmd')
+      const launcher: string = path.join(root, 'a&b', 'rabbit.cmd')
       fs.mkdirSync(path.dirname(launcher))
       fs.writeFileSync(launcher, `@echo off\r\necho Install directory: ${root}\r\n`)
       assert.equal(launcherTargetsInstallation(launcher, root), false)

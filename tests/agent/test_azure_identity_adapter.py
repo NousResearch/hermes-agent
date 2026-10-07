@@ -272,7 +272,7 @@ class TestScopedCredential:
         doctor path surfaces the same refusal. Control: a standalone run keeps the ambient chain."""
         from agent import secret_scope
         from agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from rabbit_constants import reset_rabbit_home_override, set_rabbit_home_override
 
         home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
         for home in (home_a, home_b):
@@ -286,13 +286,13 @@ class TestScopedCredential:
         config = EntraIdentityConfig()
 
         def in_scope(home, fn):
-            h_tok = set_hermes_home_override(str(home))
+            h_tok = set_rabbit_home_override(str(home))
             s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
             try:
                 return fn()
             finally:
                 secret_scope.reset_secret_scope(s_tok)
-                reset_hermes_home_override(h_tok)
+                reset_rabbit_home_override(h_tok)
 
         # Control: standalone (no multiplex, no override) keeps today's ambient chain.
         assert build_credential(config).kwargs is not None
@@ -446,7 +446,7 @@ class TestHasAzureIdentityCredentials:
 
 
 # ---------------------------------------------------------------------------
-# describe_active_credential — used by hermes doctor + hermes auth
+# describe_active_credential — used by rabbit doctor + rabbit auth
 # ---------------------------------------------------------------------------
 
 
@@ -467,7 +467,7 @@ class TestDescribeActiveCredential:
         )
         assert info["ok"] is False
         assert "lazy installs disabled" in info["error"]
-        assert "hermes pm install --extra azure-identity" in info["hint"]
+        assert "rabbit pm install --extra azure-identity" in info["hint"]
 
     def test_reports_env_sources_for_managed_identity(self, fake_azure_identity, monkeypatch):
         from agent.azure_identity_adapter import describe_active_credential

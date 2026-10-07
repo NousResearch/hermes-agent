@@ -14,7 +14,7 @@ _LM_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 # Toggle vocabulary → request vocabulary; also applied to published allowed_options.
 _LM_EFFORT_ALIASES = {"off": "none", "on": "medium"}
 
-# Hermes' ladder grew past LM Studio's vocabulary ("max", "ultra"); without this
+# Rabbit' ladder grew past LM Studio's vocabulary ("max", "ultra"); without this
 # ceiling clamp they'd fall to the "medium" default (more yields less than "xhigh").
 # Separate from _LM_EFFORT_ALIASES, which must not rewrite allowed_options.
 _LM_EFFORT_CLAMP = {"max": "xhigh", "ultra": "xhigh"}

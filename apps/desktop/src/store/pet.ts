@@ -32,7 +32,7 @@ export interface PetInfo {
   // would animate into the transparent padding of ragged sheets (blank flash).
   framesByState?: Record<string, number>
   // Concrete Codex row counts (e.g. running-right may have 8 frames even though
-  // the Hermes "run" activity state uses the in-place running row).
+  // the Rabbit "run" activity state uses the in-place running row).
   framesByRow?: Record<string, number>
   loopMs?: number
   scale?: number
@@ -145,7 +145,7 @@ export const $petActive = computed($petInfo, info => info.enabled && Boolean(inf
 /**
  * Profile the pet RPCs should resolve against. Pets are per-profile — the active
  * pet (`display.pet.*`) and the installed sprites live under each profile's
- * HERMES_HOME — so every pet RPC carries this. The gateway no-ops it for the
+ * RABBIT_HOME — so every pet RPC carries this. The gateway no-ops it for the
  * launch profile (own-profile backends already resolve it) and rebinds for any
  * other profile, which is what makes per-profile pets work in app-global remote
  * mode (one backend serving every profile).
@@ -214,7 +214,7 @@ function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
  * idle. Pure desktop-client behavior (no agent/config dependency), so it lives
  * in localStorage like the pet's drag position — per-device, not per-profile.
  */
-const ROAM_KEY = 'hermes.desktop.pet-roam.v1'
+const ROAM_KEY = 'rabbit.desktop.pet-roam.v1'
 export const $petRoam = atom<boolean>(storedBoolean(ROAM_KEY, false))
 
 export const setPetRoam = (on: boolean) => {

@@ -1,7 +1,7 @@
 """Cua-driver backend (macOS, Windows, Linux): MCP over stdio to `cua-driver`. The async `mcp` SDK runs on a
 background loop (``cua_backend_session``); the same tool surface works on all three platforms, and per-host gaps
-(no DISPLAY, missing AT-SPI, TCC) surface via `hermes computer-use doctor` instead of failing silently. Install
-with `hermes computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
+(no DISPLAY, missing AT-SPI, TCC) surface via `rabbit computer-use doctor` instead of failing silently. Install
+with `rabbit computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
 Siblings: ``cua_backend_driver`` (binary/contract), ``cua_backend_capture`` + ``cua_backend_input``
 (mixins), ``cua_backend_parse``, ``cua_backend_session`` (bridge + session + CLI fallback), ``cua_backend_daemon``
 (private daemon + macOS app identity). Siblings look this module's config/policy helpers up lazily."""
@@ -17,8 +17,8 @@ import uuid
 from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_platform.host.runtime import is_wsl
+from rabbit_cli._subprocess_compat import windows_hide_flags
+from rabbit_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -38,7 +38,7 @@ _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 def _computer_use_cfg() -> Dict[str, Any]:
     """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
+        from rabbit_cli.config import load_config
         return (load_config() or {}).get("computer_use") or {}
     return {}
 
@@ -104,7 +104,7 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
@@ -173,7 +173,7 @@ def sandbox_mcp_invocation() -> Optional[Tuple[Tuple[str, List[str]], Dict[str, 
 
 
 def sanitized_cua_driver_env() -> Dict[str, str]:
-    """``cua_driver_child_env()`` with Hermes provider secrets stripped — cua-driver is a third-party binary and must
+    """``cua_driver_child_env()`` with Rabbit provider secrets stripped — cua-driver is a third-party binary and must
     never inherit API keys. Falls back to the unsanitized telemetry env if the sanitizer can't import."""
     env = cua_driver_child_env()
     with contextlib.suppress(Exception):
@@ -242,8 +242,8 @@ def _empty_discovery_reason() -> str:
         return "no DISPLAY is set — X11/XWayland is not reachable from this process"
     if sys.platform == "darwin":  # headless Mac / asleep panel: ScreenCaptureKit has 0 shareable displays while TCC looks fine
         return ("window discovery returned no windows; on macOS this usually means no shareable display (headless Mac or "
-                "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
-    return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
+                "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `rabbit computer-use doctor`")
+    return "window discovery returned no windows; run `rabbit computer-use doctor` (display reachability, AX capability)"
 
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
@@ -268,9 +268,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
         # cua-driver reports "stale" instead of silently re-resolving).
         self._clear_active_target()
-        # Public session label (one per Hermes run) sent as `session` on every call: owns the cursor color and
+        # Public session label (one per Rabbit run) sent as `session` on every call: owns the cursor color and
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
-        self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
+        self._session_id: str = f"rabbit-{uuid.uuid4().hex[:12]}"
         self._session.set_transport_reset_callback(self._handle_transport_reset)
 
     def _handle_transport_reset(self) -> None:
@@ -291,11 +291,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             contract = cua_driver_runtime_contract_status()
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
-                               + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
-                                  if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
+                               + ("Update the binary selected by RABBIT_CUA_DRIVER_CMD or remove that override."
+                                  if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `rabbit computer-use install` to repair it."))
 
         # The MCP client SDK (`mcp`) is an optional dependency (the
-        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # `computer-use` / `mcp` extras), not part of Rabbit' minimal core.
         # Lazy-install it on first use — the same pattern every other optional
         # backend uses — so users never hit an opaque `No module named 'mcp'`
         # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
@@ -352,7 +352,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
         self._active_pid = self._active_window_id = self._last_app = self._last_target = None
-        # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot `element_index -> element_token` map
+        # Surface 6 of seven0070/Rabbit-#47072: per-snapshot `element_index -> element_token` map
         # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot

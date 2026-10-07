@@ -39,7 +39,7 @@ def install_loop_noise_filter(loop: asyncio.AbstractEventLoop) -> None:
     Idempotent: a loop already carrying the filter is left alone, so it's safe to call
     on every reconnect/serve entry without stacking handlers.
     """
-    if getattr(loop, "_hermes_noise_filter_installed", False):
+    if getattr(loop, "_rabbit_noise_filter_installed", False):
         return
     previous = loop.get_exception_handler()
 
@@ -54,4 +54,4 @@ def install_loop_noise_filter(loop: asyncio.AbstractEventLoop) -> None:
 
     loop.set_exception_handler(_handler)
     with contextlib.suppress(AttributeError, TypeError):  # pragma: no cover - exotic loop impls
-        loop._hermes_noise_filter_installed = True  # type: ignore[attr-defined]
+        loop._rabbit_noise_filter_installed = True  # type: ignore[attr-defined]

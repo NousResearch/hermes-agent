@@ -1,7 +1,7 @@
 """``pm.environments.shell_exports``: the composed environment as a script a shell can evaluate.
 
 Every shell that takes on the environment (``activate``, ``activate.fish``,
-``scripts/run-in-hermes-env``) evaluates this output, so the contract is what a
+``scripts/run-in-rabbit-env``) evaluates this output, so the contract is what a
 real shell reads back: any value survives its dialect's quoting, and names the
 shell cannot assign are left out instead of failing the whole script.
 """

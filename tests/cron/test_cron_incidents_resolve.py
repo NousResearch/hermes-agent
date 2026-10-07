@@ -1,7 +1,7 @@
 """A successful run resolves the job's open incidents; the same error afterwards re-opens them.
 
 The ledger only ever grew: a one-off failure (drift skip, provider outage) stayed ``detected``/``alerted``
-after the job had been green for weeks, so ``hermes cron incidents`` listed 32 "open" incidents on an
+after the job had been green for weeks, so ``rabbit cron incidents`` listed 32 "open" incidents on an
 install whose every job was healthy. ``resolved`` is auto and re-openable; ``closed`` is the operator's
 ack and stays silent.
 """

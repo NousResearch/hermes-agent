@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
@@ -50,7 +50,7 @@ async def test_gateway_rejects_non_admin_persistent_approval_change():
         }
     )
 
-    with patch("hermes_cli.approval_mode.run_approval_mode_command") as run:
+    with patch("rabbit_cli.approval_mode.run_approval_mode_command") as run:
         output = await runner._handle_approvals_command(_event("/approvals off"))
 
     assert "admin" in output.lower()

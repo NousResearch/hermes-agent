@@ -1,5 +1,5 @@
 name: nvidia-broadcast
-repo: https://github.com/NousResearch/hermes-nvidia
+repo: https://github.com/NousResearch/rabbit-nvidia
 sha: 65bb8d89263f920e8599432823d2d4e05cc113e3
 subdir: nvidia-broadcast
 description: "NVIDIA Broadcast control through its local MCP gateway: camera, microphone and speaker
@@ -12,8 +12,8 @@ title: NVIDIA Broadcast
 maintainer: NousResearch
 tier: official
 category: tools
-requires_hermes: ">=0.21.4"
-docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/nvidia-broadcast
+requires_rabbit: ">=0.21.4"
+docs_url: https://github.com/NousResearch/rabbit-nvidia/tree/main/nvidia-broadcast
 version: "0.1.0"
 platforms: [windows]
 onboarding: true

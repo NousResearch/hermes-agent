@@ -14,10 +14,10 @@ Hyperliquid 市场数据、账户历史、交易复盘。
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/blockchain/hyperliquid` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/blockchain/hyperliquid` 安装 |
 | 路径 | `optional-skills/blockchain/hyperliquid` |
 | 版本 | `0.1.0` |
-| 作者 | Hugo Sequier (Hugo-SEQUIER), Hermes Agent |
+| 作者 | Hugo Sequier (Hugo-SEQUIER), Rabbit Agent |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `Hyperliquid`, `Blockchain`, `Crypto`, `Trading`, `Perpetuals`, `Spot`, `DeFi` |
@@ -25,7 +25,7 @@ Hyperliquid 市场数据、账户历史、交易复盘。
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Hyperliquid Skill
@@ -53,7 +53,7 @@ Hyperliquid 市场数据、账户历史、交易复盘。
 
 仅使用标准库 — 无需外部包，无需 API key。
 
-脚本从 `~/.hermes/.env` 读取两个可选默认值：
+脚本从 `~/.rabbit/.env` 读取两个可选默认值：
 
 - `HYPERLIQUID_API_URL` — 默认为 `https://api.hyperliquid.xyz`。设置为
   `https://api.hyperliquid-testnet.xyz` 可切换至测试网。
@@ -61,7 +61,7 @@ Hyperliquid 市场数据、账户历史、交易复盘。
 
 当前工作目录中的项目 `.env` 文件作为开发环境的备用配置。
 
-辅助脚本：`~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py`
+辅助脚本：`~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py`
 
 ---
 
@@ -70,7 +70,7 @@ Hyperliquid 市场数据、账户历史、交易复盘。
 通过 `terminal` 工具调用：
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py <command> [args]
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py <command> [args]
 ```
 
 在任意命令后添加 `--json` 可获得机器可读输出。
@@ -94,7 +94,7 @@ hyperliquid_client.py review [address] [--coin COIN] [--hours N] [--fills N]
 hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ```
 
-对于 `state`、`spot-balances`、`fills`、`orders` 和 `review`，当 `~/.hermes/.env` 中设置了 `HYPERLIQUID_USER_ADDRESS` 时，地址参数为可选。
+对于 `state`、`spot-balances`、`fills`、`orders` 和 `review`，当 `~/.rabbit/.env` 中设置了 `HYPERLIQUID_USER_ADDRESS` 时，地址参数为可选。
 
 ---
 
@@ -103,12 +103,12 @@ hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ### 1. 发现 DEX 和市场
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py dexs
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py dexs
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   markets --limit 15 --sort volume
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   spots --limit 15
 ```
 
@@ -119,10 +119,10 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 2. 拉取历史市场数据
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   candles BTC --interval 1h --hours 72 --limit 48
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   funding BTC --hours 168 --limit 30
 ```
 
@@ -131,7 +131,7 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 3. 查看实时盘口
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   l2 BTC --levels 10
 ```
 
@@ -140,10 +140,10 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 4. 查看账户信息
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   state 0xabc...
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   spot-balances
 ```
 
@@ -153,20 +153,20 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 5. 查看成交记录和挂单
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   fills 0xabc... --hours 72 --limit 25
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   orders --limit 25
 ```
 
 ### 6. 生成交易复盘报告
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   review 0xabc... --hours 72 --fills 50
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   review --coin BTC --hours 168
 ```
 
@@ -177,10 +177,10 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 7. 导出可复用数据集
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   export BTC --interval 1h --hours 168 --output ./btc-1h-7d.json
 
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   export BTC --interval 15m --hours 72 --end-time-ms 1760000000000
 ```
 
@@ -203,7 +203,7 @@ python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ## 验证
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python3 ~/.rabbit/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   markets --limit 5
 ```
 

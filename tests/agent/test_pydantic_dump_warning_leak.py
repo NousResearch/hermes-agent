@@ -6,7 +6,7 @@ pydantic expects at serialization time. ``model_dump()`` on those objects
 emits ``PydanticSerializationUnexpectedValue`` UserWarnings that leak
 straight into the user's terminal mid-response.
 
-Every Hermes serialization helper that dumps arbitrary SDK models must pass
+Every Rabbit serialization helper that dumps arbitrary SDK models must pass
 ``warnings=False`` (with a TypeError fallback for duck-typed models). These
 tests pin that contract for all four helpers.
 """

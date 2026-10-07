@@ -14,7 +14,7 @@ Free keyless web, news, and image search via ddgs.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/research/duckduckgo-search` |
+| Source | Optional — install with `rabbit skills install official/research/duckduckgo-search` |
 | Path | `optional-skills/research/duckduckgo-search` |
 | Version | `1.3.0` |
 | Author | gamedevCloudy |
@@ -26,7 +26,7 @@ Free keyless web, news, and image search via ddgs.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # DuckDuckGo Search

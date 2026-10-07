@@ -3,7 +3,7 @@ import { accessSync, constants, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
-import { withInkSuspended } from '@hermes/ink'
+import { withInkSuspended } from '@rabbit/ink'
 
 /**
  * Editor fallback chain when neither $VISUAL nor $EDITOR is set. Mirrors
@@ -52,7 +52,7 @@ export const resolveEditor = (
 
 /** Suspend Ink, open ``initial`` in $EDITOR, return the edited text (null if aborted). */
 export async function openInEditor(initial: string, suffix = '.txt'): Promise<null | string> {
-  const dir = mkdtempSync(join(tmpdir(), 'hermes-edit-'))
+  const dir = mkdtempSync(join(tmpdir(), 'rabbit-edit-'))
   const file = join(dir, `edit${suffix}`)
   writeFileSync(file, initial)
   const [cmd, ...args] = resolveEditor()

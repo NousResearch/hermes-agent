@@ -30,9 +30,9 @@ const {
 export default async function beforeBuild() {
   stageMsixAssets()
   writeMsixExtensions()
-  if (store) stageStoreManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
-  else if (process.env.HERMES_PAYLOAD_TAG) {
-    stageReleaseManifest(path.join(import.meta.dirname, '..'), process.env.HERMES_PAYLOAD_TAG)
+  if (store) stageStoreManifest(path.join(import.meta.dirname, '..'), process.env.RABBIT_PAYLOAD_TAG)
+  else if (process.env.RABBIT_PAYLOAD_TAG) {
+    stageReleaseManifest(path.join(import.meta.dirname, '..'), process.env.RABBIT_PAYLOAD_TAG)
   }
 
   return false
@@ -85,7 +85,7 @@ function writeMsixExtensions() {
   const output = path.join('build', 'msix-extensions.xml')
   const file = path.join(desktop, output)
   const manifest = path.join(desktop, 'build', 'agent-payload', 'manifest.json')
-  const launchers = ['bundled', 'store'].includes(process.env.HERMES_DESKTOP_VARIANT || '')
+  const launchers = ['bundled', 'store'].includes(process.env.RABBIT_DESKTOP_VARIANT || '')
     ? JSON.parse(fs.readFileSync(manifest, 'utf8')).launchers : []
   if (!Array.isArray(launchers)) throw new Error('Bundled payload has no declared launchers')
   const nonstable = appNamePascal !== artifactNamePascal
@@ -98,7 +98,7 @@ function writeMsixExtensions() {
       template.replace('</Applications>', `${applications}\n  </Applications>`))
   }
   // The uap3:AppExtension fragment that registers the app as a Windows
-  // Copilot hardware key provider. The press activates hermes://copilot-key/start.
+  // Copilot hardware key provider. The press activates rabbit://copilot-key/start.
   //
   // Content rules (violations are an opaque makeappx 0x80080204):
   //   * xmlns:uap3 rides on the fragment root — the stock manifest template
@@ -120,9 +120,9 @@ function writeMsixExtensions() {
       Description="Launch ${xmlAttribute(displayName)} with the Copilot key"
       PublicFolder="Public">
     <uap3:Properties>
-      <SingleTap>hermes://copilot-key/start?state=Tap</SingleTap>
-      <PressAndHoldStart>hermes://copilot-key/start?state=Down</PressAndHoldStart>
-      <PressAndHoldStop>hermes://copilot-key/stop?state=Up</PressAndHoldStop>
+      <SingleTap>rabbit://copilot-key/start?state=Tap</SingleTap>
+      <PressAndHoldStart>rabbit://copilot-key/start?state=Down</PressAndHoldStart>
+      <PressAndHoldStop>rabbit://copilot-key/stop?state=Up</PressAndHoldStop>
     </uap3:Properties>
   </uap3:AppExtension>
 </uap3:Extension>

@@ -3,7 +3,7 @@
 Two strategies:
 * push-capable adapters keep the synthetic MessageEvent / handle_message path;
 * the stateless API server (supports_async_delivery=False) self-POSTs
-  /v1/chat/completions with the RAW session id in X-Hermes-Session-Id, so the
+  /v1/chat/completions with the RAW session id in X-Rabbit-Session-Id, so the
   wake turn resumes the REAL session instead of a parallel invisible one
   keyed by build_session_key().
 """
@@ -30,7 +30,7 @@ class PushAdapter:
 class ApiServerLikeAdapter:
     supports_async_delivery = False
 
-    def __init__(self, host="0.0.0.0", port=0, key="test-key", model="hermes"):
+    def __init__(self, host="0.0.0.0", port=0, key="test-key", model="rabbit"):
         self._host = host
         self._port = port
         self._api_key = key
@@ -76,7 +76,7 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
     seen = {}
 
     async def handler(request):
-        seen["session_id"] = request.headers.get("X-Hermes-Session-Id")
+        seen["session_id"] = request.headers.get("X-Rabbit-Session-Id")
         seen["auth"] = request.headers.get("Authorization")
         seen["body"] = await request.json()
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
@@ -132,7 +132,7 @@ def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
     from pathlib import Path
 
     from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=Path(tmp_path) / "state.db")
     sid = "raw-hq-sid"

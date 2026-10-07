@@ -1,6 +1,6 @@
-import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
+import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/rabbit'
 
-import { hermesApi, profileScoped } from './client'
+import { rabbitApi, profileScoped } from './client'
 
 export interface LocalModelsScope {
   connectionId: string | null
@@ -11,21 +11,21 @@ export interface LocalModelsScope {
 // reads, download/install/activate jobs, and server control.
 
 export function getLocalModelsStatus(scope?: LocalModelsScope): Promise<LocalModelsStatus> {
-  return hermesApi<LocalModelsStatus>({
+  return rabbitApi<LocalModelsStatus>({
     ...(scope ?? profileScoped()),
     path: '/api/local-models/status'
   })
 }
 
 export function getLocalHardware(scope?: LocalModelsScope): Promise<LocalHardware> {
-  return hermesApi<LocalHardware>({
+  return rabbitApi<LocalHardware>({
     ...(scope ?? profileScoped()),
     path: '/api/local-models/hardware'
   })
 }
 
 export function getLocalCatalog(scope?: LocalModelsScope): Promise<{ models: LocalCatalogModel[] }> {
-  return hermesApi<{ models: LocalCatalogModel[] }>({
+  return rabbitApi<{ models: LocalCatalogModel[] }>({
     ...(scope ?? profileScoped()),
     path: '/api/local-models/catalog'
   })
@@ -35,7 +35,7 @@ export function installLocalRuntime(
   backend?: string,
   scope?: LocalModelsScope
 ): Promise<{ backend: string; job_id: string; tag: string }> {
-  return hermesApi<{ backend: string; job_id: string; tag: string }>({
+  return rabbitApi<{ backend: string; job_id: string; tag: string }>({
     ...(scope ?? profileScoped()),
     body: { backend: backend ?? null },
     method: 'POST',
@@ -53,7 +53,7 @@ export interface QuickstartResponse {
 }
 
 export function quickstartLocalModels(modelId?: string, scope?: LocalModelsScope): Promise<QuickstartResponse> {
-  return hermesApi<QuickstartResponse>({
+  return rabbitApi<QuickstartResponse>({
     ...(scope ?? profileScoped()),
     body: { model_id: modelId ?? null },
     method: 'POST',
@@ -65,7 +65,7 @@ export function downloadLocalModel(
   modelId: string,
   scope?: LocalModelsScope
 ): Promise<{ already_downloaded?: boolean; job_id: null | string }> {
-  return hermesApi<{ already_downloaded?: boolean; job_id: null | string }>({
+  return rabbitApi<{ already_downloaded?: boolean; job_id: null | string }>({
     ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
@@ -74,7 +74,7 @@ export function downloadLocalModel(
 }
 
 export function deleteLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rabbitApi<{ ok: boolean }>({
     ...(scope ?? profileScoped()),
     method: 'DELETE',
     path: `/api/local-models/models/${encodeURIComponent(modelId)}`
@@ -82,14 +82,14 @@ export function deleteLocalModel(modelId: string, scope?: LocalModelsScope): Pro
 }
 
 export function getLocalRuntimeJob(jobId: string, scope?: LocalModelsScope): Promise<LocalRuntimeJob> {
-  return hermesApi<LocalRuntimeJob>({
+  return rabbitApi<LocalRuntimeJob>({
     ...(scope ?? profileScoped()),
     path: `/api/local-models/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
 export function getLocalModelsJobs(scope?: LocalModelsScope): Promise<{ jobs: LocalRuntimeJob[] }> {
-  return hermesApi<{ jobs: LocalRuntimeJob[] }>({
+  return rabbitApi<{ jobs: LocalRuntimeJob[] }>({
     ...(scope ?? profileScoped()),
     path: '/api/local-models/jobs'
   })
@@ -100,7 +100,7 @@ export function getLocalModelsJobs(scope?: LocalModelsScope): Promise<{ jobs: Lo
 // {ok, resumed} — a false flag (no live download handle, e.g. a
 // quickstart engine leg) is reported to the caller, not treated as success.
 export function pauseLocalDownload(jobId: string, scope?: LocalModelsScope): Promise<{ ok: boolean; paused: boolean }> {
-  return hermesApi<{ ok: boolean; paused: boolean }>({
+  return rabbitApi<{ ok: boolean; paused: boolean }>({
     ...(scope ?? profileScoped()),
     body: { job_id: jobId },
     method: 'POST',
@@ -112,7 +112,7 @@ export function resumeLocalDownload(
   jobId: string,
   scope?: LocalModelsScope
 ): Promise<{ ok: boolean; resumed: boolean }> {
-  return hermesApi<{ ok: boolean; resumed: boolean }>({
+  return rabbitApi<{ ok: boolean; resumed: boolean }>({
     ...(scope ?? profileScoped()),
     body: { job_id: jobId },
     method: 'POST',
@@ -121,7 +121,7 @@ export function resumeLocalDownload(
 }
 
 export function activateLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ job_id: string }> {
-  return hermesApi<{ job_id: string }>({
+  return rabbitApi<{ job_id: string }>({
     ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
@@ -130,7 +130,7 @@ export function activateLocalModel(modelId: string, scope?: LocalModelsScope): P
 }
 
 export function ejectLocalModel(modelId: string, scope?: LocalModelsScope): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rabbitApi<{ ok: boolean }>({
     ...(scope ?? profileScoped()),
     body: { model_id: modelId },
     method: 'POST',
@@ -139,7 +139,7 @@ export function ejectLocalModel(modelId: string, scope?: LocalModelsScope): Prom
 }
 
 export function setLocalServer(action: 'start' | 'stop', scope?: LocalModelsScope): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
+  return rabbitApi<{ ok: boolean }>({
     ...(scope ?? profileScoped()),
     body: { action },
     method: 'POST',
@@ -169,14 +169,14 @@ export function searchHFModels(
   limit: number = 20,
   scope?: LocalModelsScope
 ): Promise<{ hits: HFSearchHit[] }> {
-  return hermesApi<{ hits: HFSearchHit[] }>({
+  return rabbitApi<{ hits: HFSearchHit[] }>({
     ...(scope ?? profileScoped()),
     path: `/api/local-models/search?q=${encodeURIComponent(q)}&limit=${limit}`
   })
 }
 
 export function listHFRepoFiles(repo: string, scope?: LocalModelsScope): Promise<{ files: HFFileGroup[] }> {
-  return hermesApi<{ files: HFFileGroup[] }>({
+  return rabbitApi<{ files: HFFileGroup[] }>({
     ...(scope ?? profileScoped()),
     path: `/api/local-models/search/files?repo=${encodeURIComponent(repo)}`
   })
@@ -187,7 +187,7 @@ export function downloadBrowsedModel(
   paths: string[],
   scope?: LocalModelsScope
 ): Promise<{ already_downloaded?: boolean; job_id: null | string; model_id: string }> {
-  return hermesApi<{ already_downloaded?: boolean; job_id: null | string; model_id: string }>({
+  return rabbitApi<{ already_downloaded?: boolean; job_id: null | string; model_id: string }>({
     ...(scope ?? profileScoped()),
     body: { paths, repo },
     method: 'POST',
@@ -199,7 +199,7 @@ export function sideloadLocalModel(
   path: string,
   scope?: LocalModelsScope
 ): Promise<{ already_present?: boolean; model_id: string; ok: boolean }> {
-  return hermesApi<{ already_present?: boolean; model_id: string; ok: boolean }>({
+  return rabbitApi<{ already_present?: boolean; model_id: string; ok: boolean }>({
     ...(scope ?? profileScoped()),
     body: { path },
     method: 'POST',

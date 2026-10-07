@@ -8,7 +8,7 @@ vi.mock('@/app/learning/archive-skill-confirm-dialog', () => ({
   fireOptimistic: vi.fn()
 }))
 vi.mock('@/components/chat/code-editor', () => ({ CodeEditor: () => null }))
-vi.mock('@/hermes', () => ({
+vi.mock('@/rabbit', () => ({
   deleteLearningNode: vi.fn(),
   editLearningNode: vi.fn(),
   getLearningNode: vi.fn()

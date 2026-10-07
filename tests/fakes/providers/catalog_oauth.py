@@ -2,11 +2,6 @@
 
 One real HTTP server on 127.0.0.1 that plays the vendor side of the OAuth providers:
 
-* Nous Portal (RFC 8628 device flow + single-use refresh-token rotation):
-  ``POST /api/oauth/device/code`` and ``POST /api/oauth/token`` (``grant_type`` device_code or
-  refresh_token; the refresh token rides in the ``x-nous-refresh-token`` header). The device poll
-  answers the scripted error codes in ``poll_script`` (one per poll) and then issues tokens; every
-  poll's arrival time is recorded so a test can measure the client's real polling cadence.
 * MiniMax OAuth refresh: ``POST /oauth/token`` (form ``refresh_token``), MiniMax's
   ``{"status": "success", "expired_in": ...}`` shape.
 * Inference: ``POST …/chat/completions`` (JSON or SSE) and ``POST …/messages`` (Anthropic JSON or
@@ -29,14 +24,14 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-NOUS_INVOKE_SCOPE = "inference:invoke"
+OAUTH_INVOKE_SCOPE = "inference:invoke"
 
 
 def b64url(obj: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
 
 
-def make_jwt(tag: str, *, ttl_s: int = 3600, scope: str = NOUS_INVOKE_SCOPE) -> str:
+def make_jwt(tag: str, *, ttl_s: int = 3600, scope: str = OAUTH_INVOKE_SCOPE) -> str:
     """Unsigned JWT-shaped bearer: the client only decodes claims (``scope``/``exp``)."""
     claims = {"sub": "oauth-e2e-user", "scope": scope, "exp": int(time.time()) + ttl_s, "tag": tag}
     return ".".join([b64url({"alg": "none", "typ": "JWT"}), b64url(claims), "sig"])
@@ -60,12 +55,9 @@ class Req:
 class OAuthFake:
     """Threaded loopback vendor. Use as a context manager."""
 
-    def __init__(self, *, reply: str = "OAUTH-TURN-COMPLETE", device_interval: int = 2,
-                 poll_script: list[str] | None = None, valid_refresh: set[str] | None = None,
+    def __init__(self, *, reply: str = "OAUTH-TURN-COMPLETE", valid_refresh: set[str] | None = None,
                  revoked: set[str] | None = None) -> None:
         self.reply = reply
-        self.device_interval = device_interval
-        self.poll_script = list(poll_script or [])
         self.valid_refresh = set(valid_refresh or ())
         self.revoked = set(revoked or ())
         self.requests: list[Req] = []
@@ -91,12 +83,8 @@ class OAuthFake:
         return f"http://127.0.0.1:{self._server.server_address[1]}"
 
     # --- views -----------------------------------------------------------------------------
-    def device_polls(self) -> list[Req]:
-        return [r for r in self.requests
-                if r.path == "/api/oauth/token" and r.form.get("grant_type", "").endswith("device_code")]
-
     def refreshes(self) -> list[Req]:
-        return [r for r in self.requests if r.path in ("/api/oauth/token", "/oauth/token")
+        return [r for r in self.requests if r.path == "/oauth/token"
                 and r.form.get("grant_type") == "refresh_token"]
 
     def inference(self) -> list[Req]:
@@ -110,7 +98,7 @@ class OAuthFake:
             rt = f"rt-{kind}-{n}"
             self.valid_refresh.add(rt)
             tok = {"access_token": make_jwt(f"{kind}-{n}"), "refresh_token": rt, "token_type": "Bearer",
-                   "expires_in": 3600, "scope": NOUS_INVOKE_SCOPE}
+                   "expires_in": 3600, "scope": OAUTH_INVOKE_SCOPE}
             self.issued.append(tok)
             return tok
 
@@ -186,32 +174,6 @@ def _handler_for(fake: OAuthFake) -> type[BaseHTTPRequestHandler]:
 # --- routes -----------------------------------------------------------------------------------
 
 
-def _device_code(h: Any, fake: OAuthFake, _req: Req) -> None:
-    h._json(200, {"device_code": "dc-oauth-e2e", "user_code": "OAUT-HE2E",
-                  "verification_uri": f"{fake.origin}/device",
-                  "verification_uri_complete": f"{fake.origin}/device?code=OAUT-HE2E",
-                  "expires_in": 120, "interval": fake.device_interval})
-
-
-def _nous_token(h: Any, fake: OAuthFake, req: Req) -> None:
-    grant = req.form.get("grant_type", "")
-    if grant.endswith("device_code"):
-        with fake._lock:
-            step = fake.poll_script.pop(0) if fake.poll_script else None
-        if step is not None:
-            h._json(400, {"error": step, "error_description": f"scripted {step}"})
-            return
-        h._json(200, fake._issue("login"))
-        return
-    if grant == "refresh_token":
-        if not fake._redeem(req.headers.get("x-nous-refresh-token", "")):
-            h._json(400, {"error": "invalid_grant", "error_description": "refresh token already used or unknown"})
-            return
-        h._json(200, fake._issue("nous-rot"))
-        return
-    h._json(400, {"error": "unsupported_grant_type"})
-
-
 def _minimax_token(h: Any, fake: OAuthFake, req: Req) -> None:
     if req.form.get("grant_type") != "refresh_token" or not fake._redeem(req.form.get("refresh_token", "")):
         h._json(400, {"status": "error", "error": "invalid_grant"})
@@ -271,8 +233,6 @@ def _messages(h: Any, fake: OAuthFake, req: Req) -> None:
 
 
 _ROUTES = {
-    "/api/oauth/device/code": _device_code,
-    "/api/oauth/token": _nous_token,
     "/oauth/token": _minimax_token,
 }
 _SUFFIX_ROUTES = (("/chat/completions", _chat), ("/messages", _messages))

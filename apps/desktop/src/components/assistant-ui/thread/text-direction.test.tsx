@@ -162,7 +162,7 @@ describe('Text direction: Auto', () => {
     const { container } = render(<ComposerHarness />)
 
     expect(composerEditor(container).hasAttribute('dir')).toBe(false)
-    expect(window.localStorage.getItem('hermes.desktop.textDirection')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.textDirection')).toBeNull()
   })
 
   it('returns to the identical DOM after a forced direction is cleared', async () => {
@@ -174,7 +174,7 @@ describe('Text direction: Auto', () => {
 
     act(() => setTextDirection('auto'))
     expect(view.container.innerHTML).toBe(autoHtml)
-    expect(window.localStorage.getItem('hermes.desktop.textDirection')).toBeNull()
+    expect(window.localStorage.getItem('rabbit.desktop.textDirection')).toBeNull()
   })
 })
 
@@ -201,7 +201,7 @@ describe.each<Exclude<TextDirection, 'auto'>>(['rtl', 'ltr'])('Text direction: %
 
     act(() => setTextDirection(direction))
     expect(composerEditor(container).getAttribute('dir')).toBe(direction)
-    expect(window.localStorage.getItem('hermes.desktop.textDirection')).toBe(direction)
+    expect(window.localStorage.getItem('rabbit.desktop.textDirection')).toBe(direction)
 
     act(() => setTextDirection('auto'))
     expect(composerEditor(container).hasAttribute('dir')).toBe(false)

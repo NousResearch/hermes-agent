@@ -14,16 +14,16 @@ MODEL_B = "claude-haiku-4-5"
 
 @pytest.fixture
 def pool(tmp_path, monkeypatch):
-    root = tmp_path / "hermes-root"
+    root = tmp_path / "rabbit-root"
     root.mkdir()
     (tmp_path / "fakehome").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "fakehome"))
     for var in ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    import hermes_constants
-    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
+    monkeypatch.setenv("RABBIT_HOME", str(root))
+    import rabbit_constants
+    rabbit_constants._default_rabbit_root_memo = None  # type: ignore[attr-defined]
     (root / "auth.json").write_text(json.dumps({"credential_pool": {"anthropic": [{
         "id": "seat", "label": "seat", "auth_type": "api_key", "priority": 0,
         "source": "manual", "access_token": KEY,

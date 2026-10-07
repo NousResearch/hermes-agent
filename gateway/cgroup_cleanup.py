@@ -57,7 +57,7 @@ def _parent_is_systemd() -> bool:
 
 
 def _live_gateway_among(pids: list[int]) -> bool:
-    """True when one of ``pids`` is a live Hermes gateway runtime.
+    """True when one of ``pids`` is a live Rabbit gateway runtime.
 
     A PID whose command line can't be read has already exited (or is a
     zombie) — exactly what the reaper clears — so only a readable,

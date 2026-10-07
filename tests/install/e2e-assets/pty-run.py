@@ -10,7 +10,7 @@ died with::
 
 HEAD guards its own print path, but the tags under test cannot be changed, so the
 console has to come from the rig. pywinpty is the ConPTY spawner the product
-itself uses on Windows (``hermes_cli/win_pty_bridge.py``); this wraps it so a
+itself uses on Windows (``rabbit_cli/win_pty_bridge.py``); this wraps it so a
 piped-stdout child still gets a real console. Without pywinpty the helper falls
 back to a plain subprocess and says so in the log, so a missing dependency
 degrades the evidence instead of silently changing what the leg proves.

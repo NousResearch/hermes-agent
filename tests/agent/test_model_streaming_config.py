@@ -25,7 +25,7 @@ _BASE = {
 
 
 def _build_agent(config):
-    with patch("hermes_cli.config.load_config_readonly", return_value=config):
+    with patch("rabbit_cli.config.load_config_readonly", return_value=config):
         return AIAgent(
             api_key="x",
             base_url="http://127.0.0.1:9999/v1",
@@ -76,11 +76,11 @@ def test_legacy_string_model_section_does_not_crash(mock_openai):
 
 @patch("agent.process_bootstrap.OpenAI")
 def test_streaming_false_read_from_real_config_file(mock_openai):
-    """End-to-end: a real config.yaml in HERMES_HOME (sandboxed per-test by
+    """End-to-end: a real config.yaml in RABBIT_HOME (sandboxed per-test by
     conftest) with ``model.streaming: false`` must seed the flag through the
     actual config loader — not just the patched function."""
     mock_openai.return_value = MagicMock()
-    home = Path(os.environ["HERMES_HOME"])
+    home = Path(os.environ["RABBIT_HOME"])
     (home / "config.yaml").write_text(
         "model:\n"
         "  default: \"test/model\"\n"

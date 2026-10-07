@@ -34,7 +34,7 @@ def test_deb_identity_refusal_leaves_payload_and_output_untouched(tmp_path):
     python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n',
                       encoding='utf-8', newline='\n')
     python.chmod(0o755)
-    env = _child_env(HERMES_PAYLOAD_TAG='', HERMES_BUILD_COMMIT='', GIT_ALLOW_PROTOCOL='file',
+    env = _child_env(RABBIT_PAYLOAD_TAG='', RABBIT_BUILD_COMMIT='', GIT_ALLOW_PROTOCOL='file',
                      PYTHONUTF8='1')
     for name in ('MSYS_NO_PATHCONV', 'MSYS2_ARG_CONV_EXCL', 'GIT_DIR', 'GIT_WORK_TREE', 'PYTHONPATH', 'PYTHONHOME'):
         env.pop(name, None)

@@ -11,7 +11,7 @@
  * `127.0.0.1:<localPort>` URL that lands on the gateway's port. No new
  * credentials, no new listening surface beyond one loopback-bound port.
  *
- * Only SSH-backed remotes can do this today: a `url`/`cloud` gateway is an HTTP
+ * Only SSH-backed remotes can do this today: a `url` gateway is an HTTP
  * endpoint with no tunnel to borrow, so there is nothing to forward through.
  * Those callers get `null` and the pane keeps explaining the mismatch instead
  * of failing silently — see `isRemoteLoopbackUrl` in preview-pane.tsx.

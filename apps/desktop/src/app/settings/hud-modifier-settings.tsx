@@ -13,7 +13,7 @@ export function HudModifierSettings() {
   const { t } = useI18n()
   const copy = t.settings.hudModifier
   const common = t.settings.screenshot
-  const api = window.hermesDesktop?.hudModifier
+  const api = window.rabbitDesktop?.hudModifier
   const [status, setStatus] = useState<HudModifierStatus | null>(null)
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState<string | null>(null)

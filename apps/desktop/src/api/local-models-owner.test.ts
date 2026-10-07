@@ -6,7 +6,7 @@ import { setApiRequestConnection, setApiRequestProfile } from './client'
 import { getLocalModelsJobs, getLocalModelsStatus, pauseLocalDownload, resumeLocalDownload } from './local-models'
 
 beforeEach((): void => {
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'rabbitDesktop', {
     configurable: true,
     value: { api: vi.fn().mockResolvedValue({ jobs: [] }) }
   })
@@ -20,7 +20,7 @@ it('pins delayed reads and controls to their captured connection and profile', a
   await getLocalModelsJobs(owner)
   await pauseLocalDownload('download', owner)
 
-  for (const [request] of vi.mocked(window.hermesDesktop.api).mock.calls) {
+  for (const [request] of vi.mocked(window.rabbitDesktop.api).mock.calls) {
     expect(request).toMatchObject(owner)
   }
 })
@@ -36,15 +36,15 @@ it.each([
     response: { ok: boolean; paused?: boolean; resumed?: boolean }
   ): Promise<void> => {
     const owner: LocalModelsOwner = { connectionId: 'background', profile: 'work' }
-    vi.mocked(window.hermesDesktop.api).mockResolvedValue(response)
+    vi.mocked(window.rabbitDesktop.api).mockResolvedValue(response)
     expect(await control('download', owner)).toEqual(response)
-    expect(window.hermesDesktop.api).toHaveBeenCalledExactlyOnceWith({
+    expect(window.rabbitDesktop.api).toHaveBeenCalledExactlyOnceWith({
       ...owner,
       method: 'POST',
       path: `/api/local-models/download/${action}`,
       body: { job_id: 'download' }
     })
-    vi.mocked(window.hermesDesktop.api).mockRejectedValue(new Error('unknown download job'))
+    vi.mocked(window.rabbitDesktop.api).mockRejectedValue(new Error('unknown download job'))
     await expect(control('gone', owner)).rejects.toThrow('unknown download job')
   }
 )

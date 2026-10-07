@@ -2,7 +2,7 @@
 
 A browser follows the ``/callback`` redirect with queryless fetches (``/favicon.ico``), and the CLI waiter
 samples the result only every 500 ms. A handler that wrote every GET into the result lost the stored code
-between two polls, so the user saw "Authorization Successful" while ``hermes mcp login`` timed out. These
+between two polls, so the user saw "Authorization Successful" while ``rabbit mcp login`` timed out. These
 tests drive the production entry (``_make_callback_waiter`` → ``_start_callback_server`` → handler) with a
 browser stand-in that sends its requests back-to-back, well inside one poll interval.
 """

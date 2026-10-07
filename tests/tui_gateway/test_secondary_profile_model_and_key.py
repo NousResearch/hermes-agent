@@ -10,7 +10,7 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 import tui_gateway.server as server
 
@@ -22,11 +22,11 @@ def homes(tmp_path, monkeypatch):
         home.mkdir(parents=True)
         (home / "config.yaml").write_text(yaml.safe_dump({"model": {"default": model}}), encoding="utf-8")
         (home / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(launch))
-    for seed in ("HERMES_MODEL", "HERMES_INFERENCE_MODEL"):
+    monkeypatch.setenv("RABBIT_HOME", str(launch))
+    for seed in ("RABBIT_MODEL", "RABBIT_INFERENCE_MODEL"):
         monkeypatch.delenv(seed, raising=False)
     monkeypatch.setenv("GLM_API_KEY", "launch-own-key")
-    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setattr(server, "_rabbit_home", launch)
     monkeypatch.setattr(server, "_cfg_cache", None)
     monkeypatch.setattr(server, "_cfg_sig", None)
     monkeypatch.setattr(server, "_cfg_path", None)
@@ -36,7 +36,7 @@ def homes(tmp_path, monkeypatch):
 
 def test_session_bound_save_key_writes_only_the_session_profiles_env(homes, monkeypatch):
     launch, worker = homes
-    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
+    monkeypatch.setattr("rabbit_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
     key = "glm-" + "worker-canary"
     session = {"agent": None, "profile_home": str(worker), "session_key": "worker-session"}
     with patch.dict(server._sessions, {"s-worker": session}, clear=False):

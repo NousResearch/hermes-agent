@@ -1,4 +1,4 @@
-import { setTtsLease } from '@/hermes'
+import { setTtsLease } from '@/rabbit'
 
 // The desktop's speech-output toggles — "Read replies aloud" and voice
 // conversation mode — are the user telling us TTS is about to be needed (or no

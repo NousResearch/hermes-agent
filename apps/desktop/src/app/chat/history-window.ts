@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { capabilityScoped, hermesApi, type ProfileScope, sessionReadOwnerPin } from '@/api/client'
+import { capabilityScoped, rabbitApi, type ProfileScope, sessionReadOwnerPin } from '@/api/client'
 import {
   cachedTimelineIndex,
   previousPromptRowId,
   timelineIndexKey
 } from '@/components/assistant-ui/thread/timeline-index'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import type { SessionMessagesResponse } from '@/types/hermes'
+import type { SessionMessagesResponse } from '@/types/rabbit'
 
 import { mergeOlderTranscriptPage } from './transcript-backfill'
 
@@ -54,7 +54,7 @@ export async function fetchHistoryWindow(
   // The Electron REST bridge cannot transfer AbortSignal over IPC. Cancellation
   // below releases the caller immediately and fences the eventual bounded read;
   // it does not pretend to cancel backend I/O or fall back to a full transcript.
-  const response = await hermesApi<HistoryWindowResponse>({
+  const response = await rabbitApi<HistoryWindowResponse>({
     ...route,
     method: 'GET',
     path: `/api/sessions/${encodeURIComponent(storedId)}/messages/around?${query}`

@@ -139,7 +139,7 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
       style={{ left: anchor.left, top: anchor.top }}
     >
       <button
-        className={cn(composerFloatingPill, 'shadow-nous')}
+        className={cn(composerFloatingPill, 'shadow-rabbit')}
         // The pill is the composer's stand-in for clicking the link, so it
         // honours the same convention: ⌘/Ctrl-click escapes to the system
         // browser instead of the in-app pane.

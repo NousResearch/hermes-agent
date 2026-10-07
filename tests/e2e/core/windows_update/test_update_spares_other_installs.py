@@ -1,8 +1,8 @@
-"""Two Hermes installs on one Windows host: one install's ``hermes update`` leaves the other's
+"""Two Rabbit installs on one Windows host: one install's ``rabbit update`` leaves the other's
 gateway alone (#124659).
 
 Failure class: update blast radius. The updater's gateway discovery scans the whole process
-table; a gateway of another install (its own ``%LOCALAPPDATA%\\hermes``, its own checkout and
+table; a gateway of another install (its own ``%LOCALAPPDATA%\\rabbit``, its own checkout and
 venv) holds none of the updating install's files, so the update must neither stop it nor try to
 replay it. ``neighbour`` updates while ``host`` serves a gateway; both are real installs.
 """
@@ -51,13 +51,13 @@ def journey(tmp_path_factory):
                                                      f"install.ps1 exited {run.returncode}", run)
                                            for m, run in zip((host, neighbour), installs)])
             if j.ok("installs_ok"):
-                # One job-wide gateway phase for both machines; ``neighbour.hermes`` (not ``.update``)
+                # One job-wide gateway phase for both machines; ``neighbour.rabbit`` (not ``.update``)
                 # because the phase lock is per machine and this module holds it through ``host``.
                 with host.gateway_phase():
                     j.step("spawn", host.spawn_gateway)
                     j.step("host_before", host.wait_gateway_running)
                     neighbour.advance()
-                    j.step("neighbour_update", lambda: neighbour.hermes(
+                    j.step("neighbour_update", lambda: neighbour.rabbit(
                         "update", "--yes", label="update", timeout=UPDATE_TIMEOUT))
                     # Liveness is read here, before ``kill_owned`` tears the gateway down.
                     j.step("host_after", lambda: {**host.gateway_state(),
@@ -75,7 +75,7 @@ def test_neighbour_update_leaves_this_installs_gateway_running(journey: Journey)
     pid = int(before.get("pid") or 0)
     after = journey["host_after"]
     assert after["alive"] and after.get("pid") == pid and after.get("gateway_state") == "running", fail_with(
-        m, f"another install's `hermes update` stopped this install's gateway (pid {pid}); "
+        m, f"another install's `rabbit update` stopped this install's gateway (pid {pid}); "
            f"alive={after['alive']}, gateway_state after: {after.get('gateway_state')!r} pid {after.get('pid')}", run)
 
 
@@ -84,5 +84,5 @@ def test_neighbour_update_stops_no_foreign_gateway(journey: Journey) -> None:
     journey["host_before"]  # a foreign gateway was running during the update
     stopped = [line.strip() for line in run.stdout.splitlines() if any(s in line for s in _FOREIGN_STOP)]
     assert run.returncode == 0 and not stopped, fail_with(
-        n, f"`hermes update` without a gateway of its own reported stopping gateways "
+        n, f"`rabbit update` without a gateway of its own reported stopping gateways "
            f"(rc={run.returncode}): {stopped}", run)

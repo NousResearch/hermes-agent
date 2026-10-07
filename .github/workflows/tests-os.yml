@@ -101,7 +101,7 @@ jobs:
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
         with:
-          # Installer stage tests inherit setup-pm's HERMES_RUNTIME_DIR. Prepare
+          # Installer stage tests inherit setup-pm's RABBIT_RUNTIME_DIR. Prepare
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
           packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
@@ -181,8 +181,8 @@ jobs:
         env:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
-          HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
-          HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
+          RABBIT_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
+          RABBIT_TEST_SLICE: ${{ matrix.slice || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''
@@ -190,7 +190,7 @@ jobs:
           NOUS_API_KEY: ''
 
   install-update-e2e:
-    # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
+    # The real scripts/install.ps1 -> `rabbit update` HEAD -> NEXT journey on a real Windows
     # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
     # interpreter selection, non-ASCII profile paths and tool ACLs, partial-clone fetch and
     # venv holders. Its own workflow so wine2e-install/** pushes can run it alone.
@@ -199,8 +199,8 @@ jobs:
     uses: ./.github/workflows/windows-install-update-e2e.yml
 
   e2e-windows:
-    # Real Hermes processes on a real Windows host (tests/e2e/core/windows): hermes.exe,
-    # `hermes serve`, `hermes gateway run/stop`, the tui_gateway stdio process, cron script
+    # Real Rabbit processes on a real Windows host (tests/e2e/core/windows): rabbit.exe,
+    # `rabbit serve`, `rabbit gateway run/stop`, the tui_gateway stdio process, cron script
     # jobs, the terminal tool's Git Bash / PowerShell / cmd children and a ConPTY console,
     # all against the loopback fake provider (tests/fakes/fake_llm_provider.py). Separate
     # from os-tests above: those are unit-level Windows tests, these spawn process
@@ -236,26 +236,26 @@ jobs:
           scripts/run_tests.sh tests/e2e/core/windows/ -- \
             -m "platforms and integration" -v --tb=short -rA
         env:
-          HERMES_TEST_WORKERS: '6'
-          HERMES_TEST_FILE_TIMEOUT: '900'
-          HERMES_TEST_FILE_RETRIES: '0'
+          RABBIT_TEST_WORKERS: '6'
+          RABBIT_TEST_FILE_TIMEOUT: '900'
+          RABBIT_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
-      - name: No leftover Python / Hermes processes
+      - name: No leftover Python / Rabbit processes
         # Backstop for the per-test ownership checks: a file killed by its 900 s timeout,
         # or a detached grandchild some test's cleanup missed, leaves an interpreter behind
         # (Windows never re-parents, so nothing reaps it). The runner itself runs no
-        # python.exe / hermes.exe once the suite is done.
+        # python.exe / rabbit.exe once the suite is done.
         if: always()
         shell: pwsh
         run: |
-          $names = 'python.exe', 'pythonw.exe', 'hermes.exe'
+          $names = 'python.exe', 'pythonw.exe', 'rabbit.exe'
           $deadline = (Get-Date).AddSeconds(20)
           do {
             $left = @(Get-CimInstance Win32_Process | Where-Object { $names -contains $_.Name.ToLower() })
-            if ($left.Count -eq 0) { 'no leftover python/hermes processes'; exit 0 }
+            if ($left.Count -eq 0) { 'no leftover python/rabbit processes'; exit 0 }
             Start-Sleep -Milliseconds 500
           } while ((Get-Date) -lt $deadline)
           foreach ($p in $left) {

@@ -1,4 +1,4 @@
-"""Manual `hermes cron run` forwarding for relay-fronted delivery targets.
+"""Manual `rabbit cron run` forwarding for relay-fronted delivery targets.
 
 A standalone CLI process has no live relay adapter and no standalone sender,
 so a manual run that targets a relay-fronted platform must forward to the
@@ -198,7 +198,7 @@ class TestManualRunPromptConsumption:
 
 class TestTriggerJobPromptStamp:
     def test_trigger_stamps_and_mark_run_clears(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         import cron.jobs as jobs_mod
         import importlib
 
@@ -216,7 +216,7 @@ class TestTriggerJobPromptStamp:
         assert "manual_run_at" not in after
 
     def test_retrigger_without_prompt_clears_stale_stamp(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
         import cron.jobs as jobs_mod
         import importlib
 

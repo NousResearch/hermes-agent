@@ -197,7 +197,7 @@ def test_identical_call_streak_halts_any_tool_when_hard_stop_enabled():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
     )
-    args = {"command": "hermes config get memory.provider"}
+    args = {"command": "rabbit config get memory.provider"}
     for i in range(1, 5):
         controller.after_call("terminal", args, "local\n", failed=False)
         controller.observe_call("terminal", args, "local\n", failed=False)

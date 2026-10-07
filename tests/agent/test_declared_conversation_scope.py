@@ -1,12 +1,12 @@
 """Host-declared conversation scope on the affinity-key path (issue #96811).
 
 A host that mints one physical ``session_id`` per RESPONSE re-keys every
-conversation-affinity hint Hermes sends — ``prompt_cache_key`` on both
+conversation-affinity hint Rabbit sends — ``prompt_cache_key`` on both
 OpenAI-wire transports, the OpenRouter/Nous sticky ``session_id``, and xAI's
 ``x-grok-conv-id`` — so the conversation never lands back on the routing
-bucket it warmed. Hermes cannot infer the logical conversation from the id's
+bucket it warmed. Rabbit cannot infer the logical conversation from the id's
 syntax (#79017's failure class), but it does not have to: the host declares
-it through ``gateway_session_key`` (the ``X-Hermes-Session-Key`` /
+it through ``gateway_session_key`` (the ``X-Rabbit-Session-Key`` /
 ``build_session_key`` per-chat key).
 
 These tests pin the declaration contract and the two boundaries it must not
@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.portal_tags import (
+from agent.conversation_context import (
     get_affinity_scope,
     reset_affinity_scope,
     reset_conversation_context,
@@ -34,7 +34,7 @@ from agent.prompt_cache_scope import (
     resolve_prompt_cache_scope,
 )
 from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 # One room member, two consecutive replies: the Studio group-chat shape
 # (``gc_run_<room>_<profile>_<name>`` truncated to 96 chars + a per-response
@@ -102,7 +102,7 @@ class TestDeclaredConversationScope:
     def test_scope_never_carries_the_raw_key(self, db):
         """The scope leaves the process verbatim (sticky id, x-grok-conv-id).
 
-        A session id is a Hermes-internal token; a session KEY embeds the
+        A session id is a Rabbit-internal token; a session KEY embeds the
         platform, chat and user identifiers, so it is hashed first.
         """
         db.create_session(RUN_1, source="api_server")
@@ -423,20 +423,6 @@ class TestProviderStickyKeys:
 
         assert headers["x-grok-conv-id"] == headers_next["x-grok-conv-id"] == scope
 
-    def test_nous_sticky_key_follows_the_declared_scope(self):
-        from providers import get_provider_profile
-
-        scope = declared_conversation_scope(_agent(RUN_1, None, CHAT_KEY))
-        token = set_affinity_scope(scope)
-        try:
-            body = get_provider_profile("nous").build_extra_body(session_id=RUN_1)
-            body_next = get_provider_profile("nous").build_extra_body(session_id=RUN_2)
-        finally:
-            reset_affinity_scope(token)
-
-        assert body["session_id"] == body_next["session_id"] == scope
-
-
 class TestConversationGenerationRotates:
     """The declared key must not outlive the conversation it names.
 
@@ -611,7 +597,7 @@ class TestConversationGenerationRotates:
 class TestPeerIdentityIsSourceQualified:
     """The generation and the carrier use the same identity tuple as recovery.
 
-    ``X-Hermes-Session-Key`` accepts any authenticated caller-supplied string,
+    ``X-Rabbit-Session-Key`` accepts any authenticated caller-supplied string,
     so an API conversation may legally carry the same key as a Telegram row in
     one database. Keying on the string alone let a ``/new`` on that unrelated
     row rotate this conversation's affinity identity, while
@@ -775,7 +761,7 @@ class TestSourceOverrideDomain:
 
     ``_agent_source`` used ``agent.platform`` before the row landed while
     persistence uses ``_session_source_for_agent``, which honors
-    ``HERMES_SESSION_SOURCE``. Under an override both sides of a ``/new``
+    ``RABBIT_SESSION_SOURCE``. Under an override both sides of a ``/new``
     queried the platform domain, missed the boundary stored under the
     override, and hashed the same scope (@andrexibiza on #98811).
     """
@@ -785,7 +771,7 @@ class TestSourceOverrideDomain:
     def test_the_pre_row_source_matches_persistence(self, db, monkeypatch):
         from agent.prompt_cache_scope import _agent_source
 
-        monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
+        monkeypatch.setenv("RABBIT_SESSION_SOURCE", "override-src")
         agent = SimpleNamespace(
             session_id="s-none", _session_db=db, _gateway_session_key=self.KEY,
             platform="telegram",
@@ -793,7 +779,7 @@ class TestSourceOverrideDomain:
         assert _agent_source(agent, "", db) == "override-src"
 
     def test_new_rotates_under_a_source_override(self, db, monkeypatch):
-        monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
+        monkeypatch.setenv("RABBIT_SESSION_SOURCE", "override-src")
 
         def keyed(sid):
             db.create_session(

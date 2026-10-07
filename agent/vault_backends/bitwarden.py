@@ -59,8 +59,8 @@ class BitwardenLoginBackend(LoginBackend):
         # bw refuses a piped password ("Master password is required"); its non-interactive contract is
         # --passwordenv: the variable exists only in the child's environment, never in argv or ours.
         generation = _unlock.begin_unlock(self.name)
-        proc = run_with_secret_env([str(self._bw()), "unlock", "--raw", "--nointeraction", "--passwordenv", "HERMES_BW_MASTER"],
-                                   env=self._env(None), secret_env="HERMES_BW_MASTER", secret=master_password,
+        proc = run_with_secret_env([str(self._bw()), "unlock", "--raw", "--nointeraction", "--passwordenv", "RABBIT_BW_MASTER"],
+                                   env=self._env(None), secret_env="RABBIT_BW_MASTER", secret=master_password,
                                    timeout=_TIMEOUT, label="bw")
         token = (proc.stdout or "").strip()
         if proc.returncode != 0 or not token:

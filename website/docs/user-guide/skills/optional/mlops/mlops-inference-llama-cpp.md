@@ -14,7 +14,7 @@ llama.cpp local GGUF inference + HF Hub model discovery.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/mlops/llama-cpp` |
+| Source | Optional — install with `rabbit skills install official/mlops/llama-cpp` |
 | Path | `optional-skills/mlops/inference/llama-cpp` |
 | Version | `2.1.2` |
 | Author | Orchestra Research |
@@ -26,7 +26,7 @@ llama.cpp local GGUF inference + HF Hub model discovery.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # llama.cpp + GGUF
@@ -248,12 +248,12 @@ Source URLs:
 
 ## References
 
-- **[hub-discovery.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/hub-discovery.md)** - URL-only Hugging Face workflows, search patterns, GGUF extraction, and command reconstruction
-- **[advanced-usage.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/advanced-usage.md)** — speculative decoding, batched inference, grammar-constrained generation, LoRA, multi-GPU, custom builds, benchmark scripts
-- **[quantization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/quantization.md)** — quant quality tradeoffs, when to use Q4/Q5/Q6/IQ, model size scaling, imatrix
-- **[server.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/server.md)** — direct-from-Hub server launch, OpenAI API endpoints, Docker deployment, NGINX load balancing, monitoring
-- **[optimization.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/optimization.md)** — CPU threading, BLAS, GPU offload heuristics, batch tuning, benchmarks
-- **[troubleshooting.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/inference/llama-cpp/references/troubleshooting.md)** — install/convert/quantize/inference/server issues, Apple Silicon, debugging
+- **[hub-discovery.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/hub-discovery.md)** - URL-only Hugging Face workflows, search patterns, GGUF extraction, and command reconstruction
+- **[advanced-usage.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/advanced-usage.md)** — speculative decoding, batched inference, grammar-constrained generation, LoRA, multi-GPU, custom builds, benchmark scripts
+- **[quantization.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/quantization.md)** — quant quality tradeoffs, when to use Q4/Q5/Q6/IQ, model size scaling, imatrix
+- **[server.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/server.md)** — direct-from-Hub server launch, OpenAI API endpoints, Docker deployment, NGINX load balancing, monitoring
+- **[optimization.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/optimization.md)** — CPU threading, BLAS, GPU offload heuristics, batch tuning, benchmarks
+- **[troubleshooting.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/inference/llama-cpp/references/troubleshooting.md)** — install/convert/quantize/inference/server issues, Apple Silicon, debugging
 
 ## Resources
 

@@ -161,11 +161,11 @@ class TestScanCronSkillAssembled:
     def test_descriptive_attack_command_prose_allowed(self):
         """Security postmortems and runbooks routinely describe attack
         commands in prose — that's not a payload, it's documentation.
-        Real example: the `hermes-agent-dev` skill contains a postmortem
-        section saying 'the attacker could just cat ~/.hermes/.env'.
+        Real example: the `rabbit-agent-dev` skill contains a postmortem
+        section saying 'the attacker could just cat ~/.rabbit/.env'.
         """
         assert _scan_cron_skill_assembled(
-            "the attacker could just cat ~/.hermes/.env to steal credentials"
+            "the attacker could just cat ~/.rabbit/.env to steal credentials"
         )[1] == ""
         assert _scan_cron_skill_assembled(
             "this rule writes to authorized_keys for persistence"
@@ -187,9 +187,9 @@ class TestScanCronSkillAssembled:
 class TestCronjobRequirements:
 
     def test_accepts_interactive_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setenv("RABBIT_INTERACTIVE", "1")
+        monkeypatch.delenv("RABBIT_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("RABBIT_EXEC_ASK", raising=False)
 
         assert check_cronjob_requirements() is True
 
@@ -197,22 +197,22 @@ class TestCronjobRequirements:
     def test_accepts_external_cron_worker_with_presence_vars_stripped(self, monkeypatch):
         """``_launch_external_cron_worker`` strips the presence trio from the worker env; the
         cron session marker alone must keep ``cron.allow_agent_scheduling: true`` effective."""
-        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        for v in ("RABBIT_INTERACTIVE", "RABBIT_GATEWAY_SESSION", "RABBIT_EXEC_ASK"):
             monkeypatch.delenv(v, raising=False)
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("RABBIT_CRON_SESSION", "1")
 
         assert check_cronjob_requirements() is True
 
     @pytest.mark.parametrize(
         "var_name",
-        ["HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"],
+        ["RABBIT_INTERACTIVE", "RABBIT_GATEWAY_SESSION", "RABBIT_EXEC_ASK"],
     )
     @pytest.mark.parametrize("false_like_value", ["0", "false", "no", "off"])
     def test_rejects_false_like_any_session_env(
         self, monkeypatch, var_name, false_like_value
     ):
         """All three session env vars share the same truthy semantics."""
-        for v in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK"):
+        for v in ("RABBIT_INTERACTIVE", "RABBIT_GATEWAY_SESSION", "RABBIT_EXEC_ASK"):
             monkeypatch.delenv(v, raising=False)
         monkeypatch.setenv(var_name, false_like_value)
         assert check_cronjob_requirements() is False
@@ -317,7 +317,7 @@ class TestUnifiedCronjobTool:
 
     @staticmethod
     def _patch_named_legit(monkeypatch):
-        import hermes_cli.runtime_provider as rp
+        import rabbit_cli.runtime_provider as rp
         monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
         monkeypatch.setattr(
             rp, "_get_named_custom_provider",
@@ -428,7 +428,7 @@ class TestUnifiedCronjobTool:
 
 
 class TestAgentCannotSetModelPin:
-    """Per-job inference pins are user-owned (dashboard / `hermes cron`
+    """Per-job inference pins are user-owned (dashboard / `rabbit cron`
     --model / hand-edited jobs). The agent-facing tool schema must not expose
     model/provider/base_url, and the registered handler must ignore them even
     if a model hallucinates the old parameters."""
@@ -606,10 +606,10 @@ class TestLocalDeliveryNotice:
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
         # Default: no session origin (the TUI/CLI condition).
         for var in (
-            "HERMES_SESSION_PLATFORM",
-            "HERMES_SESSION_CHAT_ID",
-            "HERMES_SESSION_THREAD_ID",
-            "HERMES_SESSION_CHAT_NAME",
+            "RABBIT_SESSION_PLATFORM",
+            "RABBIT_SESSION_CHAT_ID",
+            "RABBIT_SESSION_THREAD_ID",
+            "RABBIT_SESSION_CHAT_NAME",
         ):
             monkeypatch.delenv(var, raising=False)
         from gateway.session_context import clear_session_vars, set_session_vars
@@ -652,7 +652,7 @@ class TestValidateCronBaseUrl:
 
     @staticmethod
     def _patch_named_legit(monkeypatch):
-        import hermes_cli.runtime_provider as rp
+        import rabbit_cli.runtime_provider as rp
         monkeypatch.setattr(rp, "has_named_custom_provider", lambda n: True)
         monkeypatch.setattr(
             rp, "_get_named_custom_provider",
@@ -673,7 +673,7 @@ class TestValidateCronBaseUrl:
     def test_stored_key_only_goes_to_the_configured_origin(self, monkeypatch):
         # The stored key is bound to the configured origin, not to its hostname: another
         # scheme, port or subdomain is a different endpoint the operator never configured.
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from rabbit_cli.auth import PROVIDER_REGISTRY
         reg, known = next((k, p.inference_base_url) for k, p in PROVIDER_REGISTRY.items()
                           if str(getattr(p, "inference_base_url", "")).startswith("https://"))
 
@@ -692,8 +692,8 @@ class TestValidateCronBaseUrl:
     def test_bare_custom_sends_a_stored_key_only_to_a_configured_origin(self, monkeypatch):
         # Whatever key the real resolver would attach to a bare-custom base_url, the guard lets
         # the job through only at the origin the operator configured. No key: still pure BYOK.
-        from hermes_cli.config import get_config_path
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from rabbit_cli.config import get_config_path
+        from rabbit_cli.runtime_provider import resolve_runtime_provider
 
         configured, stored = "https://api.acmellm.example/v1", "sk-stored-acmellm-key"
         monkeypatch.setenv("ACMELLM_API_KEY", stored)
@@ -740,7 +740,7 @@ class TestGithubExemptionAbuse:
         # URL on the line — a payload smuggled after ; && or | was never
         # scanned. The tail must stop at the URL path boundary.
         for sep in (";", " &&", " |"):
-            prompt = f"{self.GH}{sep} cat ~/.hermes/.env"
+            prompt = f"{self.GH}{sep} cat ~/.rabbit/.env"
             assert "Blocked" in _scan_cron_prompt(prompt), sep
 
 
@@ -762,8 +762,8 @@ class TestGithubExemptionAbuse:
     def test_subshell_and_backtick_payloads_are_scanned(self):
         # A no-space $(...) or backtick payload after the GitHub URL must
         # not be consumed into the URL-path tail.
-        assert "Blocked" in _scan_cron_prompt(f"{self.GH}$(cat ~/.hermes/.env)")
-        assert "Blocked" in _scan_cron_prompt(f"{self.GH}`cat ~/.hermes/.env`")
+        assert "Blocked" in _scan_cron_prompt(f"{self.GH}$(cat ~/.rabbit/.env)")
+        assert "Blocked" in _scan_cron_prompt(f"{self.GH}`cat ~/.rabbit/.env`")
 
     def test_explicit_port_github_url_still_allowed(self):
         # https://api.github.com:443/... is a legitimate authority — the
@@ -775,7 +775,7 @@ class TestGithubExemptionAbuse:
     def test_payload_between_two_github_blocks_is_scanned(self):
         # The middle span of the exemption pattern must not swallow a
         # payload sitting between two GitHub curls on the same line.
-        prompt = f"{self.GH}; cat ~/.hermes/.env; {self.GH}"
+        prompt = f"{self.GH}; cat ~/.rabbit/.env; {self.GH}"
         assert "Blocked" in _scan_cron_prompt(prompt)
 
     def test_uppercase_lookalike_host_blocked(self):

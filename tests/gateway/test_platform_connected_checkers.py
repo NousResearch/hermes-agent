@@ -39,7 +39,7 @@ def test_all_builtins_have_checker_or_generic_token_path():
     # registry fallback rather than _PLATFORM_CONNECTED_CHECKERS.
     plugin_checker_values: set[str] = set()
     try:
-        from hermes_cli.plugins import discover_plugins
+        from rabbit_cli.plugins import discover_plugins
         from gateway.platform_registry import platform_registry
         discover_plugins()
         for _entry in platform_registry.all_entries():

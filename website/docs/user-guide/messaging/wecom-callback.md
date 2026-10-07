@@ -4,23 +4,23 @@ sidebar_position: 15
 
 # WeCom Callback (Self-Built App)
 
-Connect Hermes to WeCom (Enterprise WeChat) as a self-built enterprise application using the callback/webhook model.
+Connect Rabbit to WeCom (Enterprise WeChat) as a self-built enterprise application using the callback/webhook model.
 
 :::info WeCom Bot vs WeCom Callback
-Hermes supports two WeCom integration modes:
+Rabbit supports two WeCom integration modes:
 - **[WeCom Bot](wecom.md)** — bot-style, connects via WebSocket. Simpler setup, works in group chats.
 - **WeCom Callback** (this page) — self-built app, receives encrypted XML callbacks. Shows as a first-class app in users' WeCom sidebar. Supports multi-corp routing.
 :::
 
 See also: [WeCom Bot](./wecom.md) for the bot-style integration.
 
-> Run `hermes gateway setup` and pick **WeCom Callback** for a guided walk-through.
+> Run `rabbit gateway setup` and pick **WeCom Callback** for a guided walk-through.
 
 ## How It Works
 
 1. You register a self-built application in the WeCom Admin Console
 2. WeCom pushes encrypted XML to your HTTP callback endpoint
-3. Hermes decrypts the message, queues it for the agent
+3. Rabbit decrypts the message, queues it for the agent
 4. Immediately acknowledges (silent — nothing displayed to the user)
 5. The agent processes the request (typically 3–30 minutes)
 6. The reply is delivered proactively via the WeCom `message/send` API
@@ -64,10 +64,10 @@ WECOM_CALLBACK_ALLOWED_USERS=user1,user2
 ### 3. Start the Gateway
 
 ```bash
-hermes gateway
+rabbit gateway
 ```
 
-(Use `hermes gateway start` only after `hermes gateway install` has registered the systemd/launchd service.)
+(Use `rabbit gateway start` only after `rabbit gateway install` has registered the systemd/launchd service.)
 
 The callback adapter starts an HTTP server on the configured port. WeCom will verify the callback URL via a GET request, then begin sending messages via POST.
 
@@ -157,11 +157,11 @@ The crypto implementation is compatible with Tencent's official WXBizMsgCrypt SD
 
 **Signature verification failing.**
 WeCom signs every request with the **Token** you registered in the admin
-console. A mismatch between the token configured in Hermes and the token the
+console. A mismatch between the token configured in Rabbit and the token the
 admin console expects is the most common cause. Re-copy both the **Token** and
 **EncodingAESKey** from the admin console — they're easy to truncate. Whitespace
-in `~/.hermes/.env` values around `=` will also break signature checks. After
-fixing, restart `hermes gateway run`.
+in `~/.rabbit/.env` values around `=` will also break signature checks. After
+fixing, restart `rabbit gateway run`.
 
 **Callback URL not reachable / verification step fails.**
 WeCom hits the public URL you registered. Confirm:
@@ -172,7 +172,7 @@ WeCom hits the public URL you registered. Confirm:
    it just means the listener is reachable).
 
 **Port not reachable / listener not bound.**
-Check `hermes gateway run` logs for the bound host/port. If the adapter bound to
+Check `rabbit gateway run` logs for the bound host/port. If the adapter bound to
 `127.0.0.1` you must front it with a reverse proxy or tunnel — WeCom's servers
 can't reach loopback. Leave `extra.host` unset so the default dual-stack
 bind (all interfaces, IPv4+IPv6) applies, or pin an interface in `config.yaml` (plus

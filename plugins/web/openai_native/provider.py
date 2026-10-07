@@ -1,7 +1,7 @@
 """OpenAI native web search — declares the Responses API server-side ``web_search`` built-in.
 
 Config: ``web.search_backend: openai-native`` (or ``web.backend``).
-Auth: openai-codex OAuth (``hermes auth add openai-codex``); no API key of its own.
+Auth: openai-codex OAuth (``rabbit auth add openai-codex``); no API key of its own.
 
 Unlike every other provider here, this one never executes a search itself. Selecting it
 tells the Codex Responses transport to declare the provider-executed ``web_search`` tool
@@ -37,16 +37,16 @@ def has_codex_credentials() -> bool:
 
     Mirrors ``tools/xai_http.has_xai_credentials`` — deliberately avoids
     ``resolve_codex_runtime_credentials`` (disk locks, OAuth network refresh), because
-    this runs on every ``hermes tools`` repaint. Checks, fast-to-slow:
+    this runs on every ``rabbit tools`` repaint. Checks, fast-to-slow:
     ``providers.openai-codex.tokens.access_token`` in ``auth.json``, then any
     ``credential_pool.openai-codex`` entry carrying an ``access_token`` (pool-only
     multi-account grants never write the providers singleton). Returns False on any
     exception so a corrupted auth store cannot block other availability scans.
     """
     try:
-        from hermes_constants import get_hermes_home
+        from rabbit_constants import get_rabbit_home
 
-        auth_path = get_hermes_home() / "auth.json"
+        auth_path = get_rabbit_home() / "auth.json"
         if not auth_path.exists():
             return False
         store = json.loads(auth_path.read_text(encoding="utf-8-sig"))

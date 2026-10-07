@@ -14,16 +14,16 @@ def test_running_bot_desktop_display_rides_along(monkeypatch):
         monkeypatch,
         {
             "DISPLAY": ":20",
-            "XAUTHORITY": "/run/hermes/bot-desktop/xauth",
-            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/hermes/bot-desktop/bus",
+            "XAUTHORITY": "/run/rabbit/bot-desktop/xauth",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/rabbit/bot-desktop/bus",
         },
     )
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     env = _make_run_env({})
     assert env["DISPLAY"] == ":20"
-    assert env["XAUTHORITY"] == "/run/hermes/bot-desktop/xauth"
-    assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/hermes/bot-desktop/bus"
+    assert env["XAUTHORITY"] == "/run/rabbit/bot-desktop/xauth"
+    assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/rabbit/bot-desktop/bus"
     # X11 desktop: a leaked Wayland socket flips GTK/Chromium backends
     assert "WAYLAND_DISPLAY" not in env
 

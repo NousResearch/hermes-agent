@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_constants import FINISH_REASON_LENGTH
+from rabbit_constants import FINISH_REASON_LENGTH
 
 
 class _AgentStandIn:

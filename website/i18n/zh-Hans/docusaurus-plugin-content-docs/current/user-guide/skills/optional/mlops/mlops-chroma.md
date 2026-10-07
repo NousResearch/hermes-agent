@@ -14,7 +14,7 @@ description: "面向 AI 应用的开源 embedding 数据库"
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/chroma` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/chroma` 安装 |
 | 路径 | `optional-skills/mlops/chroma` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "面向 AI 应用的开源 embedding 数据库"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Chroma - 开源 Embedding 数据库

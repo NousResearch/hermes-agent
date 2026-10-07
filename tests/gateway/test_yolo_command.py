@@ -13,11 +13,11 @@ from tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 @pytest.fixture(autouse=True)
 def _clean_yolo_state(monkeypatch):
-    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.delenv("RABBIT_YOLO_MODE", raising=False)
     disable_session_yolo("agent:main:telegram:dm:chat-a")
     disable_session_yolo("agent:main:telegram:dm:chat-b")
     yield
-    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    monkeypatch.delenv("RABBIT_YOLO_MODE", raising=False)
     disable_session_yolo("agent:main:telegram:dm:chat-a")
     disable_session_yolo("agent:main:telegram:dm:chat-b")
 
@@ -52,9 +52,9 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
 
     assert is_session_yolo_enabled(session_a) is True
     assert is_session_yolo_enabled(session_b) is False
-    assert os.environ.get("HERMES_YOLO_MODE") is None
+    assert os.environ.get("RABBIT_YOLO_MODE") is None
 
     await runner._handle_yolo_command(event_a)
 
     assert is_session_yolo_enabled(session_a) is False
-    assert os.environ.get("HERMES_YOLO_MODE") is None
+    assert os.environ.get("RABBIT_YOLO_MODE") is None

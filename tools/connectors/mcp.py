@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_constants import hermes_home_key
+from rabbit_constants import rabbit_home_key
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.gateway.config import operation_session_key
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
@@ -44,13 +44,13 @@ NO_CARD_NOTE = (
 
 
 def _catalog_names() -> List[str]:
-    from hermes_cli.mcp_catalog import list_catalog
+    from rabbit_cli.mcp_catalog import list_catalog
 
     return sorted(e.name for e in list_catalog())
 
 
 def _configured_names() -> List[str]:
-    from hermes_cli.mcp_catalog import installed_servers
+    from rabbit_cli.mcp_catalog import installed_servers
 
     return sorted(installed_servers())
 
@@ -90,7 +90,7 @@ def validate_mcp_names(action: str, names: List[str]) -> Optional[str]:
 
 
 def _catalog_entry(name: str):
-    from hermes_cli.mcp_catalog import get_entry
+    from rabbit_cli.mcp_catalog import get_entry
 
     entry = get_entry(name)
     if entry is None:
@@ -103,7 +103,7 @@ class _CatalogBackend:
 
     def required_env(self, name: str) -> List[Dict[str, Any]]:
         """The credentials the catalog entry declares that have no value yet."""
-        from hermes_cli.config import get_env_value
+        from rabbit_cli.config import get_env_value
 
         return [{"name": spec.name, "prompt": spec.prompt, "required": spec.required,
                  "secret": spec.secret, "default": "" if spec.secret else spec.default}
@@ -117,14 +117,14 @@ class _CatalogBackend:
 
     def installs_with_oauth(self, name: str) -> bool:
         """A catalog entry whose own OAuth the card must run. Provider-mediated OAuth is not one:
-        its token comes from ``hermes auth <provider>``, so the plain probe covers it."""
+        its token comes from ``rabbit auth <provider>``, so the plain probe covers it."""
         auth = _catalog_entry(name).auth
         return auth.type == "oauth" and not auth.provider
 
     def start_install_oauth(self, name: str, env: Dict[str, str]) -> Any:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
-        from hermes_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
+        from rabbit_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
         from tools.connectors import mcp_oauth
 
         fresh = not is_installed(name)
@@ -149,7 +149,7 @@ class _CatalogBackend:
         """Probe the entry's in-memory configuration with ephemeral credentials; save both only
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
         previous configuration. A first install is recorded once as an extension install."""
-        from hermes_cli.mcp_catalog import recorded_catalog_install
+        from rabbit_cli.mcp_catalog import recorded_catalog_install
 
         with recorded_catalog_install(name):
             return self._install(name, env)
@@ -157,8 +157,8 @@ class _CatalogBackend:
     def _install(self, name: str, env: Dict[str, str]) -> List[str]:
         from agent.secret_scope import (
             current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
-        from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
-        from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
+        from rabbit_cli.mcp_catalog import _inline_non_secret_value, card_install_config
+        from rabbit_cli.mcp_config import _probe_single_server, _save_mcp_server
 
         entry = _catalog_entry(name)
         _check_declared(name, entry, env)
@@ -187,8 +187,8 @@ class _CatalogBackend:
         """Flip ``enabled`` under the scope and lock the dashboard's toggle route uses
         (``PUT /api/mcp/servers/{name}/enabled``): the two read-modify-write paths run in one
         process, so an unserialised write here drops whichever landed first."""
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.web_routers._common import config_write_scope
+        from rabbit_cli.config import load_config, save_config
+        from rabbit_cli.web_routers._common import config_write_scope
 
         with config_write_scope(None):
             config = load_config()
@@ -202,7 +202,7 @@ class _CatalogBackend:
 def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
     """Configuring one MCP is not a general env-writing primitive: refuse the whole map before the
     first write if any key is undeclared or unwritable."""
-    from hermes_cli.config import validate_env_var_name_for_write
+    from rabbit_cli.config import validate_env_var_name_for_write
 
     declared = {spec.name for spec in (entry.auth.env or [])}
     for key in env:
@@ -212,7 +212,7 @@ def _check_declared(name: str, entry: Any, env: Dict[str, str]) -> None:
 
 
 def _save_env(env: Dict[str, str]) -> None:
-    from hermes_cli.config import save_env_value
+    from rabbit_cli.config import save_env_value
 
     for key, value in env.items():
         if value:
@@ -347,7 +347,7 @@ def _late_key(operation: ConnectionOperation) -> Tuple[str, str]:
     """The ``(profile, session)`` pairing ``live.open`` keys an operation by. ``profile_key``
     is stamped there; the detached no-card path never opens, so fall back to the calling
     thread's home — ``close`` runs on the tool thread under the turn's profile scope."""
-    return (operation.profile_key or hermes_home_key(), operation.session_key)
+    return (operation.profile_key or rabbit_home_key(), operation.session_key)
 
 
 # (profile key, session key) -> {server: attempt} for OAuth attempts that outlived their card.
@@ -362,7 +362,7 @@ def adopt_late_connections(agent: Any) -> List[str]:
     them to the agent's toolset selection. Runs between turns, so the result that said "not
     connected" is followed by a turn in which the tools are there."""
     session_key = operation_session_key(getattr(agent, "session_id", None))
-    key = (hermes_home_key(), session_key)
+    key = (rabbit_home_key(), session_key)
     attempts = _LATE_ATTEMPTS.get(key)
     if not attempts:
         return []
@@ -426,7 +426,7 @@ def _detail(exc: Any, runner: _Runner, target: Target) -> str:
 
 def _catalog_instructions(name: str) -> str:
     """The manifest's ``post_install`` text for a catalog name; a custom configured server has none."""
-    from hermes_cli.mcp_catalog import get_entry
+    from rabbit_cli.mcp_catalog import get_entry
 
     entry = get_entry(name)
     return str(entry.post_install or "") if entry is not None else ""
@@ -629,10 +629,10 @@ def _install_now(runner: _Runner, operation: ConnectionOperation, target: Target
         _fail(operation, target, _detail(exc, runner, target))
         return
     if missing:
-        from hermes_constants import display_hermes_home
+        from rabbit_constants import display_rabbit_home
 
         _fail(operation, target, f"set {', '.join(missing)} in the environment or "
-                                 f"{display_hermes_home()}/.env, then install again")
+                                 f"{display_rabbit_home()}/.env, then install again")
         return
     actor = _actor(target)
     if _installs_with_oauth(runner, target):

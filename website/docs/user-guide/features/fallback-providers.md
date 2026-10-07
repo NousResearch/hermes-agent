@@ -7,7 +7,7 @@ sidebar_position: 8
 
 # Fallback Providers
 
-Hermes Agent has three layers of resilience that keep your sessions running when providers hit issues:
+Rabbit Agent has three layers of resilience that keep your sessions running when providers hit issues:
 
 1. **[Credential pools](./credential-pools.md)** — rotate across multiple API keys for the *same* provider (tried first)
 2. **Primary model fallback** — automatically switches to a *different* provider:model when your main model fails
@@ -17,19 +17,19 @@ Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys).
 
 ## Primary Model Fallback
 
-When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can automatically switch to a backup provider:model pair mid-session without losing your conversation.
+When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Rabbit can automatically switch to a backup provider:model pair mid-session without losing your conversation.
 
 ### Configuration
 
 The easiest path is the interactive manager:
 
 ```bash
-hermes fallback
+rabbit fallback
 ```
 
-`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
+`rabbit fallback` reuses the provider picker from `rabbit model` — same provider list, same credential prompts, same validation. Use the subcommands `add`, `list` (alias `ls`), `remove` (alias `rm`), and `clear` to manage the chain. Changes persist under the top-level `fallback_providers:` list in `config.yaml`.
 
-If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.hermes/config.yaml`:
+If you'd rather edit the YAML directly, add a top-level `fallback_providers` list to `~/.rabbit/config.yaml`:
 
 ```yaml
 fallback_providers:
@@ -56,7 +56,7 @@ client, including its `generationConfig.thinkingConfig` translation. A custom
 OpenAI-compatible base URL continues to use the compatible client instead.
 
 :::note `fallback_model` vs `fallback_providers`
-`fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
+`fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Rabbit still honors it for back-compat, but `rabbit fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::
 
 ### Supported Providers
@@ -65,8 +65,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 |----------|-------|-------------|
 | AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
-| Nous Portal | `nous` | `hermes setup --portal` (fresh) or `hermes auth add nous` (OAuth) |
-| OpenAI Codex | `openai-codex` | `hermes model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
+| OpenAI Codex | `openai-codex` | `rabbit model` → **ChatGPT or Codex Subscription** (ChatGPT OAuth) |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` or Claude Code credentials |
@@ -82,10 +81,10 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
 | Google AI Studio | `gemini` | `GOOGLE_API_KEY` (alias: `GEMINI_API_KEY`) |
 | xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
-| xAI Grok OAuth (SuperGrok) | `xai-oauth` (alias `grok-oauth`) | `hermes model` → xAI Grok OAuth (browser login; SuperGrok subscription) |
+| xAI Grok OAuth (SuperGrok) | `xai-oauth` (alias `grok-oauth`) | `rabbit model` → xAI Grok OAuth (browser login; SuperGrok subscription) |
 | AWS Bedrock | `bedrock` | Standard boto3 auth (`AWS_REGION` + `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`) |
-| Qwen Portal (OAuth) | `qwen-oauth` | `hermes model` (Qwen Portal OAuth; optional: `HERMES_QWEN_BASE_URL`) |
-| MiniMax (OAuth) | `minimax-oauth` | `hermes model` (MiniMax portal OAuth) |
+| Qwen Portal (OAuth) | `qwen-oauth` | `rabbit model` (Qwen Portal OAuth; optional: `RABBIT_QWEN_BASE_URL`) |
+| MiniMax (OAuth) | `minimax-oauth` | `rabbit model` (MiniMax portal OAuth) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | CommandCode | `commandcode` (alias `commandcode-chat`; Claude via `commandcode-anthropic`) | `COMMANDCODE_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
@@ -103,7 +102,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | Tencent TokenPlan | `tencent-tokenplan` | `TOKENPLAN_API_KEY` |
 | Microsoft Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
-| Local llama.cpp (managed) | `llamacpp` (aliases `llama.cpp`, `llama-cpp`) | The local model server Hermes manages (Desktop **Settings → Providers → Local models**), no `base_url` needed. If it is not running the entry is skipped — Hermes never sends the local model name to another provider |
+| Local llama.cpp (managed) | `llamacpp` (aliases `llama.cpp`, `llama-cpp`) | The local model server Rabbit manages (Desktop **Settings → Providers → Local models**), no `base_url` needed. If it is not running the entry is skipped — Rabbit never sends the local model name to another provider |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 | Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
@@ -128,9 +127,9 @@ The fallback activates automatically when the primary model fails with:
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
-- **Invalid responses** — when the API returns malformed or empty responses repeatedly. An HTTP-200 body whose only assistant text is a router's `Connect timeout, please try again later.` with zero completion tokens counts as invalid too (streamed or not, in the main loop, the iteration-limit summary and auxiliary calls), so it is retried instead of shown as the answer. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried. On the native Anthropic wire a `stop_reason: refusal` arrives with an empty body; Hermes reports the reason from the response's `stop_details` (category and, when present, explanation) in the refusal message and in the log line (`native_stop_reason=… stop_details=…`).
+- **Invalid responses** — when the API returns malformed or empty responses repeatedly. An HTTP-200 body whose only assistant text is a router's `Connect timeout, please try again later.` with zero completion tokens counts as invalid too (streamed or not, in the main loop, the iteration-limit summary and auxiliary calls), so it is retried instead of shown as the answer. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried. On the native Anthropic wire a `stop_reason: refusal` arrives with an empty body; Rabbit reports the reason from the response's `stop_details` (category and, when present, explanation) in the refusal message and in the log line (`native_stop_reason=… stop_details=…`).
 
-When triggered, Hermes:
+When triggered, Rabbit:
 
 1. Resolves credentials for the fallback provider (including named custom providers using `key_cmd`)
 2. Builds a new API client, preserving a dynamic credential source across timeout and request-client rebuilds
@@ -140,16 +139,16 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-The same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `hermes chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
+The same re-resolution happens when the CLI falls back at **startup** because the primary provider's auth fails before the first request: the fallback model is sent its own configured effort, not the primary's. An explicit `rabbit chat --reasoning <level>` is kept across that startup switch — it is your intent for the run.
 
 :::warning Fallback resets the prompt cache
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
 :::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Rabbit tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 
-The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
+The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Rabbit skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
 
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
@@ -165,17 +164,6 @@ model:
 fallback_providers:
   - provider: openrouter
     model: anthropic/claude-sonnet-4
-```
-
-**Nous Portal as fallback for OpenRouter:**
-```yaml
-model:
-  provider: openrouter
-  default: anthropic/claude-opus-4
-
-fallback_providers:
-  - provider: nous
-    model: nous-hermes-3
 ```
 
 **Local model as fallback for cloud:**
@@ -198,7 +186,7 @@ fallback_providers:
 
 | Context | Fallback Supported |
 |---------|-------------------|
-| CLI sessions (interactive and `hermes -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
+| CLI sessions (interactive and `rabbit -z` one-shot) | ✔ (at startup when the primary's credentials/quota fail, mid-session, and a chain added or edited while a chat is open applies from its next turn) |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
@@ -206,14 +194,14 @@ fallback_providers:
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
 :::tip
-There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `hermes fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
+There are no environment variables for the primary fallback chain — configure it exclusively through `config.yaml` or `rabbit fallback`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
 :::
 
 ---
 
 ## Auxiliary Task Fallback
 
-Hermes uses separate lightweight models for side tasks. Each task has its own provider resolution chain that acts as a built-in fallback system.
+Rabbit uses separate lightweight models for side tasks. Each task has its own provider resolution chain that acts as a built-in fallback system.
 
 ### Tasks with Independent Provider Resolution
 
@@ -226,11 +214,11 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
 | Review | `/review` reviewer subagent (full agent, not a single LLM call) | `auxiliary.review` |
-| Triage Specifier | `hermes kanban specify` / dashboard ✨ button — fleshes out a one-liner triage task into a real spec | `auxiliary.triage_specifier` |
+| Triage Specifier | `rabbit kanban specify` / dashboard ✨ button — fleshes out a one-liner triage task into a real spec | `auxiliary.triage_specifier` |
 
 ### Auto-Detection Chain
 
-When a task's provider is set to `"auto"` (the default), Hermes first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Hermes follows your configured fallback policy and then stops:
+When a task's provider is set to `"auto"` (the default), Rabbit first tries the main provider + main model for that auxiliary task. If that route is unavailable or later fails with a capacity-style error, Rabbit follows your configured fallback policy and then stops:
 
 ```text
 Main provider + main model → auxiliary.<task>.fallback_chain →
@@ -244,18 +232,18 @@ The task-specific chain is most precise and wins when present. The top-level `fa
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**
 
 ```text
-OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
+OpenRouter → Custom endpoint → Codex OAuth →
 API-key providers (z.ai, Kimi, MiniMax, Xiaomi MiMo, Hugging Face, Anthropic) → give up
 ```
 
 **Built-in vision discovery chain:**
 
 ```text
-Main provider (if vision-capable) → OpenRouter → Nous Portal →
+Main provider (if vision-capable) → OpenRouter →
 Codex OAuth → Anthropic → Custom endpoint → give up
 ```
 
-Those built-in chains run **only when no main provider is selected** (`model.provider: auto` or unset). Once you have picked a main provider, an unavailable main route with no `fallback_chain` / `fallback_providers` skips the auxiliary task with a warning instead of guessing another provider you happen to be logged into — an expired xAI or Codex session must never bill your Nous Portal or OpenRouter balance behind your back. Declare a fallback if you want one.
+Those built-in chains run **only when no main provider is selected** (`model.provider: auto` or unset). Once you have picked a main provider, an unavailable main route with no `fallback_chain` / `fallback_providers` skips the auxiliary task with a warning instead of guessing another provider you happen to be logged into — an expired xAI or Codex session must never bill your OpenRouter balance behind your back. Declare a fallback if you want one.
 
 ### Configuring Auxiliary Providers
 
@@ -264,7 +252,7 @@ Each task can be configured independently in `config.yaml`:
 ```yaml
 auxiliary:
   vision:
-    provider: "auto"              # auto | openrouter | nous | codex | main | anthropic
+    provider: "auto"              # auto | openrouter | codex | main | anthropic
     model: ""                     # e.g. "openai/gpt-4o"
     base_url: ""                  # direct endpoint (takes precedence over provider)
     api_key: ""                   # API key for base_url
@@ -316,8 +304,7 @@ These options apply to `auxiliary:`, `compression:`, and `fallback_providers:` e
 |----------|-------------|-------------|
 | `"auto"` | Try providers in order until one works (default) | At least one provider configured |
 | `"openrouter"` | Force OpenRouter | `OPENROUTER_API_KEY` |
-| `"nous"` | Force Nous Portal | `hermes auth` |
-| `"codex"` | Force Codex OAuth | `hermes model` → ChatGPT or Codex Subscription |
+| `"codex"` | Force Codex OAuth | `rabbit model` → ChatGPT or Codex Subscription |
 | `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
 | `"llamacpp"` | Force the managed local llama.cpp server | Local model server running; when it is off, the local model name is never sent to another provider |
@@ -334,18 +321,18 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`. Hermes uses the configured `api_key` for authentication, falling back to `OPENAI_API_KEY` if not set. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
+`base_url` takes precedence over `provider`. Rabbit uses the configured `api_key` for authentication, falling back to `OPENAI_API_KEY` if not set. It does **not** reuse `OPENROUTER_API_KEY` for custom endpoints.
 
 ---
 
 ## Auxiliary Capacity-Error Fallback
 
-When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: glm`), Hermes treats that as your preferred choice — but if the provider literally cannot serve the request because of a **capacity error** (HTTP 402 payment required, HTTP 429 daily-quota exhaustion, connection failure), Hermes falls back through a layered chain instead of failing silently:
+When you set an explicit auxiliary provider (e.g. `auxiliary.vision.provider: glm`), Rabbit treats that as your preferred choice — but if the provider literally cannot serve the request because of a **capacity error** (HTTP 402 payment required, HTTP 429 daily-quota exhaustion, connection failure), Rabbit falls back through a layered chain instead of failing silently:
 
 1. **Primary aux provider** — the one you configured (tried first, always)
 2. **`auxiliary.<task>.fallback_chain`** — your per-task override list, if you wrote one
 3. **Main agent provider + model** — last-resort safety net (always tried, even if you didn't write a chain)
-4. **Warn + re-raise** — if every layer fails, Hermes logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
+4. **Warn + re-raise** — if every layer fails, Rabbit logs `Auxiliary <task>: ... all fallbacks exhausted` at WARNING level and re-raises the original error
 
 Transient HTTP 429 rate limits (`Retry-After: ...`) are treated as request constraints, not capacity problems — they respect your explicit provider choice and do **not** trigger the fallback ladder. Only daily/monthly quota exhaustion, payment errors, and connection failures bypass the explicit-provider gate.
 
@@ -365,8 +352,8 @@ auxiliary:
     fallback_chain:
       - provider: openrouter
         model: google/gemini-3-flash-preview
-      - provider: nous
-        model: anthropic/claude-sonnet-4
+      - provider: anthropic
+        model: claude-sonnet-4
 
   compression:
     provider: openrouter
@@ -382,13 +369,13 @@ Each `fallback_chain` entry may also declare its own `timeout` (seconds). Withou
 
 ### Provider quota errors that trigger fallback
 
-Hermes recognizes these as capacity-equivalent to 402 credit exhaustion (not transient rate limits):
+Rabbit recognizes these as capacity-equivalent to 402 credit exhaustion (not transient rate limits):
 
 - Bedrock / LiteLLM: `Too many tokens per day`, `daily limit`, `tokens per day`
 - Vertex AI / GCP: `quota exceeded`, `resource exhausted`, `RESOURCE_EXHAUSTED`
 - Generic: `daily quota`, `quota_exceeded`
 
-If your provider returns a different phrase for daily-quota exhaustion and Hermes doesn't trigger fallback, that's a bug — open an issue with the exact error string.
+If your provider returns a different phrase for daily-quota exhaustion and Rabbit doesn't trigger fallback, that's a bug — open an issue with the exact error string.
 
 ---
 
@@ -399,7 +386,7 @@ Context compression uses the `auxiliary.compression` config block to control whi
 ```yaml
 auxiliary:
   compression:
-    provider: "auto"                              # auto | openrouter | nous | main
+    provider: "auto"                              # auto | openrouter | main
     model: "google/gemini-3-flash-preview"
 ```
 
@@ -407,7 +394,7 @@ auxiliary:
 Older configs with `compression.summary_model` / `compression.summary_provider` / `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17).
 :::
 
-If no provider is available for compression, Hermes drops middle conversation turns without generating a summary rather than failing the session.
+If no provider is available for compression, Rabbit drops middle conversation turns without generating a summary rather than failing the session.
 
 ---
 

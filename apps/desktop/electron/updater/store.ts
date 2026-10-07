@@ -72,7 +72,7 @@ export class StoreStrategy implements UpdaterStrategy {
         await stop()
         this.deps.emitProgress({
           stage: 'restart',
-          message: 'Microsoft Store is installing the update. Hermes will reopen.',
+          message: 'Microsoft Store is installing the update. Rabbit will reopen.',
           percent: null
         })
         const installed = await this.deps.run('install')

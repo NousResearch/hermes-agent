@@ -1,13 +1,13 @@
 name: sketch-pad
-repo: https://github.com/aydnOktay/hermes-sketch-pad
+repo: https://github.com/aydnOktay/rabbit-sketch-pad
 sha: de7cd07ff29666ca1bcc3897f13b39f9472fab55
-description: Draw a shape on a Desktop pad and attach the PNG to the next Hermes
+description: Draw a shape on a Desktop pad and attach the PNG to the next Rabbit
   chat message. For "what is this shape" when you have no photo.
 maintainer: aydnOktay
 tier: community
 category: desktop
-requires_hermes: ">=0.21"
-docs_url: https://github.com/aydnOktay/hermes-sketch-pad
+requires_rabbit: ">=0.21"
+docs_url: https://github.com/aydnOktay/rabbit-sketch-pad
 version: "0.1.1"
 platforms: []
 capabilities:

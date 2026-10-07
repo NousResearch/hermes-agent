@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_constants import PARTIAL_STREAM_STUB_ID
+from rabbit_constants import PARTIAL_STREAM_STUB_ID
 from run_agent import AIAgent
 
 
@@ -22,7 +22,7 @@ def _stream_response(monkeypatch, arguments, finish_reason=None):
     )
     agent.api_mode = "chat_completions"
     agent._interrupt_requested = False
-    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+    monkeypatch.setenv("RABBIT_STREAM_RETRIES", "0")
 
     def chunk(calls=None, reason=None):
         delta = SimpleNamespace(content=None, tool_calls=calls, reasoning_content=None, reasoning=None)

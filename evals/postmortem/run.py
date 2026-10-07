@@ -6,7 +6,7 @@
     python -m evals.postmortem.run --repo A --live                       # also the probes that spend money
 
 Each probe is a standalone script run in a fresh interpreter with the target checkout on sys.path and a
-temp HERMES_HOME (probes that need real credentials say so and are only run with --live). A probe
+temp RABBIT_HOME (probes that need real credentials say so and are only run with --live). A probe
 "passes" when its process exits 0 AND its stdout contains the expected marker documented in
 PROBES below; the marker is the behaviour the corresponding PR fixed. Run the forensics lanes
 separately (they need a state.db copy): see forensics/README section in ../README.md.
@@ -44,7 +44,7 @@ PROBES = [
 
 def run_probe(script: str, args: list[str], repo: str, timeout: int = 240) -> tuple[int, str]:
     env = dict(os.environ)
-    env.setdefault("HERMES_HOME", tempfile.mkdtemp(prefix="pm-probe-"))
+    env.setdefault("RABBIT_HOME", tempfile.mkdtemp(prefix="pm-probe-"))
     env["PYTHONPATH"] = repo + os.pathsep + env.get("PYTHONPATH", "")
     cmd = [sys.executable, str(HERE / script), *[a.format(repo=repo) for a in args]]
     try:

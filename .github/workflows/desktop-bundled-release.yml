@@ -46,7 +46,7 @@ name: Desktop Bundled Release
 # dependency caches. Their receipts use releases/channel-builds/<id>/; only the
 # trusted publish-channel controller may CAS the channel after all smoke passes.
 #
-# Payload staging is `hermes pm bundle` on the native runner. There is
+# Payload staging is `rabbit pm bundle` on the native runner. There is
 # no cross-target staging. The darwin legs sign (CSC_LINK) and notarize
 # (afterSign notarize.mjs) when the release-signing environment carries the
 # Apple credentials. Downloadable commit artifacts require the same signing
@@ -150,7 +150,7 @@ on:
         type: string
         default: ''
       branding:
-        description: 'Channel app name, icon and package ID: preview (own app) or stable (the regular Hermes app). Fixed when the channel is first created.'
+        description: 'Channel app name, icon and package ID: preview (own app) or stable (the regular Rabbit app). Fixed when the channel is first created.'
         required: false
         type: choice
         options: [preview, stable]
@@ -457,14 +457,14 @@ jobs:
             runner: windows-latest-32-core
     env: &win32-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
-      HERMES_DESKTOP_VARIANT: bundled
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_DESKTOP_VARIANT: bundled
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
       RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
       # Archive ref for handoff stage/fetch: attempt ref for stable phases.
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
-      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
-      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      RABBIT_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      RABBIT_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # Signature outputs are separate from the prepared dependency snapshot.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
@@ -554,11 +554,11 @@ jobs:
         id: prepare
         shell: bash
         env:
-          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RABBIT_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
         run: |
-          args=(--tag "$HERMES_PAYLOAD_TAG")
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
-          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
+          args=(--tag "$RABBIT_PAYLOAD_TAG")
+          if [ -n "$RABBIT_BUILD_COMMIT" ]; then args=(--commit "$RABBIT_BUILD_COMMIT"); fi
+          if [ -n "$RABBIT_RELEASE_COMMIT" ]; then args+=(--release-commit "$RABBIT_RELEASE_COMMIT"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
@@ -645,7 +645,7 @@ jobs:
         shell: powershell
         timeout-minutes: 900
         env:
-          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RABBIT_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           PYTHONUTF8: '1'
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
           AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
@@ -657,7 +657,7 @@ jobs:
         run: |
           python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
+          if (-not $env:CHANNEL_BUILD -and -not $env:RABBIT_BUILD_COMMIT -and $env:RABBIT_PAYLOAD_TAG -notlike "*+canary.*") {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -704,7 +704,7 @@ jobs:
       - name: Stage Windows packages to R2
         # A channel dispatch carries build_commit as provenance, not as the
         # receipt mode: its packages are staged by the pinned channel request
-        # step above, and HERMES_PAYLOAD_TAG/HERMES_BUILD_COMMIT are both
+        # step above, and RABBIT_PAYLOAD_TAG/RABBIT_BUILD_COMMIT are both
         # empty here. Without this gate the step falls through to the tag
         # branch and handoff refuses an empty tag.
         if: needs.validate.outputs.channel-build == '' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
@@ -720,19 +720,19 @@ jobs:
         # appears after the selected packages (including Store on stable) upload.
         run: |
           args=(--include '*.msix')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$RABBIT_DESKTOP_VARIANT" = bundled ] && [[ "$RABBIT_PAYLOAD_TAG" == *+canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root apps/desktop/release --tag "$RABBIT_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+          if [ -n "$RABBIT_BUILD_COMMIT" ]; then
             # Commit-only mode: schema-2 receipts under releases/commit/<sha>/.
-            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+            python -m scripts.releases.handoff stage --commit-build "$RABBIT_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           else
-            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${RABBIT_ARCHIVE_TAG:-$RABBIT_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
@@ -865,14 +865,14 @@ jobs:
             runner: macos-15
     env: &darwin-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
-      HERMES_DESKTOP_VARIANT: bundled
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_DESKTOP_VARIANT: bundled
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
       RELEASE_CLAIM_TAG: ${{ inputs.claim-tag }}
       # Archive ref for handoff stage/fetch: attempt ref for stable phases.
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
-      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
-      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      RABBIT_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      RABBIT_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
     steps: &darwin-steps
@@ -947,11 +947,11 @@ jobs:
         id: prepare
         shell: bash
         env:
-          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RABBIT_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
         run: |
-          args=(--tag "$HERMES_PAYLOAD_TAG")
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then args=(--commit "$HERMES_BUILD_COMMIT"); fi
-          if [ -n "$HERMES_RELEASE_COMMIT" ]; then args+=(--release-commit "$HERMES_RELEASE_COMMIT"); fi
+          args=(--tag "$RABBIT_PAYLOAD_TAG")
+          if [ -n "$RABBIT_BUILD_COMMIT" ]; then args=(--commit "$RABBIT_BUILD_COMMIT"); fi
+          if [ -n "$RABBIT_RELEASE_COMMIT" ]; then args+=(--release-commit "$RABBIT_RELEASE_COMMIT"); fi
           if [ -n "${CHANNEL_BUILD:-}" ]; then args=(--channel-request "$RUNNER_TEMP/channel-request.json"); fi
           python3 scripts/bundles/desktop.py "${args[@]}" --variant bundled --prepare-only \
             --work "$RUNNER_TEMP/desktop-job" --cache "$GITHUB_WORKSPACE/.cache/desktop-inputs"
@@ -1039,7 +1039,7 @@ jobs:
         shell: bash
         timeout-minutes: 330
         env:
-          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RABBIT_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           PYTHONUTF8: '1'
           # electron-osx-sign*/electron-notarize* keep the sign+notarize
           # phase visible: without them NOTHING logs between "signing
@@ -1135,20 +1135,20 @@ jobs:
         # Per-arch feed inputs stay in the tag archive until both legs pass.
         run: |
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
+          if [ "$RELEASE_PHASE" = candidate ] || { [ "$RABBIT_DESKTOP_VARIANT" = bundled ] && [[ "$RABBIT_PAYLOAD_TAG" == *+canary.* ]]; }; then
             python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-              --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root apps/desktop/release --tag "$RABBIT_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
           fi
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
+          if [ -n "$RABBIT_BUILD_COMMIT" ]; then
             # Commit-only mode: binaries only — no feed yml exists without a tag.
-            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+            python -m scripts.releases.handoff stage --commit-build "$RABBIT_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release \
               --include '*.dmg' --include '*.zip' --include '*.blockmap'
           else
-            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${RABBIT_ARCHIVE_TAG:-$RABBIT_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name "$TARGET" --root apps/desktop/release "${args[@]}"
           fi
 
@@ -1485,11 +1485,11 @@ jobs:
     env:
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       CHANNEL_REQUEST_SHA256: ${{ needs.validate.outputs.channel-request-sha256 }}
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
       # Archive ref for the universal-bundle handoff: attempt ref for stable.
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
-      HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      RABBIT_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -1571,12 +1571,12 @@ jobs:
           if [ -n "${CHANNEL_BUILD:-}" ]; then
             python -m scripts.releases.handoff fetch --channel-request "$RUNNER_TEMP/channel-request.json" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
-          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
-            python -m scripts.releases.handoff fetch --commit-build "$HERMES_BUILD_COMMIT" \
+          elif [ -n "$RABBIT_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff fetch --commit-build "$RABBIT_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
           else
-            python -m scripts.releases.handoff fetch --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff fetch --tag "${RABBIT_ARCHIVE_TAG:-$RABBIT_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name win32-x64 --name win32-arm64 --root apps/desktop/release --include '*.msix'
           fi
 
@@ -1614,15 +1614,15 @@ jobs:
             node scripts/stage-msixbundle.mjs --channel-request "$RUNNER_TEMP/channel-request.json" --variant bundled
             exit 0
           fi
-          if [ -n "$HERMES_BUILD_COMMIT" ]; then
-            node scripts/stage-msixbundle.mjs --commit "$HERMES_BUILD_COMMIT" --version "$HERMES_PAYLOAD_VERSION" --variant bundled --no-upload
+          if [ -n "$RABBIT_BUILD_COMMIT" ]; then
+            node scripts/stage-msixbundle.mjs --commit "$RABBIT_BUILD_COMMIT" --version "$RABBIT_PAYLOAD_VERSION" --variant bundled --no-upload
             exit 0
           fi
           args=()
           if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
-          node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
+          node scripts/stage-msixbundle.mjs --tag "$RABBIT_PAYLOAD_TAG" --variant bundled "${args[@]}"
           if [ "$RELEASE_PHASE" = candidate ]; then
-            node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
+            node scripts/bundle-store-msixbundle.mjs --tag "$RABBIT_PAYLOAD_TAG"
           fi
 
       - name: Stage universal bundles to R2
@@ -1633,12 +1633,12 @@ jobs:
           if [ -n "${CHANNEL_BUILD:-}" ]; then
             python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
-          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
-            python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+          elif [ -n "$RABBIT_BUILD_COMMIT" ]; then
+            python -m scripts.releases.handoff stage --commit-build "$RABBIT_BUILD_COMMIT" \
               --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           else
-            python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+            python -m scripts.releases.handoff stage --tag "${RABBIT_ARCHIVE_TAG:-$RABBIT_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
               --name windows-universal --root apps/desktop/release --include '*.msixbundle'
           fi
 
@@ -1734,8 +1734,8 @@ jobs:
       group: win32-updater-feed-canary
       cancel-in-progress: false
     env:
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      HERMES_DESKTOP_VARIANT: bundled
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_DESKTOP_VARIANT: bundled
       RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -1754,8 +1754,8 @@ jobs:
       - name: Retrieve the tested universal bundle
         shell: bash
         run: |
-          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            --name windows-universal --root staged --include 'HermesBundled-*-win.msixbundle'
+          python -m scripts.releases.handoff fetch --tag "$RABBIT_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+            --name windows-universal --root staged --include 'RabbitBundled-*-win.msixbundle'
       - name: Publish identical tested bytes without rebuilding
         shell: bash
         run: |
@@ -1770,10 +1770,10 @@ jobs:
           from pathlib import Path
           from scripts.bundles.release_artifacts import main, single
           expected = json.loads(Path('staged/expected-identity.json').read_text(encoding='utf-8'))
-          bundle = single(Path('staged').glob('HermesBundled-*-win.msixbundle'))
+          bundle = single(Path('staged').glob('RabbitBundled-*-win.msixbundle'))
           # The handoff binds the assembly filename and bytes. Never recompute
           # its revision against stable tags that can change after native smoke.
-          match = re.fullmatch(r'HermesBundled-(\d+\.\d+\.\d+\.\d+)-win\.msixbundle', bundle.name)
+          match = re.fullmatch(r'RabbitBundled-(\d+\.\d+\.\d+\.\d+)-win\.msixbundle', bundle.name)
           if not match:
               raise ValueError('Missing assembly version in receipt-bound bundle name')
           version = match[1]
@@ -1782,7 +1782,7 @@ jobs:
               raise ValueError('Assembly version differs from the admitted build identity')
           # publish-appinstaller compares this version to the baked envelope.
           main(['publish-appinstaller', '--root', 'staged', '--bundle', str(bundle),
-                '--tag', os.environ['HERMES_PAYLOAD_TAG'], '--variant', 'bundled',
+                '--tag', os.environ['RABBIT_PAYLOAD_TAG'], '--variant', 'bundled',
                 '--identity', expected['identity'], '--publisher', expected['publisher'],
                 '--version', version])
           PY
@@ -1814,7 +1814,7 @@ jobs:
       group: darwin-updater-feed-${{ needs.validate.outputs.channel }}
       cancel-in-progress: false
     env:
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1835,7 +1835,7 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
         run: |
-          python -m scripts.releases.handoff fetch --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+          python -m scripts.releases.handoff fetch --tag "$RABBIT_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
             --name darwin-x64 --name darwin-arm64 --root staged --include '*-mac.yml'
 
       - name: Assert the per-arch feeds are present
@@ -1863,7 +1863,7 @@ jobs:
         # (feed-side); the pointer upload is the last write of the run.
         shell: bash
         run: |
-          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 finalize --tag "$HERMES_PAYLOAD_TAG" --dir staged
+          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.r2 finalize --tag "$RABBIT_PAYLOAD_TAG" --dir staged
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
@@ -1873,11 +1873,11 @@ jobs:
     environment: release-signing
     timeout-minutes: 90
     env:
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+      RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
       # Archive ref for the termux handoff: attempt ref for stable phases.
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      HERMES_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
-      HERMES_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_BUILD_COMMIT: ${{ inputs.build_commit != '' && needs.validate.outputs.channel-build == '' && needs.validate.outputs.sha || '' }}
+      RABBIT_RELEASE_COMMIT: ${{ inputs.release-phase != '' && needs.validate.outputs.sha || '' }}
       # termux_build.sh gates on `gh release view <tag>` (refuse to build
       # before the release exists); gh needs GH_TOKEN or it errors out and
       # the gate misreads that as "release not found".
@@ -1948,7 +1948,7 @@ jobs:
 
       - name: Preserve and retrieve pinned inputs
         shell: bash
-        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$RABBIT_RUNTIME_DIR"
 
       - name: Build CPython into the payload
         shell: bash
@@ -2037,22 +2037,22 @@ jobs:
         # termux_build.sh lands wheelhouse/ + index.json + SHA256SUMS in the
         # payload root, where build_deb.sh's --no-index pip install finds it.
         run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
+          if [ -n "${RABBIT_RELEASE_COMMIT:-}" ]; then
             bash scripts/termux/termux_build.sh \
               --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
+              --tag "$RABBIT_PAYLOAD_TAG" \
+              --release-commit "$RABBIT_RELEASE_COMMIT" \
               --out termux-build/payload
-          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
+          elif [ -n "$RABBIT_BUILD_COMMIT" ]; then
             # The checkout is the admitted commit. No release tag is required.
             bash scripts/termux/termux_build.sh \
               --repo . \
-              --commit "$HERMES_BUILD_COMMIT" \
+              --commit "$RABBIT_BUILD_COMMIT" \
               --out termux-build/payload
           else
             bash scripts/termux/termux_build.sh \
               --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
+              --tag "$RABBIT_PAYLOAD_TAG" \
               --out termux-build/payload
           fi
 
@@ -2078,23 +2078,23 @@ jobs:
         # Native dependency staging stays above; .deb validation still runs
         # in a fresh pinned container with no opt-out.
         run: |
-          if [ -n "${HERMES_RELEASE_COMMIT:-}" ]; then
+          if [ -n "${RABBIT_RELEASE_COMMIT:-}" ]; then
             python3 scripts/termux/build.py \
               --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
-              --release-commit "$HERMES_RELEASE_COMMIT" \
+              --tag "$RABBIT_PAYLOAD_TAG" \
+              --release-commit "$RABBIT_RELEASE_COMMIT" \
               --payload termux-build/payload \
               --out termux-build/deb
-          elif [ -n "$HERMES_BUILD_COMMIT" ]; then
+          elif [ -n "$RABBIT_BUILD_COMMIT" ]; then
             python3 scripts/termux/build.py \
               --repo . \
-              --commit "$HERMES_BUILD_COMMIT" \
+              --commit "$RABBIT_BUILD_COMMIT" \
               --payload termux-build/payload \
               --out termux-build/deb
           else
             python3 scripts/termux/build.py \
               --repo . \
-              --tag "$HERMES_PAYLOAD_TAG" \
+              --tag "$RABBIT_PAYLOAD_TAG" \
               --payload termux-build/payload \
               --out termux-build/deb
           fi
@@ -2126,7 +2126,7 @@ jobs:
         if: inputs.build_commit != ''
         shell: bash
         run: |
-          python -m scripts.releases.handoff stage --commit-build "$HERMES_BUILD_COMMIT" \
+          python -m scripts.releases.handoff stage --commit-build "$RABBIT_BUILD_COMMIT" \
             --name termux --root termux-build --include 'deb/*.deb'
 
       - name: Write the APT signing key
@@ -2159,7 +2159,7 @@ jobs:
           # The candidate phase keys the pool by the attempt ref: the pool
           # upload is immutable with a one-year cache header, so a recut of
           # the same version must never reuse a pool key.
-          stage_args=(--pool termux-build/deb --out termux-build/apt --suite "hermes-$CHANNEL")
+          stage_args=(--pool termux-build/deb --out termux-build/apt --suite "rabbit-$CHANNEL")
           if [ "$RELEASE_PHASE" = candidate ]; then
             stage_args+=(--pool-subdir "$RELEASE_CLAIM_TAG")
           fi
@@ -2174,7 +2174,7 @@ jobs:
             -v "$PWD/termux-build/apt:/apt:ro" \
             -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
-            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "rabbit-$CHANNEL" "$version"
           if [ -n "$PREVIOUS_TAG" ]; then
             previous=(termux-build/previous/deb/*.deb)
             test "${#previous[@]}" -eq 1
@@ -2183,17 +2183,17 @@ jobs:
               -v "$PWD/${previous[0]}:/previous.deb:ro" \
               -v "$PWD/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
               -v "$PWD/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
-              "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version"
+              "termux/termux-docker@$digest" bash /tmp/check-apt.sh "rabbit-$CHANNEL" "$version"
           fi
 
           args=(--include 'deb/*.deb' --include 'apt/**/*')
           if [ "$RELEASE_PHASE" = candidate ]; then
             python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
-              --root termux-build --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
+              --root termux-build --tag "$RABBIT_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out termux-build/metadata-termux-aarch64.json
             args+=(--include 'metadata-*.json')
           fi
-          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
+          python -m scripts.releases.handoff stage --tag "${RABBIT_ARCHIVE_TAG:-$RABBIT_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
             --name termux --root termux-build "${args[@]}"
           if [ "$RELEASE_PHASE" = candidate ]; then exit 0; fi
           # --key-is-full is MANDATORY on every feed-dir upload: without it
@@ -2206,18 +2206,18 @@ jobs:
           # cwd and a bare `python -m scripts.releases.r2` would ENOENT.
           export PYTHONPATH="$GITHUB_WORKSPACE"
           cd termux-build/apt
-          files=(pool/**/*.deb "dists/hermes-$CHANNEL"/main/binary-aarch64/by-hash/*/* key.asc
-                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages"
-                 "dists/hermes-$CHANNEL/main/binary-aarch64/Packages.gz"
-                 "dists/hermes-$CHANNEL/Release"
-                 "dists/hermes-$CHANNEL/Release.gpg"
-                 "dists/hermes-$CHANNEL/InRelease")
+          files=(pool/**/*.deb "dists/rabbit-$CHANNEL"/main/binary-aarch64/by-hash/*/* key.asc
+                 "dists/rabbit-$CHANNEL/main/binary-aarch64/Packages"
+                 "dists/rabbit-$CHANNEL/main/binary-aarch64/Packages.gz"
+                 "dists/rabbit-$CHANNEL/Release"
+                 "dists/rabbit-$CHANNEL/Release.gpg"
+                 "dists/rabbit-$CHANNEL/InRelease")
           # APT reads InRelease first. Publish it only after every referenced
           # index and package has been uploaded and read back successfully.
           for f in "${files[@]}"; do
             test -f "$f"
             python3 -m scripts.releases.r2 put \
-              --tag "$HERMES_PAYLOAD_TAG" \
+              --tag "$RABBIT_PAYLOAD_TAG" \
               --key "releases/termux/$CHANNEL/$f" \
               --file "$f" \
               --key-is-full
@@ -2231,7 +2231,7 @@ jobs:
             -v "$PWD:/apt:ro" \
             -v "$GITHUB_WORKSPACE/scripts/termux/check_apt.sh:/tmp/check-apt.sh:ro" \
             -v "$GITHUB_WORKSPACE/scripts/termux/validate_installed.py:/tmp/validate_installed.py:ro" \
-            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "hermes-$CHANNEL" "$version" "$public_repo"
+            "termux/termux-docker@$digest" bash /tmp/check-apt.sh "rabbit-$CHANNEL" "$version" "$public_repo"
 
   builds-pending:
     name: Mark the builds table as in progress
@@ -2246,15 +2246,15 @@ jobs:
       - name: Render the placeholder
         env:
           GH_TOKEN: ${{ github.token }}
-          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if ! gh release view "$HERMES_PAYLOAD_TAG" >/dev/null 2>&1; then
-            echo "::error::no release exists for $HERMES_PAYLOAD_TAG — cannot mark the builds table"
+          if ! gh release view "$RABBIT_PAYLOAD_TAG" >/dev/null 2>&1; then
+            echo "::error::no release exists for $RABBIT_PAYLOAD_TAG — cannot mark the builds table"
             exit 1
           fi
           python3 scripts/render-builds-table.py \
-            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" \
+            --tag "$RABBIT_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" \
             --pending-run-url "$RUN_URL"
 
   builds-table:
@@ -2294,7 +2294,7 @@ jobs:
       - name: Render
         env:
           GH_TOKEN: ${{ github.token }}
-          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RABBIT_PAYLOAD_TAG: ${{ inputs.tag }}
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -2304,7 +2304,7 @@ jobs:
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
           python3 scripts/render-builds-table.py \
-            --tag "$HERMES_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
+            --tag "$RABBIT_PAYLOAD_TAG" --repo "$GITHUB_REPOSITORY" --run-url "$RUN_URL"
 
       # publish-canary consumes this job's result. Publish diagnostics first,
       # then retain the original all-needs-success release gate.
@@ -2354,7 +2354,7 @@ jobs:
           fetch-depth: 0
       - name: Render the full expected-binary matrix
         env:
-          HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
+          RABBIT_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -2406,7 +2406,7 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
@@ -2431,7 +2431,7 @@ jobs:
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+      RABBIT_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       MS_STORE_TENANT_ID: ${{ secrets.MS_STORE_TENANT_ID }}

@@ -13,7 +13,7 @@ description: >-
   an old number. No dependencies beyond the Python standard library (two shell scripts for the
   scheduled passes). Its scripts, when the agent or operator runs them, read and write JSON state
   under the directory chosen with MIND_AGENT_DIR (default an agent/ folder inside the plugin's own
-  install dir), read HERMES_HOME/cron/executions.db for cron counts, and execute
+  install dir), read RABBIT_HOME/cron/executions.db for cron counts, and execute
   scripts/batch-maintenance.sh or scripts/verify-invariants.py from that agent directory if present;
   no network egress and no LLM calls.
 maintainer: ousiaresearch

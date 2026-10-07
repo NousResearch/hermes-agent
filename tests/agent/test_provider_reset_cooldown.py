@@ -58,7 +58,7 @@ def test_min_switch_reset_seconds_keeps_primary_when_reset_is_imminent(threshold
     agent = _agent_with_one_fallback()
     with (
         patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
-        patch("hermes_cli.config.load_config", return_value={"fallback": {"min_switch_reset_seconds": threshold}}),
+        patch("rabbit_cli.config.load_config", return_value={"fallback": {"min_switch_reset_seconds": threshold}}),
         patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
     ):
         activated = agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=1_700_000_030)

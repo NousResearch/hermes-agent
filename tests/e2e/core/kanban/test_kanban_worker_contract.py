@@ -1,4 +1,4 @@
-"""Worker-side board contracts through the real dispatcher and a real ``hermes chat -q`` worker.
+"""Worker-side board contracts through the real dispatcher and a real ``rabbit chat -q`` worker.
 
 * ``kanban_complete(artifacts=[...])``: a declared file inside the task workspace is staged as a
   ``task_attachments`` row; a declared file OUTSIDE the workspace must be reported (attached or the
@@ -66,9 +66,9 @@ def _run_one_card(board: Board, tid: str) -> None:
 
 
 def _artifact_location(board: Board, tid: str, where: str) -> Path:
-    workspace = board.hermes_home / "kanban" / "workspaces" / tid
+    workspace = board.rabbit_home / "kanban" / "workspaces" / tid
     return {"inside": workspace / "report.md",
-            "outside": board.hermes_home / "scripts" / f"{tid}-deliverable.md"}[where]
+            "outside": board.rabbit_home / "scripts" / f"{tid}-deliverable.md"}[where]
 
 
 @pytest.mark.parametrize("where", ["inside", "outside"])
@@ -108,7 +108,7 @@ def test_declared_artifact_is_attached_or_reported(tmp_path, where: str) -> None
                 _assert_visible_refusal(board, srv, tid, _artifact_location(board, tid, where))
             if attached:
                 assert len(attached) == 1 and stored[0].read_text(encoding="utf-8") == payload, attached
-                assert not stored[0].is_relative_to(board.hermes_home / "kanban" / "workspaces"), stored
+                assert not stored[0].is_relative_to(board.rabbit_home / "kanban" / "workspaces"), stored
         finally:
             board.kill_workers()
 
@@ -134,7 +134,7 @@ def _assert_visible_refusal(board: Board, srv: FakeLLMServer, tid: str, artifact
 
 
 def _seed_skill(board: Board, name: str) -> None:
-    skill = board.hermes_home / "skills" / name
+    skill = board.rabbit_home / "skills" / name
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: Use when running the kanban e2e pin probe.\n---\n\n"
@@ -170,7 +170,7 @@ def test_worker_with_unresolvable_pinned_skill_still_starts_its_session(tmp_path
             _seed_skill(board, "e2e-archived")
             tid = board.create("stale pin card", "--skill", "e2e-archived")
             # The operator removes the skill after the pin was written.
-            shutil.rmtree(board.hermes_home / "skills" / "e2e-archived")
+            shutil.rmtree(board.rabbit_home / "skills" / "e2e-archived")
             _run_one_card(board, tid)
             log = wait_until(lambda: board.worker_log(tid), 10, "worker log")
             exits = [int(rc) for rc in _EXIT_RE.findall(log)]

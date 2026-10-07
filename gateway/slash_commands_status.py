@@ -16,7 +16,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
-from hermes_cli.status_report import build_status_fields
+from rabbit_cli.status_report import build_status_fields
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -71,7 +71,7 @@ async def _quiet(call, default=None):
 # English source for the transcript-read-failure reply; callers render ``history_unreadable()``
 # (``gateway.shared.history_unreadable``) so the active language applies.
 HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
-                      "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
+                      "exist but cannot be loaded). Run `rabbit doctor --fix` on the host, or use /new "
                       "to start fresh.")
 
 
@@ -287,14 +287,6 @@ class GatewayStatusCommandsMixin:
             lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
         elif fields["model"]:
             lines.append(t("gateway.status.model", model=fields["model"]))
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            free_tier_active = await self._run_in_executor_with_context(free_tier_route)
-            if free_tier_active:
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
@@ -490,21 +482,6 @@ class GatewayStatusCommandsMixin:
             lines += ["", t("gateway.agents.none")]
         return "\n".join(lines)
 
-    async def _handle_topup_command(self, event: MessageEvent) -> str:
-        """Handle /topup -- show the Nous balance and hand off to the portal. Does NOT charge, confirm,
-        or track payment (that happens in the browser; the next /topup shows the new balance)."""
-        from agent.account_usage import build_credits_view
-        view = await _quiet(lambda: asyncio.to_thread(build_credits_view, markdown=True))
-        if view is None or not view.logged_in:
-            return t("gateway.credits.not_logged_in")
-        # Drop the helper's 📈 header; we print our own.
-        lines = [t("gateway.topup.header")] + [ln for ln in view.balance_lines if not ln.lstrip().startswith("📈")]
-        if view.identity_line:
-            lines += ["", view.identity_line]
-        if view.topup_url:
-            lines += ["", t("gateway.topup.portal_link", url=view.topup_url), t("gateway.topup.hint")]
-        return "\n".join(lines)
-
     def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
         """/context per-category block (plain text, chars/4 estimate, same engine as /usage).
         Runs in a thread; returns [] and never raises."""
@@ -606,15 +583,9 @@ class GatewayStatusCommandsMixin:
             render_account_usage_lines(account_snapshot, markdown=True) if account_snapshot else []
         )
 
-        # Nous credits + monthly-grant gauge (shared with CLI/TUI). Gates on "a Nous account is
-        # logged in" — NOT the inference provider — so a Nous user inferring elsewhere still sees
-        # a balance. Fail-open: never break /usage.
-        from agent.account_usage import nous_credits_lines
-        credits_lines = await _quiet(lambda: asyncio.to_thread(nous_credits_lines, markdown=True), [])
-
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.
-            for block in (account_lines, credits_lines):
+            for block in (account_lines,):
                 if block:
                     if lines:
                         lines.append("")
@@ -643,7 +614,7 @@ class GatewayStatusCommandsMixin:
                 t("gateway.usage.label_estimated_context", count=_fmt(approx)),
                 t("gateway.usage.detailed_after_first"),
             ])
-        if account_lines or credits_lines:
+        if account_lines:
             return _with_account_blocks([])
         return t("gateway.usage.no_data")
 
@@ -679,7 +650,7 @@ class GatewayStatusCommandsMixin:
                 days = int(flag) if flag.isdigit() else days
                 i += 1
         try:
-            from hermes_state_registry import acquire
+            from rabbit_state_registry import acquire
             from agent.insights import InsightsEngine
 
             def _run_insights():
@@ -688,10 +659,10 @@ class GatewayStatusCommandsMixin:
                     engine = InsightsEngine(db)
                     return engine.format_gateway(engine.generate(days=days, source=source))
                 finally:
-                    from hermes_state_registry import release_or_close
+                    from rabbit_state_registry import release_or_close
                     release_or_close(db)
 
-            # Not a bare hop: ``SessionDB()`` resolves ``get_hermes_home()`` at call time, a
+            # Not a bare hop: ``SessionDB()`` resolves ``get_rabbit_home()`` at call time, a
             # contextvar set by ``_profile_runtime_scope``; a default-executor hop starts with an
             # EMPTY context and would read the DEFAULT profile's state.db.
             return await self._run_in_executor_with_context(_run_insights)

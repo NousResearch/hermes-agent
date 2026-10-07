@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from tui_gateway import server
 
 MINTED_KEY = "20260828_053121_3427a9"  # the morning's lost session shape

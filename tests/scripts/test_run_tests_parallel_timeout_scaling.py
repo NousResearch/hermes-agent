@@ -3,7 +3,7 @@
 The flat --file-timeout cap (default 300s) falsely SIGKILL'd
 known-slow large-collection files under CI load, then the automatic
 retry passed — manufacturing FLAKY reports for healthy files
-(tests/test_hermes_state.py, 2026-08-18 on main). The scaler gives a
+(tests/test_rabbit_state.py, 2026-08-18 on main). The scaler gives a
 file max(flat_cap, 3 × last observed duration) and never lowers the cap.
 Only first-attempt-clean durations feed the cache, so a hang can never
 compound its own bound.
@@ -42,7 +42,7 @@ def test_scaler_never_lowers_the_flat_cap() -> None:
 
 def test_slow_file_gets_proportional_headroom() -> None:
     mod = _load_runner()
-    f = REPO_ROOT / "tests" / "test_hermes_state.py"
+    f = REPO_ROOT / "tests" / "test_rabbit_state.py"
     durations = {mod._format_file(f, REPO_ROOT): 205.0}
     # 205s last run → 615s bound: a load-dilated healthy run survives,
     # a genuine hang is still killed.

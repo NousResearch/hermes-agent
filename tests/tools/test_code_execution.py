@@ -5,7 +5,7 @@ Tests for the code execution sandbox (programmatic tool calling).
 
 These tests monkeypatch handle_function_call so they don't require API keys
 or a running terminal backend. They verify the core sandbox mechanics:
-UDS socket lifecycle, hermes_tools generation, timeout enforcement,
+UDS socket lifecycle, rabbit_tools generation, timeout enforcement,
 output capping, tool call counting, and error propagation.
 
 Run with:  python -m pytest tests/test_code_execution.py -v
@@ -52,7 +52,7 @@ from unittest.mock import patch, MagicMock
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
-    generate_hermes_tools_module,
+    generate_rabbit_tools_module,
     check_sandbox_requirements,
     build_execute_code_schema,
     _TOOL_DOC_LINES,
@@ -107,9 +107,9 @@ class TestInterruptedOutput(unittest.TestCase):
 
 
 
-class TestHermesToolsGeneration(unittest.TestCase):
+class TestRabbitToolsGeneration(unittest.TestCase):
     def test_generates_all_allowed_tools(self):
-        src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
+        src = generate_rabbit_tools_module(list(SANDBOX_ALLOWED_TOOLS))
         for tool in SANDBOX_ALLOWED_TOOLS:
             self.assertIn(f"def {tool}(", src)
 
@@ -154,23 +154,23 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         # (no PID from nohup), so search for the per-call sandbox commands
         # rather than pinning positions.
         mkdir_cmd = next(cmd for cmd, _, _ in env.commands
-                         if "mkdir -p" in cmd and "hermes_exec_" in cmd)
+                         if "mkdir -p" in cmd and "rabbit_exec_" in cmd)
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
         cleanup_cmd = next(cmd for cmd, _, _ in env.commands
-                           if "rm -rf" in cmd and "hermes_exec_" in cmd)
-        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
-        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
-        self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
+                           if "rm -rf" in cmd and "rabbit_exec_" in cmd)
+        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/rabbit_exec_", mkdir_cmd)
+        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/rabbit_exec_", cleanup_cmd)
+        self.assertNotIn("mkdir -p /tmp/rabbit_exec_", mkdir_cmd)
         # Env vars travel in the shipped sandbox.env (sourced by the remote
         # shell), not on the command line.
         self.assertIn(". ./sandbox.env", run_cmd)
         env_ship = next(c for c in ship_mock.call_args_list
                         if c.args[1].endswith("sandbox.env"))
-        self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_",
+        self.assertIn("RABBIT_RPC_DIR=/data/data/com.termux/files/usr/tmp/rabbit_exec_",
                       env_ship.args[2])
 
     def test_timezone_shell_quoted_in_remote_execution(self):
-        """HERMES_TIMEZONE must be shell-quoted in the sourced sandbox.env file
+        """RABBIT_TIMEZONE must be shell-quoted in the sourced sandbox.env file
         to prevent injection at source time."""
         class FakeEnv:
             def __init__(self):
@@ -199,7 +199,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
              patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
              patch("tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
-             patch.dict(os.environ, {"HERMES_TIMEZONE": malicious_tz}):
+             patch.dict(os.environ, {"RABBIT_TIMEZONE": malicious_tz}):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
@@ -260,14 +260,14 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
                              if c.args[1].endswith(env_name)), None)
             self.assertIsNotNone(env_ship, f"{env_name} was not shipped")
             token_line = next(l for l in env_ship.args[2].splitlines()
-                              if l.startswith("HERMES_RPC_TOKEN="))
+                              if l.startswith("RABBIT_RPC_TOKEN="))
             token = token_line.split("=", 1)[1].strip("'\"")
             self.assertTrue(token)
             self.assertFalse(any(token in c for c in commands),
                              f"{env_name} token appeared in a remote command line")
             ships[env_name], tokens[env_name] = env_ship, token
         run_cmd = next(c for c in commands if "python3 script.py" in c)
-        self.assertNotIn("HERMES_RPC_TOKEN=", run_cmd)
+        self.assertNotIn("RABBIT_RPC_TOKEN=", run_cmd)
         if sys.platform == "win32":
             return
         # Behaviour, not command text: replay the recorded setup + launch
@@ -276,7 +276,7 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         import subprocess
         import tempfile
         mkdir_cmd = next(c for c in commands
-                         if "mkdir -p" in c and "hermes_exec_" in c)
+                         if "mkdir -p" in c and "rabbit_exec_" in c)
         env_ship, token = ships["sandbox.env"], tokens["sandbox.env"]
         sandbox = env_ship.args[1].rsplit("/", 1)[0]
         root = tempfile.mkdtemp()
@@ -290,11 +290,11 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
         with open(f"{local}/sandbox.env", "w") as fh:
             fh.write(env_ship.args[2])
         with open(f"{local}/script.py", "w") as fh:
-            fh.write("import os, sys\nprint(os.environ['HERMES_RPC_TOKEN'])\nsys.exit(7)\n")
+            fh.write("import os, sys\nprint(os.environ['RABBIT_RPC_TOKEN'])\nsys.exit(7)\n")
         # The env reaches the child, its exit code is the command's, and the
         # token never leaks into the outer shell (the backend's session
         # snapshot dump; issue #71296 class).
-        run = sh(run_cmd + ' ; echo "[${HERMES_RPC_TOKEN:-}]"')
+        run = sh(run_cmd + ' ; echo "[${RABBIT_RPC_TOKEN:-}]"')
         self.assertEqual(run.stdout.splitlines(), [token, "[]"], run.stderr)
         self.assertEqual(sh(run_cmd).returncode, 7)
 
@@ -332,14 +332,14 @@ class TestExecuteCode(unittest.TestCase):
 
     def test_repo_root_modules_are_importable(self):
         """Sandboxed scripts can import modules that live at the repo root."""
-        result = self._run('import hermes_constants; print(hermes_constants.__file__)')
+        result = self._run('import rabbit_constants; print(rabbit_constants.__file__)')
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_constants.py", result["output"])
+        self.assertIn("rabbit_constants.py", result["output"])
 
     def test_single_tool_call(self):
         """Script calls terminal and prints the result."""
         code = """
-from hermes_tools import terminal
+from rabbit_tools import terminal
 result = terminal("echo hello")
 print(result.get("output", ""))
 """
@@ -366,7 +366,7 @@ print(result.get("output", ""))
         code = '''
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from hermes_tools import terminal
+from rabbit_tools import terminal
 
 N = 10
 
@@ -424,7 +424,7 @@ raise RuntimeError("deliberate crash")
     def test_shell_quote_helper(self):
         """shell_quote properly escapes dangerous characters."""
         code = """
-from hermes_tools import shell_quote
+from rabbit_tools import shell_quote
 # String with backticks, quotes, and special chars
 dangerous = '`rm -rf /` && $(whoami) "hello"'
 escaped = shell_quote(dangerous)
@@ -440,7 +440,7 @@ assert escaped.startswith("'")
     def test_json_parse_helper_bom(self):
         """json_parse strips a leading UTF-8 BOM and tolerates control chars (#57870)."""
         code = """
-from hermes_tools import json_parse
+from rabbit_tools import json_parse
 # A leading UTF-8 BOM (e.g. from Windows CLI output) must also parse (#57870)
 bom_text = "\\ufeff" + '{"body": "bom-ok"}'
 bom_result = json_parse(bom_text)
@@ -455,7 +455,7 @@ print("bom:" + bom_result["body"])
     def test_retry_helper_all_fail(self):
         """retry raises the last error when all attempts fail."""
         code = """
-from hermes_tools import retry
+from rabbit_tools import retry
 def always_fail():
     raise ValueError("nope")
 try:
@@ -520,16 +520,16 @@ class TestStubSchemaDrift(unittest.TestCase):
 
 
     def test_generated_module_accepts_all_params(self):
-        """Executing the generated hermes_tools module: every stub accepts all of
+        """Executing the generated rabbit_tools module: every stub accepts all of
         its parameters as keyword arguments and forwards each one, by name and
         value, to the RPC call (a dropped or renamed kwarg is a TypeError or a
         silently ignored argument in the sandbox)."""
         import inspect
 
         for transport in ("uds", "file"):
-            src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS), transport=transport)
-            namespace = {"__name__": "hermes_tools"}
-            exec(compile(src, "hermes_tools.py", "exec"), namespace)
+            src = generate_rabbit_tools_module(list(SANDBOX_ALLOWED_TOOLS), transport=transport)
+            namespace = {"__name__": "rabbit_tools"}
+            exec(compile(src, "rabbit_tools.py", "exec"), namespace)
             calls = []
             namespace["_call"] = lambda name, args: calls.append((name, args)) or "ok"
 
@@ -648,7 +648,7 @@ class TestEnvVarFiltering(unittest.TestCase):
     def test_timezone_injected_when_set(self):
         env_backup = os.environ.copy()
         try:
-            os.environ["HERMES_TIMEZONE"] = "America/New_York"
+            os.environ["RABBIT_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
             if sys.platform == "win32":
                 # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
@@ -737,7 +737,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from hermes_tools import terminal\n"
+            "from rabbit_tools import terminal\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -762,7 +762,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.load_config_readonly", return_value={}):
+             patch("rabbit_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 
@@ -873,7 +873,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).
 
     Regression coverage for the execute_code tool-socket hardening: a
-    request without the matching HERMES_RPC_TOKEN must be rejected before
+    request without the matching RABBIT_RPC_TOKEN must be rejected before
     the tool is dispatched, while a request carrying the correct token
     round-trips normally.
     """

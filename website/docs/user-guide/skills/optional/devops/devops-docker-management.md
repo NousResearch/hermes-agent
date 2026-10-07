@@ -14,7 +14,7 @@ Manage Docker containers, images, volumes, and Compose.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/devops/docker-management` |
+| Source | Optional — install with `rabbit skills install official/devops/docker-management` |
 | Path | `optional-skills/devops/docker-management` |
 | Version | `1.0.0` |
 | Author | sprmn24 |
@@ -25,7 +25,7 @@ Manage Docker containers, images, volumes, and Compose.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Docker Management

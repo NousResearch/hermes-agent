@@ -20,7 +20,7 @@ from cron.jobs import (
     load_jobs,
     mark_job_run,
     save_jobs,
-    _hermes_now,
+    _rabbit_now,
 )
 
 @pytest.fixture()
@@ -35,7 +35,7 @@ def temp_home(tmp_path, monkeypatch):
 def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
     job = create_job(
         prompt="x",
-        schedule=(_hermes_now() + timedelta(hours=1)).isoformat(),
+        schedule=(_rabbit_now() + timedelta(hours=1)).isoformat(),
         name="warn-guard",
         deliver="local",
     )
@@ -49,7 +49,7 @@ def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
         if j["id"] == jid:
             j["enabled"] = True
             j["state"] = "scheduled"
-            j["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
+            j["next_run_at"] = (_rabbit_now() - timedelta(seconds=5)).isoformat()
     save_jobs(jobs)
 
     with caplog.at_level(logging.INFO, logger="cron"):

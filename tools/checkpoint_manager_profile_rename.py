@@ -1,6 +1,6 @@
 """Rekey profile-local checkpoint projects after a named profile directory moves (#112973).
 
-The checkpoint store lives under ``HERMES_HOME/checkpoints`` and therefore moves with a renamed
+The checkpoint store lives under ``RABBIT_HOME/checkpoints`` and therefore moves with a renamed
 profile, but project identity inside it (ref, ``projects/<hash>.json``, agent-write ledger) is a
 hash of the absolute workdir. Every workdir beneath the profile home gets a new hash after the
 rename, so its history stays on disk yet unreachable from the new path until it is rekeyed here.
@@ -36,7 +36,7 @@ def _rebase_ledger_paths(ledger: Dict, old_workdir: Path, new_workdir: Path) -> 
 def _rekey_project(store: Path, meta: Dict, old_workdir: Path, new_workdir: Path) -> None:
     """Install the project under its new hash, then drop the old identity.
 
-    A retry (``hermes profile migrate-identity``) after a mid-way failure finds the new identity
+    A retry (``rabbit profile migrate-identity``) after a mid-way failure finds the new identity
     already populated, possibly with checkpoints taken under the new name since. Those must win:
     the new ref is only created when absent, and only when the surviving old tip is one of its
     ancestors do we drop the old identity and fold the old ledger under the new one. A new ref

@@ -1,5 +1,5 @@
 import { useAuiState, useMessageRuntime } from '@assistant-ui/react'
-import { registryBackendScopeKey } from '@hermes/shared'
+import { registryBackendScopeKey } from '@rabbit/shared'
 import { useStore } from '@nanostores/react'
 import { type MouseEvent, useCallback } from 'react'
 
@@ -18,7 +18,7 @@ import {
   setLocalReaction
 } from '@/store/reactions-local'
 import { sessionEventScopeFor } from '@/store/session-states'
-import type { MessageReaction } from '@/types/hermes'
+import type { MessageReaction } from '@/types/rabbit'
 
 // Stable empty identity — a fresh [] per render would re-run every consumer.
 const EMPTY_REACTIONS: MessageReaction[] = []

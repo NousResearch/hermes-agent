@@ -29,8 +29,8 @@ def test_the_image_bakes_the_same_apt_packages_the_runtime_would_install() -> No
     there stalls the screen with no error until someone presses Start."""
     dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile"
     text = dockerfile.read_text()
-    assert "ARG HERMES_BOT_DESKTOP" in text, "the Bot Screen apt layer is gone from the Dockerfile"
-    body = text.split("ARG HERMES_BOT_DESKTOP", 1)[1].split("--no-install-recommends", 1)[1].split("rm -rf", 1)[0]
+    assert "ARG RABBIT_BOT_DESKTOP" in text, "the Bot Screen apt layer is gone from the Dockerfile"
+    body = text.split("ARG RABBIT_BOT_DESKTOP", 1)[1].split("--no-install-recommends", 1)[1].split("rm -rf", 1)[0]
     baked = {tok for tok in re.split(r"[\s\\&]+", body) if tok and not tok.startswith("-")}
     required = set(runtime.PACKAGES["apt"])
     assert required <= baked, f"the image would not install: {sorted(required - baked)}"
@@ -103,15 +103,15 @@ def test_live_server_without_its_lock_file_still_owns_the_display(tmp_path, monk
 _FAKE_LAUNCHER = """#!/usr/bin/env bash
 # Stands in for launcher.sh + Xvnc: the X lock appears only after a delay (the TOCTOU window), then the
 # env file + socket are published; stays alive until killed like the real supervisor.
-: > "$HERMES_BD_XLOCK_DIR/spawned.$$"
+: > "$RABBIT_BD_XLOCK_DIR/spawned.$$"
 sleep 0.4
-echo $$ > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
-: > "$HERMES_BD_SOCKET"
-printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+echo $$ > "$RABBIT_BD_XLOCK_DIR/.X${RABBIT_BD_DISPLAY_NUM}-lock"
+: > "$RABBIT_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$RABBIT_BD_DISPLAY_NUM" > "$RABBIT_BD_ENV_FILE"
 sleep 30
 """
 
-# One start() per process: state_dir() is HERMES_HOME-scoped and process-global, so two profiles need two
+# One start() per process: state_dir() is RABBIT_HOME-scoped and process-global, so two profiles need two
 # interpreters — which is also how two gateway profiles race on a real host.
 _DRIVER = """
 import json, os, sys
@@ -124,7 +124,7 @@ runtime._X_LOCK_DIR = scratch / "xlocks"
 runtime._ALLOC_LOCK = scratch / "alloc.lock"
 runtime.missing_binaries = lambda: []
 runtime.geometry = lambda: "800x600"
-os.environ["HERMES_BD_XLOCK_DIR"] = str(scratch / "xlocks")
+os.environ["RABBIT_BD_XLOCK_DIR"] = str(scratch / "xlocks")
 try:
     st = runtime.start(wait_seconds=10)
     print(json.dumps({{"display": st.display, "pid": st.pid}}), flush=True)
@@ -146,7 +146,7 @@ def start_in_fresh_process(tmp_path):
     procs: list[subprocess.Popen] = []
 
     def launch(home: Path) -> subprocess.Popen:
-        env = {**os.environ, "HERMES_HOME": str(home)}
+        env = {**os.environ, "RABBIT_HOME": str(home)}
         proc = subprocess.Popen([sys.executable, "-c", _DRIVER.format(repo=repo, scratch=str(tmp_path))],
                                 env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         procs.append(proc)
@@ -187,11 +187,11 @@ def test_concurrent_starts_of_one_profile_spawn_one_launcher(tmp_path, start_in_
 _ORPHANING_LAUNCHER = """#!/usr/bin/env bash
 # Stands in for launcher.sh whose Xvnc child ("sleep") lives in the launcher's process group and
 # outlives a SIGKILL of the launcher itself — the X lock names the child, as the real one does.
-: > "$HERMES_BD_XLOCK_DIR/spawned.$$"
+: > "$RABBIT_BD_XLOCK_DIR/spawned.$$"
 sleep 30 &
-echo $! > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
-: > "$HERMES_BD_SOCKET"
-printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+echo $! > "$RABBIT_BD_XLOCK_DIR/.X${RABBIT_BD_DISPLAY_NUM}-lock"
+: > "$RABBIT_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$RABBIT_BD_DISPLAY_NUM" > "$RABBIT_BD_ENV_FILE"
 wait
 """
 
@@ -228,7 +228,7 @@ def in_process_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")
     monkeypatch.setattr(runtime, "missing_binaries", lambda: [])
     monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
-    monkeypatch.setenv("HERMES_BD_XLOCK_DIR", str(tmp_path / "xlocks"))
+    monkeypatch.setenv("RABBIT_BD_XLOCK_DIR", str(tmp_path / "xlocks"))
     yield tmp_path
     with contextlib.suppress(Exception):
         runtime.stop()
@@ -306,10 +306,10 @@ def test_orphaned_x_server_is_found_by_its_socket_when_the_lock_file_is_gone(tmp
 _SLOW_LAUNCHER = """#!/usr/bin/env bash
 # Publishes only AFTER runtime.start()'s readiness deadline has passed.
 sleep 30 &
-echo $! > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"
+echo $! > "$RABBIT_BD_XLOCK_DIR/.X${RABBIT_BD_DISPLAY_NUM}-lock"
 sleep 1
-: > "$HERMES_BD_SOCKET"
-printf 'DISPLAY=:%s\\n' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"
+: > "$RABBIT_BD_SOCKET"
+printf 'DISPLAY=:%s\\n' "$RABBIT_BD_DISPLAY_NUM" > "$RABBIT_BD_ENV_FILE"
 wait
 """
 
@@ -365,8 +365,8 @@ def test_allocation_lock_is_released_once_xvnc_claims_the_number(in_process_runt
     scratch = in_process_runtime
     # X lock at once, env file only much later: the lock must be free in between.
     (scratch / "launcher.sh").write_text(
-        '#!/usr/bin/env bash\necho $$ > "$HERMES_BD_XLOCK_DIR/.X${HERMES_BD_DISPLAY_NUM}-lock"\n'
-        'sleep 1.5\n: > "$HERMES_BD_SOCKET"\nprintf \'DISPLAY=:%s\\n\' "$HERMES_BD_DISPLAY_NUM" > "$HERMES_BD_ENV_FILE"\nsleep 30\n',
+        '#!/usr/bin/env bash\necho $$ > "$RABBIT_BD_XLOCK_DIR/.X${RABBIT_BD_DISPLAY_NUM}-lock"\n'
+        'sleep 1.5\n: > "$RABBIT_BD_SOCKET"\nprintf \'DISPLAY=:%s\\n\' "$RABBIT_BD_DISPLAY_NUM" > "$RABBIT_BD_ENV_FILE"\nsleep 30\n',
         encoding="utf-8")
     seen: dict = {}
 

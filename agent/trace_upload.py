@@ -1,4 +1,4 @@
-"""Upload a Hermes session transcript to Hugging Face as an agent trace, re-emitted in the **Claude Code
+"""Upload a Rabbit session transcript to Hugging Face as an agent trace, re-emitted in the **Claude Code
 JSONL** shape the HF Agent Trace Viewer auto-detects (https://huggingface.co/docs/hub/agent-traces).
 Deterministic, zero LLM turns. Private by default: traces can carry prompts, tool output, local paths and
 secrets, so the dataset is created private and every text body passes the secret redactor (``force=True``)
@@ -17,8 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATASET_NAME = "hermes-traces"
-_HERMES_VERSION = "hermes-agent"
+DEFAULT_DATASET_NAME = "rabbit-traces"
+_RABBIT_VERSION = "rabbit-agent"
 _REDACTION_BLOCKED_MESSAGE = (
     "Trace upload blocked: secret redaction failed, so the transcript may "
     "still contain credentials or other sensitive data. Fix the redactor or "
@@ -29,9 +29,9 @@ _NO_TOKEN_MESSAGE = (
     "\n"
     "1. Create a token with WRITE access at https://huggingface.co/settings/tokens\n"
     "   (New token -> type \"Write\" -> copy it).\n"
-    "2. Add it to your environment as HF_TOKEN (e.g. in ~/.hermes/.env):\n"
+    "2. Add it to your environment as HF_TOKEN (e.g. in ~/.rabbit/.env):\n"
     "     HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx\n"
-    "3. Run /upload-trace again (or `hermes trace upload`)."
+    "3. Run /upload-trace again (or `rabbit trace upload`)."
 )
 _TOKEN_ENV_VARS = ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_TOKEN")
 
@@ -40,7 +40,7 @@ class TraceRedactionError(RuntimeError):
     """Raised when a trace cannot be safely redacted before upload."""
 
 
-# --- Conversion: Hermes OpenAI-format messages -> Claude Code JSONL ---
+# --- Conversion: Rabbit OpenAI-format messages -> Claude Code JSONL ---
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -157,7 +157,7 @@ def build_trace_jsonl(messages: List[Dict[str, Any]], *, session_id: str, model:
         line_type, render = _ROLE_RENDERERS.get(role, ("user", _user_message))
         entry = {  # key order is the wire order
             "parentUuid": parent, "isSidechain": False, "userType": "external", "cwd": cwd or os.getcwd(),
-            "sessionId": session_id, "version": _HERMES_VERSION, "gitBranch": git_branch, "uuid": turn_uuid,
+            "sessionId": session_id, "version": _RABBIT_VERSION, "gitBranch": git_branch, "uuid": turn_uuid,
             "timestamp": base_ts, "type": line_type, "message": render(msg, model, redact),
         }
         lines.append(json.dumps(entry, ensure_ascii=False))
@@ -226,7 +226,7 @@ def _do_upload(
 def load_session_messages(session_id: str, db_path=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
     session may still have messages)."""
-    from hermes_state_registry import acquire, release_or_close
+    from rabbit_state_registry import acquire, release_or_close
     db = acquire(db_path or None)
     try:
         resolved = db.resolve_session_id(session_id) or session_id
@@ -240,7 +240,7 @@ def upload_session_trace(
     session_id: str, *, model: str = "", cwd: str = "", redact: bool = True, private: bool = True,
     dataset_name: str = DEFAULT_DATASET_NAME, db_path=None, token: Optional[str] = None,
 ) -> str:
-    """CLI/gateway entry point: load, convert, upload to ``{user}/hermes-traces``. Status string, never raises."""
+    """CLI/gateway entry point: load, convert, upload to ``{user}/rabbit-traces``. Status string, never raises."""
     if not session_id:
         return "No active session to upload."
     token = token or _resolve_hf_token()

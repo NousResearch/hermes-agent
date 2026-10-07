@@ -8,7 +8,7 @@ export function WakeIndicatorApp() {
   const [state, setState] = useState<WakeIndicatorState>('hidden')
 
   useEffect(() => {
-    const api = window.hermesDesktop?.wakeIndicator
+    const api = window.rabbitDesktop?.wakeIndicator
     let mounted = true
     let receivedLiveState = false
 

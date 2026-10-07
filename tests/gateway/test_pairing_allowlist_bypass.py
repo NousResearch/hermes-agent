@@ -83,8 +83,8 @@ def test_unpaired_user_in_allowlist_still_authorized(monkeypatch):
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """A real PairingStore backed by a temp pairing dir."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / ".rabbit"))
+    (tmp_path / ".rabbit").mkdir(parents=True, exist_ok=True)
     import importlib
 
     import gateway.pairing as pairing_mod
@@ -101,9 +101,9 @@ def _approve_new_user(store, platform, user_id, user_name=""):
 def test_approval_adds_to_configured_allowlist(store, monkeypatch):
     """When an allowlist exists, approval appends the user to it (option i)."""
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
-    # save_env_value writes to .env under HERMES_HOME; patch it to capture.
+    # save_env_value writes to .env under RABBIT_HOME; patch it to capture.
     captured = {}
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(cfg, "save_env_value",
                         lambda k, v: (captured.__setitem__(k, v),
@@ -118,7 +118,7 @@ def test_revoke_removes_from_allowlist(store, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser99")
     saved = {}
     removed = []
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(cfg, "save_env_value",
                         lambda k, v: (saved.__setitem__(k, v),
@@ -139,7 +139,7 @@ def test_revoke_whatsapp_device_jid_removes_bare_allowlist_entry(store, monkeypa
     """
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "already,15551234567")
     saved = {}
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(
         cfg,
@@ -164,7 +164,7 @@ def test_revoke_whatsapp_removes_all_alias_forms_from_allowlist(store, monkeypat
         "keeper,15551234567,15551234567@s.whatsapp.net",
     )
     saved = {}
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(
         cfg,
@@ -181,7 +181,7 @@ def test_revoke_whatsapp_cloud_device_jid_removes_bare_allowlist_entry(store, mo
     """Cloud pairing uses platform whatsapp_cloud — same JID/phone alias rules."""
     monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "already,15551234567")
     saved = {}
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(
         cfg,
@@ -202,7 +202,7 @@ def test_revoke_whatsapp_cloud_device_jid_removes_bare_allowlist_entry(store, mo
 def test_revoke_whatsapp_preserves_wildcard_allowlist_entry(store, monkeypatch):
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*,15551234567")
     saved = {}
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setattr(
         cfg,
@@ -231,7 +231,7 @@ def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
     from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
     from gateway.run import GatewayRunner
     import gateway.run as gateway_run
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
     monkeypatch.setattr(
@@ -471,7 +471,7 @@ def test_matrix_pairing_revoke_purges_live_allowlist_snapshot(store, monkeypatch
     """A live Matrix adapter must not retain an allowlist entry removed by pairing revoke."""
     from gateway.config import PlatformConfig
     import gateway.run as gateway_run
-    import hermes_cli.config as cfg
+    import rabbit_cli.config as cfg
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
     owner_id = "@owner:example.org"

@@ -1,4 +1,4 @@
-import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+import { JSON_RPC_INTERNAL_ERROR } from '@rabbit/shared'
 
 import {
   hasLivePreviewSurface,
@@ -607,7 +607,7 @@ const windowRead: Handler = ({ request }) => {
   // read_window_below tool: main owns native window enumeration. Empty =
   // unavailable (older shell without the handler, Wayland, …) — without an
   // answer the tool would stall its full 30s deadline.
-  const read = window.hermesDesktop?.readWindowBelow
+  const read = window.rabbitDesktop?.readWindowBelow
 
   void Promise.resolve(read ? read() : null).then(
     result => answerValue(request, result),

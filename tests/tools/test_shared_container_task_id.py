@@ -10,7 +10,7 @@ environments opt in to isolation by calling
 every other task_id collapses back to ``"default"``.
 
 If you change the collapse logic, update both the helper and these
-tests -- see `hermes-agent-dev` skill, "Why do subagents get their own
+tests -- see `rabbit-agent-dev` skill, "Why do subagents get their own
 containers?" section, and the Container lifecycle paragraph under
 Docker Backend in ``website/docs/user-guide/configuration.md``.
 """
@@ -74,9 +74,9 @@ def test_env_type_override_keeps_own_id():
 
 
 def test_distinct_session_keys_get_distinct_slots(monkeypatch):
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "sess-A")
     a = terminal_tool._resolve_container_task_id(None)
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-B")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "sess-B")
     b = terminal_tool._resolve_container_task_id(None)
     assert a == "session:sess-A"
     assert b == "session:sess-B"
@@ -86,7 +86,7 @@ def test_distinct_session_keys_get_distinct_slots(monkeypatch):
 def test_subagent_collapses_onto_parent_session(monkeypatch):
     # Subagents inherit the parent's session key, so they share the parent's
     # container (the #16177 intent) rather than a global "default".
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "sess-A")
     assert (
         terminal_tool._resolve_container_task_id("subagent-3-cafef00d")
         == "session:sess-A"
@@ -94,7 +94,7 @@ def test_subagent_collapses_onto_parent_session(monkeypatch):
 
 
 def test_rl_override_wins_over_session_key(monkeypatch):
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-A")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "sess-A")
     terminal_tool.register_task_env_overrides("tb2-z", {"docker_image": "z:1"})
     try:
         assert terminal_tool._resolve_container_task_id("tb2-z") == "tb2-z"
@@ -104,27 +104,27 @@ def test_rl_override_wins_over_session_key(monkeypatch):
 
 def test_no_session_key_still_defaults(monkeypatch):
     # CLI mode: no session key -> unchanged "default" behaviour.
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_KEY", raising=False)
     assert terminal_tool._resolve_container_task_id(None) == "default"
 
 
 # --- Production gateway path: session key bound via ContextVars ---------------
 #
-# The tests above set HERMES_SESSION_KEY through os.environ, which only
+# The tests above set RABBIT_SESSION_KEY through os.environ, which only
 # exercises the os.getenv() *fallback* branch of the scoping logic. Real
 # gateway turns never write this process-global env var — they bind the
 # identity through gateway.session_context.set_session_vars(), which stores it
 # in a ContextVar, and _resolve_container_task_id reads it back via
 # get_session_env(). These companion tests cover that production path with
-# HERMES_SESSION_KEY absent from os.environ.
+# RABBIT_SESSION_KEY absent from os.environ.
 
 
 def test_session_key_from_contextvar_without_environ(monkeypatch):
-    # Prove the fix works on the gateway path: HERMES_SESSION_KEY is NOT in
+    # Prove the fix works on the gateway path: RABBIT_SESSION_KEY is NOT in
     # os.environ; the key lives only in the ContextVar bound by the gateway.
     from gateway.session_context import clear_session_vars, set_session_vars
 
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_KEY", raising=False)
     tokens = set_session_vars(session_key="sess-ctx")
     try:
         assert (
@@ -146,7 +146,7 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
     # slot must follow the ContextVar-bound session, not the process global.
     from gateway.session_context import clear_session_vars, set_session_vars
 
-    monkeypatch.setenv("HERMES_SESSION_KEY", "sess-ENV")
+    monkeypatch.setenv("RABBIT_SESSION_KEY", "sess-ENV")
     tokens = set_session_vars(session_key="sess-CTX")
     try:
         assert (
@@ -159,7 +159,7 @@ def test_contextvar_session_key_wins_over_environ(monkeypatch):
 # --- Persistent Docker is PROFILE-scoped, not session-scoped ------------------
 #
 # Product contract: TERMINAL_ENV=docker + container_persistent:true means ONE
-# long-lived container per Hermes profile, shared by every session of that
+# long-lived container per Rabbit profile, shared by every session of that
 # profile (CLI, gateway chats, WebUI). The a270c4ade session-key fallback must
 # NOT fragment persistent Docker into per-session containers; it exists for
 # backends where cross-session reuse is dangerous (SSH).
@@ -272,7 +272,7 @@ def test_shared_key_applies_to_cli_no_session(monkeypatch):
     # sessions, or the opt-in splits the container it exists to unify.
     _persistent_docker(monkeypatch)
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team/workspace")
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("RABBIT_SESSION_KEY", raising=False)
     assert terminal_tool._resolve_container_task_id(None) == "shared:team/workspace"
 
 

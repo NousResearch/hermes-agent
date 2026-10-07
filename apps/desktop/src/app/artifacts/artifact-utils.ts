@@ -1,6 +1,6 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
-import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
+import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/rabbit'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
 export type ArtifactFilter = 'all' | ArtifactKind

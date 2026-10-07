@@ -18,7 +18,7 @@ permissions:
 jobs:
   build-index:
     # Only run on the upstream repository, not on forks
-    if: github.repository == 'NousResearch/hermes-agent'
+    if: github.repository == 'seven0070/Rabbit-'
     runs-on: ubuntu-latest
     # Critical path (Sep 2026): clawhub walk ∥ github taps ~8 min, then skills.sh
     # resolve ~6 min, then a bounded 8 min owner enrichment. 15 min cancelled every

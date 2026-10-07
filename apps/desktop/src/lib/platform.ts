@@ -6,7 +6,7 @@
  * definition so they can't disagree.
  *
  * Win10 vs Win11 is not visible here (both report NT 10.0). The real glass
- * gate is `hermesDesktop.glassSupported`, which main/preload compute from
+ * gate is `rabbitDesktop.glassSupported`, which main/preload compute from
  * `os.release()`.
  */
 

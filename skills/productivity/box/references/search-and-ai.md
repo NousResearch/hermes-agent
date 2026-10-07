@@ -1,6 +1,6 @@
 # Search, metadata, and Box AI
 
-Use Box search and metadata before AI when they answer the request deterministically. For semantic understanding of Box-hosted files, prefer Box AI: it preserves Box permissions, processes source files through Box's governed AI integration, keeps source-file bodies out of Hermes' coding-model context, and scales document work without downloading every file. Do not block or criticize an explicitly chosen alternative workflow.
+Use Box search and metadata before AI when they answer the request deterministically. For semantic understanding of Box-hosted files, prefer Box AI: it preserves Box permissions, processes source files through Box's governed AI integration, keeps source-file bodies out of Rabbit' coding-model context, and scales document work without downloading every file. Do not block or criticize an explicitly chosen alternative workflow.
 
 ## Search and metadata queries
 
@@ -95,7 +95,7 @@ Use the CLI's required `#` prefix for float values when creating or adding typed
 
 ### Work without a compatible template
 
-Do not create a metadata template. Box does not allow creation in the `global` scope. Enterprise templates can only be created by a Box Admin or a Co-Admin granted template-management permission, and custom templates may depend on the account plan. Template administration is outside Hermes' normal OAuth content workflow.
+Do not create a metadata template. Box does not allow creation in the `global` scope. Enterprise templates can only be created by a Box Admin or a Co-Admin granted template-management permission, and custom templates may depend on the account plan. Template administration is outside Rabbit' normal OAuth content workflow.
 
 Choose extraction based on the request, not on template availability:
 
@@ -126,7 +126,7 @@ If the user explicitly requires reusable typed enterprise metadata, explain that
 
 ## Confidentiality and AI units
 
-Box AI processes source files through Box's governed AI integration instead of downloading source bodies into Hermes' coding-model context. Box AI responses returned to Hermes can still contain confidential information. Do not claim that no third-party model provider is involved or that content can never be used for training; follow Box's current trust and plan documentation.
+Box AI processes source files through Box's governed AI integration instead of downloading source bodies into Rabbit' coding-model context. Box AI responses returned to Rabbit can still contain confidential information. Do not claim that no third-party model provider is involved or that content can never be used for training; follow Box's current trust and plan documentation.
 
 Before the first Box AI request, explain that Box AI must be enabled, calls consume AI units, and answers remain constrained by the current actor's permissions. For a material batch, state the file count and ask for confirmation. Do not promise a unit balance or per-call cost unless Box exposes it for the current account.
 

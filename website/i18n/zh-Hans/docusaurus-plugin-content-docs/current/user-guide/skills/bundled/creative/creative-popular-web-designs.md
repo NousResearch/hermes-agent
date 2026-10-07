@@ -17,14 +17,14 @@ description: "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/creative/popular-web-designs` |
 | 版本 | `1.0.0` |
-| 作者 | Hermes Agent + Teknium（设计系统来源：VoltAgent/awesome-design-md） |
+| 作者 | adapted from VoltAgent/awesome-design-md |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # 流行网页设计
@@ -43,7 +43,7 @@ description: "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS
 3. 生成 HTML 时使用设计 token 和组件规范
 4. 配合 `generative-widgets` skill，通过 cloudflared tunnel 提供服务
 
-每个模板顶部都包含一个 **Hermes 实现说明** 块，内容包括：
+每个模板顶部都包含一个 **Rabbit 实现说明** 块，内容包括：
 - CDN 字体替代方案及 Google Fonts `<link>` 标签（可直接粘贴）
 - 主字体和等宽字体的 CSS font-family 栈
 - 提醒使用 `write_file` 创建 HTML 文件，使用 `browser_vision` 进行验证
@@ -57,7 +57,7 @@ description: "54 个真实设计系统（Stripe、Linear、Vercel）的 HTML/CSS
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Page Title</title>
-  <!-- Paste the Google Fonts <link> from the template's Hermes notes -->
+  <!-- Paste the Google Fonts <link> from the template's Rabbit notes -->
   <link href="https://fonts.googleapis.com/css2?family=..." rel="stylesheet">
   <style>
     /* Apply the template's color palette as CSS custom properties */

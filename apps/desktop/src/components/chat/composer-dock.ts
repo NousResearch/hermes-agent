@@ -40,11 +40,11 @@ export const composerDockCard = (edge: 'bottom' | 'top' = 'top') =>
 
 /** Floating composer panel skin — the `/`·`@`·`?` completion drawer and the
  *  attach (`+`) menu. Glassy translucent card, hairline border, full radius,
- *  smallest type, soft nous shadow. Uses an explicit fill (not `--composer-fill`)
+ *  smallest type, soft rabbit shadow. Uses an explicit fill (not `--composer-fill`)
  *  so it renders identically whether mounted inside the composer or portaled out
  *  of it. Visual skin only — consumers add their own size/position/padding. */
 export const composerPanelCard = cn(
-  'rounded-2xl border border-border/65 shadow-nous text-[length:var(--conversation-tool-font-size)]',
+  'rounded-2xl border border-border/65 shadow-rabbit text-[length:var(--conversation-tool-font-size)]',
   'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
   composerSurfaceGlass
 )

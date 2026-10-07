@@ -1,10 +1,10 @@
 """Gateway slash commands must do their blocking work inside the routed profile.
 
 The multiplexed inbound handler wraps the whole message in
-``_profile_runtime_scope``, which installs the routed profile's ``HERMES_HOME``
+``_profile_runtime_scope``, which installs the routed profile's ``RABBIT_HOME``
 override and its secret scope as **contextvars**. A bare
 ``loop.run_in_executor(None, ...)`` starts the worker with an EMPTY context, so
-``SessionDB()`` / ``get_hermes_home()`` inside the worker resolve the LAUNCH
+``SessionDB()`` / ``get_rabbit_home()`` inside the worker resolve the LAUNCH
 home — /insights reported the default profile's conversations from another
 profile's chat. ``/compress`` already routes through
 ``_run_in_executor_with_context``; every other hop in the mixin must too.
@@ -23,11 +23,11 @@ import pytest
 
 @pytest.fixture
 def profile_home(tmp_path, monkeypatch):
-    root = tmp_path / ".hermes"
+    root = tmp_path / ".rabbit"
     home = root / "profiles" / "coder"
     home.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     return home
 
 
@@ -61,15 +61,15 @@ async def test_insights_opens_session_db_under_the_routed_home(
     runner, profile_home, monkeypatch
 ):
     import agent.insights as insights_mod
-    import hermes_state
+    import rabbit_state
     from gateway.run import _profile_runtime_scope
-    from hermes_constants import get_hermes_home
+    from rabbit_constants import get_rabbit_home
 
     seen: dict = {}
 
     class _RecordingDB:
         def __init__(self, *a, **kw):
-            seen["home"] = str(get_hermes_home())
+            seen["home"] = str(get_rabbit_home())
 
         def close(self):
             pass
@@ -84,7 +84,7 @@ async def test_insights_opens_session_db_under_the_routed_home(
         def format_gateway(self, report):
             return "ok"
 
-    monkeypatch.setattr(hermes_state, "SessionDB", _RecordingDB)
+    monkeypatch.setattr(rabbit_state, "SessionDB", _RecordingDB)
     monkeypatch.setattr(insights_mod, "InsightsEngine", _Engine)
 
     with _profile_runtime_scope(profile_home):

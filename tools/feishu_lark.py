@@ -26,7 +26,7 @@ def get_client():
 def _check_feishu():
     # find_spec checks importability without executing lark_oapi's __init__, which
     # eagerly loads websockets/dispatcher/every api model (~5s). This probe fires at
-    # every ``hermes`` startup; the handlers still do the real import when invoked.
+    # every ``rabbit`` startup; the handlers still do the real import when invoked.
     import importlib.util
     try:
         return importlib.util.find_spec("lark_oapi") is not None

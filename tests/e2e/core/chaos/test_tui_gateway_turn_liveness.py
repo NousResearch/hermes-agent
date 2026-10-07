@@ -342,10 +342,10 @@ def run_scenario(scn: Scenario, srv: FakeLLMServer, root: Path) -> dict[str, Any
         cfg.update(request_timeout=LONG_TIMEOUT_S, stale_timeout=LONG_TIMEOUT_S)
     elif scn.long_request_timeout:
         cfg.update(request_timeout=LONG_TIMEOUT_S)
-    home, hermes_home = write_chaos_home(root, srv.base_url, **cfg)
+    home, rabbit_home = write_chaos_home(root, srv.base_url, **cfg)
     tag = new_tag()
     work = gateway_cwd(root)
-    env = env_for_gateway(hermetic_env(home, hermes_home, tag), work)
+    env = env_for_gateway(hermetic_env(home, rabbit_home, tag), work)
     gw = TuiGatewayProcess(env, work, root / "gateway-stderr.log")
     stats: dict[str, Any] = {"scenario": scn.id}
     try:
@@ -385,7 +385,7 @@ def run_scenario(scn: Scenario, srv: FakeLLMServer, root: Path) -> dict[str, Any
                 lambda e: _is(e, "message.complete", sid), timeout=deadline, start=start)
             turn_s = time.monotonic() - t0
         if scn.action in EXIT_ACTIONS:
-            return _exit_mid_turn(scn, gw, hb, tag, hermes_home / "state.db", stored, stats)
+            return _exit_mid_turn(scn, gw, hb, tag, rabbit_home / "state.db", stored, stats)
         seen_types = sorted({str(e.get("type")) for e in gw.events_since(start, sid)})
         assert done is not None, (
             f"{scn.id}: no terminal message.complete within {deadline}s "
@@ -416,7 +416,7 @@ def run_scenario(scn: Scenario, srv: FakeLLMServer, root: Path) -> dict[str, Any
             f"{scn.id}: follow-up ran without the faulted turn in its history (not the same session)")
         assert unanswered_tool_calls(sent) == [], f"{scn.id}: model was sent unanswered tool_calls"
 
-        state_db = hermes_home / "state.db"
+        state_db = rabbit_home / "state.db"
         persisted = persisted_messages(state_db, stored)
         assert unanswered_tool_calls(persisted) == [], f"{scn.id}: state.db has unanswered tool_calls"
         if scn.fault == "parallel":

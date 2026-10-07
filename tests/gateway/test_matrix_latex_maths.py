@@ -21,5 +21,5 @@ def test_inline_and_display_math_survive_sanitizer_with_escaped_tex():
 
 
 def test_unpaired_dollars_and_sentinel_collisions_pass_through_unchanged():
-    text = "Costs $5 or $10 today; HERMESTEXINLINE7HERMESTEXEND is not ours"
+    text = "Costs $5 or $10 today; RABBITTEXINLINE7RABBITTEXEND is not ours"
     assert _adapter()._markdown_to_html(text) == text

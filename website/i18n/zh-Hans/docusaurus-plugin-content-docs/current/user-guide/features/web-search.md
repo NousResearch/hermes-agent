@@ -8,14 +8,14 @@ sidebar_position: 6
 # 网页搜索与提取
 
 本页的 Python 依赖命令使用 [PM 准备的源码环境](../../reference/package-management.md#developer-workflow)。
-依赖变更后，请重新激活该 checkout 并重启 Hermes。
+依赖变更后，请重新激活该 checkout 并重启 Rabbit。
 
-Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商支持：
+Rabbit Agent 内置两个可供模型调用的网页工具，由多个提供商支持：
 
 - **`web_search`** — 搜索网页并返回排序结果
 - **`web_extract`** — 从一个或多个 URL 获取并提取可读内容
 
-两者均通过单一后端选择进行配置。提供商可通过 `hermes tools` 选择，或直接在 `config.yaml` 中设置。
+两者均通过单一后端选择进行配置。提供商可通过 `rabbit tools` 选择，或直接在 `config.yaml` 中设置。
 
 ## 后端
 
@@ -28,15 +28,11 @@ Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商�
 | **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | 付费 |
-| **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
+| **xAI (Grok)** | `XAI_API_KEY` 或 `rabbit auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
 
-Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
+Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `python -c "import pm; pm.sync_venv(['ddgs'], explicit=True)"`（或让 Rabbit 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
 
 **按能力拆分：** 搜索和提取可分别使用不同的提供商——例如搜索使用 SearXNG（免费），提取使用 Firecrawl。详见下方[按能力配置](#per-capability-configuration)。
-
-:::tip Nous 订阅用户
-如果您拥有付费 [Nous Portal](https://portal.nousresearch.com) 订阅，网页搜索和提取可通过 **[Tool Gateway](tool-gateway.md)** 使用托管网页搜索——无需 API 密钥。新安装可运行 `hermes setup --portal` 登录并一次性开启所有 gateway 工具；现有安装可通过 `hermes tools` 单独开启网页功能。
-:::
 
 ---
 
@@ -60,12 +56,12 @@ Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_ext
 
 ## 设置
 
-### 通过 `hermes tools` 快速设置
+### 通过 `rabbit tools` 快速设置
 
-运行 `hermes tools`，导航至 **Web Search & Extract**，选择一个提供商。向导会提示输入所需的 URL 或 API 密钥，并写入您的配置。
+运行 `rabbit tools`，导航至 **Web Search & Extract**，选择一个提供商。向导会提示输入所需的 URL 或 API 密钥，并写入您的配置。
 
 ```bash
-hermes tools
+rabbit tools
 ```
 
 ---
@@ -75,7 +71,7 @@ hermes tools
 功能完整的搜索和提取。推荐大多数用户使用。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 FIRECRAWL_API_KEY=fc-your-key-here
 ```
 
@@ -84,7 +80,7 @@ FIRECRAWL_API_KEY=fc-your-key-here
 **自托管 Firecrawl：** 指向您自己的实例而非云端 API：
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 FIRECRAWL_API_URL=http://localhost:3002
 ```
 
@@ -94,7 +90,7 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 ### SearXNG（免费，自托管）
 
-SearXNG 是一个注重隐私的开源元搜索引擎，聚合来自 70 多个搜索引擎的结果。**无需 API 密钥**——只需将 Hermes 指向一个运行中的 SearXNG 实例。
+SearXNG 是一个注重隐私的开源元搜索引擎，聚合来自 70 多个搜索引擎的结果。**无需 API 密钥**——只需将 Rabbit 指向一个运行中的 SearXNG 实例。
 
 SearXNG 为**仅搜索**——`web_extract` 需要单独的提取提供商。
 
@@ -148,7 +144,7 @@ docker cp searxng:/etc/searxng/settings.yml ~/searxng/searxng/settings.yml
 formats:
   - html
 
-# 修改后（为 Hermes 启用 JSON）：
+# 修改后（为 Rabbit 启用 JSON）：
 formats:
   - html
   - json
@@ -170,21 +166,21 @@ curl -s "http://localhost:8888/search?q=test&format=json" | python3 -c \
 
 您应该看到类似 `10 results` 的输出。如果收到 `403 Forbidden`，说明 JSON 格式仍未启用——请重新检查第 4 步。
 
-**7. 配置 Hermes：**
+**7. 配置 Rabbit：**
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 SEARXNG_URL=http://localhost:8888
 ```
 
-然后在 `~/.hermes/config.yaml` 中选择 SearXNG 作为搜索后端：
+然后在 `~/.rabbit/config.yaml` 中选择 SearXNG 作为搜索后端：
 
 ```yaml
 web:
   search_backend: "searxng"
 ```
 
-或通过 `hermes tools` → Web Search & Extract → SearXNG 设置。
+或通过 `rabbit tools` → Web Search & Extract → SearXNG 设置。
 
 ---
 
@@ -193,7 +189,7 @@ web:
 公共 SearXNG 实例列表见 [searx.space](https://searx.space/)。筛选**已启用 JSON 格式**的实例（表格中有显示）。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 SEARXNG_URL=https://searx.example.com
 ```
 
@@ -208,13 +204,13 @@ SEARXNG_URL=https://searx.example.com
 SearXNG 负责搜索；`web_extract` 需要单独的提供商。使用按能力配置的键：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 web:
   search_backend: "searxng"
   extract_backend: "firecrawl"   # 或 tavily、exa、parallel
 ```
 
-使用此配置，Hermes 对所有搜索查询使用 SearXNG，对 URL 提取使用 Firecrawl——将免费搜索与高质量提取相结合。
+使用此配置，Rabbit 对所有搜索查询使用 SearXNG，对 URL 提取使用 Firecrawl——将免费搜索与高质量提取相结合。
 
 ---
 
@@ -223,7 +219,7 @@ web:
 针对 AI 优化的搜索和提取，免费层级慷慨。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 TAVILY_API_KEY=tvly-your-key-here
 ```
 
@@ -236,7 +232,7 @@ TAVILY_API_KEY=tvly-your-key-here
 具有语义理解的神经搜索。适合研究和查找概念相关内容。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 EXA_API_KEY=your-exa-key-here
 ```
 
@@ -249,7 +245,7 @@ EXA_API_KEY=your-exa-key-here
 具备深度研究能力的 AI 原生搜索和提取。
 
 ```bash
-# ~/.hermes/.env
+# ~/.rabbit/.env
 PARALLEL_API_KEY=your-parallel-key-here
 ```
 
@@ -264,20 +260,20 @@ PARALLEL_API_KEY=your-parallel-key-here
 支持两种凭证路径——无需新的环境变量，无需新的设置向导：
 
 ```bash
-# ~/.hermes/.env（环境变量路径）
+# ~/.rabbit/.env（环境变量路径）
 XAI_API_KEY=sk-xai-your-key-here
 ```
 
 或对于 SuperGrok 订阅用户：
 
 ```bash
-hermes auth login xai-oauth
+rabbit auth login xai-oauth
 ```
 
 然后选择 xAI 作为搜索后端：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 web:
   backend: "xai"
 ```
@@ -311,7 +307,7 @@ web:
 为所有网页功能设置一个提供商：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 web:
   backend: "searxng"   # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
@@ -321,7 +317,7 @@ web:
 搜索和提取使用不同的提供商。这允许您将免费搜索（SearXNG）与付费提取提供商组合使用，反之亦然：
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 web:
   search_backend: "searxng"     # 由 web_search 使用
   extract_backend: "firecrawl"  # 由 web_extract 使用
@@ -336,7 +332,7 @@ web:
 
 ### 自动检测
 
-如果未显式配置后端，Hermes 根据已设置的凭证选择第一个可用的后端：
+如果未显式配置后端，Rabbit 根据已设置的凭证选择第一个可用的后端：
 
 | 存在的凭证 | 自动选择的后端 |
 |--------------------|-----------------------|
@@ -352,17 +348,17 @@ xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或�
 
 ## 验证设置
 
-运行 `hermes setup` 查看检测到的网页后端：
+运行 `rabbit setup` 查看检测到的网页后端：
 
 ```
 ✅ Web Search & Extract (searxng)
 ```
 
 源码检出也可以在 [PM 激活](../../reference/package-management.md#developer-workflow)后检查模块。
-使用你打算检查网页配置的 Hermes 数据目录：
+使用你打算检查网页配置的 Rabbit 数据目录：
 
 ```bash
-# 从 Hermes 源码目录的干净 shell 运行
+# 从 Rabbit 源码目录的干净 shell 运行
 source ./activate
 python -m tools.web_tools
 ```
@@ -416,7 +412,7 @@ web:
 对于需要直接通过 `curl` 使用 SearXNG 的 agent（例如作为网页工具集不可用时的回退），请安装 `searxng-search` 可选技能：
 
 ```bash
-hermes skills install official/research/searxng-search
+rabbit skills install official/research/searxng-search
 ```
 
 这将添加一个技能，教 agent 如何：

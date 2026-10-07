@@ -1,5 +1,5 @@
-import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
-import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@hermes/shared/ansi'
+import { Ansi, Box, NoSelect, Text } from '@rabbit/ink'
+import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@rabbit/shared/ansi'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'

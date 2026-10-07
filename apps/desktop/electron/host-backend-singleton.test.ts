@@ -36,7 +36,7 @@ test('two local profiles connecting concurrently produce ZERO additional backend
 test('the local pool spawn path is unreachable, and the escape hatches still reach it', () => {
   assert.throws(() => assertNoSecondLocalBackend('worker', { isolated: false }), SecondLocalBackendError)
 
-  // HERMES_DESKTOP_ISOLATED_BACKEND=1: a private backend for this app.
+  // RABBIT_DESKTOP_ISOLATED_BACKEND=1: a private backend for this app.
   assert.equal(sharesHostBackend({ isolated: true }), false)
   assertNoSecondLocalBackend('worker', { isolated: true })
   assert.equal(resolveProfileBackendRoute('worker', { ...LOCAL, isolatedBackend: true }).backend, 'pool')
@@ -49,7 +49,7 @@ test('the local pool spawn path is unreachable, and the escape hatches still rea
   assert.equal(resolveProfileBackendRoute('worker', { ...LOCAL, profileRemoteOverride: true }).backend, 'pool')
 
   // A mutating request the server cannot profile-scope is the third way
-  // through: the pooled backend's HERMES_HOME is its only scope, so the guard
+  // through: the pooled backend's RABBIT_HOME is its only scope, so the guard
   // must let that spawn happen instead of refusing a legitimate route.
   assert.equal(sharesHostBackend({ unscopableRequest: true }), false)
   assertNoSecondLocalBackend('worker', { unscopableRequest: true })

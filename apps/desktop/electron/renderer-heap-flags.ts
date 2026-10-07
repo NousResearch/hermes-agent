@@ -2,7 +2,7 @@
 //
 // Chromium only forwards `--js-flags` to renderer processes when the BROWSER
 // process has the switch on its own command line before `ready`. The
-// `hermes desktop` launcher appends `desktop.electron_flags` to argv, but a
+// `rabbit desktop` launcher appends `desktop.electron_flags` to argv, but a
 // packaged app started from its Start-menu / .desktop entry never runs that
 // launcher, so the config key was dead there and the renderer had no heap
 // ceiling at all. This module is pure (no Electron import) so the switch
@@ -119,7 +119,7 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
     if (meantToSet) {
       console.warn(
-        '[hermes] config.yaml: desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored — ' +
+        '[rabbit] config.yaml: desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored — ' +
           'the launch reader supports only two-space-indented keys under a top-level `desktop:` with ' +
           'four-space `- ` list items (see the Desktop docs). Launching with Chromium defaults.'
       )
@@ -137,7 +137,7 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
  * single `js-flags` switch — appendSwitch replaces, so applying them one by
  * one would silently drop all but the last. Other `--name[=value]` entries
  * pass through as their own switches. Flags already present on `argv` are not
- * re-applied (the `hermes desktop` launcher put them there).
+ * re-applied (the `rabbit desktop` launcher put them there).
  */
 export function planLaunchSwitches(cfg: DesktopLaunchConfig, argv: readonly string[] = []): PlannedSwitch[] {
   const jsFlagParts: string[] = []

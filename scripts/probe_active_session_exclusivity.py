@@ -5,7 +5,7 @@ change exists to prevent: two SEPARATE gateway processes, each with its own
 snapshot of a conversation, both writing to it. That is how the defect was found
 and it is the only way to prove it is closed.
 
-Run against the fork's own HERMES_HOME so nothing here touches a real profile:
+Run against the fork's own RABBIT_HOME so nothing here touches a real profile:
 
     python scripts/probe_active_session_exclusivity.py
 
@@ -43,7 +43,7 @@ class Gateway:
 
     def __init__(self, name: str, home: Path):
         env = dict(os.environ)
-        env["HERMES_HOME"] = str(home)
+        env["RABBIT_HOME"] = str(home)
         env["PYTHONUNBUFFERED"] = "1"
         self.name = name
         self.proc = subprocess.Popen(

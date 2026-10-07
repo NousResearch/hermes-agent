@@ -39,7 +39,7 @@ export function registerPetOverlayIpc({
   // content origin so the pet lands where it sat in-window. A remembered/dragged
   // spot passes screen-space bounds (screen=true) and is used as-is. We return the
   // resolved screen bounds so the renderer can persist exactly where it opened.
-  ipcMain.handle('hermes:pet-overlay:open', async (_event, request) => {
+  ipcMain.handle('rabbit:pet-overlay:open', async (_event, request) => {
     const bounds = request && request.bounds ? request.bounds : request
     const isScreen = Boolean(request && request.screen)
     const mainWindow = getMainWindow()
@@ -70,7 +70,7 @@ export function registerPetOverlayIpc({
 
     return { ok: true, bounds: screenBounds }
   })
-  ipcMain.handle('hermes:pet-overlay:close', async () => {
+  ipcMain.handle('rabbit:pet-overlay:close', async () => {
     closePetOverlay()
 
     return { ok: true }
@@ -81,7 +81,7 @@ export function registerPetOverlayIpc({
   // The window is created non-resizable (no stray edge-drag on the transparent
   // frameless panel), which on Windows/Linux also blocks programmatic setBounds
   // sizing — so briefly flip resizable on whenever the size actually changes.
-  ipcMain.on('hermes:pet-overlay:set-bounds', (_event, bounds) => {
+  ipcMain.on('rabbit:pet-overlay:set-bounds', (_event, bounds) => {
     const petOverlayWindow = getPetOverlayWindow()
 
     if (!petOverlayWindow || petOverlayWindow.isDestroyed() || !bounds) {
@@ -112,7 +112,7 @@ export function registerPetOverlayIpc({
   // Click-through: the overlay window is a full rectangle but only the pet pixels
   // should be interactive. The renderer toggles this as the cursor enters/leaves
   // the sprite so transparent margins pass clicks to whatever is behind.
-  ipcMain.on('hermes:pet-overlay:ignore-mouse', (_event, ignore) => {
+  ipcMain.on('rabbit:pet-overlay:ignore-mouse', (_event, ignore) => {
     const petOverlayWindow = getPetOverlayWindow()
 
     // No forward on Linux: an ignoring overlay could never be re-armed.
@@ -128,7 +128,7 @@ export function registerPetOverlayIpc({
   // the app's cmd/alt-tab anchor from the main window. But the pop-up composer
   // needs the keyboard, so the renderer asks us to flip it focusable + focus it
   // while the composer is open, then back to non-activating when it closes.
-  ipcMain.on('hermes:pet-overlay:set-focusable', (_event, focusable) => {
+  ipcMain.on('rabbit:pet-overlay:set-focusable', (_event, focusable) => {
     const petOverlayWindow = getPetOverlayWindow()
 
     if (!petOverlayWindow || petOverlayWindow.isDestroyed()) {
@@ -142,15 +142,15 @@ export function registerPetOverlayIpc({
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.
-  ipcMain.on('hermes:pet-overlay:state', (_event, payload) => {
+  ipcMain.on('rabbit:pet-overlay:state', (_event, payload) => {
     const petOverlayWindow = getPetOverlayWindow()
 
     if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
-      petOverlayWindow.webContents.send('hermes:pet-overlay:state', payload)
+      petOverlayWindow.webContents.send('rabbit:pet-overlay:state', payload)
     }
   })
   // Overlay → main renderer: control messages (pop back in, composer submit).
-  ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
+  ipcMain.on('rabbit:pet-overlay:control', (_event, payload) => {
     const mainWindow = getMainWindow()
 
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -188,6 +188,6 @@ export function registerPetOverlayIpc({
       payload = { ...payload, bounds: placePetOverlay(payload.bounds, mainWindow) ?? payload.bounds }
     }
 
-    mainWindow.webContents.send('hermes:pet-overlay:control', payload)
+    mainWindow.webContents.send('rabbit:pet-overlay:control', payload)
   })
 }

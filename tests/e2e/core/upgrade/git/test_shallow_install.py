@@ -1,4 +1,4 @@
-"""Shallow and stale installs through the real ``hermes update``.
+"""Shallow and stale installs through the real ``rabbit update``.
 
 N-1's ``scripts/install.sh`` clones ``--depth 1 --single-branch``: that is the checkout every
 N-1 user has. Three installs run concurrently over smart HTTP:
@@ -9,12 +9,12 @@ N-1 user has. Three installs run concurrently over smart HTTP:
   the second must succeed after the first one unshallowed the clone (#124272: the unshallow applied
   ``--filter=tree:0`` to a clone whose objects sit in a non-promisor pack, and the next fetch dies
   in ``pack-objects ... should_include_obj``).
-* ``checked``: the same install after three passive ``hermes update --check`` runs while upstream
+* ``checked``: the same install after three passive ``rabbit update --check`` runs while upstream
   moved (each is a depth-1 fetch that appends a graft), then updated to HEAD. The history is
   shared, so the update must not claim orphan divergence (#105951's symptom).
 * ``prefetched``: a HEAD install (non-shallow ``tree:0``) with a local commit, where the user ran
   ``git fetch --depth 1 origin main`` (the documented workaround for slow fetches) before
-  ``hermes update``. The local commit shares history with upstream: it must stay recoverable, and
+  ``rabbit update``. The local commit shares history with upstream: it must stay recoverable, and
   the update must not declare orphan divergence (#123346).
 """
 
@@ -125,14 +125,14 @@ def test_passive_checks_do_not_push_the_next_update_into_orphan_divergence(runs)
     w: G.World = run["w"]
     cp1 = run["cp1"]
     for cp in run["checks"]:
-        assert cp.returncode == 0 and G.TRACEBACK not in G.output(cp), f"`hermes update --check` failed:\n{w.diag(cp)}"
+        assert cp.returncode == 0 and G.TRACEBACK not in G.output(cp), f"`rabbit update --check` failed:\n{w.diag(cp)}"
     assert cp1.returncode == 0 and run["head1"] == I.head_sha(), f"N-1 -> HEAD update failed:\n{w.diag(cp1)}"
     with known_failure(r"claims orphan divergence",
                        "#124645: each depth-1 `--check` appends a graft the fetch reflog pins, and N-1's "
                        "update resets as orphan divergence. HEAD's prune expires those reflogs and HEAD "
                        "unshallows before the pull; it is N-1's own check and pull code, so this flips once "
                        "a release carrying the fix is N-1"):
-        assert ORPHAN not in G.output(cp1) and not w.refs("refs/hermes-update-backups/orphan-*"), (
+        assert ORPHAN not in G.output(cp1) and not w.refs("refs/rabbit-update-backups/orphan-*"), (
             f"after {len(run['checks'])} passive checks ({run['grafts']} grafts in .git/shallow) the update "
             f"claims orphan divergence on a history it shares with upstream:\n{w.diag(cp1)}")
 
@@ -145,6 +145,6 @@ def test_depth1_prefetch_never_turns_shared_history_into_orphan_divergence(runs)
     assert cp1.returncode == 0 and run["head1"] == run["target"], f"update failed:\n{w.diag(cp1)}"
     keepers = w.refs_containing(run["local"])
     assert keepers, f"local commit {run['local'][:12]} is reachable only from the reflog:\n{w.diag(cp1)}"
-    assert ORPHAN not in G.output(cp1) and not w.refs("refs/hermes-update-backups/orphan-*"), (
+    assert ORPHAN not in G.output(cp1) and not w.refs("refs/rabbit-update-backups/orphan-*"), (
         f"after a --depth 1 pre-fetch the update claims orphan divergence and force-resets main "
         f"(local commit {run['local'][:12]} shares history with upstream):\n{w.diag(cp1)}")

@@ -1,6 +1,6 @@
-"""Upgrade-path E2E: a real release N-1 git install updated to HEAD by the real `hermes update`.
+"""Upgrade-path E2E: a real release N-1 git install updated to HEAD by the real `rabbit update`.
 
-Class C6 (bricked installs, stale code, lost state after `hermes update`). Each leg:
+Class C6 (bricked installs, stale code, lost state after `rabbit update`). Each leg:
 
 1. stages a local bare ``origin`` (``--shared`` onto this repository, so no network and no
    object copy) with ``main`` parked at release N-1 (``git describe --tags --abbrev=0 HEAD~1``);
@@ -12,7 +12,7 @@ Class C6 (bricked installs, stale code, lost state after `hermes update`). Each 
    job, and a hand-edited config.yaml at the N-1 schema version with comments, long quoted
    unicode values and a legacy MCP ``disabled: true`` entry (the one documented N-1 -> HEAD
    migration);
-4. moves ``origin/main`` to HEAD and runs the real ``hermes update --yes --branch main``
+4. moves ``origin/main`` to HEAD and runs the real ``rabbit update --yes --branch main``
    non-interactively. A branch-explicit update follows the historical git-source path,
    without depending on the separately published R2 channel record.
 
@@ -25,7 +25,7 @@ live gap fixed by #120339); ``kill_before_deps``
 
 Invariants after every leg (fresh processes only): the final update's exit code matches reality
 (0 and HEAD checked out and the editable install serves HEAD's tree, or non-zero and nothing
-changed); ``hermes --version``, ``hermes doctor`` and a one-shot turn succeed; state.db and the
+changed); ``rabbit --version``, ``rabbit doctor`` and a one-shot turn succeed; state.db and the
 profile's state.db pass ``integrity_check`` with unchanged row counts and byte-identical
 pre-existing messages (also after HEAD's first real use of the DB); the cron job survives; the
 venv satisfies HEAD's dependency set; config.yaml of both profiles equals exactly what HEAD's own
@@ -38,7 +38,7 @@ The install's origin is the official URL rewritten (``url.<store>.insteadOf``) t
 store, so the updater takes the normal non-fork path and never touches the network.
 
 All processes run in the bubblewrap sandbox from ``_helpers`` (own PID namespace, no user
-systemd bus, real ~/.hermes read-only): the updater's all-profile gateway scan cannot reach a
+systemd bus, real ~/.rabbit read-only): the updater's all-profile gateway scan cannot reach a
 live gateway on the host.
 """
 
@@ -59,7 +59,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
@@ -68,7 +68,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer
 pytestmark = [
     pytest.mark.platforms("linux"),
     # The real updater runs against a throwaway local origin + install inside the sandbox, never
-    # this checkout (the guard this bypasses exists to stop `hermes update` on the real repo).
+    # this checkout (the guard this bypasses exists to stop `rabbit update` on the real repo).
     pytest.mark.live_system_guard_bypass,
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(shutil.which("git") is None, reason="git required"),
@@ -88,11 +88,11 @@ def _git(*args: str, cwd: Path, check: bool = True) -> str:
 
 
 def _real_uv() -> str | None:
-    cand = shutil.which("uv") or str(H.REAL_HOME / ".hermes" / "bin" / "uv")
+    cand = shutil.which("uv") or str(H.REAL_HOME / ".rabbit" / "bin" / "uv")
     return cand if cand and Path(cand).exists() else None
 
 
-OFFICIAL_URL = "https://github.com/NousResearch/hermes-agent.git"
+OFFICIAL_URL = "https://github.com/seven0070/Rabbit-.git"
 
 
 class _Refs(NamedTuple):
@@ -105,13 +105,13 @@ class _Refs(NamedTuple):
 def _refs() -> _Refs:
     """HEAD and release N-1, resolved on first use: collection (every CI shard) runs no git.
 
-    N-1 is the nearest CalVer release tag before HEAD; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
+    N-1 is the nearest CalVer release tag before HEAD; RABBIT_E2E_UPGRADE_BASE=<ref> starts from any
     older ref instead (e.g. the pre-handoff v2026.9.14, or a patched base when proving a leg red
     against the N-1 side).
     """
     head = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
     try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git(
+        tag = os.environ.get("RABBIT_E2E_UPGRADE_BASE") or _git(
             "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1",
             cwd=H.WORKTREE,
         )
@@ -138,7 +138,7 @@ added = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "--diff-f
                         *[f"{t}/*.py" for t in tops]], capture_output=True, text=True).stdout.split()
 added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")][:3]
 bad = []
-for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
+for name in tops + ["rabbit_cli.main", "run_agent", "rabbit_state"] + added:
     try:
         mod = importlib.import_module(name)
     except BaseException as exc:
@@ -184,11 +184,11 @@ for spec in proj["dependencies"]:
         continue
     if req.specifier and not req.specifier.contains(have, prereleases=True):
         bad.append(f"{req.name}: {have} does not satisfy {req.specifier}")
-dist = metadata.distribution("hermes-agent")
+dist = metadata.distribution("rabbit-agent")
 declared = sorted(str(Requirement(r)) for r in (dist.requires or []) if "extra ==" not in r)
 wanted = sorted(str(Requirement(r)) for r in proj["dependencies"])
 if declared != wanted:
-    bad.append(f"installed hermes-agent metadata is stale: {sorted(set(declared) ^ set(wanted))}")
+    bad.append(f"installed rabbit-agent metadata is stale: {sorted(set(declared) ^ set(wanted))}")
 if bad:
     sys.exit("\n".join(bad))
 """
@@ -209,7 +209,7 @@ QUICK_CMD = "echo 'deploy: step one' && echo \"step two # still a string\" && pr
 
 def user_config(base_url: str, version: int) -> str:
     return (
-        "# Hand-edited by the user. Every comment and value below must survive `hermes update`.\n"
+        "# Hand-edited by the user. Every comment and value below must survive `rabbit update`.\n"
         "model:\n"
         "  provider: custom\n"
         f"  base_url: {base_url}  # local fake provider\n"
@@ -239,7 +239,7 @@ def user_config(base_url: str, version: int) -> str:
 
 def _base_config_version(leg: Leg) -> int:
     """The N-1 schema version, as N-1's own code reports it (imported in the N-1 install's venv)."""
-    cp = leg.run("-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG; print(DEFAULT_CONFIG['_config_version'])",
+    cp = leg.run("-c", "from rabbit_cli.config_defaults import DEFAULT_CONFIG; print(DEFAULT_CONFIG['_config_version'])",
                  argv0=leg.python)
     assert cp.returncode == 0, "could not import the N-1 DEFAULT_CONFIG:\n" + H.describe(cp)
     return int(cp.stdout.strip().splitlines()[-1])
@@ -256,20 +256,20 @@ class Leg:
     origin: Path
     install: Path
     env: dict[str, str]
-    hermes_home: Path
+    rabbit_home: Path
     wrap_dir: Path
     snapshot: dict = field(default_factory=dict)
 
     @property
-    def hermes(self) -> str:
-        published = self.install / ".hermes" / "bin" / "hermes"
-        return str(published if published.exists() else self.install / "venv" / "bin" / "hermes")
+    def rabbit(self) -> str:
+        published = self.install / ".rabbit" / "bin" / "rabbit"
+        return str(published if published.exists() else self.install / "venv" / "bin" / "rabbit")
 
     @property
     def python(self) -> str:
         from pm.environments import install_key
 
-        facts = self.hermes_home / "installs" / install_key(self.install) / "facts.json"
+        facts = self.rabbit_home / "installs" / install_key(self.install) / "facts.json"
         if facts.exists():
             selected = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
             return str(Path(selected) / "bin" / "python")
@@ -277,20 +277,20 @@ class Leg:
 
     def run(self, *args: str, timeout: float = CLI_TIMEOUT, argv0: str | None = None,
             cwd: Path | None = None) -> subprocess.CompletedProcess:
-        return H.run([argv0 or self.hermes, *args], env=self.env, cwd=cwd or self.install,
+        return H.run([argv0 or self.rabbit, *args], env=self.env, cwd=cwd or self.install,
                      writable=[self.root], timeout=timeout)
 
     def popen(self, *args: str) -> subprocess.Popen:
         log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")  # noqa: SIM115
         return subprocess.Popen(
-            H.sandbox_argv([*_KILLED_RUN_PREFIX, self.hermes, *args], writable=[self.root]),
+            H.sandbox_argv([*_KILLED_RUN_PREFIX, self.rabbit, *args], writable=[self.root]),
             env=self.env, cwd=str(self.install), stdin=subprocess.DEVNULL,
             stdout=log, stderr=subprocess.STDOUT, text=True, start_new_session=True,
         )
 
 
 # Each sandboxed command gets a fresh PID namespace, so pids restart at 2 every time. The update
-# marker a killed run leaves (``$HERMES_HOME/.hermes-update-in-progress``) holds its pid; if the
+# marker a killed run leaves (``$RABBIT_HOME/.rabbit-update-in-progress``) holds its pid; if the
 # retry came up under the SAME pid it would see a "live" holder that is really itself, an
 # artefact of the harness, not of a user retrying later (the killed pid is dead for them). So
 # the killed run's updater is pid 3 (a non-exec shell is pid 2) and every retry's updater is
@@ -308,11 +308,11 @@ def _make_origin(root: Path) -> Path:
     return origin
 
 
-def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
+def _write_wrappers(leg_root: Path, install: Path, rabbit_home: Path) -> Path:
     """Managed uv (as the installer provisions it) and an armable PATH git wrapper."""
     real_uv = _real_uv()
     real_git = shutil.which("git")
-    bin_dir = hermes_home / "bin"
+    bin_dir = rabbit_home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     uv = bin_dir / "uv"
     uv.write_text(
@@ -378,13 +378,13 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
                         env=uv_env, capture_output=True, text=True, timeout=1800)
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     env_probe = H.isolated_env(root)
-    hermes_home = Path(env_probe["HERMES_HOME"])
+    rabbit_home = Path(env_probe["RABBIT_HOME"])
     if template_home is not None:
-        shutil.rmtree(hermes_home)
-        shutil.copytree(template_home, hermes_home, symlinks=True)
-    wrap = _write_wrappers(root, install, hermes_home)
+        shutil.rmtree(rabbit_home)
+        shutil.copytree(template_home, rabbit_home, symlinks=True)
+    wrap = _write_wrappers(root, install, rabbit_home)
     env = H.isolated_env(root, extra_path=[wrap])
-    return Leg(root=root, origin=origin, install=install, env=env, hermes_home=hermes_home, wrap_dir=wrap)
+    return Leg(root=root, origin=origin, install=install, env=env, rabbit_home=rabbit_home, wrap_dir=wrap)
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def db_fingerprint(db: Path) -> dict:
 
 
 def _profile_homes(leg: Leg) -> dict[str, Path]:
-    return {"default": leg.hermes_home, "work": leg.hermes_home / "profiles" / "work"}
+    return {"default": leg.rabbit_home, "work": leg.rabbit_home / "profiles" / "work"}
 
 
 def snapshot_state(leg: Leg) -> dict:
@@ -428,7 +428,7 @@ def snapshot_state(leg: Leg) -> dict:
             "env": (home / ".env").read_bytes() if (home / ".env").exists() else None,
             "db": db_fingerprint(home / "state.db"),
         }
-    snap["cron"] = json.loads((leg.hermes_home / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    snap["cron"] = json.loads((leg.rabbit_home / "cron" / "jobs.json").read_text(encoding="utf-8"))
     return snap
 
 
@@ -450,12 +450,12 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
     if oroot.exists():
         shutil.rmtree(oroot)
     env = H.isolated_env(oroot, pythonpath=H.WORKTREE)
-    home = Path(env["HERMES_HOME"])
+    home = Path(env["RABBIT_HOME"])
     (home / "config.yaml").write_bytes(before)
     src_env = _profile_homes(leg)[name] / ".env"
     if src_env.exists():
         shutil.copy2(src_env, home / ".env")
-    code = "from hermes_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
+    code = "from rabbit_cli.config import migrate_config; migrate_config(interactive=False, quiet=True)"
     cp = H.run([str(H.WORKTREE / ".venv" / "bin" / "python"), "-c", code],
                env=env, cwd=H.WORKTREE, writable=[oroot], timeout=CLI_TIMEOUT)
     assert cp.returncode == 0 and TRACEBACK not in cp.stderr, H.describe(cp)
@@ -465,7 +465,7 @@ def migrate_oracle(leg: Leg, name: str, before: bytes) -> bytes:
 def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.CompletedProcess) -> None:
     before = leg.snapshot
     # 1. exit code matches reality
-    assert final.returncode == 0, "final `hermes update` failed:\n" + H.describe(final)
+    assert final.returncode == 0, "final `rabbit update` failed:\n" + H.describe(final)
     assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "update exited 0 but HEAD is not the target"
     assert not (leg.install / ".git" / "index.lock").exists(), "update left .git/index.lock behind"
     # The active interpreter must serve the pulled tree (stale editable finder, #119466):
@@ -475,7 +475,7 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
     assert cp.returncode == 0, "the updated venv does not serve HEAD's tree:\n" + H.describe(cp)
     # The venv satisfies HEAD's declared dependency set (not just "the old release still imports"):
     # every core requirement in the pulled pyproject is installed at a satisfying version, and the
-    # installed hermes-agent distribution was built from the pulled pyproject.
+    # installed rabbit-agent distribution was built from the pulled pyproject.
     cp = leg.run("-c", DEPS_PROBE, str(leg.install / "pyproject.toml"), argv0=leg.python, cwd=leg.root)
     assert cp.returncode == 0, "venv does not satisfy HEAD's dependencies:\n" + H.describe(cp)
     # 2. state integrity: nothing lost, nothing corrupted (measured BEFORE any new turn)
@@ -488,7 +488,7 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
         assert fp["messages"] == before[name]["db"]["messages"], f"{name} pre-existing messages changed"
         if before[name]["env"] is not None:
             assert (home / ".env").read_bytes() == before[name]["env"], f"{name} .env rewritten by the update"
-    jobs_after = json.loads((leg.hermes_home / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    jobs_after = json.loads((leg.rabbit_home / "cron" / "jobs.json").read_text(encoding="utf-8"))
     assert _job_ids(jobs_after) == _job_ids(before["cron"]) and _job_ids(jobs_after), "cron jobs lost/changed"
     # 3. config: exactly HEAD's documented migrations, nothing else
     for name, home in _profile_homes(leg).items():
@@ -523,7 +523,7 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
     assert provider.default_text in turn.stdout, H.describe(turn)
     new = provider.main_requests()[n_before:]
     assert len(new) == 1 and marker in json.dumps(new[0]["messages"]), "one-shot turn did not reach the provider once"
-    fp = db_fingerprint(leg.hermes_home / "state.db")
+    fp = db_fingerprint(leg.rabbit_home / "state.db")
     assert fp["integrity"] == [("ok",)]
     assert len(fp["sessions"]) == len(before["default"]["db"]["sessions"]) + 1, "post-update turn not persisted"
     # HEAD's first real use of the DB (its schema migrations run on open) keeps every old row intact.
@@ -549,18 +549,18 @@ def provider():
 
 @pytest.fixture(scope="module")
 def template_home(tmp_path_factory, provider) -> Path:
-    """HERMES_HOME populated by the N-1 CLI itself (sessions, profile, cron, config)."""
+    """RABBIT_HOME populated by the N-1 CLI itself (sessions, profile, cron, config)."""
     seed = make_leg(tmp_path_factory.mktemp("seed"), None)
     version = _base_config_version(seed)
     cfg = user_config(provider.base_url, version)
-    (seed.hermes_home / "config.yaml").write_text(cfg, encoding="utf-8")
-    (seed.hermes_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
+    (seed.rabbit_home / "config.yaml").write_text(cfg, encoding="utf-8")
+    (seed.rabbit_home / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e\n", encoding="utf-8")
     for prompt in ("first session before the upgrade", "second session before the upgrade"):
         cp = seed.run("-z", prompt)
         assert cp.returncode == 0, H.describe(cp)
     cp = seed.run("profile", "create", "work", "--no-alias")
     assert cp.returncode == 0, H.describe(cp)
-    work = seed.hermes_home / "profiles" / "work"
+    work = seed.rabbit_home / "profiles" / "work"
     (work / "config.yaml").write_text(cfg, encoding="utf-8")
     (work / ".env").write_text("OPENAI_API_KEY=sk-fake-e2e-work\n", encoding="utf-8")
     cp = seed.run("-p", "work", "-z", "work profile session before the upgrade")
@@ -568,10 +568,10 @@ def template_home(tmp_path_factory, provider) -> Path:
     cp = seed.run("cron", "create", "--name", "nightly", "0 3 * * *", "summarize the day")
     assert cp.returncode == 0, H.describe(cp)
     # Configs were written by hand AFTER the N-1 CLI touched them; re-pin them to the user's bytes.
-    (seed.hermes_home / "config.yaml").write_text(cfg, encoding="utf-8")
+    (seed.rabbit_home / "config.yaml").write_text(cfg, encoding="utf-8")
     (work / "config.yaml").write_text(cfg, encoding="utf-8")
     template = seed.root / "template-home"
-    shutil.copytree(seed.hermes_home, template, symlinks=True)
+    shutil.copytree(seed.rabbit_home, template, symlinks=True)
     return template
 
 
@@ -589,7 +589,7 @@ def _publish_head(leg: Leg) -> None:
 
 
 def _update(leg: Leg) -> subprocess.CompletedProcess:
-    return leg.run(*_RETRY_PREFIX[1:], leg.hermes, "update", "--yes", "--branch", "main",
+    return leg.run(*_RETRY_PREFIX[1:], leg.rabbit, "update", "--yes", "--branch", "main",
                    argv0=_RETRY_PREFIX[0], timeout=UPDATE_TIMEOUT)
 
 
@@ -647,7 +647,7 @@ def test_update_with_local_edits_and_orphan_autostash(leg, provider):
                      and not _git("diff", "--name-only", _refs().base, _refs().head, "--", p, cwd=H.WORKTREE))
     # An orphan autostash from an earlier update that never restored it (#63717).
     (leg.install / unchanged).write_text((leg.install / unchanged).read_text() + "\norphan edit\n")
-    _git("stash", "push", "-m", "hermes-update-autostash-20260101-000000", cwd=leg.install)
+    _git("stash", "push", "-m", "rabbit-update-autostash-20260101-000000", cwd=leg.install)
     orphan = _git("rev-parse", "refs/stash", cwd=leg.install)
     # The user's current local work: a tracked edit and an untracked file.
     user_line = "\nuser's local note that must survive the update\n"
@@ -688,9 +688,9 @@ def test_kill_mid_pull_then_retry_heals(leg, provider, torn):
     final = _update(leg)
     # Merge-order safe (see _pending_fixes.known_failure): only the import-time death excuses torn-tree.
     gate = known_failure(
-        r"(?s)^final `hermes update` failed:.*(cannot import name|No module named)",
+        r"(?s)^final `rabbit update` failed:.*(cannot import name|No module named)",
         "#120339 (merged; passes once N-1 is a release carrying it): a fast-forward killed half-way leaves a prefix of the changed files at HEAD while "
-        "HEAD still names N-1; every entry point, including `hermes update`, then dies at import (cannot import "
+        "HEAD still names N-1; every entry point, including `rabbit update`, then dies at import (cannot import "
         "name ... from 'utils'), so nothing can heal the install without manual git") if torn else contextlib.nullcontext()
     with gate:
         assert_healthy_at_head(leg, provider, final)

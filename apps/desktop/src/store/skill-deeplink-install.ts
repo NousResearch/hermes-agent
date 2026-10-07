@@ -1,4 +1,4 @@
-import { getApiRequestConnection, getApiRequestProfile, type ProfileScope } from '@/hermes'
+import { getApiRequestConnection, getApiRequestProfile, type ProfileScope } from '@/rabbit'
 import { translateNow } from '@/i18n'
 
 import { confirm } from './confirm'

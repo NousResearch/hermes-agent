@@ -1,4 +1,4 @@
-import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
+import type { ModelOptionProvider } from '@rabbit/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
@@ -7,11 +7,11 @@ const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, sl
 
 describe('ModelPicker provider filtering', () => {
   it('keeps the selected provider when clearing the provider filter', () => {
-    const nous = provider('nous', 'Nous Portal')
+    const openrouter = provider('openrouter', 'OpenRouter')
     const ollama = provider('ollama-cloud', 'Ollama Cloud')
 
     const rows = [
-      { name: nous.name, provider: nous },
+      { name: openrouter.name, provider: openrouter },
       { name: ollama.name, provider: ollama }
     ]
 

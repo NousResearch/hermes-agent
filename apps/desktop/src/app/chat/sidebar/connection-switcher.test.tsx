@@ -37,7 +37,6 @@ vi.mock('@/i18n', () => ({
         connections: {
           noSearchResults: 'No gateways match your search.',
           searchPlaceholder: 'Search gateways…',
-          kindCloud: 'Hermes Cloud',
           kindLocal: 'Local',
           kindRemote: 'Remote gateway',
           kindSsh: 'SSH',
@@ -154,7 +153,7 @@ describe('ConnectionSwitcher', () => {
         connection('studio-2', 'Studio 2'),
         connection('work', 'Work VPS'),
         connection('homelab', 'Homelab'),
-        connection('cloud', 'Cloud lab')
+        connection('remote-2', 'Remote lab')
       ])
     )
     render(<ConnectionSwitcher onConnect={onConnect} />)
@@ -170,8 +169,8 @@ describe('ConnectionSwitcher', () => {
     expect(screen.getAllByRole('menuitemradio').map(item => item.textContent)).toEqual([
       'This device',
       'Alpha',
-      'Cloud lab',
       'Homelab',
+      'Remote lab',
       'Studio 2',
       'Studio 10',
       'Work VPS',

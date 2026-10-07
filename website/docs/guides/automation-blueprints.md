@@ -6,7 +6,7 @@ description: "Ready-to-use automation blueprints — scheduled tasks, GitHub eve
 
 # Automation Blueprints
 
-Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](../user-guide/features/cron.md) for time-based triggers and [webhook platform](../user-guide/messaging/webhooks.md) for event-driven triggers.
+Copy-paste blueprints for common automation patterns. Each blueprint uses Rabbit's built-in [cron scheduler](../user-guide/features/cron.md) for time-based triggers and [webhook platform](../user-guide/messaging/webhooks.md) for event-driven triggers.
 
 Every blueprint works with **any model** — not locked to a single provider.
 
@@ -16,8 +16,8 @@ For parameterized blueprints with forms instead of cron syntax, see the [Automat
 | Trigger | How | Tool |
 |---------|-----|------|
 | **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob_manage` tool or `/cron` slash command |
-| **GitHub Event** | Fires on PR opens, pushes, issues, CI results | Webhook platform (`hermes webhook subscribe`) |
-| **API Call** | External service POSTs JSON to your endpoint | Webhook platform (config.yaml routes or `hermes webhook subscribe`) |
+| **GitHub Event** | Fires on PR opens, pushes, issues, CI results | Webhook platform (`rabbit webhook subscribe`) |
+| **API Call** | External service POSTs JSON to your endpoint | Webhook platform (config.yaml routes or `rabbit webhook subscribe`) |
 
 All three support delivery to Telegram, Discord, Slack, SMS, email, GitHub comments, or local files.
 :::
@@ -33,10 +33,10 @@ Label, prioritize, and summarize new issues every night. Delivers a digest to yo
 **Trigger:** Schedule (nightly)
 
 ```bash
-hermes cron create "0 2 * * *" \
-  "You are a project manager triaging the NousResearch/hermes-agent GitHub repo.
+rabbit cron create "0 2 * * *" \
+  "You are a project manager triaging the seven0070/Rabbit- GitHub repo.
 
-1. Run: gh issue list --repo NousResearch/hermes-agent --state open --json number,title,labels,author,createdAt --limit 30
+1. Run: gh issue list --repo seven0070/Rabbit- --state open --json number,title,labels,author,createdAt --limit 30
 2. Identify issues opened in the last 24 hours
 3. For each new issue:
    - Suggest a priority label (P0-critical, P1-high, P2-medium, P3-low)
@@ -58,7 +58,7 @@ Review every pull request automatically when it's opened. Posts a review comment
 **Option A — Dynamic subscription (CLI):**
 
 ```bash
-hermes webhook subscribe github-pr-review \
+rabbit webhook subscribe github-pr-review \
   --events "pull_request" \
   --prompt "Review this pull request:
 Repository: {repository.full_name}
@@ -115,15 +115,15 @@ Weekly scan of merged PRs to find API changes that need documentation updates.
 **Trigger:** Schedule (weekly)
 
 ```bash
-hermes cron create "0 9 * * 1" \
-  "Scan the NousResearch/hermes-agent repo for documentation drift.
+rabbit cron create "0 9 * * 1" \
+  "Scan the seven0070/Rabbit- repo for documentation drift.
 
-1. Run: gh pr list --repo NousResearch/hermes-agent --state merged --json number,title,files,mergedAt --limit 30
+1. Run: gh pr list --repo seven0070/Rabbit- --state merged --json number,title,files,mergedAt --limit 30
 2. Filter to PRs merged in the last 7 days
 3. For each merged PR, check if it modified:
    - Tool schemas (tools/*.py) — may need docs/reference/tools-reference.md update
-   - CLI commands (hermes_cli/commands.py, hermes_cli/main.py) — may need docs/reference/cli-commands.md update
-   - Config options (hermes_cli/config.py) — may need docs/user-guide/configuration.md update
+   - CLI commands (rabbit_cli/commands.py, rabbit_cli/main.py) — may need docs/reference/cli-commands.md update
+   - Config options (rabbit_cli/config.py) — may need docs/user-guide/configuration.md update
    - Environment variables — may need docs/reference/environment-variables.md update
 4. Cross-reference: for each code change, check if the corresponding docs page was also updated in the same PR
 
@@ -139,11 +139,11 @@ Daily scan for known vulnerabilities in project dependencies.
 **Trigger:** Schedule (daily)
 
 ```bash
-hermes cron create "0 6 * * *" \
-  "Run a dependency security audit on the hermes-agent project.
+rabbit cron create "0 6 * * *" \
+  "Run a dependency security audit on the rabbit-agent project.
 
-1. Locate the hermes-agent checkout and its pyproject.toml and uv.lock. Do not activate or mutate Hermes's dependency environment.
-2. Scan uv.lock with an independently installed scanner that supports that lock format (check its --help). Preserve the complete findings and errors. If no scanner is available, report the blocker; do not install one into Hermes.
+1. Locate the rabbit-agent checkout and its pyproject.toml and uv.lock. Do not activate or mutate Rabbit's dependency environment.
+2. Scan uv.lock with an independently installed scanner that supports that lock format (check its --help). Preserve the complete findings and errors. If no scanner is available, report the blocker; do not install one into Rabbit.
 3. Run: npm audit --json in website/ if it exists. Preserve stderr and distinguish findings from a failed scan.
 4. Check for any CVEs with CVSS score >= 7.0
 
@@ -168,7 +168,7 @@ Trigger smoke tests after every deployment. Your CI/CD pipeline POSTs to the web
 **Trigger:** API call (webhook)
 
 ```bash
-hermes webhook subscribe deploy-verify \
+rabbit webhook subscribe deploy-verify \
   --events "deployment" \
   --prompt "A deployment just completed:
 Service: {service}
@@ -202,7 +202,7 @@ Correlate monitoring alerts with recent changes to draft a response. Works with 
 **Trigger:** API call (webhook)
 
 ```bash
-hermes webhook subscribe alert-triage \
+rabbit webhook subscribe alert-triage \
   --prompt "Monitoring alert received:
 Alert: {alert.name}
 Severity: {alert.severity}
@@ -228,7 +228,7 @@ Check endpoints every 30 minutes. Only notify when something is down.
 
 **Trigger:** Schedule (every 30 min)
 
-```python title="~/.hermes/scripts/check-uptime.py"
+```python title="~/.rabbit/scripts/check-uptime.py"
 import urllib.request, json, time
 
 ENDPOINTS = [
@@ -241,7 +241,7 @@ results = []
 for ep in ENDPOINTS:
     try:
         start = time.time()
-        req = urllib.request.Request(ep["url"], headers={"User-Agent": "Hermes-Monitor/1.0"})
+        req = urllib.request.Request(ep["url"], headers={"User-Agent": "Rabbit-Monitor/1.0"})
         resp = urllib.request.urlopen(req, timeout=10)
         elapsed = round((time.time() - start) * 1000)
         results.append({"name": ep["name"], "status": resp.getcode(), "ms": elapsed})
@@ -259,9 +259,9 @@ else:
 ```
 
 ```bash
-hermes cron create "every 30m" \
+rabbit cron create "every 30m" \
   "If the script reports OUTAGE DETECTED, summarize which services are down and suggest likely causes. If NO_ISSUES, respond with [SILENT]." \
-  --script ~/.hermes/scripts/check-uptime.py \
+  --script ~/.rabbit/scripts/check-uptime.py \
   --name "Uptime monitor" \
   --deliver telegram
 ```
@@ -277,7 +277,7 @@ Monitor competitor repos for interesting PRs, features, and architectural decisi
 **Trigger:** Schedule (daily)
 
 ```bash
-hermes cron create "0 8 * * *" \
+rabbit cron create "0 8 * * *" \
   "Scout these AI agent repositories for notable activity in the last 24 hours:
 
 Repos to check:
@@ -310,7 +310,7 @@ Weekly roundup of AI/ML developments.
 **Trigger:** Schedule (weekly)
 
 ```bash
-hermes cron create "0 9 * * 1" \
+rabbit cron create "0 9 * * 1" \
   "Generate a weekly AI news digest covering the past 7 days:
 
 1. Search the web for major AI announcements, model releases, and research breakthroughs
@@ -335,8 +335,8 @@ Daily arXiv scan that saves summaries to your note-taking system.
 **Trigger:** Schedule (daily)
 
 ```bash
-hermes cron create "0 8 * * *" \
-  "Search arXiv for the 3 most interesting papers on 'language model reasoning' OR 'tool-use agents' from the past day. For each paper, create an Obsidian note with the title, authors, abstract summary, key contribution, and potential relevance to Hermes Agent development." \
+rabbit cron create "0 8 * * *" \
+  "Search arXiv for the 3 most interesting papers on 'language model reasoning' OR 'tool-use agents' from the past day. For each paper, create an Obsidian note with the title, authors, abstract summary, key contribution, and potential relevance to Rabbit Agent development." \
   --skill arxiv --skill obsidian \
   --name "Paper digest" \
   --deliver local
@@ -353,7 +353,7 @@ Automatically label and respond to new issues.
 **Trigger:** GitHub webhook
 
 ```bash
-hermes webhook subscribe github-issues \
+rabbit webhook subscribe github-issues \
   --events "issues" \
   --prompt "New GitHub issue received:
 Repository: {repository.full_name}
@@ -415,7 +415,7 @@ When a PR merges in one repo, automatically port the equivalent change to anothe
 **Trigger:** GitHub webhook
 
 ```bash
-hermes webhook subscribe auto-port \
+rabbit webhook subscribe auto-port \
   --events "pull_request" \
   --prompt "PR merged in the source repository:
 Repository: {repository.full_name}
@@ -447,7 +447,7 @@ Track payment events and get summaries of failures.
 **Trigger:** API call (webhook)
 
 ```bash
-hermes webhook subscribe stripe-payments \
+rabbit webhook subscribe stripe-payments \
   --events "payment_intent.succeeded,payment_intent.payment_failed,charge.dispute.created" \
   --prompt "Stripe event received:
 Event type: {type}
@@ -477,7 +477,7 @@ Compile key business metrics every morning.
 **Trigger:** Schedule (daily)
 
 ```bash
-hermes cron create "0 8 * * *" \
+rabbit cron create "0 8 * * *" \
   "Generate a morning business metrics summary.
 
 Search the web for:
@@ -502,8 +502,8 @@ Combine multiple skills for a comprehensive weekly security review.
 **Trigger:** Schedule (weekly)
 
 ```bash
-hermes cron create "0 3 * * 0" \
-  "Run a comprehensive security audit of the hermes-agent codebase.
+rabbit cron create "0 3 * * 0" \
+  "Run a comprehensive security audit of the rabbit-agent codebase.
 
 1. Check for dependency vulnerabilities (pip audit, npm audit)
 2. Search the codebase for common security anti-patterns:
@@ -528,7 +528,7 @@ Research, draft, and prepare content on a schedule.
 **Trigger:** Schedule (weekly)
 
 ```bash
-hermes cron create "0 10 * * 3" \
+rabbit cron create "0 10 * * 3" \
   "Research and draft a technical blog post outline about a trending topic in AI agents.
 
 1. Search the web for the most discussed AI agent topics this week

@@ -17,7 +17,7 @@ const pack = (messages: Record<string, string>) => ({ lang: 'xx', messages, surf
 
 describe('libText catalog swap', () => {
   it('billingDialogCopy re-reads string and function leaves after applyLocale', () => {
-    const before = billingDialogCopy({ is_nous: false, provider_label: 'Acme', billing_url: 'https://x' } as never)
+    const before = billingDialogCopy({ provider_label: 'Acme', billing_url: 'https://x' } as never)
 
     expect(before.title).toBe('Out of credits · Acme')
 
@@ -29,7 +29,7 @@ describe('libText catalog swap', () => {
       })
     )
 
-    const after = billingDialogCopy({ is_nous: false, provider_label: 'Acme', billing_url: 'https://x' } as never)
+    const after = billingDialogCopy({ provider_label: 'Acme', billing_url: 'https://x' } as never)
 
     expect(after.cancelLabel).toBe('XX-dismiss')
     expect(after.title).toBe('XX-title Acme')
@@ -37,7 +37,7 @@ describe('libText catalog swap', () => {
     expect(after.confirmLabel).toBe('Open billing page')
 
     resetLocale()
-    expect(billingDialogCopy({ is_nous: true } as never).cancelLabel).toBe('Dismiss')
+    expect(billingDialogCopy({ provider_label: '', billing_url: null } as never).cancelLabel).toBe('Dismiss')
   })
 
   it('plural leaves are chosen in code, so a pack can override each form', () => {

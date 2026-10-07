@@ -51,8 +51,8 @@ export const connectionEn = {
       form: '↑/↓ or Tab move · ←/→ select · Enter confirm · Esc skip · Ctrl+C stop the turn'
     },
     notice: {
-      answerNotDelivered: 'That answer did not reach Hermes. Try again.',
-      restartFailed: 'Hermes could not start that again. Try again.',
+      answerNotDelivered: 'That answer did not reach Rabbit. Try again.',
+      restartFailed: 'Rabbit could not start that again. Try again.',
       browserDidNotOpen: 'The browser did not open. Copy the link above.'
     }
   },
@@ -62,7 +62,7 @@ export const connectionEn = {
     closeHint: 'Esc/q close',
     error: (message: string) => `error: ${message}`,
     loading: 'assembling your learning map…',
-    empty: 'No learning yet — your learned skills and memories will start mapping out here as you use Hermes.',
+    empty: 'No learning yet — your learned skills and memories will start mapping out here as you use Rabbit.',
     noDetail: 'No additional detail recorded yet.',
     notice: {
       cannotEdit: 'cannot edit',

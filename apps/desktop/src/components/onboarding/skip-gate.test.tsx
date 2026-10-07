@@ -6,7 +6,7 @@ import { makeOAuthProvider } from '@/test/oauth-provider'
 
 import { DesktopOnboardingOverlay } from '.'
 
-const HEADER = "Let's get you setup with Hermes Agent"
+const HEADER = "Let's get you setup with Rabbit Agent"
 
 // Never answers: the readiness effect stays in flight, so each case is observed
 // on exactly the state it set up instead of racing a round to completion.
@@ -17,13 +17,12 @@ function skippedState(overrides: Partial<DesktopOnboardingState> = {}): DesktopO
     configured: false,
     flow: { status: 'idle' },
     mode: 'oauth',
-    providers: [makeOAuthProvider('nous', 'Nous Portal')],
+    providers: [makeOAuthProvider('openrouter', 'OpenRouter')],
     reason: null,
     requested: false,
     firstRunSkipped: true,
     manual: false,
     localEndpoint: false,
-    freeTierReady: false,
     ...overrides
   }
 }

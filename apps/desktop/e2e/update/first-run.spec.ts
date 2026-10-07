@@ -1,8 +1,8 @@
 /**
  * Failure class: FIRST RUN on a healthy install.
  *
- * A user who installed Hermes with scripts/install.sh and built the Desktop
- * app with `hermes desktop` opens the app. It must find that install and go
+ * A user who installed Rabbit with scripts/install.sh and built the Desktop
+ * app with `rabbit desktop` opens the app. It must find that install and go
  * straight to chat — on the first launch and on every later one — and never
  * show the first-run setup chooser or start the bootstrap installer
  * (#123888, #123800: the chooser / installer came back on every launch while
@@ -10,8 +10,8 @@
  * bootstrap marker first: a usable install is recognised off the filesystem.
  *
  * Real entry point: the packaged app the install built, launched with the
- * install's environment and no HERMES_DESKTOP_HERMES_ROOT override, so the app
- * resolves the backend the way it does for a user ($HERMES_HOME/hermes-agent).
+ * install's environment and no RABBIT_DESKTOP_RABBIT_ROOT override, so the app
+ * resolves the backend the way it does for a user ($RABBIT_HOME/rabbit-agent).
  */
 
 import * as fs from 'node:fs'
@@ -71,7 +71,7 @@ test('a healthy local install opens straight to chat on every launch: no setup c
         if (launch === 2) {
           // A usable install the Desktop bootstrap never stamped (a CLI install from before the
           // marker, or one whose marker was lost): usability, not the marker, decides.
-          fs.rmSync(path.join(facts.checkout, '.hermes-bootstrap-complete'), { force: true })
+          fs.rmSync(path.join(facts.checkout, '.rabbit-bootstrap-complete'), { force: true })
         }
 
         const installer = startInstallerSampler(facts)
@@ -94,8 +94,8 @@ test('a healthy local install opens straight to chat on every launch: no setup c
           expect(serve.length, `one backend for the install\n${diagnostics(facts)}`).toBe(1)
           const cwd = fs.realpathSync(`/proc/${serve[0].pid}/cwd`)
           expect(
-            [serve[0].cmdline, cwd].some(s => s.includes(facts.hermesHome)),
-            `backend runs from the install under ${facts.hermesHome}: ${serve[0].cmdline} (cwd ${cwd})`
+            [serve[0].cmdline, cwd].some(s => s.includes(facts.rabbitHome)),
+            `backend runs from the install under ${facts.rabbitHome}: ${serve[0].cmdline} (cwd ${cwd})`
           ).toBe(true)
 
           provider.script(U(launch), [{ text: [`${A(launch)} `, 'healthy ', 'install'] }])
@@ -121,7 +121,7 @@ test('a healthy local install opens straight to chat on every launch: no setup c
     }
 
     expect(
-      fs.existsSync(path.join(facts.hermesHome, 'hermes-agent', '.git')),
+      fs.existsSync(path.join(facts.rabbitHome, 'rabbit-agent', '.git')),
       'the install is still the git checkout the installer made'
     ).toBe(true)
   } finally {

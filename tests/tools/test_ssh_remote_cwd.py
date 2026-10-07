@@ -1,4 +1,4 @@
-"""SSH file paths and cwds live in the remote namespace, never the Hermes host's.
+"""SSH file paths and cwds live in the remote namespace, never the Rabbit host's.
 
 In Docker the host subprocess home is ``/opt/data/home``; expanding ``~`` or a
 relative path against it and sending the result over SSH names a directory the
@@ -40,7 +40,7 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
         key = terminal_tool._resolve_container_task_id("sess")
         terminal_tool._active_environments[key] = SimpleNamespace(**env)
 
-    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
+    with patch("rabbit_constants.get_subprocess_home", return_value=HOST_HOME):
         # Without a detected remote home, ``~`` stays for the remote shell.
         assert resolve("x.txt") == "~/proj/x.txt"
         assert resolve("~/y.txt") == "~/y.txt"
@@ -67,5 +67,5 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
     (HOST_HOME, "docker", HOST_HOME),
 ])
 def test_ssh_cwd_never_names_the_host_subprocess_home(cwd, env_type, expected):
-    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
+    with patch("rabbit_constants.get_subprocess_home", return_value=HOST_HOME):
         assert coerce_ssh_remote_cwd(cwd, env_type) == expected

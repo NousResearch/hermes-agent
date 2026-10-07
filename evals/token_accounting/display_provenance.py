@@ -15,7 +15,7 @@ import tempfile
 
 
 def child(out: Path) -> None:
-    from cli import HermesCLI
+    from cli import RabbitCLI
     from run_agent import AIAgent
     from agent.context_breakdown import compute_session_context_breakdown
     from tui_gateway.server import _get_usage, _format_live_context_output
@@ -29,7 +29,7 @@ def child(out: Path) -> None:
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig()
-    runner.session_store = SessionStore(Path(os.environ["HERMES_HOME"]) / "sessions", runner.config)
+    runner.session_store = SessionStore(Path(os.environ["RABBIT_HOME"]) / "sessions", runner.config)
     runner._session_db = None
     runner.adapters = {}
     source = SessionSource(platform=Platform.TELEGRAM, user_id="fixture", chat_id="fixture", chat_type="dm")
@@ -60,7 +60,7 @@ def child(out: Path) -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), ProviderFixture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base_url = f"http://127.0.0.1:{server.server_port}/v1"
-    cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture", base_url=base_url)
+    cli = RabbitCLI(model="fixture", provider="openai-compat", api_key="fixture", base_url=base_url)
     agent = AIAgent(model="fixture", provider="openai-compat", api_key="fixture", base_url=base_url, enabled_toolsets=[], quiet_mode=True, skip_context_files=True, skip_memory=True, save_trajectories=False)
     agent.context_compressor._config_context_length = 100_000
     agent.context_compressor._resolved_context_length = 100_000
@@ -119,7 +119,7 @@ def main() -> None:
         pid, fd = pty.fork()
         if pid == 0:
             os.environ.clear()
-            os.environ.update(HOME=home, HERMES_HOME=home + "/.hermes", PATH="/usr/bin:/bin", TERM="dumb", NO_COLOR="1")
+            os.environ.update(HOME=home, RABBIT_HOME=home + "/.rabbit", PATH="/usr/bin:/bin", TERM="dumb", NO_COLOR="1")
             try:
                 child(out)
             finally:

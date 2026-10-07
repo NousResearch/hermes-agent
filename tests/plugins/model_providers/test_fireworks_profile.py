@@ -25,8 +25,8 @@ def fireworks_profile():
 
 
 class TestFireworksHeaders:
-    def test_attribution_matches_canonical_hermes_values(self, fireworks_profile):
-        """Fireworks requests carry the same attribution identity Hermes sends
+    def test_attribution_matches_canonical_rabbit_values(self, fireworks_profile):
+        """Fireworks requests carry the same attribution identity Rabbit sends
         everywhere else.
 
         Asserted against the shared constant rather than the literals so a
@@ -38,10 +38,10 @@ class TestFireworksHeaders:
         assert headers["HTTP-Referer"] == _OR_HEADERS_BASE["HTTP-Referer"]
         assert headers["X-Title"] == _OR_HEADERS_BASE["X-Title"]
 
-    def test_user_agent_identifies_hermes(self, fireworks_profile):
-        from hermes_cli.version_info import get_version_info
+    def test_user_agent_identifies_rabbit(self, fireworks_profile):
+        from rabbit_cli.version_info import get_version_info
         assert fireworks_profile.default_headers["User-Agent"] == (
-            f"HermesAgent/{get_version_info().base_version}"
+            f"RabbitAgent/{get_version_info().base_version}"
         )
 
 

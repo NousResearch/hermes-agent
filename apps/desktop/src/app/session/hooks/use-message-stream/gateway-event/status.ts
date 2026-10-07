@@ -251,7 +251,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     showAgentNotice(notice)
 
     // The urgent pair (access paused / restored) also breaks through as a
-    // native OS notification when Hermes is backgrounded; dispatch is gated
+    // native OS notification when Rabbit is backgrounded; dispatch is gated
     // by the user's notification prefs + backgrounded check.
     const native = nativeNoticeInput(notice, translateNow('notifications.native.creditsTitle'))
 
@@ -279,7 +279,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'error') {
-    const errorMessage = payload?.message || 'Hermes reported an error'
+    const errorMessage = payload?.message || 'Rabbit reported an error'
 
     // The gateway's own verdict when it sent one (agent init with no usable provider), else the
     // sentence: a blank install must reach onboarding, not a toast it cannot act on.

@@ -8,14 +8,14 @@ from tools.delegate_tool import _expand_parent_toolsets, _strip_blocked_tools
 class TestExpandParentToolsets(unittest.TestCase):
     """Verify _expand_parent_toolsets recognises individual toolsets within composites."""
 
-    def test_composite_hermes_cli_expands_web(self):
-        """hermes-cli includes web_search/web_extract → 'web' should be in expansion."""
-        expanded = _expand_parent_toolsets({"hermes-cli"})
+    def test_composite_rabbit_cli_expands_web(self):
+        """rabbit-cli includes web_search/web_extract → 'web' should be in expansion."""
+        expanded = _expand_parent_toolsets({"rabbit-cli"})
         self.assertIn("web", expanded)
         self.assertIn("terminal", expanded)
         self.assertIn("browser", expanded)
         # Original composite is preserved
-        self.assertIn("hermes-cli", expanded)
+        self.assertIn("rabbit-cli", expanded)
 
 
 
@@ -25,14 +25,14 @@ class TestExpandParentToolsets(unittest.TestCase):
         expanded = _expand_parent_toolsets({"debugging"})
         self.assertTrue({"debugging", "terminal", "web", "file"} <= expanded)
         self.assertNotIn("browser", expanded)
-        self.assertNotIn("hermes-cli", expanded)
+        self.assertNotIn("rabbit-cli", expanded)
 
     def test_composites_with_allowed_included_tools_are_not_stripped(self):
-        toolsets = ["safe", "hermes-gateway", "hermes-cli", "delegation", "kanban"]
+        toolsets = ["safe", "rabbit-gateway", "rabbit-cli", "delegation", "kanban"]
 
         self.assertEqual(
             _strip_blocked_tools(toolsets),
-            ["safe", "hermes-gateway", "hermes-cli"],
+            ["safe", "rabbit-gateway", "rabbit-cli"],
         )
 
 

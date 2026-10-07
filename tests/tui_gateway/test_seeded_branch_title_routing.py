@@ -4,11 +4,11 @@ import subprocess
 
 import pytest
 
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("rabbit_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
 
     project = tmp_path / "example-project"
@@ -37,7 +37,7 @@ def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypat
         assert "error" not in response, response
         child = response["result"]["stored_session_id"]
         # A DERIVED title is what memory providers skip when naming sessions (the provenance
-        # contract in hermes_state_common); a generated parent title must not arrive as USER/LLM.
+        # contract in rabbit_state_common); a generated parent title must not arrive as USER/LLM.
         assert db.get_session_title_source(child) == SessionDB.TITLE_SOURCE_DERIVED
         assert db.message_count(child) == len(history)
         # A subsequent explicit rename must retain user authority.

@@ -24,8 +24,8 @@ import { appendUniquePathEntries, delimiterForPlatform, pathEnvKey } from './bac
 // Every attempt is bounded by a timeout, stdin is closed immediately, and any
 // failure leaves PATH untouched.
 
-const PATH_START = '__HERMES_LOGIN_PATH_START__'
-const PATH_END = '__HERMES_LOGIN_PATH_END__'
+const PATH_START = '__RABBIT_LOGIN_PATH_START__'
+const PATH_END = '__RABBIT_LOGIN_PATH_END__'
 const PROBE_COMMAND = "printf '%s' \"" + PATH_START + '${PATH}' + PATH_END + '"'
 const ATTEMPT_TIMEOUT_MS = 5000
 

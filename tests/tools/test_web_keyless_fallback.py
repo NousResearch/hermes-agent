@@ -35,7 +35,6 @@ def _no_web_env(monkeypatch):
     )
     monkeypatch.setattr(web_tools, "_env_value", lambda name: "", raising=True)
     monkeypatch.setattr(web_tools, "_load_web_config", dict, raising=True)
-    monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False, raising=True)
     monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=True)
     yield
 
@@ -310,7 +309,7 @@ class TestProviderRouting:
 
     def test_provider_tier_reads_config(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "rabbit_cli.config.load_config",
             lambda: {"web": {"provider_tier": {"exa": "FREE", "parallel": "bogus"}}},
         )
         assert keyless_mcp.provider_tier("exa") == "free"
@@ -433,16 +432,16 @@ class TestResolutionOrder:
 
 
 # ---------------------------------------------------------------------------
-# hermes tools picker: tier variant rows
+# rabbit tools picker: tier variant rows
 # ---------------------------------------------------------------------------
 
 
 class TestPickerTierRows:
     def test_variant_schemas_flatten_to_tier_rows(self, fresh_registry, monkeypatch):
-        from hermes_cli import tools_config
+        from rabbit_cli import tools_config
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda: None
+            "rabbit_cli.plugins._ensure_plugins_discovered", lambda: None
         )
         rows = tools_config._plugin_web_search_providers()
         by_backend_tier = {
@@ -460,24 +459,23 @@ class TestPickerTierRows:
                 assert r["env_vars"], r
 
     def test_selection_persists_tier(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from rabbit_cli.tools_config import _write_provider_config
 
         config: dict = {}
         _write_provider_config(
             {"web_backend": "exa", "web_tier": "free", "env_vars": []},
             config,
-            managed_feature=None,
         )
         assert config["web"]["backend"] == "exa"
         assert config["web"]["provider_tier"]["exa"] == "free"
         # Re-selecting a tier-agnostic row clears the stale tier.
         _write_provider_config(
-            {"web_backend": "exa", "env_vars": []}, config, managed_feature=None
+            {"web_backend": "exa", "env_vars": []}, config
         )
         assert "exa" not in config["web"]["provider_tier"]
 
     def test_tier_match_highlights_correct_row(self):
-        from hermes_cli.tools_config import _web_tier_matches
+        from rabbit_cli.tools_config import _web_tier_matches
 
         free_row = {"web_backend": "parallel", "web_tier": "free"}
         paid_row = {"web_backend": "parallel", "web_tier": "paid"}

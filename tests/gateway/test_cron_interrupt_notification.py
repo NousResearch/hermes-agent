@@ -74,8 +74,8 @@ class TestNotifyInterruptedCronJobs:
     @pytest.mark.parametrize("setting", [None, False, True])
     async def test_interrupt_notice_is_a_suppressible_diagnostic(self, tmp_path, monkeypatch, setting):
         import json
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+        monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+        monkeypatch.setenv("RABBIT_MANAGED_DIR", str(tmp_path / "managed"))
         cfg = {} if setting is None else {"display": {"suppress_warning_notifications": setting}}
         (tmp_path / "config.yaml").write_text(json.dumps(cfg))
         runner, adapter = make_restart_runner()

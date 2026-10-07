@@ -49,7 +49,7 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     store.write_text("", encoding="utf-8")
     child = _write_venv(tmp_path / "child")
 
-    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("rabbit_cli._launchers.resolve_store_python", lambda _root: store)
     monkeypatch.setattr("pm.environments.committed_venv", lambda _root: committed)
     # Base read selected_venv; pointing it at the stale venv is what makes this red there.
     monkeypatch.setattr("pm.environments.selected_venv", lambda _root: stale)

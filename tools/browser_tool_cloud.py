@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
-from hermes_constants import get_hermes_home_override, hermes_home_key
+from rabbit_constants import get_rabbit_home_override, rabbit_home_key
 from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
 from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
@@ -21,11 +21,11 @@ from tools import browser_tool_cdp as _cdp
 def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object]):
     """Process-lifetime cache on ``_bt``: the resolved flag is set BEFORE computing, then the final value is stored.
 
-    Under a routed profile (HERMES_HOME override, multiplexed gateway) the slot is NOT consulted: every
+    Under a routed profile (RABBIT_HOME override, multiplexed gateway) the slot is NOT consulted: every
     ``_memo`` here caches a ``browser.*`` config read, and one process-wide slot would hand the launch
     profile's engine/headed/private-URL policy to every other profile (same rule as ``_allow_private_urls``).
     """
-    if get_hermes_home_override() is not None:
+    if get_rabbit_home_override() is not None:
         return compute()
     if not getattr(_bt, resolved_attr):
         setattr(_bt, resolved_attr, True)
@@ -36,16 +36,16 @@ def _memo(_bt, resolved_attr: str, cache_attr: str, compute: Callable[[], object
 def _ensure_browser_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery (standalone scripts/tests may never import ``model_tools``)."""
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from rabbit_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
     except Exception as exc:
         _origin().logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
-    """Return the provider cached for the active Hermes profile."""
+    """Return the provider cached for the active Rabbit profile."""
     _bt = _origin()
-    scope = hermes_home_key()
+    scope = rabbit_home_key()
     with _bt._cloud_provider_cache_lock:
         # A cleared boolean (tests / legacy reset) is a full reset even if a scoped resolution is still mirrored here.
         if not _bt._cloud_provider_resolved:
@@ -124,7 +124,7 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     resolved: Optional[CloudBrowserProvider] = None
     provider_key = None
     try:
-        from hermes_cli.config import read_raw_config
+        from rabbit_cli.config import read_raw_config
         browser_cfg = read_raw_config().get("browser", {})
         if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
             provider_key = normalize_browser_cloud_provider(browser_cfg.get("cloud_provider"))
@@ -134,8 +134,12 @@ def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
                 _bt._cloud_provider_resolved = True
                 return None
             if provider_key == "nous":
-                # Managed "Nous Subscription" is serviced by the Browser Use provider.
-                provider_key = "browser-use"
+                # Legacy managed-subscription selection; the hosted gateway is not part
+                # of this build. Fall through to autodetect from available credentials.
+                _bt.logger.warning(
+                    "browser.cloud_provider 'nous' is no longer supported; "
+                    "auto-detecting from available credentials instead")
+                provider_key = None
         if provider_key:
             resolved = _instantiate_explicit_cloud_provider(provider_key)
             if resolved is None:
@@ -257,7 +261,7 @@ def _allow_private_urls() -> bool:
     resolve on every call so one profile's opt-out is never reused by another.
     """
     _bt = _origin()
-    if get_hermes_home_override() is not None:
+    if get_rabbit_home_override() is not None:
         return _resolve_allow_private_urls()
     return _memo(_bt, "_allow_private_urls_resolved", "_cached_allow_private_urls", _resolve_allow_private_urls)
 

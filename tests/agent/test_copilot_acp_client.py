@@ -78,7 +78,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             secret_file = root / "config.env"
             secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012", encoding="utf-8")
 
-            # agent.redact snapshots HERMES_REDACT_SECRETS at import time into
+            # agent.redact snapshots RABBIT_REDACT_SECRETS at import time into
             # _REDACT_ENABLED, so patching os.environ is a no-op. Flip the
             # module-level constant directly for the duration of the call.
             with patch("agent.redact._REDACT_ENABLED", True):
@@ -145,7 +145,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             safe_root.mkdir()
             outside = root / "outside.txt"
 
-            with patch.dict(os.environ, {"HERMES_WRITE_SAFE_ROOT": str(safe_root)}, clear=False):
+            with patch.dict(os.environ, {"RABBIT_WRITE_SAFE_ROOT": str(safe_root)}, clear=False):
                 response = self._dispatch(
                     {
                         "jsonrpc": "2.0",
@@ -160,7 +160,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
                 )
 
         self.assertIn("error", response)
-        self.assertIn("HERMES_WRITE_SAFE_ROOT", str(response["error"]))
+        self.assertIn("RABBIT_WRITE_SAFE_ROOT", str(response["error"]))
         self.assertFalse(outside.exists())
 
 
@@ -193,23 +193,23 @@ def _fake_popen_capture(captured):
 
 
 def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "hermes"
-    (hermes_home / "home").mkdir(parents=True)
+    rabbit_home = tmp_path / "rabbit"
+    (rabbit_home / "home").mkdir(parents=True)
     real_home = tmp_path / "real-home"
     real_home.mkdir()
 
     monkeypatch.setenv("HOME", str(real_home))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    # Hermeticity: an ambient HERMES_REAL_HOME (exported by Hermes' own
+    monkeypatch.setenv("RABBIT_HOME", str(rabbit_home))
+    # Hermeticity: an ambient RABBIT_REAL_HOME (exported by Rabbit' own
     # terminal contract on dev boxes) outranks HOME in the candidate ladder,
     # and an ambient TERMINAL_HOME_MODE would change the policy under test.
-    monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+    monkeypatch.delenv("RABBIT_REAL_HOME", raising=False)
     monkeypatch.delenv("TERMINAL_HOME_MODE", raising=False)
     # Hermeticity: get_subprocess_home()'s auto mode prefers the profile home
     # when is_container() is True — on a containerized CI runner that real
     # probe flips the resolution this test asserts. The host/VM branch is the
     # contract under test; pin containment off.
-    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+    monkeypatch.setattr("rabbit_constants.is_container", lambda: False)
 
     captured = {}
     client = _make_home_client(tmp_path)
@@ -223,12 +223,12 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
                 client._run_prompt("hello", timeout_seconds=1)
 
     assert captured["kwargs"]["env"]["HOME"] == str(real_home)
-    assert captured["kwargs"]["env"]["HERMES_REAL_HOME"] == str(real_home)
+    assert captured["kwargs"]["env"]["RABBIT_REAL_HOME"] == str(real_home)
 
 
 def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     monkeypatch.delenv("HOME", raising=False)
-    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("RABBIT_HOME", raising=False)
 
     captured = {}
     client = _make_home_client(tmp_path)
@@ -310,7 +310,7 @@ def test_probe_skipped_for_custom_args_without_acp():
 #
 # `copilot --acp` validates but IGNORES the `--model` spawn flag; the ACP
 # session runs the CLI's own default unless the client issues the ACP-native
-# `session/set_model` call. Without it, picking gpt-5.6-terra in Hermes
+# `session/set_model` call. Without it, picking gpt-5.6-terra in Rabbit
 # visibly answers as the CLI's default model.
 
 

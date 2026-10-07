@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import agent.compression_facade as compression_facade
 import agent.conversation_compression as conversation_compression
 from agent.conversation_compression import CompressionCommitFence
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _build_agent(db: SessionDB, session_id: str):

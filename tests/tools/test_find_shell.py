@@ -99,7 +99,7 @@ class TestFindShellWindowsBehavior:
 
 class TestFindBashCollapsedToPmShell:
     """_find_bash is now a thin wrapper over pm.shell(); the Windows
-    candidate ladder (HERMES_GIT_BASH_PATH → %LOCALAPPDATA%\\hermes\\git →
+    candidate ladder (RABBIT_GIT_BASH_PATH → %LOCALAPPDATA%\\rabbit\\git →
     Program Files) and the ASLR diagnostic were deleted — the store is the
     authority on bundled bash."""
 
@@ -114,12 +114,12 @@ class TestFindBashCollapsedToPmShell:
 
     def test_raises_when_pm_shell_finds_nothing(self, monkeypatch):
         """A store with no bash (and no PATH bash) surfaces a clear error
-        pointing at `hermes pm install` instead of hunting locations."""
+        pointing at `rabbit pm install` instead of hunting locations."""
         monkeypatch.setattr("pm.shell.bash", lambda: None)
         with pytest.raises(RuntimeError) as exc_info:
             _find_bash()
         assert "No shell found" in str(exc_info.value)
-        assert "hermes pm install" in str(exc_info.value)
+        assert "rabbit pm install" in str(exc_info.value)
 
 
 

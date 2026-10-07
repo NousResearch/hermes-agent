@@ -14,7 +14,7 @@ description: "提供使用 SAELens 训练和分析稀疏自编码器（SAE）的
 
 | | |
 |---|---|
-| 来源 | 可选 — 通过 `hermes skills install official/mlops/saelens` 安装 |
+| 来源 | 可选 — 通过 `rabbit skills install official/mlops/saelens` 安装 |
 | 路径 | `optional-skills/mlops/saelens` |
 | 版本 | `1.0.0` |
 | 作者 | Orchestra Research |
@@ -26,7 +26,7 @@ description: "提供使用 SAELens 训练和分析稀疏自编码器（SAE）的
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # SAELens：用于机制可解释性的稀疏自编码器
@@ -369,9 +369,9 @@ cfg = LanguageModelSAERunnerConfig(
 
 | 文件 | 内容 |
 |------|----------|
-| [references/README.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/README.md) | 概述与快速入门指南 |
-| [references/api.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/api.md) | SAE、TrainingSAE、配置的完整 API 参考 |
-| [references/tutorials.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/saelens/references/tutorials.md) | 训练、分析、引导的分步教程 |
+| [references/README.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/README.md) | 概述与快速入门指南 |
+| [references/api.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/api.md) | SAE、TrainingSAE、配置的完整 API 参考 |
+| [references/tutorials.md](https://github.com/seven0070/Rabbit-/blob/main/optional-skills/mlops/saelens/references/tutorials.md) | 训练、分析、引导的分步教程 |
 
 ## 外部资源
 

@@ -34,11 +34,11 @@ _DISK_USAGE_CACHE_TTL = 300.0  # seconds
 
 
 def _scratch_paths():
-    return glob.glob(str(_get_scratch_dir() / "hermes-*"))
+    return glob.glob(str(_get_scratch_dir() / "rabbit-*"))
 
 
 def _check_disk_usage_warning():
-    """True when hermes scratch dirs exceed the warning threshold (cached, advisory)."""
+    """True when rabbit scratch dirs exceed the warning threshold (cached, advisory)."""
     from tools.terminal_tool import DISK_USAGE_WARNING_THRESHOLD_GB
     if time.monotonic() - _disk_usage_cache["timestamp"] < _DISK_USAGE_CACHE_TTL:
         return _disk_usage_cache["result"]

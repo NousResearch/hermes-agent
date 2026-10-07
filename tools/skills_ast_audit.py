@@ -1,4 +1,4 @@
-"""AST-level deep audit for skill Python files — opt-in diagnostic (``hermes skills audit --deep``), not a
+"""AST-level deep audit for skill Python files — opt-in diagnostic (``rabbit skills audit --deep``), not a
 security gate (SECURITY.md §2.4). Flags dynamic import / attribute access for human review; every pattern has
 legitimate uses, so findings are hints, not verdicts."""
 

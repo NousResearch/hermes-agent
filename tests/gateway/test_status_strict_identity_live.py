@@ -1,6 +1,6 @@
 """Strict gateway identity against a REAL process holding ``gateway.lock``.
 
-``hermes update`` on Windows maps live gateways to profiles through
+``rabbit update`` on Windows maps live gateways to profiles through
 ``get_running_pid_identity_strict``. A live gateway whose ``gateway.pid`` was
 unlinked still holds its runtime lock, and the lock carries the same identity
 record, so the updater must identify it from the lock instead of aborting the
@@ -77,12 +77,12 @@ def _spawn_lock_holder(
     bin_dir: Path, home: Path, *, as_gateway: bool,
 ) -> tuple[subprocess.Popen[str], psutil.Process]:
     bin_dir.mkdir(parents=True, exist_ok=True)
-    script = bin_dir / ("hermes" if as_gateway else "holder.py")
+    script = bin_dir / ("rabbit" if as_gateway else "holder.py")
     script.write_text(_HOLDER.format(root=str(PROJECT_ROOT)), encoding="utf-8")
     argv = [sys.executable, str(script), *(["gateway", "run"] if as_gateway else [])]
     proc = subprocess.Popen(
         argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env={**os.environ, "HERMES_HOME": str(home)},
+        env={**os.environ, "RABBIT_HOME": str(home)},
     )
     assert proc.stdout is not None
     line = _readline(proc.stdout).strip()
@@ -112,7 +112,7 @@ def gateway_holder(tmp_path_factory):
 def home(gateway_holder, monkeypatch):
     """The holder's home; the identity files each test mutates are restored afterwards."""
     home, _pid = gateway_holder
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     pid_bytes = (home / "gateway.pid").read_bytes()
     lock_bytes = (home / "gateway.lock").read_bytes()
     yield home
@@ -125,7 +125,7 @@ def home(gateway_holder, monkeypatch):
 
 
 # The class-scoped holder spawns before the per-test live-system guard is armed; the mark
-# documents the `hermes gateway run` lookalike and covers it if the fixture is ever narrowed.
+# documents the `rabbit gateway run` lookalike and covers it if the fixture is ever narrowed.
 @pytest.mark.spawns_gateway_lookalike
 class TestStrictIdentityWithLiveLock:
     def test_missing_pid_file_resolves_from_the_lock_record(self, home, gateway_holder):
@@ -139,10 +139,10 @@ class TestStrictIdentityWithLiveLock:
         assert identity == with_pid_file
 
     def test_updater_discovery_maps_the_profile_without_a_pid_file(self, home, gateway_holder, monkeypatch):
-        from hermes_cli.gateway import find_profile_gateway_processes
+        from rabbit_cli.gateway import find_profile_gateway_processes
 
-        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-        monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
+        monkeypatch.setattr("rabbit_cli.profiles._get_default_rabbit_home", lambda: home)
+        monkeypatch.setattr("rabbit_cli.profiles._get_profiles_root", lambda: home / "no-profiles")
         (home / "gateway.pid").unlink()
 
         procs = find_profile_gateway_processes(strict=True)
@@ -168,7 +168,7 @@ class TestStrictIdentityWithLiveLock:
 
 def test_lock_holder_that_is_not_a_gateway_still_aborts(tmp_path, monkeypatch):
     home = _make_home(tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     proc, holder = _spawn_lock_holder(tmp_path / "bin", home, as_gateway=False)
     try:
         (home / "gateway.pid").unlink()

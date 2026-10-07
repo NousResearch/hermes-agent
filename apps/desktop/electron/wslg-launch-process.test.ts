@@ -14,7 +14,7 @@ import { afterAll, beforeAll, test } from 'vitest'
 let fixtureDir: string
 
 beforeAll(async () => {
-  fixtureDir = await mkdtemp(path.join(tmpdir(), 'hermes-wslg-process-'))
+  fixtureDir = await mkdtemp(path.join(tmpdir(), 'rabbit-wslg-process-'))
   await build({
     entryPoints: [
       fileURLToPath(new URL('./wslg-launch-process.ts', import.meta.url)),
@@ -44,7 +44,7 @@ beforeAll(async () => {
     import { fstatSync } from 'node:fs'
     import inspector from 'node:inspector'
     import { spawnWslgLaunch } from './wslg-launch-process.mjs'
-    const fd = Number(process.env.HERMES_DESKTOP_READY_FD)
+    const fd = Number(process.env.RABBIT_DESKTOP_READY_FD)
     const originalUrl = inspector.url()
     const args = originalUrl ? ['--inspect=' + new URL(originalUrl).host] : []
     args.push(new URL('./app.mjs', import.meta.url).pathname)
@@ -54,7 +54,7 @@ beforeAll(async () => {
     try { fstatSync(fd) } catch { fdClosed = true }
     console.log(JSON.stringify({ kind: 'launcher', pid: process.pid,
       originalUrl, url: inspector.url(), fdClosed,
-      readyEnv: process.env.HERMES_DESKTOP_READY_FD
+      readyEnv: process.env.RABBIT_DESKTOP_READY_FD
     }))
     child.once('error', error => { console.error(error); process.exit(1) })
     child.once('exit', (code, signal) => {
@@ -86,7 +86,7 @@ async function withLauncher(
       env: {
         ...process.env,
         NODE_OPTIONS: '',
-        HERMES_DESKTOP_READY_FD: readyFd,
+        RABBIT_DESKTOP_READY_FD: readyFd,
         TEST_FAIL_SPAWN: failSpawn ? '1' : ''
       },
       stdio: ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'pipe']

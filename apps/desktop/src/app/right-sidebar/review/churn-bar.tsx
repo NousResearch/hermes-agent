@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useMemo } from 'react'
 
-import type { HermesReviewFile } from '@/global'
+import type { RabbitReviewFile } from '@/global'
 import { $reviewMaxChurn } from '@/store/review'
 
 // Per-row "digital rain" churn bar: a right-anchored, clipped stream of
@@ -33,7 +33,7 @@ function rain(seed: string, len: number): string {
   return out
 }
 
-export function ChurnBar({ file }: { file: HermesReviewFile }) {
+export function ChurnBar({ file }: { file: RabbitReviewFile }) {
   const max = useStore($reviewMaxChurn)
   const fill = useMemo(() => rain(file.path, 200), [file.path])
   const width = max > 0 ? ((file.added + file.removed) / max) * 100 : 0

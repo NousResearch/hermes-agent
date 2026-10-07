@@ -160,7 +160,7 @@ def stage_inputs(pins: list[InputPin], *, archive: Archive, store: Store | None 
 
     def stage_digest(digest: str, references: list[InputPin]) -> None:
         # Each worker owns its downloads and cleanup, including on failure.
-        with tempfile.TemporaryDirectory(prefix="hermes-inputs-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="rabbit-inputs-") as temporary:
             local = Path(temporary) / "input"
             origin = archive.fetch(references[0], local)
             for pin in references:

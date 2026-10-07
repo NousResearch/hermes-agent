@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 
 @pytest.fixture
@@ -132,12 +132,12 @@ def test_actual_background_tasks_reach_chat_completions(
     from agent.auxiliary_client import async_call_llm
     from agent.context_compressor import ContextCompressor
     from agent.title_generator import generate_title
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from rabbit_cli.runtime_provider import resolve_runtime_provider
 
     base_url, requests = actual_endpoint
     if hosted:
         base_url = base_url.replace("127.0.0.1", "api.actual.inc")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     if use_api_key:
         monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
         monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:1")
@@ -244,14 +244,14 @@ def test_actual_runtime_transitions_reach_chat_completions(
     tmp_path, monkeypatch, actual_endpoint, provider, hosted, entrypoint
 ):
     from agent.error_classifier import FailoverReason
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from rabbit_cli.runtime_provider import resolve_runtime_provider
     from run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     if hosted:
         base_url = base_url.replace("127.0.0.1", "api.actual.inc")
     base_url += "/v1"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
     monkeypatch.setenv("OPENAI_API_KEY", "actual-test-key")
     config = {
@@ -368,7 +368,7 @@ def test_actual_rejects_forced_responses_before_http(
     if hosted:
         base_url = base_url.replace("127.0.0.1", "api.actual.inc")
     base_url += "/v1"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     config = {
         "model": {"provider": provider, "base_url": base_url, "default": "test-model"},
         "providers": {
@@ -432,7 +432,7 @@ def test_actual_auxiliary_fallback_reaches_chat_completions(
 
     local_url, requests = actual_endpoint
     actual_url = local_url.replace("127.0.0.1", "api.actual.inc") + "/v1"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
     config = {
         "model": {
@@ -483,13 +483,13 @@ def test_actual_auxiliary_fallback_reaches_chat_completions(
 def test_actual_setup_keeps_provider_settings_in_yaml(
     tmp_path, monkeypatch, override, configured_provider
 ):
-    from hermes_cli import config as config_module
-    from hermes_cli import model_setup_flows as setup
-    from hermes_cli.auth import resolve_api_key_provider_credentials
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from rabbit_cli import config as config_module
+    from rabbit_cli import model_setup_flows as setup
+    from rabbit_cli.auth import resolve_api_key_provider_credentials
+    from rabbit_cli.runtime_provider import resolve_runtime_provider
     from providers import get_provider_profile
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
     monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8089")
     configured_url = "http://127.0.0.1:8080"
@@ -537,7 +537,7 @@ def test_actual_key_reload_keeps_yaml_endpoint(tmp_path, monkeypatch, actual_end
     from run_agent import AIAgent
 
     base_url, requests = actual_endpoint
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
     monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:1")
     (tmp_path / "config.yaml").write_text(

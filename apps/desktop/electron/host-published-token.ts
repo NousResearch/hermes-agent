@@ -1,6 +1,6 @@
-// Session token published by a Hermes backend for same-user attach.
+// Session token published by a Rabbit backend for same-user attach.
 //
-// `GET /` withholds `window.__HERMES_SESSION_TOKEN__` when the dashboard is
+// `GET /` withholds `window.__RABBIT_SESSION_TOKEN__` when the dashboard is
 // auth-gated. The backend still writes the live token next to its host
 // rendezvous record (`gateway/host_rendezvous.py`): `host-serve.token` for the
 // machine owner, `host-desktop-serve.token` for a Desktop-spawned child. The
@@ -54,7 +54,7 @@ export function hostRendezvousDirectory(env: HostRendezvousEnv): string {
   const stateHome =
     stateHomeEnv && path.isAbsolute(stateHomeEnv) ? stateHomeEnv : path.join(env.home, '.local', 'state')
 
-  return path.join(stateHome, 'hermes', 'gateway-locks')
+  return path.join(stateHome, 'rabbit', 'gateway-locks')
 }
 
 function tokenFingerprint(token: string): string {

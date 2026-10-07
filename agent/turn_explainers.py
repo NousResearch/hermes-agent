@@ -84,7 +84,7 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
 
     ``env_var`` overrides on every call and is never cached. Reads the persisted config.yaml
     so gateway and CLI share the setting; ``load_config`` is imported lazily (startup cycle,
-    and tests patch it at ``hermes_cli.config``). Any failure → True (safe default: on)."""
+    and tests patch it at ``rabbit_cli.config``). Any failure → True (safe default: on)."""
     try:
         env = os.environ.get(env_var)
         if env is not None:
@@ -93,7 +93,7 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
         if cached is not None:
             return cached
         try:
-            from hermes_cli.config import load_config as _load_config
+            from rabbit_cli.config import load_config as _load_config
             _cfg = _load_config() or {}
         except Exception:
             _cfg = {}
@@ -137,7 +137,7 @@ class TurnExplainersMixin:
             if changed is not None:
                 changed.update(landed_paths)
             # Feed the checkpoint agent-write ledger so /rollback's safe mode can tell
-            # Hermes-authored content from later user hand-edits.
+            # Rabbit-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
                 from tools.file_tools_paths import container_backend_for_task
@@ -178,16 +178,16 @@ class TurnExplainersMixin:
         }
 
     def _file_mutation_verifier_enabled(self) -> bool:
-        """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
+        """``display.file_mutation_verifier`` / ``RABBIT_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
         return _display_flag_enabled(
-            self, env_var="HERMES_FILE_MUTATION_VERIFIER", config_key="file_mutation_verifier",
+            self, env_var="RABBIT_FILE_MUTATION_VERIFIER", config_key="file_mutation_verifier",
             cache_attr="_file_mutation_verifier_enabled_cache",
         )
 
     def _turn_completion_explainer_enabled(self) -> bool:
-        """``display.turn_completion_explainer`` / ``HERMES_TURN_COMPLETION_EXPLAINER``."""
+        """``display.turn_completion_explainer`` / ``RABBIT_TURN_COMPLETION_EXPLAINER``."""
         return _display_flag_enabled(
-            self, env_var="HERMES_TURN_COMPLETION_EXPLAINER", config_key="turn_completion_explainer",
+            self, env_var="RABBIT_TURN_COMPLETION_EXPLAINER", config_key="turn_completion_explainer",
             cache_attr="_turn_completion_explainer_enabled_cache",
         )
 
@@ -253,22 +253,22 @@ class TurnExplainersMixin:
         if key is not None:
             body = t(key, model=model or t("explainer.shared.the_model"))
         elif reason == "session_persistence_failed":
-            from hermes_constants import display_hermes_home, profile_cli_selector
-            from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+            from rabbit_constants import display_rabbit_home, profile_cli_selector
+            from rabbit_state_errors import STORAGE_RECOVERY_DOCS_URL
 
-            # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
+            # Copy-pasteable, so pin every `rabbit` command to the profile whose store failed:
             # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
-            # process default, and a bare `hermes` follows active_profile (#105887).
+            # process default, and a bare `rabbit` follows active_profile (#105887).
             fill: Dict[str, str] = {
-                "home": display_hermes_home(), "profile_arg": profile_cli_selector(),
+                "home": display_rabbit_home(), "profile_arg": profile_cli_selector(),
                 "recovery_docs": STORAGE_RECOVERY_DOCS_URL, "db_path": "", "backups_dir": "",
             }
             if persistence_cause in ("corrupt", "fts_index"):
-                from hermes_constants import get_default_hermes_root
-                from hermes_state import _default_db_path
+                from rabbit_constants import get_default_rabbit_root
+                from rabbit_state import _default_db_path
 
                 fill["db_path"] = str(db_path or _default_db_path())
-                fill["backups_dir"] = str(get_default_hermes_root() / "backups")
+                fill["backups_dir"] = str(get_default_rabbit_root() / "backups")
             body = t(_persistence_explanation_key(persistence_cause), **fill)
         else:
             body = None

@@ -1,14 +1,14 @@
 ---
 title: "Teams Meeting Pipeline"
 sidebar_label: "Teams Meeting Pipeline"
-description: "通过 Hermes CLI 操作 Teams 会议摘要流水线 — 总结会议、检查流水线状态、重放任务、管理 Microsoft Graph 订阅"
+description: "通过 Rabbit CLI 操作 Teams 会议摘要流水线 — 总结会议、检查流水线状态、重放任务、管理 Microsoft Graph 订阅"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Teams Meeting Pipeline
 
-通过 Hermes CLI 操作 Teams 会议摘要流水线 — 总结会议、检查流水线状态、重放任务、管理 Microsoft Graph 订阅。
+通过 Rabbit CLI 操作 Teams 会议摘要流水线 — 总结会议、检查流水线状态、重放任务、管理 Microsoft Graph 订阅。
 
 ## Skill 元数据
 
@@ -17,21 +17,20 @@ description: "通过 Hermes CLI 操作 Teams 会议摘要流水线 — 总结会
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/productivity/teams-meeting-pipeline` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent + Teknium |
 | 许可证 | MIT |
 | 标签 | `Teams`, `Microsoft Graph`, `Meetings`, `Productivity`, `Operations` |
 
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发该 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # Teams Meeting Pipeline
 
 当用户询问 Microsoft Teams 会议摘要、转录文本、录制内容、行动项、Graph 订阅，或任何与 Teams 会议流水线相关的运维问题时，使用此 skill。支持任意语言 — 以下触发示例并非完整列表。
 
-所有面向运维人员的操作均通过终端工具执行 `hermes teams-pipeline` 子命令完成。此流水线没有新的模型工具 — CLI 是唯一操作界面。
+所有面向运维人员的操作均通过终端工具执行 `rabbit teams-pipeline` 子命令完成。此流水线没有新的模型工具 — CLI 是唯一操作界面。
 
 ## 使用场景
 
@@ -50,7 +49,7 @@ description: "通过 Hermes CLI 操作 Teams 会议摘要流水线 — 总结会
 
 ## 前置条件
 
-使用流水线前，请确认以下变量已在 `~/.hermes/.env` 中设置：
+使用流水线前，请确认以下变量已在 `~/.rabbit/.env` 中设置：
 
 ```bash
 MSGRAPH_TENANT_ID=...
@@ -65,35 +64,35 @@ MSGRAPH_CLIENT_SECRET=...
 ### 状态与检查（从这里开始）
 
 ```bash
-hermes teams-pipeline validate              # 配置快照 — 每次变更后首先运行
-hermes teams-pipeline token-health          # Graph token 状态
-hermes teams-pipeline token-health --force-refresh   # 强制重新获取 token
-hermes teams-pipeline list                  # 近期会议任务
-hermes teams-pipeline list --status failed  # 仅显示失败任务
-hermes teams-pipeline show <job-id>         # 查看某个任务的完整详情
-hermes teams-pipeline subscriptions         # 当前 Graph webhook 订阅
+rabbit teams-pipeline validate              # 配置快照 — 每次变更后首先运行
+rabbit teams-pipeline token-health          # Graph token 状态
+rabbit teams-pipeline token-health --force-refresh   # 强制重新获取 token
+rabbit teams-pipeline list                  # 近期会议任务
+rabbit teams-pipeline list --status failed  # 仅显示失败任务
+rabbit teams-pipeline show <job-id>         # 查看某个任务的完整详情
+rabbit teams-pipeline subscriptions         # 当前 Graph webhook 订阅
 ```
 
 ### 重新运行 / 调试
 
 ```bash
-hermes teams-pipeline run <job-id>          # 重放已存储任务（重新生成摘要并重新投递）
-hermes teams-pipeline fetch --meeting-id <id>   # 试运行：解析会议及转录文本，不持久化
-hermes teams-pipeline fetch --join-web-url "<url>"   # 通过加入链接进行试运行
+rabbit teams-pipeline run <job-id>          # 重放已存储任务（重新生成摘要并重新投递）
+rabbit teams-pipeline fetch --meeting-id <id>   # 试运行：解析会议及转录文本，不持久化
+rabbit teams-pipeline fetch --join-web-url "<url>"   # 通过加入链接进行试运行
 ```
 
 ### 订阅管理
 
 ```bash
-hermes teams-pipeline subscribe \
+rabbit teams-pipeline subscribe \
   --resource communications/onlineMeetings/getAllTranscripts \
   --notification-url https://<your-public-host>/msgraph/webhook \
   --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE"
 
-hermes teams-pipeline renew-subscription <sub-id> --expiration <iso-8601>
-hermes teams-pipeline delete-subscription <sub-id>
-hermes teams-pipeline maintain-subscriptions            # 续期即将到期的订阅
-hermes teams-pipeline maintain-subscriptions --dry-run  # 显示将被续期的内容
+rabbit teams-pipeline renew-subscription <sub-id> --expiration <iso-8601>
+rabbit teams-pipeline delete-subscription <sub-id>
+rabbit teams-pipeline maintain-subscriptions            # 续期即将到期的订阅
+rabbit teams-pipeline maintain-subscriptions --dry-run  # 显示将被续期的内容
 ```
 
 ## 常见问题决策树
@@ -108,9 +107,9 @@ hermes teams-pipeline maintain-subscriptions --dry-run  # 显示将被续期的�
 Microsoft Graph 将 webhook 订阅上限设为 72 小时，且**不会自动续期**。如果未调度 `maintain-subscriptions`，手动创建订阅 3 天后会议通知将静默停止。
 
 当用户反馈"昨天流水线还正常，今天没有任何内容进来"时：
-1. 执行 `hermes teams-pipeline subscriptions` — 如果结果为空，或所有条目的 `expirationDateTime` 均已过期，即为原因所在。
+1. 执行 `rabbit teams-pipeline subscriptions` — 如果结果为空，或所有条目的 `expirationDateTime` 均已过期，即为原因所在。
 2. 按上方示例使用 `subscribe` 重新创建订阅。
-3. **立即设置自动续期**，可通过 `hermes cron add`、systemd timer 或普通 crontab 实现。运维手册 `/docs/guides/operate-teams-meeting-pipeline#automating-subscription-renewal-required-for-production` 提供了三种方案的完整说明。12 小时间隔是安全的（相对 72 小时上限有 6 倍余量）。
+3. **立即设置自动续期**，可通过 `rabbit cron add`、systemd timer 或普通 crontab 实现。运维手册 `/docs/guides/operate-teams-meeting-pipeline#automating-subscription-renewal-required-for-production` 提供了三种方案的完整说明。12 小时间隔是安全的（相对 72 小时上限有 6 倍余量）。
 
 ## 其他注意事项
 

@@ -35,7 +35,7 @@ function managedResult(over: Partial<DesktopManagedConnectionUpdateResult> = {})
 beforeEach(() => {
   _resetManagedUpdatesForTests()
   updateManaged.mockReset().mockResolvedValue(managedResult())
-  ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+  ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = {
     connections: { updateManaged }
   }
 })
@@ -122,7 +122,7 @@ describe('runManagedUpdate', () => {
 
   it('maps a thrown managed-update-in-progress IPC envelope to the same busy state', async () => {
     const error: Error & { code?: string } = new Error(
-      "Error invoking remote method 'hermes:connections:update-managed': " +
+      "Error invoking remote method 'rabbit:connections:update-managed': " +
         'SSH connection "linux-ssh" is paused while its managed update is in progress.'
     )
 
@@ -178,7 +178,7 @@ describe('runManagedUpdate', () => {
   })
 
   it('fails closed when the bridge is missing instead of pretending to update', async () => {
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { connections: {} }
+    ;(window as { rabbitDesktop?: unknown }).rabbitDesktop = { connections: {} }
 
     const state = await runManagedUpdate('linux-ssh')
 

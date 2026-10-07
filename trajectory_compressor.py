@@ -17,7 +17,7 @@ import random
 import shutil
 import tempfile
 import time
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path
@@ -29,13 +29,13 @@ from utils import base_url_host_matches, base_url_hostname
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
-from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+from rabbit_constants import OPENROUTER_BASE_URL, get_rabbit_home
 from agent.compression_marker import elide_middle
 from agent.retry_utils import jittered_backoff
-from hermes_cli.env_loader import load_hermes_dotenv
+from rabbit_cli.env_loader import load_rabbit_dotenv
 
-# Load .env from HERMES_HOME first, then project root as a dev fallback.
-load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=Path(__file__).parent / ".env")
+# Load .env from RABBIT_HOME first, then project root as a dev fallback.
+load_rabbit_dotenv(rabbit_home=get_rabbit_home(), project_env=Path(__file__).parent / ".env")
 
 
 def _response_finish_reason(response: Any) -> str:
@@ -312,7 +312,7 @@ class TrajectoryCompressor:
             from agent.auxiliary_client import resolve_provider_client
             client, _ = resolve_provider_client(provider, model=self.config.summarization_model)
             if client is None:
-                raise RuntimeError(f"Provider '{provider}' is not configured. Check your API key or run: hermes setup")
+                raise RuntimeError(f"Provider '{provider}' is not configured. Check your API key or run: rabbit setup")
             self.client = self.async_client = None  # Not used directly
         else:
             # Custom endpoint — use config's raw base_url + api_key_env

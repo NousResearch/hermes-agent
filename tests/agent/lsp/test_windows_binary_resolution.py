@@ -26,7 +26,7 @@ def test_windows_resolution_picks_cmd_wrapper_from_npm_bin_over_posix_shim(tmp_p
     """Drives the production entry with ``is_windows`` as data (no sys.platform patch): the pair
     lives where npm leaves it (``lsp/node_modules/.bin``), and pyright's langserver sibling keeps
     the resolved suffix instead of falling onto the bare shim."""
-    monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr(install, "rabbit_lsp_bin_dir", lambda: tmp_path / "bin")
     (tmp_path / "bin").mkdir()
     cmd = _npm_shim_pair(tmp_path / "node_modules" / ".bin", "tool")
 
@@ -44,7 +44,7 @@ def test_windows_resolution_picks_cmd_wrapper_from_npm_bin_over_posix_shim(tmp_p
 @pytest.mark.platforms("windows")
 def test_existing_binary_resolves_runnable_cmd_over_posix_shim(tmp_path: Path, monkeypatch):
     """Live: staging dir holds npm's shim AND its .cmd; the resolved path must actually run."""
-    monkeypatch.setattr(install, "hermes_lsp_bin_dir", lambda: tmp_path)
+    monkeypatch.setattr(install, "rabbit_lsp_bin_dir", lambda: tmp_path)
     shim = tmp_path / "tool"
     shim.write_text("#!/bin/sh\nexec node \"$0.js\" \"$@\"\n", encoding="utf-8")
     (tmp_path / "tool.cmd").write_text("@echo off\r\necho wrapper-ran\r\n", encoding="utf-8")

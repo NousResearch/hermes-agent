@@ -266,7 +266,7 @@ export function assembleSidebarSessionSlices(recents: unknown, cron: unknown, me
 /** One CONNECTED (already-pooled) registry gateway whose sessions belong in the
  *  unified list. `backends` carries the resolved descriptors: one per pooled
  *  (connection, profile) pair for ssh-scoped sources, a single shared host for
- *  remote/cloud. The caller resolves descriptors — this module only fetches,
+ *  remote. The caller resolves descriptors — this module only fetches,
  *  tags, and dedupes, so it stays unit-testable. */
 export interface RegistrySessionSource {
   connectionId: string
@@ -307,7 +307,7 @@ export function hasPinnedRegistrySessionSource(
     return false
   }
 
-  // Shared remote and cloud hosts serve every profile from one backend. An
+  // Shared remote hosts serve every profile from one backend. An
   // absent profile is also allowed because the route can still be an explicit
   // all-profiles request without an ambient renderer profile.
   if (!selectedProfile || selectedProfile === 'all' || !source.kind || !source.backends) {
@@ -490,7 +490,7 @@ export async function fetchRegistrySessionRows(
         return
       }
 
-      // Shared remote/cloud host: one cross-profile read returns every
+      // Shared remote host: one cross-profile read returns every
       // profile's rows, each tagged with its owning remote profile.
       const shared = source.backends[0]
 
@@ -629,7 +629,7 @@ export function pathWithRemoteOwnerScope(path: string, scope: string): string {
     return path
   }
 
-  const url = new URL(path, 'http://hermes.local')
+  const url = new URL(path, 'http://rabbit.local')
   url.searchParams.set('profile', scoped)
 
   return `${url.pathname}${url.search}${url.hash}`
@@ -643,7 +643,7 @@ export async function fetchRemoteProfileSessions(
 ): Promise<SessionListResponse> {
   const params = new URLSearchParams(searchParams)
   // #64999: a per-profile override can point at a MULTI-profile backend — one
-  // `hermes serve` hosting several profiles — and an unscoped /api/sessions
+  // `rabbit serve` hosting several profiles — and an unscoped /api/sessions
   // reads whichever profile the backend process was launched under. Name the
   // scope so the rows provably belong to it; the remote's own stamps then
   // carry the authoritative identity (main.ts no longer relabels).

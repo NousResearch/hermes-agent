@@ -1,6 +1,6 @@
 """Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
+tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._RABBIT_CORE_TOOLS``)
 and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
 activates the bridge (the listing scales with budget, not activation); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
@@ -16,7 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+from rabbit_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
@@ -109,9 +109,9 @@ def _safe_float(value: Any, fallback: float) -> float:
 
 
 def _config_from_loader(loader_name: str) -> ToolSearchConfig:
-    """Tool-search config via ``hermes_cli.config.<loader_name>`` (defaults on any failure)."""
+    """Tool-search config via ``rabbit_cli.config.<loader_name>`` (defaults on any failure)."""
     try:
-        import hermes_cli.config as _cfg_mod
+        import rabbit_cli.config as _cfg_mod
         tools_cfg = (getattr(_cfg_mod, loader_name)() or {}).get("tools")
         tools_cfg = tools_cfg if isinstance(tools_cfg, dict) else {}
         return ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
@@ -127,13 +127,13 @@ load_config_readonly = functools.partial(_config_from_loader, "load_config_reado
 def _core_tool_names() -> frozenset[str]:
     """Names that never defer by default (lazy: ``toolsets`` imports ``tools.registry``)."""
     try:
-        from toolsets import _HERMES_CORE_TOOLS
-        return frozenset(_HERMES_CORE_TOOLS)
+        from toolsets import _RABBIT_CORE_TOOLS
+        return frozenset(_RABBIT_CORE_TOOLS)
     except Exception:
         return frozenset()
 
 
-# Session-gated GUI toolsets: off ``_HERMES_CORE_TOOLS`` so non-GUI clients never pay
+# Session-gated GUI toolsets: off ``_RABBIT_CORE_TOOLS`` so non-GUI clients never pay
 # their schema; once enabled they stay direct unless the deferral list names them. ``setup``
 # is the setup profile's whole job: a guide that has to search for its one tool first
 # answers the user's install request with a tool_search round trip.
@@ -549,7 +549,7 @@ def out_of_scope_reason(name: str) -> Optional[str]:
     try:
         if _registry_toolset(name) in _DIRECT_SURFACE_TOOLSETS:
             return (f"'{name}' needs a desktop-app session with a GUI surface (preview/terminal panes). "
-                    "This session has none: use it only from the Hermes desktop app, not via tool_search.")
+                    "This session has none: use it only from the Rabbit desktop app, not via tool_search.")
     except Exception:
         pass
     return None

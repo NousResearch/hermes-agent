@@ -176,7 +176,7 @@ class Scenario:
     when: str = "provider"
     busy_mode: str | None = None
     reaps_hung_tool: bool = False
-    # A stalled turn makes >= HERMES_STREAM_STALE_GIVEUP stale attempts, and the cross-turn
+    # A stalled turn makes >= RABBIT_STREAM_STALE_GIVEUP stale attempts, and the cross-turn
     # breaker (#58962) then refuses the session's next turn WITHOUT calling the provider
     # until /new or a provider swap. Allowed only here, and only as a bounded, surfaced
     # refusal with zero provider calls; /new must then make the chat answer again.

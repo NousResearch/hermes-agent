@@ -8,7 +8,7 @@ description: >-
 maintainer: DECRUX9812
 tier: community
 category: automation
-requires_hermes: ">=0.21"
+requires_rabbit: ">=0.21"
 docs_url: https://github.com/DECRUX9812/typesafe-skill-router#readme
 platforms: []
 capabilities:

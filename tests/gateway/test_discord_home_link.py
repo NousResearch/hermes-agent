@@ -17,7 +17,7 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 def test_discord_home_link_loads_as_channel_id(tmp_path, monkeypatch, source):
     channel_id = "202523857364451329"
     link = f"https://discord.com/channels/302523857364451329/{channel_id}"
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
     config_text = "platforms:\n  discord:\n    enabled: false\n"
     if source == "env":

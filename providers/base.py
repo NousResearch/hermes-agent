@@ -25,17 +25,17 @@ OMIT_TEMPERATURE = object()
 
 
 def _profile_user_agent() -> str:
-    """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
+    """Return a ``rabbit-cli/<version>`` UA string, with a stable fallback.
 
     Used by ``ProviderProfile.fetch_models`` so the catalog probe is not
     served the default ``Python-urllib/<ver>`` UA — some providers
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
-        return f"hermes-cli/{get_version_info().base_version}"
+        from rabbit_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"rabbit-cli/{get_version_info().base_version}"
     except Exception:
-        return "hermes-cli"
+        return "rabbit-cli"
 
 
 @dataclass
@@ -62,11 +62,11 @@ class ProviderProfile:
     supports_model_listing: bool = True
 
     # ── Provider-owned auth (optional; non-api-key plugins) ──────────
-    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # ``auth_handler(action, args) -> bool``: ``rabbit auth add|status|logout|refresh <name>`` calls it
     # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
     # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
-    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # Both own their own token endpoints; Rabbit passes no secrets beyond the pooled row itself.
     # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
     # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
     # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
@@ -104,7 +104,7 @@ class ProviderProfile:
 
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
-    # describe how to launch it; hermes_cli/auth.py's
+    # describe how to launch it; rabbit_cli/auth.py's
     # resolve_external_process_provider_credentials() reads them instead of
     # hardcoding one vendor's binary. Env vars are checked in order and win
     # over the static defaults, so an operator can point at a custom build.
@@ -207,7 +207,7 @@ class ProviderProfile:
         """Reasoning config the main loop sends when ``agent.reasoning_effort`` is unset.
 
         None (default) hands the unset state to ``build_api_kwargs_extras`` as ``reasoning_config=None``,
-        where each profile already decides (Nous/OpenRouter fill medium; Anthropic omits). A profile
+        where each profile already decides (OpenRouter fills medium; Anthropic omits). A profile
         that would otherwise leave the route's own default in charge returns the config here so the
         agent records it as what went on the wire (the reasoning-rejection ladder reads that).
         """
@@ -324,7 +324,7 @@ class ProviderProfile:
         through to its existing construction path.
 
         This is the hook that lets a provider ship *outside* this tree: with it,
-        a profile registered from ``~/.hermes/plugins/model-providers/`` or a
+        a profile registered from ``~/.rabbit/plugins/model-providers/`` or a
         pip entry point can supply its own transport without any core edit. See
         ``plugins/model-providers/copilot-acp/`` for the in-tree example.
         """
@@ -392,7 +392,7 @@ class ProviderProfile:
         import json
         import urllib.request
 
-        from hermes_cli.urllib_security import open_credentialed_url
+        from rabbit_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -400,7 +400,7 @@ class ProviderProfile:
         req.add_header("Accept", "application/json")
         # Some providers (e.g. OpenCode Zen) sit behind a WAF that blocks
         # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic
-        # hermes-cli UA so the catalog endpoint is reachable.
+        # rabbit-cli UA so the catalog endpoint is reachable.
         req.add_header("User-Agent", _profile_user_agent())
         for k, v in self.default_headers.items():
             req.add_header(k, v)
@@ -409,7 +409,7 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            from hermes_cli.chat_catalog import chat_catalog_ids
+            from rabbit_cli.chat_catalog import chat_catalog_ids
 
             return chat_catalog_ids(items)
         except Exception as exc:

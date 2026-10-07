@@ -1,7 +1,7 @@
 """Transcript-ledger harness for the conversation-history (C3) and prompt-cache (C17) suites.
 
 Everything real except the model: a real ``AIAgent`` + ``SessionDB`` on disk in-process, the
-real ``tui_gateway`` stdio JSON-RPC server and the real ``hermes chat -q`` oneshot CLI as
+real ``tui_gateway`` stdio JSON-RPC server and the real ``rabbit chat -q`` oneshot CLI as
 subprocesses, all pointed at one recording ``FakeLLMServer``. The invariants below read the
 three durable/observable projections of a conversation and cross-check them:
 
@@ -29,7 +29,7 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # Children get an ALLOWLISTED env: a developer or agent shell exports TERMINAL_CWD,
-# HERMES_SESSION_*, AUXILIARY_*, provider keys ... any of which changes the child's prompt or
+# RABBIT_SESSION_*, AUXILIARY_*, provider keys ... any of which changes the child's prompt or
 # routing and would make a surface-switch comparison diverge for reasons outside the product.
 _ENV_ALLOW = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "SHELL", "SSL_CERT_FILE", "TZ")
 
@@ -98,51 +98,51 @@ def first_divergence(a: str, b: str) -> str:
 # state.db views
 
 
-def db_connect(hermes_home: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{hermes_home / 'state.db'}?mode=ro", uri=True, timeout=30)
+def db_connect(rabbit_home: Path) -> sqlite3.Connection:
+    con = sqlite3.connect(f"file:{rabbit_home / 'state.db'}?mode=ro", uri=True, timeout=30)
     con.row_factory = sqlite3.Row
     return con
 
 
-def views(hermes_home: Path, sid: str) -> tuple[list[dict], list[dict]]:
+def views(rabbit_home: Path, sid: str) -> tuple[list[dict], list[dict]]:
     """(model_history, display_history) exactly as a resuming surface loads them."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
-    db = SessionDB(db_path=hermes_home / "state.db")
+    db = SessionDB(db_path=rabbit_home / "state.db")
     try:
         return db.get_resume_conversations(sid)
     finally:
         db.close()
 
 
-def model_only_identities(hermes_home: Path, model: list[dict]) -> set[tuple]:
+def model_only_identities(rabbit_home: Path, model: list[dict]) -> set[tuple]:
     """Identities of model-view rows stored as model-only (never part of the display projection)."""
     ids = [m["_row_id"] for m in model if m.get("_row_id") is not None]
     if not ids:
         return set()
-    with db_connect(hermes_home) as con:
+    with db_connect(rabbit_home) as con:
         hidden = {r[0] for r in con.execute(
             f"SELECT id FROM messages WHERE id IN ({','.join('?' * len(ids))}) "
             "AND COALESCE(json_extract(display_metadata, '$.model_only'), 0) != 0", ids)}
     return {identity(m) for m in model if m.get("_row_id") in hidden}
 
 
-def row_counts(hermes_home: Path, sid: str) -> dict[str, int]:
-    with db_connect(hermes_home) as con:
+def row_counts(rabbit_home: Path, sid: str) -> dict[str, int]:
+    with db_connect(rabbit_home) as con:
         total, active = con.execute(
             "SELECT count(*), coalesce(sum(active), 0) FROM messages WHERE session_id=?", (sid,)).fetchone()
         return {"total": total, "active": active}
 
 
-def integrity_ok(hermes_home: Path) -> None:
-    with db_connect(hermes_home) as con:
+def integrity_ok(rabbit_home: Path) -> None:
+    with db_connect(rabbit_home) as con:
         assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
-def lineage(hermes_home: Path, sid: str) -> list[str]:
+def lineage(rabbit_home: Path, sid: str) -> list[str]:
     """Root→tip chain of session ids ending at ``sid`` (compaction rotation may create children)."""
     chain = [sid]
-    with db_connect(hermes_home) as con:
+    with db_connect(rabbit_home) as con:
         while True:
             row = con.execute("SELECT parent_session_id FROM sessions WHERE id=?", (chain[0],)).fetchone()
             if not row or not row[0]:
@@ -158,10 +158,10 @@ def is_summary(msg: dict[str, Any]) -> bool:
     return SUMMARY_TEXT in _text(msg.get("content") or "") or bool(msg.get("_compressed_summary"))
 
 
-def assert_rows_exactly_once(hermes_home: Path, sid: str, where: str) -> None:
+def assert_rows_exactly_once(rabbit_home: Path, sid: str, where: str) -> None:
     """(a) at the storage layer: no two ACTIVE rows of a session are the same logical message.
     Readers dedupe defensively, so a double write can hide behind them; the rows cannot."""
-    con = db_connect(hermes_home)
+    con = db_connect(rabbit_home)
     try:
         rows = con.execute(
             "SELECT id, role, content, tool_call_id, tool_calls FROM messages "
@@ -296,12 +296,12 @@ def billed_usage(records: list[dict[str, Any]], kind: str = "main") -> dict[str,
     return tot
 
 
-def assert_usage_matches(hermes_home: Path, sids: list[str], records: list[dict[str, Any]], where: str) -> None:
+def assert_usage_matches(rabbit_home: Path, sids: list[str], records: list[dict[str, Any]], where: str) -> None:
     """(f) state.db usage equals what the provider billed: main-loop totals on ``sessions`` and in
     the per-model ledger, no double count, no drop; cache reads are split out of input tokens."""
     want = billed_usage(records, "main")
     marks = ",".join("?" * len(sids))
-    with db_connect(hermes_home) as con:
+    with db_connect(rabbit_home) as con:
         s = con.execute(
             f"SELECT sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(api_call_count) "
             f"FROM sessions WHERE id IN ({marks})", sids).fetchone()
@@ -320,14 +320,14 @@ def assert_usage_matches(hermes_home: Path, sids: list[str], records: list[dict[
 # subprocess surfaces
 
 
-def child_env(home: Path, hermes_home: Path, workdir: Path) -> dict[str, str]:
+def child_env(home: Path, rabbit_home: Path, workdir: Path) -> dict[str, str]:
     env = {k: os.environ[k] for k in _ENV_ALLOW if k in os.environ}
     env.update(
-        HOME=str(home), HERMES_HOME=str(hermes_home), PWD=str(workdir),
-        HERMES_TEST_ISOLATION=str(hermes_home),
+        HOME=str(home), RABBIT_HOME=str(rabbit_home), PWD=str(workdir),
+        RABBIT_TEST_ISOLATION=str(rabbit_home),
         # The child's state.db IS this test's sandbox db; the live-DB guard would refuse it
         # because a pytest ancestor is present.
-        HERMES_STATE_DB_GUARD_BYPASS="1",
+        RABBIT_STATE_DB_GUARD_BYPASS="1",
         PYTHONPATH=str(REPO_ROOT), PYTHONUNBUFFERED="1", NO_COLOR="1", TMPDIR=str(home),
         TZ="UTC", LANG="C.UTF-8", PYTHONHASHSEED="0",
     )
@@ -359,8 +359,8 @@ _SID_RE = re.compile(r"^session_id:\s*(\S+)\s*$", re.M)
 
 def run_oneshot(env: dict[str, str], cwd: Path, prompt: str, spawned: Spawned, *,
                 resume: str | None = None, timeout: float = 180.0) -> tuple[str, str]:
-    """``hermes chat -q PROMPT -Q [--resume SID]`` in a fresh process -> (stdout, durable sid)."""
-    cmd = [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "-Q"]
+    """``rabbit chat -q PROMPT -Q [--resume SID]`` in a fresh process -> (stdout, durable sid)."""
+    cmd = [sys.executable, "-m", "rabbit_cli.main", "chat", "-q", prompt, "-Q"]
     if resume:
         cmd += ["--resume", resume]
     p = spawned.add(subprocess.Popen(cmd, cwd=str(cwd), env={**env, "PWD": str(cwd)}, stdin=subprocess.DEVNULL,
@@ -574,13 +574,13 @@ class InProcessSession:
     """A real ``AIAgent`` + ``SessionDB`` driven the way the classic CLI drives it: the surface
     owns ``history`` and hands it back each turn; ``/compress`` goes through ``compress_now``."""
 
-    def __init__(self, base_url: str, hermes_home: Path, sid: str, *, platform: str = "cli") -> None:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
-        from hermes_state import SessionDB
+    def __init__(self, base_url: str, rabbit_home: Path, sid: str, *, platform: str = "cli") -> None:
+        from rabbit_cli.config import load_config
+        from rabbit_cli.tools_config import _get_platform_tools
+        from rabbit_state import SessionDB
         from run_agent import AIAgent
 
-        self.db = SessionDB(db_path=hermes_home / "state.db")
+        self.db = SessionDB(db_path=rabbit_home / "state.db")
         # The CLI entrypoints enable the platform's configured toolsets; a bare AIAgent would
         # advertise a different tools array than every real surface resuming this session.
         toolsets = sorted(_get_platform_tools(load_config(), platform))
@@ -599,7 +599,7 @@ class InProcessSession:
         return result
 
     def compress(self, args: str = "") -> Any:
-        """Mirror ``hermes_cli.cli_session_mixin`` ``/compress``: install ``after_messages``, follow a
+        """Mirror ``rabbit_cli.cli_session_mixin`` ``/compress``: install ``after_messages``, follow a
         rotated session id, re-flush the handoff on rotation, finalize the engine notification."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import compress_now, parse_compress_args
@@ -624,8 +624,8 @@ class InProcessSession:
 class Ledger:
     """Cross-checks request stream, model view, display view, row counts and usage after each step."""
 
-    def __init__(self, srv: Any, hermes_home: Path, *, check_inputs: bool = True) -> None:
-        self.srv, self.home, self.check_inputs = srv, hermes_home, check_inputs
+    def __init__(self, srv: Any, rabbit_home: Path, *, check_inputs: bool = True) -> None:
+        self.srv, self.home, self.check_inputs = srv, rabbit_home, check_inputs
         self.ever: dict[tuple, str] = {}
         self.inputs: list[str] = []
         self.model_only: set[tuple] = set()

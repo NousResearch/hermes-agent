@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent import video_gen_registry
 from agent.video_gen_provider import VideoGenProvider
@@ -20,7 +20,7 @@ def _reset_registry():
 
 @pytest.fixture
 def cfg_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     return tmp_path
 
 

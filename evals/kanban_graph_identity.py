@@ -18,18 +18,18 @@ def main():
     args = parser.parse_args()
     if not args.child:
         with tempfile.TemporaryDirectory(prefix="kanban-identity-") as home:
-            env = {"HOME": home, "HERMES_HOME": home + "/hermes", "PATH": os.defpath,
+            env = {"HOME": home, "RABBIT_HOME": home + "/rabbit", "PATH": os.defpath,
                    "LANG": "C.UTF-8", "TZ": "UTC", "PYTHONDONTWRITEBYTECODE": "1"}
             return subprocess.run(
                 [sys.executable, str(Path(__file__).resolve()), "--repo", str(args.repo), "--child"],
                 cwd=args.repo, env=env, check=False,
             ).returncode
     sys.path.insert(0, str(args.repo))
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
-    from hermes_cli.kanban_db_dispatch import dispatch_once
+    from rabbit_cli import kanban_db as kb, kanban_db_connect as kbc
+    from rabbit_cli.kanban_db_dispatch import dispatch_once
     from tools.kanban_tools import _handle_create
-    from hermes_cli.kanban_decompose import _apply_fanout, _Routing
-    graph = importlib.import_module("hermes_cli.kanban_db_graph") if (args.repo / "hermes_cli/kanban_db_graph.py").exists() else kb
+    from rabbit_cli.kanban_decompose import _apply_fanout, _Routing
+    graph = importlib.import_module("rabbit_cli.kanban_db_graph") if (args.repo / "rabbit_cli/kanban_db_graph.py").exists() else kb
     decompose = graph.decompose_triage_task
     specs = [{"title": "work", "assignee": "default"}]
     with kbc.connect_closing() as conn:

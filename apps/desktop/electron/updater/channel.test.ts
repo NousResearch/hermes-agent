@@ -56,7 +56,7 @@ async function fixture(): Promise<{
     buildId: 'a'.repeat(32),
     channel: 'fresh-preview-29',
     sequence: 1,
-    repository: 'example/hermes-agent',
+    repository: 'example/rabbit-agent',
     commit: 'b'.repeat(40),
     sourceVersion: '1.2.3',
     version: '0.0.1',
@@ -65,13 +65,13 @@ async function fixture(): Promise<{
     bundleEnv: {},
     identity: {
       token: '1234567890abcdef',
-      displayName: 'Hermes fresh-preview-29',
-      appId: 'chat.nous.hermes.h1234567890abcdef',
-      appNamePascal: 'HermesH1234567890abcdef',
-      artifactNamePascal: 'HermesH1234567890abcdef',
-      cliName: 'hermes-fresh-preview-29',
-      windowsExecutableName: 'HermesH1234567890abcdef.exe',
-      msixAppIdWithOrg: 'NousResearch.HermesH1234567890abcdef'
+      displayName: 'Rabbit fresh-preview-29',
+      appId: 'chat.nous.rabbit.h1234567890abcdef',
+      appNamePascal: 'RabbitH1234567890abcdef',
+      artifactNamePascal: 'RabbitH1234567890abcdef',
+      cliName: 'rabbit-fresh-preview-29',
+      windowsExecutableName: 'RabbitH1234567890abcdef.exe',
+      msixAppIdWithOrg: 'Seven0070.RabbitH1234567890abcdef'
     }
   }
 
@@ -89,7 +89,7 @@ async function fixture(): Promise<{
         version: next.version,
         identity: build.identity.appId,
         teamId: 'ABCDE12345',
-        artifact: { key: `${prefix}darwin/Hermes.zip`, sha256: 'd'.repeat(64), size: 100 },
+        artifact: { key: `${prefix}darwin/Rabbit.zip`, sha256: 'd'.repeat(64), size: 100 },
         feed: { key: `${prefix}darwin/stable-mac.yml`, channel: 'stable' }
       }
     ]
@@ -139,7 +139,7 @@ async function retiredFixture(
     f.build = { ...f.build, identity: structuredClone(sourceRecord.identity) }
     f.record.identity = structuredClone(sourceRecord.identity)
   } else {
-    f.record.identity = { ...f.build.identity, appId: 'chat.nous.hermes', token: 'fedcba0987654321' }
+    f.record.identity = { ...f.build.identity, appId: 'chat.nous.rabbit', token: 'fedcba0987654321' }
   }
 
   f.manifest.request = {
@@ -175,7 +175,7 @@ async function retiredFixture(
   return { ...f, retired }
 }
 
-test.each(['NODE_OPTIONS', 'PATH', 'HERMES_PYTHON'])(
+test.each(['NODE_OPTIONS', 'PATH', 'RABBIT_PYTHON'])(
   'channel manifest rejects process-control bundle key %s',
   async (key: string): Promise<void> => {
     const f = await fixture()
@@ -220,9 +220,9 @@ test('protected canary accepts bounded Windows revisions without relaxing stable
       variant: 'bundled',
       version: '1.2.4.10',
       identity: f.build.identity.msixAppIdWithOrg,
-      publisher: 'CN=Nous Research',
+      publisher: 'CN=Sanath Patil',
       artifact: {
-        key: `releases/channel-builds/${f.manifest.request.buildId}/win32/Hermes.msixbundle`,
+        key: `releases/channel-builds/${f.manifest.request.buildId}/win32/Rabbit.msixbundle`,
         sha256: 'd'.repeat(64),
         size: 100
       },
@@ -236,7 +236,7 @@ test('protected canary accepts bounded Windows revisions without relaxing stable
   f.manifest.request.version = f.manifest.request.releaseTag.slice(1)
   f.manifest.request.windowsVersion = '1.2.4.10'
   f.publish()
-  const resolver = new ChannelResolver({ build: f.build, platform: 'win32', arch: 'x64', signer: 'CN=Nous Research' })
+  const resolver = new ChannelResolver({ build: f.build, platform: 'win32', arch: 'x64', signer: 'CN=Sanath Patil' })
   expect((await resolver.resolve()).kind).toBe('active')
 
   for (const version of ['1.2.4.65536', '65536.2.4.0', '1.2.4.-1', '1.2.4.1.0', '1.2.4.x']) {
@@ -269,7 +269,7 @@ test.each(['rc.1-v0.21.5', 'rc.12-v1.0.0'] as const)(
       archiveRef: attempt
     })
     f.manifest.packages[0].version = '0.21.5'
-    f.manifest.packages[0].artifact.key = `releases/tag/${attempt}/darwin/Hermes.zip`
+    f.manifest.packages[0].artifact.key = `releases/tag/${attempt}/darwin/Rabbit.zip`
     f.manifest.packages[0].feed.key = `releases/tag/${attempt}/darwin/stable-mac.yml`
     f.publish()
 
@@ -290,7 +290,7 @@ test('the protected archive prefix falls back closed to the bare release tag', a
   Object.assign(f.manifest.request, { releaseTag: 'v1.2.3', version: '1.2.3', windowsVersion: '1.2.3.0' })
   f.manifest.packages[0].version = '1.2.3'
   const attempt = 'rc.2-v1.2.3'
-  f.manifest.packages[0].artifact.key = `releases/tag/${attempt}/darwin/Hermes.zip`
+  f.manifest.packages[0].artifact.key = `releases/tag/${attempt}/darwin/Rabbit.zip`
   f.manifest.packages[0].feed.key = `releases/tag/${attempt}/darwin/stable-mac.yml`
   const resolver = new ChannelResolver({ build: f.build, platform: 'darwin', arch: 'arm64', signer: 'ABCDE12345' })
   // A stable request without archiveRef can never admit attempt-scoped bytes.
@@ -481,7 +481,7 @@ test('discontinued retirement surfaces the notice and never downloads or applies
     expect(request).toMatch(/^\/releases\/(channels\/|channel-builds\/[a-f0-9]+\/build\.json$)/)
   }
 
-  expect(f.requests).not.toContain('/releases/channel-builds/cccccccccccccccccccccccccccccccc/darwin/Hermes.zip')
+  expect(f.requests).not.toContain('/releases/channel-builds/cccccccccccccccccccccccccccccccc/darwin/Rabbit.zip')
   // The ordinary apply path refuses rather than downloading.
   expect(await strategy.apply()).toMatchObject({ ok: false })
 })
@@ -514,7 +514,7 @@ test.each(['hash', 'identity', 'repository', 'signer', 'escape', 'schema', 'vers
     }
 
     if (fault === 'repository') {
-      f.manifest.request.repository = 'other/hermes-agent'
+      f.manifest.request.repository = 'other/rabbit-agent'
     }
 
     if (fault === 'signer') {
@@ -635,9 +635,9 @@ test('Windows resolves its numeric native version, publisher and immutable descr
       variant: 'bundled',
       version: '0.0.2.0',
       identity: f.build.identity.msixAppIdWithOrg,
-      publisher: 'CN=Nous Research',
+      publisher: 'CN=Sanath Patil',
       artifact: {
-        key: `releases/channel-builds/${f.manifest.request.buildId}/win32/Hermes.msixbundle`,
+        key: `releases/channel-builds/${f.manifest.request.buildId}/win32/Rabbit.msixbundle`,
         sha256: 'd'.repeat(64),
         size: 100
       },
@@ -653,7 +653,7 @@ test('Windows resolves its numeric native version, publisher and immutable descr
     build: f.build,
     platform: 'win32',
     arch: 'x64',
-    signer: 'CN=Nous Research'
+    signer: 'CN=Sanath Patil'
   }).resolve()
 
   expect(result.kind).toBe('active')
@@ -716,7 +716,7 @@ test('long-offline previews retain the qualified migration target after stable a
     version: '1.3.0',
     artifact: {
       ...f.manifest.packages[0].artifact,
-      key: `releases/channel-builds/${f.manifest.request.buildId}/darwin/Hermes.zip`
+      key: `releases/channel-builds/${f.manifest.request.buildId}/darwin/Rabbit.zip`
     },
     feed: { key: `releases/channel-builds/${f.manifest.request.buildId}/darwin/stable-mac.yml`, channel: 'stable' }
   }

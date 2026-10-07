@@ -1,11 +1,11 @@
-"""E2E: ``hermes peer dm`` against a REAL api_server gateway whose canonical
+"""E2E: ``rabbit peer dm`` against a REAL api_server gateway whose canonical
 Bot Chat session is HIDDEN (issue #91583).
 
-Two real HERMES homes in spirit: the "peer" side is a real
+Two real RABBIT homes in spirit: the "peer" side is a real
 :class:`APIServerAdapter` bound to a real loopback TCP socket over a real
-SQLite ``state.db`` (its own tmp HERMES_HOME) containing a hidden
+SQLite ``state.db`` (its own tmp RABBIT_HOME) containing a hidden
 ``Bot Chat`` row — exactly what Bot Mode leaves behind. The "local" side is
-the stock ``hermes peer dm`` client code (``hermes_cli.subcommands.peer``),
+the stock ``rabbit peer dm`` client code (``rabbit_cli.subcommands.peer``),
 untouched, talking real HTTP with the real API key auth.
 
 Only the model turn itself is stubbed (``_run_agent``); every HTTP handler,
@@ -22,8 +22,8 @@ from aiohttp import web
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
-from hermes_cli.subcommands import peer as peer_cmd
-from hermes_state import SessionDB
+from rabbit_cli.subcommands import peer as peer_cmd
+from rabbit_state import SessionDB
 
 API_KEY = "sk-peer-e2e-key-123456"
 
@@ -38,7 +38,7 @@ def _build_app(adapter: APIServerAdapter) -> web.Application:
 
 @pytest.fixture()
 def peer_gateway(tmp_path, monkeypatch):
-    """A real api_server gateway (own HERMES_HOME + state.db) on a real socket."""
+    """A real api_server gateway (own RABBIT_HOME + state.db) on a real socket."""
     peer_home = tmp_path / "peer_home"
     peer_home.mkdir()
     db = SessionDB(peer_home / "state.db")

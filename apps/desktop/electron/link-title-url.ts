@@ -2,7 +2,7 @@
  * URL admission for the link-title pipeline.
  *
  * The renderer's title-fetch path can send ANY href-shaped string to the
- * ``hermes:fetchLinkTitle`` IPC; the main process must re-validate before
+ * ``rabbit:fetchLinkTitle`` IPC; the main process must re-validate before
  * anything reaches curl or the hidden title window's ``loadURL()``. A leaked
  * directive-shaped string (``@url:`https://…```, #93893) navigates Chromium to
  * a non-URL and surfaces as repeating ``ERR_NAME_NOT_RESOLVED`` console noise.

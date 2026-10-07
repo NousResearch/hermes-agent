@@ -6,7 +6,7 @@ required for long-running containers spawning subprocesses (subagents,
 dashboard, dynamic gateways) — otherwise the process table fills with
 defunct entries and eventually exhausts the kernel PID space.
 
-Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+Every ``docker exec`` here runs as the unprivileged ``rabbit`` user
 (via :func:`docker_exec_sh` in conftest); see the conftest module
 docstring.
 """

@@ -39,7 +39,7 @@ export function wrappedYoutubeSrc(embedUrl: string, hostOrigin: string): string 
 // Dev and web renderers already have an http origin and embed directly.
 function usePlayerSrc(embedUrl: string): null | string {
   const direct = useMemo(() => youtubeSrc(embedUrl), [embedUrl])
-  const getHostOrigin = hasHttpOrigin() ? undefined : window.hermesDesktop?.getEmbedHostOrigin
+  const getHostOrigin = hasHttpOrigin() ? undefined : window.rabbitDesktop?.getEmbedHostOrigin
   const [wrapped, setWrapped] = useState<null | string>(null)
 
   useEffect(() => {

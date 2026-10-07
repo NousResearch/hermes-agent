@@ -25,7 +25,7 @@ beforeEach((): void => {
 
 function handler(): () => Promise<MachineProfile> {
   registerMachineProfile()
-  const registration = host.handle.mock.calls.find(([channel]): boolean => channel === 'hermes:machine:profile')
+  const registration = host.handle.mock.calls.find(([channel]): boolean => channel === 'rabbit:machine:profile')
   expect(registration).toBeDefined()
 
   return registration![1] as () => Promise<MachineProfile>

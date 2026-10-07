@@ -167,24 +167,24 @@ export function windowConnectionOverride(): null | string {
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openSessionWindow === 'function'
+  return typeof window !== 'undefined' && typeof window.rabbitDesktop?.openSessionWindow === 'function'
 }
 
 // True when the shell can open a full peer app window (⌘⇧N / "New Window").
 export function canOpenNewWindow(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openWindow === 'function'
+  return typeof window !== 'undefined' && typeof window.rabbitDesktop?.openWindow === 'function'
 }
 
 // True when the shell can pop the in-app Browser into its own OS window.
 export function canOpenBrowserWindow(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openBrowserWindow === 'function'
+  return typeof window !== 'undefined' && typeof window.rabbitDesktop?.openBrowserWindow === 'function'
 }
 
 // True when the shell can hand a session to the user's own terminal emulator.
 // Desktop-only, and a REMOTE connection is excluded by the caller: the terminal
 // we'd open is on this machine, but the session lives on the remote host.
 export function canOpenSessionInTerminal(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.openSessionInTerminal === 'function'
+  return typeof window !== 'undefined' && typeof window.rabbitDesktop?.openSessionInTerminal === 'function'
 }
 
 type WindowOpenResult = { ok: boolean; error?: string } | undefined
@@ -246,7 +246,7 @@ export async function openSessionInNewWindow(
 
     const connectionId = isSessionOwnerRoute(owner) ? owner.connectionId : null
 
-    return window.hermesDesktop.openSessionWindow(sessionId, { watch: opts?.watch, profile, connectionId })
+    return window.rabbitDesktop.openSessionWindow(sessionId, { watch: opts?.watch, profile, connectionId })
   }, 'Could not open chat in a new window')
 }
 
@@ -257,7 +257,7 @@ export async function openNewWindow(route?: { connectionId: null | string; profi
     return
   }
 
-  await runWindowOpen(() => window.hermesDesktop.openWindow(route), 'Could not open a new window')
+  await runWindowOpen(() => window.rabbitDesktop.openWindow(route), 'Could not open a new window')
 }
 
 /** Pop the in-app Browser into its own OS window. Returns whether the
@@ -267,7 +267,7 @@ export async function openBrowserInNewWindow(tabId: string): Promise<boolean> {
     return false
   }
 
-  return runWindowOpen(() => window.hermesDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
+  return runWindowOpen(() => window.rabbitDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
 }
 
 // Resume a session in the user's own terminal emulator, running the TUI there.
@@ -282,7 +282,7 @@ export async function openSessionInTerminal(
   }
 
   await runWindowOpen(
-    () => window.hermesDesktop.openSessionInTerminal(sessionId, opts),
+    () => window.rabbitDesktop.openSessionInTerminal(sessionId, opts),
     'Could not open chat in a terminal'
   )
 }

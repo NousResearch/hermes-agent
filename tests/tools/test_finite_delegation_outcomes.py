@@ -78,8 +78,8 @@ class _Child:
 
 @pytest.fixture
 def harness(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_SINGLE_QUERY_SESSION", "1")
     tokens = [(v, v.set(sc._UNSET)) for v in sc._VAR_MAP.values()]
     tokens += [(v, v.set(sc._UNSET)) for v in
                (sc._SESSION_ASYNC_DELIVERY, sc._SESSION_HISTORY_DELIVERY)]
@@ -222,9 +222,9 @@ def test_finite_marker_overrides_api_history_continuation(harness):
 def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, marker, api_history):
     _parent, children, dispatch = harness
     if marker is None:
-        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")
+        monkeypatch.delenv("RABBIT_SINGLE_QUERY_SESSION")
     else:
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", marker)
+        monkeypatch.setenv("RABBIT_SINGLE_QUERY_SESSION", marker)
     if api_history:
         sc.set_session_vars(platform="api_server", chat_id="history-session",
                             session_key="history-session", session_id="history-session",

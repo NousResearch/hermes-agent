@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Relative, not `@hermes/shared`: the electron bundle is built by esbuild with
+// Relative, not `@rabbit/shared`: the electron bundle is built by esbuild with
 // no tsconfig path resolution (see scripts/bundle-electron-main.mjs), so a bare
 // specifier would typecheck and then fail to bundle.
 import {
@@ -182,10 +182,10 @@ function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?:
     }
 
     throw new Error(
-      'Secure token storage is unavailable (no OS keyring service was found), so Hermes Desktop cannot save remote gateway tokens. ' +
+      'Secure token storage is unavailable (no OS keyring service was found), so Rabbit Desktop cannot save remote gateway tokens. ' +
         'Either enable an OS keyring (e.g. GNOME Keyring or KWallet providing org.freedesktop.secrets) and try again, ' +
         'confirm the plain-text storage option when prompted in Settings → Gateway, ' +
-        'or set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment.'
+        'or set RABBIT_DESKTOP_REMOTE_URL and RABBIT_DESKTOP_REMOTE_TOKEN in your environment.'
     )
   }
 
@@ -198,7 +198,7 @@ function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?:
     const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
     throw new Error(
       `Failed to encrypt the remote gateway token for secure storage${detail}. ` +
-        'Set HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN in your environment as a fallback.'
+        'Set RABBIT_DESKTOP_REMOTE_URL and RABBIT_DESKTOP_REMOTE_TOKEN in your environment as a fallback.'
     )
   }
 }
@@ -216,7 +216,7 @@ function encryptDesktopSecret(value, safeStorageApi, options: { allowPlainText?:
 // so the caller (and tests) can distinguish "enabled" from "left untouched".
 // Never throws: a failure here is non-fatal — encryption simply stays
 // unavailable and the user can fall back to the plain-text opt-in or the
-// HERMES_DESKTOP_REMOTE_* env vars.
+// RABBIT_DESKTOP_REMOTE_* env vars.
 function enableBasicPasswordStoreEncryption({ platform, passwordStoreSwitch, safeStorageApi }: any = {}) {
   if (platform !== 'linux' || passwordStoreSwitch !== 'basic') {
     return false
@@ -443,14 +443,14 @@ function resolveRequestedPathForIpc(filePath, options: { purpose?: string; baseD
  * Candidate absolute paths to retry when a preview/download target could not
  * be resolved against the agent's working directory. Attachment references
  * stored in chat history are frequently HOME-relative (e.g.
- * "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
- * ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to cwd
- * (#115609). Pure and DI-testable: takes `home`/`hermesHome` as arguments
+ * "AppData/Local/rabbit/attachments/foo.xlsx" on Windows, or
+ * ".rabbit/attachments/foo.xlsx" elsewhere) rather than relative to cwd
+ * (#115609). Pure and DI-testable: takes `home`/`rabbitHome` as arguments
  * instead of reaching for `app.getPath('home')` / a module-level constant.
  * Returns an empty array for absolute paths, `file:` URLs, and empty input —
  * those already had their one real resolution attempt upstream.
  */
-function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
+function homeRelativeAttachmentCandidates(raw, home, rabbitHome) {
   const trimmed = String(raw || '').trim()
 
   if (!trimmed || /^file:/i.test(trimmed) || path.isAbsolute(trimmed)) {
@@ -459,7 +459,7 @@ function homeRelativeAttachmentCandidates(raw, home, hermesHome) {
 
   const normalized = trimmed.replace(/\\/g, '/')
 
-  return [path.join(home, normalized), path.join(hermesHome, 'attachments', path.basename(normalized))]
+  return [path.join(home, normalized), path.join(rabbitHome, 'attachments', path.basename(normalized))]
 }
 
 async function statForIpc(fsImpl: { promises: { stat: typeof fs.promises.stat } }, resolvedPath, purpose, typeLabel) {

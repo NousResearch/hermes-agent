@@ -1,21 +1,21 @@
-"""Regression test: ``hermes dump`` reports a real git SHA inside the container.
+"""Regression test: ``rabbit dump`` reports a real git SHA inside the container.
 
 ``.dockerignore`` excludes ``.git``, so ``git rev-parse HEAD`` fails inside
 the published image. CI writes ``install-stamp.json`` before ``docker build``
 (scripts/write_install_stamp.py) and it is COPY'd to the canonical
-``/opt/hermes/install-stamp.json``. ``hermes dump`` reads the
-commit from that stamp through ``hermes_cli.version_info``.
+``/opt/rabbit/install-stamp.json``. ``rabbit dump`` reads the
+commit from that stamp through ``rabbit_cli.version_info``.
 
 A local ``docker build`` (the ``built_image`` fixture in
 ``tests/docker/conftest.py``) has no CI stamp — only the Dockerfile's
 distribution-only fallback, whose all-zero commit version_info skips. In
-that case ``hermes dump`` falls back to ``(unknown)``.
+that case ``rabbit dump`` falls back to ``(unknown)``.
 
 This test asserts both cases:
 
-* When the stamp exists in the image, ``hermes dump`` must show the first 8
+* When the stamp exists in the image, ``rabbit dump`` must show the first 8
   characters of its commit, not ``(unknown)``.
-* When the stamp is absent, ``hermes dump`` must show ``(unknown)`` — a guard
+* When the stamp is absent, ``rabbit dump`` must show ``(unknown)`` — a guard
   against the helper inventing a SHA from another source.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _run_dump(image: str) -> str:
     """Return the stdout of ``docker run <image> dump``.
 
     Relies on Docker's anonymous VOLUME for ``/opt/data`` (declared by the
-    Dockerfile) so the container's hermes user (UID 10000) can bootstrap
+    Dockerfile) so the container's rabbit user (UID 10000) can bootstrap
     its config.  Anonymous volumes are auto-cleaned by ``--rm``, so unlike
     a host bind-mount we don't have to chown anything to UID 10000 (which
     would break cleanup on non-root hosts).
@@ -47,7 +47,7 @@ def _run_dump(image: str) -> str:
         capture_output=True, text=True, timeout=120,
     )
     assert r.returncode == 0, (
-        f"hermes dump exited {r.returncode}: "
+        f"rabbit dump exited {r.returncode}: "
         f"stderr={r.stderr[-1000:]!r}\nstdout={r.stdout[-1000:]!r}"
     )
     return r.stdout
@@ -58,7 +58,7 @@ def _read_stamp_commit_from_image(image: str) -> str | None:
     r = subprocess.run(
         [
             "docker", "run", "--rm", "--entrypoint", "cat", image,
-            "/opt/hermes/install-stamp.json",
+            "/opt/rabbit/install-stamp.json",
         ],
         capture_output=True, text=True, timeout=30,
     )
@@ -86,7 +86,7 @@ def test_dump_reports_stamp_commit_when_present(built_image: str) -> None:
     # docker.yml writes this build input before building and testing the image.
     # Read the independent input: the canonical runner scrubs CI/GITHUB_SHA.
     source_stamp = Path(__file__).resolve().parents[2] / "install-stamp.json"
-    if os.environ.get("HERMES_TEST_IMAGE"):
+    if os.environ.get("RABBIT_TEST_IMAGE"):
         assert source_stamp.is_file(), "prebuilt image requires its checkout build stamp"
     if source_stamp.is_file():
         expected = json.loads(source_stamp.read_text(encoding="utf-8-sig"))["commit"]
@@ -112,7 +112,7 @@ def test_dump_reports_stamp_commit_when_present(built_image: str) -> None:
         )
         return
 
-    # CI path: the stamp exists. ``hermes dump`` shows the first 8 chars.
+    # CI path: the stamp exists. ``rabbit dump`` shows the first 8 chars.
     assert reported != "(unknown)", (
         "install stamp present in image but dump still reported "
         f"'(unknown)' — the stamp fallback is broken. Stamp commit: {stamped!r}"

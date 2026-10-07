@@ -134,7 +134,7 @@ class VisionMessagePrepMixin:
         """True if the active provider+model reports native vision (config override
         > models.dev; see ``image_routing._supports_vision_override``)."""
         try:
-            from hermes_cli.config import load_config
+            from rabbit_cli.config import load_config
             from agent.image_routing import _lookup_supports_vision
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()

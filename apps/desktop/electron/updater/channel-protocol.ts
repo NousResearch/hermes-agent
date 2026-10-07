@@ -366,12 +366,12 @@ function request(fields: Fields): ChannelRequest {
 
   // Match the build-time allowlist: a channel request cannot inject process flags.
   const allowed = new Set([
-    'HERMES_HOME',
-    'HERMES_DATA_DIR_SUFFIX',
-    'HERMES_DESKTOP_USER_DATA_DIR',
-    'HERMES_SHARED_AUTH_DIR',
-    'HERMES_GUEST_ONBOARDING',
-    'HERMES_SKIP_INTRO'
+    'RABBIT_HOME',
+    'RABBIT_DATA_DIR_SUFFIX',
+    'RABBIT_DESKTOP_USER_DATA_DIR',
+    'RABBIT_SHARED_AUTH_DIR',
+    'RABBIT_GUEST_ONBOARDING',
+    'RABBIT_SKIP_INTRO'
   ])
 
   for (const key of environment.keys()) {

@@ -22,9 +22,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 
 test('stagedUpdaterSupportsPrewrittenMarker rejects installers predating the self-adopt fix', () => {
   // The real-world trap: an installer staged at first install months ago, never
-  // refreshed because copy_self_to_hermes_home no-ops during --update.
+  // refreshed because copy_self_to_rabbit_home no-ops during --update.
   assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Rabbit\\rabbit-setup.exe', {
       stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
     }),
     false
@@ -33,13 +33,13 @@ test('stagedUpdaterSupportsPrewrittenMarker rejects installers predating the sel
 
 test('stagedUpdaterSupportsPrewrittenMarker accepts installers from the fix onward', () => {
   assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Rabbit\\rabbit-setup.exe', {
       stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS
     }),
     true
   )
   assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Rabbit\\rabbit-setup.exe', {
       stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS + 30 * DAY_MS
     }),
     true
@@ -50,7 +50,7 @@ test('stagedUpdaterSupportsPrewrittenMarker treats an unreadable mtime as unsupp
   // Bias toward the path that can always make progress: a skipped pre-write
   // loses anti-respawn hardening, a wedged updater can never update again.
   assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
+    stagedUpdaterSupportsPrewrittenMarker('C:\\Rabbit\\rabbit-setup.exe', {
       stagedMtimeMs: () => null
     }),
     false
@@ -62,12 +62,12 @@ test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows
   // the stale binary is the only updater these users have, and it works fine
   // once it is allowed to write its own claim.
   assert.equal(
-    resolveStagedUpdaterBinary('C:\\Hermes', {
+    resolveStagedUpdaterBinary('C:\\Rabbit', {
       fileExists: () => true,
       isWindows: true,
       stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
     }),
-    path.join('C:\\Hermes', 'hermes-setup.exe')
+    path.join('C:\\Rabbit', 'rabbit-setup.exe')
   )
 })
 
@@ -83,9 +83,9 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
   }
 
   const result = spawnUpdaterProcess(
-    'hermes-setup.exe',
+    'rabbit-setup.exe',
     ['--update', '--branch', 'main'],
-    { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore' },
+    { cwd: 'C:\\Rabbit', detached: true, stdio: 'ignore' },
     {
       isWindows: true,
       spawnProcess: (command, args, options) => {
@@ -101,8 +101,8 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
   assert.deepEqual(calls, [
     {
       args: ['--update', '--branch', 'main'],
-      command: 'hermes-setup.exe',
-      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true }
+      command: 'rabbit-setup.exe',
+      options: { cwd: 'C:\\Rabbit', detached: true, stdio: 'ignore', windowsHide: true }
     }
   ])
 })
@@ -111,7 +111,7 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
   let capturedOptions: SpawnOptions | undefined
 
   spawnUpdaterProcess(
-    'hermes-setup',
+    'rabbit-setup',
     ['--update'],
     { detached: true, stdio: 'ignore' },
     {
@@ -128,8 +128,8 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
 })
 
 test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', () => {
-  const home = 'C:\\Users\\hermes\\AppData\\Local\\hermes'
-  const staged = path.join(home, 'hermes-setup.exe')
+  const home = 'C:\\Users\\rabbit\\AppData\\Local\\rabbit'
+  const staged = path.join(home, 'rabbit-setup.exe')
   const probed: string[] = []
 
   const resolved = resolveStagedUpdaterBinary(home, {
@@ -145,12 +145,12 @@ test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', (
   assert.deepEqual(probed, [staged])
 })
 
-test('resolveStagedUpdaterBinary returns null off Windows even when hermes-setup is staged (#74836)', () => {
-  const home = '/Users/hermes/.hermes'
+test('resolveStagedUpdaterBinary returns null off Windows even when rabbit-setup is staged (#74836)', () => {
+  const home = '/Users/rabbit/.rabbit'
   let probes = 0
 
   const resolved = resolveStagedUpdaterBinary(home, {
-    // The installer stages hermes-setup on macOS/Linux too, so "it exists" is
+    // The installer stages rabbit-setup on macOS/Linux too, so "it exists" is
     // the normal case — and precisely the one that must not win.
     fileExists: () => {
       probes += 1
@@ -165,7 +165,7 @@ test('resolveStagedUpdaterBinary returns null off Windows even when hermes-setup
 })
 
 test('resolveStagedUpdaterBinary returns null on Windows when nothing is staged', () => {
-  const resolved = resolveStagedUpdaterBinary('C:\\Users\\hermes\\AppData\\Local\\hermes', {
+  const resolved = resolveStagedUpdaterBinary('C:\\Users\\rabbit\\AppData\\Local\\rabbit', {
     fileExists: () => false,
     isWindows: true
   })
@@ -174,7 +174,7 @@ test('resolveStagedUpdaterBinary returns null on Windows when nothing is staged'
 })
 
 test('resolveUpdateScriptHandoff prefers the repo script on Windows when present', () => {
-  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const root = String.raw`C:\Users\rabbit\AppData\Local\rabbit\rabbit-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
@@ -189,7 +189,7 @@ test('resolveUpdateScriptHandoff prefers the repo script on Windows when present
 })
 
 test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
-  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const root = String.raw`C:\Users\rabbit\AppData\Local\rabbit\rabbit-agent`
   const legacy = path.join(root, 'scripts', 'desktop-update.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
@@ -202,7 +202,7 @@ test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
 })
 
 test('resolveUpdateScriptHandoff returns null when the checkout predates the script', () => {
-  const handoff = resolveUpdateScriptHandoff(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+  const handoff = resolveUpdateScriptHandoff(String.raw`C:\Users\rabbit\AppData\Local\rabbit\rabbit-agent`, {
     isWindows: true,
     fileExists: () => false
   })
@@ -211,7 +211,7 @@ test('resolveUpdateScriptHandoff returns null when the checkout predates the scr
 })
 
 test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () => {
-  const handoff = resolveUpdateScriptHandoff('/home/hermes/.hermes/hermes-agent', {
+  const handoff = resolveUpdateScriptHandoff('/home/rabbit/.rabbit/rabbit-agent', {
     isWindows: false,
     fileExists: () => true
   })
@@ -223,7 +223,7 @@ test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden
   // #116161: `start /min` allocated a NEW (minimized, visible) console for
   // powershell on every hand-off; `detached: true` (DETACHED_PROCESS) would
   // leave the wrapper console-less, forcing the same allocation under `/b`.
-  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const root = String.raw`C:\Users\rabbit\AppData\Local\rabbit\rabbit-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
@@ -257,7 +257,7 @@ test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {
-  const root = '/home/hermes/.hermes/hermes-agent'
+  const root = '/home/rabbit/.rabbit/rabbit-agent'
   const expected = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
 
   const handoff = resolvePosixScriptHandoff(root, {
@@ -271,7 +271,7 @@ test('resolvePosixScriptHandoff returns the bash recipe when the script exists',
 })
 
 test('resolvePosixScriptHandoff is null when the checkout predates the script', () => {
-  const handoff = resolvePosixScriptHandoff('/home/hermes/.hermes/hermes-agent', {
+  const handoff = resolvePosixScriptHandoff('/home/rabbit/.rabbit/rabbit-agent', {
     isWindows: false,
     fileExists: () => false
   })
@@ -280,7 +280,7 @@ test('resolvePosixScriptHandoff is null when the checkout predates the script', 
 })
 
 test('resolvePosixScriptHandoff is null on Windows', () => {
-  const handoff = resolvePosixScriptHandoff(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+  const handoff = resolvePosixScriptHandoff(String.raw`C:\Users\rabbit\AppData\Local\rabbit\rabbit-agent`, {
     isWindows: true,
     fileExists: () => true
   })
@@ -300,11 +300,11 @@ test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', (
     '--inspect=9229',
     '--remote-debugging-port=9222',
     '--no-sandbox',
-    'hermes://open/session/abc',
+    'rabbit://open/session/abc',
     '--profile=work'
   ]
 
-  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'hermes://open/session/abc', '--profile=work'])
+  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'rabbit://open/session/abc', '--profile=work'])
   assert.deepEqual(collectRelaunchArgs(undefined), [])
 })
 

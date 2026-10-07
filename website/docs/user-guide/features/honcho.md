@@ -6,10 +6,10 @@ description: "AI-native persistent memory via Honcho — dialectic reasoning, mu
 
 # Honcho Memory
 
-[Honcho](https://github.com/plastic-labs/honcho) is an AI-native memory backend that adds dialectic reasoning and deep user modeling on top of Hermes's built-in memory system. Instead of simple key-value storage, Honcho maintains a running model of who the user is — their preferences, communication style, goals, and patterns — by reasoning about conversations after they happen.
+[Honcho](https://github.com/plastic-labs/honcho) is an AI-native memory backend that adds dialectic reasoning and deep user modeling on top of Rabbit's built-in memory system. Instead of simple key-value storage, Honcho maintains a running model of who the user is — their preferences, communication style, goals, and patterns — by reasoning about conversations after they happen.
 
 :::info Honcho is a catalog Memory Provider Plugin
-Honcho is maintained by Plastic Labs and installed from the [plugin catalog](./plugins.md) (`hermes plugins install honcho`); source lives in [plastic-labs/honcho](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho). It plugs into the [Memory Providers](./memory-providers.md) system, so all features below are available through the unified memory provider interface. Homes upgraded from a release that bundled Honcho get the plugin installed automatically — config and memory carry over untouched.
+Honcho is maintained by Plastic Labs and installed from the [plugin catalog](./plugins.md) (`rabbit plugins install honcho`); source lives in [plastic-labs/honcho](https://github.com/plastic-labs/honcho/tree/main/rabbit-plugin-honcho). It plugs into the [Memory Providers](./memory-providers.md) system, so all features below are available through the unified memory provider interface. Homes upgraded from a release that bundled Honcho get the plugin installed automatically — config and memory carry over untouched.
 :::
 
 ## What Honcho Adds
@@ -28,25 +28,25 @@ Honcho is maintained by Plastic Labs and installed from the [plugin catalog](./p
 
 **Session-scoped context**: Base context now includes the session summary alongside the user representation and peer card. This gives the agent awareness of what has already been discussed in the current session, reducing repetition and enabling continuity.
 
-**Multi-agent profiles**: When multiple Hermes instances talk to the same user (e.g., a coding assistant and a personal assistant), Honcho maintains separate "peer" profiles. Each peer sees only its own observations and conclusions, preventing cross-contamination of context.
+**Multi-agent profiles**: When multiple Rabbit instances talk to the same user (e.g., a coding assistant and a personal assistant), Honcho maintains separate "peer" profiles. Each peer sees only its own observations and conclusions, preventing cross-contamination of context.
 
 ## Setup
 
 ```bash
-hermes plugins install honcho   # from the plugin catalog
-hermes memory setup             # select "honcho" from the provider list
+rabbit plugins install honcho   # from the plugin catalog
+rabbit memory setup             # select "honcho" from the provider list
 ```
 
 Or configure manually:
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 memory:
   provider: honcho
 ```
 
 ```bash
-echo 'HONCHO_API_KEY=***' >> ~/.hermes/.env
+echo 'HONCHO_API_KEY=***' >> ~/.rabbit/.env
 ```
 
 Get an API key at [honcho.dev](https://honcho.dev).
@@ -105,11 +105,11 @@ The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1
 
 ## Configuration Options
 
-Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
+Honcho is configured in `~/.honcho/config.json` (global) or `$RABBIT_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
 
 ### Self-Hosted Honcho with Authentication
 
-When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and `hermes memory setup`) ask for a **local JWT / bearer token** after the base URL. Paste a JWT signed with the server's `AUTH_JWT_SECRET` (the Honcho compose env var) to enable authenticated access; leave it blank for servers running with `AUTH_USE_AUTH=false`. The local token is stored under the host block (`hosts.<host>.apiKey` in `honcho.json`), separate from any cloud `apiKey`, so you can flip the `Cloud or local?` prompt back to `cloud` later without losing either credential.
+When pointing Rabbit at a self-hosted Honcho server, `rabbit honcho setup` (and `rabbit memory setup`) ask for a **local JWT / bearer token** after the base URL. Paste a JWT signed with the server's `AUTH_JWT_SECRET` (the Honcho compose env var) to enable authenticated access; leave it blank for servers running with `AUTH_USE_AUTH=false`. The local token is stored under the host block (`hosts.<host>.apiKey` in `honcho.json`), separate from any cloud `apiKey`, so you can flip the `Cloud or local?` prompt back to `cloud` later without losing either credential.
 
 ### Full Config Reference
 
@@ -138,7 +138,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `a2aSessions` | `true` | Write DMs from other bots into their own Honcho session per sender bot, never the human's. `false` skips bot-authored turns entirely |
 
 **Session strategy** controls how Honcho sessions map to your work:
-- `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
+- `per-session` — each `rabbit` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
 - `per-directory` — one Honcho session per working directory. Context accumulates across runs.
 - `per-repo` — one session per git repository.
 - `global` — single session across all directories.
@@ -147,7 +147,7 @@ Directory-based strategies and manual `sessions` mappings use the logical sessio
 
 Messaging gateways keep their stable per-chat session key regardless of strategy or title. For other sessions, `per-session` identity takes priority, followed by a manual directory mapping, an explicit title, and the configured strategy.
 
-Automatically generated Hermes titles (`derived` or `llm`), including lineage titles for Desktop branches, are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
+Automatically generated Rabbit titles (`derived` or `llm`), including lineage titles for Desktop branches, are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
 
 Sessions created before title provenance was recorded retain legacy behavior: because an old automatic title cannot be distinguished from an old user title, a title with no source is treated as an explicit override.
 
@@ -173,7 +173,7 @@ In `tools` mode, the model is fully in control — it calls `honcho_reasoning` w
 
 ## Gateway Identity Mapping
 
-These settings only matter when you run the [Hermes gateway](../../developer-guide/gateway-internals.md) — the one entrypoint where users arrive with platform-native runtime IDs (Telegram UID, Discord snowflake, Slack user). CLI, TUI, and desktop sessions have no runtime ID and always resolve to `peerName`, so off-gateway these keys do nothing.
+These settings only matter when you run the [Rabbit gateway](../../developer-guide/gateway-internals.md) — the one entrypoint where users arrive with platform-native runtime IDs (Telegram UID, Discord snowflake, Slack user). CLI, TUI, and desktop sessions have no runtime ID and always resolve to `peerName`, so off-gateway these keys do nothing.
 
 The setup wizard detects whether a gateway platform is connected and skips this step entirely if not. When it runs, it asks one question — *who talks to this gateway?* — and derives the keys:
 
@@ -230,7 +230,7 @@ Common patterns:
 | AI shouldn't re-model the user from its own replies | `"ai": {"observeMe": true, "observeOthers": false}` |
 | Strong persona the AI peer shouldn't update from self-observation | `"ai": {"observeMe": false, "observeOthers": true}` |
 
-Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Hermes syncs them back at session init.
+Server-side toggles set via the [Honcho dashboard](https://app.honcho.dev) win over local defaults — Rabbit syncs them back at session init.
 
 ## Tools
 
@@ -246,35 +246,35 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
-The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). On a fresh install, configure Honcho directly with `hermes memory setup honcho` (or run `hermes memory setup` and pick it from the list); the `hermes honcho` subcommand then appears on the next invocation.
+The `rabbit honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). On a fresh install, configure Honcho directly with `rabbit memory setup honcho` (or run `rabbit memory setup` and pick it from the list); the `rabbit honcho` subcommand then appears on the next invocation.
 
 ```bash
-hermes memory setup honcho    # Configure Honcho directly (works before activation)
-hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Redirects to `hermes memory setup` (post-activation alias)
-hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
-hermes honcho peer            # Show or update peer names + dialectic reasoning level
-hermes honcho mode            # Show or set recall mode (hybrid/context/tools)
-hermes honcho tokens          # Show or set token budget for context and dialectic
-hermes honcho identity        # Seed or show the AI peer's Honcho identity
-hermes honcho sync            # Sync Honcho config to all existing profiles
-hermes honcho peers           # Show peer identities across all profiles
-hermes honcho sessions        # List known Honcho session mappings
-hermes honcho map             # Map current directory to a Honcho session name
-hermes honcho enable          # Enable Honcho for the active profile
-hermes honcho disable         # Disable Honcho for the active profile
-hermes honcho migrate         # Step-by-step migration guide from openclaw-honcho
+rabbit memory setup honcho    # Configure Honcho directly (works before activation)
+rabbit honcho status          # Connection status, config, and key settings
+rabbit honcho setup           # Redirects to `rabbit memory setup` (post-activation alias)
+rabbit honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
+rabbit honcho peer            # Show or update peer names + dialectic reasoning level
+rabbit honcho mode            # Show or set recall mode (hybrid/context/tools)
+rabbit honcho tokens          # Show or set token budget for context and dialectic
+rabbit honcho identity        # Seed or show the AI peer's Honcho identity
+rabbit honcho sync            # Sync Honcho config to all existing profiles
+rabbit honcho peers           # Show peer identities across all profiles
+rabbit honcho sessions        # List known Honcho session mappings
+rabbit honcho map             # Map current directory to a Honcho session name
+rabbit honcho enable          # Enable Honcho for the active profile
+rabbit honcho disable         # Disable Honcho for the active profile
+rabbit honcho migrate         # Step-by-step migration guide from openclaw-honcho
 ```
 
-## Migrating from `hermes honcho`
+## Migrating from `rabbit honcho`
 
-If you previously used the standalone `hermes honcho setup`:
+If you previously used the standalone `rabbit honcho setup`:
 
 1. Your existing configuration (`honcho.json` or `~/.honcho/config.json`) is preserved
 2. Your server-side data (memories, conclusions, user profiles) is intact
 3. Set `memory.provider: honcho` in config.yaml to reactivate
 
-No re-login or re-setup needed. Run `hermes memory setup` and select "honcho" — the wizard detects your existing config.
+No re-login or re-setup needed. Run `rabbit memory setup` and select "honcho" — the wizard detects your existing config.
 
 ## Full Documentation
 

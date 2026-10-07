@@ -4,7 +4,7 @@
 ``happy_eyeballs_delay`` defaults to ``None`` (serial walk over getaddrinfo results). On a
 network with an advertised-but-blackholed IPv6 route every AAAA record burns the full
 connect timeout before IPv4 answers — the same stall class the bootstrap racer closes for
-sync connects. Each Hermes ``websockets.connect`` call site must pass the RFC 8305 delay.
+sync connects. Each Rabbit ``websockets.connect`` call site must pass the RFC 8305 delay.
 """
 
 from __future__ import annotations

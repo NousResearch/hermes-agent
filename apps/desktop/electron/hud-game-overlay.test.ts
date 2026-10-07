@@ -26,7 +26,7 @@ const win = (over: Partial<EnumeratedWindow>): EnumeratedWindow => ({
 })
 
 const fullscreenGame = win({ app: 'Balatro', bounds: { ...DISPLAY }, id: 7, pid: 2000 })
-const hudWindow = win({ app: 'Hermes', bounds: { x: 970, y: 1048, width: 620, height: 320 }, id: 2, pid: SELF_PID })
+const hudWindow = win({ app: 'Rabbit', bounds: { x: 970, y: 1048, width: 620, height: 320 }, id: 2, pid: SELF_PID })
 const desktopShell = win({ app: 'Windows Explorer', bounds: { ...DISPLAY }, id: 3, pid: 900 })
 
 // ─── coversDisplay ───────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ test('fullscreen game under the HUD is detected', () => {
 })
 
 test('own windows never count, wherever they sit in the z-order', () => {
-  const selfFullscreen = win({ app: 'Hermes', bounds: { ...DISPLAY }, pid: SELF_PID })
+  const selfFullscreen = win({ app: 'Rabbit', bounds: { ...DISPLAY }, pid: SELF_PID })
 
   assert.equal(detectFullscreenApp([selfFullscreen, desktopShell], SELF_PID, DISPLAY), null)
 })
@@ -105,7 +105,7 @@ test('the game actually closing ends overlay mode even when it was active', () =
 })
 
 test('findFullscreenAppAnywhere ignores z-order but keeps every other guard', () => {
-  const selfFullscreen = win({ app: 'Hermes', bounds: { ...DISPLAY }, pid: SELF_PID })
+  const selfFullscreen = win({ app: 'Rabbit', bounds: { ...DISPLAY }, pid: SELF_PID })
 
   assert.equal(findFullscreenAppAnywhere([selfFullscreen], SELF_PID, DISPLAY), null)
   assert.equal(findFullscreenAppAnywhere([desktopShell], SELF_PID, DISPLAY), null)

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
+import { setApiRequestConnection, setApiRequestProfile } from '@/rabbit'
 
 import { activeConnection } from './plugins'
 
@@ -11,14 +11,14 @@ describe('activeConnection connection timeout (#93454)', () => {
   afterEach(() => {
     setApiRequestConnection(null)
     setApiRequestProfile(null)
-    Reflect.deleteProperty(window, 'hermesDesktop')
+    Reflect.deleteProperty(window, 'rabbitDesktop')
     vi.useRealTimers()
   })
 
   it('rejects instead of hanging forever when getConnection() wedges', async () => {
     vi.useFakeTimers()
     setApiRequestProfile('coder')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'rabbitDesktop', {
       configurable: true,
       value: { getConnection: vi.fn(() => new Promise(() => undefined)) }
     })
@@ -33,7 +33,7 @@ describe('activeConnection connection timeout (#93454)', () => {
     vi.useFakeTimers()
     setApiRequestConnection('gw-tailscale')
     setApiRequestProfile('research')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'rabbitDesktop', {
       configurable: true,
       value: {
         getConnection: vi.fn(() => new Promise(() => undefined)),

@@ -14,7 +14,7 @@ Launch video from a project or URL, upstream-maintained.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/brag-slim` |
+| Source | Optional — install with `rabbit skills install official/creative/brag-slim` |
 | Path | `optional-skills/creative/brag-slim` |
 | Version | `0.4.0` |
 | Author | Shunit Haviv Hakimi (shunithaviv) |
@@ -26,14 +26,14 @@ Launch video from a project or URL, upstream-maintained.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Brag Slim (upstream-maintained)
 
 > **Catalog stub.** This entry is maintained upstream at
 > [latent-spaces/brag](https://github.com/latent-spaces/brag): the project
-> ships `/brag-slim` as a single `SKILL.md` under `skills/brag-slim/`. `hermes
+> ships `/brag-slim` as a single `SKILL.md` under `skills/brag-slim/`. `rabbit
 > skills install official/creative/brag-slim` pulls the current file live from
 > that repo (quarantined and scanned like any hub install) — this directory
 > holds only the catalog metadata, so the vendored copy can never go stale.

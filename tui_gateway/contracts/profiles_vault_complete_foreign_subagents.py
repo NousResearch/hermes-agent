@@ -15,7 +15,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
-from .config_free_tier_control import ModelOptionProvider
+from .config_control import ModelOptionProvider
 from .registry import method
 
 # ── completions / paste / model keys (methods_complete) ───────────────────────────────────────
@@ -537,7 +537,7 @@ class ForeignSource(WireEnum):
 
 
 class ForeignSessionRow(Result):
-    """``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque
+    """``rabbit_cli/foreign_sessions_browser.py::list_foreign_sessions`` — ``id`` is an opaque
     handle, never a path."""
 
     id: str

@@ -1,4 +1,4 @@
-import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ReasoningEffort } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, isReasoningEffort, type ReasoningEffort } from '@rabbit/shared'
 
 import { normalize } from '@/lib/text'
 
@@ -16,7 +16,7 @@ const SHORT_LABELS: Record<string, string> = {
 }
 
 /**
- * A pick the route does not send verbatim: `ultra` is a Hermes-internal step
+ * A pick the route does not send verbatim: `ultra` is a Rabbit-internal step
  * that routes clamp to their strongest level (`max` on OpenAI-compatible wires; the Codex
  * app-server sends it verbatim as codex's own mode), and the
  * CLI's `/reasoning` says so ("ultra (sends max on this route)"). The wire
@@ -39,7 +39,7 @@ export function reasoningEffortClamp(
 }
 
 /** Compact label; a clamped pick shows both ends ("Ultra→Max") so the pill
- *  never presents a Hermes step as a wire level the route does not have. */
+ *  never presents a Rabbit step as a wire level the route does not have. */
 export function reasoningEffortLabel(effort: string, wire?: string): string {
   const key = normalize(effort)
   const clamp = reasoningEffortClamp(effort, wire)

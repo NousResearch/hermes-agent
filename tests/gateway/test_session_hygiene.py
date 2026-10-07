@@ -148,7 +148,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -275,7 +275,7 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -312,7 +312,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     timeout must fence its eventual commit, continue to the live agent, and
     clean up the temporary agent only after the worker actually returns.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -415,7 +415,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -489,7 +489,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     stored_system_prompt = (
-        "You are Hermes.\n\n"
+        "You are Rabbit.\n\n"
         "<memory_provider_context>\n"
         "Pinboard provider instructions\n"
         "</memory_provider_context>"
@@ -578,7 +578,7 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
@@ -714,7 +714,7 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
     )
@@ -756,7 +756,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
     """Scaffolding for the restart-persistence tests: a fresh GatewayRunner
     wired to a REAL AsyncSessionDB facade (not a MagicMock) so the hygiene
     cooldown check/write paths exercise the actual SQLite-backed methods."""
-    from hermes_state import AsyncSessionDB
+    from rabbit_state import AsyncSessionDB
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -817,7 +817,7 @@ def _make_cooldown_runner(monkeypatch, tmp_path, agent_cls, session_db, session_
         }
     )
 
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_rabbit_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
@@ -849,7 +849,7 @@ async def test_hygiene_compression_cooldown_survives_gateway_restart(
     assert the second runner still honors the cooldown — i.e. it does not
     re-instantiate a compression agent for the same failing session.
     """
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     gateway_run = importlib.import_module("gateway.run")
     session_id = "sess-restart"
@@ -971,7 +971,7 @@ async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
     That used to skip the abort-cooldown block, so the next turn immediately
     re-armed hygiene and waited up to the 600s ceiling behind a doomed attempt.
     """
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     session_id = "sess-fence-cancel"
 
@@ -1048,7 +1048,7 @@ async def test_hygiene_skips_when_compression_already_in_flight(
     monkeypatch, tmp_path
 ):
     """Do not spawn a sibling hygiene compressor while a lock is already held."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     session_id = "sess-in-flight"
 
@@ -1120,7 +1120,7 @@ def _turn_payload(runner):
 
 def _make_bound_runner(monkeypatch, tmp_path, agent_cls, cfg_text, transcript):
     """``_make_cooldown_runner`` with a >hard-limit transcript and a lowered hard limit."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("sess-bound", "telegram")

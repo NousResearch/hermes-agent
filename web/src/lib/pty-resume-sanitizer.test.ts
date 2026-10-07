@@ -4,7 +4,7 @@ import { applyPtyFilters, PtyResumeSanitizer } from "./pty-resume-sanitizer";
 /**
  * Fixture note — why most cases use CRLF, not LF.
  *
- * `hermes_cli/pty_bridge.py` spawns the agent through
+ * `rabbit_cli/pty_bridge.py` spawns the agent through
  * `ptyprocess.PtyProcess.spawn()` and never puts the PTY into raw mode, so the
  * line discipline runs with ONLCR: every LF the child writes reaches the
  * master (and therefore xterm) as CRLF. Verified against a real PTY:

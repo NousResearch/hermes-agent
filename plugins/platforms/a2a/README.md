@@ -1,18 +1,18 @@
-# A2A — Agent-to-Agent protocol for Hermes
+# A2A — Agent-to-Agent protocol for Rabbit
 
 Talk to other agents, and let other agents talk to you, over the open
 [A2A protocol](https://a2a-protocol.org) **v1.0**. Works with any A2A-compliant
-peer (another Hermes, LangChain, CrewAI, Google ADK, OpenClaw, …). Stdlib only —
+peer (another Rabbit, LangChain, CrewAI, Google ADK, OpenClaw, …). Stdlib only —
 no `a2a-sdk` dependency.
 
 ## Enable
 
 ```bash
-hermes gateway setup      # pick A2A, or:
+rabbit gateway setup      # pick A2A, or:
 ```
 
 ```yaml
-# ~/.hermes/config.yaml
+# ~/.rabbit/config.yaml
 gateway:
   platforms:
     a2a:
@@ -42,7 +42,7 @@ The agent gets five tools:
 
 ## Inbound — be callable
 
-When the `a2a` platform is enabled, Hermes serves a v1.0 Agent Card at
+When the `a2a` platform is enabled, Rabbit serves a v1.0 Agent Card at
 `http://<host>:<port>/.well-known/agent-card.json` (the legacy
 `/.well-known/agent.json` path is also answered for pre-1.0 clients) and
 accepts JSON-RPC
@@ -65,8 +65,8 @@ via `tasks/get`.
   cannot invoke operator slash commands.
 - Outbound text is scrubbed of credential-shaped strings.
 - Push callbacks are SSRF-guarded and HMAC-SHA256 signed (`X-A2A-Signature`).
-- Every exchange is logged to `~/.hermes/a2a_audit.jsonl`.
-- Conversations persist to `~/.hermes/a2a_conversations/` — they survive context
+- Every exchange is logged to `~/.rabbit/a2a_audit.jsonl`.
+- Conversations persist to `~/.rabbit/a2a_conversations/` — they survive context
   compaction and restarts (`a2a_history` recalls them).
 
 ## Env vars

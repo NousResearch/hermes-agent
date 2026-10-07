@@ -12,7 +12,7 @@ from gateway.platforms.api_server import APIServerAdapter, _ProviderAuthResoluti
 @pytest.mark.parametrize("setting", [None, False, True])
 @pytest.mark.parametrize("category", ["diagnostic", "result"])
 async def test_notification_projection_preserves_source_outcome(tmp_path, monkeypatch, setting, category):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}" if setting is None else
         f"display: {{suppress_warning_notifications: {str(setting).lower()}}}\n")
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -61,7 +61,7 @@ async def test_notification_projection_preserves_source_outcome(tmp_path, monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting", [None, False, True])
 async def test_pre_agent_auth_diagnostic_obeys_policy_without_losing_logs(tmp_path, monkeypatch, caplog, setting):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}" if setting is None else
         f"display: {{suppress_warning_notifications: {str(setting).lower()}}}\n")
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -82,7 +82,7 @@ async def test_http_diagnostic_projection_keeps_source_and_terminal_flags(tmp_pa
     from aiohttp.test_utils import TestClient, TestServer
     import json
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}" if setting is None else
         f"display: {{suppress_warning_notifications: {str(setting).lower()}}}\n")
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "test-local-key"}))
@@ -110,9 +110,9 @@ async def test_http_diagnostic_projection_keeps_source_and_terminal_flags(tmp_pa
     with patch.object(adapter, "_create_agent", side_effect=create):
         async with TestClient(TestServer(app)) as client:
             response = await client.post("/v1/chat/completions", headers={
-                "Authorization": "Bearer test-local-key", "X-Hermes-Session-Id": "session"}, json={
+                "Authorization": "Bearer test-local-key", "X-Rabbit-Session-Id": "session"}, json={
                 "messages": [{"role": "user", "content": "background diagnostic"}],
-                "stream": stream, "hermes_notification_category": "diagnostic"})
+                "stream": stream, "rabbit_notification_category": "diagnostic"})
             wire = await response.text()
     assert response.status == 200, wire
     assert source["final_response"] == "private diagnostic evidence"
@@ -126,12 +126,12 @@ async def test_http_diagnostic_projection_keeps_source_and_terminal_flags(tmp_pa
                   if line.startswith("data: ") and line != "data: [DONE]"]
         terminal = frames[-1]
         assert terminal["choices"][0]["finish_reason"] == "error"
-        assert terminal["hermes"]["partial"] is True
+        assert terminal["rabbit"]["partial"] is True
         assert terminal["usage"]["total_tokens"] == 7
     else:
         body = json.loads(wire)
         assert body["choices"][0]["finish_reason"] == "error"
-        assert body["hermes"]["partial"] is True
+        assert body["rabbit"]["partial"] is True
         assert body["usage"]["total_tokens"] == 7
 
 
@@ -143,7 +143,7 @@ async def test_http_unhandled_diagnostic_error_is_quiet_but_failed(tmp_path, mon
     from aiohttp.test_utils import TestClient, TestServer
     import json
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("{}" if setting is None else
         f"display: {{suppress_warning_notifications: {str(setting).lower()}}}\n")
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "test-local-key"}))
@@ -152,9 +152,9 @@ async def test_http_unhandled_diagnostic_error_is_quiet_but_failed(tmp_path, mon
     with patch.object(adapter, "_create_agent", side_effect=RuntimeError("private constructor failure")):
         async with TestClient(TestServer(app)) as client:
             response = await client.post("/v1/chat/completions", headers={
-                "Authorization": "Bearer test-local-key", "X-Hermes-Session-Id": "session"}, json={
+                "Authorization": "Bearer test-local-key", "X-Rabbit-Session-Id": "session"}, json={
                 "messages": [{"role": "user", "content": "background diagnostic"}],
-                "stream": stream, "hermes_notification_category": "diagnostic"})
+                "stream": stream, "rabbit_notification_category": "diagnostic"})
             wire = await response.text()
     assert response.status == (200 if stream else 500), wire
     assert "private constructor failure" in caplog.text
@@ -163,7 +163,7 @@ async def test_http_unhandled_diagnostic_error_is_quiet_but_failed(tmp_path, mon
         frames = [json.loads(line[6:]) for line in wire.splitlines()
                   if line.startswith("data: ") and line != "data: [DONE]"]
         assert frames[-1]["choices"][0]["finish_reason"] == "error"
-        assert frames[-1]["hermes"]["failed"] is True
+        assert frames[-1]["rabbit"]["failed"] is True
     assert adapter._inflight_agent_runs == 0
 
 
@@ -174,7 +174,7 @@ async def test_http_idempotency_does_not_replay_opposite_presentation(tmp_path, 
     from aiohttp.test_utils import TestClient, TestServer
     from gateway.platforms.api_server import _IdempotencyCache
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "test-local-key"}))
@@ -189,10 +189,10 @@ async def test_http_idempotency_does_not_replay_opposite_presentation(tmp_path, 
         async with TestClient(TestServer(app)) as client:
             for category in categories:
                 body = {"messages": [{"role": "user", "content": "event"}],
-                        "hermes_notification_category": category}
+                        "rabbit_notification_category": category}
                 for repeat in range(2):
                     response = await client.post("/v1/chat/completions", headers={
-                        "Authorization": "Bearer test-local-key", "X-Hermes-Session-Id": "session",
+                        "Authorization": "Bearer test-local-key", "X-Rabbit-Session-Id": "session",
                         "Idempotency-Key": "same-key"}, json=body)
                     wire = await response.json()
                     assert response.status == 200, wire

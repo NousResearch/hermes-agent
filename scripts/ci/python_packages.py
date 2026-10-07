@@ -28,10 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     if command:
         environment = {key: value for key, value in os.environ.items()
                        if key not in {"PYTHONHOME", "VIRTUAL_ENV"}}
-        environment.update(HERMES_PYTHON=str(python), VIRTUAL_ENV=str(python.parent.parent))
+        environment.update(RABBIT_PYTHON=str(python), VIRTUAL_ENV=str(python.parent.parent))
         environment["PATH"] = str(python.parent) + os.pathsep + environment.get("PATH", "")
         return subprocess.call([str(python), *command], env=environment)
-    file_commands("GITHUB_ENV", {"HERMES_PYTHON": python, "VIRTUAL_ENV": python.parent.parent})
+    file_commands("GITHUB_ENV", {"RABBIT_PYTHON": python, "VIRTUAL_ENV": python.parent.parent})
     add_path([str(python.parent)])
     print(f"CI tools ready: {python}")
     return 0

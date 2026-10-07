@@ -34,7 +34,7 @@ from agent.auxiliary_client import call_llm, async_call_llm
 COMPRESSION_TIMEOUT_FLOOR = 300.0
 
 # The default ``auxiliary.compression.timeout`` shipped in the config schema
-# (hermes_cli/config.py).  Simulated here as the config-derived value.
+# (rabbit_cli/config.py).  Simulated here as the config-derived value.
 COMPRESSION_CONFIG_TIMEOUT = 120.0
 
 

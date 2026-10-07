@@ -12,7 +12,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
-from hermes_constants import get_hermes_home, hermes_home_key
+from rabbit_constants import get_rabbit_home, rabbit_home_key
 
 
 @pytest.mark.asyncio
@@ -28,11 +28,11 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
     seen: list[tuple[Path, str]] = []
 
     def fake_discover() -> list[str]:
-        seen.append((get_hermes_home(), threading.current_thread().name))
+        seen.append((get_rabbit_home(), threading.current_thread().name))
         return []
 
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve",
+        "rabbit_cli.profiles.profiles_to_serve",
         lambda multiplex: homes,
     )
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", fake_discover)
@@ -55,7 +55,7 @@ async def test_reload_mcp_only_touches_requesting_profile(
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
-    worker_scope = hermes_home_key(worker_home)
+    worker_scope = rabbit_home_key(worker_home)
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -69,15 +69,15 @@ async def test_reload_mcp_only_touches_requesting_profile(
     monkeypatch.setattr(mcp_tool, "_servers", {"default-srv": object(), "worker-srv": object()})
     monkeypatch.setattr(
         mcp_tool, "_server_scope_keys",
-        {"default-srv": hermes_home_key(tmp_path), "worker-srv": worker_scope},
+        {"default-srv": rabbit_home_key(tmp_path), "worker-srv": worker_scope},
     )
     seen: list[tuple] = []
 
     def fake_shutdown(*, scope=None) -> None:
-        seen.append(("shutdown", scope, get_hermes_home()))
+        seen.append(("shutdown", scope, get_rabbit_home()))
 
     def fake_discover() -> list[str]:
-        seen.append(("discover", get_hermes_home()))
+        seen.append(("discover", get_rabbit_home()))
         return []
 
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", fake_shutdown)
@@ -112,10 +112,10 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
     from tools import mcp_tool_discovery as _mcp_discovery
     from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
-    launch_scope = hermes_home_key(tmp_path / "default")
+    launch_scope = rabbit_home_key(tmp_path / "default")
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
-    worker_scope = hermes_home_key(worker_home)
+    worker_scope = rabbit_home_key(worker_home)
     launch_key = (launch_scope, "default-srv")
     worker_key = (worker_scope, "worker-srv")
 
@@ -162,8 +162,8 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
-    worker_scope = hermes_home_key(worker_home)
-    launch_scope = hermes_home_key(tmp_path / "default")
+    worker_scope = rabbit_home_key(worker_home)
+    launch_scope = rabbit_home_key(tmp_path / "default")
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
@@ -225,8 +225,8 @@ def test_scope_visibility_rejects_a_foreign_or_differently_authenticated_route(
     from tools import mcp_tool
     from tools import mcp_tool_registration as _mcp_registration
 
-    worker_scope = hermes_home_key(tmp_path / "worker")
-    launch_scope = hermes_home_key(tmp_path / "default")
+    worker_scope = rabbit_home_key(tmp_path / "worker")
+    launch_scope = rabbit_home_key(tmp_path / "default")
     live_server = SimpleNamespace(session=object(), _config={"url": "https://default.example/mcp"})
     monkeypatch.setattr(mcp_tool, "_servers", {"shared": live_server})
     monkeypatch.setattr(mcp_tool, "_server_scope_keys", {"shared": launch_scope})
@@ -241,10 +241,10 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from agent.secret_scope import set_multiplex_active
-    from hermes_constants import (
-        hermes_home_key,
-        reset_hermes_home_override,
-        set_hermes_home_override,
+    from rabbit_constants import (
+        rabbit_home_key,
+        reset_rabbit_home_override,
+        set_rabbit_home_override,
     )
     from tools import mcp_tool
     from tools import mcp_tool_config as _mcp_config
@@ -256,10 +256,10 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
     launch_home = tmp_path / "default"
     worker_home.mkdir(parents=True)
     launch_home.mkdir()
-    worker_token = set_hermes_home_override(worker_home)
+    worker_token = set_rabbit_home_override(worker_home)
     previous_multiplex = set_multiplex_active(True)
-    worker_scope = hermes_home_key()
-    launch_scope = hermes_home_key(launch_home)
+    worker_scope = rabbit_home_key()
+    launch_scope = rabbit_home_key(launch_home)
     tool = SimpleNamespace(
         name="echo",
         description="Echo a value",
@@ -340,7 +340,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
                 target.clear()
                 target.update(value)
         set_multiplex_active(previous_multiplex)
-        reset_hermes_home_override(worker_token)
+        reset_rabbit_home_override(worker_token)
 
 
 def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -> None:
@@ -358,8 +358,8 @@ def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -
     assert reg.snapshot_registration("mcp__s__t", scope="/home/p1") is None
 
     # A plugin module may not name another profile's overlay.
-    from hermes_constants import hermes_home_key
-    reg._plugin_module_scopes["hermes_plugins.p"] = {hermes_home_key("/home/p1")}
-    reg._caller_module = staticmethod(lambda: "hermes_plugins.p")
+    from rabbit_constants import rabbit_home_key
+    reg._plugin_module_scopes["rabbit_plugins.p"] = {rabbit_home_key("/home/p1")}
+    reg._caller_module = staticmethod(lambda: "rabbit_plugins.p")
     with pytest.raises(PermissionError):
         reg.deregister("anything", scope="/home/p2")

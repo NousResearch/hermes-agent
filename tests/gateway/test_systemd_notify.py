@@ -12,11 +12,11 @@ pytestmark = pytest.mark.platforms("linux")
 
 # abstract (NUL-prefixed) AF_UNIX names are a Linux kernel feature
 def test_notify_supports_systemd_abstract_socket(monkeypatch):
-    name = "\0hermes-test-notify"
+    name = "\0rabbit-test-notify"
     receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     receiver.bind(name)
     receiver.settimeout(1.0)
-    monkeypatch.setenv("NOTIFY_SOCKET", "@hermes-test-notify")
+    monkeypatch.setenv("NOTIFY_SOCKET", "@rabbit-test-notify")
 
     try:
         from gateway.systemd_notify import notify
@@ -48,7 +48,7 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
 
     import gateway.systemd_notify as notify_mod
 
-    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/rabbit-test-notify")
     monkeypatch.setattr(notify_mod.socket, "socket", lambda *_args: _Sender())
 
     assert notify_mod.notify("READY=1") is True
@@ -58,7 +58,7 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
 @pytest.mark.asyncio
 async def test_watchdog_sends_ready_heartbeat_and_stopping(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/rabbit-test-notify")
     monkeypatch.setenv("WATCHDOG_USEC", "20000")
 
     import gateway.systemd_notify as notify_mod

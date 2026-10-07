@@ -1,4 +1,4 @@
-"""Auto-decompose billing bounds, proven against a REAL ``hermes gateway run`` embedded dispatcher.
+"""Auto-decompose billing bounds, proven against a REAL ``rabbit gateway run`` embedded dispatcher.
 
 The gateway (no messaging platforms -> a kanban/cron-only process) ticks the embedded dispatcher
 every second; each tick auto-decomposes triage cards through the auxiliary model, which is the
@@ -34,7 +34,7 @@ from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.kanban._helpers import PY, Board, wait_until
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Response, Text
 
-# The gateway child is isolated (scratch HOME/HERMES_HOME, own lock dir) and reaped by PID below.
+# The gateway child is isolated (scratch HOME/RABBIT_HOME, own lock dir) and reaped by PID below.
 pytestmark = [
     pytest.mark.spawns_gateway_lookalike,
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups for the gateway child"),
@@ -131,13 +131,13 @@ def task_count(b: Board) -> int:
 @contextmanager
 def gateway(b: Board) -> Iterator[subprocess.Popen]:
     env = b.env()
-    # The child's HOME is itself the scratch board root, so ~/.hermes IS the temp home here; the
+    # The child's HOME is itself the scratch board root, so ~/.rabbit IS the temp home here; the
     # inherited live-system guard would refuse it (same as the delivery/tenancy gateway children).
-    env.update({"HERMES_GATEWAY_LOCK_DIR": str(b.root / "gw-locks"), "PYTHONUNBUFFERED": "1",
-                "HERMES_STATE_DB_GUARD_BYPASS": "1"})
+    env.update({"RABBIT_GATEWAY_LOCK_DIR": str(b.root / "gw-locks"), "PYTHONUNBUFFERED": "1",
+                "RABBIT_STATE_DB_GUARD_BYPASS": "1"})
     log_path = b.root / "gateway.log"
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen([PY, "-m", "hermes_cli.main", "gateway", "run"], cwd=str(b.root),
+        proc = subprocess.Popen([PY, "-m", "rabbit_cli.main", "gateway", "run"], cwd=str(b.root),
                                 env=env, stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True)
     try:
@@ -224,7 +224,7 @@ def test_valid_three_child_graph_bills_once_and_links_children(tmp_path: Path) -
 
 def test_huge_decompose_reply_is_bounded(tmp_path: Path) -> None:
     """One decompose call answering 500 children must be rejected or capped, not fanned out.
-    Driven through the real ``hermes kanban decompose`` CLI (same decompose_task path)."""
+    Driven through the real ``rabbit kanban decompose`` CLI (same decompose_task path)."""
     model = AuxModel()
     with FakeLLMServer(aux=model) as srv:
         b = Board(tmp_path, srv.base_url)

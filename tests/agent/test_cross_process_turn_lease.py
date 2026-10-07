@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent import relay_runtime
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -123,7 +123,7 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch, signal):
         "include_row_ids": True,
     }
     texts = [text or "" for _kind, text in status_events]
-    for notice in ("Another Hermes process", "Session is free"):
+    for notice in ("Another Rabbit process", "Session is free"):
         assert any(notice in text for text in texts) is (signal == "on_wait"), notice
 
 

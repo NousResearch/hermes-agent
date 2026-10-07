@@ -1,15 +1,15 @@
 ---
 sidebar_position: 1
 title: "Tips & Best Practices"
-description: "Practical advice to get the most out of Hermes Agent — prompt tips, CLI shortcuts, context files, memory, cost optimization, and security"
+description: "Practical advice to get the most out of Rabbit Agent — prompt tips, CLI shortcuts, context files, memory, cost optimization, and security"
 ---
 
 # Tips & Best Practices
 
-A quick-wins collection of practical tips that make you immediately more effective with Hermes Agent. Each section targets a different aspect — scan the headers and jump to what's relevant.
+A quick-wins collection of practical tips that make you immediately more effective with Rabbit Agent. Each section targets a different aspect — scan the headers and jump to what's relevant.
 
 :::tip Confused which model to pick?
-Run `hermes setup --portal` — you get 300+ models including Claude, GPT-5, and Gemini under one subscription. See [Nous Portal](../integrations/nous-portal.md).
+
 :::
 
 ---
@@ -52,7 +52,7 @@ Press **Ctrl+C** once to interrupt the agent mid-response. You can then type a n
 
 ### Resume Sessions with `-c`
 
-Forgot something from your last session? Run `hermes -c` to resume exactly where you left off, with full conversation history restored. You can also resume by title: `hermes -r "my research project"`.
+Forgot something from your last session? Run `rabbit -c` to resume exactly where you left off, with full conversation history restored. You can also resume by title: `rabbit -r "my research project"`.
 
 ### Clipboard Image Paste
 
@@ -82,9 +82,9 @@ Create an `AGENTS.md` in your project root with architecture decisions, coding c
 
 ### SOUL.md: Customize Personality
 
-Want Hermes to have a stable default voice? Edit `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` if you use a custom Hermes home). Hermes now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
+Want Rabbit to have a stable default voice? Edit `~/.rabbit/SOUL.md` (or `$RABBIT_HOME/SOUL.md` if you use a custom Rabbit home). Rabbit now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
 
-For a full walkthrough, see [Use SOUL.md with Hermes](./use-soul-with-hermes.md).
+For a full walkthrough, see [Use SOUL.md with Rabbit](./use-soul-with-rabbit.md).
 
 ```markdown
 # Soul
@@ -97,11 +97,11 @@ Use `SOUL.md` for durable personality. Use `AGENTS.md` for project-specific inst
 
 ### .cursorrules Compatibility
 
-Already have a `.cursorrules` or `.cursor/rules/*.mdc` file? Hermes reads those too. No need to duplicate your coding conventions — they're loaded automatically from the working directory.
+Already have a `.cursorrules` or `.cursor/rules/*.mdc` file? Rabbit reads those too. No need to duplicate your coding conventions — they're loaded automatically from the working directory.
 
 ### Discovery
 
-Hermes loads the top-level `AGENTS.md` from the current working directory at session start. Subdirectory `AGENTS.md` files are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
+Rabbit loads the top-level `AGENTS.md` from the current working directory at session start. Subdirectory `AGENTS.md` files are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
 
 :::tip
 Keep context files focused and concise. Every character counts against your token budget since they're injected into every single message.
@@ -152,7 +152,7 @@ Instead of running terminal commands one at a time, ask the agent to write a scr
 Use `/model` to switch models mid-session. Use a frontier model (Claude Sonnet/Opus, GPT-4o) for complex reasoning and architecture decisions. Switch to a faster model for simple tasks like formatting, renaming, or boilerplate generation. Keep in mind each switch resets the prompt cache (see above), so on long sessions it's often cheaper to start a fresh session on the other model than to bounce back and forth.
 
 :::tip
-Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days. To see what your *fixed* per-message cost is before any conversation — system prompt, skills index, memory, tool schemas — run [`hermes prompt-size`](../reference/cli-commands.md#hermes-prompt-size) (works offline).
+Run `/usage` periodically to see your token consumption. Run `/insights` for a broader view of usage patterns over the last 30 days. To see what your *fixed* per-message cost is before any conversation — system prompt, skills index, memory, tool schemas — run [`rabbit prompt-size`](../reference/cli-commands.md#rabbit-prompt-size) (works offline).
 :::
 
 ## Messaging Tips
@@ -163,11 +163,11 @@ Use `/sethome` in your preferred Telegram or Discord chat to designate it as the
 
 ### Use /title to Organize Sessions
 
-Name your sessions with `/title auth-refactor` or `/title research-llm-quantization`. Named sessions are easy to find with `hermes sessions list` and resume with `hermes -r "auth-refactor"`. Unnamed sessions pile up and become impossible to distinguish.
+Name your sessions with `/title auth-refactor` or `/title research-llm-quantization`. Named sessions are easy to find with `rabbit sessions list` and resume with `rabbit -r "auth-refactor"`. Unnamed sessions pile up and become impossible to distinguish.
 
 ### DM Pairing for Team Access
 
-Instead of manually collecting user IDs for allowlists, enable DM pairing. When a teammate DMs the bot, they get a one-time pairing code. You approve it with `hermes pairing approve telegram XKGH5N7P` — simple and secure.
+Instead of manually collecting user IDs for allowlists, enable DM pairing. When a teammate DMs the bot, they get a one-time pairing code. You approve it with `rabbit pairing approve telegram XKGH5N7P` — simple and secure.
 
 ### Tool Progress Display Modes
 
@@ -186,7 +186,7 @@ When working with untrusted repositories or running unfamiliar code, use Docker 
 ```bash
 # In your .env:
 TERMINAL_ENV=docker
-TERMINAL_DOCKER_IMAGE=hermes-sandbox:latest
+TERMINAL_DOCKER_IMAGE=rabbit-sandbox:latest
 ```
 
 ### Avoid Windows Encoding Pitfalls
@@ -214,7 +214,7 @@ When the agent triggers a dangerous command approval (`rm -rf`, `DROP TABLE`, et
 
 ### Command Approval Is Your Safety Net
 
-Hermes checks every command against a curated list of dangerous patterns before execution. This includes recursive deletes, SQL drops, piping curl to shell, and more. Don't disable this in production — it exists for good reasons.
+Rabbit checks every command against a curated list of dangerous patterns before execution. This includes recursive deletes, SQL drops, piping curl to shell, and more. Don't disable this in production — it exists for good reasons.
 
 :::warning
 When running in a container backend (Docker, Singularity, Modal, Daytona), dangerous command checks are **skipped** because the container is the security boundary. Make sure your container images are properly locked down.

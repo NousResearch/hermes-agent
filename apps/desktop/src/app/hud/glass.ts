@@ -63,7 +63,7 @@ const DRAWER_SELECTOR = '[data-slot="composer-completion-drawer"]'
 export function useHudGlass(rootRef: RefObject<HTMLElement | null>, backing: boolean): void {
   useEffect(() => {
     const root = rootRef.current
-    const setFrost = window.hermesDesktop?.hud?.setFrost
+    const setFrost = window.rabbitDesktop?.hud?.setFrost
 
     if (!root) {
       return

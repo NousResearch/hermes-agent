@@ -84,7 +84,7 @@ class TestCA:
         self.dir = directory
         directory.mkdir(parents=True, exist_ok=True)
         self._key = ec.generate_private_key(ec.SECP256R1())
-        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Hermes E2E TLS Inspection Root")])
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Rabbit E2E TLS Inspection Root")])
         now = datetime.datetime.now(datetime.timezone.utc)
         self._cert = (
             x509.CertificateBuilder().subject_name(name).issuer_name(name)
@@ -116,14 +116,14 @@ class TestCA:
         if bundle.is_symlink():
             bundle.unlink()
         bundle.write_bytes(system + b"\n" + self.pem)
-        (dest / "hermes-e2e-root.pem").write_bytes(self.pem)
+        (dest / "rabbit-e2e-root.pem").write_bytes(self.pem)
         openssl = shutil.which("openssl")
         if openssl:
             digest = subprocess.run([openssl, "x509", "-hash", "-noout", "-in", str(self.cert_file)],
                                     capture_output=True, text=True, check=True).stdout.strip()
             link = dest / f"{digest}.0"
             if not link.exists():
-                link.symlink_to("hermes-e2e-root.pem")
+                link.symlink_to("rabbit-e2e-root.pem")
         return [(dest, certs)]
 
     def server_context(self, host: str) -> ssl.SSLContext:

@@ -17,7 +17,7 @@ description: "4阶段根因调试：先理解缺陷再修复"
 | 来源 | 内置（默认安装） |
 | 路径 | `skills/software-development/systematic-debugging` |
 | 版本 | `1.1.0` |
-| 作者 | Hermes Agent（改编自 obra/superpowers） |
+| 作者 | Rabbit Agent（改编自 obra/superpowers） |
 | 许可证 | MIT |
 | 平台 | linux, macos, windows |
 | 标签 | `debugging`, `troubleshooting`, `problem-solving`, `root-cause`, `investigation` |
@@ -26,7 +26,7 @@ description: "4阶段根因调试：先理解缺陷再修复"
 ## 参考：完整 SKILL.md
 
 :::info
-以下是 Hermes 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
+以下是 Rabbit 在触发此 skill 时加载的完整 skill 定义。这是 agent 在 skill 激活时所看到的指令内容。
 :::
 
 # 系统化调试
@@ -333,11 +333,11 @@ pytest tests/ -q
 | **3. 假设** | 形成理论、最小化测试、每次一个变量 | 已确认或形成新假设 |
 | **4. 实施** | 创建回归测试、修复根因、验证 | 缺陷已解决，所有测试通过 |
 
-## Hermes Agent 集成
+## Rabbit Agent 集成
 
 ### 调查工具
 
-在阶段 1 中使用以下 Hermes 工具：
+在阶段 1 中使用以下 Rabbit 工具：
 
 - **`search_files`** — 查找错误字符串、追踪函数调用、定位模式
 - **`read_file`** — 带行号读取源代码，用于精确分析

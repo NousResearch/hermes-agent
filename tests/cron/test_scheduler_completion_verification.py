@@ -64,7 +64,7 @@ class _RecordingSessionDB:
 
 
 def _run_booked_job(monkeypatch, tmp_path):
-    import hermes_state
+    import rabbit_state
     import run_agent
 
     instances: list[_RecordingSessionDB] = []
@@ -75,18 +75,18 @@ def _run_booked_job(monkeypatch, tmp_path):
         instances.append(self)
 
     monkeypatch.setattr(_RecordingSessionDB, "__init__", _capture_init)
-    monkeypatch.setattr(hermes_state, "SessionDB", _RecordingSessionDB)
+    monkeypatch.setattr(rabbit_state, "SessionDB", _RecordingSessionDB)
     monkeypatch.setattr(run_agent, "AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
-        "hermes_constants.resolve_reasoning_config", lambda *_a, **_k: None
+        "rabbit_constants.resolve_reasoning_config", lambda *_a, **_k: None
     )
     # The runtime key is read from the environment (never a literal here);
     # AIAgent and SessionDB are fakes above, so the value is never used.
-    monkeypatch.setenv("HERMES_TEST_RUNTIME_KEY", "unused-placeholder")
+    monkeypatch.setenv("RABBIT_TEST_RUNTIME_KEY", "unused-placeholder")
 
     def _fake_runtime(**_kwargs):
         return {
-            "api_key": os.environ.get("HERMES_TEST_RUNTIME_KEY", ""),
+            "api_key": os.environ.get("RABBIT_TEST_RUNTIME_KEY", ""),
             "base_url": None,
             "provider": "test-provider",
             "api_mode": None,
@@ -95,10 +95,10 @@ def _run_booked_job(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
+        "rabbit_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
     )
     monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", lambda: [])
-    monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(cron_scheduler, "_get_rabbit_home", lambda: tmp_path)
     monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
     monkeypatch.setattr(
         cron_scheduler, "_guard_job_credential_exfil", lambda _job: None

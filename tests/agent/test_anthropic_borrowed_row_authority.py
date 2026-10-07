@@ -52,18 +52,18 @@ _ROTATED_REFRESH = "sk-ant-ort01-borrowed-rotated"
 
 
 @pytest.fixture
-def hermes_home(tmp_path, monkeypatch):
-    """Real on-disk HERMES_HOME so ``load_pool()`` re-reads what it persisted."""
-    home = tmp_path / "hermes"
+def rabbit_home(tmp_path, monkeypatch):
+    """Real on-disk RABBIT_HOME so ``load_pool()`` re-reads what it persisted."""
+    home = tmp_path / "rabbit"
     home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("RABBIT_HOME", str(home))
     for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
         monkeypatch.delenv(var, raising=False)
     (home / "auth.json").write_text(
         json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+        "rabbit_cli.auth.is_provider_explicitly_configured", lambda pid: True
     )
     return home
 
@@ -110,7 +110,7 @@ def _rotating_refresh(refresh_token, **_kw):
 
 
 def test_persisted_claude_code_row_carries_no_token_material(
-    hermes_home, claude_credentials
+    rabbit_home, claude_credentials
 ):
     """Baseline: the row the refresh path re-reads really is sanitized.
 
@@ -125,7 +125,7 @@ def test_persisted_claude_code_row_carries_no_token_material(
         "load_pool must hydrate the live pair from the singleton"
     )
 
-    rows = [r for r in _persisted_rows(hermes_home) if r.get("source") == "claude_code"]
+    rows = [r for r in _persisted_rows(rabbit_home) if r.get("source") == "claude_code"]
     assert len(rows) == 1
     assert not rows[0].get("access_token")
     assert not rows[0].get("refresh_token")
@@ -133,7 +133,7 @@ def test_persisted_claude_code_row_carries_no_token_material(
     assert sanitize_borrowed_credential_payload(rows[0], "anthropic") == rows[0]
 
 
-def test_pool_store_sync_never_adopts_a_borrowed_row(hermes_home, claude_credentials):
+def test_pool_store_sync_never_adopts_a_borrowed_row(rabbit_home, claude_credentials):
     """The sanitized row must not be mistaken for a rotation by another process."""
     pool = load_pool("anthropic")
     entry = next(e for e in pool._entries if e.source == "claude_code")
@@ -146,7 +146,7 @@ def test_pool_store_sync_never_adopts_a_borrowed_row(hermes_home, claude_credent
 
 
 def test_refresh_from_persisted_sanitized_row_keeps_the_full_pair(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """The production ``load -> sanitize -> refresh`` path refreshes, not blanks.
 
@@ -184,7 +184,7 @@ def test_refresh_from_persisted_sanitized_row_keeps_the_full_pair(
 
 
 def test_refresh_reaches_the_shared_credentials_lock(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """``claude_code`` must always take the path-keyed lock before deciding.
 
@@ -209,7 +209,7 @@ def test_refresh_reaches_the_shared_credentials_lock(
     assert taken, "the authoritative re-read must happen under the shared-file lock"
 
 
-def test_empty_oauth_entry_is_never_leased(hermes_home, claude_credentials):
+def test_empty_oauth_entry_is_never_leased(rabbit_home, claude_credentials):
     """A token-less OAuth row must not be selectable as an empty bearer.
 
     The pre-existing guard covered ``AUTH_TYPE_API_KEY`` only, so an OAuth row
@@ -229,7 +229,7 @@ def test_empty_oauth_entry_is_never_leased(hermes_home, claude_credentials):
 
 
 def test_selection_after_refresh_leases_only_hydrated_entries(
-    hermes_home, claude_credentials, monkeypatch
+    rabbit_home, claude_credentials, monkeypatch
 ):
     """End-to-end: refresh through selection leaves a usable, non-empty lease."""
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _rotating_refresh)
@@ -242,10 +242,10 @@ def test_selection_after_refresh_leases_only_hydrated_entries(
     assert any(e.access_token == _ROTATED_ACCESS for e in available)
 
 
-def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
+def test_rabbit_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
     """The borrowed-source refusal must not disable pool-owned adoption.
 
-    ``hermes_pkce`` *is* pool-owned, so its persisted row keeps its tokens and
+    ``rabbit_pkce`` *is* pool-owned, so its persisted row keeps its tokens and
     stays a legitimate rotation witness for another pool instance.
     """
     rotated = {
@@ -253,7 +253,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
         "label": "anthropic oauth",
         "auth_type": AUTH_TYPE_OAUTH,
         "priority": 0,
-        "source": "hermes_pkce",
+        "source": "rabbit_pkce",
         "access_token": _ROTATED_ACCESS,
         "refresh_token": _ROTATED_REFRESH,
         "expires_at_ms": int(time.time() * 1000) + 3_600_000,
@@ -268,7 +268,7 @@ def test_hermes_pkce_row_still_syncs_from_the_pool_store(monkeypatch):
         label="anthropic oauth",
         auth_type=AUTH_TYPE_OAUTH,
         priority=0,
-        source="hermes_pkce",
+        source="rabbit_pkce",
         access_token=_STALE_ACCESS,
         refresh_token=_STALE_REFRESH,
         expires_at_ms=_EXPIRED_MS,

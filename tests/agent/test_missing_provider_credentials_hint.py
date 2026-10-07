@@ -5,19 +5,19 @@ Deriving the env var from the provider id (``f"{id.upper()}_API_KEY"``) invents 
 reads ``DASHSCOPE_API_KEY``. Both the auxiliary ladder and main-agent init share one helper.
 """
 import pytest
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from agent.auxiliary_unavailable import missing_provider_credentials_message
-from hermes_cli.auth import PROVIDER_REGISTRY
+from rabbit_cli.auth import PROVIDER_REGISTRY
 
 
 @pytest.mark.parametrize("provider, expected, forbidden", [
-    ("minimax-oauth", "hermes auth add minimax-oauth", "MINIMAX-OAUTH_API_KEY"),
+    ("minimax-oauth", "rabbit auth add minimax-oauth", "MINIMAX-OAUTH_API_KEY"),
     ("alibaba", "Set the DASHSCOPE_API_KEY environment variable", "ALIBABA_API_KEY"),
 ])
 def test_aux_ladder_names_registry_remedy_for_explicit_provider(tmp_path, monkeypatch, provider, expected, forbidden):
     """Real call_llm → ladder with the compression provider pinned and no credentials anywhere."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     for var in ("MINIMAX_API_KEY", "DASHSCOPE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({
@@ -39,10 +39,10 @@ def test_main_init_shares_helper_and_no_registry_provider_gets_an_invented_env_v
 
     from agent.agent_init import _routed_client_kwargs
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     agent = SimpleNamespace(provider="minimax-oauth", model="m", base_url=None, api_key=None,
                             _fallback_activated=False, _explicit_provider="minimax-oauth")
-    with pytest.raises(RuntimeError, match=r"hermes auth add minimax-oauth"):
+    with pytest.raises(RuntimeError, match=r"rabbit auth add minimax-oauth"):
         _routed_client_kwargs(agent, None, 60)
 
     for pid, pconfig in PROVIDER_REGISTRY.items():
@@ -70,7 +70,7 @@ def _write_exhausted_codex_pool(home, *, count: int, reset_at: float):
 
 
 def test_exhausted_oauth_pool_reports_cooldown_not_missing_credentials(tmp_path, monkeypatch):
-    """#56810: a valid OAuth grant in 429 cooldown is not "no credentials … hermes auth add".
+    """#56810: a valid OAuth grant in 429 cooldown is not "no credentials … rabbit auth add".
 
     Both raise sites (main-agent init and the auxiliary ladder) render the pool state: how many
     credentials are benched and when the next one resets.
@@ -80,7 +80,7 @@ def test_exhausted_oauth_pool_reports_cooldown_not_missing_credentials(tmp_path,
 
     from agent.agent_init import _routed_client_kwargs
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))  # never adopt the host's Codex CLI tokens
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     reset_at = time.time() + 3 * 3600
@@ -113,7 +113,7 @@ def test_elapsed_cooldown_or_empty_pool_keeps_missing_credentials_text(tmp_path,
     """Control: a pool whose cooldown already elapsed (or no pool at all) is not called "cooling down"."""
     import time
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     assert "cooling down" not in missing_provider_credentials_message("openai-codex")
     _write_exhausted_codex_pool(tmp_path, count=1, reset_at=time.time() - 60)
     assert "cooling down" not in missing_provider_credentials_message("openai-codex")

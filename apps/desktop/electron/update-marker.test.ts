@@ -30,7 +30,7 @@ import {
 } from './update-marker'
 
 function tmpHome(tag) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-marker-${tag}-`))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rabbit-marker-${tag}-`))
 
   return dir
 }
@@ -190,7 +190,7 @@ test('writeUpdateMarker uses the acquisition time passed to a detached script', 
 
 test('writeUpdateMarker is best-effort (no throw on bad path)', () => {
   // A non-existent directory should not throw.
-  const badHome = path.join(os.tmpdir(), 'hermes-marker-nonexistent-' + Date.now())
+  const badHome = path.join(os.tmpdir(), 'rabbit-marker-nonexistent-' + Date.now())
   assert.doesNotThrow(() => writeUpdateMarker(badHome, 4242))
 })
 

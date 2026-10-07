@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fan-out resource benchmark for hermes-agent.
+"""Fan-out resource benchmark for rabbit-agent.
 
 Spawns N in-process child AIAgents via the REAL delegate_task code path
 (tools.delegate_tool.delegate_task) against a local fake OpenAI server, with
@@ -30,7 +30,7 @@ import time
 
 # --------------------------------------------------------------------------
 # Fake OpenAI chat-completions server: each child does
-#   turn 1: call write_file on <its worktree>/hermes_cli/bench_<i>.py
+#   turn 1: call write_file on <its worktree>/rabbit_cli/bench_<i>.py
 #   turn 2: call execute_code print(1)
 #   turn 3: final text
 # --------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def _snap(pid: int, db_path: str) -> dict:
     kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True).stdout
     return {
         "threads": g("Threads"), "rss_mb": g("VmRSS") // 1024, "fds": len(os.listdir(f"/proc/{pid}/fd")),
-        "tcp": int(tcp or 0), "pyright": kids.count("pyright"), "kernels": kids.count("hermes_kernel_runner"),
+        "tcp": int(tcp or 0), "pyright": kids.count("pyright"), "kernels": kids.count("rabbit_kernel_runner"),
         "db_mb": round(os.path.getsize(db_path) / 2**20, 1) if os.path.exists(db_path) else 0,
         "httpx_clients": _count_live("Client"), "transports": _count_live("HTTPTransport"), "session_dbs": _count_live("SessionDB"), "live_agents": _count_live("AIAgent"),
     }
@@ -138,13 +138,13 @@ def main() -> None:
         return
 
     _REPLY_KB[0] = a.reply_kb
-    home = tempfile.mkdtemp(prefix="hermes_bench_home_")
-    os.environ["HERMES_HOME"] = home
+    home = tempfile.mkdtemp(prefix="rabbit_bench_home_")
+    os.environ["RABBIT_HOME"] = home
     os.environ["TERMINAL_ENV"] = "local"
     os.environ.pop("OPENROUTER_API_KEY", None)
     sys.path.insert(0, a.repo)
     os.chdir(a.repo)
-    pyright = shutil.which("pyright-langserver", path=os.path.expanduser("~/.hermes/lsp/bin") + os.pathsep + os.environ.get("PATH", ""))
+    pyright = shutil.which("pyright-langserver", path=os.path.expanduser("~/.rabbit/lsp/bin") + os.pathsep + os.environ.get("PATH", ""))
     with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as f:
         f.write("lsp:\n  enabled: true\n  wait_timeout: 5.0\n  install_strategy: manual\n")
         if pyright:
@@ -153,13 +153,13 @@ def main() -> None:
 
     # W git worktrees, each a real python project (pyproject + package) so pyright roots resolve.
     wts = []
-    base = tempfile.mkdtemp(prefix="hermes_bench_wt_")
+    base = tempfile.mkdtemp(prefix="rabbit_bench_wt_")
     for w in range(a.worktrees):
         d = os.path.join(base, f"wt{w}")
-        os.makedirs(os.path.join(d, "hermes_cli"))
+        os.makedirs(os.path.join(d, "rabbit_cli"))
         subprocess.run(["git", "init", "-q", d], check=True)
         open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8").write("[project]\nname='b'\n")
-        open(os.path.join(d, "hermes_cli", "__init__.py"), "w", encoding="utf-8").write("")
+        open(os.path.join(d, "rabbit_cli", "__init__.py"), "w", encoding="utf-8").write("")
         wts.append(d)
 
     srv = _serve()
@@ -167,7 +167,7 @@ def main() -> None:
     from run_agent import AIAgent
     from tools import delegate_tool
 
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     db_path = os.path.join(home, "state.db")
     from pathlib import Path
     session_db = SessionDB(db_path=Path(db_path))
@@ -190,7 +190,7 @@ def main() -> None:
                 peak[k] = max(peak[k], v)
     threading.Thread(target=sampler, daemon=True).start()
 
-    tasks = [{"goal": json.dumps({"file": os.path.join(wts[i % len(wts)], "hermes_cli", f"bench_{i}.py")}),
+    tasks = [{"goal": json.dumps({"file": os.path.join(wts[i % len(wts)], "rabbit_cli", f"bench_{i}.py")}),
               "context": "bench"} for i in range(a.children)]
     t0 = time.monotonic()
     res = delegate_tool.delegate_task(tasks=tasks, parent_agent=parent, background=False)

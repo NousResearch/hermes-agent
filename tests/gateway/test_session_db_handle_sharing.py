@@ -27,7 +27,7 @@ from gateway.session_db_recovery import RecoverableHandleCache
 
 def _live_count(path) -> int:
     """Live-connection count the tracking registry holds for *path*."""
-    import hermes_cli.sqlite_safe_read as mod
+    import rabbit_cli.sqlite_safe_read as mod
 
     with mod._live_lock:
         return mod._live_connections.get(mod._key(path), 0)
@@ -36,19 +36,19 @@ def _live_count(path) -> int:
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """A gateway home under tmp_path, with path resolution going through it."""
-    import hermes_state
+    import rabbit_state
 
-    root = tmp_path / "hermes"
+    root = tmp_path / "rabbit"
     root.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("RABBIT_HOME", str(root))
     # The suite-wide fixture re-points DEFAULT_DB_PATH, which trips the
     # deliberate escape hatch in _default_db_path() and would pin every lookup
     # to one fixed path. Restore the import-time snapshot so resolution runs
-    # through get_hermes_home() the way production does; HERMES_HOME above
+    # through get_rabbit_home() the way production does; RABBIT_HOME above
     # keeps it inside tmp_path. Same reasoning as
     # test_multiplex_session_db_profile_scope.py.
     monkeypatch.setattr(
-        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+        rabbit_state, "DEFAULT_DB_PATH", rabbit_state._IMPORT_DEFAULT_DB_PATH
     )
     return root
 
@@ -166,7 +166,7 @@ def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store,
     know about, so the agent's ``acquire`` got a second writer on the same file, and after a
     delete + recreate every call raised ``StateDbReplacedError`` until restart.
     """
-    import hermes_state_registry as registry
+    import rabbit_state_registry as registry
 
     runner = _runner_with(store)
     first = store._db
@@ -193,7 +193,7 @@ def test_a_handle_the_registry_tore_down_is_reopened_through_the_registry(store,
 def test_api_server_profile_cache_reopens_a_handle_the_registry_tore_down(home):
     """The API adapter's per-home cache serves routed profiles under their runtime scope; the
     same ``close_all_under`` must evict its entry too."""
-    import hermes_state_registry as registry
+    import rabbit_state_registry as registry
     from gateway.platforms.api_server import APIServerAdapter
 
     adapter = APIServerAdapter.__new__(APIServerAdapter)

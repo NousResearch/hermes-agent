@@ -2,7 +2,7 @@ import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import type { Tiered } from '@/store/interface-mode'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { SessionMessage, UsageStats } from '@/types/rabbit'
 
 export interface ContextSuggestion {
   text: string

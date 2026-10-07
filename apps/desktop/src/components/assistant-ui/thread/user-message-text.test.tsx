@@ -15,10 +15,10 @@ afterEach(cleanup)
 describe('a sent reference renders as the chip the composer showed', () => {
   it('chips a backtick-quoted @url: instead of splitting it into code', () => {
     render(
-      <UserMessageText text="@url:`https://github.com/NousResearch/hermes-agent/pull/74790` urls lose formatting" />
+      <UserMessageText text="@url:`https://github.com/seven0070/Rabbit-/pull/74790` urls lose formatting" />
     )
 
-    expect(screen.queryByTitle('https://github.com/NousResearch/hermes-agent/pull/74790')).not.toBeNull()
+    expect(screen.queryByTitle('https://github.com/seven0070/Rabbit-/pull/74790')).not.toBeNull()
     // The whole reference is one node — no bare `@url:` text left behind.
     expect(document.body.textContent).not.toContain('@url:')
   })
@@ -31,7 +31,7 @@ describe('a sent reference renders as the chip the composer showed', () => {
   })
 
   it('labels a large-paste file as pasted content, keeping its path on hover', () => {
-    const path = '/home/u/.hermes/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
+    const path = '/home/u/.rabbit/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
 
     render(<UserMessageText text={`@file:${path}`} />)
 

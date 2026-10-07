@@ -52,16 +52,16 @@ def _home_candidates() -> list:
     home = Path.home()
     candidates = [home / ".lightpanda" / "lightpanda", home / ".local" / "bin" / "lightpanda"]
     try:
-        from hermes_constants import get_hermes_home
-        candidates.append(Path(get_hermes_home()) / "bin" / "lightpanda")
+        from rabbit_constants import get_rabbit_home
+        candidates.append(Path(get_rabbit_home()) / "bin" / "lightpanda")
     except Exception as e:  # pragma: no cover - defensive
-        logger.debug("hermes home unavailable for lightpanda lookup: %s", e)
+        logger.debug("rabbit home unavailable for lightpanda lookup: %s", e)
     return candidates
 
 
 def find_lightpanda_binary() -> Optional[str]:
     """Return the lightpanda executable, or None. Order: PATH (with agent-browser's Homebrew/managed-node
-    fallbacks), then installer/agent-browser locations, then ``$HERMES_HOME/bin``. No Windows build."""
+    fallbacks), then installer/agent-browser locations, then ``$RABBIT_HOME/bin``. No Windows build."""
     if os.name == "nt":
         logger.debug("Lightpanda has no Windows build")
         return None
@@ -83,19 +83,19 @@ def _pick_free_loopback_port() -> int:
 
 
 def _state_dir() -> Path:
-    from hermes_constants import get_hermes_home
-    path = Path(get_hermes_home()) / "cache" / "browser-use" / "lightpanda"
+    from rabbit_constants import get_rabbit_home
+    path = Path(get_rabbit_home()) / "cache" / "browser-use" / "lightpanda"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _http_cache_dir() -> Path:
-    """Filesystem HTTP cache shared by every Lightpanda this Hermes spawns.
+    """Filesystem HTTP cache shared by every Lightpanda this Rabbit spawns.
 
     Shared rather than per-session so a cached asset survives session churn.
     Lightpanda holds it in sqlite (WAL) with a best-effort write path, and
     ``--http-cache-entry-limit`` (upstream default 1000, not passed here)
-    bounds it without Hermes managing eviction.
+    bounds it without Rabbit managing eviction.
     """
     path = _state_dir() / "http-cache"
     path.mkdir(parents=True, exist_ok=True)
@@ -141,7 +141,7 @@ def _browser_env() -> dict:
 
 def _cdp_ready(url: str, timeout: float = 0.2) -> bool:
     try:
-        from hermes_cli.browser_connect import is_browser_debug_ready
+        from rabbit_cli.browser_connect import is_browser_debug_ready
         return is_browser_debug_ready(url, timeout=timeout)
     except Exception as e:
         logger.debug("CDP readiness probe failed for %s: %s", url, e)
@@ -200,7 +200,7 @@ def launch_lightpanda(session_name: str, *, block_private_networks: bool = False
     if not binary:
         if os.name == "nt":
             return None, ("browser.engine is 'lightpanda' but Lightpanda has no Windows "
-                          "build. Set browser.engine to auto (or run Hermes under WSL2).")
+                          "build. Set browser.engine to auto (or run Rabbit under WSL2).")
         return None, ("browser.engine is 'lightpanda' but no lightpanda binary was found on PATH, ~/.lightpanda "
                       f"or ~/.local/bin. {LIGHTPANDA_INSTALL_HINT}, or set browser.engine to auto.")
 
@@ -299,7 +299,7 @@ def _is_lightpanda_process(pid: int, port, start_time) -> bool:
 
 
 def reap_orphaned_lightpanda() -> int:
-    """Kill ``lightpanda serve`` processes whose owning Hermes is gone; return the count. A live owner is
+    """Kill ``lightpanda serve`` processes whose owning Rabbit is gone; return the count. A live owner is
     never touched; a PID is only signalled after psutil confirms it is still ``lightpanda serve`` on the recorded port."""
     try:
         state_dir = _state_dir()

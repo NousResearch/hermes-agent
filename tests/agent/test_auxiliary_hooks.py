@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.auxiliary_client import call_llm
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from rabbit_cli import plugins as plugins_mod
+from rabbit_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 @pytest.fixture

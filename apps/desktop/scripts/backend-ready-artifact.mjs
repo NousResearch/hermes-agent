@@ -2,10 +2,10 @@
  * Guard the packaged backend-readiness parser against artifact skew (#60772).
  *
  * The packaged app's `dist/electron-main.mjs` bundle must accept BOTH ready
- * tokens (`HERMES_BACKEND_READY` from a current backend, and the legacy
- * `HERMES_DASHBOARD_READY` from older ones). A stale artifact that matches
+ * tokens (`RABBIT_BACKEND_READY` from a current backend, and the legacy
+ * `RABBIT_DASHBOARD_READY` from older ones). A stale artifact that matches
  * only one token boots a perfectly healthy backend and then kills it after
- * "Timed out waiting for Hermes backend port announcement" — invisible to
+ * "Timed out waiting for Rabbit backend port announcement" — invisible to
  * every source-level test, because the packaged bundle is the only thing that
  * ships. afterPack runs for every packed build, so this turns that class of
  * skew into a build failure instead of a user-side boot loop.
@@ -18,12 +18,12 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
 const PACKAGED_MAIN_MODULE = 'dist/electron-main.mjs'
-const READY_TOKENS = ['HERMES_BACKEND_READY', 'HERMES_DASHBOARD_READY']
+const READY_TOKENS = ['RABBIT_BACKEND_READY', 'RABBIT_DASHBOARD_READY']
 // The esbuild-bundled regex source for the dual-token readiness matcher. The
 // bundle keeps the source literal verbatim, so the packaged text contains the
-// (unexecuted) source form `HERMES_(?:BACKEND|DASHBOARD)_READY`; the parens
+// (unexecuted) source form `RABBIT_(?:BACKEND|DASHBOARD)_READY`; the parens
 // and `?` are escaped here to match that substring as text.
-const READY_MATCHER_SOURCE = /HERMES_\(\?:BACKEND\|DASHBOARD\)_READY/
+const READY_MATCHER_SOURCE = /RABBIT_\(\?:BACKEND\|DASHBOARD\)_READY/
 
 function resolvePackagedAsarPath(context) {
   const appOutDir = context?.appOutDir
@@ -35,7 +35,7 @@ function resolvePackagedAsarPath(context) {
     if (appOutDir.endsWith('.app')) {
       return path.join(appOutDir, 'Contents', 'Resources', 'app.asar')
     }
-    const productName = context.packager?.appInfo?.productFilename || 'Hermes'
+    const productName = context.packager?.appInfo?.productFilename || 'Rabbit'
     return path.join(appOutDir, `${productName}.app`, 'Contents', 'Resources', 'app.asar')
   }
 

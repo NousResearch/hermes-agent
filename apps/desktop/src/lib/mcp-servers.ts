@@ -1,6 +1,6 @@
 // Shape helpers for the `mcp_servers` config map, shared by everything that
 // reads or writes it: the MCP tab editor, the paste-anything importer, and the
-// `hermes://mcp/install` deeplink dialog. These agree on what a server entry
+// `rabbit://mcp/install` deeplink dialog. These agree on what a server entry
 // looks like, so they belong in one place — a config written by one path has to
 // be readable by the others.
 
@@ -11,7 +11,7 @@ export type McpServerEntry = McpServers[string]
 export const isServerShape = (value: Record<string, unknown>) =>
   typeof value.command === 'string' || typeof value.url === 'string'
 
-/** Cursor/Claude write `type`; Hermes reads `transport`. Normalizing on the way
+/** Cursor/Claude write `type`; Rabbit reads `transport`. Normalizing on the way
  *  in makes pasted configs behave identically under the CLI/TUI loader. */
 export function normalizeEntry(entry: Record<string, unknown>): Record<string, unknown> {
   if (typeof entry.type === 'string' && entry.transport === undefined) {

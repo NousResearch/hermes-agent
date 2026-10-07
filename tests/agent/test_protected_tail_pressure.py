@@ -63,7 +63,7 @@ def _already_compacted_session(
 ) -> list[dict]:
     """Shape after multiple in-place compactions: head + handoff + heavy tail."""
     msgs: list[dict] = [
-        {"role": "system", "content": "You are Hermes."},
+        {"role": "system", "content": "You are Rabbit."},
         {"role": "user", "content": "Investigate thoroughly"},
         {"role": "assistant", "content": "OK"},
         {
@@ -166,7 +166,7 @@ class TestProtectedTailPressure61932:
         """
         c = compressor_128k
         msgs: list[dict] = [
-            {"role": "system", "content": "You are Hermes."},
+            {"role": "system", "content": "You are Rabbit."},
             {"role": "user", "content": "Investigate thoroughly"},
             {"role": "assistant", "content": "OK"},
         ]
@@ -265,7 +265,7 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
         )
     c._generate_summary = lambda *a, **k: "compact summary of earlier turns"
     prose = ("the quarterly fleet review keeps drifting between regions and owners " * 360)[:24_000]
-    msgs: list[dict] = [{"role": "system", "content": "You are Hermes."}]
+    msgs: list[dict] = [{"role": "system", "content": "You are Rabbit."}]
     for t in range(13):
         msgs += [
             {"role": "user", "content": f"{prose}\nRun probe {t} and name the hottest node."},
@@ -303,7 +303,7 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
 def test_compaction_keeps_four_images_in_a_spared_pending_round(compressor_128k):
     pending_ids = [f"new_{i}" for i in range(4)]
     msgs = [
-        {"role": "system", "content": "You are Hermes."},
+        {"role": "system", "content": "You are Rabbit."},
         {"role": "user", "content": "Inspect the first image."},
         {"role": "assistant", "content": None, "tool_calls": [_image_call("old")]},
         _image_result("old"),

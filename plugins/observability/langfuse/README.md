@@ -1,28 +1,28 @@
 # Langfuse Observability Plugin
 
-This plugin ships bundled with Hermes but is **opt-in** — it only loads when
+This plugin ships bundled with Rabbit but is **opt-in** — it only loads when
 you explicitly enable it.
 
 ## Enable
 
 ```bash
 # Interactive: credentials + PM preparation of the langfuse extra + enable
-hermes tools  # → Langfuse Observability
+rabbit tools  # → Langfuse Observability
 ```
 
-Restart Hermes after setup. If dependency preparation fails, retry through
-`hermes tools`; do not inject the SDK into the selected environment with pip.
+Restart Rabbit after setup. If dependency preparation fails, retry through
+`rabbit tools`; do not inject the SDK into the selected environment with pip.
 For manual source-checkout setup, see the
 [plugin guide](../../../website/docs/user-guide/features/built-in-plugins.md#observabilitylangfuse).
 
 ## Required credentials
 
-Set these in `~/.hermes/.env` (or via `hermes tools`):
+Set these in `~/.rabbit/.env` (or via `rabbit tools`):
 
 ```bash
-HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
-HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
-HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
+RABBIT_LANGFUSE_PUBLIC_KEY=pk-lf-...
+RABBIT_LANGFUSE_SECRET_KEY=sk-lf-...
+RABBIT_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
 ```
 
 Without the SDK or credentials the hooks no-op silently — the plugin fails
@@ -31,31 +31,31 @@ open.
 ## Verify
 
 ```bash
-hermes plugins list                 # observability/langfuse should show "enabled"
-hermes chat -q "hello"              # then check Langfuse for a "Hermes turn" trace
+rabbit plugins list                 # observability/langfuse should show "enabled"
+rabbit chat -q "hello"              # then check Langfuse for a "Rabbit turn" trace
 ```
 
-Generation observations include the Hermes system prompt when the provider
+Generation observations include the Rabbit system prompt when the provider
 uses a separate `system` param (Anthropic Messages API). Open an **LLM call**
-child span to inspect `role: system` (truncated via `HERMES_LANGFUSE_MAX_CHARS`).
+child span to inspect `role: system` (truncated via `RABBIT_LANGFUSE_MAX_CHARS`).
 
 ## Optional tuning
 
 ```bash
-HERMES_LANGFUSE_ENV=production       # environment tag
-HERMES_LANGFUSE_RELEASE=v1.0.0       # release tag
-HERMES_LANGFUSE_SAMPLE_RATE=0.5      # sample 50% of traces
-HERMES_LANGFUSE_MAX_CHARS=12000      # max chars per field (default: 12000)
-HERMES_LANGFUSE_MAX_DEPTH=4          # max payload depth (default: 4)
-HERMES_LANGFUSE_CAPTURE=sanitized    # content capture mode (see below)
-HERMES_LANGFUSE_DEBUG=true           # verbose plugin logging
+RABBIT_LANGFUSE_ENV=production       # environment tag
+RABBIT_LANGFUSE_RELEASE=v1.0.0       # release tag
+RABBIT_LANGFUSE_SAMPLE_RATE=0.5      # sample 50% of traces
+RABBIT_LANGFUSE_MAX_CHARS=12000      # max chars per field (default: 12000)
+RABBIT_LANGFUSE_MAX_DEPTH=4          # max payload depth (default: 4)
+RABBIT_LANGFUSE_CAPTURE=sanitized    # content capture mode (see below)
+RABBIT_LANGFUSE_DEBUG=true           # verbose plugin logging
 ```
 
-`HERMES_LANGFUSE_MAX_DEPTH` controls nested payload capture in both `sanitized`
+`RABBIT_LANGFUSE_MAX_DEPTH` controls nested payload capture in both `sanitized`
 and `full` modes, including tool arguments and JSON tool results. The root is
 depth 0; each dictionary value or array element adds one level. Values beyond
 the limit become `<max-depth>`, including scalars. For deeper MCP responses,
-set it to a higher non-negative integer (for example, `10`) in the Hermes
+set it to a higher non-negative integer (for example, `10`) in the Rabbit
 process environment. Unset or blank values default to `4`; invalid or negative
 values log a warning and fall back to `4`. `0` keeps only the root level.
 Increasing the depth exports more content and may produce larger traces;
@@ -64,7 +64,7 @@ unchanged. `metadata` mode still omits content.
 
 ## Capture modes
 
-`HERMES_LANGFUSE_CAPTURE` controls how much *content* (prompts, responses,
+`RABBIT_LANGFUSE_CAPTURE` controls how much *content* (prompts, responses,
 tool arguments/results) is exported. Structural metadata — IDs, roles, tool
 names, token usage, cost, timing — is always captured in every mode.
 
@@ -90,5 +90,5 @@ For personal sessions or shared Langfuse projects, prefer `metadata`.
 ## Disable
 
 ```bash
-hermes plugins disable observability/langfuse
+rabbit plugins disable observability/langfuse
 ```

@@ -109,7 +109,7 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
         if not is_safe_url(MANIFEST_URL):
             raise ManifestError(f"Pet manifest URL failed the SSRF safety check: {MANIFEST_URL}")
         with create_ssrf_safe_client(timeout=timeout, follow_redirects=True) as client:
-            resp = client.get(MANIFEST_URL, headers={"User-Agent": "hermes-agent-petdex"})
+            resp = client.get(MANIFEST_URL, headers={"User-Agent": "rabbit-agent-petdex"})
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:  # noqa: BLE001 - normalize to one error type

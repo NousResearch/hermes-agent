@@ -1,0 +1,15 @@
+name: rabbit-desktop-camera
+repo: https://github.com/BrokeSkill/Rabbit-Camera
+sha: ce9e8b914cb73ca88e797d89124f6add516bf823
+description: A camera button for the Rabbit Desktop composer. Open the preview, take a photo, and the frame lands in the composer as an image attachment, ready to send.
+maintainer: BrokeSkill
+tier: community
+category: desktop
+version: "0.1.0"
+image: https://raw.githubusercontent.com/BrokeSkill/Rabbit-Camera/ce9e8b914cb73ca88e797d89124f6add516bf823/docs/demo.gif
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

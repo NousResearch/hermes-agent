@@ -413,7 +413,7 @@ describe('rankSkillCommands', () => {
   })
 })
 
-describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
+describe('registry-derived block-list (contract with rabbit_cli/commands.py)', () => {
   beforeEach(() => rememberDesktopCommandsCatalog(undefined))
 
   it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {

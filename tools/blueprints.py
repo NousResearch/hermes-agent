@@ -1,7 +1,7 @@
 """Blueprints: shareable plain-language automations layered on skills + cron.
 
 A blueprint is NOT a new object type: it is an ordinary skill whose frontmatter declares
-``metadata.hermes.blueprint`` (``schedule`` required; optional ``deliver`` [default "origin"],
+``metadata.rabbit.blueprint`` (``schedule`` required; optional ``deliver`` [default "origin"],
 ``prompt``, ``no_agent``, ``model``, ``provider``, ``enabled_toolsets``), so it rides the whole
 skills-hub pipeline for free. This module only bridges that block to cron ``create_job()``,
 plus the inverse (``export_blueprint``) back to a SKILL.md.
@@ -26,7 +26,7 @@ class BlueprintError(ValueError):
 
 @dataclass
 class BlueprintSpec:
-    """Parsed ``metadata.hermes.blueprint`` automation spec for a skill."""
+    """Parsed ``metadata.rabbit.blueprint`` automation spec for a skill."""
 
     skill_name: str
     schedule: str
@@ -47,7 +47,7 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
     if not stripped.startswith("---") or (end := stripped.find("\n---", 3)) == -1:
         return None
     try:
-        import hermes_yaml as yaml
+        import rabbit_yaml as yaml
 
         data = yaml.safe_load(stripped[3:end])
     except Exception as e:  # pragma: no cover - malformed YAML
@@ -59,7 +59,7 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
 def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
     """Extract a BlueprintSpec from a SKILL.md string, or None if not a blueprint.
 
-    A skill is a blueprint iff ``metadata.hermes.blueprint`` is a mapping with a
+    A skill is a blueprint iff ``metadata.rabbit.blueprint`` is a mapping with a
     non-empty ``schedule``. Raises BlueprintError if the block exists but is
     structurally invalid (so a typo surfaces instead of silently no-op'ing).
     """
@@ -68,12 +68,12 @@ def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
         return None
 
     meta = fm.get("metadata")
-    hermes = meta.get("hermes") if isinstance(meta, dict) else None
-    blueprint = hermes.get("blueprint") if isinstance(hermes, dict) else None
+    rabbit = meta.get("rabbit") if isinstance(meta, dict) else None
+    blueprint = rabbit.get("blueprint") if isinstance(rabbit, dict) else None
     if blueprint is None:
         return None
     if not isinstance(blueprint, dict):
-        raise BlueprintError("metadata.hermes.blueprint must be a mapping")
+        raise BlueprintError("metadata.rabbit.blueprint must be a mapping")
 
     schedule = str(blueprint.get("schedule", "")).strip()
     if not schedule:
@@ -159,9 +159,9 @@ def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any
 
 def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional[str] = None) -> str:
     """Inverse of ``create_blueprint_job``: render a cron job as a SKILL.md (with a
-    ``metadata.hermes.blueprint`` block) ready for ``hermes skills publish``.
+    ``metadata.rabbit.blueprint`` block) ready for ``rabbit skills publish``.
     ``body`` becomes the SKILL.md body; its first line is the description."""
-    import hermes_yaml as yaml
+    import rabbit_yaml as yaml
 
     # Sanitize to a valid skill identifier.
     name = str(blueprint_name or job.get("name") or "shared-blueprint").lower()
@@ -180,7 +180,7 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
     frontmatter = {
         "name": name, "description": body.splitlines()[0][:200] if body else "Shared automation blueprint.",
         "version": "1.0.0", "license": "MIT",
-        "metadata": {"hermes": {"tags": ["blueprint", "automation"], "blueprint": block}},
+        "metadata": {"rabbit": {"tags": ["blueprint", "automation"], "blueprint": block}},
     }
     fm_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
     body_text = body or f"# {name}\n\nShared automation blueprint."

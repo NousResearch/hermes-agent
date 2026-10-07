@@ -133,7 +133,6 @@ export interface Translations {
     /** First-run shared-metrics offer — optional, English fallback. */
     sharedMetricsTitle?: string;
     sharedMetricsBody?: string;
-    sharedMetricsShare?: string;
     sharedMetricsLocal?: string;
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
@@ -172,11 +171,11 @@ export interface Translations {
     starting: string;
     startedInBackground: string;
     stopped: string;
-    updateHermes: string;
-    updateHermesConfirmMessage?: string;
-    updateHermesConfirmNow?: string;
-    updateHermesConfirmTitle?: string;
-    updatingHermes: string;
+    updateRabbit: string;
+    updateRabbitConfirmMessage?: string;
+    updateRabbitConfirmNow?: string;
+    updateRabbitConfirmTitle?: string;
+    updatingRabbit: string;
     waitingForOutput: string;
   };
 
@@ -638,7 +637,7 @@ export interface Translations {
     fontMono?: string;
   };
 
-  // ── Achievements plugin (plugins/hermes-achievements) ──
+  // ── Achievements plugin (plugins/rabbit-achievements) ──
   achievements: {
     hero: {
       kicker: string;

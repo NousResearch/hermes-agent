@@ -51,7 +51,7 @@ class DummyAgent:
     ):
         self.api_mode = "codex_app_server"
         self.codex_app_server_auto_compaction = auto_compaction
-        self.session_id = "hermes-session-1"
+        self.session_id = "rabbit-session-1"
         self.platform = "cli"
         self._cached_system_prompt = "cached prompt"
         self._codex_session = FakeCodexSession(result)
@@ -179,7 +179,7 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
 
 
 
-def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
+def test_codex_native_boundary_clears_stale_rabbit_fallback_streak():
     from unittest.mock import patch
 
     from agent.context_compressor import ContextCompressor
@@ -243,7 +243,7 @@ def test_interrupted_codex_compaction_arms_the_failure_cooldown():
             interrupted=True,
             error="compact turn interrupted",
         ),
-        auto_compaction="hermes",
+        auto_compaction="rabbit",
     )
     agent.context_compressor = RecordingCooldownCompressor()
     messages = [{"role": "user", "content": "hi"}]
@@ -262,7 +262,7 @@ def test_interrupted_codex_compaction_arms_the_failure_cooldown():
 def test_codex_compaction_error_without_interrupt_also_arms_cooldown():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1", error="boom"),
-        auto_compaction="hermes",
+        auto_compaction="rabbit",
     )
     agent.context_compressor = RecordingCooldownCompressor()
     messages = [{"role": "user", "content": "hi"}]
@@ -278,7 +278,7 @@ def test_codex_compaction_error_without_interrupt_also_arms_cooldown():
 def test_active_cooldown_blocks_automatic_codex_compaction():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
-        auto_compaction="hermes",
+        auto_compaction="rabbit",
     )
     agent.context_compressor = RecordingCooldownCompressor(remaining=120.0)
     session = agent._codex_session
@@ -311,7 +311,7 @@ def test_force_bypasses_the_codex_compaction_cooldown():
 def test_successful_codex_compaction_arms_no_cooldown():
     agent = DummyAgent(
         TurnResult(thread_id="thread-1", turn_id="compact-turn-1"),
-        auto_compaction="hermes",
+        auto_compaction="rabbit",
     )
     agent.context_compressor = RecordingCooldownCompressor()
     messages = [{"role": "user", "content": "hi"}]

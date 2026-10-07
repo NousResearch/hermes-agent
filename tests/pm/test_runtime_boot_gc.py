@@ -7,11 +7,11 @@ import sys
 
 def test_bootstrap_lease_survives_selection_change(tmp_path, monkeypatch):
     from pm.environments import install_state_dir, runtime_facts_path, site_packages
-    from hermes_cli.runtime_state import collect_generations
+    from rabbit_cli.runtime_state import collect_generations
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path / "home"))
     state = install_state_dir(repo)
     for name in ("first", "second", "unused"):
         venv = state / "environments" / name / "venv"

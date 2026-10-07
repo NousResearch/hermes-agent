@@ -1,8 +1,8 @@
 {
-  "name": "@hermes-agent/photon-sidecar",
+  "name": "@rabbit-agent/photon-sidecar",
   "private": true,
   "version": "0.4.0",
-  "description": "Spectrum-ts bridge for the Hermes Agent Photon platform plugin.",
+  "description": "Spectrum-ts bridge for the Rabbit Agent Photon platform plugin.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {

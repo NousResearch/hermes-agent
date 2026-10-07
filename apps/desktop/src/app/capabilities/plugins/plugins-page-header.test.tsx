@@ -12,7 +12,7 @@ const compactScope: CapabilityScope = {
   key: 'default',
   onChange: vi.fn(),
   options: [
-    { key: 'default', label: 'Hermes (default)', value: 'default' },
+    { key: 'default', label: 'Rabbit (default)', value: 'default' },
     { key: longProfile, label: longProfile, value: longProfile }
   ],
   profile: null,

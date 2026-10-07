@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.session_activity import ActivityProvenance
-from hermes_state import SessionDB
+from rabbit_state import SessionDB
 
 
 def _agent_with_db(db: SessionDB, session_id: str):

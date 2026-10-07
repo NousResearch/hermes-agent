@@ -64,12 +64,12 @@ async def _run_browser_flow(tmp_path, monkeypatch, *, issuer, authorization_serv
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage, _authorization_code_result
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_oauth import RabbitTokenStorage, _authorization_code_result
+    from tools.mcp_oauth_manager import _RABBIT_PROVIDER_CLS, reset_manager_for_tests
     from tools.mcp_tool import sdk_httpx
 
     httpx = sdk_httpx()
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("RABBIT_HOME", str(tmp_path))
     reset_manager_for_tests()
     seen = {}
 
@@ -80,11 +80,11 @@ async def _run_browser_flow(tmp_path, monkeypatch, *, issuer, authorization_serv
     async def callback():
         return _authorization_code_result("code-1", seen["state"])
 
-    metadata = OAuthClientMetadata(redirect_uris=[AnyUrl("http://127.0.0.1:1/cb")], client_name="Hermes Agent")
+    metadata = OAuthClientMetadata(redirect_uris=[AnyUrl("http://127.0.0.1:1/cb")], client_name="Rabbit Agent")
     if scope is not None:
         metadata.scope = scope
-    provider = _HERMES_PROVIDER_CLS(
-        server_name="srv", server_url=RESOURCE, storage=HermesTokenStorage("srv"), client_metadata=metadata,
+    provider = _RABBIT_PROVIDER_CLS(
+        server_name="srv", server_url=RESOURCE, storage=RabbitTokenStorage("srv"), client_metadata=metadata,
         redirect_handler=redirect, callback_handler=callback)
     async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(_standin(
             httpx, issuer=issuer, authorization_servers=authorization_servers))) as client:
@@ -132,9 +132,9 @@ async def test_device_flow_normalizes_issuer_and_asks_google_for_offline_access(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import RabbitTokenStorage
     from tools.mcp_oauth_device import DeviceOAuthMetadata, _authorize, _device_metadata
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from tools.mcp_oauth_manager import _RABBIT_PROVIDER_CLS
     from tools.mcp_tool import sdk_httpx
 
     httpx = sdk_httpx()
@@ -170,9 +170,9 @@ async def test_device_flow_normalizes_issuer_and_asks_google_for_offline_access(
             return httpx.Response(200, json={"access_token": "AT-1", "token_type": "Bearer",
                                              "expires_in": 3600}, request=request)
 
-        provider = _HERMES_PROVIDER_CLS(
-            server_name="srv", server_url=RESOURCE, storage=HermesTokenStorage("srv"),
-            client_metadata=OAuthClientMetadata(redirect_uris=[AnyUrl("http://127.0.0.1:1/cb")], client_name="Hermes Agent"))
+        provider = _RABBIT_PROVIDER_CLS(
+            server_name="srv", server_url=RESOURCE, storage=RabbitTokenStorage("srv"),
+            client_metadata=OAuthClientMetadata(redirect_uris=[AnyUrl("http://127.0.0.1:1/cb")], client_name="Rabbit Agent"))
         provider.context.oauth_metadata = DeviceOAuthMetadata.model_validate(
             _asm_doc(issuer, device_authorization_endpoint=f"{issuer}/device/code"))
         provider.context.client_info = OAuthClientInformationFull.model_validate(

@@ -14,10 +14,10 @@ Adversarial plan interview before implementation.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/software-development/grill-me` |
+| Source | Optional — install with `rabbit skills install official/software-development/grill-me` |
 | Path | `optional-skills/software-development/grill-me` |
 | Version | `2.0.0` |
-| Author | Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Hermes Agent |
+| Author | Rafael Zendron (rafaumeu) + Matt Pocock (mattpocock/skills, grilling) + Rabbit Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `planning`, `adversarial`, `interview`, `decision-tree`, `pre-implementation`, `review`, `alignment` |
@@ -26,7 +26,7 @@ Adversarial plan interview before implementation.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Rabbit loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # Grill Me
@@ -114,7 +114,7 @@ Do not act on the plan until the user confirms shared understanding.
 1. **Asking questions out of dependency order.** A question that depends on
    an unanswered question is a guess wearing a question mark. Keep it for a
    later round.
-2. **Skipping the codebase.** Find facts in code with Hermes tools instead of
+2. **Skipping the codebase.** Find facts in code with Rabbit tools instead of
    asking the user.
 3. **Accepting "I don't know" as final.** Suggest options, explain
    trade-offs, make a recommendation.

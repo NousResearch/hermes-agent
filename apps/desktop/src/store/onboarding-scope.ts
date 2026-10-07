@@ -1,4 +1,4 @@
-import { getApiRequestConnection, getApiRequestProfile, type ProfileScope } from '@/hermes'
+import { getApiRequestConnection, getApiRequestProfile, type ProfileScope } from '@/rabbit'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { requestGatewayForAgent } from '@/store/gateway'
 
@@ -29,10 +29,10 @@ export async function requestOnboardingGateway<T>(
 ): Promise<T> {
   // `default` is only the Desktop routing key for the launch home here.
   const profile = scope.profile || 'default'
-  const desktop = window.hermesDesktop
+  const desktop = window.rabbitDesktop
 
   if (scope.connectionId && !desktop.getConnectionFor) {
-    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+    throw new Error('This Desktop build cannot dial registry connections. Update Rabbit Desktop.')
   }
 
   const connection = await withTimeout(

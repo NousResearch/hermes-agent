@@ -709,7 +709,7 @@ def test_sanitize_still_drops_replayed_result_for_retired_call():
 
 
 def test_sanitize_preserves_deterministic_local_ids_across_turns():
-    """Hermes' own deterministic call ids (fn-name+args hashes / local
+    """Rabbit' own deterministic call ids (fn-name+args hashes / local
     counters) legitimately repeat across turns — both must survive.
 
     Scenario surfaced in #76632: two image_generate rounds emit the same
@@ -1589,7 +1589,7 @@ def test_repair_decodes_sentinel_multimodal_and_skips_text_merge():
     """A multimodal turn re-inserted as its ``\x00json:`` string (e.g. after a proactive prune
     re-inserts history) must be decoded back to structured content, not glued onto an adjacent
     text turn as a giant base64 blob; an undecodable one is left unmerged (#125299)."""
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from agent.agent_runtime_helpers import repair_message_sequence
 
     parts = [
@@ -1629,7 +1629,7 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
     count and role order do not change — a regression the content-only repair tests cannot catch."""
     import os
     from unittest.mock import patch
-    from hermes_state import SessionDB
+    from rabbit_state import SessionDB
     from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     from agent.context_compressor import _DB_PERSISTED_MARKER
 

@@ -11,7 +11,7 @@ test('both SOUL editors explain a missing file and save it without changing pers
   const fixture = await setupMockBackend()
   const { page, sandbox, mockUrl } = fixture
   const profileName = 'soul-test'
-  const profileHome = path.join(sandbox.hermesHome, 'profiles', profileName)
+  const profileHome = path.join(sandbox.rabbitHome, 'profiles', profileName)
   fs.mkdirSync(profileHome, { recursive: true })
   writeMockProviderConfig(profileHome, mockUrl, undefined, 'personalities:\n  helper: "Keep answers brief."')
   const configPath = path.join(profileHome, 'config.yaml')

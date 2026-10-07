@@ -10,7 +10,7 @@ logger = logging.getLogger("gateway.run")
 def _watched_homes(runner, default_home) -> list:
     """Every home the sweep's ``_profile_scope_for_source`` can resolve an origin to: the gateway home
     plus, under multiplex, the whole served set INCLUDING ``default`` — a ``-p work`` multiplexer's own
-    home is not ``~/.hermes``, so dropping ``default`` here would hide its heartbeats forever."""
+    home is not ``~/.rabbit``, so dropping ``default`` here would hide its heartbeats forever."""
     from gateway.run import _multiplex_profile_homes
 
     homes = [default_home]
@@ -28,8 +28,8 @@ async def restore_heartbeat_watches(runner) -> None:
     """
     from gateway.run import _profile_runtime_scope
     from gateway.run_idle_gates import profile_has_active_heartbeat
-    from hermes_cli.heartbeat import HeartbeatManager
-    from hermes_constants import get_hermes_home
+    from rabbit_cli.heartbeat import HeartbeatManager
+    from rabbit_constants import get_rabbit_home
 
     store = runner.session_store
 
@@ -37,7 +37,7 @@ async def restore_heartbeat_watches(runner) -> None:
         restored = []
         # The poller may have been spawned by a named profile's /heartbeat command.
         # Anchor even default origins to the gateway home, not inherited context.
-        home = getattr(store, "_routing_home", None) or get_hermes_home()
+        home = getattr(store, "_routing_home", None) or get_rabbit_home()
         # Cheap gate: with no heartbeat persisted in any served profile there is nothing to
         # restore — skip the per-origin profile-scope re-parse over every routed session.
         if not any(profile_has_active_heartbeat(h) for h in _watched_homes(runner, home)):

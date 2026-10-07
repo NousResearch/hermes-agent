@@ -1,7 +1,7 @@
 name: prompt-enhancer
 repo: https://github.com/Heybinshao/prompt-enhancer
 sha: 8fb4e23d7e25aacf41e3be6e5c91d72af0829e86
-description: "A composer button for Hermes Desktop that rewrites a rough draft into a structured prompt (task / scope / constraints / output shape) and restores the original on a second click. One stateless gateway call, preserves @file and /command chips, per-session state. UI in EN / 简中 / 繁體."
+description: "A composer button for Rabbit Desktop that rewrites a rough draft into a structured prompt (task / scope / constraints / output shape) and restores the original on a second click. One stateless gateway call, preserves @file and /command chips, per-session state. UI in EN / 简中 / 繁體."
 maintainer: Heybinshao
 tier: community
 category: desktop

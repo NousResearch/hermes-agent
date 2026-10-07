@@ -2,8 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
-import type { HermesApiRequest } from '@/global'
-import type { HermesConfigRecord } from '@/hermes'
+import type { RabbitApiRequest } from '@/global'
+import type { RabbitConfigRecord } from '@/rabbit'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
@@ -32,23 +32,23 @@ function route(profile: string, connectionId: string | null = null) {
 afterEach(() => {
   cleanup()
   route('default')
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  Reflect.deleteProperty(window, 'rabbitDesktop')
   vi.restoreAllMocks()
 })
 
 // Regression for #113980: exercise the real provider, API origin binding and
 // profile routing, including an explicit pick before leaving and a fresh mount.
 it('reads and persists the owning profile through A → B → A and restart', async () => {
-  const configs: Record<string, HermesConfigRecord> = {
+  const configs: Record<string, RabbitConfigRecord> = {
     default: { display: { language: 'en' } },
     coder: { display: { language: 'zh', skin: 'mono' } }
   }
 
-  const api = vi.fn(async (request: HermesApiRequest) => {
+  const api = vi.fn(async (request: RabbitApiRequest) => {
     const key = request.profile || 'default'
 
     if (request.method === 'PUT') {
-      configs[key] = structuredClone((request.body as { config: HermesConfigRecord }).config)
+      configs[key] = structuredClone((request.body as { config: RabbitConfigRecord }).config)
 
       return { ok: true }
     }
@@ -56,7 +56,7 @@ it('reads and persists the owning profile through A → B → A and restart', as
     return structuredClone(configs[key])
   })
 
-  window.hermesDesktop = { api } as never
+  window.rabbitDesktop = { api } as never
 
   const view = render(
     <I18nProvider>
@@ -84,12 +84,12 @@ it('reads and persists the owning profile through A → B → A and restart', as
 })
 
 it('isolates stale reads and failed saves when the same profile moves between connections', async () => {
-  let finishBoot!: (config: HermesConfigRecord) => void
-  let finishSaveRead!: (config: HermesConfigRecord) => void
+  let finishBoot!: (config: RabbitConfigRecord) => void
+  let finishSaveRead!: (config: RabbitConfigRecord) => void
   let rejectSave!: (reason: Error) => void
   let reads = 0
 
-  const api = vi.fn((request: HermesApiRequest) => {
+  const api = vi.fn((request: RabbitApiRequest) => {
     if (request.method === 'PUT') {
       return new Promise((_, reject) => {
         rejectSave = reject
@@ -113,7 +113,7 @@ it('isolates stale reads and failed saves when the same profile moves between co
     return Promise.resolve({ display: { language: request.connectionId === 'remote' ? 'zh' : 'en' } })
   })
 
-  window.hermesDesktop = { api } as never
+  window.rabbitDesktop = { api } as never
   render(
     <I18nProvider>
       <Probe />

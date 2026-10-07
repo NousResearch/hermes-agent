@@ -3,7 +3,7 @@
 Everything runs through ``tests/e2e/core/upgrade/_helpers.py`` (bwrap sandbox, allowlisted env)
 and ``_install_helpers.py`` (local bare origin + URL rewrite, git wrapper). This module only adds
 what a host shape needs on top: a sandbox rooted at an arbitrary path, the configured fake
-provider, a one-shot turn, a background ``hermes gateway run`` and a login-shell probe.
+provider, a one-shot turn, a background ``rabbit gateway run`` and a login-shell probe.
 """
 
 from __future__ import annotations
@@ -45,13 +45,13 @@ def make_origin(root: Path) -> Path:
 def new_sandbox(root: Path, origin: Path) -> I.Sandbox:
     """``I.new_sandbox`` with the launch-time source-update check a real user's process runs.
 
-    The shared sandbox env sets ``HERMES_DISABLE_LAZY_INSTALLS=1``, which also short-circuits
+    The shared sandbox env sets ``RABBIT_DISABLE_LAZY_INSTALLS=1``, which also short-circuits
     ``prepare_launch`` (the per-launch "is this install current?" check). Host-shape bugs live in
     exactly that check (path strings that differ from one launch to the next), so these
     sandboxes run without it, as users do.
     """
     sb = I.new_sandbox(root, origin)
-    sb.env.pop("HERMES_DISABLE_LAZY_INSTALLS", None)
+    sb.env.pop("RABBIT_DISABLE_LAZY_INSTALLS", None)
     return sb
 
 
@@ -62,16 +62,16 @@ def ok(cp: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
 
 def configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
     """Point the install at the fake provider with a current-version config."""
-    ver = ok(sb.run([sb.python, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
+    ver = ok(sb.run([sb.python, "-c", "from rabbit_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
     version = int(ver.stdout.strip().splitlines()[-1])
-    (sb.hermes_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
-    (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n", encoding="utf-8")
+    (sb.rabbit_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
+    (sb.rabbit_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n", encoding="utf-8")
 
 
 def turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str, *, env: dict | None = None) -> subprocess.CompletedProcess:
-    """One ``hermes -z`` turn that must reach the provider exactly once and print its reply."""
+    """One ``rabbit -z`` turn that must reach the provider exactly once and print its reply."""
     n = len(provider.main_requests())
-    cp = H.run([sb.hermes, "-z", marker], env=env or sb.env, cwd=sb.root, writable=[sb.root], timeout=900)
+    cp = H.run([sb.rabbit, "-z", marker], env=env or sb.env, cwd=sb.root, writable=[sb.root], timeout=900)
     assert cp.returncode == 0 and I.TRACEBACK not in cp.stdout + cp.stderr, I.describe(cp)
     assert provider.default_text in cp.stdout, "the reply never reached stdout:\n" + I.describe(cp)
     new = provider.main_requests()[n:]
@@ -103,7 +103,7 @@ def missing_entries(entries: list[str]) -> list[str]:
 
 
 class Gateway:
-    """``hermes gateway run`` in the foreground of its own sandbox, as a user starts it by hand."""
+    """``rabbit gateway run`` in the foreground of its own sandbox, as a user starts it by hand."""
 
     def __init__(self, sb: I.Sandbox):
         self.sb = sb
@@ -111,7 +111,7 @@ class Gateway:
         self.proc: subprocess.Popen | None = None
 
     def state(self) -> dict:
-        f = self.sb.hermes_home / "gateway_state.json"
+        f = self.sb.rabbit_home / "gateway_state.json"
         try:
             return json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -120,7 +120,7 @@ class Gateway:
     def start(self, timeout: float = 180) -> dict:
         fh = open(self.log, "w", encoding="utf-8")  # noqa: SIM115 - handed to the child
         self.proc = subprocess.Popen(
-            H.sandbox_argv([self.sb.hermes, "gateway", "run"], writable=[self.sb.root]),
+            H.sandbox_argv([self.sb.rabbit, "gateway", "run"], writable=[self.sb.root]),
             env=self.sb.env, cwd=str(self.sb.root), stdin=subprocess.DEVNULL, stdout=fh,
             stderr=subprocess.STDOUT, start_new_session=True)
         fh.close()
@@ -138,8 +138,8 @@ class Gateway:
 
     def tail(self, n: int = 6000) -> str:
         parts = []
-        for label, p in (("gateway stdout", self.log), ("agent.log", self.sb.hermes_home / "logs" / "agent.log"),
-                         ("errors.log", self.sb.hermes_home / "logs" / "errors.log")):
+        for label, p in (("gateway stdout", self.log), ("agent.log", self.sb.rabbit_home / "logs" / "agent.log"),
+                         ("errors.log", self.sb.rabbit_home / "logs" / "errors.log")):
             try:
                 parts.append(f"--- {label} ---\n{p.read_text(encoding='utf-8', errors='replace')[-n:]}")
             except OSError:

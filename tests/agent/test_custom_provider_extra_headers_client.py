@@ -19,7 +19,7 @@ _PROXY_CONFIG = {
             "api_key": "proxy-key",
             "extra_headers": {
                 "CF-Access-Client-Id": "xxxx.access",
-                "X-Client-Name": "hermes-agent",
+                "X-Client-Name": "rabbit-agent",
             },
         }
     ]
@@ -29,7 +29,7 @@ _PROXY_CONFIG = {
 @patch("agent.process_bootstrap.OpenAI")
 def test_custom_provider_extra_headers_applied_at_construction(mock_openai):
     mock_openai.return_value = MagicMock()
-    with patch("hermes_cli.config.load_config", return_value=_PROXY_CONFIG):
+    with patch("rabbit_cli.config.load_config", return_value=_PROXY_CONFIG):
         agent = AIAgent(
             api_key="proxy-key",
             base_url=_PROXY_URL,
@@ -42,7 +42,7 @@ def test_custom_provider_extra_headers_applied_at_construction(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["CF-Access-Client-Id"] == "xxxx.access"
-    assert headers["X-Client-Name"] == "hermes-agent"
+    assert headers["X-Client-Name"] == "rabbit-agent"
 
 
 

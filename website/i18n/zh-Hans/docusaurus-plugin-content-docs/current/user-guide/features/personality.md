@@ -1,40 +1,40 @@
 ---
 sidebar_position: 9
 title: "个性与 SOUL.md"
-description: "通过全局 SOUL.md、内置个性预设和自定义角色定义来自定义 Hermes Agent 的个性"
+description: "通过全局 SOUL.md、内置个性预设和自定义角色定义来自定义 Rabbit Agent 的个性"
 ---
 
 # 个性与 SOUL.md
 
-Hermes Agent 的个性完全可自定义。`SOUL.md` 是**主要身份标识**——它是系统提示词（prompt）中的第一项内容，定义了 Agent 是谁。
+Rabbit Agent 的个性完全可自定义。`SOUL.md` 是**主要身份标识**——它是系统提示词（prompt）中的第一项内容，定义了 Agent 是谁。
 
-- `SOUL.md` — 存放在 `HERMES_HOME` 中的持久角色文件，作为 Agent 的身份标识（系统提示词中的第 1 个槽位）
+- `SOUL.md` — 存放在 `RABBIT_HOME` 中的持久角色文件，作为 Agent 的身份标识（系统提示词中的第 1 个槽位）
 - 内置或自定义的 `/personality` 预设 — 会话级系统提示词覆盖层
 
-如果你想改变 Hermes 的身份，或将其替换为完全不同的 Agent 角色，请编辑 `SOUL.md`。
+如果你想改变 Rabbit 的身份，或将其替换为完全不同的 Agent 角色，请编辑 `SOUL.md`。
 
 ## SOUL.md 的工作方式
 
-Hermes 现在会自动在以下位置生成默认的 `SOUL.md`：
+Rabbit 现在会自动在以下位置生成默认的 `SOUL.md`：
 
 ```text
-~/.hermes/SOUL.md
+~/.rabbit/SOUL.md
 ```
 
-更准确地说，它使用当前实例的 `HERMES_HOME`，因此如果你以自定义主目录运行 Hermes，它将使用：
+更准确地说，它使用当前实例的 `RABBIT_HOME`，因此如果你以自定义主目录运行 Rabbit，它将使用：
 
 ```text
-$HERMES_HOME/SOUL.md
+$RABBIT_HOME/SOUL.md
 ```
 
 ### 重要行为
 
 - **SOUL.md 是 Agent 的主要身份标识。** 它占据系统提示词的第 1 个槽位，替代硬编码的默认身份。
-- 如果 `SOUL.md` 尚不存在，Hermes 会自动创建一个初始文件
+- 如果 `SOUL.md` 尚不存在，Rabbit 会自动创建一个初始文件
 - 已有的用户 `SOUL.md` 文件不会被覆盖
-- Hermes 仅从 `HERMES_HOME` 加载 `SOUL.md`
-- Hermes 不会在当前工作目录中查找 `SOUL.md`
-- 如果 `SOUL.md` 存在但为空，或无法加载，Hermes 将回退到内置的默认身份
+- Rabbit 仅从 `RABBIT_HOME` 加载 `SOUL.md`
+- Rabbit 不会在当前工作目录中查找 `SOUL.md`
+- 如果 `SOUL.md` 存在但为空，或无法加载，Rabbit 将回退到内置的默认身份
 - 如果 `SOUL.md` 有内容，该内容在经过安全扫描和截断处理后将原样注入
 - SOUL.md **不会**在上下文文件部分重复出现——它仅作为身份标识出现一次
 
@@ -44,23 +44,23 @@ $HERMES_HOME/SOUL.md
 
 这样可以保持个性的可预测性。
 
-如果 Hermes 从你启动它的任意目录加载 `SOUL.md`，你的个性可能会在不同项目之间意外改变。通过仅从 `HERMES_HOME` 加载，个性归属于 Hermes 实例本身。
+如果 Rabbit 从你启动它的任意目录加载 `SOUL.md`，你的个性可能会在不同项目之间意外改变。通过仅从 `RABBIT_HOME` 加载，个性归属于 Rabbit 实例本身。
 
 这也让用户更容易理解：
-- "编辑 `~/.hermes/SOUL.md` 来更改 Hermes 的默认个性。"
+- "编辑 `~/.rabbit/SOUL.md` 来更改 Rabbit 的默认个性。"
 
 ## 编辑位置
 
 对于大多数用户：
 
 ```bash
-~/.hermes/SOUL.md
+~/.rabbit/SOUL.md
 ```
 
 如果你使用自定义主目录：
 
 ```bash
-$HERMES_HOME/SOUL.md
+$RABBIT_HOME/SOUL.md
 ```
 
 ## SOUL.md 应该写什么？
@@ -71,7 +71,7 @@ $HERMES_HOME/SOUL.md
 - 直接程度
 - 默认交互风格
 - 风格上应避免的内容
-- Hermes 应如何处理不确定性、分歧或模糊情况
+- Rabbit 应如何处理不确定性、分歧或模糊情况
 
 不适合写入的内容：
 - 一次性项目说明
@@ -116,7 +116,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - Treat edge cases as part of the design, not cleanup
 ```
 
-## Hermes 注入提示词的内容
+## Rabbit 注入提示词的内容
 
 `SOUL.md` 的内容直接进入系统提示词的第 1 个槽位——即 Agent 身份位置。不会在其周围添加任何包装语言。
 
@@ -124,7 +124,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 - 提示词注入扫描
 - 内容过大时进行截断
 
-如果文件为空、仅含空白字符或无法读取，Hermes 将回退到内置默认身份（"You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask..."）。当 `skip_context_files` 被设置时（例如在子 Agent/委托上下文中），同样适用此回退。
+如果文件为空、仅含空白字符或无法读取，Rabbit 将回退到内置默认身份（"You are Rabbit Agent, built by Sanath Patil. Be direct: match the length of your reply to the weight of the ask..."）。当 `skip_context_files` 被设置时（例如在子 Agent/委托上下文中），同样适用此回退。
 
 ## 安全扫描
 
@@ -172,7 +172,7 @@ You optimize for truth, clarity, and usefulness over politeness theater.
 
 ## 内置个性
 
-Hermes 内置了多种个性，可通过 `/personality` 切换。
+Rabbit 内置了多种个性，可通过 `/personality` 切换。
 
 | 名称 | 描述 |
 |------|-------------|
@@ -183,7 +183,7 @@ Hermes 内置了多种个性，可通过 `/personality` 切换。
 | **teacher** | 耐心的教育者，配有清晰示例 |
 | **kawaii** | 可爱表达、闪光效果与热情 ★ |
 | **catgirl** | 带有猫咪表达方式的 Neko-chan，nya~ |
-| **pirate** | 船长 Hermes，精通技术的海盗 |
+| **pirate** | 船长 Rabbit，精通技术的海盗 |
 | **shakespeare** | 充满戏剧张力的吟游诗人风格 |
 | **surfer** | 超级冷静的冲浪者氛围 |
 | **noir** | 硬派侦探叙事风格 |
@@ -207,11 +207,11 @@ Hermes 内置了多种个性，可通过 `/personality` 切换。
 /personality teacher
 ```
 
-这些是便捷的覆盖层，但你的全局 `SOUL.md` 仍然赋予 Hermes 持久的默认个性，除非覆盖层对其进行了实质性更改。
+这些是便捷的覆盖层，但你的全局 `SOUL.md` 仍然赋予 Rabbit 持久的默认个性，除非覆盖层对其进行了实质性更改。
 
 ## 在配置中定义自定义个性
 
-你也可以在 `~/.hermes/config.yaml` 的 `agent.personalities` 下定义命名的自定义个性。
+你也可以在 `~/.rabbit/config.yaml` 的 `agent.personalities` 下定义命名的自定义个性。
 
 ```yaml
 agent:
@@ -231,7 +231,7 @@ agent:
 
 一个强健的默认配置：
 
-1. 在 `~/.hermes/SOUL.md` 中维护一个经过深思熟虑的全局 `SOUL.md`
+1. 在 `~/.rabbit/SOUL.md` 中维护一个经过深思熟虑的全局 `SOUL.md`
 2. 将项目说明放在 `AGENTS.md` 中
 3. 仅在需要临时模式切换时使用 `/personality`
 
@@ -259,13 +259,13 @@ agent:
 - [上下文文件](./context-files.md)
 - [配置](../configuration.md)
 - [技巧与最佳实践](../../guides/tips.md)
-- [SOUL.md 指南](../../guides/use-soul-with-hermes.md)
+- [SOUL.md 指南](../../guides/use-soul-with-rabbit.md)
 
 ## CLI 外观与对话个性
 
 对话个性与 CLI 外观是相互独立的：
 
-- `SOUL.md`、`agent.system_prompt` 和 `/personality` 影响 Hermes 的说话方式
-- `display.skin` 和 `/skin` 影响 Hermes 在终端中的显示外观
+- `SOUL.md`、`agent.system_prompt` 和 `/personality` 影响 Rabbit 的说话方式
+- `display.skin` 和 `/skin` 影响 Rabbit 在终端中的显示外观
 
 关于终端外观，请参阅 [皮肤与主题](./skins.md)。

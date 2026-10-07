@@ -17,7 +17,7 @@ def _resolve_browser_cdp_url() -> str:
     if env_url := os.environ.get("BROWSER_CDP_URL", "").strip():
         return env_url
     with contextlib.suppress(Exception):
-        from hermes_cli.config import read_raw_config
+        from rabbit_cli.config import read_raw_config
         cfg = read_raw_config()
         browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
         if isinstance(browser_cfg, dict):
@@ -49,7 +49,7 @@ def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
 
 def _connect_local_default(port: int, system: str, announce) -> str | None:
     """Discover (or launch) the default local debug browser → CDP URL, or None after announcing."""
-    from hermes_cli.browser_connect import (
+    from rabbit_cli.browser_connect import (
         discover_local_cdp_url, find_free_debug_port, launch_chrome_debug, local_port_in_use,
         manual_chrome_debug_command)
 
@@ -95,7 +95,7 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
 
 def _browser_connect(rid, params: dict) -> dict:
     import platform
-    from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+    from rabbit_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
     from tools.browser_tool_lifecycle import cleanup_all_browsers
     from urllib.parse import urlparse
     raw_url = params.get("url")

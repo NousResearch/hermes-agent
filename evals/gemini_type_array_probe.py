@@ -94,10 +94,10 @@ def main():
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
     for name in list(sys.modules):
-        if name == "agent" or name.startswith(("agent.", "tools", "hermes")):
+        if name == "agent" or name.startswith(("agent.", "tools", "rabbit")):
             del sys.modules[name]
     with tempfile.TemporaryDirectory(prefix="gemini-schema-home-") as home:
-        os.environ["HERMES_HOME"] = home
+        os.environ["RABBIT_HOME"] = home
         adapter = importlib.import_module("agent.gemini_native_adapter")
         baseline = types.ModuleType("baseline_gemini_schema")
         source = subprocess.check_output(

@@ -42,7 +42,7 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
     ``meta`` copy the fallback. Every structured field is additive: a driver that omits one leaves the attribute
     ``None`` so old drivers see unchanged behavior.
 
-    See the action response shape in cua-driver's mcp-tool-notes and NousResearch/hermes-agent#67052.
+    See the action response shape in cua-driver's mcp-tool-notes and seven0070/Rabbit-#67052.
     """
     sc = structured if isinstance(structured, dict) else {}
 
@@ -99,7 +99,7 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
     AT-SPI / AXFrame returned usable bounds, ``frame`` ``{x, y, w, h}`` — so real pixel bounds survive (the
     markdown path loses them). Malformed entries are skipped.
 
-    Surface 2 of NousResearch/hermes-agent#47072: read the canonical ``structuredContent.elements`` array
+    Surface 2 of seven0070/Rabbit-#47072: read the canonical ``structuredContent.elements`` array
     cua-driver-rs emits on every ``get_window_state`` response (trycua/cua#1961).
     """
     elements: List[UIElement] = []
@@ -161,7 +161,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
     ``images`` with ``""`` where the part carried no mimeType (older drivers — callers then sniff the base64 prefix).
 
     `image_mime_types` is the explicit `mimeType` cua-driver emits on every image part as of trycua/cua#1961
-    (Surface 7 of NousResearch/hermes-agent#47072). Each entry corresponds index-for-index with `images`; an
+    (Surface 7 of seven0070/Rabbit-#47072). Each entry corresponds index-for-index with `images`; an
     empty string entry signals the part carried no mimeType (older cua-driver build), and the caller should
     fall back to base64-prefix sniffing.
     """

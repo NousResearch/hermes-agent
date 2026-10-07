@@ -1,11 +1,11 @@
 /**
  * AuthWidget — sidebar "Logged in as …" affordance for the dashboard
- * OAuth gate (Phase 7 of .hermes/plans/2026-05-21-dashboard-oauth-auth.md).
+ * OAuth gate (Phase 7 of .rabbit/plans/2026-05-21-dashboard-oauth-auth.md).
  *
  * Renders nothing in loopback / --insecure mode. In gated mode, fetches
  * /api/auth/me on mount and surfaces:
  *
- *   - the user_id (truncated to 14 chars + ellipsis) since the Nous Portal
+ *   - the user_id (truncated to 14 chars + ellipsis) since the portal
  *     contract V1 doesn't emit email/display_name claims (Contract Anchor
  *     C4 in the plan; the API responds with empty strings for those
  *     fields, so we use user_id as the display value)
@@ -54,7 +54,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
   // guaranteed 401. Don't fire the request at all — it only produces console
   // noise ("Failed to load resource: 401") on every dashboard load.
   const gated =
-    typeof window !== "undefined" && !!window.__HERMES_AUTH_REQUIRED__;
+    typeof window !== "undefined" && !!window.__RABBIT_AUTH_REQUIRED__;
 
   useEffect(() => {
     if (!gated) return;

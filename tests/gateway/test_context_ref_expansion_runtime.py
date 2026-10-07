@@ -4,7 +4,7 @@
 Bug: the block read ``self._model`` / ``self._base_url`` to resolve the
 model/base_url for ``get_model_context_length_async``. ``GatewayRunner``
 never assigns either attribute (that pattern was copy-pasted from
-``HermesCLI``, which does carry ``self.model``/``self.base_url`` — see
+``RabbitCLI``, which does carry ``self.model``/``self.base_url`` — see
 commit da44c196b). Every message containing "@" raised ``AttributeError``
 inside the ``try`` block, which the surrounding ``except Exception`` silently
 swallowed at debug level, so ``preprocess_context_references_async`` never

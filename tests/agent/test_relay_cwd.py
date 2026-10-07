@@ -1,4 +1,4 @@
-"""Logical working directories attached to Hermes-owned Relay scopes."""
+"""Logical working directories attached to Rabbit-owned Relay scopes."""
 
 from pathlib import Path
 
@@ -53,7 +53,7 @@ def test_gateway_session_key_uses_its_recorded_cwd(monkeypatch):
     monkeypatch.setattr(
         "gateway.session_context.get_session_env",
         lambda name, default: (
-            "gateway-key" if name == "HERMES_SESSION_KEY" else default
+            "gateway-key" if name == "RABBIT_SESSION_KEY" else default
         ),
     )
     monkeypatch.setattr(

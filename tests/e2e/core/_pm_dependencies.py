@@ -29,11 +29,11 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
     # node runs the TUI behind the dashboard's /api/pty; carry it when the
     # runner's store has it, or PM in the sandbox reports it not installed.
     names = ("uv", "python") + (("node",) if facts.get("node") else ())
-    if "node" not in names and os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
+    if "node" not in names and os.environ.get("RABBIT_E2E_REQUIRE_TUI") == "1":
         # A node on PATH alone (actions/setup-node) is invisible to PM, so
         # every /api/pty chat would fail later with an opaque close 1011.
         raise AssertionError(
-            f"HERMES_E2E_REQUIRE_TUI=1 but the PM store has no node: {source} "
+            f"RABBIT_E2E_REQUIRE_TUI=1 but the PM store has no node: {source} "
             "(install it with setup-pm `toolchain: all`)"
         )
     records = {name: facts.get(name) for name in names}
@@ -44,7 +44,7 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
     lock = Lockfile(lockfile_path())
     verified_tools(names, source_store=source, target=target, lock=lock)
 
-    # The source may live under the real ~/.hermes. Per-test guards must never
+    # The source may live under the real ~/.rabbit. Per-test guards must never
     # read it, nor follow a sandbox tool symlink back into it. Copy the verified
     # entries once per pytest process into the runner's throwaway scratch root.
     prepared = Path(tempfile.mkdtemp(prefix="pm-e2e-tools-"))
@@ -66,14 +66,14 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
 _PREPARED_TOOLS = _prepare_test_tools()
 
 
-def select_test_dependencies(hermes_home: Path, checkout: Path) -> None:
+def select_test_dependencies(rabbit_home: Path, checkout: Path) -> None:
     """Point sandbox PM facts at the real test venv instead of bootstrapping a second one."""
     test_venv = Path(sys.prefix)
     if not (test_venv / "pyvenv.cfg").is_file():
         return  # Nix/system Python has no prepared venv to select.
     selected = site_packages(test_venv)
     assert selected.is_dir(), f"test interpreter lacks site-packages: {test_venv}"
-    state = hermes_home / "installs" / install_key(checkout)
+    state = rabbit_home / "installs" / install_key(checkout)
     environment = state / "environments" / "e2e-test" / "venv"
     environment.mkdir(parents=True)
     shutil.copyfile(test_venv / "pyvenv.cfg", environment / "pyvenv.cfg")
@@ -87,7 +87,7 @@ def select_test_dependencies(hermes_home: Path, checkout: Path) -> None:
     if _PREPARED_TOOLS is None:
         return
     source, records = _PREPARED_TOOLS
-    tools = hermes_home / "tools"
+    tools = rabbit_home / "tools"
     tools.mkdir()
     for record in records.values():
         assert record is not None

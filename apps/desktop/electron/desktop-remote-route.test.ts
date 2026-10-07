@@ -59,7 +59,7 @@ test('environment URL without its token keeps the existing error', () => {
         env: { url: 'https://env.test' },
         registry: registry('local', [])
       }),
-    /HERMES_DESKTOP_REMOTE_TOKEN is not/
+    /RABBIT_DESKTOP_REMOTE_TOKEN is not/
   )
 })
 
@@ -92,10 +92,10 @@ test('profile SSH identity includes port, key, paths, and remote profile', () =>
   const ssh = {
     mode: 'ssh',
     host: 'box.test',
-    user: 'hermes',
+    user: 'rabbit',
     port: 2222,
     keyPath: '/keys/a',
-    remoteHermesPath: '/srv/hermes',
+    remoteRabbitPath: '/srv/rabbit',
     remoteProfile: 'worker'
   }
 
@@ -116,17 +116,17 @@ test('profile SSH route fails closed when any dial field differs', () => {
   const ssh = {
     mode: 'ssh',
     host: 'box.test',
-    user: 'hermes',
+    user: 'rabbit',
     port: 2222,
     keyPath: '/keys/a',
-    remoteHermesPath: '/srv/hermes',
+    remoteRabbitPath: '/srv/rabbit',
     remoteProfile: 'worker'
   }
 
   const variants = [
     { ...ssh, port: 2200 },
     { ...ssh, keyPath: '/keys/b' },
-    { ...ssh, remoteHermesPath: '/opt/hermes' },
+    { ...ssh, remoteRabbitPath: '/opt/rabbit' },
     { ...ssh, remoteProfile: 'default' },
     { ...ssh, user: 'other' }
   ]
@@ -144,9 +144,9 @@ test('profile SSH route fails closed when any dial field differs', () => {
 
 test('global SSH treats an omitted port as 22 and checks the primary route', () => {
   const route = resolveDesktopRemoteRoute({
-    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'rabbit' } },
     registry: registry('ssh-primary', [
-      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'rabbit', port: 22 }
     ])
   })
 
@@ -156,10 +156,10 @@ test('global SSH treats an omitted port as 22 and checks the primary route', () 
 
 test('v1 settings SSH pool key ignores registry identity tags', () => {
   const route = resolveDesktopRemoteRoute({
-    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'hermes' } },
+    config: { mode: 'ssh', remote: { mode: 'ssh', host: 'box.test', user: 'rabbit' } },
     profile: 'worker',
     registry: registry('ssh-primary', [
-      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'hermes', port: 22 }
+      { id: 'ssh-primary', kind: 'ssh', label: 'SSH primary', host: 'box.test', user: 'rabbit', port: 22 }
     ])
   })
 
@@ -174,10 +174,10 @@ test('v1 profile SSH pool key is the profile, not conn:id::profile', () => {
   const ssh = {
     mode: 'ssh',
     host: 'box.test',
-    user: 'hermes',
+    user: 'rabbit',
     port: 2222,
     keyPath: '/keys/a',
-    remoteHermesPath: '/srv/hermes',
+    remoteRabbitPath: '/srv/rabbit',
     remoteProfile: 'worker'
   }
 
@@ -209,29 +209,7 @@ test('profile route omits identity when two registry entries match exactly', () 
   assert.equal(route?.connectionId, undefined)
 })
 
-test('kind, auth material, headers, and Cloud org stay part of route identity', () => {
-  const cloud = {
-    mode: 'cloud',
-    url: 'https://cloud.test',
-    authMode: 'oauth',
-    headers: { 'CF-Access': { encoding: 'plain', value: 'a' } },
-    org: 'org-a'
-  }
-
-  const route = resolveDesktopRemoteRoute({
-    config: { mode: 'cloud', remote: cloud },
-    registry: registry('cloud', [
-      { id: 'cloud', kind: 'cloud', label: 'Cloud', ...cloud },
-      { id: 'remote', kind: 'remote', label: 'Remote', ...cloud },
-      { id: 'other-org', kind: 'cloud', label: 'Other org', ...cloud, org: 'org-b' }
-    ])
-  })
-
-  assert.equal(route?.kind, 'cloud')
-  assert.equal(route?.connectionId, 'cloud')
-})
-
-test('URL route fails closed for different token, headers, kind, or Cloud org', () => {
+test('URL route fails closed for a different token or headers', () => {
   const cases = [
     {
       config: { mode: 'remote', remote: { url: 'https://gateway.test', token: tokenA } },
@@ -253,14 +231,6 @@ test('URL route fails closed for different token, headers, kind, or Cloud org', 
         headers: { 'CF-Access': { encoding: 'plain', value: 'b' } }
       }
     },
-    {
-      config: { mode: 'remote', remote: { url: 'https://gateway.test', token: tokenA } },
-      primary: { kind: 'cloud', url: 'https://gateway.test', token: tokenA }
-    },
-    {
-      config: { mode: 'cloud', remote: { url: 'https://gateway.test', authMode: 'oauth', org: 'a' } },
-      primary: { kind: 'cloud', url: 'https://gateway.test', authMode: 'oauth', org: 'b' }
-    }
   ]
 
   for (const [index, item] of cases.entries()) {
@@ -277,14 +247,14 @@ test('profile remote wins over a registry-backed global SSH route', () => {
   const route = resolveDesktopRemoteRoute({
     config: {
       mode: 'ssh',
-      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'rabbit' },
       profiles: {
         worker: { mode: 'remote', url: 'https://worker.test', authMode: 'token', token: tokenA }
       }
     },
     profile: 'worker',
     registry: registry('global-ssh', [
-      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'rabbit' },
       { id: 'worker-remote', kind: 'remote', label: 'Worker', url: 'https://worker.test', token: tokenA }
     ])
   })
@@ -298,15 +268,15 @@ test('profile SSH wins over a different registry primary SSH route', () => {
   const route = resolveDesktopRemoteRoute({
     config: {
       mode: 'ssh',
-      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' },
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'rabbit' },
       profiles: {
-        worker: { mode: 'ssh', host: 'worker-box.test', user: 'hermes' }
+        worker: { mode: 'ssh', host: 'worker-box.test', user: 'rabbit' }
       }
     },
     profile: 'worker',
     registry: registry('global-ssh', [
-      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' },
-      { id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', host: 'worker-box.test', user: 'hermes' }
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'rabbit' },
+      { id: 'worker-ssh', kind: 'ssh', label: 'Worker SSH', host: 'worker-box.test', user: 'rabbit' }
     ])
   })
 
@@ -319,11 +289,11 @@ test('environment remote wins over a registry-backed global SSH route', () => {
   const route = resolveDesktopRemoteRoute({
     config: {
       mode: 'ssh',
-      remote: { mode: 'ssh', host: 'global-box.test', user: 'hermes' }
+      remote: { mode: 'ssh', host: 'global-box.test', user: 'rabbit' }
     },
     env: { url: 'https://env.test', token: 'env-token' },
     registry: registry('global-ssh', [
-      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'hermes' }
+      { id: 'global-ssh', kind: 'ssh', label: 'Global SSH', host: 'global-box.test', user: 'rabbit' }
     ])
   })
 
@@ -336,7 +306,7 @@ test('local route does not inherit an unrelated registry SSH connection', () => 
   const route = resolveDesktopRemoteRoute({
     config: { mode: 'local' },
     registry: registry('local', [
-      { id: 'unused-ssh', kind: 'ssh', label: 'Unused SSH', host: 'box.test', user: 'hermes' }
+      { id: 'unused-ssh', kind: 'ssh', label: 'Unused SSH', host: 'box.test', user: 'rabbit' }
     ])
   })
 
@@ -351,7 +321,7 @@ test('local config without overrides returns null', () => {
 //
 // "Make primary" on a registered remote gateway only writes connections.json;
 // the v1 config.mode stays 'local'. The route resolver must still expose that
-// remote transport, or startHermes() spawns a loopback `hermes serve` the
+// remote transport, or startRabbit() spawns a loopback `rabbit serve` the
 // desktop never uses (duplicated MCP sets, port squat, respawn-on-poll).
 
 test('falls back to a REMOTE registry primary when the v1 mode is local (#91564/#90316)', () => {
@@ -368,28 +338,6 @@ test('falls back to a REMOTE registry primary when the v1 mode is local (#91564/
   assert.equal(route?.connectionId, 'gw-b')
   assert.equal((route as any)?.url, 'https://gw-b.test')
   assert.deepEqual((route as any)?.token, tokenB)
-})
-
-test('falls back to a CLOUD registry primary when the v1 mode is local', () => {
-  const route = resolveDesktopRemoteRoute({
-    config: { mode: 'local' },
-    profile: null,
-    registry: registry('cloud-1', [
-      {
-        id: 'cloud-1',
-        kind: 'cloud',
-        label: 'Hermes Cloud',
-        url: 'https://agent.hermes.cloud',
-        authMode: 'oauth',
-        org: 'nous'
-      }
-    ])
-  })
-
-  assert.equal(route?.kind, 'cloud')
-  assert.equal(route?.source, 'registry')
-  assert.equal((route as any)?.authMode, 'oauth')
-  assert.equal((route as any)?.org, 'nous')
 })
 
 test('falls back to an SSH registry primary when the v1 mode is local', () => {

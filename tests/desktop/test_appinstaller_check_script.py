@@ -23,9 +23,9 @@ from pathlib import Path
 import pytest
 
 
-HERMES_PYTHON = sys.executable
+RABBIT_PYTHON = sys.executable
 REPO = Path(__file__).resolve().parents[2]
-MODULE = "hermes_cli.windows_appinstaller_update"
+MODULE = "rabbit_cli.windows_appinstaller_update"
 
 @pytest.mark.parametrize("state,code,available", [
     ("not-packaged", 0, False), ("AVAILABLE", 2, True), ("REQUIRED", 2, True),
@@ -89,7 +89,7 @@ def test_script_import_failure_json_and_exit(tmp_path):
     # A real subprocess runs the entry the desktop spawns (python -P -m) and
     # imports the absent projection.
     (tmp_path / "winrt.py").write_text("raise ImportError('fixture unavailable')", encoding="utf-8")
-    child = subprocess.run([HERMES_PYTHON, "-P", "-m", MODULE], capture_output=True,
+    child = subprocess.run([RABBIT_PYTHON, "-P", "-m", MODULE], capture_output=True,
                            text=True, timeout=30,
                            env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])})
     assert child.returncode == 1, child.stderr
@@ -103,7 +103,7 @@ def test_installed_winrt_projects_checker_uri_and_async_types(tmp_path):
     # A dev process has no package identity, so exercise the types that the
     # packaged update call projects only after Package.current succeeds.
     probe = subprocess.run(
-        [HERMES_PYTHON, "-I", "-c",
+        [RABBIT_PYTHON, "-I", "-c",
          f"import sys; sys.path.insert(0, {str(REPO)!r}); "
          f"from {MODULE} import _load_projection; "
          "from winrt.windows.foundation import IAsyncOperation, Uri; "

@@ -465,7 +465,7 @@ def fresh_gw(tmp_path, llm):
 @pytest.mark.parametrize("point,platform", CRASH_MATRIX)
 def test_crash_between_completion_and_send(fresh_gw, director, point, platform):
     """kill -9 the gateway at a point between provider completion and the platform ack, restart it
-    on the same HERMES_HOME. Recovery may be the delivery ledger (redeliver the held answer) or,
+    on the same RABBIT_HOME. Recovery may be the delivery ledger (redeliver the held answer) or,
     for a turn that never finished, auto-resume (a fresh model turn): either way the inbound ends
     with exactly ONE complete visible reply that matches the transcript, and any second copy the
     platform may hold is marked as a possible duplicate."""

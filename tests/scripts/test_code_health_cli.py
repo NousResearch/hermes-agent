@@ -348,7 +348,7 @@ def test_a_branch_cannot_relax_its_own_switch(tmp_path, monkeypatch, capsys):
 
 
 def test_hooks_run_with_msys_path_conversion_disabled(tmp_path):
-    """Hermes' Windows terminal exports both variables, so native git and python see the hook's
+    """Rabbit' Windows terminal exports both variables, so native git and python see the hook's
     paths verbatim: a POSIX `/c/...` temp path then reaches them unconverted. Inert elsewhere."""
     repo, remote = _pushable(tmp_path)
     _branch_with_checker(repo, "feature", {"pkg/d.py": "def d():\n    return 4\n"})

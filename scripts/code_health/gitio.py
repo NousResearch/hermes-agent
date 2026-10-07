@@ -123,8 +123,8 @@ def tracked_files(repo: Path, tree: str | None) -> list[str]:
 
 
 def known_env_names(repo: Path, tree: str | None) -> set[str]:
-    """Every HERMES_* literal in non-test Python of a tree (the HX002 allow set)."""
-    args = ["grep", "-h", "-o", "-I", "-E", r"HERMES_[A-Z0-9_]+"]
+    """Every RABBIT_* literal in non-test Python of a tree (the HX002 allow set)."""
+    args = ["grep", "-h", "-o", "-I", "-E", r"RABBIT_[A-Z0-9_]+"]
     if tree is not None:
         args.append(tree)
     args += ["--", "*.py", ":!tests/**", ":!**/tests/**"]

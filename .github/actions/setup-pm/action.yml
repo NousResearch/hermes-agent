@@ -139,7 +139,7 @@ runs:
         _PM_PACKAGES: ${{ inputs.packages }}
       run: |
         "$_PM_BOOTSTRAP" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" archive-inputs \
-          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$HERMES_HOME"
+          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$RABBIT_HOME"
 
     - name: Install and verify tools through PM
       id: install
@@ -151,7 +151,7 @@ runs:
         _PM_PACKAGES: ${{ inputs.packages }}
       run: |
         "$_PM_BOOTSTRAP" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" install \
-          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$HERMES_HOME"
+          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$RABBIT_HOME"
 
     - name: Cache uv dependency downloads and builds
       id: python-cache
@@ -231,5 +231,5 @@ runs:
       run: |
         args=()
         if [ "$_PM_TEST_ENVIRONMENT" = true ]; then args+=(--test-environment); fi
-        "$HERMES_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
-          --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$HERMES_HOME" "${args[@]}"
+        "$RABBIT_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
+          --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$RABBIT_HOME" "${args[@]}"

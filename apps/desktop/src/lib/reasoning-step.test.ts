@@ -32,7 +32,7 @@ describe('stepReasoningEffort', () => {
   it('resolves an unset or stale value through the fallback before stepping', () => {
     expect(stepReasoningEffort('', 1, 'low')).toBe('medium')
     expect(stepReasoningEffort('', -1, 'low')).toBe('minimal')
-    // An unrecognized value falls back to Hermes' own default (medium).
+    // An unrecognized value falls back to Rabbit' own default (medium).
     expect(stepReasoningEffort('banana', 1, 'high')).toBe('high')
     expect(stepReasoningEffort('', 1)).toBe('high')
   })

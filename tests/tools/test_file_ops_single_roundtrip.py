@@ -19,7 +19,7 @@ from tools.file_operations import ExecuteResult, ShellFileOperations
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX shell probes
 
-READ_PROBE_MARK = "__HERMES_RF_"
+READ_PROBE_MARK = "__RABBIT_RF_"
 
 @pytest.fixture(scope="module")
 def _local_env(tmp_path_factory):
@@ -47,13 +47,13 @@ def _ops(_local_env, tmp_path):
 @pytest.fixture
 def shell(_ops, monkeypatch):
     """Pin the shell path even where a native fast path exists."""
-    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+    monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
     return _ops
 
 @pytest.fixture
 def native(_ops, monkeypatch):
     """Same wiring with the native fast path on."""
-    monkeypatch.delenv("HERMES_NATIVE_FILE_READ", raising=False)
+    monkeypatch.delenv("RABBIT_NATIVE_FILE_READ", raising=False)
     return _ops
 
 def _write(tmp_path, name, data: bytes):
@@ -135,7 +135,7 @@ class TestReadFileOneRoundTrip:
 
     def test_sentinel_lookalike_in_content_reads_intact(self, shell, tmp_path):
         ops, calls = shell
-        lookalike = "__HERMES_RF_" + "ab" * 16 + "__"
+        lookalike = "__RABBIT_RF_" + "ab" * 16 + "__"
         p = _write(tmp_path, "s.txt", f"x\n{lookalike}\ny\n".encode("utf-8"))
         r = ops.read_file(p)
         assert r.error is None and r.total_lines == 3
@@ -242,7 +242,7 @@ class TestWriteFileRoundTrips:
         p.write_bytes(b"x = 1\r\ny = 2\r\n")
         r = ops.write_file(str(p), "x = 1\ny = 3\n")
         assert r.error is None
-        probes = [c for c in calls if "__HERMES_WF_" in c]
+        probes = [c for c in calls if "__RABBIT_WF_" in c]
         assert len(probes) == 1 and "cat " in probes[0]
         assert not any(c.startswith("cat ") for c in calls)
         assert p.read_bytes() == b"x = 1\r\ny = 3\r\n"
@@ -262,7 +262,7 @@ class TestWriteFileRoundTrips:
         real_exec = ops._exec
 
         def garbled(command, *args, **kwargs):
-            if "__HERMES_WF_" in command:
+            if "__RABBIT_WF_" in command:
                 return ExecuteResult(stdout="[Command timed out after 1s]\n", exit_code=124)
             return real_exec(command, *args, **kwargs)
 
@@ -315,7 +315,7 @@ class TestNativeRead:
     def test_kill_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
         ops, calls = native
         p = _write(tmp_path, "a.txt", b"one\n")
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         ops.read_file(p)
         assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
 
@@ -328,7 +328,7 @@ class TestNativeRead:
 
     def test_tilde_still_expands_through_the_shell(self, native):
         ops, calls = native
-        r = ops.read_file("~/hermes-no-such-file-7f3a.txt")
+        r = ops.read_file("~/rabbit-no-such-file-7f3a.txt")
         assert calls[0] == "echo $HOME"
         assert r.error and "File not found" in r.error
 
@@ -408,7 +408,7 @@ PARITY_CASES = [
     ("past_eof", b"".join(b"l%d\n" % i for i in range(1, 6)), {"offset": 50}),
     ("nul_binary", b"\x00\x01\x02" * 20, {}),
     ("latin1_tail", b"caf\xe9\n", {}),
-    ("sentinel_lookalike", b"x\n__HERMES_RF_" + b"ab" * 16 + b"__\ny\n", {}),
+    ("sentinel_lookalike", b"x\n__RABBIT_RF_" + b"ab" * 16 + b"__\ny\n", {}),
 ]
 
 class TestNativeReadParity:
@@ -418,11 +418,11 @@ class TestNativeReadParity:
     def test_shell_and_native_agree(self, native, tmp_path, monkeypatch, name, data, kwargs):
         ops, calls = native
         p = _write(tmp_path, f"{name}.txt", data)
-        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
         via_shell = ops.read_file(p, **kwargs).to_dict()
         assert calls and READ_PROBE_MARK in calls[0]
         calls.clear()
-        monkeypatch.delenv("HERMES_NATIVE_FILE_READ")
+        monkeypatch.delenv("RABBIT_NATIVE_FILE_READ")
         via_native = ops.read_file(p, **kwargs).to_dict()
         assert via_native == via_shell
         # The native path touches the shell only for the UTF-16 rescue of binaries.
@@ -444,9 +444,9 @@ class TestNativeReadParity:
             str(tmp_path / "note.txt"),   # missing → similar-file suggestions
             "real.txt",                   # relative to env.cwd
         ):
-            monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+            monkeypatch.setenv("RABBIT_NATIVE_FILE_READ", "0")
             via_shell = ops.read_file(p).to_dict()
-            monkeypatch.delenv("HERMES_NATIVE_FILE_READ")
+            monkeypatch.delenv("RABBIT_NATIVE_FILE_READ")
             calls.clear()
             via_native = ops.read_file(p).to_dict()
             assert via_native == via_shell, p

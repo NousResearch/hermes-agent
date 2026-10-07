@@ -82,7 +82,7 @@ class TestAPIServerPlaceholderKeyGuard:
     async def test_refuses_wildcard_with_short_random_key(self):
         """A short but non-placeholder key is brute-forceable on a public bind.
 
-        June 2026 hermes-0day hardening raised the network-bind entropy floor
+        June 2026 rabbit-0day hardening raised the network-bind entropy floor
         from 8 to 16 chars. A 12-char random key (which passed the old guard)
         must now be refused — the API server dispatches terminal-capable agent
         work, so a guessable key is RCE.
@@ -102,7 +102,7 @@ class TestAPIServerPlaceholderKeyGuard:
         port/runner setup is environment-dependent — only that the weak-key
         guard does not reject it."""
         from gateway.platforms.api_server import APIServerAdapter
-        from hermes_cli.auth import has_usable_secret
+        from rabbit_cli.auth import has_usable_secret
 
         strong = "0123456789abcdef0123456789abcdef"
         assert has_usable_secret(strong, min_length=16) is True

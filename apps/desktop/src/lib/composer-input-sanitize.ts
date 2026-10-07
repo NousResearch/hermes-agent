@@ -2,7 +2,7 @@
  * Strip terminal bracketed-paste leaks and repeated artifact tails from composer
  * text before it is shown in the UI or sent to the gateway.
  *
- * Mirrors hermes_cli/input_sanitize.py (CLI/TUI gateway defensive path).
+ * Mirrors rabbit_cli/input_sanitize.py (CLI/TUI gateway defensive path).
  */
 
 const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\])])\[200~/g

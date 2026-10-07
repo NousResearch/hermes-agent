@@ -4,7 +4,7 @@ import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 import { recordFeatureToggle } from './desktop-metrics'
 
-const KEY = 'hermes.desktop.intro-splash.v1'
+const KEY = 'rabbit.desktop.intro-splash.v1'
 
 /** Whether the wordmark + tagline splash renders on an empty chat. */
 export const $introSplash = atom(storedBoolean(KEY, true))

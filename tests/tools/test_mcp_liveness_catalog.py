@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from hermes_platform import declaration
+from rabbit_platform import declaration
 from tools.registry import registry
 
 
@@ -22,7 +22,7 @@ def _decl(tmp_path):
 
 
 def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, monkeypatch):
-    import hermes_cli.agent_plugins as agent_plugins
+    import rabbit_cli.agent_plugins as agent_plugins
     from tools.tool_search import ToolSearchConfig, dispatch_tool_search
     from tools.tool_search_catalog import build_catalog_listing_with_form
 

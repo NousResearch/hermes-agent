@@ -36,11 +36,11 @@ def test_pending_deliveries_are_claimed_in_instant_order_across_dst_fall_back(
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     new_york = ZoneInfo("America/New_York")
     monkeypatch.setattr(
-        queue, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+        queue, "_rabbit_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
     )
     queue.enqueue("exec-z-earlier", {"id": "job-1"}, "first")
     monkeypatch.setattr(
-        queue, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+        queue, "_rabbit_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
     )
     queue.enqueue("exec-a-later", {"id": "job-2"}, "second")
 

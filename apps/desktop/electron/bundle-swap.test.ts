@@ -9,7 +9,7 @@ import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 const RUNNING = { builtAt: '2026-08-29T04:00:00.000Z', commit: 'a'.repeat(40), source: 'local' }
 
 it('reads only the installed stamp for swap detection, without schema conversion', () => {
-  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-swap-'))
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'rabbit-swap-'))
 
   try {
     expect(readBundleSwapStamp(resources)).toBeNull()

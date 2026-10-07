@@ -8,7 +8,7 @@ any particular document.
 
 import io
 
-import hermes_yaml as yaml
+import rabbit_yaml as yaml
 
 from utils import fast_safe_load
 
@@ -17,7 +17,7 @@ _DOCS = [
     "",  # empty document -> None
     "a: 1\nb: two\nc: 3.5\n",
     "list: [1, 2, 3]\nnested:\n  k: v\n  flag: true\n  empty: null\n",
-    "name: skill-x\nmetadata:\n  hermes:\n    tags: [alpha, beta]\n    category: devops\n",
+    "name: skill-x\nmetadata:\n  rabbit:\n    tags: [alpha, beta]\n    category: devops\n",
     "- one\n- two\n- three\n",  # top-level sequence
     "scalar string",  # bare scalar
 ]

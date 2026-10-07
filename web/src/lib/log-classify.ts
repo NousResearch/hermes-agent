@@ -1,7 +1,7 @@
 /**
  * Log-line level classification for the dashboard Logs page.
  *
- * Prefers the structured level token emitted by hermes_logging
+ * Prefers the structured level token emitted by rabbit_logging
  * ("2026-07-26 13:07:45,228 INFO …"); falls back to word-boundary matching
  * for untimestamped lines (tracebacks, wrapped continuations). Plain
  * substring matching is deliberately avoided — INFO lines carrying payloads
@@ -10,7 +10,7 @@
 
 export type LogLevel = "error" | "warning" | "info" | "debug";
 
-// Level token as emitted by hermes_logging, anchored to the line head so
+// Level token as emitted by rabbit_logging, anchored to the line head so
 // payload text can't spoof the level.
 const LEVEL_TOKEN_RE =
   /^\d{4}-\d{2}-\d{2}[ T][\d:,.]+\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)\b/;

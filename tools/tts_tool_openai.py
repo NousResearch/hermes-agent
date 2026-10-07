@@ -53,7 +53,8 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
                 "tts", NOUS_MANAGED_PROVIDER,
                 "the Nous Tool Gateway is not available (not entitled or unreachable)"))
         return route
-    direct_api_key = openai_cfg.get("api_key") or resolve_openai_audio_api_key()
+    direct_api_key = openai_cfg.get("api_key") or resolve_openai_audio_api_key(
+        key_env=str(openai_cfg.get("key_env") or "").strip())
     if direct_api_key:
         return direct_api_key, openai_cfg.get("base_url") or DEFAULT_OPENAI_BASE_URL, False
     if selected is not None:
@@ -63,7 +64,11 @@ def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:
         ))
     route = _managed_openai_audio_route()
     if route is None:
-        message = "Neither tts.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
+        key_env_name = str(openai_cfg.get("key_env") or "").strip()
+        hint = ("; tts.openai.key_env (" + key_env_name + ") resolves to an empty value"
+                if key_env_name else "")
+        message = ("Neither tts.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/"
+                   "OPENAI_API_KEY is set" + hint)
         if managed_nous_tools_enabled():
             message += ". " + nous_tool_gateway_unavailable_message("managed OpenAI audio for TTS")
         raise ValueError(message)

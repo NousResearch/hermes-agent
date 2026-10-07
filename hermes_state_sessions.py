@@ -1278,6 +1278,8 @@ class SessionSessionsMixin:
                 tip.id,
                 tip.source,
                 tip.model,
+                COALESCE(tip.cwd, s.cwd) AS cwd,
+                COALESCE(tip.git_repo_root, s.git_repo_root) AS git_repo_root,
                 COALESCE(tip.title, s.title) AS title,
                 s.started_at AS started_at,
                 tip.ended_at,

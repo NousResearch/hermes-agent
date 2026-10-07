@@ -10,6 +10,7 @@ No LLM calls — every shape returns actual DB messages.
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -41,6 +42,11 @@ _READ_MAX_CONTENT = 2000
 # FTS rows scanned before dedup-by-lineage — well above the distinct sessions a query
 # returns, so interactive matches buried under cron hits survive the demotion pass.
 _DISCOVER_SCAN_LIMIT = 300
+# Browse candidates scanned when a workspace filter narrows the result set — matches CLI
+# `hermes sessions list --workspace`'s own bump, so an older same-project session isn't
+# silently dropped just because more recent sessions from OTHER projects fill the small
+# unfiltered scan window (`limit + 15`).
+_WORKSPACE_BROWSE_SCAN_LIMIT = 200
 # exclude_session_ids: ids already inspected this task; capped so a runaway list can't fan out lineage walks.
 _EXCLUDE_SESSION_IDS_CAP = 20
 # Relative time bounds: "7d" / "24h" / "2w" = now minus N hours/days/weeks.
@@ -263,11 +269,26 @@ def _session_link(session_id: str, profile: str = None) -> str:
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
+def _workspace_label(meta: Dict[str, Any]) -> Optional[str]:
+    """Basename of the session's workspace key (git repo root, else cwd); None if unbound."""
+    from hermes_state_sessions import workspace_key
+    key = workspace_key(meta)
+    return os.path.basename(key.rstrip("/\\")) if key else None
+
+
+def _workspace_matches(meta: Dict[str, Any], needle: str) -> bool:
+    """Same semantics as ``hermes sessions list --workspace``: substring or exact basename match
+    against the session's workspace key (case-insensitive)."""
+    from hermes_state_sessions import workspace_key
+    key = (workspace_key(meta) or "").lower()
+    return bool(key) and (needle in key or needle == os.path.basename(key.rstrip("/\\")))
+
+
 def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     """Canonical key order; ``parent_session_id`` set when the hit lives in a child."""
     entry = {k: fields[k] for k in (
-        "session_id", "when", "source", "model", "title", "matched_role", "match_message_id", "snippet",
-        "bookend_start", "messages", "bookend_end", "messages_before", "messages_after", "detail")}
+        "session_id", "when", "source", "model", "title", "workspace", "matched_role", "match_message_id",
+        "snippet", "bookend_start", "messages", "bookend_end", "messages_before", "messages_after", "detail")}
     if lineage_root and lineage_root != entry["session_id"]:
         entry["parent_session_id"] = lineage_root
     return entry
@@ -302,7 +323,7 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     return {**_discovery_entry(
         lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
-        title=title, matched_role="session_title", match_message_id=anchor_id,
+        title=title, workspace=_workspace_label(session_meta), matched_role="session_title", match_message_id=anchor_id,
         snippet=f"Session title matched: {title}",
         bookend_start=shape("bookend_start", messages[:3]),
         messages=shape("window", messages[:5], anchor_id, max_content_len=4000),
@@ -341,7 +362,8 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
         when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
         source=session_meta.get("source") or match_info.get("source", "unknown"),
         model=session_meta.get("model") or match_info.get("model") or "unknown",
-        title=session_meta.get("title") or None, matched_role=match_info.get("role"),
+        title=session_meta.get("title") or None, workspace=_workspace_label(session_meta),
+        matched_role=match_info.get("role"),
         match_message_id=msg_id, snippet=match_info.get("snippet") or "",
         bookend_start=_bookend(view, "bookend_start") if full else [],
         messages=[_shape_message(m, anchor_id=msg_id, max_content_len=4000)
@@ -354,17 +376,20 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[List[str]] = None) -> str:
+              exclude_session_ids: Optional[List[str]] = None, workspace: Optional[str] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
+    workspace_needle = workspace.strip().lower() if isinstance(workspace, str) and workspace.strip() else None
     title_result = _title_match_result(db, query, current_lineage_root)
     # FTS rows are time-bounded in SQL (_search_filter_clauses); the title match bypasses that
     # query, so it is the one place the window is re-checked in Python.
     if title_result:
         title_sid, title_root = title_result["session_id"], title_result.get("_lineage_root") or title_result["session_id"]
-        title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
-        if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
+        title_meta = _get_session_meta(db, title_root) or _get_session_meta(db, title_sid)
+        title_started = _coerce_started_ts(title_meta.get("started_at"))
+        if ({title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts)
+                or (workspace_needle and not _workspace_matches(title_meta, workspace_needle))):
             title_result = None
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
@@ -412,6 +437,8 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
                 _session_left_live_context(db, raw_sid) or is_compacted_hit):
             continue
         if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+            continue
+        if workspace_needle and not _workspace_matches(_get_session_meta(db, resolved_sid), workspace_needle):
             continue
         seen_sessions.setdefault(resolved_sid, {**r, "_lineage_root": resolved_sid})
     for lineage_root, match_info in seen_sessions.items():
@@ -477,7 +504,8 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_profile: str = None,
+                          workspace: str = None) -> str:
     """Browse shape: metadata for the most recent sessions (no LLM, no FTS5)."""
     def _browse():
         # Never use list_sessions_rich(order_by_last_active=True) here: it walks every
@@ -489,19 +517,28 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None, link_p
         bounded_list = getattr(db, "list_recent_sessions_bounded", None)
         if bounded_list is None:
             raise RuntimeError("session database does not support bounded recent-session browse")
+        workspace_needle = workspace.strip().lower() if isinstance(workspace, str) and workspace.strip() else None
+        # A workspace filter narrows AFTER the scan (same substring/basename match as
+        # `hermes sessions list --workspace`), so scan wider up front or older same-project
+        # sessions get silently crowded out by more recent sessions from other projects.
+        scan_limit = _WORKSPACE_BROWSE_SCAN_LIMIT if workspace_needle else limit + 15
         sessions = bounded_list(
-            limit=limit + 15,  # extra so we can skip current / compression roots
+            limit=scan_limit,  # extra so we can skip current / compression roots
             exclude_sources=list(_HIDDEN_SESSION_SOURCES), timeout_seconds=3.0)
         current_root, has_compression_hop = (
             _resolve_to_parent(db, current_session_id) if current_session_id else (None, False))
         # Compression continuation: the root was summarised into the live child, so hide
         # it. /new-reset children carry no transcript — keep that root browsable.
         hidden = {current_session_id, current_root if has_compression_hop and current_root else None}
+        candidates = [x for x in sessions if x.get("id", "") not in hidden]
+        if workspace_needle:
+            candidates = [s for s in candidates if _workspace_matches(s, workspace_needle)]
         results = [{
             "session_id": s.get("id", ""), "link": _session_link(s.get("id", ""), link_profile),
-            "title": s.get("title") or None, **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
+            "title": s.get("title") or None, "workspace": _workspace_label(s),
+            **{k: s.get(k, "") for k in ("source", "started_at", "last_active")},
             "message_count": s.get("message_count", 0), "preview": s.get("preview", "")}
-            for s in [x for x in sessions if x.get("id", "") not in hidden][:limit]]
+            for s in candidates[:limit]]
         return _ok(mode="browse", results=results, count=len(results), message=(
             f"Showing {len(results)} most recent sessions. Pass a query= to search, "
             "or session_id+around_message_id to scroll."))
@@ -576,7 +613,7 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail, owned_dbs,
-              after=None, before=None, exclude_session_ids=None) -> str:
+              after=None, before=None, exclude_session_ids=None, workspace=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
@@ -602,7 +639,7 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         return _read_scoped(db, session_id.strip(), profile)
     limit = _clamp_int(limit, 3, 1, 10)
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile)
+        return _list_recent_sessions(db, limit, current_session_id, link_profile=profile, workspace=workspace)
     sort_norm = sort.strip().lower() if isinstance(sort, str) else None
     try:
         after_ts, before_ts = _parse_iso_bound(after), _parse_iso_bound(before)
@@ -613,13 +650,14 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids), workspace=workspace)
 
 
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
-                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
+                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+                   workspace: str = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_state import format_session_db_unavailable
@@ -633,7 +671,8 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail, owned_dbs,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids,
+                         workspace=workspace)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -775,6 +814,18 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "workspace": {
+                "type": "string",
+                "description": (
+                    "Optional, discovery and browse shapes. Restrict results to sessions "
+                    "run from a project/workspace — a folder basename (e.g. 'my-app') or a "
+                    "full cwd path. Matches the session's git repo root, else its cwd. Use "
+                    "when the user means \"in this project\" (a bare browse or query alone "
+                    "can surface sessions from other projects). Every result also carries a "
+                    "`workspace` field (the project folder's basename, or null) so you can "
+                    "tell projects apart without this filter."
+                ),
+            },
         },
         "required": [],
     },
@@ -791,6 +842,6 @@ registry.register(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
-                                    "after", "before", "exclude_session_ids")}),
+                                    "after", "before", "exclude_session_ids", "workspace")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

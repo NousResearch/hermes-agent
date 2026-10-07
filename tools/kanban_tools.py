@@ -190,14 +190,17 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
     """A delegate_task child shares the parent's process, so inherited HERMES_KANBAN_*
     env is not proof of ownership: it may report findings but must not mutate.
 
-    Fails CLOSED when the delegation context cannot be evaluated: a silently disabled
-    identity gate is indistinguishable from no gate at all, and this one guards board
-    writes. The escape is provenance, not assumption — a process scrubbed for a
-    descendant has its ``HERMES_KANBAN_TASK`` removed, so a process still holding one
-    is the dispatcher worker for that task and must not be stranded mid-run by a
-    broken import. (An in-process delegate child inherits the parent's variables, so
-    this escape alone cannot separate it; that residual exists only in the
-    un-evaluable case and is logged.) Both outcomes are audited.
+    Fully closed: only a definite "not a delegate child" (``verdict is False``) permits a
+    board write. An un-evaluable delegation context (module missing, version-skewed, or
+    shadowed on ``sys.path``) refuses for EVERY caller — ``HERMES_KANBAN_TASK`` included.
+    There is no env-bit escape: in the state where the predicate cannot be evaluated,
+    every board write would die one step later anyway, because
+    ``hermes_cli.kanban_db_connect.connect()`` imports the very same
+    ``agent.delegation_context`` module unwrapped (``from agent.delegation_context import
+    kanban_path_is_fenced``) and raises before any write. Refusing here converts that
+    opaque downstream ImportError into an immediate refusal that names the real cause, and
+    an identity gate must never read "unknown" as "allow". Both non-False verdicts are
+    audited.
     """
     verdict = _delegation_ctx_or_none("is_delegated_child_process_context")
     if verdict is True:
@@ -206,23 +209,16 @@ def _reject_delegated_child_mutation(tool_name: str) -> None:
             "Return findings to the parent agent; the dispatcher worker or an explicitly "
             "configured Kanban orchestrator must perform board mutations.")
     if verdict is None:
-        # Never read "unknown" as "not a child".
-        owned = os.environ.get("HERMES_KANBAN_TASK")
-        if owned:
-            logger.warning(
-                "kanban %s: agent.delegation_context is un-evaluable in this process; "
-                "allowing the mutation because this process owns %s, but the "
-                "delegate-child fence is degraded here.", tool_name, owned)
-            return
+        # Never read "unknown" as "not a child" — refuse for every caller.
         logger.warning(
-            "kanban %s: agent.delegation_context is un-evaluable in this process and no "
-            "HERMES_KANBAN_TASK proves ownership; refusing to mutate the board.",
+            "kanban %s: agent.delegation_context is un-evaluable in this process; "
+            "refusing the mutation because the delegate-child fence fails closed.",
             tool_name)
         raise _Reject(
             f"{tool_name} refused: the delegation context could not be evaluated in this "
             "process (agent.delegation_context is unavailable), so board ownership cannot "
-            "be established. Nothing was written; perform the mutation from a process "
-            "that owns the task (HERMES_KANBAN_TASK) on a working install.")
+            "be established. Nothing was written; fix the install, or run the mutation "
+            "from a process whose agent.delegation_context imports cleanly.")
 
 
 def _default_task_id(arg: Any) -> Optional[str]:

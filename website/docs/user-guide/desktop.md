@@ -384,7 +384,7 @@ For installations managed by the app, open **Settings → About → Danger zone*
 
 The app closes to finish the job (the cleanup runs after it exits so it can remove the running app bundle and its own venv). The agent-removing options are hidden automatically when no local agent is installed.
 
-These controls are hidden for Nix, bundled/Light packages, and other externally owned installations. Remove those through their package manager or the operating system instead. The app checks its own local package ownership, independently of a remote backend's update status. If ownership cannot be confirmed, no uninstall actions are offered.
+These controls are hidden for Nix, bundled packages, and other externally owned installations. Remove those through their package manager or the operating system instead. The app checks its own local package ownership, independently of a remote backend's update status. If ownership cannot be confirmed, no uninstall actions are offered.
 
 For self-managed installations, you can do the same from the terminal — `hermes uninstall --gui` for the GUI alone, or `hermes uninstall` / `hermes uninstall --full` for the agent too.
 

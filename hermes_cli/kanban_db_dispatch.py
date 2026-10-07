@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- adds the shared per-profile cap-map reader (normalize_profile_caps / profile_caps_setting / _profile_cap_for) and threads it through dispatch_once; offsetting that growth would mean moving unrelated dispatcher code into a sibling in the same change
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
 Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
@@ -127,7 +128,9 @@ class DispatchResult:
     telemetry can tell "stuck" from "correctly idle"."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
-    assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
+    assignee is at its cap — ``kanban.max_in_progress_per_profile_map[assignee]``
+    when the map names the profile, else the map's ``default`` entry, else
+    ``kanban.max_in_progress_per_profile`` (0009). Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
@@ -1950,6 +1953,68 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+# Key in ``kanban.max_in_progress_per_profile_map`` that caps every profile the
+# map does not name. It doubles as a literal profile name (every Hermes home
+# has a root profile called ``default``) — the two readings agree.
+_PROFILE_CAP_DEFAULT_KEY = "default"
+
+
+def normalize_profile_caps(raw: Any) -> Optional[dict[str, int]]:
+    """Normalize ``kanban.max_in_progress_per_profile_map`` to ``{profile: cap}``.
+
+    The map key had no reader before ops/hermes-local 0009: config carried the
+    dict, the code read only the scalar, and a map-only config silently meant
+    cap=None (unlimited) — the 2026-10-07 stampede hole. Invalid entries are
+    dropped with a warning instead of disabling the whole map, so one bad value
+    cannot re-open that hole. Returns ``None`` when unset/empty/unusable.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        _kb._log.warning(
+            "kanban dispatcher: invalid max_in_progress_per_profile_map=%r "
+            "(expected a mapping of profile -> positive int); ignoring", raw,
+        )
+        return None
+    caps: dict[str, int] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and key.strip() and not isinstance(value, bool):
+            try:
+                cap = int(value)
+            except (TypeError, ValueError):
+                cap = 0
+            if cap >= 1:
+                caps[key.strip()] = cap
+                continue
+        _kb._log.warning(
+            "kanban dispatcher: dropping max_in_progress_per_profile_map entry %r: %r "
+            "(need a profile name and a positive int)", key, value,
+        )
+    return caps or None
+
+
+def profile_caps_setting(kanban_cfg: Optional[dict]) -> Optional[dict[str, int]]:
+    """Read ``kanban.max_in_progress_per_profile_map`` from the ``kanban.*``
+    config section. The gateway dispatcher and ``hermes kanban dispatch`` share
+    this reader so both paths resolve the map identically (0009)."""
+    if not isinstance(kanban_cfg, dict):
+        return None
+    caps = normalize_profile_caps(kanban_cfg.get("max_in_progress_per_profile_map"))
+    if caps:
+        _kb._log.info("kanban dispatcher: max_in_progress_per_profile_map=%s", caps)
+    return caps
+
+
+def _profile_cap_for(
+    assignee: Optional[str], profile_caps: Optional[dict[str, int]],
+) -> Optional[int]:
+    """Cap for ``assignee``: the map's own entry, else the ``default`` entry
+    (where the scalar fallback folds in), else ``None`` (no cap for it)."""
+    if not profile_caps:
+        return None
+    return profile_caps.get(assignee or "", profile_caps.get(_PROFILE_CAP_DEFAULT_KEY))
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1963,6 +2028,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_map: Optional[dict[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1986,6 +2052,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_map=max_in_progress_per_profile_map,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2034,7 +2101,7 @@ def _dispatch_lane_task(
     board: Optional[str],
     failure_limit: int,
     spawn_fn,
-    per_profile_cap: Optional[int],
+    profile_caps: Optional[dict[str, int]],
     per_profile_running: dict[str, int],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
@@ -2064,10 +2131,13 @@ def _dispatch_lane_task(
                     _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
-    # must not be overwhelmed by a fan-out even with global headroom.
-    if per_profile_cap is not None:
+    # must not be overwhelmed by a fan-out even with global headroom. The cap
+    # is per-assignee when the map (0009) names it or carries a ``default``
+    # entry; ``None`` means this assignee is uncapped this tick.
+    cap = _profile_cap_for(assignee, profile_caps)
+    if cap is not None:
         current = per_profile_running.get(assignee, 0)
-        if current >= per_profile_cap:
+        if current >= cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
@@ -2088,7 +2158,7 @@ def _dispatch_lane_task(
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
         # ticks re-query from the DB.
-        if per_profile_cap is not None and name:
+        if profile_caps is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
@@ -2279,16 +2349,17 @@ def _any_spawnable_review(
     conn: sqlite3.Connection,
     review_rows: list[sqlite3.Row],
     *,
-    per_profile_cap: Optional[int] = None,
+    profile_caps: Optional[dict[str, int]] = None,
     per_profile_running: Optional[dict[str, int]] = None,
 ) -> bool:
     """Mirror review dispatch gates before reserving ready-lane capacity.
 
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
-    assignee already at the per-profile cap, or respawn-guarded — cannot
-    consume the reservation, so it must not withhold capacity from an
-    otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    assignee already at its per-profile cap (0009 map / scalar fallback), or
+    respawn-guarded — cannot consume the reservation, so it must not withhold
+    capacity from an otherwise ready task (one such row would pin
+    ``ready_budget`` to 0).
     """
     if not review_rows:
         return False
@@ -2300,7 +2371,8 @@ def _any_spawnable_review(
             continue
         if profile_exists is not None and not profile_exists(assignee):
             continue
-        if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+        cap = _profile_cap_for(assignee, profile_caps)
+        if cap is not None and running.get(assignee, 0) >= cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True
@@ -2338,6 +2410,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_profile_map: Optional[dict[str, int]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2364,16 +2437,28 @@ def _dispatch_once_locked(
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
     # review rows the lane loop would refuse this tick.
-    per_profile_cap = max_in_progress_per_profile if (
-        # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
-        # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
-        # workloads from melting a single profile's local model / API quota / browser pool while leaving
-        # other profiles idle.
+    # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
+    # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
+    # workloads from melting a single profile's local model / API quota / browser pool while leaving
+    # other profiles idle. The optional map (0009) gives each profile its own
+    # cap; the scalar folds into the map's ``default`` entry (setdefault: an
+    # explicit map ``default`` wins), and with no map the scalar alone caps
+    # every profile — the pre-0009 contract, unchanged.
+    caps_map = normalize_profile_caps(max_in_progress_per_profile_map)
+    scalar_cap = max_in_progress_per_profile if (
         isinstance(max_in_progress_per_profile, int)
+        and not isinstance(max_in_progress_per_profile, bool)
         and max_in_progress_per_profile > 0
     ) else None
+    profile_caps: Optional[dict[str, int]] = None
+    if caps_map:
+        profile_caps = dict(caps_map)
+        if scalar_cap is not None:
+            profile_caps.setdefault(_PROFILE_CAP_DEFAULT_KEY, scalar_cap)
+    elif scalar_cap is not None:
+        profile_caps = {_PROFILE_CAP_DEFAULT_KEY: scalar_cap}
     per_profile_running: dict[str, int] = {}
-    if per_profile_cap is not None:
+    if profile_caps is not None:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
@@ -2387,13 +2472,13 @@ def _dispatch_once_locked(
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        profile_caps=profile_caps, per_profile_running=per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        profile_caps=profile_caps, per_profile_running=per_profile_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

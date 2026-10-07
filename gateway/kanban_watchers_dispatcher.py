@@ -42,6 +42,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    max_in_progress_per_profile_map: Optional[dict]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -102,6 +103,11 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    # Per-profile cap map (0009): {profile: cap} with an optional ``default``
+    # entry for profiles the map does not name. Shared reader with
+    # ``hermes kanban dispatch``; absent/unusable map -> None (scalar-only).
+    per_profile_caps = _kbd().profile_caps_setting(kanban_cfg)
+
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -115,6 +121,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Per-profile caps map (0009): per-profile overrides; the scalar above
+        # stays the fallback for profiles the map does not name.
+        max_in_progress_per_profile_map=per_profile_caps,
     )
 
 

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- registers the existing-but-unread config key kanban.max_in_progress_per_profile_map with its reader; a data-only default row cannot be offset by moving code without editing unrelated config entries
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -1931,6 +1932,14 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-profile cap MAP (ops/hermes-local 0009): {profile: cap}, with an
+        # optional `default` entry capping every profile the map does not name.
+        # Map and scalar may coexist: the map wins for the profiles it names
+        # (and via its `default` entry); the scalar is the fallback for
+        # profiles absent from the map. Before 0009 this key had no reader —
+        # a map-only config silently meant no cap. None = no map (scalar-only
+        # semantics, or no per-profile cap when the scalar is also unset).
+        "max_in_progress_per_profile_map": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

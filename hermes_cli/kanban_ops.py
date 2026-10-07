@@ -59,8 +59,8 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # kanban.max_in_progress_per_profile (+ its per-profile map, 0009) and
+    # kanban.max_spawn with the same semantics as the gateway dispatch path.
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
@@ -69,6 +69,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
+        # Per-profile cap map: same reader and semantics as the gateway
+        # dispatcher (map wins; scalar is the fallback for absent profiles).
+        max_in_progress_per_profile_map = kbd.profile_caps_setting(_kanban_cfg)
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -80,6 +83,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        max_in_progress_per_profile_map = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,6 +94,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_profile_map=max_in_progress_per_profile_map,
         )
     if getattr(args, "json", False):
         _print_json({

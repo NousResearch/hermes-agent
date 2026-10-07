@@ -366,9 +366,11 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
-        if model and resolve_anthropic_token():
+        # A model-less pooled-OAuth lookup conservatively hides every active model cooldown,
+        # so it cannot establish whether the login is missing. Inspect the recorded bench instead.
+        if model and (load_pool("anthropic").has_model_cooldown(model=model) or resolve_anthropic_token()):
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).",
+                            "try another Claude model or wait for the cooldown (see `hermes auth list`).",
                             provider="anthropic", code=CODEX_RATE_LIMITED_CODE)
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token

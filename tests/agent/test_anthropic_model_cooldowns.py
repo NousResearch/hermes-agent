@@ -43,6 +43,8 @@ def test_generic_429_benches_only_the_rate_limited_model(pool, monkeypatch):
 
     assert pool.entries()[0].last_status is None  # credential-wide state untouched
     assert pool.select(model=MODEL_A) is None
+    assert pool.has_model_cooldown(model=MODEL_A) is True
+    assert pool.has_model_cooldown(model=MODEL_B) is False
     assert pool.select(model=MODEL_B) is not None
     assert pool.select() is None  # a caller that names no model honours every active cooldown
     assert pool.next_available_at(model=MODEL_A) is not None
@@ -67,4 +69,5 @@ def test_auth_and_billing_failures_stay_credential_wide(pool, status_code, failu
     )
     assert pool.entries()[0].last_status == STATUS_EXHAUSTED
     assert not pool.entries()[0].model_cooldowns
+    assert pool.has_model_cooldown(model=MODEL_A) is False
     assert pool.select(model=MODEL_B) is None

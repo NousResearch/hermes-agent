@@ -45,6 +45,17 @@ def merge_model_cooldowns(*maps: Any) -> Dict[str, float]:
 
 
 class CredentialPoolModelCooldownMixin:
+    def has_model_cooldown(self, *, model: str) -> bool:
+        """A saved, non-dead credential is benched for this model, not signed out."""
+        from agent.credential_pool import STATUS_DEAD
+
+        with self._lock:
+            return any(
+                entry.runtime_api_key and entry.last_status != STATUS_DEAD
+                and model_cooldown_until(entry, model) is not None
+                for entry in self._entries
+            )
+
     def token_is_blocked(self, token: str, *, model: Optional[str] = None) -> bool:
         """Whether a pool cooldown blocks *token* for *model*.
 

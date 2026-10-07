@@ -254,6 +254,8 @@ def test_skipped_oneshot_survives_recovery_by_any_save(cron_store, monkeypatch):
     assert get_due_jobs() == []
     clock["now"] += timedelta(minutes=31)
     assert [d["id"] for d in get_due_jobs()] == ["once"]
+    cronjobs.clear_run_claim("once")  # its dispatch failed (pool shut down): still not missed
+    assert [d["id"] for d in get_due_jobs()] == ["once"]
     stale = dict(once, id="stale")  # due during the outage, first scanned after the recovery scan
     save_jobs(load_jobs() + [stale])
     assert "stale" not in [d["id"] for d in get_due_jobs()]

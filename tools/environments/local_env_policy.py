@@ -4,6 +4,7 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
+from collections.abc import Mapping
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
@@ -15,6 +16,65 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 # trusted operator shell (SECURITY.md §3.2) and env_passthrough can never re-allow a
 # blocklisted name (GHSA-rhgp-j443-p4rf), so blocking it would be unrecoverable.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({"AWS_BEARER_TOKEN_BEDROCK"})
+
+# The general AWS chain remains available to the user's trusted terminal, but it
+# is profile credential authority for a routed Hermes child. Remove every SDK
+# selector before overlaying the selected profile's dotenv so a Bedrock profile
+# cannot borrow the launch profile's IAM/session/container identity.
+_ROUTED_PROFILE_AWS_CREDENTIAL_ENV_VARS = frozenset({
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SECURITY_TOKEN",
+    "AWS_CREDENTIAL_EXPIRATION",
+    "AWS_ACCOUNT_ID",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_CREDENTIAL_FILE",
+    "BOTO_CONFIG",
+    "AWS_LOGIN_CACHE_DIRECTORY",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+})
+
+
+def _is_routed_profile_sdk_credential(name: str) -> bool:
+    """Credential selectors safe in an operator shell but not across profiles."""
+    upper = name.upper()
+    return (
+        upper in _ROUTED_PROFILE_AWS_CREDENTIAL_ENV_VARS
+        or upper == "CUSTOM_API_KEY"
+        or (upper.startswith("HERMES_CUSTOM_") and upper.endswith("_API_KEY"))
+    )
+
+
+def declared_credential_env_names(config: object) -> frozenset[str]:
+    """Return env names that Hermes config explicitly declares as credential pointers."""
+    names: set[str] = set()
+
+    def _walk(value: object) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                if key in {"key_env", "api_key_env"} and isinstance(child, str):
+                    name = child.strip()
+                    if name:
+                        names.add(name)
+                else:
+                    _walk(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                _walk(child)
+
+    _walk(config)
+    return frozenset(names)
+
 
 _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",

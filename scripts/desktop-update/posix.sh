@@ -1159,7 +1159,17 @@ export PYTHONUNBUFFERED=1
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
 # `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
-export HERMES_UPDATE_HANDOFF_PID="$$"
+# It must name the pid that OWNS the marker, not this script's: marker_refresher_start()
+# (called above) hands line 1 to the custodian subshell and sets MY_PID to it, so the
+# claim's owner is $MARKER_REFRESHER — a SIBLING of the update child. Exporting "$$"
+# left the owner matching none of _is_partner()'s three cases (own pid / this env /
+# ancestor), so every desktop-initiated update refused its own claim and exited 2
+# (#134268, #134309). Fall back to "$$" only when the handover did not happen.
+if [ "${MARKER_CLAIMED:-0}" -eq 1 ] && [ -n "${MARKER_REFRESHER:-}" ] && [ "$MARKER_REFRESHER" -gt 0 ] 2>/dev/null; then
+  export HERMES_UPDATE_HANDOFF_PID="$MARKER_REFRESHER"
+else
+  export HERMES_UPDATE_HANDOFF_PID="$$"
+fi
 # The update's receipt carries this id (update_receipt._launcher_correlation_id),
 # which is how update_committed_after_exit finds THIS run's receipt.
 export HERMES_UPDATE_CORRELATION_ID="$UPDATE_CORRELATION"

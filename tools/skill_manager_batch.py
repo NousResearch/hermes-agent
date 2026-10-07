@@ -170,14 +170,57 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
     return snapshots, None
 
 
+def _swap_in_snapshot(live_dir, restore_to, snap) -> None:
+    """Move ``live_dir`` aside and copy ``snap`` back to ``restore_to``, deleting the
+    broken state only once the restore succeeded — a failed copytree (disk full, locked
+    file) must not mean total loss; on failure the half-applied state goes back and the
+    error re-raises."""
+    aside = live_dir.with_name(live_dir.name + ".rollback-broken")
+    shutil.rmtree(aside, ignore_errors=True)
+    live_dir.rename(aside)
+    try:
+        shutil.copytree(snap, restore_to)
+    except Exception:
+        shutil.rmtree(restore_to, ignore_errors=True)
+        aside.rename(live_dir)
+        raise
+    shutil.rmtree(aside, ignore_errors=True)
+
+
+def _restore_link_target(pre_dir, link_target, snap) -> None:
+    """Undo the batch at the SHARED TREE a symlinked farm entry points into.
+
+    Ops write through the link, so the mutation lives at the link's TARGET while the
+    snapshot in ``snap`` is a copy of that target's reachable pre-batch content. ``snap``
+    is None when the link was dangling (or absent) at snapshot time: the batch then had
+    no reachable directory to mutate, so there is nothing to restore and — critically —
+    nothing to delete. Only a target whose pre-state we snapshotted AND that is still
+    present is touched, so a batch-created or out-of-band-repointed entry can never
+    delete or overwrite an unrelated directory.
+    """
+    if snap is None:
+        return
+    target = Path(link_target)
+    if not target.is_absolute():
+        target = Path(os.path.normpath(os.path.join(str(pre_dir.parent), link_target)))
+    if not target.is_dir():  # repointed/removed out of band: do not conjure it back
+        return
+    _swap_in_snapshot(target, target, snap)
+
+
 def _restore_snapshot(pre_dir, snap, post_dir, link_target=None, dir_pre_existed=False,
                       written=()) -> None:
     if link_target is not None:
         # Pre-state was a per-skill SYMLINK into a shared tree: restore it AS a
-        # symlink to that same target. Never copytree the snapshot over the
-        # link's path — a real-directory copy of the shared package in the farm
-        # silently detaches the lane from the corpus (and rmtree cannot remove a
-        # symlinked aside, so the broken-state move would leak a stray link too).
+        # symlink to that same target. Ops write THROUGH the link, so the mutation
+        # the batch made sits at the link's TARGET — putting the entry's shape back
+        # alone would report a rollback that never happened. Revert the snapshotted
+        # reachable content there FIRST, then re-create the lexical symlink. Never
+        # copytree the snapshot over the link's path — a real-directory copy of the
+        # shared package in the farm silently detaches the lane from the corpus (and
+        # rmtree cannot remove a symlinked aside, so the broken-state move would leak
+        # a stray link too).
+        _restore_link_target(pre_dir, link_target, snap)
         if pre_dir.is_symlink():
             pre_dir.unlink(missing_ok=True)
         elif pre_dir.exists():
@@ -211,17 +254,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, link_target=None, dir_pre_existed
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
-    aside = post_dir.with_name(post_dir.name + ".rollback-broken")
-    shutil.rmtree(aside, ignore_errors=True)
-    post_dir.rename(aside)
-    try:
-        shutil.copytree(snap, pre_dir)
-    except Exception:
-        # Restore failed: put the half-applied state back rather than nothing.
-        shutil.rmtree(pre_dir, ignore_errors=True)
-        aside.rename(pre_dir)
-        raise
-    shutil.rmtree(aside, ignore_errors=True)
+    _swap_in_snapshot(post_dir, pre_dir, snap)
 
 
 def _rollback(snapshots, find_skill, results):

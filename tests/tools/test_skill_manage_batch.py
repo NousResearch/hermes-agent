@@ -4,12 +4,14 @@ Memory-tool pattern: several ops on ONE skill, atomically — create + N
 supporting files, or SKILL.md + the script it references, in one call.
 Any failure rolls the skill directory back to its pre-batch state.
 """
+import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -18,6 +20,11 @@ SK = (
     "---\nname: {n}\ndescription: Use when probing batch ops. Behavior.\n---\n"
     "# Probe\nStep 1.\n"
 )
+
+
+def _sha256(path: str) -> str:
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
 
 
 class TestSkillManageBatch(unittest.TestCase):
@@ -273,31 +280,80 @@ class TestSkillManageBatch(unittest.TestCase):
         restored AS a symlink when a later op in the batch fails — never
         materialized as a real-directory copy of the snapshot (which would
         silently detach the lane's farm entry from the shared corpus), and with
-        no stray ``*.rollback-broken`` link left in the farm."""
+        no stray ``*.rollback-broken`` link left in the farm.
+
+        The atomicity contract is about the link's TARGET, not the entry: ops write
+        THROUGH the symlink, so a rollback that only puts the entry's shape back
+        reports an undo that never happened while the shared tree stays mutated.
+
+        The alias is resolved here through the finder a symlink-aware index walk
+        supplies (PR #118550). On a base whose walker skips symlinked directories
+        ``_find_skill`` never returns one, the batch aborts at ``operations[0]`` and
+        every assertion below holds trivially — which is why the finder is injected
+        rather than relied upon, and why ``completed_before_failure`` is asserted.
+        """
         shared = os.path.join(self.home, "shared", "skills", "yoyodine")
         farm = os.path.join(self.home, "skills", "yoyodine")
         os.makedirs(farm, exist_ok=True)
+        targets = {}
         for name in ("demo-alpha", "demo-beta"):
             src = os.path.join(shared, name)
             os.makedirs(os.path.join(src, "references"), exist_ok=True)
             with open(os.path.join(src, "SKILL.md"), "w") as fh:
                 fh.write(SK.format(n=name) + "ORIGINAL BODY\n")
             os.symlink(src, os.path.join(farm, name), target_is_directory=True)
-        r = json.loads(self.smt.skill_manage(action="", name="", operations=[
-            {"name": "demo-alpha", "action": "patch",
-             "old_string": "ORIGINAL BODY", "new_string": "EDITED BODY"},
-            {"name": "demo-beta", "action": "patch",
-             "old_string": "STRING-THAT-DOES-NOT-EXIST-ANYWHERE", "new_string": "X"},
-        ]))
+            targets[name] = os.path.join(src, "SKILL.md")
+
+        real_find = self.smt._find_skill
+
+        def find_through_alias(name):
+            entry = os.path.join(farm, name)
+            return {"path": Path(entry)} if os.path.islink(entry) else real_find(name)
+
+        with patch.object(self.smt, "_find_skill", new=find_through_alias):
+            r = json.loads(self.smt.skill_manage(action="", name="", operations=[
+                {"name": "demo-alpha", "action": "patch",
+                 "old_string": "ORIGINAL BODY", "new_string": "EDITED BODY"},
+                {"name": "demo-beta", "action": "patch",
+                 "old_string": "STRING-THAT-DOES-NOT-EXIST-ANYWHERE", "new_string": "X"},
+            ]))
         self.assertFalse(r["success"])
+        # A mutation LANDED on the shared target before the failure — without this the
+        # whole test is content-free (the batch would abort on ops[0] and prove nothing).
+        self.assertEqual(r["failed_index"], 1)
+        self.assertEqual(r["completed_before_failure"], 1)
         for name in ("demo-alpha", "demo-beta"):
             entry = os.path.join(farm, name)
             self.assertTrue(os.path.islink(entry),
                             f"{name} was restored as a real directory, not a symlink")
             self.assertEqual(os.readlink(entry), os.path.join(shared, name),
                              f"{name} link target changed")
-        leftovers = [p for p in os.listdir(farm) if "rollback-broken" in p]
-        self.assertEqual(leftovers, [], "stray .rollback-broken residue left in farm")
+            with open(targets[name]) as fh:
+                body = fh.read()
+            self.assertIn("ORIGINAL BODY", body,
+                          f"{name}: rollback never restored the shared target reached "
+                          f"through the link")
+            self.assertNotIn("EDITED BODY", body,
+                             f"{name}: the batch's mutation survived a reported rollback")
+        for root in (farm, shared):
+            leftovers = [p for p in os.listdir(root) if "rollback-broken" in p]
+            self.assertEqual(leftovers, [], f"stray .rollback-broken residue in {root}")
+
+        # Control: rollback must not delete or overwrite the target of an alias it never
+        # mutated. `create` on a name the alias already serves fails before writing, so
+        # there is nothing to undo and the reachable content must come back untouched.
+        before = {n: _sha256(p) for n, p in targets.items()}
+        with patch.object(self.smt, "_find_skill", new=find_through_alias):
+            c = json.loads(self.smt.skill_manage(action="", name="", operations=[
+                {"name": "demo-alpha", "action": "create", "content": SK.format(n="demo-alpha")},
+                {"name": "demo-alpha", "action": "write_file",
+                 "file_path": "references/new.md", "file_content": "x"},
+            ]))
+        self.assertFalse(c["success"], c)
+        for name, path in targets.items():
+            self.assertTrue(os.path.isfile(path), f"{name}: rollback deleted the link target")
+            self.assertEqual(_sha256(path), before[name],
+                             f"{name}: rollback overwrote a target it never mutated")
 
     def test_single_op_path_unchanged(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])

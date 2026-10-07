@@ -362,6 +362,13 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     finally:
         os.chmod(target.parent, 0o700)
         os.chmod(target, 0o600)
+    lock = cron_dir / ".tick.lock"  # only the tick lock is unwritable (root-owned): every tick skips
+    lock.write_text("")
+    os.chmod(lock, 0o400)
+    try:
+        assert store_health.probe_store(cron_dir) is not None
+    finally:
+        os.chmod(lock, 0o600)
 
     sent = []
     gate = asyncio.Event()

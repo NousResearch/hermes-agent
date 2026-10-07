@@ -273,9 +273,11 @@ def probe_store(cron_dir: Path) -> Optional[OSError]:
         size = jobs_file.stat().st_size + 4096
     except OSError:
         size = 4096
-    target = os.path.realpath(jobs_file)
-    if os.path.exists(target) and not os.access(target, os.W_OK):  # e.g. a read-only symlink target
-        return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
+    # A read-only jobs.json symlink target, or a tick lock the ticker cannot open (root-owned in a
+    # writable dir: the tick skips every run while the dir itself still accepts writes).
+    for target in (os.path.realpath(jobs_file), str(cron_dir / ".tick.lock")):
+        if os.path.exists(target) and not os.access(target, os.W_OK):
+            return OSError(errno.EACCES, os.strerror(errno.EACCES), target)
     tmp = None
     chunk = b"\0" * 65536
     try:

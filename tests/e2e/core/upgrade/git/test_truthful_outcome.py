@@ -119,3 +119,41 @@ def test_retry_after_interrupted_fetches_heals_without_refetching_history(w):
         f"of the same shape: it re-fetched far more than the release:\n{w.diag(cp, mark)}")
     debris = sorted(p.name for p in pack_dir.glob("tmp_*") if p.stat().st_mtime <= old + 1)
     assert not debris, f"dead transfers' temp packs survived a successful update: {debris}\n{w.diag(cp, mark)}"
+
+
+def test_custom_branch_merge_failure_does_not_claim_an_unverified_tree(w):
+    """A checkout carrying local commits reconciles by merge, not by reset. That path reported every
+    non-zero merge as a content conflict and asserted the tree was untouched without reading it, so a
+    cut lazy fetch printed "nothing was changed" over a half-applied tree that then broke every later
+    update. #124642 fixed the same false diagnosis one branch over, on the fast-forward path."""
+    w.reset_clean()
+    w.srv.clear_faults()
+    w.git("checkout", "-q", "-b", "local")
+    w.git("commit", "-q", "--allow-empty", "-m", "local: work the update must preserve")
+    before = w.head()
+    w.publish("release: e2e truthful custom-branch merge", {"e2e-truthful-merge.txt": "release\n"})
+    armed = w.srv.arm(FAULTS["cut-mid-checkout-lazy-fetch"]())
+    mark = w.srv.mark()
+
+    try:
+        cp = w.update()
+
+        w.srv.clear_faults()
+        out, diag = G.output(cp), w.diag(cp, mark)
+        assert armed.fired, f"the fault never fired; the cell exercised nothing:\n{diag}"
+        assert cp.returncode != 0, f"update exited 0 although the transfer failed:\n{diag}"
+        assert G.SUCCESS not in out, f"success banner printed although the transfer failed:\n{diag}"
+        assert w.head() == before and w.branch() == "local", \
+            f"failed update moved HEAD off the local branch:\n{diag}"
+        assert "Merge conflict" not in out, \
+            f"a cut transfer is reported as a conflict between local commits and upstream:\n{diag}"
+        # Whatever git left behind, the report matches it: the claim is read back, never asserted.
+        if w.status():
+            assert "did not restore the tree" in out and "nothing was changed" not in out, \
+                f"failed merge left the tree dirty while reporting it untouched:\n{diag}"
+        else:
+            assert "nothing was changed" in out, f"a clean abort is not reported as one:\n{diag}"
+    finally:
+        w.srv.clear_faults()
+        w.git("checkout", "-q", "-f", "main")
+        w.git("branch", "-qD", "local", check=False)

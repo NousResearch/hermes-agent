@@ -866,11 +866,26 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha, *, target_r
             f"merging origin/{branch} instead of resetting so local commits survive...")
         # Best-effort safety tag as a recovery anchor.
         _git_run(git_cmd, ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"])
-        if _git_run(git_cmd, ["merge", "--no-edit", merge_ref]).returncode != 0:
+        merge_result = _git_run(git_cmd, ["merge", "--no-edit", merge_ref])
+        if merge_result.returncode != 0:
+            # Not every failure here is a conflict: a promisor lazy fetch cut mid-checkout, an
+            # index.lock or a hook can end the merge before it ever records MERGE_HEAD, and
+            # `merge --abort` is then a no-op that leaves the half-applied tree in place. Report what
+            # git said and read the tree back rather than asserting it is clean (#124642 fixed the
+            # same false diagnosis on the fast-forward path).
             _git_run(git_cmd, ["merge", "--abort"])
-            print("✗ Merge conflict between local commits and upstream — update stopped, nothing was changed.")
+            residue = (_git_run(git_cmd, ["status", "--porcelain"]).stdout or "").strip()
+            print(f"✗ Merging origin/{branch} into '{_cur_branch}' failed — update stopped.")
+            detail = (merge_result.stderr or merge_result.stdout or "").strip()
+            if detail:
+                print(f"  {detail}")
             print(f"  Resolve manually: cd {_m().PROJECT_ROOT} && git merge origin/{branch}")
-            print("  Then re-run the update. Local work is untouched.")
+            if residue:
+                print(f"  ⚠ 'git merge --abort' did not restore the tree: {len(residue.splitlines())} "
+                      f"uncommitted path(s) remain from the failed merge. Every later update fails on "
+                      f"them until the tree is clean again — inspect with: git -C {_m().PROJECT_ROOT} status")
+            else:
+                print("  Then re-run the update. Local work is untouched; nothing was changed.")
             sys.exit(1)
         return
     # Same branch and proven non-ancestor: an upstream force-push/rebase may lose nothing,

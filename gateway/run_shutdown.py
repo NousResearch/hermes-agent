@@ -1508,17 +1508,59 @@ class GatewayShutdownMixin:
             GatewayShutdownMixin._spawn_windows_restart_watcher(hermes_cmd, current_pid, restart_after_s)
             return
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        # A restart child that cannot run (binary replaced mid-restart, venv torn
+        # down, PATH loss) used to die invisibly: its streams went to DEVNULL and
+        # nothing recorded the exit code, while the parent was already exiting —
+        # the gateway never came back and no trace remained (#134728). Land the
+        # watcher's output and the child's exit code in a diag log; a spawn that
+        # cannot even start is logged loudly like the Windows watcher above.
+        from hermes_constants import get_process_hermes_home
+
+        log_file = None
+        try:
+            log_dir = get_process_hermes_home() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_dir / "gateway-restart-watcher.log", "ab", buffering=0)
+        except OSError:
+            log_file = None
+        if log_file is not None:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            log_file.write(
+                f"\n=== detached restart watcher started {stamp}: "
+                f"{cmd} gateway restart (waiting {int(restart_after_s)}s) ===\n".encode())
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        if log_file is not None:
+            shell_cmd += (
+                f"; rc=$?; printf '\\n=== detached restart watcher: exit %s ===\\n' \"$rc\" "
+                f">> {shlex.quote(str(log_file.name))}")
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
-        subprocess.Popen(
-            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
-        )
+        try:
+            subprocess.Popen(
+                argv,
+                stdout=log_file if log_file is not None else subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+                env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
+            )
+        except OSError as exc:
+            # Both stdout hand-off and logging failed. Log only the shell
+            # basename and numeric errno — never argv, env, watcher source, or
+            # str(exc) (may carry a full path) — and keep the shutdown path
+            # alive rather than raising into the dying process.
+            winerror = getattr(exc, "winerror", None)
+            logger.error(
+                "Detached restart watcher was not started (%s; %s=%r). The gateway will not "
+                "be respawned by this restart attempt.", "bash",
+                "winerror" if winerror is not None else "errno",
+                winerror if winerror is not None else exc.errno,
+            )
+        finally:
+            if log_file is not None:
+                log_file.close()  # child holds its own dup'd fd
 
     def _wedged_agent_count(self) -> int:
         """Work units the restart wait may skip: chat agents idle past ``agent.gateway_timeout`` and

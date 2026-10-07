@@ -1,0 +1,20 @@
+name: klipper-print-watch
+repo: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch
+sha: a84dc7cd22cdeaee405dd89100358b2061033be7
+description: "Built on the Moonraker HTTP API. Approved pause/resume/cancel. Cron reports klippy_shutdown, complete, error, paused, cancelled, stalled. Disclosure — one MOONRAKER_URL; agent can call tools; no allowlist (guests can ask); every move asks; always adds a dead command_allowlist line; no motion in cron, yolo, approvals off, single-query, unattended, isolation host, or missing helper; host has no CLI; approval waits up to approvals.timeout (300s); cron: 1 agent turn per run (288/day at */5); unreachable told once; stores states, file, progress, time, failure code, <=20 stills; no key or name; no daily cap; no child process; vision off, else 1 ctx.llm call; control <=60s; state is not motion proof; private modules fail closed; tests/ not loaded; uninstall leaves cron; not tried on hardware."
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-klipper-print-watch#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+  - klipper_status
+  - klipper_control
+  - klipper_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - MOONRAKER_URL

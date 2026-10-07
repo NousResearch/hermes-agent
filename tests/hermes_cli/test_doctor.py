@@ -1608,3 +1608,27 @@ class TestMacOSTCCGrants:
         out = capsys.readouterr().out
         assert "could not read code-signing requirement" in out
         assert "stable" not in out
+
+
+@pytest.mark.parametrize("probe_error,free,root,expected,issues", [
+    (None, 50 << 30, False, "store is writable", []),
+    (OSError(28, "No space left on device"), 50 << 30, False, "NOT writable (ENOSPC", ["is not writable"]),
+    (None, 10 << 20, False, "free — cron jobs stop when it fills", ["Free disk space"]),
+    # root may fill the reserved blocks: 0 B for disk_usage, but statvfs f_bfree says 4 GB
+    pytest.param(None, 0, True, "store is writable", [], id="root-reserved-blocks",
+                 marks=pytest.mark.skipif(not hasattr(os, "geteuid"), reason="no os.geteuid")),
+])
+def test_cron_store_check_reports_writability_and_low_space(
+        monkeypatch, tmp_path, capsys, probe_error, free, root, expected, issues):
+    from cron import store_health
+
+    (tmp_path / "cron").mkdir()
+    monkeypatch.setattr(doctor, "HERMES_HOME", tmp_path)
+    monkeypatch.setattr(store_health, "probe_store", lambda _d: probe_error)
+    monkeypatch.setattr(store_health.shutil, "disk_usage", lambda _d: SimpleNamespace(free=free))
+    if hasattr(os, "geteuid"):  # rows run as the user they name, whoever runs the suite
+        monkeypatch.setattr(os, "geteuid", lambda: 0 if root else 1000)
+        monkeypatch.setattr(os, "statvfs", lambda _d: SimpleNamespace(f_bfree=1 << 20, f_frsize=4096))
+    finding = doctor_state._check_cron_store(False)
+    assert expected in capsys.readouterr().out
+    assert len(finding.issues) == len(issues) and all(any(s in i for i in finding.issues) for s in issues)

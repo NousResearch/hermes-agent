@@ -350,6 +350,17 @@ hermes cron status
 
 For a named profile served by the default-profile multiplexer, `hermes cron status` names that scheduler host and reports the named profile's own heartbeat health. Missing or stale heartbeats point to `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when that heartbeat is missing or stale; `cron status` additionally checks the last successful tick and reports tick errors.
 
+#### Cron store not writable (full disk, read-only mount, permissions)
+
+When the cron store (`~/.hermes/cron/`, or the profile's own `cron/` directory) can't be written, for example because the disk is full (`ENOSPC`), the mount is read-only (`EROFS`) or the permissions are wrong (`EACCES`), the scheduler does not run a job whose run it can't record. That prevents double fires after recovery. The ticker keeps running. It stops attempting the doomed writes and re-checks the store about once a minute. The outage shows up in four places:
+
+- `hermes cron status` probes the store itself and leads with `⚠ Cron store is NOT writable — scheduled jobs are being skipped`. Below that it shows the store path, the OS error, the last successful write and how many due runs have not fired. `hermes cron list` prints a one-line banner.
+- `hermes doctor` warns when the store is not writable, or when its filesystem has less than 100 MB free.
+- The gateway posts one notice to the profile's home channels when the store becomes unwritable and one when it has stayed writable for an hour (a store that fails again within that hour posts nothing more, so the last notice always matches its state). Both respect `display.suppress_warning_notifications` and use the profile's `display.language`.
+- Monitoring exports `hermes.cron.store.writable` (0 while any profile's store served by this gateway is unwritable, else 1) and `hermes.cron.store.skipped_runs` (summed over those stores).
+
+To fix it, free disk space on the filesystem holding the store, remount it read-write, or fix the ownership and permissions of the store directory so the gateway user can write it. You don't need to restart anything. On the next tick that can write, each job that stayed due fires **once** under the normal [misfire catch-up](#misfire-catch-up) rules, not once per missed tick. A one-shot that came due during the outage fires once instead of expiring (unless the gateway restarts while the store is unwritable).
+
 ### Gateway scheduler behavior
 
 On each tick Hermes:

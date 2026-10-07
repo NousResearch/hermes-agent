@@ -492,6 +492,22 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 
 @doctor_check()
+def _check_cron_store(should_fix: bool, f: Finding) -> None:
+    """The cron store accepts writes and its filesystem is not nearly full (jobs skip otherwise)."""
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
+    cron_dir = HERMES_HOME / "cron"
+    if (report := probe_report(cron_dir)) is not None:
+        check_warn(f"{_DHH}/cron/ is NOT writable ({report['error']}) — scheduled cron jobs are being skipped")
+        return f.issues.append(f"Cron store {report['store']} is not writable: {report['fix']}")
+    free = free_bytes(cron_dir) if cron_dir.is_dir() else None
+    if free is not None and free < LOW_FREE_BYTES:
+        check_warn(f"{_DHH}/cron/ filesystem has only {_human_bytes(free)} free — cron jobs stop when it fills")
+        return f.issues.append(f"Free disk space on the filesystem holding {cron_dir}")
+    check_ok(f"{_DHH}/cron/ store is writable")
+
+
+@doctor_check()
 def _check_checkpoint_store(should_fix: bool, f: Finding) -> None:
     """/rollback store footprint: warn when checkpoints are on and the store sits above its cap."""
     from tools.checkpoint_maintenance import checkpoint_footprint_notice
@@ -585,7 +601,7 @@ _MEMORY_PROVIDER_CHECKS: dict = {}
 
 
 def _memory_provider_generic(name: str) -> None:
-    """Generic check for every memory provider (openviking, mem0, honcho, hindsight, ...)."""
+    """Generic check for every memory provider (honcho, hindsight, mem0, openviking, ...)."""
     from plugins.memory import load_memory_provider
     _provider = load_memory_provider(name)
     if _provider and _provider.is_available():

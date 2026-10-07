@@ -35,14 +35,31 @@ _lock.checkout_lock_path = checkout_lock_path
 """
 
 
+_SPAWNED: list[subprocess.Popen] = []
+
+
+@pytest.fixture(autouse=True)
+def _reap_children():
+    """A failed assert skips a test's own release, and a draining gateway ignores SIGTERM and
+    polls for its flag forever: SIGKILL every child still alive once the test is over."""
+    yield
+    while _SPAWNED:
+        child = _SPAWNED.pop()
+        if child.poll() is None:
+            child.kill()  # windows-footgun: ok — module skips on Windows
+            child.wait(timeout=10)
+
+
 def _child(code: str, *argv: str, env: dict) -> subprocess.Popen:
     shim = Path(env["HERMES_HOME"]) / "checkout-lock-shim"
     shim.mkdir(exist_ok=True)
     (shim / "sitecustomize.py").write_text(_PRIVATE_CHECKOUT_LOCK, encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(shim), str(REPO))),
            "HERMES_TEST_CHECKOUT_LOCK": str(shim / "hermes-update.lock"), **env}
-    return subprocess.Popen([sys.executable, "-c", textwrap.dedent(code), *argv], cwd=REPO, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, text=True, env=env)
+    child = subprocess.Popen([sys.executable, "-c", textwrap.dedent(code), *argv], cwd=REPO,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True, env=env)
+    _SPAWNED.append(child)
+    return child
 
 
 def _orphaned_profiles(home: Path) -> dict | None:

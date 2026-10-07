@@ -125,6 +125,8 @@ import {
   readBundleSwapStamp,
   relaunchIntoSwappedBundle
 } from './bundle-swap'
+import { CHALLENGE_PARTITION } from './challenge-window'
+import { registerChallengeWindowIpc } from './challenge-window-ipc'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -448,7 +450,7 @@ import {
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
-import { createPortalSession } from './portal-session'
+import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
 import {
   createKeepAwake,
   type KeepAwakeMode,
@@ -483,18 +485,20 @@ import {
 import { migrateActiveProfileIfMissing as migrateActiveProfileIfMissingPure } from './profile-migration'
 import { prepareProfileRenameLifecycle, profileRenameFromRequest } from './profile-rename-routing'
 import {
+  applyRemoteProfileSessionOutcomes,
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  composeUnifiedSessionResponse,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
   isAllProfilesSessionListRequest,
-  mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
   remoteProfileQueryScope,
+  settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse,
@@ -4953,10 +4957,6 @@ async function isSourceRuntimeUsable(root: string): Promise<boolean> {
   return (await resolveSourceInstallationBackend(root, [], { hermesHome: HERMES_HOME })) !== null
 }
 
-function isActiveRuntimeUsable(): Promise<boolean> {
-  return isSourceRuntimeUsable(ACTIVE_HERMES_ROOT)
-}
-
 function activeRuntimeState(backend: SourceBackend | null): ActiveRuntimeState {
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
@@ -8146,17 +8146,6 @@ async function freshGatewayWsUrl(profile) {
 //     portal's silent auto-approve (org member, existing session) and 302s back
 //     with that agent's session cookie — no prompt. Each agent still completes
 //     its own PKCE exchange; SSO removes the human click, not a security check.
-
-// Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
-// convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
-// so a single override flips every Hermes surface to the same portal.
-const DEFAULT_NOUS_PORTAL_URL = 'https://portal.nousresearch.com'
-
-function resolvePortalBaseUrl() {
-  const raw = process.env.HERMES_PORTAL_BASE_URL || process.env.NOUS_PORTAL_BASE_URL || DEFAULT_NOUS_PORTAL_URL
-
-  return String(raw).trim().replace(/\/+$/, '')
-}
 
 const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
   createPortalSession({
@@ -17420,23 +17409,26 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const profileTotals = { ...(base.profile_totals || {}) }
   let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
 
-  // Swap each remote profile's stale local rows/total for the remote's real ones.
-  await Promise.all(
-    remoteProfiles.map(async name => {
-      const list = await remoteSessionList(name, remoteParams).catch(() => null)
-
-      if (!list) {
-        delete profileTotals[name] // dead remote → drop its stale local total too
-
-        return
-      }
-
-      const rows = rowsOf(list)
-      merged.push(...rows)
-      profileTotals[name] = Number(list.total) || rows.length
-      total += profileTotals[name]
-    })
+  // Swap each remote profile's stale local rows/total for the remote's real
+  // ones. #75712: each remote fetch runs under its own bounded budget and
+  // settles — one unavailable remote no longer holds the whole aggregate (and
+  // the sidebar behind it) hostage for the 180s backend readiness wait. A
+  // dead or still-pending remote contributes no rows, drops its stale local
+  // total, and is NAMED in the response `errors` instead of silently
+  // vanishing; the fetch itself keeps running so a remote that is merely slow
+  // to boot lands on a later refresh.
+  const remoteOutcomes = await settleRemoteProfileSessions(remoteProfiles, name =>
+    remoteSessionList(name, remoteParams)
   )
+
+  const { total: remoteTotal, errors: remoteErrors } = applyRemoteProfileSessionOutcomes(
+    remoteOutcomes,
+    merged,
+    profileTotals,
+    total
+  )
+
+  total = remoteTotal
 
   // Registry gateways (v2 connections): splice every CONNECTED gateway's rows
   // into the unified list. Only already-pooled backends are read — a sidebar
@@ -17457,12 +17449,7 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return {
-    ...(base as any),
-    sessions: mergeProfileSessionWindow(merged, offset, limit),
-    total,
-    profile_totals: profileTotals
-  }
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors)
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
@@ -18478,6 +18465,15 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   }
 })
 
+// Free-tier browser challenge: a hidden portal window (electron/challenge-window.ts).
+registerChallengeWindowIpc({
+  isReady: () => app.isReady(),
+  getSession: () => session.fromPartition(CHALLENGE_PARTITION),
+  resolvePortalBaseUrl,
+  createWindow: options => new BrowserWindow(options),
+  rememberLog
+})
+
 ipcMain.handle('hermes:openExternal', async (_event, url) => {
   const result = await openExternalUrl(url)
 
@@ -19113,7 +19109,9 @@ registerDesktopUninstallIpc({
   stamp: INSTALL_STAMP,
   fallbackSummary: fallbackUninstallSummary,
   probeSummary: probeUninstallSummary,
-  runUninstall: runDesktopUninstall
+  runUninstall: runDesktopUninstall,
+  removableAppPath: () => resolveRemovableAppPath(process.execPath, process.platform, process.env),
+  openAppsSettings: () => shell.openExternal('ms-settings:appsfeatures')
 })
 
 // Download a VS Code Marketplace extension and return the raw color-theme JSON

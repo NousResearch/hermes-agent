@@ -9,15 +9,21 @@ its starting HEAD at all: both torn trees were admitted.
 
 Real git (local repositories and a bare "upstream"), real update steps, real durable pause record
 and gate. git's mid-move failure is real too: a read-only directory, as an unprivileged user.
+
+The updater repairs a failed move in-process (#132361's commit point); the gate's case is the torn
+tree that repair cannot settle. A concurrent launch holding the restore claim is that case, for real:
+the marker stays for the next launch, and so must the paused set.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 
 import pytest
 
+from hermes_cli import _early_recovery as er
 from hermes_cli import update_cmd
 from hermes_cli import update_pause_record as pause_record
 
@@ -67,6 +73,20 @@ def gate(root) -> bool:
     return pause_record.tree_is_whole(pause_record.read(pause_record.record_path())["token"], root)[0]
 
 
+@contextlib.contextmanager
+def repair_blocked(root, monkeypatch):
+    """Another launch holds the restore claim: the in-process repair of a failed move gives up and
+    leaves the tree torn, its marker kept for the next launch."""
+    monkeypatch.setattr(er, "_RESTORE_CLAIM_WAIT_SECONDS", 0.2)
+    fd = os.open(er.interrupted_pull_marker(root).parent / er._RESTORE_CLAIM, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        assert er._lock_fd(fd, True)
+        yield
+    finally:
+        er._lock_fd(fd, False)
+        os.close(fd)
+
+
 def bare_upstream(root, tmp_path, tip) -> None:
     remote = tmp_path / "upstream.git"
     subprocess.run(["git", "clone", "-q", "--bare", str(root), str(remote)], check=True)
@@ -74,7 +94,7 @@ def bare_upstream(root, tmp_path, tip) -> None:
     git(root, "remote", "add", "upstream", str(remote))
 
 
-def test_a_torn_first_branch_switch_stays_held_after_a_ref_only_fetch(repo):
+def test_a_torn_first_branch_switch_stays_held_after_a_ref_only_fetch(repo, monkeypatch):
     a = commit(repo, "A", **{"a.py": "A=1\n"})
     git(repo, "checkout", "-q", "-b", "feature")  # parked on a merged branch: the update switches to main
     git(repo, "checkout", "-q", "main")
@@ -87,7 +107,7 @@ def test_a_torn_first_branch_switch_stays_held_after_a_ref_only_fetch(repo):
     # it between the two, as a kill would (HEAD unmoved, the target's bytes already in the tree).
     (repo / ".git" / "refs" / "heads").chmod(0o555)
     try:
-        with pytest.raises(SystemExit):
+        with repair_blocked(repo, monkeypatch), pytest.raises(SystemExit):
             update_cmd._prepare_checkout_for_update(
                 ["git"], "main", "feature", is_fork=False, assume_yes=True, gateway_mode=False,
                 gw_input_fn=None, switch_branch=False, _windows_gateway_resume=token)
@@ -99,7 +119,7 @@ def test_a_torn_first_branch_switch_stays_held_after_a_ref_only_fetch(repo):
     assert gate(repo) is False, "a torn switch was admitted once a fetch moved the refs"
 
 
-def test_a_torn_early_upstream_sync_stays_held_after_a_ref_only_fetch(repo, tmp_path):
+def test_a_torn_early_upstream_sync_stays_held_after_a_ref_only_fetch(repo, tmp_path, monkeypatch):
     a = commit(repo, "A", **{"a.py": "A=1\n", "locked__z.py": "Z=1\n"})
     b = commit(repo, "B", **{"a.py": "A=2\n", "locked__z.py": "Z=2\n"})
     bare_upstream(repo, tmp_path, b)
@@ -107,9 +127,10 @@ def test_a_torn_early_upstream_sync_stays_held_after_a_ref_only_fetch(repo, tmp_
     git(repo, "update-ref", "refs/remotes/origin/main", a)  # the fork matches origin, trails upstream
     token = pause(repo)
     (repo / "locked").chmod(0o555)
-    update_cmd._prepare_checkout_for_update(
-        ["git"], "main", "main", is_fork=True, assume_yes=True, gateway_mode=False,
-        gw_input_fn=None, switch_branch=False, _windows_gateway_resume=token)
+    with repair_blocked(repo, monkeypatch):
+        update_cmd._prepare_checkout_for_update(
+            ["git"], "main", "main", is_fork=True, assume_yes=True, gateway_mode=False,
+            gw_input_fn=None, switch_branch=False, _windows_gateway_resume=token)
     assert git(repo, "rev-parse", "HEAD") == a and (repo / "a.py").read_text() == "A=2\n", "fixture: not torn"
     git(tmp_path / "upstream.git", "update-ref", "refs/heads/main", a)  # upstream moves on (here: back)
     git(repo, "fetch", "-q", "upstream", "+refs/heads/main:refs/remotes/upstream/main")  # a later real fetch
@@ -117,7 +138,7 @@ def test_a_torn_early_upstream_sync_stays_held_after_a_ref_only_fetch(repo, tmp_
 
 
 @pytest.mark.parametrize("second_move", ["torn", "refused", "complete"])
-def test_a_second_move_is_gated_from_the_head_the_first_one_reached(repo, tmp_path, second_move):
+def test_a_second_move_is_gated_from_the_head_the_first_one_reached(repo, tmp_path, monkeypatch, second_move):
     commit(repo, "A", **{"a.py": "A=1\n", "locked__z.py": "Z=1\n", "notes.txt": "mine\n"})
     o = commit(repo, "O", **{"origin.py": "O=1\n"})
     # Refused: upstream also touches the user's file, which the user edits again after the update.
@@ -132,9 +153,10 @@ def test_a_second_move_is_gated_from_the_head_the_first_one_reached(repo, tmp_pa
         (repo / "locked").chmod(0o555)
     elif second_move == "refused":
         (repo / "new.py").write_text("in the way\n", encoding="utf-8")  # git refuses before writing a file
-    update_cmd._pull_updates(
-        ["git"], "main", None, prompt_for_restore=False, gw_input_fn=None, discard_local_changes=False,
-        keep_stash=False, sync_upstream=True, assume_yes=True, _windows_gateway_resume=token)
+    with repair_blocked(repo, monkeypatch) if second_move == "torn" else contextlib.nullcontext():
+        update_cmd._pull_updates(
+            ["git"], "main", None, prompt_for_restore=False, gw_input_fn=None, discard_local_changes=False,
+            keep_stash=False, sync_upstream=True, assume_yes=True, _windows_gateway_resume=token)
     head = git(repo, "rev-parse", "HEAD")
     if second_move == "torn":
         assert head == o and (repo / "a.py").read_text() == "A=2\n", "fixture: not torn"

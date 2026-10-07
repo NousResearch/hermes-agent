@@ -319,6 +319,16 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
+
+        # PtySession.close() removes markers owned by live registry sessions.
+        # This second pass cleans any channel markers left in app state,
+        # including stale paths from sessions reaped earlier.
+        for marker in set(_get_pty_active_session_files(app).values()):
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
@@ -1472,7 +1482,9 @@ def _on_server_started(
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
     else:
-        print(f"  Hermes Web UI → http://{host}:{actual_port}")
+        from hermes_cli.url_utils import format_url_host
+
+        print(f"  Hermes Web UI → http://{format_url_host(host)}:{actual_port}")
     _maybe_open_browser(host, actual_port, open_browser, initial_profile)
 
     if start_mcp_discovery_after_bind:

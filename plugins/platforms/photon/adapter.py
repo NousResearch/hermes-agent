@@ -294,7 +294,7 @@ def _reinstall_sidecar_deps() -> None:
 
     def _run(verb: str) -> subprocess.CompletedProcess:
         return subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
+            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
         result = _run("ci")
@@ -507,6 +507,33 @@ def _normalize_content(content: Dict[str, Any]) -> _Normalized:
     if normalize is None:
         return f"[Photon content type not handled: {ctype}]", MessageType.TEXT, [], []
     return normalize(content)
+
+
+def _sent_text_key(chat_id: Optional[str]) -> Optional[str]:
+    """DM GUID (``any;-;+1555...``) and bare E.164 address one space; index under the phone."""
+    return PhotonAdapter._normalize_chat_key(chat_id) if chat_id else None
+
+
+def _attachment_label(kind: str, name: str) -> str:
+    return f"[{kind}: {name}]"
+
+
+async def _record_sent_text_async(chat_id: Optional[str], message_id: Optional[str], text: Optional[str]) -> None:
+    """Remember what we sent so a later threaded reply to it carries the quoted text. Never raises."""
+    try:
+        from gateway import rich_sent_store
+        await rich_sent_store.record_async(_sent_text_key(chat_id), message_id, text)
+    except Exception:
+        logger.debug("[photon] sent-text index record failed", exc_info=True)
+
+
+def _lookup_sent_text(chat_id: Optional[str], message_id: Optional[str]) -> Optional[str]:
+    try:
+        from gateway import rich_sent_store
+        return rich_sent_store.lookup(_sent_text_key(chat_id), message_id)
+    except Exception:
+        logger.debug("[photon] sent-text index lookup failed", exc_info=True)
+        return None
 
 
 def _attachment_body(space_id: str, safe_path: str, *, kind: str, name: Optional[str] = None,
@@ -802,11 +829,31 @@ class PhotonAdapter(BasePlatformAdapter):
         sender_id = sender.get("id") or space.get("phone") or space_id
         timestamp = _parse_timestamp(event.get("timestamp") or "")
         message_id = event.get("messageId")
+        # iMessage threaded reply (spectrum 12.x): unwrap to the inner content so the user's
+        # words go through the normal ladder, and keep the quoted target as reply context
+        # (#100663). Malformed envelopes fall through to the unknown-type marker.
+        reply_ctx: Dict[str, Any] = {}
+        if content.get("type") == "reply" and isinstance(content.get("content"), dict) \
+                and content["content"].get("type") not in (None, "unknown"):
+            target_id = content.get("targetMessageId")
+            target_text = content.get("targetText") or None
+            # spectrum often can't hydrate the target's text (e.g. our own sends, older
+            # bubbles): fall back to the local index of what we sent.
+            stored_text = _lookup_sent_text(space_id, target_id) if target_id and not target_text else None
+            # Cloud targets carry no direction and _sent_message_ids is in-memory, so after a
+            # restart an index hit is the only proof the target was ours (only our sends are indexed).
+            is_own = content.get("targetDirection") == "outbound" or bool(
+                target_id and target_id in self._sent_message_ids) or stored_text is not None
+            reply_ctx = {"reply_to_message_id": target_id, "reply_to_text": target_text or stored_text,
+                         "reply_to_is_own_message": is_own}
+            content = content["content"]
         ctype = content.get("type")
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
                                        user_id=sender_id, user_name=sender_id or None, message_id=message_id)
+            for key, value in reply_ctx.items():
+                kwargs.setdefault(key, value)
             return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
                                 raw_message=event, timestamp=timestamp, **kwargs)
         if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
@@ -880,7 +927,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """stdout of a short shell-out, or None if it failed to run."""
         try:
             return subprocess.run(  # noqa: S603, S607
-                cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0,
+                cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5.0,
                 check=False).stdout
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -1411,10 +1458,12 @@ class PhotonAdapter(BasePlatformAdapter):
         return await self._sidecar_send(
             chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
-    async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
+    async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False,
+                         sent_text: Optional[str] = None) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
         a ``PhotonSidecarError``'s class/retryability so ``_send_with_retry`` can recognise
-        permanent failures."""
+        permanent failures. ``sent_text`` is what a later threaded reply to this bubble quotes;
+        every outbound path passes through here, so recording here covers them all."""
         try:
             data = await self._sidecar_call(path, body)
         except PhotonSidecarError as e:
@@ -1425,13 +1474,17 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
+        if sent_text:
+            await _record_sent_text_async(body.get("spaceId"), data.get("messageId"), sent_text)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send(self, space_id: str, text: str, *, richlink: bool = True,
                             markdown: bool = True) -> SendResult:
+        sent_text = text
         rich_url = _richlink_candidate(text) if richlink else None
         if rich_url:
-            rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url})
+            rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url},
+                                                sent_text=sent_text)
             if rich_result.success:
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
@@ -1446,7 +1499,7 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
-        return await self._post_send("/send", body, structured=True)
+        return await self._post_send("/send", body, structured=True, sent_text=sent_text)
 
     async def _sidecar_send_poll(self, space_id: str, title: str, options: list) -> SendResult:
         """POST a native poll to ``/send-poll`` (degrades to a numbered list elsewhere)."""
@@ -1456,7 +1509,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(opts) < 2:
             return SendResult(success=False, error="poll needs at least two options")
         body = {"spaceId": space_id, "title": title.strip()[: self.MAX_MESSAGE_LENGTH], "options": opts}
-        return await self._post_send("/send-poll", body)
+        return await self._post_send("/send-poll", body, sent_text=body["title"])
 
     async def _sidecar_send_attachment(self, space_id: str, path: str, *, name: Optional[str] = None,
                                        mime_type: Optional[str] = None, caption: Optional[str] = None,
@@ -1468,7 +1521,8 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"unsafe or missing attachment path: {path}")
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
-        return await self._post_send("/send-attachment", body, structured=True)
+        label = caption or _attachment_label(kind, name or os.path.basename(safe_path))
+        return await self._post_send("/send-attachment", body, structured=True, sent_text=label)
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if self._http_client is None:
@@ -1615,6 +1669,7 @@ async def _standalone_send(
                     if not data:
                         return _standalone_error(resp)
                 last_message_id = data.get("messageId")
+                await _record_sent_text_async(chat_id, last_message_id, message)
             # 2. Each attachment as a separate /send-attachment call; media_files is
             #    List[Tuple[path, is_voice]] (filter_media_delivery_paths).
             for media_path, is_voice in media_files or []:
@@ -1628,6 +1683,8 @@ async def _standalone_send(
                 if not data:
                     return _standalone_error(resp)
                 last_message_id = data.get("messageId") or last_message_id
+                await _record_sent_text_async(chat_id, data.get("messageId"), _attachment_label(
+                    "voice" if is_voice else "attachment", os.path.basename(safe_path)))
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
         return send_error(f"Photon standalone send failed: {e}")

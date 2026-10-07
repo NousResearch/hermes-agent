@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.web_server as web_server
+import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture()
@@ -31,6 +32,9 @@ def client():
     return c
 
 
+_ACTION_ID = "d" * 32
+
+
 def _write_receipt(tmp_path: Path, monkeypatch, *, outcome="success") -> dict:
     receipt = {
         "schema": 1,
@@ -39,6 +43,7 @@ def _write_receipt(tmp_path: Path, monkeypatch, *, outcome="success") -> dict:
         "argv": ["hermes", "update"],
         "pid": 12345,
         "outcome": outcome,
+        "action_id": _ACTION_ID,
         "pre_update": {"sha": "a" * 40, "version": "0.20.4"},
         "post_update": {"sha": "b" * 40, "version": "0.20.5"},
         "steps": [{"name": "pre_update_backup", "ok": True, "detail": "", "at": ""}],
@@ -88,12 +93,15 @@ class TestUpdateReceiptEndpoint:
 class TestUpdateStatusReadsReceipt:
 
     def _clear_registries(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(web_server, "_ACTION_LOG_DIR", tmp_path / "actions")
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "actions")
         (tmp_path / "actions").mkdir(exist_ok=True)
-        monkeypatch.setattr(web_server, "_ACTION_PROCS", {})
-        monkeypatch.setattr(web_server, "_ACTION_RESULTS", {})
-        monkeypatch.setattr(web_server, "_ACTION_COMMANDS", {})
-        monkeypatch.setattr(web_server, "_ACTION_IDS", {})
+        # The dashboard's own log names the action it spawned; the receipt must name the same one.
+        (tmp_path / "actions" / "hermes-update.log").write_text(
+            f"=== hermes-update started 2026-08-23 07:00:00 {_ACTION_ID} ===\n", encoding="utf-8")
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_IDS", {})
 
     def test_status_attaches_receipt_summary(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)

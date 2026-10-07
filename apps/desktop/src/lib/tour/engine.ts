@@ -56,6 +56,10 @@ export interface TourHolder {
  *  supplies the actual navigation (see TourHost), so the engine itself stays
  *  self-contained and portable to a guest page. */
 export interface TourStep {
+  /** Draw this step accent-lit: a slowly travelling ring around the popover
+   *  instead of the usual hairline. For the moment in a run that is worth more
+   *  than a step — used sparingly, or it stops meaning anything. */
+  accent?: boolean
   navigate?: string
   pane?: string
   selector?: string
@@ -73,6 +77,8 @@ export interface TourHost {
   navigate?: (to: string) => void
   /** Reveal a desktop pane by name. */
   revealPane?: (pane: string) => void
+  /** The tour ended, however it ended (Esc, the ✕, an overlay click, the last step). */
+  onEnd?: () => void
 }
 
 /** A normalized action. `kind` is the verb; the rest is per-verb payload. */
@@ -116,7 +122,7 @@ export function runTourEngine(
     step.title || step.text
       ? {
           description: step.text || '',
-          popoverClass: first ? 'tour-pop-in' : 'tour-pop-next',
+          popoverClass: (first ? 'tour-pop-in' : 'tour-pop-next') + (step.accent ? ' tour-pop-accent' : ''),
           side: step.side || undefined,
           title: step.title || ''
         }
@@ -277,6 +283,14 @@ export function runTourEngine(
     doc.body.classList.remove('driver-active', 'driver-fade', 'driver-simple', 'driver-no-scroll')
   }
 
+  /** Every way a driver goes away funnels here, so the host hears about each one. */
+  const ended = () => {
+    holder.driver = undefined
+    holder.release?.()
+    holder.release = undefined
+    host?.onEnd?.()
+  }
+
   if (kind === 'show') {
     const gone = unmatched([action])
 
@@ -286,7 +300,8 @@ export function runTourEngine(
 
     if (!holder.driver) {
       clearOrphans()
-      holder.driver = factory(base)
+      // Esc, the ✕ and an overlay click end a one-off highlight too.
+      holder.driver = factory({ ...base, onDestroyed: ended })
     }
 
     // A one-off highlight is its own arrival, so it uses the settle-down enter.
@@ -321,9 +336,7 @@ export function runTourEngine(
     holder.driver = factory({
       ...base,
       onDestroyed: () => {
-        holder.driver = undefined
-        holder.release?.()
-        holder.release = undefined
+        ended()
 
         if (origin !== undefined && host?.navigate && host.currentRoute?.() !== origin) {
           host.navigate(origin)

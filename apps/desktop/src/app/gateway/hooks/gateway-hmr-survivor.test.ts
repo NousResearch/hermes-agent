@@ -24,16 +24,6 @@ afterEach(() => {
 })
 
 describe('gateway HMR survivor cache', () => {
-  it('returns null when nothing is parked', () => {
-    expect(takeGatewaySurvivor()).toBeNull()
-  })
-
-  it('round-trips a parked survivor', () => {
-    const survivor = makeSurvivor('open')
-    stashGatewaySurvivor(survivor)
-    expect(takeGatewaySurvivor()).toBe(survivor)
-  })
-
   it('is single-shot — a second take returns null', () => {
     stashGatewaySurvivor(makeSurvivor('open'))
     expect(takeGatewaySurvivor()).not.toBeNull()

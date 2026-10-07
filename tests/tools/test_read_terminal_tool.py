@@ -16,8 +16,8 @@ class TestReadTerminalEmptyBufferGuidance(unittest.TestCase):
         payload = json.loads(result)
         self.assertIn("error", payload)
         msg = payload["error"]
-        self.assertIn("No in-app terminal is open", msg)
-        self.assertIn("do not retry", msg)
+        self.assertIn("No in-app terminal answered", msg)
+        self.assertIn("do not retry", msg.lower())
         self.assertIn("execute_code", msg)
 
     def test_desktop_only_error_unchanged(self):

@@ -400,6 +400,37 @@ class PeerRunsHTTPClient:
         self._recovery_backoff.pop(key, None)
         return recovered
 
+    def cancel_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
+        """Cancel the generation without an admission replay, including an absent target run."""
+        checked = self._checked_dispatch(dispatch, grant)
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        if existing is not None:
+            return self.stop_receipt(
+                task_id=checked.task_id, execution_generation=checked.execution_generation, grant=grant)
+        key, now = (checked.task_id, checked.execution_generation), self.clock()
+        backoff = self._recovery_backoff.get(key)
+        if backoff is not None and now < float(backoff["next_attempt_at"]):
+            raise PeerRunsHTTPError("peer admission cancellation is backing off", retryable=True, ambiguous=True)
+        try:
+            result = self._request(
+                "/v1/runs/stop", method="POST",
+                body={"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()},
+                headers={"Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
+                room_grant=grant)
+            if not str(result.get("run_id") or "") or result.get("status") not in _KNOWN_RUN_STATES:
+                raise PeerRunsHTTPError("peer returned no exact cancellation receipt", retryable=True, ambiguous=True)
+        except PeerRunsHTTPError as exc:
+            delay = self._next_poll_delay(backoff)
+            self._recovery_backoff = {key: {"delay": delay, "next_attempt_at": now + delay}}
+            if exc.status_code in {404, 405}:
+                raise PeerRunsHTTPError(
+                    "peer cannot cancel an uncertain admission; update the target gateway",
+                    ambiguous=True, status_code=exc.status_code) from exc
+            raise
+        self._recovery_backoff.pop(key, None)
+        self._remember_run(checked, result, session_id=self._session_id(checked, grant=grant))
+        return result
+
     @staticmethod
     def _accepted(
         checked: HostedMemberDispatch, *, run_id: str, session_id: str, replayed: bool,
@@ -444,6 +475,11 @@ class PeerRunsHTTPClient:
                     status_code=replay_error.status_code,
                     error_code=replay_error.error_code,
                 ) from replay_error
+        return self._remember_run(checked, result, session_id=session_id)
+
+    def _remember_run(
+        self, checked: HostedMemberDispatch, result: Mapping[str, Any], *, session_id: str,
+    ) -> Mapping[str, Any]:
         run_id = str(result.get("run_id") or "")
         receipt = {
             "run_id": run_id, "session_id": session_id,

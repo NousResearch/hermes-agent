@@ -1172,3 +1172,20 @@ def test_grant_refresh_retries_old_grant_after_response_loss():
     assert first["grant"] == "replacement-one"
     assert second["grant"] == "replacement-two"
     assert first["catalog"] == second["catalog"] == raw_catalog
+
+
+def test_old_target_cancels_known_receipt_but_never_admits_an_unknown_stop(peer_server, tmp_path):
+    receipt_db = tmp_path / "home.db"
+    client = PeerRunsHTTPClient(base_url=peer_server, api_key="", receipt_db_path=receipt_db)
+    with pytest.raises(PeerRunsHTTPError, match="update the target gateway") as error:
+        client.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert error.value.ambiguous and not error.value.not_admitted
+    assert FakePeer.runs == {} and FakePeer.idempotency == []
+
+    # An explicit later dispatch is allowed, and its saved receipt needs only the old run Stop API.
+    admitted = client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    restarted = PeerRunsHTTPClient(base_url=peer_server, api_key="", receipt_db_path=receipt_db)
+    stopped = restarted.cancel_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert stopped["run_id"] == admitted["run_id"]
+    assert FakePeer.runs[admitted["run_id"]]["status"] == "cancelled"
+    assert FakePeer.idempotency == ["room:task-1:1"]

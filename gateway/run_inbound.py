@@ -21,7 +21,7 @@ from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import BasePlatformAdapter, EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
@@ -1765,8 +1765,16 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
             state.persistent.native_image_paths = []
         return paths
 
+    def _reply_is_private(self, event: Optional["MessageEvent"]) -> bool:
+        """True when the adapter answering *event* says its reply has a private lane only this
+        process holds; restart recovery would re-run the turn into the public lane."""
+        adapter = self._delivery_adapter_for(getattr(event, "source", None))
+        return isinstance(adapter, BasePlatformAdapter) and adapter.reply_is_private(event)
+
     async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        if self._reply_is_private(event):
+            return False
         try:
             token = await self.async_session_store.mark_turn_active(session_key)
         except Exception as exc:

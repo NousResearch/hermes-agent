@@ -37,8 +37,15 @@ change detector whose false positive reconnects something, a parse-failure recor
 manifest, hook-consent, free-tier and onboarding stamps do). "Recent" is judged on ctime as well as
 mtime, because `cp -p` or `rsync --inplace -t` restore an older mtime after writing. A worker bound to
 a frozen config snapshot never hashes a `config.yaml`: its key stays stat-only there, so the content
-check never makes such a worker open the profile file. The managed scope (`/etc/hermes`) stays an overlay on top
-of whatever user layer the backend returns.
+check never makes such a worker open the profile file. Caches keyed on `config_cache_version` miss
+when a remote poll installs a new layer, exactly as they do after a local file edit. With the file
+backend, the managed scope (`/etc/hermes`) stays an overlay on top of the user layer. The remote
+backend ignores the managed `config.yaml`: config and locks come only from Remote Config, and
+`hermes doctor` flags the file if it exists. The managed `.env` still applies in both modes.
+
+Related keys that must change together (a model switch's `model.*` keys, the TUI `/focus`
+toggle) go through `write_config_keys(path, {key: value, ...})`. A remote backend sends them
+as one CAS write, so a lock on any of them refuses all of them.
 
 ## Lints
 

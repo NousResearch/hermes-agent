@@ -1107,7 +1107,8 @@ class SessionAuthority:
             self.check_approval_generation(session_id, generation)
             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
             from gateway.session_prompt_hooks import control_opened
-            control_opened(self, session_id, live.controls, data['request_id'])
+            control_opened(self, session_id, live.controls, data['request_id'],
+                           description=data.get('scanner_description'))
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         live = self.sessions[session_id]

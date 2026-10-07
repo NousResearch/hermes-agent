@@ -1692,7 +1692,7 @@ def my_callback(session_id: str, kind: str, prompt_id: str,
 | `kind` | `str` | As in the table above |
 | `prompt_id` | `str` | The id that answers the prompt; the matching `on_session_prompt_settled` carries the same value |
 | `execution_generation` | `int \| None` | The turn's generation for `approval` / `clarify` events, `None` for request frames |
-| `params` | `dict` | A deep copy of the prompt as the viewers received it (event payload or frame `params`). Every string is redacted with the secret redactor, even when `security.redact_secrets` is off |
+| `params` | `dict` | A deep copy of the prompt as the viewers received it (event payload or frame `params`). Every string is redacted with the secret redactor, even when `security.redact_secrets` is off. A dangerous-command approval's `description` is the scanner warning only, without the unverified model-provided context the viewers see |
 
 What the person types is **never** passed. **Return value:** ignored; a raising callback is logged at debug and the prompt is unaffected. Calls run in order on one background worker, never on the agent thread or the event loop and never under a session lock, in the scope of the profile that owns the session (on a multi-profile gateway, only that profile's plugins are called). A slow callback only delays later calls of these two hooks.
 

@@ -66,8 +66,10 @@ class DiscordInteractionMixin:
     async def _drain_discord_label_writes(self, timeout: float) -> None:
         """Wait (bounded) for a label write still running, e.g. one whose reader was cancelled.
         Shutdown closes the session database right after the adapters disconnect and does not see
-        this worker; a write landing after that close reopens state.db behind its checkpoint."""
-        writer, self._discord_labels_writer = self._discord_labels_writer, None
+        this worker. A write still running past this wait cannot reopen state.db after that close
+        (``record_chat_labels``); it fails and the labels are recorded again on the next message."""
+        writer = getattr(self, "_discord_labels_writer", None)
+        self._discord_labels_writer = None
         if writer is None:
             return
         writer.shutdown(wait=False, cancel_futures=True)

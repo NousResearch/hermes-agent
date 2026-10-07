@@ -150,6 +150,15 @@ class RecoverableHandleCache:
             on_recovered()
         return handle
 
+    def peek(self, path: Path) -> Any:
+        """The cached open handle for *path*, or None; never opens one."""
+        path = Path(path)
+        with self.lock:
+            handle = self.handles.get(path)
+            if handle is None or (path in self._registry_backed and not _registry_owned(handle)):
+                return None
+            return handle
+
     def close_all(self, close: Callable[[Any], None]) -> None:
         """Drain cached handles under the lock and close them outside it."""
         with self.lock:

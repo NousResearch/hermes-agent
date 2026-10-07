@@ -1167,47 +1167,50 @@ class RelayAdapter(DiscordInteractionMixin, BasePlatformAdapter):
         from gateway.relay.ws_transport import _env_disconnect_budget_s
         _started = time.monotonic()
         _budget = _env_disconnect_budget_s()
-        # Stop the revocation monitor first so it can't fire a spurious fatal
-        # during/after a deliberate teardown.
-        if self._revocation_monitor is not None:
-            self._revocation_monitor.cancel()
-            try:
-                await asyncio.wait_for(
-                    self._revocation_monitor, timeout=_RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S
-                )
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
-            self._revocation_monitor = None
-        if self._transport is not None:
-            # Ask the connector to flip this instance to buffered-only BEFORE tearing
-            # down the socket, so inbound arriving while asleep buffers durably and
-            # replays on reconnect. Best-effort: a transport without go_idle (the
-            # stub) or a failed ack must not block shutdown. transport.disconnect()
-            # runs in finally so an outer cancellation during go_idle still closes the
-            # socket/supervisor; shield() keeps the teardown await itself from being
-            # cancelled mid-flight.
-            try:
-                go_idle = getattr(self._transport, "go_idle", None)
-                if callable(go_idle):
-                    try:
-                        result: Any = go_idle(timeout_s=_RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
-                        logger.debug("relay going_idle failed during drain", exc_info=True)
-            finally:
+        try:
+            # Stop the revocation monitor first so it can't fire a spurious fatal
+            # during/after a deliberate teardown.
+            if self._revocation_monitor is not None:
+                self._revocation_monitor.cancel()
                 try:
-                    _remaining = max(0.0, _budget - (time.monotonic() - _started))
+                    await asyncio.wait_for(
+                        self._revocation_monitor, timeout=_RELAY_REVOCATION_MONITOR_TEARDOWN_TIMEOUT_S
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                    pass
+                self._revocation_monitor = None
+            if self._transport is not None:
+                # Ask the connector to flip this instance to buffered-only BEFORE tearing
+                # down the socket, so inbound arriving while asleep buffers durably and
+                # replays on reconnect. Best-effort: a transport without go_idle (the
+                # stub) or a failed ack must not block shutdown. transport.disconnect()
+                # runs in finally so an outer cancellation during go_idle still closes the
+                # socket/supervisor; shield() keeps the teardown await itself from being
+                # cancelled mid-flight.
+                try:
+                    go_idle = getattr(self._transport, "go_idle", None)
+                    if callable(go_idle):
+                        try:
+                            result: Any = go_idle(timeout_s=_RELAY_GO_IDLE_ON_DISCONNECT_TIMEOUT_S)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
+                            logger.debug("relay going_idle failed during drain", exc_info=True)
+                finally:
                     try:
-                        _td = self._transport.disconnect(budget_s=_remaining)  # type: ignore[call-arg]
-                    except TypeError:
-                        # Transports without the budget_s keyword (stubs).
-                        _td = self._transport.disconnect()
-                    await asyncio.shield(_td)
-                except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
-                    logger.debug("relay transport disconnect failed during drain", exc_info=True)
-        # The reader is gone, so no label write starts now; let one still running finish first.
-        await self._drain_discord_label_writes(max(0.0, _budget - (time.monotonic() - _started)))
+                        _remaining = max(0.0, _budget - (time.monotonic() - _started))
+                        try:
+                            _td = self._transport.disconnect(budget_s=_remaining)  # type: ignore[call-arg]
+                        except TypeError:
+                            # Transports without the budget_s keyword (stubs).
+                            _td = self._transport.disconnect()
+                        await asyncio.shield(_td)
+                    except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
+                        logger.debug("relay transport disconnect failed during drain", exc_info=True)
+        finally:
+            # The reader is gone, so no label write starts now; let one still running finish first,
+            # even when the runner's disconnect budget cancelled the teardown above.
+            await self._drain_discord_label_writes(max(0.0, _budget - (time.monotonic() - _started)))
 
     async def go_dormant(self) -> bool:
         """Quiesce the relay for a scale-to-zero suspend. Unlike ``disconnect()`` this

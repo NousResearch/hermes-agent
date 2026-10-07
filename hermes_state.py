@@ -957,11 +957,14 @@ class SessionDB(
                 with suppress(sqlite3.Error):
                     conn.execute(f"PRAGMA busy_timeout={int(previous_ms)}")
 
-    def _reopen_after_close_locked(self, context: str = "write") -> None:
+    def _reopen_after_close_locked(self, context: str = "write", *, refuse: bool = False) -> None:
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner
         set ``_conn = None`` while a worker still had a transcript flush to land).
         Loud (WARNING) and bounded (only after an explicit close()). Caller holds
-        ``self._lock``. No _init_schema: no DDL races with siblings during teardown."""
+        ``self._lock``. No _init_schema: no DDL races with siblings during teardown.
+        ``refuse``: raise instead, for a write that must not outlive close()."""
+        if refuse:
+            raise sqlite3.ProgrammingError(f"SessionDB for {self.db_path} is closed; {context} refused")
         if self.read_only:
             raise sqlite3.ProgrammingError(
                 f"SessionDB for {self.db_path} was closed (read-only handle); "
@@ -992,13 +995,15 @@ class SessionDB(
             self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _execute_write(
-        self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
+        self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None, *,
+        reopen_after_close: bool = True,
     ) -> T:
         """Run *fn(conn)* inside BEGIN IMMEDIATE with jittered lock retry; commit
         is handled here (callers must not commit). Returns *fn*'s result.
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
-        and the WHOLE callback retried — *fn* must stay idempotent under retry."""
+        and the WHOLE callback retried — *fn* must stay idempotent under retry.
+        ``reopen_after_close=False``: after close() the write raises instead of reopening (#94736)."""
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
@@ -1027,7 +1032,7 @@ class SessionDB(
                 with self._lock:
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
-                        self._reopen_after_close_locked(context="write")
+                        self._reopen_after_close_locked(context="write", refuse=not reopen_after_close)
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         fn_started = True
@@ -1112,11 +1117,12 @@ class SessionDB(
 
     def _write_sql(
         self, sql: str, params: Any = (), *, many: bool = False, patience_s: Optional[float] = None,
+        reopen_after_close: bool = True,
     ) -> None:
         """Run one INSERT/UPDATE/DELETE through ``_execute_write``."""
         def _do(conn):
             (conn.executemany if many else conn.execute)(sql, params)
-        self._execute_write(_do, patience_s=patience_s)
+        self._execute_write(_do, patience_s=patience_s, reopen_after_close=reopen_after_close)
 
     def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
@@ -1636,9 +1642,11 @@ class SessionDB(
 
     def set_meta(
         self, key: str, value: str, *, cursor: Optional[sqlite3.Cursor] = None, patience_s: Optional[float] = None,
+        reopen_after_close: bool = True,
     ) -> None:
         """Upsert state_meta[key]; with ``cursor`` the write is inline (the caller already holds a
-        transaction — nesting BEGIN IMMEDIATE would deadlock). ``patience_s``: as ``_execute_write``."""
+        transaction — nesting BEGIN IMMEDIATE would deadlock). ``patience_s`` / ``reopen_after_close``:
+        as ``_execute_write``."""
         sql = (
             "INSERT INTO state_meta (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -1646,7 +1654,7 @@ class SessionDB(
         if cursor is not None:
             cursor.execute(sql, (key, value))
         else:
-            self._write_sql(sql, (key, value), patience_s=patience_s)
+            self._write_sql(sql, (key, value), patience_s=patience_s, reopen_after_close=reopen_after_close)
 
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces

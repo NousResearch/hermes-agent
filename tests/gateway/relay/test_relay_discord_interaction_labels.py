@@ -115,11 +115,11 @@ async def test_slash_between_messages_keeps_one_pinned_prompt(tmp_path, monkeypa
         # What _routing_db_method returns while the database handle cannot be opened.
         real, faults = store._routing_db_method, [name]
 
-        def method(wanted):
+        def method(wanted, **kwargs):
             if wanted in faults:
                 faults.remove(wanted)
                 return None
-            return real(wanted)
+            return real(wanted, **kwargs)
 
         store._routing_db_method = method
 
@@ -218,6 +218,31 @@ async def test_interaction_names_the_user_as_the_text_lane_would_now(member, exp
     assert (await _slash(adapter, member=member)).source.user_name == expected
 
 
+def _hold_label_writes(db):
+    """Hold the next label write until ``held`` is set; ``done`` is set once it has returned or raised."""
+    entered, held, done = threading.Event(), threading.Event(), threading.Event()
+    real = db.set_meta
+
+    def held_write(key, *args, **kwargs):
+        entered.set()
+        held.wait(5)
+        try:
+            return real(key, *args, **kwargs)
+        finally:
+            done.set()
+
+    db.set_meta = held_write
+    return entered, held, done
+
+
+async def _cancel_mid_write(adapter, entered):
+    intake = asyncio.create_task(adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"})))
+    await asyncio.to_thread(entered.wait, 5)
+    intake.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await intake
+
+
 def _labelled_store(tmp_path):
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
     store = SessionStore(tmp_path, config)
@@ -233,23 +258,8 @@ async def test_disconnect_waits_for_a_label_write_its_cancelled_reader_left_runn
     session database right after the adapters disconnect. disconnect() must not return while that
     write is still running, or it lands after the close and reopens state.db."""
     store, adapter = _labelled_store(tmp_path)
-    db, entered, held, done = store._routing_db, threading.Event(), threading.Event(), threading.Event()
-    real = db.set_meta
-
-    def held_write(key, *args, **kwargs):
-        entered.set()
-        held.wait(5)
-        try:
-            return real(key, *args, **kwargs)
-        finally:
-            done.set()
-
-    db.set_meta = held_write
-    intake = asyncio.create_task(adapter._on_inbound(_message({"chat_id": "ch1", "chat_type": "group"})))
-    await asyncio.to_thread(entered.wait, 5)
-    intake.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await intake
+    entered, held, done = _hold_label_writes(store._routing_db)
+    await _cancel_mid_write(adapter, entered)
     asyncio.get_running_loop().call_later(0.2, held.set)
     await adapter.disconnect()
     assert done.is_set()
@@ -273,5 +283,54 @@ async def test_busy_database_delays_a_label_write_briefly_and_the_next_message_r
         blocker.close()
     assert elapsed < 5
     adapter.handle_message.assert_awaited_once()
+    await adapter._on_inbound(_message(chat, "u2"))
+    assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Hermes Server / #ops", "Incident triage")
+
+
+@pytest.mark.asyncio
+async def test_a_label_write_running_past_disconnect_cannot_write_after_the_database_closes(
+        tmp_path, monkeypatch):
+    """disconnect()'s wait is bounded. A write still running past it meets the database shutdown
+    closed next, and must fail rather than reopen state.db behind the close checkpoint."""
+    import gateway.relay.ws_transport as ws_transport
+    from hermes_state_registry import close_all
+
+    store, adapter = _labelled_store(tmp_path)
+    db = store._routing_db
+    entered, held, done = _hold_label_writes(db)
+    await _cancel_mid_write(adapter, entered)
+    monkeypatch.setattr(ws_transport, "_env_disconnect_budget_s", lambda: 0.0)
+    await adapter.disconnect()
+    assert not done.is_set()
+    close_all()
+    assert db._conn is None
+    held.set()
+    await asyncio.to_thread(done.wait, 5)
+    assert db._conn is None
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute("SELECT count(*) FROM state_meta WHERE key LIKE 'gateway_chat_labels:%'")
+        assert rows.fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_a_label_write_never_opens_the_database_the_relay_reader_waits_on(tmp_path):
+    """Opening state.db waits out a sibling's write lock with the routine 20 s patience. With no open
+    handle (an earlier open failed and its backoff ran out) the label write is skipped, not an open;
+    the next message after the store reopens records the labels."""
+    store, adapter = _labelled_store(tmp_path)
+    chat = {"chat_id": "ch1", "chat_type": "group"}
+    store._db_handle_cache.handles.clear()
+    opens, real_open = [], store._open_session_db_for_active_scope
+
+    def counted_open(*args, **kwargs):
+        opens.append(1)
+        return real_open(*args, **kwargs)
+
+    store._open_session_db_for_active_scope = counted_open
+    await adapter._on_inbound(_message(chat))
+    adapter.handle_message.assert_awaited_once()
+    assert opens == []
+    store._open_session_db_for_active_scope = real_open
+    assert store._routing_db is not None
     await adapter._on_inbound(_message(chat, "u2"))
     assert store.chat_labels(Platform.DISCORD, "g1", "ch1") == ("Hermes Server / #ops", "Incident triage")

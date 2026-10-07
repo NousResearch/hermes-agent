@@ -11,7 +11,7 @@ from hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning, prompt as _prompt,
 )
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
+from hermes_cli.config import cfg_get, get_env_value, save_config, save_env_value
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
@@ -981,7 +981,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     if not env_vars:
         if provider.get("post_setup"):
-            _run_post_setup(provider["post_setup"])
+            _run_post_setup(provider["post_setup"], config)
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
@@ -993,7 +993,7 @@ def _configure_provider(provider: dict, config: dict, *, force_fresh: bool = Tru
 
     all_configured = _prompt_env_vars(env_vars, reconfigure=reconfigure)
     if provider.get("post_setup") and all_configured:
-        _run_post_setup(provider["post_setup"])
+        _run_post_setup(provider["post_setup"], config)
     if all_configured:
         if not reconfigure:
             _print_success(f"  {provider['name']} configured!")
@@ -1005,11 +1005,12 @@ def _reconfigure_provider(provider: dict, config: dict, *, force_fresh: bool = T
     _configure_provider(provider, config, force_fresh=force_fresh, reconfigure=True)
 
 
-def _configure_vision_backend() -> None:
+def _configure_vision_backend(config: dict) -> None:
     """Interactive vision-backend configuration (``auxiliary.vision.{provider,model,base_url}``).
     Offers any authenticated provider + model (same surface as ``hermes model``) or a custom endpoint
     rather than forcing OpenRouter. "Auto" leaves the keys empty so the resolver uses the main-model
-    fallback chain."""
+    fallback chain. Writes go into the caller's ``config``: ``hermes tools`` saves that object after this
+    step, so a separately loaded copy would be overwritten."""
     from hermes_cli.tools_config import _cfg_section, _prompt_choice
 
     print()
@@ -1023,7 +1024,6 @@ def _configure_vision_backend() -> None:
         "Skip"]
     idx = _prompt_choice("  Configure vision backend", choices, 0)
 
-    config = load_config()
     vision_cfg = _cfg_section(_cfg_section(config, "auxiliary"), "vision")
 
     if idx == 0:
@@ -1117,7 +1117,7 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
     _print_success(f"  Vision set to {slug} / {model}")
 
 
-def _configure_simple_requirements(ts_key: str, *, reconfigure: bool = False):
+def _configure_simple_requirements(ts_key: str, config: dict, *, reconfigure: bool = False):
     """Fallback for toolsets that just need env vars (no provider selection).
     Vision has its own provider/model picker — run it directly so neither flow falls back to the generic
     single-key prompt (which would re-ask for OPENROUTER_API_KEY)."""
@@ -1125,7 +1125,7 @@ def _configure_simple_requirements(ts_key: str, *, reconfigure: bool = False):
 
     if ts_key == "vision":
         if reconfigure or not _toolset_has_keys("vision"):
-            _configure_vision_backend()
+            _configure_vision_backend(config)
         return
 
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])

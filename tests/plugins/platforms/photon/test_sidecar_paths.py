@@ -63,7 +63,9 @@ def test_readonly_source_with_baked_fresh_deps_runs_in_place(
     assert sidecar_paths.resolve_sidecar_dir(source) == source
 
 
-_LOCAL_IMPORT_RE = re.compile(r'from "\./([^"]+\.mjs)"|import "\./([^"]+\.mjs)"')
+_LOCAL_IMPORT_RE = re.compile(
+    r"""(?:from|import|export\s+[^;]*from)\s+['"]\./([^'"]+\.mjs)['"]"""
+)
 
 
 def test_mirror_files_cover_every_local_import_of_index_mjs() -> None:
@@ -76,8 +78,9 @@ def test_mirror_files_cover_every_local_import_of_index_mjs() -> None:
     index = sidecar_paths.SOURCE_SIDECAR_DIR / "index.mjs"
     imported = sorted(
         {
-            match.group(1) or match.group(2)
+            match.group(1)
             for match in _LOCAL_IMPORT_RE.finditer(index.read_text(encoding="utf-8"))
+            if match.group(1)
         }
     )
     assert imported, "no local imports found — index.mjs layout changed?"
@@ -122,11 +125,13 @@ def test_mirror_refresh_updates_changed_files_and_keeps_node_modules(
 
 def test_dir_writable_probe(tmp_path) -> None:
     assert sidecar_paths.dir_writable(tmp_path) is True
+    if os.name == "nt":
+        pytest.skip("directory permissions probe requires POSIX")
     ro = tmp_path / "ro"
     ro.mkdir()
     ro.chmod(0o555)
     try:
-        if os.geteuid() == 0:  # pragma: no cover - root ignores perms
+        if getattr(os, "geteuid", lambda: -1)() == 0:  # pragma: no cover - root ignores perms
             pytest.skip("root bypasses directory permissions")
         assert sidecar_paths.dir_writable(ro) is False
     finally:

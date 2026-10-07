@@ -1125,40 +1125,29 @@ class TestPopenLeakOnSetupFailure:
 
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
-        killed = []
-
         proc = MagicMock()
         proc.pid = 9999
         proc.stdout = iter([])
         proc.stdin = MagicMock()
         proc.poll.return_value = None
-
-        def fake_kill():
-            killed.append(True)
-
-        proc.kill = fake_kill
         proc.wait = MagicMock()
 
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
-        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
-        # the real OS for an arbitrary PID. On a busy host that PID may exist,
-        # in which case spawn_local's primary cleanup path
-        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
-        # real process group and proc.kill() is never reached — flaky failure,
-        # and a real risk of SIGKILLing an innocent process group. Force the
-        # ProcessLookupError fallback so the test deterministically exercises
-        # proc.kill() and never issues a real killpg.
+        # The orphan path terminates through _terminate_host_pid, which
+        # revalidates the recorded kernel start time before signalling, so a
+        # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
 
-        assert killed, "proc.kill() must be called when post-Popen setup raises"
+        assert terminate.call_count == 1, "post-Popen setup failure must terminate the orphan"
+        assert terminate.call_args[0][0] == 9999
 
 # =========================================================================
 # Spawn rewrite regression (issue #68915)
@@ -2634,6 +2623,34 @@ class TestSystemdCgroupIsolation:
         assert not any(
             value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
         ), probe_argv
+
+    @pytest.mark.platforms("linux")
+    @pytest.mark.parametrize("rejects_no_expand", [False, True], ids=["systemd>=254", "systemd<254"])
+    def test_scoped_command_is_not_expanded_by_systemd_run(self, monkeypatch, rejects_no_expand):
+        """systemd >= 254 rewrites ``$$``/``${X}`` in a --scope command unless given
+        ``--expand-environment=no``; older systemd-run rejects that option, and losing
+        it there must not cost the scope (#132385)."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_RUN_NO_EXPAND", True)
+        probes = []
+
+        def fake_run(argv, **kwargs):
+            probes.append(argv)
+            if rejects_no_expand and "--expand-environment=no" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stderr=b"systemd-run: unrecognized option '--expand-environment=no'")
+            return subprocess.CompletedProcess(argv, 0, stderr=b"")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        spawn = pr._build_systemd_scope_argv(["bash", "-c", "echo $$"], unit_suffix="t")
+        assert ("--expand-environment=no" in spawn) is not rejects_no_expand
+        assert spawn[spawn.index("--") + 1:] == ["bash", "-c", "echo $$"]
+        assert len(probes) == (2 if rejects_no_expand else 1)
 
     @pytest.mark.platforms("linux")
     def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):

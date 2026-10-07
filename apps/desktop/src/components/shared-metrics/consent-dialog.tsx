@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 
 import { DocsLink } from '@/components/onboarding/flow'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
+import { $tourActive } from '@/lib/tour/tour-active'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -25,6 +26,7 @@ import {
   SHARED_METRICS_DOCS_URL,
   type SharedMetricsChoice,
   sharedMetricsOfferPending,
+  sharedMetricsProfileRequester,
   type SharedMetricsRequester
 } from '@/store/shared-metrics'
 
@@ -54,19 +56,23 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const copy = t.sharedMetrics
   const onboarding = useStore($desktopOnboarding)
   const surfaces = useStore($onboardingSurfaces)
+  const tourActive = useStore($tourActive)
   const detailsId = useId()
   const consent = useStore($sharedMetricsConsent)
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  // Never over the provider picker, the free-tier welcome or the guided chat:
+  const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
+
+  // Never over the provider picker, the free-tier welcome, the guided chat or a tour on screen:
   // the question belongs to the moment after setup.
   const onboardingSettled =
     (onboarding.configured === true || onboarding.firstRunSkipped) &&
     !onboarding.manual &&
     !onboarding.freeTierReady &&
-    surfaces.size === 0
+    surfaces.size === 0 &&
+    !tourActive
 
   const ready = enabled && onboardingSettled
 
@@ -79,14 +85,14 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
 
     let cancelled = false
 
-    void readSharedMetricsConsent(requestGateway).then(next => {
+    void readSharedMetricsConsent(scopedRequest).then(next => {
       if (!cancelled) {
         $sharedMetricsConsent.set(next)
       }
     })
 
     return () => void (cancelled = true)
-  }, [ready, profile, requestGateway])
+  }, [ready, profile, scopedRequest])
 
   if (!ready || !detailsOpen || !sharedMetricsOfferPending(consent)) {
     return null
@@ -100,7 +106,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(requestGateway, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {

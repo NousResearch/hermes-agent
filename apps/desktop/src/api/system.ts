@@ -2,6 +2,7 @@ import type {
   ActionResponse,
   ActionStatusResponse,
   AudioSpeakResponse,
+  AudioSttLeaseResponse,
   AudioTranscriptionResponse,
   AudioTtsLeaseResponse,
   BackendUpdateCheckResponse,
@@ -13,7 +14,16 @@ import type {
   MemoryStatusResponse
 } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type OwnerScope, ownerScoped, type ProfileScope, profileScoped } from './client'
+import {
+  capabilityScoped,
+  hermesApi,
+  hermesApiAs,
+  type OwnerScope,
+  ownerScoped,
+  type ProfileScope,
+  profileScoped,
+  type ResolvedOwner
+} from './client'
 
 export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
 export const AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS = 600_000
@@ -135,9 +145,9 @@ export function runCurator(): Promise<ActionResponse> {
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
+export function restartGateway(profile?: null | string): Promise<ActionResponse> {
   return hermesApi<ActionResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -161,18 +171,27 @@ export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResp
   })
 }
 
-export function getActionStatus(name: string, lines = 200, profile?: ProfileScope): Promise<ActionStatusResponse> {
+export function getActionStatus(
+  name: string,
+  lines = 200,
+  profile?: ProfileScope
+): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
     ...capabilityScoped(profile),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
 }
 
-export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
-  return hermesApi<AudioTranscriptionResponse>({
+/** `owner` = the recording's owner, resolved when the mic opened: the audio is
+ *  decoded on the backend its STT warm-up targeted. Omitted → the active scope. */
+export function transcribeAudio(
+  dataUrl: string,
+  mimeType?: string,
+  owner?: ResolvedOwner
+): Promise<AudioTranscriptionResponse> {
+  const request = {
     path: '/api/audio/transcribe',
     method: 'POST',
-    ...profileScoped(),
     body: {
       data_url: dataUrl,
       mime_type: mimeType
@@ -181,7 +200,11 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     // encoding finish. Remote providers and long clips regularly exceed the
     // default 15s Electron backend timeout.
     timeoutMs: audioTranscribeRequestTimeoutMs(dataUrl)
-  })
+  }
+
+  return owner
+    ? hermesApiAs<AudioTranscriptionResponse>(owner, request)
+    : hermesApi<AudioTranscriptionResponse>({ ...profileScoped(), ...request })
 }
 
 // `owner` = the speaking session's (connection, profile) — a Bot's own TTS
@@ -216,6 +239,28 @@ export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLea
     method: 'POST',
     body: { active, lease },
     timeoutMs: AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS
+  })
+}
+
+// Same cold-start class as TTS: acquiring a lease pre-loads the local STT
+// model (first-use download + load), which on CPU-bound hosts can exceed the
+// transcription floor on its own (issue #105955). The desktop acquires when
+// the mic opens so the load happens while the user is still speaking.
+export const AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS = 180_000
+
+/**
+ * Tell the backend a voice-input session started (`active: true`) so it can
+ * warm the STT engine, or ended (`active: false`) to drop the lease.
+ * `lease` names the session — `desktop:voice-input:<renderer>`. `owner` is
+ * the voice operation's owner, resolved once when it started, so a queued call
+ * is never re-routed by a later gateway/profile switch.
+ */
+export function setSttLease(lease: string, active: boolean, owner: ResolvedOwner): Promise<AudioSttLeaseResponse> {
+  return hermesApiAs<AudioSttLeaseResponse>(owner, {
+    path: '/api/audio/stt-lease',
+    method: 'POST',
+    body: { active, lease },
+    timeoutMs: AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
   })
 }
 

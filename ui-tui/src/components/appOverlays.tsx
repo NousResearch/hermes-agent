@@ -11,7 +11,7 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
-import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
+import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -59,19 +59,23 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
-  onClarifyAnswer,
+  onClarifyCancel,
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
+  onVaultCodeSubmit,
+  onVaultSaveLoginSubmit,
   onVaultUnlockSubmit
 }: Pick<
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
-  | 'onClarifyAnswer'
+  | 'onClarifyCancel'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
+  | 'onVaultCodeSubmit'
+  | 'onVaultSaveLoginSubmit'
   | 'onVaultUnlockSubmit'
 >) {
   const overlay = useStore($overlayState)
@@ -147,8 +151,7 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
-          onAnswer={onClarifyAnswer}
-          onCancel={() => onClarifyAnswer('')}
+          onCancel={onClarifyCancel}
           onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}
           t={theme}
@@ -186,6 +189,33 @@ export function PromptZone({
           cols={cols}
           displayName={overlay.vaultUnlock.displayName}
           onSubmit={onVaultUnlockSubmit}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultSaveLogin) {
+    return (
+      <PromptCell cols={cols} id="vault-save-login">
+        <VaultSaveLoginPrompt
+          cols={cols}
+          onReady={onVaultSaveLoginSubmit}
+          site={overlay.vaultSaveLogin.site}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultCode) {
+    return (
+      <PromptCell cols={cols} id="vault-code">
+        <VaultCodePrompt
+          cols={cols}
+          hint={overlay.vaultCode.hint}
+          onSubmit={onVaultCodeSubmit}
+          site={overlay.vaultCode.site}
           t={theme}
         />
       </PromptCell>

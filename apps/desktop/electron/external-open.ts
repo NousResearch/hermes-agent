@@ -15,6 +15,8 @@
 
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 
+import { absolutizeProtocolRelativeUrl, looksLikeLocalFilesystemPath } from './local-filesystem-path'
+
 export type ExternalOpenResult =
   { ok: true } | { ok: false; reason: 'invalid' } | { ok: false; reason: 'failed'; message: string }
 
@@ -53,6 +55,15 @@ export interface ExternalOpenDeps {
   spawn: (cmd: string, args: readonly string[], opts: SpawnOptions) => ChildProcess
   openExternal: (url: string) => Promise<void>
   openFile: (rawUrl: string) => Promise<void>
+  /**
+   * Open a BARE local filesystem path (POSIX `/…`, `~/…`, Windows drive/UNC)
+   * that is not a URL. The impl resolves it through the same audited
+   * `resolveRequestedPathForIpc` the `file:` route uses, then `shell.openPath`,
+   * with the same reveal-in-folder fallback and missing-file reporting as the
+   * file route. Resolves false when the path could not be resolved at all
+   * (rejected syntax, blocked device path) so the caller logs and reports it.
+   */
+  openLocalPath: (rawPath: string) => Promise<boolean>
   notifyFailure: (url: string, message: string) => void
   log: (line: string) => void
 }
@@ -70,10 +81,33 @@ export function externalOpenErrorMessage(error: unknown): string {
  * so fire-and-forget callers can `void` the result safely.
  */
 export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
-  const raw = String(rawUrl || '').trim()
+  const raw = absolutizeProtocolRelativeUrl(String(rawUrl || '').trim())
 
   if (!raw) {
     return { ok: false, reason: 'invalid' }
+  }
+
+  // Bare local paths (POSIX `/…`, `~/…`, Windows drive/UNC) are not valid
+  // absolute URLs: `new URL()` either throws (POSIX, `~`, UNC) or mis-parses a
+  // drive letter as a bogus `c:` scheme, which the web allowlist below would
+  // reject as "Invalid external URL". Route them through the audited file
+  // resolver instead (hermes-agent 80946, 84361).
+  if (looksLikeLocalFilesystemPath(raw)) {
+    let opened: boolean
+
+    try {
+      opened = await deps.openLocalPath(raw)
+    } catch (error) {
+      return failOpen(deps, raw, error)
+    }
+
+    if (!opened) {
+      deps.log(`[file] openPath resolve rejected: path=${raw}`)
+
+      return { ok: false, reason: 'invalid' }
+    }
+
+    return { ok: true }
   }
 
   let parsed: URL

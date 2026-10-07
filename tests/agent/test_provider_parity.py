@@ -454,7 +454,7 @@ class TestChatMessagesToResponsesInput:
     def test_user_message_passes_through(self, monkeypatch):
         messages = [{"role": "user", "content": "hello"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "user", "content": "hello"}]
+        assert items == [{"type": "message", "role": "user", "content": "hello"}]
 
     def test_system_messages_filtered(self, monkeypatch):
         messages = [
@@ -626,7 +626,7 @@ class TestChatMessagesToResponsesInputMessageItems:
             {"role": "user", "content": "follow up"},
         ]
         items = _chat_messages_to_responses_input(messages)
-        msg_items = [i for i in items if i.get("type") == "message"]
+        msg_items = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         assert len(msg_items) == 1
         assert msg_items[0]["id"] == "msg_123"
         assert msg_items[0]["phase"] == "final_answer"
@@ -635,7 +635,7 @@ class TestChatMessagesToResponsesInputMessageItems:
     def test_fallback_to_plain_when_no_message_items(self, monkeypatch):
         messages = [{"role": "assistant", "content": "Hello world"}]
         items = _chat_messages_to_responses_input(messages)
-        assert items == [{"role": "assistant", "content": "Hello world"}]
+        assert items == [{"type": "message", "role": "assistant", "content": "Hello world"}]
 
 
 

@@ -352,6 +352,84 @@ describe('ModelSettings', () => {
     expect(screen.queryByRole('switch')).toBeNull()
   })
 
+  it('renders plugin-registered auxiliary tasks after the built-ins with the server label (#40880)', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'vision', provider: 'auto', model: '', base_url: '' },
+        {
+          task: 'grill_tab',
+          provider: 'openrouter',
+          model: 'openai/gpt-5-mini',
+          base_url: '',
+          label: 'Grill Tab',
+          hint: 'Tab-to-grill questions and brief synthesis',
+          plugin: 'grill-tab'
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    const pluginRow = await screen.findByText('Grill Tab')
+    expect(pluginRow).toBeTruthy()
+    expect(screen.getByText('Tab-to-grill questions and brief synthesis')).toBeTruthy()
+    // Server-declared label is used for the plugin row only; built-ins keep i18n labels.
+    expect(screen.getByText('Vision')).toBeTruthy()
+    // Built-ins render first; the plugin row is appended.
+    const vision = document.getElementById('aux-task-vision')
+    const grill = document.getElementById('aux-task-grill_tab')
+    expect(vision && grill && vision.compareDocumentPosition(grill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('shows an unpinned inheriting plugin task as following its base, and offers Follow once pinned', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'compression', provider: 'openrouter', model: 'vendor/fast', base_url: '' },
+        {
+          task: 'side_task',
+          provider: 'auto',
+          model: '',
+          base_url: '',
+          label: 'Side model',
+          hint: 'side model for side',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'openrouter', model: 'vendor/fast', base_url: '' }
+        },
+        {
+          task: 'pinned_task',
+          provider: 'nous',
+          model: 'hermes-4',
+          base_url: '',
+          label: 'Pinned side',
+          hint: 'pinned',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'nous', model: 'hermes-4', base_url: '' }
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('inherits Compression · openrouter · vendor/fast')).toBeTruthy()
+    // Only the pinned inheriting row offers the way back to its base.
+    const follow = screen.getAllByRole('button', { name: 'Follow Compression' })
+    expect(follow).toHaveLength(1)
+    expect(document.getElementById('aux-task-pinned_task')?.contains(follow[0])).toBe(true)
+
+    fireEvent.click(follow[0])
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: '',
+        provider: 'auto',
+        reasoning_effort: null,
+        scope: 'auxiliary',
+        task: 'pinned_task'
+      })
+    )
+  })
+
   it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

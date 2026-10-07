@@ -89,6 +89,8 @@ def test_goal_guidance_injected_only_when_tool_present():
 
 def test_agent_tool_setting_is_strict_bool(monkeypatch):
     import hermes_cli.goals as g
+
+    monkeypatch.undo()  # the autouse fixture stubs the predicate itself; test the real one
     for raw, want in (({"goals": {"agent_tool": True}}, True), ({"goals": {"agent_tool": "false"}}, False), ({}, False)):
         monkeypatch.setattr("hermes_cli.config.load_config", lambda raw=raw: raw)
         assert g.agent_goal_tool_enabled() is want

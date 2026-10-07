@@ -62,15 +62,19 @@ def report_pack_tidy(root: Path) -> None:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
-def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
+def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path,
+                           notice: str | None = None) -> str | None:
     """Report a release-pinned channel's verdict, or return the branch to compare against.
 
     ``None`` means the verdict is printed (the channel pins a commit); exits 1 when the channel
-    cannot be resolved.
+    cannot be resolved. ``notice`` (an unconfigured-main-default warning) prints right after the
+    channel line when the caller determined this run's choice was not explicit.
     """
     from hermes_cli.source_releases import resolve_source_target
 
     print(f"→ Update channel: {selected_channel}")
+    if notice:
+        print(notice)
     try:
         target = resolve_source_target(selected_channel, git_cmd, root)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:

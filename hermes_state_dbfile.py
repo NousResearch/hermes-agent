@@ -545,7 +545,12 @@ def capture_retired_wal_generation(
         final = db_path.with_name(f"{stem}-{n}")
     staging = final.with_name(final.name + ".partial")
     try:
-        staging.mkdir(parents=True, exist_ok=False)
+        # Do not recreate a profile home that its lifecycle deliberately moved away.
+        # The database parent must already exist; creating missing parents here can
+        # resurrect an absent multiplex-served profile during un-serve teardown.
+        from hermes_constants import assert_named_profile_home_live
+        assert_named_profile_home_live(db_path.parent)
+        staging.mkdir(exist_ok=False)
         manifest: Dict[str, Any] = {
             "version": RETIRED_GENERATION_MANIFEST_VERSION,
             "database": str(db_path),

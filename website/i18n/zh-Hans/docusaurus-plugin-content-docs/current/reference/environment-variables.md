@@ -20,7 +20,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `NOUS_INFERENCE_BASE_URL` | 直接覆盖 Nous 推理端点 |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API 密钥（[ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)） |
 | `AI_GATEWAY_BASE_URL` | 覆盖 AI Gateway base URL（默认：`https://ai-gateway.vercel.sh/v1`） |
-| `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用） |
+| `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用）。设置 `OPENAI_BASE_URL` 后，它只会发送到该 URL 完全相同的源（scheme、主机和端口），绝不会发送到同一主机的其他端口或 `http://` |
 | `OPENAI_BASE_URL` | 自定义端点的 base URL（VLLM、SGLang 等） |
 | `COPILOT_GITHUB_TOKEN` | 用于 Copilot API 的 GitHub token——最高优先级（OAuth `gho_*` 或细粒度 PAT `github_pat_*`；经典 PAT `ghp_*` **不支持**） |
 | `GH_TOKEN` | GitHub token——Copilot 第二优先级（也供 `gh` CLI 使用） |
@@ -58,7 +58,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `AZURE_CLIENT_SECRET` | `EnvironmentCredential` 使用的服务主体密钥 |
 | `AZURE_CLIENT_CERTIFICATE_PATH` | 服务主体证书（`AZURE_CLIENT_SECRET` 的替代方案） |
 | `AZURE_FEDERATED_TOKEN_FILE` | AKS Workload Identity / OIDC 流程的联合 token 文件路径 |
-| `AZURE_AUTHORITY_HOST` | 主权云 authority 覆盖（例如 Azure Government 使用 `https://login.microsoftonline.us`）。参见 [Azure Foundry 指南](../guides/azure-foundry.md#sovereign-clouds-government-china) |
+| `AZURE_AUTHORITY_HOST` | 主权云 authority 覆盖（例如 Azure Government 使用 `https://login.microsoftonline.us`）。参见 [Azure Foundry 指南](../guides/azure-foundry.md#主权云政府云中国云) |
 | `IDENTITY_ENDPOINT` / `MSI_ENDPOINT` | App Service、Functions 和 Container Apps 的托管标识端点；VM 通常使用 IMDS 而不设置这些变量 |
 | `HF_TOKEN` | Hugging Face Inference Providers token（[huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)） |
 | `HF_BASE_URL` | 覆盖 Hugging Face base URL（默认：`https://router.huggingface.co/v1`） |
@@ -95,8 +95,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `VOICE_TOOLS_OPENAI_KEY` | OpenAI 语音转文字和文字转语音提供商的首选 OpenAI 密钥 |
 | `HERMES_LOCAL_STT_COMMAND` | 可选的本地语音转文字命令模板。支持 `{input_path}`、`{output_dir}`、`{language}` 和 `{model}` 占位符 |
 | `HERMES_LOCAL_STT_LANGUAGE` | 传递给 `HERMES_LOCAL_STT_COMMAND` 或自动检测的本地 `whisper` CLI 回退的默认语言（默认：`en`） |
-| `HERMES_HOME` | 覆盖 Hermes 配置目录（默认：`~/.hermes`）。同时限定 gateway PID 文件和 systemd 服务名称，允许多个安装并发运行 |
-| `HERMES_GIT_BASH_PATH` | **仅 Windows。** 覆盖终端工具的 `bash.exe` 发现路径。可指向任意 bash——完整 Git-for-Windows 安装、通过符号链接的 WSL bash、MSYS2、Cygwin。安装程序会自动将其设置为所配置的 PortableGit。参见 [Windows（原生）指南](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
+| `HERMES_HOME` | 选择配置和用户数据目录。POSIX 默认为 `~/.hermes`，Windows 默认为 `%LOCALAPPDATA%\hermes`。源码位置和 PM 工具存储单独管理，详见[包管理](./package-management.md)。 |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **仅 Windows。** 设为 `1` 可禁用 UTF-8 stdio shim（`configure_windows_stdio()`），回退到控制台的本地代码页。用于排查编码问题；正常操作中极少需要 |
 | `HERMES_KANBAN_HOME` | 覆盖锚定 kanban 看板（数据库 + 工作区 + 工作日志）的共享 Hermes 根目录。回退到 `get_default_hermes_root()`（任意活动 profile 的父目录）。适用于测试和非常规部署 |
 | `HERMES_KANBAN_BOARD` | 为当前进程固定活动 kanban 看板。优先于 `~/.hermes/kanban/current`；调度器将其注入工作进程子进程环境，使工作进程无法看到其他看板上的任务。默认为 `default`。slug 验证：小写字母数字 + 连字符 + 下划线，1-64 字符 |
@@ -273,7 +272,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `DISCORD_IGNORED_CHANNELS` | bot 永不响应的逗号分隔频道 ID |
 | `DISCORD_NO_THREAD_CHANNELS` | bot 不自动创建线程的逗号分隔频道 ID |
 | `DISCORD_REPLY_TO_MODE` | 回复引用行为：`off`、`first`（默认）或 `all` |
-| `DISCORD_ALLOW_MENTION_EVERYONE` | 允许 bot ping `@everyone`/`@here`（默认：`false`）。参见 [Mention 控制](../user-guide/messaging/discord.md#mention-control)。 |
+| `DISCORD_ALLOW_MENTION_EVERYONE` | 允许 bot ping `@everyone`/`@here`（默认：`false`）。参见 [Mention 控制](../user-guide/messaging/discord.md#提及控制)。 |
 | `DISCORD_ALLOW_MENTION_ROLES` | 允许 bot ping `@role` mention（默认：`false`）。 |
 | `DISCORD_ALLOW_MENTION_USERS` | 允许 bot ping 单个 `@user` mention（默认：`true`）。 |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | 回复消息时 ping 原作者（默认：`true`）。 |
@@ -323,6 +322,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `EMAIL_SMTP_HOST` | 邮件适配器的 SMTP 主机名 |
 | `EMAIL_SMTP_PORT` | SMTP 端口 |
 | `EMAIL_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔邮箱地址 |
+| `EMAIL_AUTHSERV_ID` | 接收服务器在最上层 `Authentication-Results` 中写入的精确 authserv-id；除非已禁用发件人认证（`EMAIL_TRUST_FROM_HEADER=true`），否则必须设置 |
 | `EMAIL_HOME_ADDRESS` | 主动邮件投递的默认收件人 |
 | `EMAIL_HOME_ADDRESS_NAME` | 邮件主目标的显示名称 |
 | `EMAIL_POLL_INTERVAL` | 邮件轮询间隔（秒） |
@@ -337,7 +337,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `FEISHU_ENCRYPT_KEY` | webhook 模式的可选加密密钥 |
 | `FEISHU_VERIFICATION_TOKEN` | webhook 模式的可选验证 token |
 | `FEISHU_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔飞书用户 ID |
-| `FEISHU_ALLOW_BOTS` | `none`（默认）/`mentions`/`all`——接受来自其他 bot 的入站消息。参见 [bot 间消息传递](../user-guide/messaging/feishu.md#bot-to-bot-messaging) |
+| `FEISHU_ALLOW_BOTS` | `none`（默认）/`mentions`/`all`——接受来自其他 bot 的入站消息。参见 [bot 间消息传递](../user-guide/messaging/feishu.md#机器人间消息传递) |
 | `FEISHU_REQUIRE_MENTION` | `true`（默认）/`false`——群组消息是否必须 @mention bot。可通过 `group_rules.<chat_id>.require_mention` 按聊天覆盖。 |
 | `FEISHU_HOME_CHANNEL` | cron 投递和通知的飞书聊天 ID |
 | `WECOM_BOT_ID` | 来自管理控制台的企业微信 AI Bot ID |
@@ -404,8 +404,9 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `MATRIX_AUTO_THREAD` | 为房间消息自动创建线程（默认：`true`） |
 | `MATRIX_DM_MENTION_THREADS` | 在私聊中被 `@mention` 时创建线程（默认：`false`） |
 | `MATRIX_RECOVERY_KEY` | 设备密钥轮换后交叉签名验证的恢复密钥。推荐用于启用了交叉签名的 E2EE 设置。 |
-| `HASS_TOKEN` | Home Assistant 长期访问 token（启用 HA 平台 + 工具） |
-| `HASS_URL` | Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_TOKEN` | Home Assistant 插件：长期访问 token（启用 HA 平台 + 工具；需要插件目录中的 `homeassistant` 插件，见 [Home Assistant](../user-guide/messaging/homeassistant.md)） |
+| `HASS_URL` | Home Assistant 插件：Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_HOME_CHANNEL` | Home Assistant 插件：裸名 `deliver: homeassistant`（cron、webhook）的默认通知目标 |
 | `WEBHOOK_ENABLED` | 启用 webhook 平台适配器（`true`/`false`） |
 | `WEBHOOK_PORT` | 接收 webhook 的 HTTP 服务器端口（默认：`8644`） |
 | `WEBHOOK_SECRET` | webhook 签名验证的全局 HMAC 密钥（当路由未指定自己的密钥时作为回退） |
@@ -415,7 +416,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `API_SERVER_PORT` | API 服务器端口（默认：`8642`） |
 | `API_SERVER_HOST` | API 服务器主机/绑定地址（默认：`127.0.0.1`）。使用 `0.0.0.0` 开放网络访问——需要 `API_SERVER_KEY` 和严格的 `API_SERVER_CORS_ORIGINS` 白名单。 |
 | `API_SERVER_MODEL_NAME` | `/v1/models` 上公告的模型名称。默认为 profile 名称（默认 profile 为 `hermes-agent`）。适用于 Open WebUI 等前端需要每个连接使用不同模型名称的多用户场景。 |
-| `GATEWAY_PROXY_URL` | 将消息转发到的远程 Hermes API 服务器 URL（[代理模式](../user-guide/messaging/matrix.md#proxy-mode-e2ee-on-macos)）。设置后，gateway 仅处理平台 I/O——所有 agent 工作委托给远程服务器。也可通过 `config.yaml` 中的 `gateway.proxy_url` 配置。 |
+| `GATEWAY_PROXY_URL` | 将消息转发到的远程 Hermes API 服务器 URL（[代理模式](../user-guide/messaging/matrix.md#代理模式macos-上的-e2ee)）。设置后，gateway 仅处理平台 I/O——所有 agent 工作委托给远程服务器。也可通过 `config.yaml` 中的 `gateway.proxy_url` 配置。 |
 | `GATEWAY_PROXY_KEY` | 代理模式下与远程 API 服务器认证的 Bearer token。必须与远程主机上的 `API_SERVER_KEY` 一致。 |
 | `MESSAGING_CWD` | 消息模式下终端命令的工作目录（默认：`~`） |
 | `GATEWAY_ALLOWED_USERS` | 跨所有平台允许的逗号分隔用户 ID |
@@ -447,7 +448,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 ### Teams 会议摘要投递
 
-仅在启用 [`teams_pipeline` 插件](../user-guide/messaging/msgraph-webhook.md)时使用。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#meeting-summary-delivery-teams-meeting-pipeline)。
+仅在启用 [`teams_pipeline` 插件](../user-guide/messaging/msgraph-webhook.md)时使用。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#会议摘要投递teams-会议-pipeline)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -569,7 +570,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 | `HERMES_ALLOW_PRIVATE_URLS` | `true`/`false`——允许工具获取 localhost/私有网络 URL。gateway 模式下默认关闭。 |
 | `HERMES_REDACT_SECRETS` | `true`/`false`——控制工具输出、日志和聊天响应中的密钥脱敏（默认：`true`）。 |
 | `HERMES_WRITE_SAFE_ROOT` | 可选目录前缀，**硬阻止** `write_file`/`patch` 写入列出的根目录之外的路径（无审批提示）。支持多个目录，使用 `os.pathsep` 分隔（Unix 为 `:`，Windows 为 `;`）。详见下方 [HERMES_WRITE_SAFE_ROOT](#hermes_write_safe_root)。 |
-| `HERMES_DISABLE_LAZY_INSTALLS` | 官方 Docker 镜像中自动设置的内部桥接变量，用于阻止运行时将依赖安装到不可变的 `/opt/hermes` 树。面向用户的等价配置是 `config.yaml` 中的 `security.allow_lazy_installs: false`；不要在 `.env` 中手动设置此变量。 |
+| `HERMES_DISABLE_LAZY_INSTALLS` | 测试和安装探针使用的内部按需安装禁用策略，优先于 `security.allow_lazy_installs`；不要在 `.env` 中手动设置。 |
 | `HERMES_DISABLE_FILE_STATE_GUARD` | 设为 `1` 可关闭 `patch`/`write_file` 上的"文件自上次读取后已更改"保护。 |
 | `HERMES_CORE_TOOLS` | 规范核心工具列表的逗号分隔覆盖（高级；极少需要）。 |
 | `HERMES_BUNDLED_SKILLS` | 启动时加载的内置技能列表的逗号分隔覆盖。 |
@@ -597,7 +598,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 ```
 
-取消设置或从 `.env` 中移除此变量可恢复常规写入（仍受凭证路径拒绝列表约束——见[文件写入安全](../user-guide/security.md#file-write-safety)）。
+取消设置或从 `.env` 中移除此变量可恢复常规写入（仍受凭证路径拒绝列表约束——见[文件写入安全](https://hermes-agent.nousresearch.com/docs/user-guide/security#file-write-safety)）。
 
 ## 界面
 

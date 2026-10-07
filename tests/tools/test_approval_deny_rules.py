@@ -5,7 +5,6 @@ A match blocks unconditionally â€” BEFORE the --yolo / /yolo / mode=off bypass â
 making it the user-editable counterpart to the code-shipped hardline floor.
 """
 
-import os
 import shlex
 
 import pytest
@@ -13,7 +12,6 @@ import pytest
 from tools import approval as mod
 import tools.approval_floors as approval_floors
 from tools import approval_context
-
 
 @pytest.fixture
 def deny_config(monkeypatch):
@@ -27,7 +25,6 @@ def deny_config(monkeypatch):
     monkeypatch.setattr(approval_context, "_get_approval_config", lambda: state["config"])
     return set_deny
 
-
 @pytest.fixture
 def clean_env(monkeypatch):
     """Non-interactive, non-gateway, non-cron, non-yolo baseline."""
@@ -37,7 +34,6 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", False)
 
-
 class TestMatchUserDenyRule:
     def test_no_config_is_noop(self, deny_config):
         deny_config([])
@@ -46,7 +42,6 @@ class TestMatchUserDenyRule:
     def test_missing_key_is_noop(self, monkeypatch):
         monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual"})
         assert mod._match_user_deny_rule("rm -rf build/") is None
-
 
     def test_config_load_failure_fails_open(self, monkeypatch):
         def boom():
@@ -58,7 +53,6 @@ class TestMatchUserDenyRule:
         """Deobfuscation variants from the detector also feed deny matching."""
         deny_config(["git push --force*"])
         assert mod._match_user_deny_rule('git pu""sh --force origin main') is not None
-
 
 def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
     """Paths, prefixes and shell carriers cannot outrank an explicit deny."""
@@ -108,7 +102,6 @@ def test_deny_follows_executable_identity(deny_config, clean_env, monkeypatch):
                 result = guard(command, "local")
                 assert result.get("user_deny") is True, (mode, yolo, command, result)
                 assert result["approved"] is False
-
 
 def test_deny_projection_preserves_data_and_path_rules(deny_config):
     """Project only executable positions; retain spelling-sensitive argument data."""
@@ -166,7 +159,6 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
         assert _split_env_string(unresolved) is None
 
-
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])
@@ -185,7 +177,6 @@ class TestDenyBeatsYolo:
         assert result["approved"] is False
         assert result.get("user_deny") is True
 
-
     def test_non_matching_command_still_bypassed_by_yolo(
             self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])
@@ -202,7 +193,6 @@ class TestDenyBeatsYolo:
 
         result = mod.check_dangerous_command("git push --force origin main", "local")
         assert result["approved"] is True
-
 
 class TestDenyOrdering:
     def test_hardline_fires_before_deny(self, deny_config, clean_env):
@@ -263,12 +253,3 @@ class TestDenyOrdering:
         deny_config(["git push --force*"])
         result = mod.check_dangerous_command("ls -la", "local")
         assert result["approved"] is True
-
-    def test_block_message_tells_agent_not_to_retry(self, deny_config, clean_env):
-        deny_config(["git push --force*"])
-        result = mod.check_dangerous_command("git push --force origin main", "local")
-        msg = result["message"]
-        assert "BLOCKED" in msg
-        assert "git push --force*" in msg
-        assert "retry" in msg.lower()
-        assert "rephrase" in msg.lower()

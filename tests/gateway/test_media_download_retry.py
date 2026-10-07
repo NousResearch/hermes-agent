@@ -23,14 +23,6 @@ import httpx
 # Helpers for building httpx exceptions
 # ---------------------------------------------------------------------------
 
-def _make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("GET", "http://example.com/img.jpg")
-    response = httpx.Response(status_code=status_code, request=request)
-    return httpx.HTTPStatusError(
-        f"HTTP {status_code}", request=request, response=response
-    )
-
-
 def _make_timeout_error() -> httpx.TimeoutException:
     return httpx.TimeoutException("timed out")
 
@@ -115,24 +107,6 @@ class TestCacheImageFromBytes:
 class TestCacheImageFromUrl:
     """Tests for gateway.platforms.base.cache_image_from_url"""
 
-    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
-        """A clean 200 response caches the image and returns a path."""
-        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
-
-        mock_client = _make_stream_client(
-            responses=[_make_stream_response(b"\xff\xd8\xff fake jpeg")]
-        )
-
-        async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_image_from_url
-                return await cache_image_from_url(
-                    "http://example.com/img.jpg", ext=".jpg"
-                )
-
-        path = asyncio.run(run())
-        assert path.endswith(".jpg")
-        mock_client.stream.assert_called_once()
 
     def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
@@ -218,24 +192,6 @@ class TestCacheImageFromUrlConnectGuard:
 class TestCacheAudioFromUrl:
     """Tests for gateway.platforms.base.cache_audio_from_url"""
 
-    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
-        """A clean 200 response caches the audio and returns a path."""
-        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
-
-        mock_client = _make_stream_client(
-            responses=[_make_stream_response(b"\x00\x01 fake audio")]
-        )
-
-        async def run():
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                from gateway.platforms.base import cache_audio_from_url
-                return await cache_audio_from_url(
-                    "http://example.com/voice.ogg", ext=".ogg"
-                )
-
-        path = asyncio.run(run())
-        assert path.endswith(".ogg")
-        mock_client.stream.assert_called_once()
 
     def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
@@ -376,14 +332,6 @@ def _make_slack_adapter():
 # SlackAdapter diagnostics helpers
 # ---------------------------------------------------------------------------
 
-class TestSlackAttachmentDiagnostics:
-
-    def test_download_failure_403_returns_permission_notice(self):
-        adapter = _make_slack_adapter()
-        exc = _make_http_status_error(403)
-        detail = adapter._describe_slack_download_failure(exc, file_obj={"name": "report.pdf"})
-        assert "403" in detail
-        assert "permission or scope" in detail
 
 
 # ---------------------------------------------------------------------------

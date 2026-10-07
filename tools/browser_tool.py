@@ -23,6 +23,7 @@ from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.observability.shared_metrics_loop import record_browser_call
 
 
 # Env keys re-added to the agent-browser subprocess AFTER credential stripping.
@@ -33,6 +34,14 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSER_USE_API_KEY",
     "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
 )
+
+
+def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
+    """Frozen old-updater surface (tests/compat/old_updater_surface.json): a pre-PM ``hermes update``
+    still running mid-swap imports this from the NEW tree. Nothing is warmed — PM owns the browser
+    runtime — and the permanent definition must live here, not behind the revert-scheduled compat
+    pointer."""
+    return False
 
 
 def _build_browser_env() -> dict:
@@ -57,7 +66,11 @@ def _build_browser_env() -> dict:
             env[key] = value
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
-    env = add_loopback_no_proxy(env)
+    # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over). Pure: this
+    # builder also serves the npx cache warmer, the Chromium auto-installer and the Lightpanda engine, none of which
+    # may bring a screen up — the auto-start hook lives at the headed Chromium spawn sites (browser_tool_session).
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = add_loopback_no_proxy(_bot_desktop_env(env))
     # Chrome puts its SingletonSocket under $TMPDIR; a deep scratch dir overflows the AF_UNIX
     # path cap and Chrome dies at startup ("Socket path too long"), so browsers get the short root.
     env["TMPDIR"] = _socket_safe_tmpdir()
@@ -104,12 +117,17 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# PATH fallbacks for minimal-PATH environments (systemd services): Termux,
-# macOS Homebrew, and the usual system dirs — needed for agent-browser/npx/node.
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
+# Includes macOS Homebrew locations for externally installed browser helpers.
 _SANE_PATH_DIRS = (
-    "/data/data/com.termux/files/usr/bin", "/data/data/com.termux/files/usr/sbin",
-    "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/sbin", "/usr/local/bin",
-    "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
 
@@ -137,13 +155,6 @@ MIN_SNAPSHOT_THRESHOLD = 1000
 MAX_STORED_SNAPSHOT_CHARS = 2_000_000
 _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})  # legitimately empty stdout
 
-# Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
-# than a concrete path (also compared in hermes_cli/tools_config.py and doctor.py).
-NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
-# Pinned to match scripts/install.sh / install.ps1's managed install so a bare-npx
-# resolution gets the same version instead of floating latest. Update together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
-
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.
 # The config-derived ones are keyed by profile home (``hermes_home_key()``): the multiplexed
@@ -162,15 +173,12 @@ _cached_cloud_providers: Dict[tuple[str, tuple[int, int]], Optional[BrowserProvi
 _cloud_provider_cache_lock = threading.RLock()
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
-_cached_agent_browser: Optional[str] = None
-_agent_browser_resolved = False
 _cached_browser_engine: Optional[str] = None  # agent-browser v0.25.3+ ``--engine lightpanda``
 _browser_engine_resolved = False
 _auto_local_for_private_urls_resolved = False
 _cached_auto_local_for_private_urls: bool = True
 _cached_headed_mode: Optional[bool] = None
 _headed_mode_resolved = False
-_cached_chromium_installed: Optional[bool] = None
 _chromium_autoinstall_attempted = False  # one-shot: a failed 170MB download must not retry per call
 
 # Mask secrets in logged CDP URLs; agent.redact.redact_cdp_url is the single policy.
@@ -257,6 +265,9 @@ from tools import browser_tool_lightpanda_fallback as _lp
 # Single shared real-profile copy-browser session: concurrent tasks reuse it
 # instead of each launching a rival Chromium on the same copied user-data-dir.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
+# Keep lock contention well inside the agent's 420-second outer tool deadline.
+# The holder may be an abandoned daemon worker that Python cannot terminate.
+_REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
@@ -843,7 +854,9 @@ def _json_with_fallback(response: Dict[str, Any], result: Dict[str, Any]) -> str
 
 
 def _failed_response(result: Dict[str, Any], default_error: str) -> str:
-    return _json_with_fallback(_err(result.get("error", default_error)), result)
+    # ``code`` = machine-readable refusal (human_has_control), same shape as computer_use's.
+    extra = {"code": result["code"]} if result.get("code") else {}
+    return _json_with_fallback(_err(result.get("error", default_error), **extra), result)
 
 
 def _tool_response(result: Dict[str, Any], ok: Dict[str, Any], default_error: str) -> str:
@@ -1089,9 +1102,15 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
-    fast = _eval_supervisor_fast_path(effective_task_id, expression)
-    if fast is not None:
-        return fast
+    # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
+    # Desktop lease fence has to bracket it here too — otherwise the one command that reads arbitrary
+    # page state is the one a human's takeover does not stop. Same fence, same session identity.
+    fenced = _session.run_fenced(_active_sessions.get(effective_task_id) or {},
+                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression)})
+    if fenced.get("code") == "human_has_control":
+        return _dumps(fenced)
+    if fenced["fast"] is not None:
+        return fenced["fast"]
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
     if not result.get("success"):
@@ -1200,11 +1219,19 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:
-        screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
+        # In the sandbox the CLI writes to ITS filesystem; the file is fetched back below.
+        remote_path = _session.sandbox_screenshot_path(screenshot_path)
+        screenshot_args = (["--annotate"] if annotate else []) + ["--full", remote_path or str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
         # doesn't trigger a redundant LP fallback.
         result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
                                       _engine_override="auto" if lp_prerouted else None)
+        if remote_path and result.get("success"):
+            try:
+                _session.fetch_sandbox_file(str((result.get("data") or {}).get("path") or remote_path), screenshot_path)
+                result.setdefault("data", {})["path"] = str(screenshot_path)
+            except Exception as exc:  # noqa: BLE001 — reported as the missing-file error below
+                logger.warning("could not fetch the sandbox screenshot %s: %s", remote_path, exc)
     if not result.get("success"):
         return result, screenshot_path, _json_with_fallback(_err(
             f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"
@@ -1325,8 +1352,10 @@ def _routed_check_fn(name: str):
 
 def _routed_handler(name: str, fallback):
     def handler(args, **kw):
-        return routed_browser_handler(name, args, fallback=lambda: fallback(args, kw),
-                                      task_id=kw.get("task_id"), session_id=kw.get("session_id"))
+        return record_browser_call(lambda legacy: routed_browser_handler(
+            name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+        ), _cloud.browser_backend_name)
     return handler
 
 
@@ -1336,54 +1365,3 @@ for _name, _emoji, _check_fn, _defaults, *_extra in _BROWSER_TOOL_TABLE:
     registry.register(name=_name, toolset="browser", schema=_BROWSER_SCHEMA_MAP[_name],
                       handler=_routed_handler(_name, _fallback_call(_name, _defaults, *_extra)),
                       check_fn=_check_fn, emoji=_emoji)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import contextlib  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import signal  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-
-SNAPSHOT_SUMMARIZE_THRESHOLD = DEFAULT_SNAPSHOT_THRESHOLD
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BrowserUseProvider': ('plugins.browser.browser_use.provider', 'BrowserUseBrowserProvider'),
-    'BrowserbaseProvider': ('plugins.browser.browserbase.provider', 'BrowserbaseBrowserProvider'),
-    'CloudBrowserProvider': ('agent.browser_provider', 'BrowserProvider'),
-    'FirecrawlProvider': ('plugins.browser.firecrawl.provider', 'FirecrawlBrowserProvider'),
-    'agent_browser_runnable': ('hermes_constants', 'agent_browser_runnable'),
-    'check_browser_requirements': ('tools.browser_tool_install', 'check_browser_requirements'),
-    'check_browser_vision_requirements': ('tools.browser_tool_install', 'check_browser_vision_requirements'),
-    'cleanup_all_browsers': ('tools.browser_tool_lifecycle', 'cleanup_all_browsers'),
-    'cleanup_browser': ('tools.browser_tool_lifecycle', 'cleanup_browser'),
-    'get_hermes_home_override': ('hermes_constants', 'get_hermes_home_override'),
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'lightpanda_engine_status': ('tools.browser_tool_lightpanda_fallback', 'lightpanda_engine_status'),
-    'node_tool_runnable': ('hermes_constants', 'node_tool_runnable'),
-    'normalize_browser_cloud_provider': ('tools.tool_backend_helpers', 'normalize_browser_cloud_provider'),
-    'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
-    'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-    'warm_agent_browser_npx_cache': ('tools.browser_tool_install', 'warm_agent_browser_npx_cache'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

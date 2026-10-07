@@ -9,19 +9,19 @@ import type {
   ModelInfoResponse
 } from '@/types/hermes'
 
-import {
-  capabilityScoped,
-  hermesApi,
-  type ProfileScope,
-  profileScoped,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
+
+// /api/model/info resolves the live context window, which probes the configured
+// provider's /models endpoint. An unreachable provider must not hold the Model
+// Settings page hostage (the backend bounds the same probe; this is the client
+// side of that budget).
+const MODEL_INFO_REQUEST_TIMEOUT_MS = 5_000
 
 export function getGlobalModelInfo(profile?: null | string): Promise<ModelInfoResponse> {
   return hermesApi<ModelInfoResponse>({
     ...profileScoped(profile),
     path: '/api/model/info',
-    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+    timeoutMs: MODEL_INFO_REQUEST_TIMEOUT_MS
   })
 }
 
@@ -38,7 +38,7 @@ export function getGlobalModelOptions(
     includeUnconfigured?: boolean
     explicitOnly?: boolean
   },
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<ModelOptionsResult> {
   const params = new URLSearchParams()
 
@@ -54,8 +54,8 @@ export function getGlobalModelOptions(
     params.set('explicit_only', '1')
   }
 
-  return hermesApi<ModelOptionsResult>({
-    ...profileScoped(profile),
+  return window.hermesDesktop.api<ModelOptionsResult>({
+    ...capabilityScoped(profile),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
@@ -71,12 +71,9 @@ export interface RecommendedDefaultModel {
 // Recommended default model for a freshly-authenticated provider. Mirrors the
 // curation `hermes model` does — for Nous it honors the free/paid tier so a
 // free user gets a free model instead of a paid default.
-export function getRecommendedDefaultModel(
-  provider: string,
-  profile?: null | string
-): Promise<RecommendedDefaultModel> {
-  return hermesApi<RecommendedDefaultModel>({
-    ...profileScoped(profile),
+export function getRecommendedDefaultModel(provider: string, profile?: ProfileScope): Promise<RecommendedDefaultModel> {
+  return window.hermesDesktop.api<RecommendedDefaultModel>({
+    ...capabilityScoped(profile),
     path: `/api/model/recommended-default?provider=${encodeURIComponent(provider)}`
   })
 }
@@ -125,10 +122,10 @@ export function saveMoaModels(
 
 export function setModelAssignment(
   body: ModelAssignmentRequest,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<ModelAssignmentResponse> {
-  return hermesApi<ModelAssignmentResponse>({
-    ...profileScoped(profile),
+  return window.hermesDesktop.api<ModelAssignmentResponse>({
+    ...capabilityScoped(profile),
     path: '/api/model/set',
     method: 'POST',
     body

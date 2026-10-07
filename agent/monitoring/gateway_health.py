@@ -230,8 +230,8 @@ def _safe_profile() -> str:
 
 def _safe_version() -> str:
     try:
-        from hermes_cli import __version__
-        return str(__version__)
+        from hermes_cli.version_info import get_version_info
+        return get_version_info().base_version
     except Exception:
         return "unknown"
 
@@ -329,24 +329,3 @@ __all__ = [
     "GatewayMetric", "GatewayHealthSnapshot", "GatewayDiagnosticLogHandler",
     "build_gateway_health_snapshot", "classify_gateway_error", "source_logger_for_export",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def redact_gateway_message(message: Any) -> str:
-    """Redact gateway diagnostic free text for operator-owned export.
-
-    Single scrub path: everything goes through
-    ``agent.monitoring.redaction.redact_for_export`` (unconditional
-    secrets + PII), then is length-bounded.
-    """
-    try:
-        from agent.monitoring.redaction import redact_for_export
-        redacted = redact_for_export(str(message or "")) or ""
-    except Exception:
-        redacted = "[redaction-unavailable]"
-    return redacted[:500]
-# ---- END PLUGIN-COMPAT ----

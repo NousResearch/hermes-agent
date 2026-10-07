@@ -2,7 +2,6 @@
 
 import asyncio
 import datetime as dt
-import os
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 
@@ -54,17 +53,6 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     DiscordAdapter,
     _apply_yaml_config,
 )
-
-
-class FakeReaction:
-    def __init__(self, emoji, *, me=False, users=None):
-        self.emoji = emoji
-        self.me = me
-        self._users = list(users or [])
-
-    async def users(self):
-        for user in self._users:
-            yield user
 
 
 class FakeChannel:
@@ -294,19 +282,6 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
     )
 
 
-def test_default_config_exposes_missed_message_backfill_settings():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["discord"]["missed_message_backfill"] == {
-        "enabled": False,
-        "channels": "",
-        "window_seconds": 21600,
-        "limit": 100,
-        "max_dispatches": 10,
-        "max_attempts": 3,
-    }
-
-
 def test_missed_message_backfill_config_stays_per_adapter():
     first_extra = _apply_yaml_config(
         {},
@@ -346,6 +321,19 @@ def test_missed_message_backfill_config_stays_per_adapter():
     assert second._missed_message_backfill_window_seconds() == 120
     assert second._missed_message_backfill_limit() == 6
     assert second._missed_message_backfill_max_dispatches() == 3
+
+
+def test_explicit_empty_backfill_channel_list_disables_the_scan(monkeypatch):
+    """``channels: []`` is the operator saying "scan nothing" — it must not fall through to the
+    allowed ∪ free-response default (which would scan channels they disabled). The default
+    ``channels: ""`` still falls through."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "555")
+    explicit = DiscordAdapter(PlatformConfig(
+        enabled=True, token="one", extra={"missed_message_backfill": {"enabled": True, "channels": []}}))
+    assert explicit._missed_message_backfill_channels() == set()
+    default = DiscordAdapter(PlatformConfig(
+        enabled=True, token="two", extra={"missed_message_backfill": {"enabled": True, "channels": ""}}))
+    assert "555" in default._missed_message_backfill_channels()
 
 
 def test_recovery_ledger_prunes_expired_rows(adapter):

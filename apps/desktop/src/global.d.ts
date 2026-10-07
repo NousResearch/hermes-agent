@@ -1,9 +1,17 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
+import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ChallengeOutcome } from '../electron/challenge-window'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
+import type { HudModifierApi } from '../electron/hud-modifier-types'
+import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { KeepAwakeMode } from '../electron/power-save'
+import type { UpdateHoldWire } from '../electron/update-hold-types'
+import type { UpdateRunReport } from '../electron/updater/update-metrics'
+import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -12,9 +20,16 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
-import type { QuickEntryStatePush, QuickEntryStatus, QuickEntrySubmitPayload } from './store/quick-entry'
+import type {
+  QuickEntryStatePush,
+  QuickEntryStatus,
+  QuickEntrySubmitPayload,
+  QuickEntrySubmitResult
+} from './store/quick-entry'
 
 export {}
+
+export type DesktopMachineProfile = MachineProfile
 
 declare global {
   interface Window {
@@ -44,6 +59,8 @@ declare global {
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
       getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      // Loopback origin serving the YouTube player wrapper (packaged file:// renderer).
+      getEmbedHostOrigin?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
       // and drop it if a remote one has gone unreachable, so the next
       // getConnection() rebuilds a reachable descriptor instead of the renderer
@@ -72,7 +89,7 @@ declare global {
       // a running subagent's session.
       openSessionWindow: (
         sessionId: string,
-        opts?: { profile?: null | string; watch?: boolean }
+        opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
@@ -88,6 +105,14 @@ declare global {
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
+      // main relays opaque payloads to the other Hermes renderer windows;
+      // renderer code keeps the destination exact and rejects anything not
+      // addressed to its window.
+      windowRelay?: {
+        send: (payload: unknown) => void
+        onMessage: (callback: (payload: unknown) => void) => () => void
+      }
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
@@ -106,6 +131,10 @@ declare global {
         setState: (state: WakeIndicatorState) => void
         onState: (callback: (state: WakeIndicatorState) => void) => () => void
       }
+      chatOnboarding?: {
+        grow: (request: GrowRequest) => void
+        soloBoot: () => void
+      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -119,35 +148,6 @@ declare global {
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
-      }
-      // Intro reveal: the full-screen first-run brand sequence. The main
-      // renderer owns the phase; the overlay window (`?win=intro`) owns
-      // the animation clock and plays sound locally.
-      introReveal?: {
-        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
-        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
-        skip: () => void
-        /** The surface painted its first frame — reveal the OS window now. */
-        ready: () => void
-        onSkip: (callback: () => void) => () => void
-        onClosed: (callback: () => void) => () => void
-      }
-      // In-chat onboarding assembly: grow the main window outward by per-edge
-      // pixel deltas so the chat pane keeps its exact screen rect while the
-      // app assembles around it.
-      chatOnboarding?: {
-        grow: (request: {
-          bottom: number
-          left: number
-          /** Floor for the resulting CSS-pixel viewport width, for layouts that
-           *  need one (a docked sidebar). Clamped to the display. */
-          minWidth?: number
-          right: number
-          top: number
-        }) => void
-        /** The film has revealed the app. Animate the visible window down to
-         *  the solo-chat size as the guided chat starts. */
-        soloBoot?: () => void
       }
       // HUD mode: the chrome-free floating chat. A FULL app renderer with its
       // own gateway (like an instance window), sized and skinned as a floating
@@ -180,6 +180,7 @@ declare global {
       }
       // macOS native screenshot gesture; absent on other platforms.
       screenshot?: ScreenshotApi
+      hudModifier?: HudModifierApi
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
@@ -193,7 +194,8 @@ declare global {
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.
-        submit: (payload: QuickEntrySubmitPayload) => void
+        submit: (payload: QuickEntrySubmitPayload) => Promise<QuickEntrySubmitResult>
+        ackSubmit: (correlationId: string, result: QuickEntrySubmitResult) => void
         // Quick window → main: hide without sending (Escape / blur).
         dismiss: () => void
         // Primary renderer → main → quick window: gateway connection state +
@@ -203,10 +205,17 @@ declare global {
         // Quick window subscribes to those pushes.
         onState: (callback: (payload: QuickEntryStatePush) => void) => () => void
         // Primary renderer subscribes to submits captured by the quick window.
-        onSubmit: (callback: (payload: QuickEntrySubmitPayload | string) => void) => () => void
+        onSubmit: (
+          callback: (payload: (QuickEntrySubmitPayload & { correlationId: string }) | string) => void
+        ) => () => void
         // Quick window subscribes to "you were just summoned" so it can reset
         // its draft and re-focus the input on every open.
         onShown: (callback: () => void) => () => void
+        // Quick window subscribes to the outcome of a submit whose relay timed
+        // out (delivery is unknown until this arrives).
+        onLateResult: (
+          callback: (payload: { correlationId: string; result: QuickEntrySubmitResult }) => void
+        ) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
@@ -253,7 +262,10 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: DesktopOauthLoginOptions
+      ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
@@ -279,6 +291,8 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      /** Launch -> ready ms for the first caller per app launch, null afterwards. Absent on older shells. */
+      claimStartupLatency?: () => Promise<null | number>
       requestMicrophoneAccess: () => Promise<boolean>
       /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
       readWindowBelow?: () => Promise<{
@@ -292,15 +306,15 @@ declare global {
           title: string
         } | null
       } | null>
-      readFileDataUrl: (filePath: string) => Promise<string>
+      readFileDataUrl: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
-      readFileDataUrlForAttach?: (filePath: string) => Promise<string>
+      readFileDataUrlForAttach?: (filePath: string) => Promise<string | HermesReadFileErrorResult>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
       dataUrlReadMax?: {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
         set: (maxMb: number) => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>
       }
-      readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      readFileText: (filePath: string) => Promise<HermesReadFileTextResult | HermesReadFileErrorResult>
       /** Full-source read for runtime desktop plugins (readFileText truncates
        *  at the 512 KiB preview cap). Absent on older shells — callers fall
        *  back to readFileText and must reject a `truncated` result. */
@@ -353,7 +367,10 @@ declare global {
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
-      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
+      /** Resolves to `HermesReadFileErrorResult` when the watched file was
+       *  already gone at call time (a restored tab probing a deleted path) —
+       *  structured data instead of a rejection, matching the read handlers. */
+      watchPreviewFile: (url: string) => Promise<HermesPreviewWatch | HermesReadFileErrorResult>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
        *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
        *  older Electron shells predate it and fall back to the readdir poll. */
@@ -366,21 +383,48 @@ declare global {
       glassSupported?: boolean
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
-      /** Launch flag: the app was started with --local, enabling the
-       *  local-models GUI surfaces. Absent/false = every local surface hides. */
+      /** Feature flag: the local-models UI is enabled. */
       localModelsEnabled?: boolean
-      /** Launch flag: the Nous free tier is on for this launch
-       *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
-       *  main process also stamps onto every backend it spawns. */
+      /** Launch flag shared with every backend the app starts. */
       guestOnboardingEnabled?: boolean
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
+      /** Sanitized local `display.skin`, available before any gateway connects. */
+      localSkin?: { profile: string; skin: HermesSkin } | null
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      setKeepAwake?: (mode: KeepAwakeMode) => void
+      minimizeToTray?: {
+        get: () => Promise<{ enabled: boolean; available: boolean }>
+        set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
+        onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
+      }
       setDisableF12?: (blocked: boolean) => void
+      setF12ShortcutActive?: (active: boolean) => void
+      onF12Shortcut?: (
+        callback: (input: {
+          alt?: boolean
+          code?: string
+          control?: boolean
+          key: string
+          meta?: boolean
+          repeat?: boolean
+          shift?: boolean
+        }) => void
+      ) => () => void
       setPreviewShortcutActive?: (active: boolean) => void
+      /** Tell main a preview guest is off screen, so focused-guest gestures skip it. */
+      setPreviewGuestHidden?: (webContentsId: number, hidden: boolean) => void
       openExternal: (url: string) => Promise<void>
+      onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
+      /** The free tier's browser challenge (electron/challenge-window.ts): load
+       *  the account service's page in a hidden window, revealed only if the
+       *  page asks for the human. Resolves with how the window ended. */
+      freeTierChallenge?: {
+        run: (request: {
+          url: string
+          required: boolean
+          expiresIn?: number
+          attempt?: number
+        }) => Promise<ChallengeOutcome>
+      }
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
@@ -420,6 +464,8 @@ declare global {
         message: string
         componentStack: string
       }) => void
+      /** Append one raw line to desktop.log (fire-and-forget, notifyError path). */
+      logLine?: (line: string) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -430,10 +476,16 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
-      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
-      logsRoot?: () => Promise<string>
-      /** Re-copy unified packages' desktop halves into the app-level root; returns touched paths. */
+      /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
+      /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
+       *  profile) — error card "Open Logs". */
+      logsRoot?: (profile?: string) => Promise<string>
+      // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
+      // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
+      // so one agent-plugin package can ship a desktop UI half. Optional:
+      // older Electron shells predate it — the scanner then skips this root.
+      agentPluginsRoot?: () => Promise<string>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -543,6 +595,9 @@ declare global {
         repo?: string
         force?: boolean
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+      /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
+       *  Electron re-checks containment and refuses unified-package halves. */
+      removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
@@ -563,16 +618,26 @@ declare global {
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
+      /** Resolve This device without starting an install. Missing on an older preload. */
+      probeLocalBackend?: () => Promise<{ bootstrapNeeded: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
-      repairBootstrap: () => Promise<{ ok: boolean }>
+      // The blocked boot screen's actions (an earlier update still holds the install).
+      updateHold: {
+        recheck: () => Promise<{ ok: boolean }>
+        quit: () => Promise<{ ok: boolean }>
+        startAnyway: (request: { holdId: string; confirmed: true }) => Promise<{ ok: boolean }>
+      }
+      repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
-      getVersion: () => Promise<DesktopVersionInfo>
-      /** Host facts for the guided first run. Optional: an older preload (a
-       *  mid-upgrade managed install) simply doesn't answer. */
+      getVersion: (scope?: { connectionId?: string; profile?: string }) => Promise<DesktopVersionInfo>
       getMachineProfile?: () => Promise<DesktopMachineProfile>
+      /** The latest pm/venv/plugin-operation receipt (machine-readable):
+       *  bisect disables, failed rebuilds, update-check results. null when
+       *  no venv operation has run yet. */
+      getSyncStatus: () => Promise<DesktopSyncReceipt | null>
       /** Restart the app in place — loads the swapped bundle when bundleSwapPending. */
       relaunchApp?: () => Promise<void>
       getRemoteDisplayReason?: () => Promise<string | null>
@@ -582,10 +647,24 @@ declare global {
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        /** Claim the pending packaged self-update run (null when none or already claimed). */
+        takePendingRun?: () => Promise<UpdateRunReport | null>
+        /** `sent` deletes the claimed record; false keeps it for the next attach. */
+        ackPendingRun?: (sent: boolean) => Promise<void>
+        onPendingRun?: (callback: () => void) => () => void
+      }
+      desktopMetrics?: {
+        /** Mirror this window's focused profile and its opt-in; false deletes that profile's pending crashes. */
+        setEnabled?: (on: boolean, profile: string) => Promise<void>
+        /** Claim this window's profile's pending renderer-crash reasons (null when off, none, or claimed). */
+        takeRendererCrashes?: () => Promise<{ reasons: Array<'crash' | 'killed' | 'oom' | 'other'> } | null>
+        /** `sent` drops the claimed reasons; false keeps them for the next attach. */
+        ackRendererCrashes?: (sent: boolean) => Promise<void>
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+        openAppsSettings: () => Promise<void>
       }
       themes: {
         // Download a VS Code Marketplace extension and return the raw color
@@ -644,8 +723,41 @@ export interface HermesTerminalExit {
   signal: string | null
 }
 
+/** The pm receipt shape (pm/receipt.py schema 1) — one machine-readable
+ *  surface for venv rebuilds, plugin bisects, and update checks. Fields
+ *  are optional-typed: older/newer receipts may lack sections; readers
+ *  must degrade gracefully (the derive-* module does). */
+export interface DesktopSyncReceipt {
+  schema?: number
+  kind?: string
+  outcome?: string
+  exit_code?: number
+  started_at?: string
+  finished_at?: string
+  steps?: Array<{ name: string; ok: boolean; detail?: string; at?: string }>
+  venv_rebuild?: { ok: boolean; reason?: string } | null
+  pm_sync_outcome?: string
+  pm_steps?: DesktopSyncReceipt['steps']
+  pm_venv_rebuild?: DesktopSyncReceipt['venv_rebuild']
+  pm_plugin_bisect?: DesktopSyncReceipt['plugin_bisect']
+  plugin_bisect?: Array<{ plugin: string; action: string; reason: string }>
+  plugin_checks?: Array<{
+    name: string
+    class?: string
+    current?: string | null
+    latest?: string | null
+    update_available?: boolean | null
+    needs_fixing?: string | null
+    reason?: string
+  }>
+  feature_list?: string[] | null
+}
+
 export interface DesktopVersionInfo {
+  /** Packaged client version, or the runtime version for source installs. */
   appVersion: string
+  /** Fixed release identity. Commit builds have no update channel. */
+  channel?: string | null
   electronVersion: string
   nodeVersion: string
   platform: string
@@ -655,34 +767,65 @@ export interface DesktopVersionInfo {
   bundleOutOfSync?: boolean
   /** Commits under apps/desktop/ the running bundle is missing (null unknown). */
   bundleCommitsBehind?: null | number
+  /** Build provenance from the install stamp (empty for packaged builds with
+   *  no stamp / a bare `app.getVersion()` fallback). */
+  baseVersion?: string
+  branch?: string | null
+  commit?: string | null
+  distance?: number
+  dirty?: boolean
+  source?: 'build' | 'commit-build' | 'ci' | 'docker' | 'fallback' | 'git' | 'local' | 'nix' | 'unknown'
+  distribution?: 'desktop-app' | 'docker' | 'nix'
+  /** Who applies the next update (from the stamp). Names the Store on a
+   *  Store-identity build — the Settings label keys off this, never
+   *  process.windowsStore (which also matches sideloaded MSIX). */
+  updateMechanism?: 'self' | 'app-installer' | 'electron-updater' | 'external' | 'microsoft-store'
+  /** The artifact kind of the desktop app carrying this info ('bootstrap' |
+   *  'bundled' | 'light'). 'bootstrap' is the old-style installer shell over
+   *  a managed checkout; the Distribution label keys on it. */
+  payload?: 'bootstrap' | 'bundled' | 'light'
+  /** True when the runtime checkout carries the bootstrap installers'
+   *  `.hermes-bootstrap-complete` receipt — install.sh / install.ps1 (or the
+   *  desktop first-launch bootstrap) created it, a manual clone did not. */
+  installedByScript?: boolean
+  /** sha16 of the canonical install-root path — the per-install channel key and
+   *  the shape `hermes update --install-id` prints. */
+  installId?: string
+  /** What this build carries (embedded / light / external) and where an
+   *  external backend resolved from. Bundled artifacts run their payload; light
+   *  artifacts have no runtime and only reach remote backends. */
+  hermesRuntime?: { type: 'embedded' } | { type: 'light' } | { type: 'external'; source?: RuntimeSource }
   /** True when the bundle on disk is newer than the running process — a plain
    *  app restart (no rebuild, no installer) is enough to load it. */
   bundleSwapPending?: boolean
 }
 
-export interface DesktopMachineProfile {
-  /** Days since the OS created this user account; null when unknowable. */
-  ageDays: null | number
-  arch: string
-  /** The OS display language (`app.getLocale()`, e.g. "ja", "pt-BR"); '' when
-   *  unknowable. A first-run DEFAULT for the UI language, never a lock — the
-   *  user's saved `display.language` always wins, and the picker still rules. */
-  locale: string
-  /** Hardware's self-reported model (`NVIDIA_DGX_Spark`); '' when unavailable. */
-  model: string
-  /** An NVIDIA GPU is present, by PCI vendor id. */
-  nvidia: boolean
-  platform: string
-  release: string
-  /** OS login name ('' when unknowable) — a first-name SUGGESTION for the
-   *  guided chat, never a default. The renderer blocklists handles that are
-   *  not a name before offering it. */
-  username: string
-}
+/** Where an external build's backend came from. Mirrors the resolution ladder
+ *  in `resolveHermesBackend()`: `git` / `source` / sealed stewards are the
+ *  Python install methods from `installation.tree.install_method()`; the
+ *  Electron-only rungs (`hermes-root`, `path`, `system-python`, `bootstrap`)
+ *  are resolution facts the backend cannot see. Each variant carries the
+ *  location it resolved from, when there is one. */
+export type RuntimeSource =
+  | { type: 'hermes-root'; root: string } // HERMES_DESKTOP_HERMES_ROOT — explicit developer override
+  | { type: 'git'; root: string } // checkout at a managed install root, $HERMES_HOME/hermes-agent
+  | { type: 'source'; root: string } // a git checkout anywhere else
+  | { type: 'docker'; root: string | null } // sealed tree stewarded by Docker
+  | { type: 'nix'; root: string | null } // sealed tree stewarded by Nix
+  | { type: 'desktop-app'; root: string | null } // sealed tree stewarded by the desktop bundle
+  | { type: 'desktop-bootstrap'; root: string } // canonical install created by the desktop first-launch bootstrap
+  | { type: 'unknown' } // no stamp, no .git — provenance cannot be told
+  | { type: 'path'; command: string } // an existing `hermes` CLI found on PATH
+  | { type: 'system-python'; command: string } // pip-installed hermes_cli on system Python
+  | { type: 'bootstrap' } // nothing usable yet; the first-launch installer runs
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
 
 export interface DesktopUninstallSummary {
+  /** Local package ownership, resolved by Electron before offering removal. */
+  code_removal_allowed: boolean
+  /** Native removal steps when the OS or a package manager owns removal. */
+  native_removal_instructions: null | string
   hermes_home: string
   agent_installed: boolean
   gui_installed: boolean
@@ -711,8 +854,19 @@ export interface DesktopUpdateCommit {
   at: number
 }
 
+export type UpdaterMechanismClient =
+  'app-installer' | 'electron-updater' | 'external' | 'microsoft-store' | 'windows-handoff' | 'posix-handoff' | 'manual'
+
 export interface DesktopUpdateStatus {
   supported: boolean
+  retirement?: {
+    state: 'discontinued'
+    destination: string
+    version: string
+    message?: string
+  }
+  /** Which mechanism owns updates for this install (see electron/updater). */
+  mechanism?: UpdaterMechanismClient
   updateAvailable?: boolean
   branch?: string
   currentBranch?: string
@@ -726,6 +880,10 @@ export interface DesktopUpdateStatus {
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string
+  /** The R2 channel name; independent of source branch and package version. */
+  channel?: string
+  /** The latest release tag on a release-feed channel, e.g. `v0.18.0`. */
+  latestTag?: string | null
   targetSha?: string
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
@@ -734,29 +892,18 @@ export interface DesktopUpdateStatus {
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'
 
-export interface DesktopUpdateBlocker {
-  pid: number
-  name: string
-  cmdline: string
-  kind: 'local-preview' | 'other'
-  safeToStop: boolean
-  label?: string
-  port?: number
-  createTime?: number
-}
-
 export interface DesktopUpdateApplyOptions {
   dirtyStrategy?: DesktopUpdateDirtyStrategy
-  /** User confirmed that Desktop may stop freshly re-scanned safe local preview servers. */
-  stopSafeBlockers?: boolean
 }
 
 export interface DesktopUpdateApplyResult {
   ok: boolean
+  /** False when the apply-time check found nothing to install. */
+  updateAvailable?: boolean
   branch?: string
   error?: string
   message?: string
-  blockers?: DesktopUpdateBlocker[]
+
   /** True when no staged updater exists (CLI install) and the user should run
    *  `hermes update` themselves. `command` is the exact line to run. */
   manual?: boolean
@@ -815,6 +962,8 @@ export interface DesktopPluginProfileRoute {
   // across sources.
   connectionId: string
   mode: 'local' | 'remote'
+  // Electron's authoritative registry primary. Absent on older shells.
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -913,8 +1062,9 @@ export interface DesktopConnectionConfig {
   // stored as plain text on disk (with an explicit opt-in).
   secureTokenStorage: boolean
   // Whether the currently-persisted remote token is stored with encoding
-  // 'plain' (i.e. plain text on disk in connection.json), which happens when
-  // the user opted in on a machine without secure storage.
+  // 'plain' AND this machine cannot secure it (plain text on disk in
+  // connection.json on a keyring-less machine). Stays false while keychain
+  // encryption is opted out — plain text is the chosen mode there.
   remoteTokenPlainText: boolean
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
@@ -951,6 +1101,9 @@ export interface DesktopConnectionConfigInput {
   sshKeyPath?: string
   sshRemoteHermesPath?: string
   sshRemoteProfile?: string
+  // For a URL-remote/cloud per-profile override: the profile name on the remote
+  // host when it differs from this Desktop routing label.
+  remoteProfile?: string
 }
 
 export interface DesktopConnectionTestResult {
@@ -962,6 +1115,7 @@ export interface DesktopConnectionTestResult {
     | 'auth-failed'
     | 'hermes-not-found'
     | 'host-key-changed'
+    | 'interactive-auth'
     | 'timeout'
     | 'unreachable'
     | 'unsupported-platform'
@@ -1067,6 +1221,7 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    needsSignIn?: boolean
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
   }[]
@@ -1099,6 +1254,8 @@ export interface DesktopManagedUpdateReceipt {
   preVersion?: string
   postVersion?: string
   stopReason?: string
+  followups?: Array<{ step: string; reason: string }>
+  userAction?: { step: string; reason: string } | null
 }
 
 export interface DesktopManagedConnectionUpdateResult {
@@ -1111,6 +1268,8 @@ export interface DesktopManagedConnectionUpdateResult {
   exitCode: number | null
   receipt: DesktopManagedUpdateReceipt | null
   scopes: Array<{ profile: string; restored: boolean; error?: string }>
+  /** Post-commit steps a successful update still owes (named in `message`). */
+  owed?: Array<{ step: string; reason: string }>
   error?: string
   message?: string
 }
@@ -1145,10 +1304,44 @@ export interface DesktopConnectionProbeResult {
   error: string | null
 }
 
+export interface ExternalOpenFailedPayload {
+  url: string
+  message?: string
+  /** Machine-readable failure class; the dialog picks localized copy per code. */
+  code?: 'missing-file'
+}
+
+export interface DesktopOauthLoginOptions {
+  /**
+   * Registry-draft identity for a sign-in that runs before the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads.
+   */
+  connectionId?: null | string
+  /** Draft label — used to mint the id when `connectionId` is absent. */
+  label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
+}
+
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
   connected: boolean
+  error?: string
+  /**
+   * The connection id the session was written for. A pre-save sign-in should
+   * pin this into the draft so the later save reuses the same id (and jar).
+   */
+  connectionId?: string
 }
 
 export interface DesktopOauthLogoutResult {
@@ -1223,7 +1416,12 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+  /** Set while an earlier update's hold keeps the local backend from starting (blocked boot screen). */
+  updateHold?: UpdateHoldWire | null
 }
+
+/** What holds the install while the boot is blocked: one definition, shared with the main process. */
+export type { UpdateHoldWire } from '../electron/update-hold-types'
 
 // First-launch install ("bootstrap") event types -- emitted by
 // electron/bootstrap-runner.ts and observed by the renderer install overlay.
@@ -1256,6 +1454,10 @@ export interface DesktopBootstrapUnsupportedPlatform {
 export interface DesktopBootstrapSetupChoice {
   platform: string
   activeRoot: string
+  /** What the local card represents: 'none' = installer offer; the rest = use existing. */
+  local: 'none' | 'installed' | 'bundled'
+  /** This artifact is a bundled install (payload ships in-app). */
+  bundled: boolean
 }
 
 export interface DesktopBootstrapState {
@@ -1268,6 +1470,8 @@ export interface DesktopBootstrapState {
   completedAt: number | null
   setupChoice: DesktopBootstrapSetupChoice | null
   unsupportedPlatform: DesktopBootstrapUnsupportedPlatform | null
+  /** This artifact is a bundled install (payload ships in-app). */
+  bundled: boolean
 }
 
 export type DesktopBootstrapEvent =
@@ -1277,6 +1481,8 @@ export type DesktopBootstrapEvent =
       active: boolean
       platform?: string
       activeRoot?: string
+      local?: DesktopBootstrapSetupChoice['local']
+      bundled?: boolean
     }
   | { type: 'manifest'; stages: DesktopBootstrapStageDescriptor[]; protocolVersion: number | null }
   | {
@@ -1337,7 +1543,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string
@@ -1351,6 +1557,19 @@ export interface HermesReadFileTextResult {
   path: string
   text: string
   truncated?: boolean
+}
+
+/** Structured failure for a preview read. The main process returns this (it
+ *  does NOT reject the IPC call) when the file is simply not on disk — a
+ *  restored preview tab or transcript reference pointing at a deleted/moved
+ *  file, or a path under a cleared /tmp, is an expected outcome that the
+ *  renderer already displays as "preview unavailable". Other errors still
+ *  reject as before. */
+export interface HermesReadFileErrorResult {
+  ok: false
+  error: string
+  message: string
+  path?: string
 }
 
 export interface HermesPreviewWatch {

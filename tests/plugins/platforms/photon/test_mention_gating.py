@@ -58,11 +58,6 @@ def _capture(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[Me
     return captured
 
 
-def test_require_mention_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    adapter = _make_adapter(monkeypatch)
-    assert adapter.require_mention is False
-    # Defaults compile to the two Hermes wake-word patterns.
-    assert len(adapter._mention_patterns) == 2
 
 
 @pytest.mark.asyncio

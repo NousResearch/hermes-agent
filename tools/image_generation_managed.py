@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+
 FAL, KREA, PORTAL = "fal", "krea", "portal"
 
 # Portal ids that are the same model as a FAL or Krea catalog entry. FAL wins (it is the
@@ -45,6 +47,21 @@ def managed_backend_for_model(model_id: Optional[str]) -> str:
     if candidate in KREA_MODEL_IDS:
         return KREA
     return PORTAL
+
+
+def managed_route(provider: Any, model_id: Any) -> Optional[str]:
+    """Gateway a request is dispatched to for the stored ``image_gen.provider`` / ``image_gen.model``
+    (raw config values; blank or non-string reads as unset).
+
+    ``None`` when a direct/BYO provider owns the request. A Portal id reaches the Portal only under
+    an explicit ``nous`` pick; with the provider unset it stays on the in-tree FAL path."""
+    provider, model_id = (v.strip() if isinstance(v, str) and v.strip() else None for v in (provider, model_id))
+    if provider is not None and provider != NOUS_MANAGED_PROVIDER:
+        return None
+    backend = managed_backend_for_model(model_id)
+    if backend == PORTAL and provider != NOUS_MANAGED_PROVIDER:
+        return FAL
+    return backend
 
 
 def _plugin_rows(name: str) -> list:

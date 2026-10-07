@@ -21,11 +21,7 @@ export function ResumeExhaustedOverlay({
 
   return (
     <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
-      <ErrorState
-        className="max-w-sm"
-        description={t.desktop.resumeStrandedBody}
-        title={t.desktop.resumeStrandedTitle}
-      >
+      <ErrorState className="max-w-sm" description={t.desktop.resumeStrandedBody} title={t.desktop.resumeStrandedTitle}>
         <div className="grid justify-items-center gap-1.5">
           <Button onClick={() => requestFreshSession()} size="sm" variant="outline">
             {t.assistant.thread.errorStartNewSession}

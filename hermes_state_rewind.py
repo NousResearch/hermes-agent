@@ -57,12 +57,18 @@ class SessionRewindMixin:
         wrong-shape targets raise :class:`RewindTargetUnavailableError`."""
         from agent.context_compressor import (
             _DB_PERSISTED_MARKER, history_before_user_originated_turn, retryable_user_text,
-            split_user_originated_turn)
+            split_user_originated_turn, user_originated_turn_view)
         from agent.message_content import flatten_message_text
+        from agent.message_metadata import MESSAGE_UID, message_uid_or_none
         from agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
-        durable = self.get_messages_as_conversation(session_id, include_row_ids=True)
+        stored = self.get_messages_as_conversation(session_id, include_row_ids=True)
+        # Live replay (the pre-request repair, a resume) merges a stored ``user;user`` pair — an ask whose turn
+        # ended with no reply, then the next ask — into ONE turn while both rows stay stored. Address turns on
+        # that same repaired projection or the warm history is a turn short of the transcript forever
+        # (#115493); the merged turn keeps the first row's identity, so the rewind starts at that row.
+        durable = self.get_messages_as_conversation(session_id, include_row_ids=True, repair_alternation=True)
         durable_user = _user_indices(durable)
         if user_ordinal < 0:
             user_ordinal = max(len(durable_user) + user_ordinal, 0)
@@ -90,17 +96,26 @@ class SessionRewindMixin:
         target_row_id = target.get("_row_id")
         if not isinstance(target_row_id, int):
             raise RuntimeError("rewind target has no durable row identity")
+        # The in-txn payload pin compares against the STORED row, which for a merged turn holds only the
+        # first ask, never the merged text the live views carry.
+        stored_view = next(
+            (user_originated_turn_view(m) for m in stored if m.get("_row_id") == target_row_id), None)
+        if stored_view is None:
+            raise RuntimeError(_HISTORY_CHANGED)
         try:
             result = self.rewind_to_message(
                 session_id, target_row_id, preserve_compaction_handoff=scaffold is not None,
-                expected_active_ids=expected_active_ids, expected_target_content=live_view.get("content"))
+                expected_active_ids=expected_active_ids, expected_target_content=stored_view.get("content"))
         except ValueError as exc:  # target vanished / changed role under us: same class of failure as out-of-range
             raise RewindTargetUnavailableError(str(exc)) from exc
         if scaffold is not None:
             replacement_id = result.get("replacement_message_id")
             if not isinstance(replacement_id, int) or not durable_prefix:
                 raise RuntimeError("rewind did not retain its compaction handoff")
+            # The installed scaffold IS the replacement row: carry its identity, not just its row id.
             durable_prefix[-1].update({"_row_id": replacement_id, _DB_PERSISTED_MARKER: True})
+            if replacement_uid := result.get("replacement_message_uid"):
+                durable_prefix[-1][MESSAGE_UID] = replacement_uid
             prefix[-1] = durable_prefix[-1]
         if adopt_row_ids and prefix is not durable_prefix and len(prefix) == len(durable_prefix) and all(
             warm.get("role") == durable_message.get("role")
@@ -112,6 +127,8 @@ class SessionRewindMixin:
             for warm, durable_message in zip(prefix, durable_prefix):
                 if isinstance(row_id := durable_message.get("_row_id"), int):
                     warm["_row_id"] = row_id
+                if uid := message_uid_or_none(durable_message):
+                    warm[MESSAGE_UID] = uid
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),

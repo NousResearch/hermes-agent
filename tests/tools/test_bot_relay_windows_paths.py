@@ -26,12 +26,13 @@ import pytest
 
 import tools.bot_mode_dm as bot_mode_dm
 import tools.bot_relay as bot_relay
+import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_waiter_argv_uses_forward_slashes_on_windows():
     """On native Windows the reply path rides as a forward-slash argv element, like the delivery
     runner's paths: Git Bash runs those, and parses a backslash path as a command name."""
@@ -42,6 +43,7 @@ def test_waiter_argv_uses_forward_slashes_on_windows():
     assert not any("\\" in part for part in parts)
 
 
+@pytest.mark.platforms("linux")
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     bin_dir = tmp_path / "venv" / "bin"
     bin_dir.mkdir(parents=True)
@@ -62,6 +64,9 @@ def test_local_delivery_uses_shutil_which_when_no_sibling(tmp_path, monkeypatch)
     empty = tmp_path / "nowhere"
     empty.mkdir(parents=True)
     monkeypatch.setattr("sys.executable", str(empty / "python"))
+    # Keep this checkout's own published install launcher out of the resolution
+    # when probing the fallback ladder (#124868).
+    monkeypatch.setattr(bot_relay, "__file__", str(empty / "bot_relay.py"))
     which_hit = str(tmp_path / "usr-local-bin" / "hermes")
     monkeypatch.setattr(
         bot_relay.shutil, "which", lambda name: which_hit if name == "hermes" else None
@@ -76,6 +81,7 @@ def test_local_delivery_falls_back_to_bare_name(tmp_path, monkeypatch):
     empty.mkdir(parents=True)
     monkeypatch.setattr("sys.executable", str(empty / "python"))
     monkeypatch.setattr(bot_relay.shutil, "which", lambda name: None)
+    monkeypatch.setattr(bot_relay, "__file__", str(empty / "bot_relay.py"))
 
     argv = bot_relay.local_delivery_command("ops", "query.json")
     assert argv[0] == "hermes"

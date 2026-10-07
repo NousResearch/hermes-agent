@@ -6,7 +6,6 @@ import gzip
 import io
 import json
 import logging
-import re
 import sys
 import time
 import urllib.request
@@ -16,6 +15,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.debug_redaction import redact_debug_support_text
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -24,10 +24,6 @@ logger = logging.getLogger(__name__)
 _REDACTION_BANNER = (
     "[hermes debug share: log content redacted at upload time. "
     "run with --no-redact to disable]\n")
-_EMAIL_ADDRESS_RE = re.compile(
-    r"(?<![A-Za-z0-9._%+-])"
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
-    r"(?![A-Za-z0-9._%+-])")
 _PASTE_RS_URL = "https://paste.rs/"  # primary; dpaste.com is the fallback
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 _USER_AGENT = "hermes-agent/debug-share"
@@ -45,7 +41,7 @@ def _pending_file() -> Path:
 
 def _load_pending() -> list[dict]:
     try:
-        data = json.loads(_pending_file().read_text(encoding="utf-8"))
+        data = json.loads(_pending_file().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return []
     if not isinstance(data, list):
@@ -177,7 +173,8 @@ def _post_paste(service: str, endpoint: str, body: bytes, content_type: str) -> 
     with urllib.request.urlopen(req, timeout=30) as resp:
         url = resp.read().decode("utf-8").strip()
     if not url.startswith("http"):
-        raise ValueError(f"Unexpected response from {service}: {url[:200]}")
+        safe_response = redact_debug_support_text(url, max_chars=200)
+        raise ValueError(f"Unexpected response from {service}: {safe_response}")
     return url
 
 
@@ -208,7 +205,7 @@ def upload_to_pastebin(content: str, expiry_days: int = 1) -> str:
         try:
             return upload()
         except Exception as exc:
-            errors.append(f"{service}: {exc}")
+            errors.append(f"{service}: {exc}")  # every caller scrubs the RuntimeError
     raise RuntimeError("Failed to upload to any paste service:\n  " + "\n  ".join(errors))
 
 
@@ -222,9 +219,8 @@ class LogSnapshot:
 
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
-    from hermes_cli.logs import LOG_FILES
-    filename = LOG_FILES.get(log_name)
-    return (get_hermes_home() / "logs" / filename) if filename else None
+    from hermes_cli.logs import log_file_path
+    return log_file_path(log_name)  # update/handoff: the ROOT home's, whatever profile is active
 
 
 # Logs written by a client process, invisible to a remote/docker/SSH backend running `debug
@@ -256,23 +252,13 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str) -> str:
-    """``redact_sensitive_text(force=True)`` + email scrub — fires regardless of the operator's
-    ``security.redact_secrets`` setting; only the in-memory upload copy is sanitized."""
-    if not text:
-        return text
-    from agent.redact import redact_sensitive_text
-    text = redact_sensitive_text(text, force=True)
-    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
-
-
 def _read_tail_bytes(
-    log_path: Path, size: int, max_bytes: int, tail_lines: int) -> tuple[bytes, bool]:
-    """Whole file, or (oversized) a backwards read holding ``max_bytes`` for the full upload AND
-    enough newlines for the summary tail from the same snapshot → (raw, truncated)."""
+    log_path: Path, size: int, max_bytes: int, tail_lines: int
+) -> tuple[bytes, int, bool]:
+    """Return a bounded tail, its file offset, and whether it starts on a line boundary."""
     with open(log_path, "rb") as f:
         if size <= max_bytes:
-            return f.read(), False
+            return f.read(), 0, True
         chunk_size = 8192
         pos = size
         chunks: list[bytes] = []
@@ -288,7 +274,24 @@ def _read_tail_bytes(
             total += len(chunk)
             newline_count += chunk.count(b"\n")
             chunk_size = min(chunk_size * 2, 65536)
-        return b"".join(chunks), pos > 0
+        starts_on_boundary = True
+        if pos > 0:
+            f.seek(pos - 1)
+            starts_on_boundary = f.read(1) == b"\n"
+        return b"".join(chunks), pos, starts_on_boundary
+
+
+def _truncate_complete_lines(text: str, max_bytes: int) -> tuple[str, bool]:
+    """Keep at most the last ``max_bytes`` without publishing a partial first line."""
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text, False
+    cut = len(raw) - max_bytes
+    on_boundary = raw[cut - 1:cut] == b"\n"
+    kept = raw[cut:]
+    if not on_boundary:
+        kept = kept.split(b"\n", 1)[1] if b"\n" in kept else b""
+    return kept.decode("utf-8", errors="replace"), True
 
 
 def _capture_log_snapshot(
@@ -306,32 +309,31 @@ def _capture_log_snapshot(
         size = log_path.stat().st_size
         if size == 0:  # truncated between _resolve_log_path and stat
             return LogSnapshot(path=log_path, tail_text="(file empty)", full_text=None)
-        raw, truncated = _read_tail_bytes(log_path, size, max_bytes, tail_lines)
-        full_raw = raw
-        if truncated and len(full_raw) > max_bytes:
-            cut = len(full_raw) - max_bytes
-            # Drop a partial first line only when the cut lands genuinely mid-line.
-            on_boundary = cut > 0 and full_raw[cut - 1 : cut] == b"\n"
-            full_raw = full_raw[cut:]
-            if not on_boundary and b"\n" in full_raw:
-                full_raw = full_raw.split(b"\n", 1)[1]
+        raw, start_offset, starts_on_boundary = _read_tail_bytes(
+            log_path, size, max_bytes, tail_lines
+        )
         all_text = raw.decode("utf-8", errors="replace")
+        if redact:
+            # The support scrub needs the complete logical field before either
+            # the summary-line cap or full-log byte cap can remove its key.
+            all_text = redact_debug_support_text(all_text)
+        if start_offset and not starts_on_boundary:
+            all_text = all_text.split("\n", 1)[1] if "\n" in all_text else ""
         tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
-        full_text = full_raw.decode("utf-8", errors="replace")
+        full_text, capped = _truncate_complete_lines(all_text, max_bytes)
+        truncated = capped or size > max_bytes
         if truncated:
             full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
-        if redact:
-            tail_text = _redact_log_text(tail_text)
-            full_text = _redact_log_text(full_text)
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:
-        return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
+        error = redact_debug_support_text(exc)
+        return LogSnapshot(path=log_path, tail_text=f"(error reading: {error})", full_text=None)
 
 
 # Logs the debug report tails, in output order. ``agent`` gets the full ``--lines`` budget;
 # the rest are capped at 100 lines. Every log but ``errors`` is also uploaded in full.
-_REPORT_LOGS = ("agent", "errors", "gateway", "gui", "desktop")
-_FULL_LOGS = ("agent", "gateway", "gui", "desktop")
+_REPORT_LOGS = ("agent", "errors", "gateway", "gui", "desktop", "update", "handoff")
+_FULL_LOGS = ("agent", "gateway", "gui", "desktop", "update", "handoff")
 
 
 def _tail_budget(name: str, log_lines: int) -> int:
@@ -346,13 +348,16 @@ def _capture_default_log_snapshots(
         for name in _REPORT_LOGS}
 
 
-def _capture_dump() -> str:
-    """Run ``hermes dump`` and return its stdout as a string."""
+def _capture_dump(redact: bool = True) -> str:
+    """Run ``hermes dump`` and return its stdout, force-redacted unless *redact* is False: the dump
+    is upload-bound and quotes config values (e.g. ``fallback_providers``), so URL credentials are
+    redacted too, as in the uploaded logs."""
     from hermes_cli.dump import run_dump
     capture = io.StringIO()
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
-    return capture.getvalue()
+    text = capture.getvalue()
+    return redact_debug_support_text(text) if redact else text
 
 
 def collect_debug_report(
@@ -378,9 +383,14 @@ def collect_debug_report(
                 buf.write(f"session {sess}: {st['heal_events']} heal events, "
                           f"{st['messages_healed']} messages healed, escalated={st['escalated']}\n")
     buf.write("\n")
+    from hermes_cli.logs import LOG_FILES
     for name in _REPORT_LOGS:
-        buf.write(f"\n--- {name}.log (last {_tail_budget(name, log_lines)} lines) ---\n"
-                  f"{log_snapshots[name].tail_text}\n")
+        snap = log_snapshots.get(name)
+        if snap is None:
+            continue
+        filename = LOG_FILES.get(name, f"{name}.log")
+        buf.write(f"\n--- {filename} (last {_tail_budget(name, log_lines)} lines) ---\n"
+                  f"{snap.tail_text}\n")
     return buf.getvalue()
 
 
@@ -394,15 +404,17 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
     The dump header is prepended to each full log so every file is self-contained, and the
     redaction banner is prepended when ``redact`` is True.
     """
-    dump_text = _capture_dump()
+    dump_text = _capture_dump(redact=redact)
     log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
     report = collect_debug_report(log_lines=log_lines, dump_text=dump_text,
                                   log_snapshots=log_snapshots)
     banner = _REDACTION_BANNER if redact else ""
     bundle: dict[str, str] = {"report": banner + report}
+    from hermes_cli.logs import LOG_FILES
     for name in _FULL_LOGS:
         if full := log_snapshots[name].full_text:
-            bundle[f"{name}.log"] = banner + dump_text + f"\n\n--- full {name}.log ---\n" + full
+            filename = LOG_FILES.get(name, f"{name}.log")
+            bundle[filename] = banner + dump_text + f"\n\n--- full {filename} ---\n" + full
     return bundle
 
 
@@ -442,13 +454,25 @@ def build_debug_share(
     failures: list[str] = []
     # The summary report is required (raises so callers can fall back); full logs are optional.
     urls = {"Report": upload_to_pastebin(report, expiry_days=expiry)}
-    for label, content in bundle.items():
-        if label == "report":
+    # Full logs to upload (the source of this list is checked by tests to ensure
+    # new logs aren't silently skipped).
+    for label in (
+        "agent.log",
+        "gateway.log",
+        "gui.log",
+        "desktop.log",
+        # Update-failure diagnostics: the only files holding the root cause
+        # of a failed update/Desktop rebuild (#100874).
+        "update.log",
+        "desktop-update-handoff.log",
+    ):
+        content = bundle.get(label)
+        if not content:
             continue
         try:
             urls[label] = upload_to_pastebin(content, expiry_days=expiry)
         except Exception as exc:
-            failures.append(f"{label}: {exc}")
+            failures.append(f"{label}: {redact_debug_support_text(exc)}")
     _schedule_auto_delete(list(urls.values()))
     return DebugShareResult(urls=urls, failures=failures, redacted=redact,
                             auto_delete_seconds=_AUTO_DELETE_SECONDS, report=report)
@@ -485,9 +509,20 @@ def run_debug_share(args):
         print("Collecting debug report...")
         bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
         print(bundle["report"])
-        for label, body in bundle.items():
-            if label != "report":
-                print(f"\n\n{'=' * 60}\nFULL {label}\n{'=' * 60}\n\n{body}")
+        for title, label in (
+            ("FULL agent.log", "agent.log"),
+            ("FULL gateway.log", "gateway.log"),
+            ("FULL gui.log", "gui.log"),
+            ("FULL desktop.log", "desktop.log"),
+            ("FULL update.log", "update.log"),
+            ("FULL desktop-update-handoff.log", "desktop-update-handoff.log"),
+        ):
+            body = bundle.get(label)
+            if body:
+                print(f"\n\n{'=' * 60}")
+                print(title)
+                print(f"{'=' * 60}\n")
+                print(body)
         return
 
     if getattr(args, "nous", False):
@@ -499,7 +534,7 @@ def run_debug_share(args):
     try:
         result = build_debug_share(log_lines=log_lines, expiry=expiry, redact=redact)
     except RuntimeError as exc:
-        print(f"\nUpload failed: {exc}", file=sys.stderr)
+        print(f"\nUpload failed: {redact_debug_support_text(exc)}", file=sys.stderr)
         print("\nRun `hermes debug share --local` to print the report instead.\n")
         sys.exit(1)
     label_width = max(len(k) for k in result.urls)
@@ -528,7 +563,9 @@ _NOUS_PRIVACY_NOTICE = """\
   • System info (OS, Python/Hermes version, provider, which API keys are
     configured — NOT the actual keys)
   • Full agent.log, gateway.log, and desktop.log (up to 512 KB each — likely
-    contains conversation content, tool outputs, and file paths)
+    contains conversation content, tool outputs, and file paths), plus
+    update.log and desktop-update-handoff.log when present (update/hand-off
+    output — the root cause of update failures)
 
   • The bundle is viewable only by Nous staff (and allowlisted Discord mods)
     via a Google-login-gated viewer.
@@ -554,7 +591,8 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     try:
         res = share_to_nous(build_nous_bundle(bundle, redact=redact))
     except Exception as exc:
-        print(f"\nNous upload failed: {exc}\n"
+        error = redact_debug_support_text(exc)
+        print(f"\nNous upload failed: {error}\n"
               "\nThe Nous diagnostics service may be unavailable or not yet provisioned.\n"
               "Run `hermes debug share --local` to print the report instead, "
               "or `hermes debug share` to upload to a public paste service.\n", file=sys.stderr)
@@ -586,11 +624,15 @@ def run_debug_delete(args):
             if delete_paste(url):
                 print(f"  ✓ Deleted: {url}")
             else:
-                print(f"  ✗ Failed to delete: {url} (unexpected response)")
+                print(
+                    "  ✗ Failed to delete: "
+                    f"{redact_debug_support_text(url)} (unexpected response)"
+                )
         except ValueError as exc:
-            print(f"  ✗ {exc}")
+            print(f"  ✗ {redact_debug_support_text(exc)}")
         except Exception as exc:
-            print(f"  ✗ Could not delete {url}: {exc}")
+            safe_url = redact_debug_support_text(url)
+            print(f"  ✗ Could not delete {safe_url}: {redact_debug_support_text(exc)}")
 
 
 def run_debug(args):

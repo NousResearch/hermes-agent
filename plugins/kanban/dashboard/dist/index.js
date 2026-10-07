@@ -468,15 +468,44 @@
 
   function attachTouchDrag(el, taskId) {
     if (!el) return;
+    // A finger drifts a few px on every real tap; without a movement threshold ANY touch
+    // pointerdown armed a drag and called preventDefault(), which suppresses the synthesized
+    // click the card relies on to open (#115568). Defer the drag proxy + preventDefault until
+    // the pointer has actually moved past DRAG_THRESHOLD_PX; a tap that never crosses it falls
+    // through to the native click, same as it already does for a mouse.
+    const DRAG_THRESHOLD_PX = 8;
     function onDown(e) {
       if (e.pointerType !== "touch") return;
-      e.preventDefault();
-      const proxy = el.cloneNode(true);
-      proxy.classList.add("hermes-kanban-touch-proxy");
-      document.body.appendChild(proxy);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let proxy = null;
       let lastTarget = null;
+      let dragging = false;
+
+      function startDrag() {
+        dragging = true;
+        proxy = el.cloneNode(true);
+        proxy.classList.add("hermes-kanban-touch-proxy");
+        document.body.appendChild(proxy);
+        proxy.style.position = "fixed";
+        proxy.style.pointerEvents = "none";
+        proxy.style.opacity = "0.85";
+        proxy.style.zIndex = "9999";
+        proxy.style.width = `${el.offsetWidth}px`;
+        proxy.style.left = `${startX - el.offsetWidth / 2}px`;
+        proxy.style.top = `${startY - 24}px`;
+      }
 
       function move(ev) {
+        if (!dragging) {
+          const dx = ev.clientX - startX;
+          const dy = ev.clientY - startY;
+          if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+          startDrag();
+        }
+        // Only now, once a drag is actually underway, does it claim the gesture — a stationary
+        // tap never reaches preventDefault() and its click event fires normally.
+        ev.preventDefault();
         proxy.style.left = `${ev.clientX - proxy.offsetWidth / 2}px`;
         proxy.style.top = `${ev.clientY - 24}px`;
         proxy.style.display = "none";
@@ -495,6 +524,7 @@
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", up);
         document.removeEventListener("pointercancel", up);
+        if (!dragging) return;
         if (lastTarget) {
           lastTarget.classList.remove("hermes-kanban-column--drop");
           const status = lastTarget.getAttribute("data-kanban-column");
@@ -513,14 +543,6 @@
         }
         proxy.remove();
       }
-      // Kick off proxy at the pointer origin.
-      proxy.style.position = "fixed";
-      proxy.style.pointerEvents = "none";
-      proxy.style.opacity = "0.85";
-      proxy.style.zIndex = "9999";
-      proxy.style.width = `${el.offsetWidth}px`;
-      proxy.style.left = `${e.clientX - el.offsetWidth / 2}px`;
-      proxy.style.top = `${e.clientY - 24}px`;
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", up);
       document.addEventListener("pointercancel", up);

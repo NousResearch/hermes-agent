@@ -62,7 +62,7 @@ class TestGatewayConnectionErrorReply:
         for text in samples:
             assert _looks_like_gateway_provider_error(text), text
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
             assert "/retry" in reply, text
 
         assert _looks_like_gateway_provider_error("openai.APIConnectionError")
@@ -74,7 +74,7 @@ class TestGatewayConnectionErrorReply:
             "failed to establish a new connection",
         ):
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_prose_cannot_connect_is_not_a_provider_error(self):
         text = (
@@ -91,7 +91,7 @@ class TestGatewayConnectionErrorReply:
         ):
             if _looks_like_gateway_provider_error(text):
                 reply = _gateway_provider_error_reply(text)
-                assert "not running or is unreachable" not in reply, text
+                assert reply != _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_connection_regex_does_not_match_non_connection_error(self):
         assert not _GATEWAY_CONNECTION_ERROR_RE.search("Rate limited after 3 retries")
@@ -107,8 +107,9 @@ class TestGatewayConnectionErrorReply:
     def test_every_reply_names_a_slash_command_and_no_jargon(self):
         """Each shaped reply must give the chat user something they can run; 'provider' and
         'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
+        from agent.i18n import t
         from gateway.run import _PROVIDER_ERROR_REPLIES
-        replies = [reply for _, reply in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
+        replies = [t(reply_key) for _, reply_key in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
         for reply in replies:
             assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
             assert "provider" not in reply.lower(), reply

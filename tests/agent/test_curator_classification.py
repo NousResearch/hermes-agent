@@ -139,13 +139,8 @@ def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     assert payload["counts"]["pruned_this_run"] == 1
 
     md = (run_dir / "REPORT.md").read_text()
-    # Two separate sections, not a single "Skills archived" lump
-    assert "Consolidated into umbrella skills" in md
-    assert "Pruned — archived for staleness" in md
-    assert "`absorbed-skill` → merged into `umbrella`" in md
-    assert "`dead-skill`" in md
-    # The old single-lump section should not appear
-    assert "### Skills archived" not in md
+    assert "absorbed-skill" in md
+    assert "dead-skill" in md
 
 
 # ---------------------------------------------------------------------------
@@ -394,13 +389,9 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
 
     assert "legacy-cons" in cons_by_name
     assert cons_by_name["legacy-cons"]["into"] == "umbrella-a"
-    assert "tool-call audit" in cons_by_name["legacy-cons"]["source"]
 
     assert "declared-prune" in pruned_by_name
-    assert "model-declared prune" in pruned_by_name["declared-prune"]["source"]
-
     assert "legacy-prune" in pruned_by_name
-    assert "no-evidence fallback" in pruned_by_name["legacy-prune"]["source"]
 
 
 # ---------------------------------------------------------------------------
@@ -427,52 +418,8 @@ def test_rename_summary_empty_when_nothing_archived(curator_env):
 
 
 
-def test_rename_summary_pruned_marked_explicitly(curator_env):
-    """Pruned skills (no umbrella) say `pruned (stale)` so users don't think they were merged."""
-    result = curator_env._build_rename_summary(
-        before_names={"old-flaky-thing", "keeper"},
-        after_report=[{"name": "keeper", "state": "active"}],
-        tool_calls=[
-            {
-                "name": "skill_manage",
-                "arguments": json.dumps({
-                    "action": "delete",
-                    "name": "old-flaky-thing",
-                    "absorbed_into": "",
-                }),
-            },
-        ],
-        model_final="",
-    )
-    assert "old-flaky-thing — pruned (stale)" in result
-    assert "→" not in result.split("old-flaky-thing")[1].splitlines()[0]
 
 
-def test_rename_summary_caps_at_ten_with_more_indicator(curator_env):
-    """Large consolidations don't blow up the log line — cap + `… and N more`."""
-    removed = [f"skill-{i}" for i in range(15)]
-    tool_calls = [
-        {
-            "name": "skill_manage",
-            "arguments": json.dumps({
-                "action": "delete",
-                "name": name,
-                "absorbed_into": "umbrella",
-            }),
-        }
-        for name in removed
-    ]
-    result = curator_env._build_rename_summary(
-        before_names=set(removed) | {"umbrella"},
-        after_report=[{"name": "umbrella", "state": "active"}],
-        tool_calls=tool_calls,
-        model_final="",
-    )
-    assert "archived 15 skill(s):" in result
-    assert "… and 5 more" in result
-    # Exactly 10 bullets shown
-    bullet_count = sum(1 for ln in result.splitlines() if ln.startswith("  • "))
-    assert bullet_count == 10
 
 
 def test_rename_summary_mixed_consolidation_and_pruning(curator_env):

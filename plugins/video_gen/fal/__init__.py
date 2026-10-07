@@ -211,6 +211,10 @@ def _video_url_from_result(result: Any) -> Tuple[Any, Optional[str]]:
 _fal_client: Any = None
 _fal_client_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Managed FAL gateway (Nous Subscription)
+# ---------------------------------------------------------------------------
+
 _managed_fal_video_client: Any = None
 _managed_fal_video_client_config: Any = None
 _managed_fal_video_client_lock = threading.Lock()
@@ -270,10 +274,15 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
     managed_gateway = _resolve_managed_fal_video_gateway()
     if managed_gateway is None:
         return client.submit(endpoint, arguments=arguments, headers=headers)
+    from tools.fal_common import (
+        _extract_http_status, _managed_fal_billing_error, submit_managed_fal_with_rate_limit_retry,
+    )
     try:
-        return _get_managed_fal_video_client(managed_gateway).submit(endpoint, arguments=arguments, headers=headers)
+        return submit_managed_fal_with_rate_limit_retry(
+            lambda request_headers: _get_managed_fal_video_client(managed_gateway).submit(
+                endpoint, arguments=arguments, headers=request_headers),
+            what="video endpoint", name=endpoint)
     except Exception as exc:
-        from tools.fal_common import _extract_http_status, _managed_fal_billing_error
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
             billing = _managed_fal_billing_error(exc, "endpoint")
@@ -420,11 +429,3 @@ class FALVideoGenProvider(VideoGenProvider):
 def register(ctx) -> None:
     """Plugin entry point — wire ``FALVideoGenProvider`` into the registry."""
     ctx.register_video_gen_provider(FALVideoGenProvider())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

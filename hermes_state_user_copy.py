@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from hermes_state_errors import classify_persistence_error, is_disk_full_error
+from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL, classify_persistence_error, is_disk_full_error
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,11 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "the session database file is damaged",
         _DOCTOR + " Recovery: `hermes {profile_arg}sessions recover --source <state.db> --inspect-only`.",
     ),
+    "session_row_missing": (
+        "storage_session_missing",
+        "this session's database row was deleted while the chat was still open and could not be recreated",
+        "Try again; if it persists, run `hermes {profile_arg}doctor`.",
+    ),
     "fts_index": (
         "storage_index_corrupt",
         "the session search index is damaged (the messages themselves are intact)",
@@ -55,10 +60,16 @@ _STORAGE_FAILURES: dict[str, tuple[str, str, str]] = {
         "the session database file was replaced while Hermes was running",
         "Stop Hermes (`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it again.",
     ),
+    # Code stays `storage_replaced` (GUI clients key on it); the copy names the real remedy: every writer
+    # on the profile must stop, doctor names the ones still holding the retired log (#110054).
     "deleted_wal": (
         "storage_replaced",
-        "the session database file was changed or replaced while Hermes was running",
-        "Stop Hermes (`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it again.",
+        "another Hermes process still holds an old copy of the session database's write-ahead log, "
+        "so Hermes stopped writing to keep the file safe",
+        "Nothing is lost. Quit every Hermes process on this profile (Desktop app, "
+        "`hermes {profile_arg}gateway stop`, dashboard, cron), run `hermes {profile_arg}doctor` — it names "
+        "any process still holding the log — then start Hermes again. Do not run `doctor --fix` or delete "
+        "any state.db files while they run. Guide: " + STORAGE_RECOVERY_DOCS_URL,
     ),
     "compression": (
         "storage_busy",

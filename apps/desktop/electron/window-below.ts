@@ -145,6 +145,19 @@ export interface EnumerationFailure {
 export const enumerationFailed = <T>(result: EnumerationFailure | T): result is EnumerationFailure =>
   typeof result === 'object' && result !== null && 'reason' in result
 
+// Keep the native provider's failure detail shared by the tool and HUD log.
+export function getWindowsFailureReason(detail: string, platform: string, arch: string): string {
+  if (platform === 'win32' && arch === 'arm64') {
+    return (
+      `${detail}. On Windows ARM64, check that the installed get-windows package includes a working ` +
+      'win32-arm64 native binding. If that binding is unavailable, use the x64 desktop build under Windows emulation, ' +
+      'or a build with a matching native binding. This affects both read_window_below and HUD window context.'
+    )
+  }
+
+  return detail
+}
+
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error ?? 'unknown error')
 
@@ -189,9 +202,8 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
     // the CJS loader, which this ESM main process never does (every import
     // here is `from 'node:child_process'`). Pointing the import at the
     // unpacked copy gives get-windows a real path to derive from.
-    const staged = resolveOutsideAsar(
-      path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
-    )
+    const staged = resolveOutsideAsar(path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js'))
+
     let stagedError = 'not staged in this build'
 
     if (fs.existsSync(staged)) {
@@ -285,7 +297,11 @@ export async function enumerateWindowsFrontToBack(
   selfPid: number,
   titlesAvailable: boolean
 ): Promise<EnumeratedWindow[] | EnumerationFailure> {
-  return (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  const result = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+
+  return enumerationFailed(result)
+    ? { reason: getWindowsFailureReason(result.reason, process.platform, process.arch) }
+    : result
 }
 
 export async function readWindowBelow(

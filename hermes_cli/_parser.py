@@ -65,6 +65,21 @@ def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
         return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
+def command_argv(argv: list[str]) -> list[str]:
+    """Subcommand and its arguments, excluding top-level flags and their values."""
+    required, optional = top_level_value_flag_sets()
+    value_flags = required | optional | {flag for flag, takes_value in PRE_ARGPARSE_INHERITED_FLAGS if takes_value}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return argv[i + 1:]
+        if not token.startswith("-"):
+            return argv[i:]
+        i += 2 if "=" not in token and token in value_flags and i + 1 < len(argv) else 1
+    return []
+
+
 def _inherited_flag(parser, *args, **kwargs):
     """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_cli.relaunch``."""
     action = parser.add_argument(*args, **kwargs)
@@ -190,6 +205,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules)")
     inherited(parser, "--tui", action="store_true", default=False,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=False,
+              help="With --tui: use native terminal scrollback and disable mouse tracking")
     inherited(parser, "--cli", action="store_true", default=False,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
@@ -293,11 +310,28 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
     inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
               help="Launch the modern TUI instead of the classic REPL")
+    inherited(chat_parser, "--native", "--tui-native", dest="tui_native", action="store_true", default=SUPPRESS,
+              help="Use native terminal scrollback and disable mouse tracking")
     inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
     inherited(chat_parser, "--dev", dest="tui_dev", action="store_true", default=SUPPRESS,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
     return chat_parser
+
+
+def _plugin_command_install_hint(prog: str, value: str):
+    """Install command when *value* names a catalog memory plugin that resolves nowhere: its
+    ``hermes <name>`` command exists only once the plugin is installed. Top level only; never raises."""
+    if prog != "hermes" or not re.fullmatch(r"[a-z0-9_-]{1,64}", value):
+        return None
+    try:
+        from plugins.memory import find_provider_dir
+        if find_provider_dir(value) is not None:
+            return None
+        from hermes_cli.memory_provider_migration import catalog_install_hint
+        return catalog_install_hint(value, category="memory")
+    except Exception:
+        return None
 
 
 class HermesArgumentParser(argparse.ArgumentParser):
@@ -315,7 +349,11 @@ class HermesArgumentParser(argparse.ArgumentParser):
             # (argparse hands add_parser() the parent's class), so the copy stays correct for both.
             lines = [f"{self.prog}: '{value}' is not a `{self.prog}` command."]
             close = difflib.get_close_matches(str(value), list(action.choices), n=3, cutoff=0.6)
-            if close:
+            install = _plugin_command_install_hint(self.prog, str(value))
+            if install:
+                # A provider that left core (``hermes honcho``) registers its command only once installed.
+                lines.append(f"The '{value}' memory plugin is not installed. Install it with: {install}")
+            elif close:
                 lines.append(f"Did you mean: {', '.join(close)}?")
             lines.append(f"Run `{self.prog} --help` to see all commands.")
             self.exit(2, "\n".join(lines) + "\n")

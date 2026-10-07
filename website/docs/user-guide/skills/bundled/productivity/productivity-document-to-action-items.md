@@ -15,13 +15,13 @@ Extract cited obligations, deadlines, tasks from documents.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\document-to-action-items` |
+| Path | `skills/productivity/document-to-action-items` |
 | Version | `0.1.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Documents`, `OCR`, `Action-Items`, `Deadlines`, `Extraction` |
-| Related skills | [`pdf`](./productivity-pdf.md), [`pdf`](./productivity-pdf.md), [`docx`](./productivity-docx.md), [`notion`](./productivity-notion.md) |
+| Related skills | [`pdf`](../../bundled/productivity/productivity-pdf.md), [`pdf`](../../bundled/productivity/productivity-pdf.md), [`docx`](../../bundled/productivity/productivity-docx.md), [`notion`](../../bundled/productivity/productivity-notion.md) |
 
 ## Reference: full SKILL.md
 

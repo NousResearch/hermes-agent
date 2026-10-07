@@ -1,5 +1,5 @@
-"""LM Studio reasoning-effort resolution (chat-completions transport + run_agent's
-iteration-limit summary path). LM Studio publishes per-model
+"""LM Studio reasoning-effort resolution (used by the lmstudio provider profile). LM Studio
+publishes per-model
 ``capabilities.reasoning.allowed_options`` (``["off","on"]`` for toggle models,
 ``["off","minimal","low"]`` for graduated ones); the user's ``reasoning_config`` is
 mapped onto LM Studio's vocabulary, then clamped to the allowed set so the server

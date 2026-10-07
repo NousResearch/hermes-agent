@@ -238,6 +238,14 @@ class GatewayVoiceMixin:
         return False
 
     @staticmethod
+    def _cached_user_display_name(client, user_id: int) -> Optional[str]:
+        """``get_member`` is cache-only; a speaker it misses may still be a cached user, whose display
+        name (global name or username, no server nickname) beats a bare id."""
+        get_user = getattr(client, "get_user", None)
+        name = getattr(get_user(int(user_id)) if callable(get_user) else None, "display_name", None)
+        return name if isinstance(name, str) and name else None
+
+    @staticmethod
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
         session), else a synthetic one."""
@@ -248,21 +256,32 @@ class GatewayVoiceMixin:
         member = guild.get_member(int(user_id)) if guild else None
         display_name = getattr(member, "display_name", None)
         user_name = display_name if isinstance(display_name, str) and display_name else None
+        channel = client.get_channel(int(text_ch_id)) if client else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             # get_member() is cache-only: on a miss the /voice join invoker keeps the name bound at
             # join, never another participant's.
             if user_name is None and source.user_id == str(user_id):
                 user_name = source.user_name
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
             source.user_id, source.user_name = str(user_id), user_name or str(user_id)
+            # The bound source is the `/voice join` message's; its id is not this turn's trigger
+            # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
+            source.message_id = None
         else:
-            source = SessionSource(
-                platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=user_name or str(user_id), chat_type="channel",
-                profile=getattr(adapter, "_owner_profile", None))
+            # A programmatic join binds no source: build the one a typed message in that channel carries
+            # (group, or thread under its parent, with the guild), else the turn keys another session.
+            user_name = user_name or GatewayVoiceMixin._cached_user_display_name(client, user_id)
+            thread_id = None
+            if channel is not None and callable(split := getattr(adapter, "_thread_id_and_chat_for_channel", None)):
+                thread_id, _ = split(channel)
+            parent_id = adapter._get_parent_channel_id(channel) if thread_id else None
+            source = adapter.build_source(
+                chat_id=str(text_ch_id), chat_type="thread" if thread_id else "group", user_id=str(user_id),
+                user_name=user_name or str(user_id), thread_id=thread_id, guild_id=str(guild_id),
+                parent_chat_id=parent_id)
         # The stored source is a join-time copy; a typed message reads the channel's current name and
         # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
-        channel = client.get_channel(int(text_ch_id)) if client else None
         if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
             if isinstance(current := labels(channel), tuple):
                 source.chat_name, source.chat_topic = current
@@ -292,6 +311,14 @@ class GatewayVoiceMixin:
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
         # resume-pending marker (issue #23778).
+        # The /voice join copy never carries the per-event role grant (to_dict drops it), so a
+        # role-only speaker was always refused here. Recompute it for THIS speaker against the
+        # guild's current member, with the flag's message-path meaning, never the joiner's.
+        if isinstance(roles := getattr(adapter, "_allowed_role_ids", None), (set, frozenset)) and roles:
+            client = getattr(adapter, "_client", None)
+            guild = client.get_guild(guild_id) if client else None
+            source.role_authorized = guild is not None and adapter._is_allowed_user(
+                str(user_id), guild=guild, is_dm=False) is True
         if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return

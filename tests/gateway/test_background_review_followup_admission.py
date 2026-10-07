@@ -48,7 +48,8 @@ def _wire_with_adapter(adapter, session_key: str = "session-key", overflow_probe
         process_task_id=None,
         process_baseline=None,
         run_generation=1,
-    )
+        voice_turn=False,
+)
     holder = types.SimpleNamespace(
         _ctx=ctx,
         _runner=types.SimpleNamespace(
@@ -715,7 +716,8 @@ async def test_busy_fast_path_merges_publish_the_followup_fence(monkeypatch, fas
             history=[],
             _status_thread_metadata={},
             result_holder=[None],
-        )
+            voice_turn=False,
+)
         assert await runner._run_agent_queued_followup(
             turn_ctx,
             adapter,
@@ -1002,7 +1004,8 @@ async def test_queued_followup_turn_carries_the_outer_review_admission(monkeypat
         context_prompt="",
         channel_prompt=None,
         gateway_review_admission=admission,
-    )
+        voice_turn=False,
+)
 
     result = await runner._run_agent_queued_followup(
         turn_ctx, adapter, "queued text", None, "response", {"interrupted": True}, None
@@ -1051,7 +1054,8 @@ async def test_queued_followup_runs_unowned_when_the_turn_context_carries_no_adm
         result_holder=[None],
         context_prompt="",
         channel_prompt=None,
-    )
+        voice_turn=False,
+)
 
     result = await runner._run_agent_queued_followup(
         turn_ctx, adapter, "queued text", None, "response", {"interrupted": True}, None

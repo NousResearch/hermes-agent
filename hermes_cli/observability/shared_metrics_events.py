@@ -52,11 +52,12 @@ def record_slash_command(*, command: str, surface: str) -> None:
 
 
 def record_compression(
-    *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None
+    *, trigger: str, outcome: str, tokens_before: int | None, context_length: int | None,
+    failure_class: str | None = None,
 ) -> None:
     _emit(
         contract.COMPRESSION_MARK, fields_.compression_fields, trigger=trigger, outcome=outcome,
-        tokens_before=tokens_before, context_length=context_length,
+        tokens_before=tokens_before, context_length=context_length, failure_class=failure_class,
     )
 
 
@@ -68,10 +69,7 @@ _compression_attempt = threading.local()
 # Attempts that ended before anything could fail: another path held the lock, the transcript had
 # nothing summarizable (no LLM call was made), the user stopped it, or a newer attempt replaced it.
 # Counting these as ``failed`` made a session that is simply all protected tail read as broken.
-_SKIPPED_COMPRESSION_CLASSES = frozenset({
-    "lock_contended", "insufficient_messages", "no_compressible_window", "empty_post_handoff_window",
-    "explicit_interrupt", "attempt_superseded", "snapshot_stale",
-})
+_SKIPPED_COMPRESSION_CLASSES = contract.COMPRESSION_SKIP_CLASSES
 
 
 def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
@@ -85,11 +83,16 @@ def finish_compression_attempt(
     pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
     if not pending:
         return
+    # Classify the stored value, so the outcome and the recorded reason always agree.
+    reason = fields_.compression_failure_class("failed", failure_class)
     outcome = (
         "success" if commit_status == "committed"
-        else "skipped" if failure_class in _SKIPPED_COMPRESSION_CLASSES else "failed"
+        else "skipped" if reason in _SKIPPED_COMPRESSION_CLASSES else "failed"
     )
-    record_compression(trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length)
+    record_compression(
+        trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length,
+        failure_class=reason,
+    )
     if outcome == "success" and agent is not None:
         from .shared_metrics_efficiency import record_cache_break
 
@@ -136,8 +139,17 @@ def record_fallback(*, from_provider: str | None, to_provider: str | None, reaso
     )
 
 
-def record_extension_install(*, kind: str, source: str, name: str | None, outcome: str) -> None:
+def record_extension_install(
+    *, kind: str, source: str, name: str | None, outcome: str,
+    # ---- iuf c1 ----
+    failure_class: str | None = None, registry: str | None = None, error: BaseException | None = None,
+    # ---- end iuf c1 ----
+) -> None:
+    """``failure_class`` names why a failed install stopped (the kind's closed set); a raised
+    ``error`` is classified by its tagged class or type instead, inside the metrics guard.
+    ``registry`` is the skills-hub adapter id that resolved/served a skill."""
     _emit(
         contract.EXTENSION_INSTALL_MARK, fields_.extension_install_fields,
         kind=kind, source=source, name=name, outcome=outcome,
+        failure_class=failure_class, registry=registry, error=error,
     )

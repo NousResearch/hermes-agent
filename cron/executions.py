@@ -7,6 +7,7 @@ to match the claim-time fingerprint is not proof of death. Terminal states are i
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import sqlite3
@@ -22,6 +23,8 @@ from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
+
+logger = logging.getLogger(__name__)
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -317,6 +320,16 @@ _OWNER_WEDGED_REASON = (
     "treated as wedged (#115692). The process was not terminated; whether side effects "
     "ran is unknown."
 )
+
+
+def settle_unstarted_execution(execution_id: str, job_id: str, error: str) -> None:
+    """Close the receipt of a run that never started: a ``claimed`` row never resolves. Best-effort
+    so a ledger write cannot mask the failure the caller logs or re-raises."""
+    try:
+        finish_execution(execution_id, success=False, error=error)
+    except (sqlite3.Error, OSError) as record_err:
+        logger.error("Job '%s': failed to close execution receipt %s (%s): %s",
+                     job_id, execution_id, error, record_err)
 
 
 def recover_interrupted_executions() -> int:

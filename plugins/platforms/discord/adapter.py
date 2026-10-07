@@ -1258,11 +1258,13 @@ def _read_discord_prompt_timeout() -> int:
 
 
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, BasePlatformAdapter):
+class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin, DiscordSlashAuthMixin,
+                     BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -3838,19 +3840,15 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             existing = self._voice_clients.get(guild_id)
             if existing and existing.is_connected():
-                if existing.channel.id == channel.id:
-                    self._reset_voice_timeout(guild_id)
-                    return True
-                await existing.move_to(channel)
+                if existing.channel.id != channel.id:
+                    await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
+                self._bind_voice_text_channel(guild_id, text_channel_id, source)
                 return True
             vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
-            if text_channel_id is not None:
-                self._voice_text_channels[guild_id] = text_channel_id
-            if source is not None:
-                self._voice_sources[guild_id] = source
+            self._bind_voice_text_channel(guild_id, text_channel_id, source)
             try:
                 receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
                 receiver.start()
@@ -4243,73 +4241,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             "DISCORD_ALLOWED_CHANNELS, or set DISCORD_ALLOW_ALL_USERS=true for open access.",
             self.name,
         )
-
-    # ── Slash command authorization ─────────────────────────────────────
-    # ``_check_slash_authorization`` mirrors the on_message gates one-for-one. No allowlist =>
-    # fail closed unless allow-all; DISCORD_ALLOWED_CHANNELS alone authorizes per validated channel.
-
-    def _evaluate_slash_authorization(
-        self, interaction: "discord.Interaction",
-    ) -> Tuple[bool, Optional[str]]:
-        """Evaluate slash authorization without responding; returns ``(allowed, reason)``.
-        Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
-        Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
-        """
-        chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
-        channel_ids: set = set()
-        channel_keys: set = set()
-        # Channel scope mirrors on_message; DMs use on_message's DM lockdown path instead.
-        if not in_dm:
-            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(chan_obj, "id", None)
-            if chan_id_raw is not None:
-                channel_ids.add(str(chan_id_raw))
-                # Threads: also test the parent channel, as on_message does.
-                if isinstance(chan_obj, discord.Thread):
-                    parent_id = self._get_parent_channel_id(chan_obj)
-                    if parent_id:
-                        channel_ids.add(str(parent_id))
-            # Name-form keys (ID, name, #name, parent) so name-based lists work for slash too.
-            channel_keys = self._discord_channel_keys_from_channel(
-                chan_obj,
-                self._get_parent_channel_id(chan_obj)
-                if isinstance(chan_obj, discord.Thread)
-                else None,
-            )
-            allowed = self._get_allowed_channels()
-            if allowed:
-                if "*" not in allowed:
-                    if not channel_ids:
-                        # Channel policy configured but no resolvable channel id: fail closed.
-                        return (
-                            False, "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
-                        )
-                    if not (channel_keys & allowed):
-                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
-            # Ignored beats allowed, including via a thread's parent.
-            ignored = self._get_ignored_channels()
-            if ignored and channel_ids:
-                if "*" in ignored or (channel_keys & ignored):
-                    return (False, "channel in DISCORD_IGNORED_CHANNELS")
-        # ── User / role allowlist (mirrors on_message line 681) ──
-        user = getattr(interaction, "user", None)
-        allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
-        allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
-        if user is None or getattr(user, "id", None) is None:
-            # No identifiable user: fail closed even with allow-all; downstream handlers need interaction.user.id.
-            if allowed_users or allowed_roles:
-                return (False, "missing interaction.user with allowlist configured")
-            return (False, "missing interaction.user")
-        user_id = str(user.id)
-        # guild + is_dm scope the role check so the cross-guild DM bypass can't land via slash.
-        # See #12136.
-        interaction_guild = getattr(interaction, "guild", None)
-        if not self._is_allowed_user(
-            user_id, author=user, guild=interaction_guild, is_dm=in_dm,
-            channel_ids=channel_keys if not in_dm else None,
-        ):
-            return (False, "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES")
-        return (True, None)
 
     async def _check_slash_authorization(
         self, interaction: "discord.Interaction", command_text: str,
@@ -4945,11 +4876,13 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        # Without the role grant the gateway refuses a role-only member the slash gate admitted.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
@@ -5004,6 +4937,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=self._get_effective_topic(thread, is_thread=True),
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+            role_authorized=self._slash_role_grant(interaction),
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
@@ -5160,6 +5094,15 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
             int(str(entry).strip()) for entry in self._gate_csv_set(raw)
             if str(entry).strip().isdigit()
         }
+
+    def _component_live_auth(self, interaction) -> Optional[bool]:
+        """The gateway's live allowlist verdict for a component click (None when no check is wired):
+        an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
+        user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
+        channel_id = getattr(interaction, "channel_id", None)
+        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
+        return self._is_sender_authorized(
+            user_id, chat_type, str(channel_id) if channel_id is not None else None)
 
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
@@ -5760,6 +5703,8 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         try:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
+            if view is not None:
+                view.live_auth = self._component_live_auth
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
@@ -6433,65 +6378,6 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
 # ---------------------------------------------------------------------------
 
 
-def _component_check_auth(
-    interaction, allowed_user_ids: Optional[set], allowed_role_ids: Optional[set],
-) -> bool:
-    """Shared user-or-role OR authorization for component button clicks.
-    Allow on: DISCORD/GATEWAY_ALLOW_ALL_USERS, user in DISCORD/GATEWAY_ALLOWED_USERS, a role in the
-    role allowlist, or pairing-store approval. Role allowlist with no ``roles`` (DM) rejects (fail closed).
-    """
-    user = getattr(interaction, "user", None)
-    if user is None or getattr(user, "id", None) is None:
-        return False
-    # Scope-aware reads: interaction tasks inherit the owning profile's secret-scope contextvar;
-    # under multiplex a raw os.getenv could return ANOTHER profile's allow-all flag.
-    # Scope-aware reads (issue #72348): component interactions are dispatched from discord.py tasks
-    # descended from the task created inside the owning profile's runtime scope, so the profile's
-    # secret-scope contextvar is inherited here.
-    if _scoped_gate_env("DISCORD_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
-        return True
-    if _scoped_gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}:
-        return True
-    user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
-    global_allowed = {
-        uid.strip()
-        for uid in _scoped_gate_env("GATEWAY_ALLOWED_USERS").split(",")
-        if uid.strip()
-    }
-    user_set.update(global_allowed)
-    role_set = set(allowed_role_ids or set())
-    has_users = bool(user_set)
-    has_roles = bool(role_set)
-    try:
-        uid = str(user.id)
-    except AttributeError:
-        uid = ""
-    if has_users:
-        if "*" in user_set or (uid and uid in user_set):
-            return True
-    if has_roles:
-        roles_attr = getattr(user, "roles", None)
-        if roles_attr is None:
-            # Role policy configured but no role data (DM Member, raw User): fail closed.
-            return False
-        try:
-            user_role_ids = {getattr(r, "id", None) for r in roles_attr}
-        except TypeError:
-            return False
-        if user_role_ids & role_set:
-            return True
-    # Pairing store (mirrors ``authz_mixin._check_authorization``): paired users click without allowlist.
-    if uid:
-        try:
-            from gateway.pairing import PairingStore
-            store = PairingStore()
-            if store.is_approved("discord", uid):
-                return True
-        except Exception:
-            pass
-    return False
-
-
 def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> Tuple[bool, set]:
     """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
     Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
@@ -6523,11 +6409,15 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            # The adapter's live allowlist check, bound in ``_send_prompt``.
+            self.live_auth = None
             self.resolved = False
             self._message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+            from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""

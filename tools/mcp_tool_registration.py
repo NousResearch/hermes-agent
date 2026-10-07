@@ -265,7 +265,7 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
-        handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
+        handler = _handlers._make_tool_handler(name, t.name, tool_timeout, native_images=True)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out
 

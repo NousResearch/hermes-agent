@@ -5,6 +5,11 @@ import {
 } from "@hermes/shared";
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
+import type {
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -438,7 +443,7 @@ export const api = {
       // /auth/logout returns 302 → /login. Follow that with a full-page
       // navigation rather than letting fetch() opaquely consume the
       // redirect — the SPA needs to leave the protected area.
-      window.location.assign("/login");
+      window.location.assign(`${BASE}/login`);
       return r;
     }),
   getSessions: (
@@ -652,10 +657,7 @@ export const api = {
     ),
   getSharedMetricsConsent: (profile = getManagementProfile()) =>
     fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile)),
-  saveSharedMetricsConsent: (
-    answer: { enabled: boolean; send: boolean },
-    profile = getManagementProfile(),
-  ) =>
+  saveSharedMetricsConsent: (answer: { enabled: boolean; send: boolean }, profile = getManagementProfile()) =>
     fetchJSON<SharedMetricsConsent>(appendProfileParam("/api/shared-metrics/consent", profile), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1996,12 +1998,13 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
-/** One profile's shared-metrics answer; `decided` is false until either key is written. */
+/** One profile's shared-metrics answer; `reask` = a pre-fix "off" asked once more. */
 export interface SharedMetricsConsent {
   enabled: boolean;
   send: boolean;
   decided: boolean;
   managed: boolean;
+  reask?: boolean;
 }
 
 export interface StatusResponse {
@@ -2253,43 +2256,12 @@ export interface LogsResponse {
   lines: string[];
 }
 
-export interface ManagedFileEntry {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: number | null;
-  mtime: number;
-  mime_type: string | null;
-}
-
-export interface ManagedFilesResponse {
-  root: string | null;
-  path: string;
-  parent: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-  entries: ManagedFileEntry[];
-}
-
-export interface ManagedFileReadResponse {
-  name: string;
-  path: string;
-  size: number;
-  mime_type: string;
-  data_url: string;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
-
-export interface ManagedFileWriteResponse {
-  ok: boolean;
-  path: string;
-  entry: ManagedFileEntry;
-  root: string | null;
-  locked_root: string | null;
-  can_change_path: boolean;
-}
+export type {
+  ManagedFileEntry,
+  ManagedFileReadResponse,
+  ManagedFilesResponse,
+  ManagedFileWriteResponse,
+} from "./api-files";
 
 export interface AnalyticsDailyEntry {
   day: string;

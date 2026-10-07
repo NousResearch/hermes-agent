@@ -1471,46 +1471,10 @@ def restore_primary_runtime(agent) -> bool:
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
-        _apply_primary_runtime_fields(agent, rt)
-        from agent.turn_recovery import reset_codex_reasoning_replay
-        reset_codex_reasoning_replay(agent)
-        _restore_runtime_capabilities(agent, rt)
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout for snapshots predating the native-vs-proxy split.
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
+        from agent.route_binding import reinstall_primary_runtime
+        reinstall_primary_runtime(
+            agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
-        # An operator cache disable (_cache_disabled) must survive snapshot restoration.
-        if getattr(agent, "_cache_disabled", False):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-        _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
-        )
-        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
-        if getattr(agent, "_compression_feasibility_checked", False) is True:
-            from agent.conversation_compression import revalidate_compression_feasibility
-            revalidate_compression_feasibility(agent)
-        _rebind_primary_credential_pool(
-            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
-        )
-        # Older snapshots have no reasoning_config; keep the current value.
-        saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
-        # Reset the stale-call circuit breaker: its streak measured the fallback provider.
-        from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
-        _reset_stale_streak(agent)
-        # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
-        # again (prefix cache match).
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -3690,37 +3654,6 @@ def _iter_pool_sockets(client: Any):
                     yield sock
 
 
-def _socket_is_dead(sock) -> bool:
-    """Probe socket health with a non-blocking recv peek."""
-    import socket as _socket
-    try:
-        sock.setblocking(False)
-        return sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT) == b""
-    except BlockingIOError:
-        return False  # no data available: socket is healthy
-    except OSError:
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            sock.setblocking(True)
-
-
-def cleanup_dead_connections(agent) -> bool:
-    """Force-close and rebuild the primary client if its pool has dead sockets (CLOSE-WAIT, errors); returns True if cleaned."""
-    client = getattr(agent, "client", None)
-    if client is None:
-        return False
-    try:
-        dead_count = sum(1 for sock in _iter_pool_sockets(client) if _socket_is_dead(sock))
-        if dead_count > 0:
-            _ra().logger.warning("Found %d dead connection(s) in client pool — rebuilding client", dead_count)
-            agent._replace_primary_openai_client(reason="dead_connection_cleanup")
-            return True
-    except Exception as exc:
-        _ra().logger.debug("Dead connection check error: %s", exc)
-    return False
-
-
 def _set_reset_from_retry_after(context: Dict[str, Any], retry_after: Any) -> None:
     if "reset_at" in context:
         return
@@ -3903,7 +3836,7 @@ __all__ = [
     "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
     "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
     "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
-    "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api", "cleanup_dead_connections",
+    "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api",
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

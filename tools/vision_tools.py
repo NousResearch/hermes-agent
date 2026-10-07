@@ -569,20 +569,22 @@ def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[st
     return _lookup_supports_vision(provider, model, cfg) is True
 
 
+def _native_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    """THE gate for every tool that can hand the main model pixels (``vision_analyze``, browser and
+    ``computer_use`` screenshots, MCP ``ImageContent``): image routing resolves to ``native``
+    (``agent.image_input_mode``, an explicit ``auxiliary.vision`` backend, the catalog) AND the
+    route accepts images inside tool results. One predicate, so the lane never depends on which
+    tool produced the image."""
+    from agent.image_routing import decide_image_input_mode
+    return decide_image_input_mode(provider, model, cfg) == "native" and _accepts_tool_result_images(provider, model, cfg)
+
+
 def _should_use_native_vision_fast_path() -> bool:
-    """True when image routing resolves to ``native`` AND the provider accepts images in tool
-    results, or the user set the ``model.supports_vision`` override (escape hatch for
-    custom/local providers). Any failure → False."""
+    """:func:`_native_tool_result_images` for the active main model; any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
-        provider = _read_main_provider()
-        model = _read_main_model()
-        cfg = load_config()
-        if decide_image_input_mode(provider, model, cfg) != "native":
-            return False
-        return _accepts_tool_result_images(provider, model, cfg)
+        return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config())
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

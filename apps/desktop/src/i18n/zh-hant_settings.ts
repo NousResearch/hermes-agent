@@ -1068,6 +1068,7 @@ export const zhHantSettings = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
+        voice_chat: { label: '語音聊天', hint: '語音模式回覆' },
         triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
         kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
         profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
@@ -1095,6 +1096,7 @@ export const zhHantSettings = {
       modelsTitle: '模型',
       recommended: '推薦',
       recommendedReason: {
+        'product-default': '這台機器的預設模型，由其製造商選定。',
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
           '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',

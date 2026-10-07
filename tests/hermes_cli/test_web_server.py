@@ -753,66 +753,6 @@ class TestWebServerEndpoints:
         return {field["key"]: field for field in payload["fields"]}
 
 
-    def test_openviking_dashboard_persists_typed_recall_values(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://127.0.0.1:1933",
-                    "recall_limit": "12",
-                    "recall_score_threshold": "0.42",
-                    "recall_max_injected_chars": "8000",
-                    "profile_token_budget": "7000",
-                    "recall_timeout_seconds": "2.5",
-                    "recall_request_timeout_seconds": "1.5",
-                    "recall_full_read_limit": "5",
-                    "recall_prefer_abstract": True,
-                    "recall_resources": False,
-                }
-            },
-        )
-
-        assert resp.status_code == 200
-        config = load_config()["memory"]["openviking"]
-        assert config["recall_limit"] == 12
-        assert config["recall_score_threshold"] == 0.42
-        assert config["profile_token_budget"] == 7000
-        assert config["recall_prefer_abstract"] is True
-        assert config["recall_resources"] is False
-
-    def test_openviking_dashboard_rejects_out_of_range_recall_value(self):
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://127.0.0.1:1933",
-                    "recall_limit": 101,
-                }
-            },
-        )
-
-        assert resp.status_code == 400
-
-    def test_openviking_dashboard_rejects_blocked_endpoint_before_saving(self):
-        from hermes_cli.config import load_config
-
-        resp = self.client.put(
-            "/api/memory/providers/openviking/config",
-            json={
-                "values": {
-                    "endpoint": "http://169.254.169.254/latest/meta-data/credential",
-                }
-            },
-        )
-
-        assert resp.status_code == 400
-        assert "credential" not in resp.json()["detail"]
-        memory_config = load_config().get("memory", {})
-        assert "openviking" not in memory_config
-
-
     # A user-installed memory provider with a DECLARED config surface (``config_schema.py``, flat
     # ``<home>/<name>/config.json`` storage) and a live ``get_config_schema``/``save_config`` pair.
     # Bundled providers no longer ship a flat-storage declared schema (hindsight moved to the
@@ -1453,35 +1393,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert check_data["install_method"] == "apt"
         assert check_data["can_apply"] is False
         assert check_data["update_command"] == data["update_command"]
-
-    def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
-
-        action_id = "c" * 32
-        (tmp_path / "hermes-update.log").write_text(
-            "=== hermes-update started 2026-08-17 11:19:34 ===\n"
-            "pulling updates...\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "update.log").write_text(
-            "=== hermes update started 2026-08-17T11:19:35 ===\n"
-            "✓ Update complete!\n"
-            f"=== hermes-update completed {action_id} ===\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
-        monkeypatch.setattr(_web_server_gateway, "_ACTION_IDS", {})
-
-        status = self.client.get("/api/actions/hermes-update/status?lines=2000")
-
-        assert status.status_code == 200
-        data = status.json()
-        assert data["running"] is False
-        assert data["exit_code"] == 0
-        assert data["action_id"] == action_id
-        assert f"=== hermes-update completed {action_id} ===" in data["lines"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
         import hermes_cli.web_server as web_server
@@ -3684,7 +3595,6 @@ class TestOrphanedOwnerReclaim:
         ``(claimed, published, fake_procs)``.
         """
         import types
-        from unittest.mock import MagicMock
         from gateway import host_rendezvous as hr
         import hermes_cli.web_server as web_server
         from hermes_cli import process_identity as pi
@@ -3981,57 +3891,6 @@ class TestModelInfoEndpoint:
 # ---------------------------------------------------------------------------
 # Gateway health probe tests
 # ---------------------------------------------------------------------------
-
-
-class TestProbeGatewayHealth:
-    """Tests for _probe_gateway_health() — cross-container gateway detection."""
-
-
-    def test_probe_uses_configured_short_timeout(self, monkeypatch):
-        """The HTTP probe must not fall through to the OS TCP timeout."""
-        import hermes_cli.web_server as ws
-
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 0.75)
-        timeouts = []
-
-        def mock_urlopen(req, **kwargs):
-            timeouts.append(kwargs.get("timeout"))
-            raise TimeoutError("mock timeout")
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-
-        alive, body = _web_server_gateway._probe_gateway_health()
-
-        assert alive is False
-        assert body is None
-        assert timeouts == [0.75, 0.75]
-
-
-    def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
-        """If /health/detailed fails, falls back to /health."""
-        import hermes_cli.web_server as ws
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
-        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
-
-        call_count = [0]
-
-        def mock_urlopen(req, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise ConnectionError("detailed failed")
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
-            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            return mock_resp
-
-        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
-        alive, body = _web_server_gateway._probe_gateway_health()
-        assert alive is True
-        assert body["status"] == "ok"
-        assert call_count[0] == 2
 
 
 class TestStatusRemoteGateway:

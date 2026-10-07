@@ -1218,18 +1218,25 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
 }
 
 function remoteProfileMissingError(output) {
-  const match = String(output || '').match(/Error: Profile ['\"]([^'\"]+)['\"] does not exist\.?(?: Create it with: ([^\n]+))?/i)
+  const match = String(output || '').match(
+    /Error: Profile ['"]([^'"]+)['"] does not exist\.?(?: Create it with: ([^\n]+))?/i
+  )
 
-  if (!match) return null
+  if (!match) {
+    return null
+  }
 
   const profile = match[1]
   const createCommand = match[2]?.trim()
+
   const err: any = new Error(
     `The remote Hermes profile '${profile}' does not exist. ` +
       `Select an existing remote profile${createCommand ? ` or create it with: ${createCommand}` : '.'}`
   )
+
   err.kind = 'remote-profile-missing'
   err.profile = profile
+
   return err
 }
 
@@ -1250,7 +1257,11 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
 
     if (isAlive && !(await isAlive())) {
       const cause = remoteProfileMissingError(tail)
-      if (cause) throw cause
+
+      if (cause) {
+        throw cause
+      }
+
       const err: any = new Error('Remote dashboard process exited before announcing its port.')
       err.kind = 'spawn-failed'
       throw err

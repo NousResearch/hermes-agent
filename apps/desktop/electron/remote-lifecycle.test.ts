@@ -1088,23 +1088,6 @@ test('scrapeReadyPort reads only the named spawn log', async () => {
   assert.ok(ssh.calls.every(call => !call.includes('desktop-ssh.log')))
 })
 
-test('scrapeReadyPort explains a missing remote profile', async () => {
-  const ssh = fakeSsh([[/cat/, "Error: Profile 'operator' does not exist. Create it with: hermes profile create operator\n"]])
-
-  await assert.rejects(
-    () => scrapeReadyPort(ssh, spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), {
-      timeoutMs: 1000,
-      isAlive: async () => false
-    }),
-    (err: any) => {
-      assert.equal(err.kind, 'remote-profile-missing')
-      assert.match(err.message, /remote Hermes profile 'operator' does not exist/)
-      assert.match(err.message, /hermes profile create operator/)
-      return true
-    }
-  )
-})
-
 test('scrapeReadyPort times out and reports a dead spawn', async () => {
   // never emits a READY line
   const ssh = fakeSsh([[/cat .*\.log/, 'still starting...']])

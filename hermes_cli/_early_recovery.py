@@ -796,9 +796,17 @@ def _ps_git_holder(lsof: str, git_dir: Path, root: Path, any_git: bool) -> _Hold
     reader, and works in the checkout (its cwd from ``lsof -d cwd``, or a path argument) keeps the
     lock; one whose cwd cannot be read makes the answer None. Gits elsewhere on the machine do not
     count, or any commit open in another repository would block every launch-time repair."""
+    import shutil
+
+    # The launcher can run with a PATH that has neither git nor ps (a Windows-style install, a
+    # stripped service env): ps lives at /bin/ps on macOS and every BSD.
+    ps_bin = shutil.which("ps") or next((p for p in ("/bin/ps", "/usr/bin/ps") if os.path.isfile(p)), None)
+    if ps_bin is None:
+        return None
+
     def ps(*columns: str) -> list[list[str]] | None:
         try:
-            out = subprocess.run(["ps", "-A", *(f"-o{c}=" for c in columns)], capture_output=True,
+            out = subprocess.run([ps_bin, "-A", *(f"-o{c}=" for c in columns)], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace",
                                  timeout=20, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError):

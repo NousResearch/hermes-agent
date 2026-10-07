@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
 from tools.registry import registry, tool_error
@@ -53,7 +53,10 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
-def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+def _truncate_stdout_text(
+    stdout_text: str,
+    spill_writer: Optional[Callable[[str], Optional[str]]] = None,
+) -> Tuple[str, Dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
     omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
@@ -71,7 +74,7 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
-    spill_path = _spill_full_stdout(stdout_text)
+    spill_path = (spill_writer or _spill_full_stdout)(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
         metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
@@ -81,25 +84,12 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
 
 
 def _spill_full_stdout(stdout_text: str) -> Optional[str]:
-    """Write full stdout to cache/exec; return its path (None on failure — best-effort,
-    the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files)."""
-    try:
-        import hashlib
-        from hermes_constants import get_hermes_dir
-        from tools.spill_safety import write_text_exclusive
-        if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
-            stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
-                           + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
-        cache_dir = get_hermes_dir("cache/exec", "exec_spill")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
-        path = cache_dir / f"stdout-{digest}.txt"
-        write_text_exclusive(path, stdout_text, private=False, overwrite=True)
-        return str(path)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Failed to spill execute_code stdout: %s", exc)
-        return None
+    """Compatibility fallback for direct truncation callers; production paths pass an
+    owner/backend-bound writer so the returned path is private and readable."""
+    from tools.code_execution_artifacts import retain_artifact
+    from tools.code_kernel import _resolve_owner
+
+    return retain_artifact(_resolve_owner("") or "default", stdout_text)
 
 
 def check_sandbox_requirements() -> bool:
@@ -511,12 +501,15 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+def _clean_output(
+    stdout_text: str,
+    spill_writer: Optional[Callable[[str], Optional[str]]] = None,
+) -> Tuple[str, Dict[str, Any]]:
     """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
     output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
-    stdout_text, metadata = _truncate_stdout_text(stdout_text)
+    stdout_text, metadata = _truncate_stdout_text(stdout_text, spill_writer=spill_writer)
     return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
 
 
@@ -545,10 +538,11 @@ _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
 
 
 def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: Dict[str, Any],
-                   kernel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   kernel: Optional[Dict[str, Any]] = None,
+                   spill_writer: Optional[Callable[[str], Optional[str]]] = None) -> Dict[str, Any]:
     """Common remote reply shape: status, cleaned output, *fields*, duration, optional kernel
     info, then truncation metadata (key order is part of the result contract)."""
-    stdout_text, stdout_metadata = _clean_output(raw_stdout)
+    stdout_text, stdout_metadata = _clean_output(raw_stdout, spill_writer=spill_writer)
     result: Dict[str, Any] = {"status": status, "output": stdout_text, **fields,
                               "duration_seconds": round(time.monotonic() - exec_start, 2)}
     if kernel is not None:
@@ -562,8 +556,11 @@ def _apply_timeout(result: Dict[str, Any], timeout_msg: str) -> None:
     result["output"] = _with_timeout_notice(result["output"], timeout_msg)
 
 
-def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
-                                 timeout: int, exec_start: float) -> str:
+def _finish_remote_kernel_result(
+    kernel_result: Dict[str, Any], *, timeout: int, exec_start: float,
+    spill_writer: Optional[Callable[[str], Optional[str]]] = None,
+    runner_artifact: Optional[str] = None,
+) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
     mirrors the local kernel contract (kernel killed, state lost, next call fresh)."""
     stdout_text = kernel_result.get("stdout", "") or ""
@@ -573,9 +570,35 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         # Same joining shape as the local kernel: stderr and traceback ride in
         # the output under one marker so the model sees the failure inline.
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
-    result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
-                            {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
-                            kernel=kernel_result.get("kernel", {"remote": True}))
+    result = _remote_result(
+        kernel_result.get("status", "error"), stdout_text, exec_start,
+        {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
+        kernel=kernel_result.get("kernel", {"remote": True}), spill_writer=spill_writer,
+    )
+    # The remote runner's own cap is the same size as the model-facing cap, so its
+    # clipped head may not trigger _truncate_stdout_text a second time. Preserve the
+    # truncation contract and point at the re-homed owner artifact explicitly.
+    if kernel_result.get("stdout_clipped") and not result.get("stdout_truncated"):
+        captured = len(str(kernel_result.get("stdout", "") or "").encode("utf-8", errors="replace"))
+        total = max(captured, int(kernel_result.get("stdout_bytes_total", 0) or 0))
+        result.update(
+            stdout_truncated=True,
+            stdout_bytes_total=total,
+            stdout_bytes_captured=captured,
+            stdout_bytes_omitted=max(0, total - captured),
+        )
+        if runner_artifact:
+            result["stdout_spill_path"] = runner_artifact
+            result["warning"] = (
+                "execute_code stdout was truncated (head shown); the script did run. "
+                f"FULL output saved to {runner_artifact} — page it with "
+                f'read_file(path="{runner_artifact}", offset=...) instead of re-running.'
+            )
+        else:
+            result["warning"] = (
+                "execute_code stdout was truncated; only the captured head is available. "
+                "Re-run only with narrower output if the omitted data is required."
+            )
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
@@ -639,8 +662,14 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
-    result = _remote_result(status, stdout_text, exec_start,
-                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+    from tools.code_execution_artifacts import retain_artifact
+    from tools.code_kernel import _resolve_owner
+    owner = _resolve_owner(effective_task_id) or effective_task_id
+    result = _remote_result(
+        status, stdout_text, exec_start,
+        {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]},
+        spill_writer=lambda text: retain_artifact(owner, text, env=env),
+    )
     tool_errors = tool_errors_since(tool_call_log)
     if tool_errors:
         result["tool_errors"] = tool_errors
@@ -689,7 +718,30 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
             logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
             kernel_result = None
         if kernel_result is not None:
-            return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
+            from tools.code_execution_artifacts import (
+                retain_artifact, retain_remote_runner_artifact,
+            )
+            from tools.code_kernel import _resolve_owner
+            owner = _resolve_owner(effective_task_id) or effective_task_id
+            runner_artifact = None
+            raw_spill = str(kernel_result.get("stdout_spill_path", "") or "")
+            raw_root = str(kernel_result.get("stdout_spill_root", "") or "")
+            if raw_spill and raw_root and kernel_result.get("stdout_clipped"):
+                runner_artifact = retain_remote_runner_artifact(
+                    owner, raw_spill, allowed_root=raw_root, env=env, kind="output"
+                )
+            has_diagnostics = bool(
+                kernel_result.get("stderr") or kernel_result.get("traceback")
+            )
+            return _finish_remote_kernel_result(
+                kernel_result, timeout=timeout, exec_start=exec_start,
+                spill_writer=lambda text: (
+                    runner_artifact
+                    if runner_artifact and not has_diagnostics
+                    else retain_artifact(owner, text, env=env)
+                ),
+                runner_artifact=runner_artifact,
+            )
         logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
     except Exception as exc:
         return _remote_failure(exc, exec_start, 0)

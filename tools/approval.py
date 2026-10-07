@@ -297,10 +297,11 @@ def clear_session(session_key: str) -> None:
             entry.cancelled = "the session ended before the prompt was answered"
             entry.event.set()
     _release_permission_mode_dependents(session_key)
-    # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
-    # finished conversation cannot leak a live interpreter.
+    # Session-persistent code kernels and their retained output artifacts share this owner key and die at the
+    # same boundary so a finished conversation leaves neither an interpreter nor its output behind.
     for module, shutdown in (("tools.code_kernel", "shutdown_kernels_for_owner"),
-                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner")):
+                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner"),
+                             ("tools.code_execution_artifacts", "cleanup_artifacts_for_owner")):
         try:
             getattr(importlib.import_module(module), shutdown)(session_key)
         except Exception:

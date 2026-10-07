@@ -186,7 +186,9 @@ def _spill(text, spill_name):
         return ""
     try:
         spill_path = os.path.join(_SPILL_DIR, spill_name)
-        with open(spill_path, "w", encoding="utf-8", errors="replace") as f:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(spill_path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
             f.write(text[:_SPILL_CAP])
             if len(text) > _SPILL_CAP:
                 f.write("\\n\\n[... spill capped ...]")
@@ -472,6 +474,8 @@ def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
     _REGISTRY.shutdown(owner_matches=matcher)
     from tools.code_kernel_remote import shutdown_remote_kernels_where
     shutdown_remote_kernels_where(matcher)
+    from tools.code_execution_artifacts import cleanup_artifacts_where
+    cleanup_artifacts_where(matcher)
 
 
 atexit.register(shutdown_all_kernels)
@@ -782,6 +786,7 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
                  timeout: int, sandbox_tools: frozenset, reused: bool,
                  state_reset: bool, exec_start: float) -> Dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
+    from tools.code_execution_artifacts import retain_artifact, retain_local_runner_artifact
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
     from tools.ansi_strip import strip_ansi
@@ -793,9 +798,33 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
     duration = round(time.monotonic() - exec_start, 2)
     kernel.execution_count = int(payload.get("execution_count", kernel.execution_count + 1))
     stderr_raw = kernel.stderr.drain()
-    stdout_text, stdout_metadata = _truncate_stdout_text(clean(str(payload.get("stdout", "")) + kernel.raw.drain()))
+    stdout_full = clean(str(payload.get("stdout", "")) + kernel.raw.drain())
     cell_stderr = clean(str(payload.get("stderr", "")) + stderr_raw)
     cell_status = payload.get("status", "")
+    trace = clean(str(payload.get("traceback", ""))) if cell_status == "error" else ""
+
+    # The runner caps Python-level stdout before serializing the cell reply. Re-home its
+    # private temporary spill into the owner's bounded store, then delete the raw copy.
+    runner_artifact = None
+    cell_spill = str(payload.get("stdout_spill_path", "") or "")
+    if cell_spill and payload.get("stdout_clipped"):
+        runner_artifact = retain_local_runner_artifact(
+            kernel.owner, cell_spill, allowed_root=kernel.tmpdir, kind="output"
+        )
+
+    # Truncate the complete model-facing diagnostic, not stdout alone: otherwise a large
+    # stderr/traceback bypasses the cap and never receives a readable retained artifact.
+    output_full = stdout_full
+    if status == "success" and cell_status == "error" and (cell_stderr or trace):
+        output_full = _with_stderr(output_full, cell_stderr + trace)
+    elif status == "success" and cell_status == "exit" and cell_stderr:
+        output_full = _with_stderr(output_full, cell_stderr)
+    elif status == "success" and cell_stderr:
+        output_full = _with_stderr(output_full, cell_stderr)
+    stdout_text, stdout_metadata = _truncate_stdout_text(
+        output_full,
+        spill_writer=lambda text: runner_artifact or retain_artifact(kernel.owner, text),
+    )
     result: Dict[str, Any] = {
         "status": status, "output": stdout_text, "exit_code": 0,
         "tool_calls_made": kernel.tool_call_counter[0], "duration_seconds": duration,
@@ -807,15 +836,6 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
         result["tool_errors"] = tool_errors
-    # Cell-side spill (runner clipped before replying): same read_file recipe as the host-side spill.
-    cell_spill = str(payload.get("stdout_spill_path", "") or "")
-    if cell_spill and payload.get("stdout_clipped"):
-        result["stdout_spill_path"] = cell_spill
-        result["warning"] = (
-            f"Cell stdout exceeded the inline cap; head shown. FULL output saved to {cell_spill} "
-            f'— page it with read_file(path="{cell_spill}", offset=...) instead of re-running. '
-            "(Kernel state persists: printing a narrower slice next call is often cheaper.)"
-        )
     if status == "timeout":
         message = (f"Cell timed out after {timeout}s; the session kernel was killed and its "
                    "state was lost. The next execute_code call starts a fresh kernel.")
@@ -826,9 +846,8 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
         result.update(exit_code=-1, output=_format_interrupted_output(stdout_text),
                       error="Interrupted; the session kernel was killed and its state was lost.")
     elif cell_status == "error":
-        trace = clean(str(payload.get("traceback", "")))
         result.update(status="error", exit_code=1, error=trace or "Cell raised an exception.",
-                      output=_with_stderr(stdout_text, cell_stderr + trace) if (cell_stderr or trace) else stdout_text)
+                      output=stdout_text)
         hint = _sandbox_failure_hint(trace, enabled_tools=sandbox_tools)
         if hint:
             result["hint"] = hint
@@ -836,14 +855,10 @@ def _cell_result(kernel: SessionKernel, key: Tuple, status: str, payload: Dict[s
         # The cell called sys.exit(): honor it as end-of-kernel.
         _REGISTRY.discard(key, kernel)
         result["kernel"]["ended"] = True
-        if cell_stderr:
-            result["output"] = _with_stderr(stdout_text, cell_stderr)
     elif status == "error":
         _REGISTRY.discard(key, kernel)
         result.update(exit_code=-1, error="The session kernel died while running the cell"
                       + (": " + stderr_raw.strip() if stderr_raw.strip() else "."))
-    elif cell_stderr:
-        result["output"] = _with_stderr(stdout_text, cell_stderr)
     return result
 
 

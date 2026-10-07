@@ -52,9 +52,25 @@ import traceback
 KDIR = os.environ["HERMES_KERNEL_DIR"]
 CELLS = os.path.join(KDIR, "cells")
 _CAPTURE_LIMIT = {capture_limit}
+_SPILL_CAP = {spill_cap}
 IDLE_EXIT_SECONDS = {idle_exit}
 
 {cell_source}
+
+def _spill(text, spill_name):
+    """Best-effort private spill inside the already-private kernel directory."""
+    try:
+        spill_path = os.path.join(KDIR, spill_name)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(spill_path, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as f:
+            f.write(text[:_SPILL_CAP])
+            if len(text) > _SPILL_CAP:
+                f.write("\\n\\n[... spill capped ...]")
+        return spill_path
+    except Exception:
+        return ""
+
 
 def main():
     execution_count = 0
@@ -80,7 +96,13 @@ def main():
             os.remove(req_path)
             last_activity = time.time()
             execution_count += 1
-            payload, _ = run_cell(request, execution_count)
+            payload, full_stdout = run_cell(request, execution_count)
+            payload["stdout_spill_path"] = (
+                _spill(full_stdout, "cell_%06d_stdout.txt" % execution_count)
+                if payload["stdout_clipped"] else ""
+            )
+            if payload["stdout_clipped"]:
+                payload["stdout_bytes_total"] = len(full_stdout.encode("utf-8", errors="replace"))
             res_name = name.replace("cell_req_", "cell_res_")
             tmp = os.path.join(CELLS, res_name + ".tmp")
             # Cell results carry the executed code's output: owner-only, even if
@@ -209,7 +231,7 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
     from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
     from tools.code_execution_tool import (
-        MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
+        MAX_SPILLED_STDOUT_BYTES, MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
         _ship_env_file_and_launch, generate_hermes_tools_module,
     )
     kernel_dir = f"{_env_temp_dir(env)}/hermes_rkernel_{uuid.uuid4().hex[:12]}"
@@ -225,7 +247,8 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                          "remote kernel dir setup", timeout=15)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
-            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
+            cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES,
+            spill_cap=MAX_SPILLED_STDOUT_BYTES, idle_exit=idle_exit))
         _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         # kernel.env is removed after sourcing: the runner's env keeps the
@@ -422,6 +445,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
         result["status"] = "success"
     result["stdout_clipped"] = bool(cell_payload.get("stdout_clipped"))
     result["stderr_clipped"] = bool(cell_payload.get("stderr_clipped"))
+    if result["stdout_clipped"] and cell_payload.get("stdout_spill_path"):
+        result["stdout_spill_path"] = str(cell_payload["stdout_spill_path"])
+        result["stdout_spill_root"] = kernel.kernel_dir
+        result["stdout_bytes_total"] = int(cell_payload.get("stdout_bytes_total", 0) or 0)
     if state_reset:
         kernel_info["state_reset"] = True
     if state_lost:

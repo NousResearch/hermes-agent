@@ -14,6 +14,7 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 from agent.message_metadata import DB_ROW_SNAPSHOT
 from agent.vision_message_prep import _provider_model_key
 
@@ -302,7 +303,6 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
         return False
     text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
-    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER, hidden_interrupt_placeholder_row
 
     stripped = text.strip()
     if not stripped or stripped == _INTERRUPTED_PLACEHOLDER:

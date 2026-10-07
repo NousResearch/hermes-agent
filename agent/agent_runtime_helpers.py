@@ -33,6 +33,7 @@ from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
+from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
@@ -2734,7 +2735,6 @@ def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) ->
         return False
     if _msg_has_payload(msg):
         return False
-    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     msg["content"] = _INTERRUPTED_PLACEHOLDER
     return True
 
@@ -2837,7 +2837,6 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:
         return messages
-    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     repaired: List[Dict[str, Any]] = []
     healed = 0
     last_idx = len(messages) - 1

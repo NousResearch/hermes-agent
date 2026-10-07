@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[3]
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 INSTALL_PS1 = ROOT / "scripts" / "install.ps1"
 
-UNPACKED_DIRS = ("linux-unpacked", "linux-arm64-unpacked", "mac", "mac-arm64",
+UNPACKED_DIRS = ("linux-unpacked", "linux-arm64-unpacked", "mac", "mac-x64", "mac-arm64",
                  "win-unpacked", "win-ia32-unpacked", "win-arm64-unpacked")
 
 

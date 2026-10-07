@@ -3,14 +3,18 @@ import { describe, expect, it } from 'vitest'
 import { agentsOverlayClockIntervalMs } from '../lib/agentsOverlayClock.js'
 
 describe('agentsOverlayClockIntervalMs', () => {
-  it('stops the clock for a static replay', () => {
+  it('stops the clock for a static replay with no processes', () => {
     expect(
       agentsOverlayClockIntervalMs(
         true,
         [{ status: 'completed' }, { status: 'failed' }],
-        [{ status: 'completed' }]
+        []
       )
     ).toBeNull()
+  })
+
+  it('stops the clock when only settled agents remain and no processes are shown', () => {
+    expect(agentsOverlayClockIntervalMs(false, [{ status: 'completed' }], [])).toBeNull()
   })
 
   it('does not animate archived agent statuses even if an old snapshot says running', () => {
@@ -27,7 +31,9 @@ describe('agentsOverlayClockIntervalMs', () => {
     expect(agentsOverlayClockIntervalMs(true, [{ status: 'completed' }], [{ status: 'running' }])).toBe(1000)
   })
 
-  it('stops once every visible time-dependent row is settled', () => {
-    expect(agentsOverlayClockIntervalMs(false, [{ status: 'completed' }], [{ status: 'exited' }])).toBeNull()
+  it('keeps a 1s clock while settled process rows remain in the retain window', () => {
+    expect(agentsOverlayClockIntervalMs(false, [{ status: 'completed' }], [{ status: 'done' }])).toBe(1000)
+    expect(agentsOverlayClockIntervalMs(false, [], [{ status: 'failed' }])).toBe(1000)
+    expect(agentsOverlayClockIntervalMs(true, [], [{ status: 'killed' }])).toBe(1000)
   })
 })

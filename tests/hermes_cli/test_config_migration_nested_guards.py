@@ -62,11 +62,10 @@ def test_malformed_nested_value_is_migrated_not_crashed(tmp_path, current_ver, c
     assert not results["warnings"], "a guarded shape must migrate cleanly, not be skipped"
 
 
-def test_failing_step_is_skipped_with_warning_and_config_still_migrates(tmp_path, caplog):
+def test_failing_step_is_not_stamped_past_and_is_retried(tmp_path, caplog):
     """``migrate_config`` (the ``hermes config migrate`` / ``hermes update`` path) keeps going
-    past a raising step, records the skip in ``warnings`` and stamps the latest version. The
-    quiet path (profile creation, unattended update) discards ``results``, so the skip must
-    also reach the log or it is silent and, once stamped, permanent."""
+    past a raising step, records the skip in ``warnings``, and leaves the on-disk version before
+    the failed step so the next run can retry it."""
     from hermes_cli import config_migrations
     from hermes_cli.config import migrate_config
 
@@ -81,6 +80,31 @@ def test_failing_step_is_skipped_with_warning_and_config_still_migrates(tmp_path
         results = migrate_config(interactive=False, quiet=True)
 
     assert any(w.startswith("config migration to v13 failed and was skipped") for w in results["warnings"])
-    assert _read_config(tmp_path)["_config_version"] == config_migrations.MIGRATIONS[-1][0]
+    assert _read_config(tmp_path)["_config_version"] == 12
     assert any("config migration to v13 failed and was skipped" in r.getMessage()
                and r.levelno == logging.WARNING for r in caplog.records)
+
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        retry_results = migrate_config(interactive=False, quiet=True)
+
+    assert not retry_results["warnings"]
+    assert _read_config(tmp_path)["_config_version"] == config_migrations.MIGRATIONS[-1][0]
+
+
+def test_successful_migration_warning_still_stamps_latest_version(tmp_path):
+    """Informational migration warnings must not turn successful steps into failures."""
+    from hermes_cli import config_migrations
+    from hermes_cli.config import migrate_config
+
+    _write_config(tmp_path, {
+        "_config_version": 37,
+        "model": {"default": "x/y"},
+        "plugins": {"enabled": ["observability/nemo_relay"]},
+    })
+    with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+        results = migrate_config(interactive=False, quiet=True)
+
+    assert any("Removed legacy Relay plugin" in warning for warning in results["warnings"])
+    migrated = _read_config(tmp_path)
+    assert "observability/nemo_relay" not in migrated.get("plugins", {}).get("enabled", [])
+    assert migrated["_config_version"] == config_migrations.MIGRATIONS[-1][0]

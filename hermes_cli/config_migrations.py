@@ -850,25 +850,40 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
 
 
 def run_migrations(
-    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> bool:
     """Apply every registered migration whose target version exceeds *current_ver*; a config
     with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
-    advance between steps — each step is gated on the same initial value.
+    advance between steps — each step is gated on the same initial value. Return whether any
+    step failed so the caller can retain that version for a later retry.
     """
+    migration_failed = False
     for target_ver, migration_fn in MIGRATIONS:
         if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:
                 migration_fn(results, quiet)
             except Exception as exc:
+                migration_failed = True
                 # A malformed nested value in one step must not abort the rest of the
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
                 results.setdefault("warnings", []).append(warning)
-                # Quiet callers (profile creation, unattended update) discard ``results`` and
-                # migrate_config still stamps the latest version, so without a log line the
-                # skipped step vanishes for good.
+                # Quiet callers (profile creation, unattended update) discard ``results``,
+                # so failed steps must also reach the log.
                 logger.warning("%s", warning)
                 if not quiet:
                     print(f"  ⚠ {warning}")
+    return migration_failed
+
+
+def stamp_migration_version(
+    current_ver: int, latest_ver: int, floor_refused: bool, migration_failed: bool,
+) -> None:
+    """Retain the source version for refused or failed ladders so later runs can retry."""
+    if current_ver < latest_ver and not floor_refused and not migration_failed:
+        from hermes_cli.config import _persist_migration, read_raw_config
+
+        config = read_raw_config()
+        config["_config_version"] = latest_ver
+        _persist_migration(config)

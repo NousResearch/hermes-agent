@@ -14,6 +14,7 @@ from cron.scheduler import (
     _build_job_prompt,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
+    _merge_plugin_toolsets_into_per_job,
     _run_cron_cleanup_with_timeout,
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
@@ -140,6 +141,54 @@ class TestPerJobToolsetMcpMerge:
         assert _resolve_cron_enabled_toolsets(
             {"enabled_toolsets": ["nonexistent_ts"]}, {"platform_toolsets": "oops", "mcp_servers": {}}
         ) == ["nonexistent_ts"]
+
+class TestPerJobToolsetPluginMerge:
+    """A per-job enabled_toolsets allowlist must not silently drop plugin toolsets (#134311)."""
+
+    # spotify is plugin-provided AND default-off everywhere: it must never ride in implicitly.
+    PLUGIN_TS = {"kanban_board", "spotify"}
+
+    def _patch_keys(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
+            lambda: set(self.PLUGIN_TS),
+        )
+
+    def test_native_only_list_gets_enabled_plugin_toolsets(self, monkeypatch):
+        self._patch_keys(monkeypatch)
+        result = _merge_plugin_toolsets_into_per_job(["web", "terminal"])
+        assert result[:2] == ["web", "terminal"]
+        assert set(result) == {"web", "terminal", "kanban_board"}
+
+    def test_explicit_plugin_toolset_is_treated_as_allowlist(self, monkeypatch):
+        # User named one plugin toolset -> add nothing further.
+        self._patch_keys(monkeypatch)
+        result = _merge_plugin_toolsets_into_per_job(["web", "kanban_board"])
+        assert result == ["web", "kanban_board"]
+        assert "spotify" not in result
+
+    def test_explicit_default_off_plugin_toolset_is_kept(self, monkeypatch):
+        self._patch_keys(monkeypatch)
+        result = _merge_plugin_toolsets_into_per_job(["web", "spotify"])
+        assert result == ["web", "spotify"]
+
+    def test_no_plugins_sentinel_opts_out_and_is_stripped(self, monkeypatch):
+        self._patch_keys(monkeypatch)
+        result = _merge_plugin_toolsets_into_per_job(["web", "no_plugins"])
+        assert result == ["web"]
+
+    def test_resolver_chains_plugin_merge_after_mcp_merge(self, monkeypatch):
+        """End to end: a native-toolset job allowlist keeps MCP servers AND plugin toolsets, and an
+        MCP server merged in by name never reads as an explicit plugin choice (the registry-shaped
+        collision #134311's fix has to avoid)."""
+        self._patch_keys(monkeypatch)
+        cfg = {"mcp_servers": {"finnhub": {"enabled": True}}}
+        result = _resolve_cron_enabled_toolsets({"enabled_toolsets": ["terminal", "file"]}, cfg)
+        assert set(result) == {"terminal", "file", "finnhub", "kanban_board"}
+
+    def test_resolver_keeps_explicit_empty_list_at_zero_toolsets(self, monkeypatch):
+        self._patch_keys(monkeypatch)
+        assert _resolve_cron_enabled_toolsets({"enabled_toolsets": []}, {"mcp_servers": {}}) == []
 
 class TestResolveOrigin:
 

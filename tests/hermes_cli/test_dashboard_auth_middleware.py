@@ -165,6 +165,9 @@ def test_loopback_auth_providers_bypasses_token_gate(loopback_app):
     assert r.status_code == 200, (
         f"Expected 200, got {r.status_code}: {r.text}"
     )
+    assert set(r.json()) == {"providers"}, (
+        "the pre-login body must carry a providers list and nothing else"
+    )
     providers = r.json()["providers"]
     assert providers, "stub provider should be listed"
     assert set(providers[0]) == {"name", "display_name", "supports_password"}
@@ -183,6 +186,17 @@ def test_loopback_auth_providers_match_is_exact_not_prefix(loopback_app):
     the token gate so the allowlist can never be widened by suffixing."""
     r = loopback_app.get("/api/auth/providers/evil")
     assert r.status_code == 401
+
+
+def test_loopback_token_gate_still_guards_unrelated_api_routes(loopback_app):
+    """Control group for the ``/api/auth/providers`` allowlisting: an unrelated
+    API route on the same token-less loopback client must keep its 401, so a
+    future widening of ``PUBLIC_API_PATHS`` can never silently open more than
+    the paths its own tests name."""
+    r = loopback_app.get("/api/sessions")
+    assert r.status_code == 401, (
+        f"Expected 401, got {r.status_code}: {r.text}"
+    )
 
 
 def test_plugin_assets_pass_gate_while_api_stays_gated(gated_app):

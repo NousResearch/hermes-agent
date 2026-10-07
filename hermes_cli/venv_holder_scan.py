@@ -177,7 +177,7 @@ def pids_holding_venv(
         try:
             if _references_venv(pid, venv_norm):
                 holders.append(pid)
-        except Exception:  # noqa: BLE001 - /proc races with process exit; never fatal
+        except Exception:  # health: allow BLE001 -- /proc races with process exit mid-scan; a holder must never abort the walk
             continue
     return sorted(holders)
 

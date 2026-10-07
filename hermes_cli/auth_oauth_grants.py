@@ -561,6 +561,19 @@ def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]
     return pool, rows if isinstance(rows, list) else []
 
 
+def owned_profile_reads_root_state(
+        auth_store: Dict[str, Any], provider_id: str, source_path: Optional[Path]) -> bool:
+    """True when a profile that owns its own pool rows would seed ``providers.<id>`` from ROOT.
+
+    Seeding that state re-copies root's single-use refresh token into the profile's pool, which
+    is the fork #100339 forbids; the singleton seeders skip it."""
+    from hermes_cli.auth import _global_auth_file_path, _same_path
+    global_root = _global_auth_file_path()
+    return bool(
+        source_path is not None and global_root is not None and _same_path(source_path, global_root)
+        and _pool_rows(auth_store, provider_id)[1])
+
+
 def _adopt_if_fresher(
     target: Dict[str, Any], candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """*target* carrying *candidate*'s pair when the candidate rotated later, else None."""

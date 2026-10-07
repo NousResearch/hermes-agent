@@ -428,6 +428,36 @@ def test_anthropic_auth_add_survives_the_next_load_beside_a_root_singleton(fleet
     assert singleton.read_bytes() == singleton_before
 
 
+@pytest.mark.parametrize("provider,root_login", [
+    ("nous", {"access_token": "at-root", "refresh_token": "rt-root", "agent_key": "ak-root"}),
+    ("openai-codex", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+    ("xai-oauth", {"tokens": {"access_token": "at-root", "refresh_token": "rt-root"}}),
+], ids=["nous", "openai-codex", "xai-oauth"])
+def test_profile_auth_add_never_copies_roots_provider_login(fleet: dict, provider: str, root_login: dict) -> None:
+    """Root's login may live only in ``providers.<id>``, with no pool rows yet. A profile sees it
+    through the root fallback; neither the profile's first ``auth add`` nor a later load may write
+    that single-use refresh token into the profile's store."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text(encoding="utf-8"))
+    store["credential_pool"].pop(provider, None)
+    store["providers"][provider] = root_login
+    root_file.write_text(json.dumps(store), encoding="utf-8")
+    kid = _profile(fleet, "kid")
+
+    fleet["use"](kid)
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="mine01", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-mine", refresh_token="rt-mine",
+    ))
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+    fleet["use"](kid)  # a later process
+    assert "mine01" in [e.id for e in load_pool(provider).entries()]
+    assert "rt-root" not in (kid / "auth.json").read_text(encoding="utf-8")
+
+
 def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, monkeypatch, capsys):
     """"Added" is printed only for a credential the store holds afterwards."""
     from argparse import Namespace

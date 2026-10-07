@@ -135,13 +135,16 @@ class CredentialPoolAdminMixin:
             if borrowed_ids or profile_borrows:
                 # ``hermes -p <profile> auth add <single-use provider>``: a fresh
                 # login inside the profile is the profile's OWN credential, so
-                # it goes to the profile store, never to root. Borrowed root
-                # rows stay out of it — a copy would fork their single-use
-                # refresh token (#100339). Once the profile owns rows, the root
-                # fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                # it goes to the profile store, never to root. Only that row is
+                # written: the rest of this pool is root's (its rows, or its
+                # ``providers.<id>`` login seeded through the fallback), and a
+                # copy would fork that single-use refresh token (#100339). Rows
+                # the profile seeds from its own sources come back on the next
+                # load. Once the profile owns rows, the root fallback for this
+                # provider is shadowed.
+                self._entries = [entry]
                 written = write_credential_pool(
-                    self.provider, [e.to_dict() for e in self._entries],
+                    self.provider, [entry.to_dict()],
                     token_bases=self._persisted_token_pairs,
                 )
                 self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)

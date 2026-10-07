@@ -229,11 +229,58 @@ def test_the_pass_is_capped(conn):
         _stranded(conn, "demo-coder")
     cfg = {"stranded_threshold_seconds": THRESHOLD}
     routed = kd.route_stranded_cards(conn, config=cfg, limit=2)
-    assert [r["outcome"] for r in routed] == ["filed", "filed"]
-    # Each stranded card has its own cause-specific key, so the third waits.
+    # The cap DEFERS the third card to the next pass -- it is reported as capped,
+    # never silently dropped -- and each card keeps its own cause-specific key.
+    assert [r["outcome"] for r in routed] == ["filed", "filed", "capped"]
     assert conn.execute(
         "SELECT COUNT(*) AS n FROM tasks WHERE idempotency_key LIKE ?",
         (kd.REPAIR_IDEMPOTENCY_PREFIX + "%",)).fetchone()["n"] == 2
+    # Nothing was lost: the deferred card is filed by the next pass.
+    again = kd.route_stranded_cards(conn, config=cfg, limit=2)
+    assert [r["outcome"] for r in again] == ["existing", "existing", "filed"]
+
+
+def test_every_card_of_one_cause_gets_its_own_repair(conn):
+    """A cause group is N repairs, not one.
+
+    One card per cause group while EVERY card in the group was audited
+    ``stranded_routed`` recorded a repair for cards that were never repaired --
+    and because the group shared its first card's idempotency key, no later pass
+    could file them either (it found the key and reported ``existing``).
+    """
+    stranded = [_stranded(conn, "demo-coder") for _ in range(3)]
+    busy = kb.create_task(conn, title="busy", assignee="demo-coder")
+    assert kb.claim_task(conn, busy, claimer=kb._claimer_id()) is not None
+    cfg = {"stranded_threshold_seconds": THRESHOLD, "kanban": {"max_in_progress": 1}}
+    routed = kd.route_stranded_cards(conn, config=cfg, limit=5)
+    # The cap makes one cause out of all three, whatever their queue position.
+    assert {r["cause"] for r in routed if r["cause"]} == {kd.STRANDED_CAUSE_FLEET_AT_CAPACITY}
+    assert [r["outcome"] for r in routed] == ["filed", "filed", "filed"]
+    for tid in stranded:
+        key = kd.repair_idempotency_key(tid, kd.STRANDED_CAUSE_FLEET_AT_CAPACITY)
+        assert len(_cards_with_key(conn, key)) == 1, tid
+        events = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+            (tid, "stranded_routed")).fetchone()["n"]
+        assert events == 1, f"{tid} was audited {events} times for one repair"
+
+
+def test_a_running_row_with_no_assignee_still_uses_the_cap(conn):
+    """The cap counts every running row, assignee or not.
+
+    A lane renamed away leaves a ``running`` row with no assignee. Counting only
+    the assignee-grouped rows reported "the fleet has a free slot" while the
+    dispatcher saw the cap full, so the card was classified -- and routed -- as a
+    lane that simply got no worker.
+    """
+    stranded = _stranded(conn, "demo-coder")
+    orphan = kb.create_task(conn, title="orphaned claim", assignee="demo-coder")
+    assert kb.claim_task(conn, orphan, claimer=kb._claimer_id()) is not None
+    conn.execute("UPDATE tasks SET assignee = NULL WHERE id = ?", (orphan,))
+    conn.commit()
+    cfg = {"stranded_threshold_seconds": THRESHOLD, "kanban": {"max_in_progress": 1}}
+    route = _route(_stranded_diag(conn, stranded, config=cfg))
+    assert route["cause"] == kd.STRANDED_CAUSE_FLEET_AT_CAPACITY
 
 
 def test_a_board_wide_stall_collapses_to_one_card_per_cause(conn):

@@ -5,42 +5,57 @@ and tested" closes a card whose change never reached the target branch, and a ch
 head closes while its own landing leg is still queued behind it. This module is the
 single, deterministic answer to two questions the completion path asks:
 
-* **Is this card's deliverable a landing?** — :func:`landing_declaration`. The
-  answer never comes from prose a human (or a model) would have to interpret: it
-  comes from the board's own structured declarations — the card's
-  ``completion_contract`` (the vocabulary ``kanban_pr_acceptance`` already gates),
-  the completion's own landing claim, and a non-``done`` child that carries a
-  landing contract (the chain-head case). A card that declares none of them is not
-  a landing card and its completion is untouched.
+* **Is this card's deliverable a landing?** — :func:`declares_landing_contract`
+  answers it for a child, and the completion's own landing claim for the card
+  under completion. The answer never comes from prose a human (or a model) would
+  have to interpret: a card's deliverable is a landing when the completion claims
+  one, or when a non-``done`` child carries a landing contract (the chain-head
+  case). A card that declares neither is not a landing card and its completion is
+  untouched. A ``completion_contract`` naming a published deliverable is
+  deliberately NOT a third trigger — see below.
 * **Does the completion carry the landed evidence?** — :func:`landed_evidence`,
   over the three forms the standing Feature DoD accepts: the merged commit on the
   target branch, the deploy stamp naming it, or a live hash equal to the merged
   blob. A published-but-unmerged PR is not a landing, and neither is a green check
-  run. Where a form names a target, the target is READ rather than taken on the
-  claim's word: a deploy stamp is opened and the commit it names is what counts
-  (a stamp that names no commit is not evidence), and an artifact the live hash
-  points at is hashed on disk. A target that contradicts the claim it is offered
-  for — a stamp naming a different commit, an artifact hashing to something else —
-  refuses the completion outright.
+  run. Every form names a target, and the target is READ rather than taken on the
+  claim's word: a deploy stamp is opened — a value that names no file, like a
+  stamp that names no commit, is not evidence — an artifact the live hash points
+  at is hashed on disk, and a merged commit is resolved with read-only git against
+  the checkout it says it merged in (``merged_repo``, plus ``merged_branch`` when
+  it is not that checkout's own HEAD), so a commit on an unmerged branch, on
+  another branch, or in no repository is not a landing. A target that contradicts
+  the claim it is offered for — a stamp naming a different commit, an artifact
+  hashing to something else, a commit that is not on the branch it names — refuses
+  the completion outright.
 
-The declaration is the whole mechanism, so it is worth stating plainly: a card's
-deliverable is a landing when it declares one of the three structured things above
-— a ``completion_contract`` naming a repo or PR (the vocabulary
-``kanban_pr_acceptance`` already gates), a landing claim on the completion, or a
-child that carries a landing contract and has not landed. A card that declares
-none of them is untouched: inferring "this card probably had to land" from its
-title or its summary is exactly the prose reading this module exists to avoid, and
-it is what makes the ordinary local-only card, the review flow and the chained
-landing leg all work without a human in the loop.
+The claim is the whole mechanism, so it is worth stating plainly: a completion is
+gated when it CLAIMS a landing, or when the card's own child carries a landing
+contract and has not landed. A card that declares neither is untouched: inferring
+"this card probably had to land" from its title or its summary is exactly the prose
+reading this module exists to avoid, and it is what makes the ordinary local-only
+card, the review flow and the chained landing leg all work without a human in the
+loop.
 
-Pure functions over a task row / metadata / one bounded child query, so the rules
-are testable without a dispatcher.
+Why a ``completion_contract`` naming a published deliverable is not a third
+trigger: that contract's criterion is a PR published at the exact head with its
+required checks green, and ``kanban_pr_acceptance`` already gates it at the
+completion boundary. Demanding landed evidence as well would refuse exactly the
+completions that gate exists to allow, so the landing gate leaves a declared
+published deliverable to the acceptance gate, and
+:func:`declares_landing_contract` is used only for the chain-head question ("does
+this child own a deliverable that has to exist before its parent closes?").
+
+Functions over a task row / metadata / one bounded child query, plus read-only
+reads of the targets a claim names (a stamp file, an artifact, a git checkout), so
+the rules are testable without a dispatcher.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -73,12 +88,20 @@ EVIDENCE_LIVE_HASH_MISMATCH = "a live hash equal to the merged blob (the two has
 EVIDENCE_STAMP_MISMATCH = (
     "a deploy stamp naming the merged commit (the stamp names a different commit)"
 )
+#: Named separately: a merged commit the claim offers with no checkout behind it.
+#: A sha alone is shaped like a commit, never proof of a landing — the checkout it
+#: merged in has to be named before git can be asked about it.
+EVIDENCE_MERGED_COMMIT_UNVERIFIED = (
+    "the merged commit read from the checkout it merged in "
+    "(name the checkout in merged_repo, and merged_branch when the commit is not on "
+    "that checkout's own HEAD)"
+)
 
 #: Keys carried into a claim only when another key already makes it one: the
 #: target a live hash is read from. Never a claim trigger on their own — a
 #: report field that happens to be called ``artifact_path`` must not refuse a
 #: completion that never claimed a landing.
-CLAIM_CARRIED_KEYS = ("artifact_path", "live_path")
+CLAIM_CARRIED_KEYS = ("artifact_path", "live_path", "merged_repo", "merged_branch")
 
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -89,6 +112,11 @@ _COMMIT_TOKEN_RE = re.compile(r"\b[0-9a-fA-F]{7,40}\b")
 _STAMP_MAX_BYTES = 64 * 1024
 #: The largest artifact whose hash is re-read from disk.
 _ARTIFACT_MAX_BYTES = 64 * 1024 * 1024
+#: A read-only git probe is bounded, and never prompts or lazily fetches: a
+#: completion gate must not block on the network, and an unanswerable probe
+#: fails closed (the commit is not evidence).
+_GIT_TIMEOUT_SECONDS = 5.0
+_GIT_PROBE_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1"}
 #: The file a deploy writes its provenance into, under the deployed tree.
 _STAMP_BASENAME = ".deployed-from"
 # ``owner/repo`` (the same shape kanban_pr_acceptance accepts) or a PR URL.
@@ -114,6 +142,14 @@ def declares_landing_contract(task: Any) -> bool:
 
     ``local-only`` (and NULL) declare nothing; ``OWNER/REPO`` and a PR URL declare
     a deliverable that has to exist outside the card before the card is done.
+
+    Such a card's OWN completion is gated by ``kanban_pr_acceptance`` — a PR
+    published at the exact head with its required checks green — not by
+    :func:`landing_gap`, whose criterion is a merge: demanding a merge of a
+    declared published deliverable would refuse the completions the acceptance
+    contract exists to allow. So this predicate answers the chain-head question
+    ("does this child own a deliverable that has to exist before its parent
+    closes?"), and :func:`landing_gap` never treats a contract as a claim.
     """
     contract = _field(task, "completion_contract")
     if not isinstance(contract, str):
@@ -129,7 +165,7 @@ def _stamp_text(value: str) -> Optional[str]:
 
     The target is read, never taken on the claim's word: a value pointing at a
     deploy stamp — or at a deployed tree holding one — is opened, and a value
-    pointing at nothing is treated as the stamp's own line.
+    pointing at nothing is no evidence at all.
     """
     raw = value.strip()
     if not raw or "\x00" in raw:
@@ -162,18 +198,70 @@ def _is_commit(token: str, *, trust_label: bool = False) -> bool:
 def resolve_deploy_stamp(value: str) -> Optional[str]:
     """The commit the deploy stamp names, read from the target the value points at.
 
-    ``None`` when nothing in the stamp names a commit — a stamp that says only
-    *when* something was deployed carries no landing evidence.
+    ``None`` when the value names no readable stamp, or when the stamp it names
+    carries no commit — a stamp that says only *when* something was deployed, or a
+    claim that offers a stamp line with nothing on disk behind it, is not evidence.
     """
     text = _stamp_text(value)
-    haystack = text if text is not None else value
-    labelled = _STAMP_COMMIT_LINE_RE.search(haystack)
+    if text is None:
+        return None
+    labelled = _STAMP_COMMIT_LINE_RE.search(text)
     if labelled and _is_commit(labelled.group(1), trust_label=True):
         return labelled.group(1).lower()
-    for match in _COMMIT_TOKEN_RE.finditer(haystack):
+    for match in _COMMIT_TOKEN_RE.finditer(text):
         if _is_commit(match.group(0)):
             return match.group(0).lower()
     return None
+
+
+def _git(repo: str, *args: str) -> Optional[str]:
+    """Run one bounded, read-only git probe; stdout on success, ``None`` otherwise.
+
+    Never prompts and never lazily fetches: an unanswerable probe (no git, no
+    checkout, a timeout, a missing object) returns ``None`` so the caller fails
+    closed. Stdout may legitimately be empty — compare with ``is None``, not
+    truthiness, when the question is "did it succeed".
+    """
+    env = dict(os.environ)
+    env.update(_GIT_PROBE_ENV)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS, env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def resolve_merged_commit(commit: str, repo: str, branch: Any = None) -> tuple[bool, Optional[str], str]:
+    """``(ok, ref, reason)`` — is ``commit`` merged on ``branch`` in ``repo``?
+
+    The check is the one a reviewer would run: the commit must resolve in the
+    checkout AND be an ancestor of the ref it claims to have merged into. So a sha
+    that is only on an unpushed branch, only on another branch, the head of an open
+    unmerged PR, or in no repository at all, is not a landing. ``branch`` defaults
+    to the checkout's own HEAD.
+    """
+    if not isinstance(repo, str) or not repo.strip():
+        return False, None, "no_checkout"
+    repo = repo.strip()
+    if _git(repo, "rev-parse", "--git-dir") is None:
+        return False, None, "not_a_checkout"
+    if _git(repo, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}") is None:
+        return False, None, "unknown_commit"
+    ref = branch.strip() if isinstance(branch, str) and branch.strip() else ""
+    if not ref:
+        ref = (_git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "").strip()
+    if not ref or ref == "HEAD":
+        ref = (_git(repo, "rev-parse", "HEAD") or "").strip()
+    if not ref:
+        return False, None, "no_ref"
+    if _git(repo, "merge-base", "--is-ancestor", commit, ref) is None:
+        return False, None, f"not_on:{ref}"
+    return True, ref, ""
 
 
 def _file_sha256(value: str) -> Optional[str]:
@@ -259,6 +347,19 @@ def pending_landing_children(conn, task_id: str) -> list[dict]:
     return out
 
 
+def _merged_commit_refusal(repo: str, commit: str, reason: str) -> str:
+    """The missing-evidence phrase for a merged commit that failed its target."""
+    if reason == "unknown_commit":
+        detail = f"no commit {commit} in {repo}"
+    elif reason.startswith("not_on:"):
+        detail = f"{commit} is not on {reason.split(':', 1)[1]} in {repo}"
+    elif reason == "not_a_checkout":
+        detail = f"{repo} is not a git checkout, so the commit cannot be read there"
+    else:
+        detail = f"the merge target could not be read in {repo}"
+    return f"the merged commit on the target branch ({detail})"
+
+
 def landed_evidence(claim: Any) -> tuple[bool, list[str], dict]:
     """``(ok, missing, evidence)`` for a landing claim.
 
@@ -269,9 +370,10 @@ def landed_evidence(claim: Any) -> tuple[bool, list[str], dict]:
     evidence: dict = {}
     if not isinstance(claim, dict):
         return False, missing, evidence
-    merged = claim.get("merged_commit") or claim.get("merge_commit")
-    if isinstance(merged, str) and _GIT_SHA_RE.match(merged.strip()):
-        evidence["merged_commit"] = merged.strip()
+    named_commit = claim.get("merged_commit") or claim.get("merge_commit")
+    named_commit = named_commit.strip().lower() if (
+        isinstance(named_commit, str) and _GIT_SHA_RE.match(named_commit.strip())
+    ) else None
     stamp = claim.get("deploy_stamp") or claim.get("deploy-stamp")
     stamp_commit = None
     if isinstance(stamp, str) and stamp.strip():
@@ -279,9 +381,25 @@ def landed_evidence(claim: Any) -> tuple[bool, list[str], dict]:
         if stamp_commit:
             evidence["deploy_stamp"] = stamp.strip()
             evidence["deploy_stamp_commit"] = stamp_commit
-    if stamp_commit and evidence.get("merged_commit") and stamp_commit != evidence["merged_commit"].lower():
+    if stamp_commit and named_commit and stamp_commit != named_commit:
         # The named target contradicts the claim it is offered as evidence for.
         return False, [EVIDENCE_STAMP_MISMATCH], {}
+    if named_commit:
+        # A sha is shaped like a commit, not proof of a landing: resolve it against
+        # the checkout the claim says it merged in. A named checkout that does not
+        # carry the commit on the named branch is self-refuting, like a stamp that
+        # names another commit. A claim naming no checkout leaves this form
+        # unsubstantiated — it does not veto a DIFFERENT form that is substantiated.
+        repo = claim.get("merged_repo")
+        if isinstance(repo, str) and repo.strip():
+            ok, ref, reason = resolve_merged_commit(named_commit, repo, claim.get("merged_branch"))
+            if not ok:
+                return False, [_merged_commit_refusal(repo.strip(), named_commit, reason)], {}
+            evidence["merged_commit"] = named_commit
+            evidence["merged_repo"] = repo.strip()
+            evidence["merged_branch"] = ref
+        else:
+            missing[0] = EVIDENCE_MERGED_COMMIT_UNVERIFIED
     live = claim.get("live_sha256")
     merged_blob = claim.get("merged_blob_sha256")
     if isinstance(live, str) and isinstance(merged_blob, str):
@@ -313,9 +431,12 @@ def landing_gap(metadata: Any, children: Optional[list[dict]] = None) -> Optiona
 
     ``None`` when this card is not a landing card — it completes unchanged.
     Otherwise a dict naming ``source``, the ``missing`` evidence, the ``evidence``
-    found and the ``children`` still withholding the landing. Callers with a
-    connection pass :func:`pending_landing_children`; without one the child rule
-    is skipped (the claim rule still applies).
+    found and the ``children`` still withholding the landing. Two triggers, and
+    only two: the completion's own landing claim, and a child that carries a
+    landing contract and has not landed. A card's own ``completion_contract`` is
+    NOT one — see :func:`declares_landing_contract`. Callers with a connection
+    pass :func:`pending_landing_children`; without one the child rule is skipped
+    (the claim rule still applies).
     """
     claim = landing_claim(metadata)
     children = children or []

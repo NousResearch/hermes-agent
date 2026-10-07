@@ -57,8 +57,12 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
       msixAppIdWithOrg: `Example.Smoke${token}`, cliName: `smoke-${token}`, windowsExecutableName: `smoke-${token}` } }
   const cli = path.resolve(import.meta.dirname, '../tests/install/e2e-assets/bundle-smoke-metadata.mjs')
   const requestPath = path.join(temp, 'request.json'), stampPath = path.join(temp, 'stamp.json')
+  const compileCache = path.join(temp, 'node-compile-cache')
   const run = (command, args = []) => spawnSync(process.execPath,
-    [cli, command, '--commit', commit, '--channel-request', requestPath, ...args], { encoding: 'utf8' })
+    [cli, command, '--commit', commit, '--channel-request', requestPath, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, NODE_COMPILE_CACHE: compileCache }
+    })
   try {
     fs.writeFileSync(requestPath, JSON.stringify(request))
     const identity = run('identity')

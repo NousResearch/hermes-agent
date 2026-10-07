@@ -1,0 +1,17 @@
+{
+  "name": "@electron-internal/extract-zip",
+  "version": "1.0.5",
+  "private": true,
+  "description": "Checksum-bound Electron ZIP extraction using trusted OS tools",
+  "main": "index.cjs",
+  "exports": "./index.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node --test safe-extract.test.mjs",
+    "lint": "node --check index.cjs && node --check safe-extract.test.mjs && python3 -c \"import ast,pathlib; ast.parse(pathlib.Path('extract.py').read_text())\"",
+    "check": "npm test && npm run lint",
+    "fix": "npm run lint"
+  }
+}

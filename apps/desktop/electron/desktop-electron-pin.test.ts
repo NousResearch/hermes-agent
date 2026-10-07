@@ -20,7 +20,9 @@
  * 1. the Electron dependency is an *exact* version (Electron Builder needs the
  *    installed binary to match ``electronVersion`` / ``electronDist``), and
  * 2. the dependency and the independently resolved lockfile entry agree — so ``npm ci`` installs exactly what
- *    the build packages.
+ *    the build packages, and
+ * 3. Electron's checksummed ZIP is extracted through the reviewed local OS-tool
+ *    adapter, not the unsigned native addon blocked by Windows Smart App Control.
  */
 
 import assert from 'node:assert/strict'
@@ -31,7 +33,9 @@ import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
+const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
+const SAFE_EXTRACTOR = 'packages/electron-safe-extract-zip'
 
 // An exact semver: digits.digits.digits with an optional prerelease/build tag,
 // but NO range operators (^ ~ > < = * x || spaces || -range).
@@ -91,4 +95,27 @@ test('lockfile resolves the pinned electron', () => {
         'run `npm install --package-lock-only` so `npm ci` stays consistent.'
     )
   }
+})
+
+test('electron ZIP extraction avoids the unsigned native Windows addon', () => {
+  const rootPkg = JSON.parse(fs.readFileSync(ROOT_PKG, 'utf8')) as {
+    workspaces?: string[]
+  }
+  assert.ok(
+    rootPkg.workspaces?.includes(SAFE_EXTRACTOR),
+    'the reviewed OS-tool extractor must be a root workspace so it satisfies Electron locally'
+  )
+
+  const extractorRoot = path.join(REPO_ROOT, SAFE_EXTRACTOR)
+  const extractorPkg = JSON.parse(
+    fs.readFileSync(path.join(extractorRoot, 'package.json'), 'utf8')
+  ) as { name?: string; version?: string }
+  assert.equal(extractorPkg.name, '@electron-internal/extract-zip')
+  assert.match(extractorPkg.version ?? '', /^1\.0\./)
+  const files = fs.readdirSync(extractorRoot, { recursive: true, encoding: 'utf8' })
+  assert.equal(
+    files.some((file) => file.endsWith('.node')),
+    false,
+    'the compatibility extractor must not ship a native addon'
+  )
 })

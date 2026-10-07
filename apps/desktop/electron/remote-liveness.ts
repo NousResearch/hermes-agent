@@ -8,6 +8,12 @@ export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
 export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+// One bounded retry before a dispatch failure may retire a pooled descriptor.
+// The first probe can lose the race against an in-flight cold-start or a
+// synchronous ssh-lifecycle bootstrap occupying the channel; a short pause
+// lets the forward answer on the second attempt instead of tearing down a
+// healthy tunnel. Kept small so a genuinely dead descriptor still fails fast.
+export const POOLED_DISPATCH_PROBE_RETRY_DELAY_MS = 1_500
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -128,7 +134,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       // retire a healthy forward (#131765). A fresh socket makes the TCP
       // handshake itself the liveness test.
       await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS, freshSocket: true })
-    }
+      await probe(connection, path, { timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS })    }
   }
 
   try {
@@ -139,9 +145,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
     }
 
     try {
-      await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
+      await probeWithRetry('/api/health')
     } catch (healthError) {
       // A remote that predates /api/health would otherwise 404 every dispatch,
       // retire the tunnel and reconnect forever; the boot probe falls back the
@@ -150,9 +154,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
         throw healthError
       }
 
-      await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-      })
+      await probeWithRetry('/api/status')
     }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {

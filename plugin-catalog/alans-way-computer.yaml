@@ -1,8 +1,8 @@
 name: alans-way-computer
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: bb7dfc55653c28529dcfd97e73a2c757337f3861
+sha: ce51733b66291e69f616db48ae8799c0de50db43
 subdir: alans-way-computer
-version: "0.6.2"
+version: "0.7.0"
 title: "Alan's Way Computer"
 description: >-
   Computer-use provider for Hermes: the stock computer_use tool drives desktop apps on the user's computer
@@ -16,7 +16,7 @@ maintainer: capthvnsen
 tier: community
 category: tools
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/bb7dfc55653c28529dcfd97e73a2c757337f3861/alans-way-computer
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/ce51733b66291e69f616db48ae8799c0de50db43/alans-way-computer
 readme: true
 platforms: [linux, macos]
 known_issues:

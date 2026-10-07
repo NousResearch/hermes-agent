@@ -1,29 +1,33 @@
 name: alans-way
 repo: https://github.com/capthvnsen/alans-way-agents
-sha: bb7dfc55653c28529dcfd97e73a2c757337f3861
+sha: ce51733b66291e69f616db48ae8799c0de50db43
 subdir: alans-way
-version: "0.6.2"
+version: "0.7.0"
 title: "Alan's Way"
 description: >-
-  Proactive primary bot for a Hermes gateway running on a Linux machine or a macOS guest VM. After install,
-  the workspace-setup skill walks that agent through a separate companion app and Tailscale setup on the
-  user's computer (macOS, Windows or Linux). Setup configures every bot profile and turns off the stock
-  browser toolset in favor of the workspace browser. Desktop input goes only through Hermes's approval-gated
-  computer_use tool. Watches are propose-only: a proposed
-  watch runs only after the user approves it.
+  Idle check-ins from the primary bot of a Hermes gateway on a Linux machine or a macOS guest VM: when the bound
+  Telegram chat has been quiet for two hours, during 08:00-22:00 in the user's timezone, the bot checks in once
+  (does one safe step and reports it, suggests one, or asks one question), backing off when unanswered. The model
+  tool can only make check-ins quieter; more often, resume and wider hours are operator-only via /proactivity or
+  the CLI. After install, the workspace-setup skill walks the agent through a separate companion app and Tailscale
+  setup on the user's computer (macOS, Windows or Linux); desktop input goes only through Hermes's approval-gated
+  computer_use tool.
 maintainer: capthvnsen
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/capthvnsen/alans-way-agents/tree/bb7dfc55653c28529dcfd97e73a2c757337f3861/alans-way
+docs_url: https://github.com/capthvnsen/alans-way-agents/tree/ce51733b66291e69f616db48ae8799c0de50db43/alans-way
 readme: true
 platforms: [linux, macos]
 known_issues:
   - "Install this on the machine that runs Hermes (a Linux host or a macOS guest VM), not on the user's primary computer. Windows guests are new and untested on real hardware. If the plugin is already installed from the catalog, setup leaves it as it is, so this pin stays."
   - "Setup turns off Hermes's stock browser toolset for Telegram and cron so the agent uses the workspace browser (pass --keep-browser to leave it on). It never turns off computer_use: on Hermes with the computer-use provider API, desktop input goes through the gated computer_use tool and its alans-way-computer provider."
+  - "Check-ins need plugins.entries.alans-way.allow_gateway_injection: true and a bound Telegram DM (setup does both). A background thread checks every 60 seconds once the gateway connects Telegram."
 capabilities:
   provides_tools:
-    - proactive_control
-  provides_hooks: []
+    - proactivity
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
   provides_middleware: []
   requires_env: []

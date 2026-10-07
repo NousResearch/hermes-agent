@@ -179,6 +179,8 @@ The **Memory Graph** (command palette → *Memory Graph*, or the status-bar item
 
 Quick Entry is a small always-available composer summoned by a **global hotkey from anywhere on your system** — fire off a prompt without switching to (or even opening) the main window. Enable it in **Settings → Advanced → Quick Entry**; the default shortcut is **Ctrl/Cmd+Shift+Space** and you can set your own (it needs at least one modifier). If another app already owns the chord, the settings row tells you so you can pick a different one.
 
+The **Quick Entry position** row decides where the window opens on the display you are on: one percentage places its horizontal centre, the other its top edge, both measured across the work area of that screen. The defaults (50 / 22) keep it centred and about a fifth of the way down, and a field you clear goes back to its default; values outside 0–100 are clamped, so the window always stays fully on screen. Saving a new position moves an open Quick Entry window right away — no need to hide and re-summon it. You can also simply **drag the composer** to where you want it: its background is the drag handle, and the spot you drop it in is remembered (and shown back in the same settings row) as the new position.
+
 ### Voice
 
 Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md) available elsewhere. On macOS the OS will prompt once for microphone access.

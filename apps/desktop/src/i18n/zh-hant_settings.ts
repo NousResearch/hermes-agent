@@ -834,7 +834,12 @@ export const zhHantSettings = {
       shortcutDesc: '至少需要一個修飾鍵，例如 CommandOrControl+Shift+Space。',
       active: '快速鍵已生效。',
       takenBy: '此快速鍵已被其他應用程式占用，請換一個。',
-      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。'
+      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。',
+      positionTitle: '快速輸入位置',
+      positionDesc: '視窗在螢幕上的開啟位置：相對工作區的橫向（視窗中央）與縱向（頂邊）百分比。',
+      positionHorizontal: '橫向置中 (%)',
+      positionVertical: '頂部位置 (%)',
+      positionDefaultHint: '留空恢復預設值（50 / 22）；數值會限制在 0–100。',
     },
     credentials: {
       pasteKey: '貼上金鑰',

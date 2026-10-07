@@ -8,17 +8,19 @@
  * app/contrib/hooks/use-quick-entry-bridge). There is no second submit path and
  * no new gateway RPC.
  *
- * The device-local preference (enabled + shortcut) is authoritative in the MAIN
- * process — it owns the OS registration and must restore it on a cold launch
- * without the renderer ever visiting Settings. This module treats what the
- * bridge returns as the truth and caches it for the settings UI, same authority
- * split as keep-awake.
+ * The device-local preference (enabled + shortcut + placement) is authoritative
+ * in the MAIN process — it owns the OS registration and must restore it on a
+ * cold launch without the renderer ever visiting Settings. This module treats
+ * what the bridge returns as the truth and caches it for the settings UI, same
+ * authority split as keep-awake.
  */
 
 import { atom } from 'nanostores'
 
 export interface QuickEntryState {
   enabled: boolean
+  /** Where the window opens, as fractions (0..1) of the display's work area. */
+  position: QuickEntryPosition
   /** null before the first read; the settings row shows a skeleton until then. */
   registered: boolean | null
   /** Why the OS shortcut isn't live: taken by another app, or unusable. */
@@ -28,18 +30,45 @@ export interface QuickEntryState {
 
 export type QuickEntryRegistrationError = 'invalid' | 'taken'
 
+/**
+ * Placement as fractions of the target display's work area, so one value is
+ * correct on every monitor: `x` puts the window's horizontal CENTRE there,
+ * `y` puts its TOP EDGE there.
+ */
+export interface QuickEntryPosition {
+  x: number
+  y: number
+}
+
 export interface QuickEntryStatus {
   enabled: boolean
   error: null | QuickEntryRegistrationError
+  position: QuickEntryPosition
   registered: boolean
   shortcut: string
 }
 
 export const QUICK_ENTRY_DEFAULT_SHORTCUT = 'CommandOrControl+Shift+Space'
+/** Centered horizontally, a fifth of the way down — the shipped placement. */
+export const QUICK_ENTRY_DEFAULT_POSITION: QuickEntryPosition = { x: 0.5, y: 0.22 }
+
+/** Main sanitizes on write; this only keeps a bad read from blanking the row. */
+function adoptPosition(raw: unknown): QuickEntryPosition {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+
+  const axis = (value: unknown, fallback: number) =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback
+
+  return {
+    x: axis(record.x, QUICK_ENTRY_DEFAULT_POSITION.x),
+    y: axis(record.y, QUICK_ENTRY_DEFAULT_POSITION.y)
+  }
+}
 
 export const $quickEntry = atom<QuickEntryState>({
   enabled: true,
   error: null,
+  position: QUICK_ENTRY_DEFAULT_POSITION,
   registered: null,
   shortcut: QUICK_ENTRY_DEFAULT_SHORTCUT
 })
@@ -52,6 +81,7 @@ function applyStatus(status: QuickEntryStatus | undefined): void {
   $quickEntry.set({
     enabled: status.enabled === true,
     error: status.error ?? null,
+    position: adoptPosition(status.position),
     registered: status.registered === true,
     shortcut: typeof status.shortcut === 'string' && status.shortcut ? status.shortcut : QUICK_ENTRY_DEFAULT_SHORTCUT
   })
@@ -80,7 +110,11 @@ export async function loadQuickEntrySettings(): Promise<void> {
  * rejected shortcut or an already-taken chord comes back as an error state
  * instead of a silently-lost setting.
  */
-export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcut?: string }): Promise<void> {
+export async function saveQuickEntrySettings(patch: {
+  enabled?: boolean
+  position?: QuickEntryPosition
+  shortcut?: string
+}): Promise<void> {
   if (!canUseQuickEntry()) {
     return
   }

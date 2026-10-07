@@ -1648,6 +1648,12 @@ export const frOverrides = {
         "Faites apparaître un petit compositeur depuis n'importe où avec un raccourci global et envoyez une invite sans ouvrir Hermes.",
       shortcutTitle: 'Raccourci de saisie rapide',
       shortcutDesc: 'Nécessite au moins un modificateur, par ex. CommandOrControl+Shift+Espace.',
+      positionTitle: 'Position de la saisie rapide',
+      positionDesc:
+        "Où la fenêtre s'ouvre sur l'écran : un pourcentage vers la droite (le centre de la fenêtre) et vers le bas (son bord supérieur) de la zone de travail.",
+      positionHorizontal: 'Centre horizontal (%)',
+      positionVertical: 'Bord supérieur (%)',
+      positionDefaultHint: 'Champ vide = valeur par défaut (50 / 22) ; les valeurs sont limitées à 0–100.',
       active: 'Le raccourci est actif.',
       takenBy: 'Une autre application utilise déjà ce raccourci — choisissez-en un autre.',
       invalidShortcut: 'Raccourci invalide. Incluez au moins une touche modificateur.'

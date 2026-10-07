@@ -1077,6 +1077,11 @@ export interface Translations extends NoticeTranslations {
       enabledDesc: string
       shortcutTitle: string
       shortcutDesc: string
+      positionTitle: string
+      positionDesc: string
+      positionHorizontal: string
+      positionVertical: string
+      positionDefaultHint: string
       active: string
       takenBy: string
       invalidShortcut: string

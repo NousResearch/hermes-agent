@@ -575,7 +575,12 @@ export const arSettings = {
       shortcutDesc: 'يحتاج إلى مفتاح تعديل واحد على الأقل، مثل CommandOrControl+Shift+Space.',
       active: 'الاختصار مفعّل.',
       takenBy: 'يستخدم تطبيق آخر هذا الاختصار — اختر اختصارا مختلفا.',
-      invalidShortcut: 'ليس اختصارا صالحا. أضف مفتاح تعديل واحدا على الأقل.'
+      invalidShortcut: 'ليس اختصارا صالحا. أضف مفتاح تعديل واحدا على الأقل.',
+      positionTitle: 'موضع الإدخال السريع',
+      positionDesc: 'أين تُفتح النافذة على الشاشة: نسبة أفقياً (مركز النافذة) ورأسيياً (الحافة العليا) من منطقة العمل.',
+      positionHorizontal: 'المركز أفقياً (%)',
+      positionVertical: 'الحافة العليا (%)',
+      positionDefaultHint: 'الحقل الفارغ يعيد القيمة الافتراضية (50 / 22)؛ تُحدَّد القيم بين 0–100.',
     },
     credentials: {
       pasteKey: 'لصق المفتاح',

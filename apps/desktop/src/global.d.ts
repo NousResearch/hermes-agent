@@ -21,6 +21,7 @@ import type {
   PetOverlayStatePayload
 } from './store/pet-overlay'
 import type {
+  QuickEntryPosition,
   QuickEntryStatePush,
   QuickEntryStatus,
   QuickEntrySubmitPayload,
@@ -190,7 +191,11 @@ declare global {
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
         // registration surfaces in Settings instead of failing silently.
-        setSettings: (patch: { enabled?: boolean; shortcut?: string }) => Promise<QuickEntryStatus>
+        setSettings: (patch: {
+          enabled?: boolean
+          position?: QuickEntryPosition
+          shortcut?: string
+        }) => Promise<QuickEntryStatus>
         // Quick window → main: send this payload (main forwards it to the
         // primary renderer, which routes it to the target session and submits
         // through the normal prompt path) and hide.

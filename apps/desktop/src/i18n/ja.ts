@@ -1057,6 +1057,12 @@ export const ja = defineLocale({
         'グローバルショートカットで小さな入力欄をどこからでも呼び出し、Hermes を開かずにプロンプトを送信します。',
       shortcutTitle: 'クイック入力のショートカット',
       shortcutDesc: '修飾キーが 1 つ以上必要です（例: CommandOrControl+Shift+Space）。',
+      positionTitle: 'クイック入力の位置',
+      positionDesc:
+        'ウィンドウを画面のどこに開くか。作業領域に対する横方向（ウィンドウの中心）と縦方向（上端）の割合をパーセントで指定します。',
+      positionHorizontal: '横方向の中央 (%)',
+      positionVertical: '上端 (%)',
+      positionDefaultHint: '空欄で既定値（50 / 22）に戻ります。値は 0–100 に制限されます。',
       active: 'ショートカットは有効です。',
       takenBy: 'このショートカットは他のアプリが使用しています。別のものを選んでください。',
       invalidShortcut: '有効なショートカットではありません。修飾キーを 1 つ以上含めてください。'

@@ -53,4 +53,30 @@ describe('QuickEntryApp', () => {
       expect(option.style.backgroundColor).toBe('var(--ui-bg-elevated, var(--background))')
     }
   })
+
+  it('declares the native drag band and takes every control out of it', () => {
+    const { container } = render(<QuickEntryApp />)
+
+    // A frameless window only moves where the page says so: the transparent
+    // host and the card itself are the [-webkit-app-region:drag] band, which
+    // is what lets the user pick the composer up and park it somewhere else.
+    const hosts = Array.from(container.querySelectorAll('div')).slice(0, 2)
+
+    expect(hosts).toHaveLength(2)
+
+    for (const host of hosts) {
+      expect(host.className).toContain('-webkit-app-region:drag')
+    }
+
+    // App-region hit-testing beats DOM order and z-index, so every interactive
+    // child must opt back out or it silently becomes a window drag.
+    const controls = Array.from(container.querySelectorAll('input, select, label'))
+
+    expect(controls).toHaveLength(3)
+
+    for (const control of controls) {
+      expect(control.className).toContain('-webkit-app-region:no-drag')
+      expect(control.className).not.toContain('-webkit-app-region:drag]')
+    }
+  })
 })

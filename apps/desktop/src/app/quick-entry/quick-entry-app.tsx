@@ -19,6 +19,16 @@ const QUICK_TARGET_OPTION_STYLE = {
   color: 'var(--ui-text-primary, var(--foreground))'
 }
 
+// Frameless windows are inert to the mouse until the PAGE says otherwise: a
+// `[-webkit-app-region:drag]` band is the only thing that starts a native
+// window drag. The card is that band (so the user can pick the composer up and
+// park it — main persists the drop as the stored position), and every
+// interactive child opts back OUT: app-region hit-testing wins over DOM order
+// and z-index, so a control missing `no-drag` silently turns into a window
+// drag instead of doing its job.
+const DRAG_REGION = '[-webkit-app-region:drag]'
+const NO_DRAG_REGION = '[-webkit-app-region:no-drag]'
+
 /**
  * The Quick Entry composer — the whole renderer surface of the global-hotkey
  * mini window. Deliberately one input plus a session-target picker and nothing
@@ -100,6 +110,7 @@ export function QuickEntryApp() {
 
   return (
     <div
+      className={DRAG_REGION}
       style={{
         alignItems: 'center',
         background: 'transparent',
@@ -111,6 +122,7 @@ export function QuickEntryApp() {
       }}
     >
       <div
+        className={DRAG_REGION}
         style={{
           background: 'var(--ui-bg-elevated, var(--background))',
           border: '1px solid var(--ui-stroke-secondary, rgba(127,127,127,0.35))',
@@ -145,6 +157,7 @@ export function QuickEntryApp() {
             autoCapitalize="off"
             autoComplete="off"
             autoCorrect="off"
+            className={NO_DRAG_REGION}
             disabled={!state.connected}
             onBlur={event => {
               // Moving focus to the target picker is not leaving the window.
@@ -181,6 +194,7 @@ export function QuickEntryApp() {
         </div>
         <div style={{ alignItems: 'center', display: 'flex', gap: 8 }}>
           <label
+            className={NO_DRAG_REGION}
             htmlFor="quick-entry-target"
             style={{
               color: 'var(--muted-foreground, #8a8a8a)',
@@ -193,6 +207,7 @@ export function QuickEntryApp() {
           </label>
           <select
             aria-label="Target session"
+            className={NO_DRAG_REGION}
             disabled={!state.connected}
             id="quick-entry-target"
             onChange={event => dispatch({ target: event.target.value, type: 'target' })}

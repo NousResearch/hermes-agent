@@ -1644,6 +1644,12 @@ export const esOverrides = {
         'Invoca un pequeño compositor desde cualquier lugar con un atajo global y envía un prompt sin abrir Hermes.',
       shortcutTitle: 'Atajo de entrada rápida',
       shortcutDesc: 'Necesita al menos un modificador, p. ej. CommandOrControl+Shift+Espacio.',
+      positionTitle: 'Posición de la entrada rápida',
+      positionDesc:
+        'Dónde se abre la ventana en la pantalla: un porcentaje hacia la derecha (el centro de la ventana) y hacia abajo (su borde superior) del área de trabajo.',
+      positionHorizontal: 'Centro horizontal (%)',
+      positionVertical: 'Borde superior (%)',
+      positionDefaultHint: 'Vacío restablece el valor predeterminado (50 / 22); los valores se limitan a 0–100.',
       active: 'El atajo está activo.',
       takenBy: 'Otra app ya usa este atajo — elige uno diferente.',
       invalidShortcut: 'No es un atajo válido. Incluye al menos una tecla modificadora.'

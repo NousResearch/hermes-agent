@@ -24,9 +24,12 @@ const DEFAULT_QUICK_ENTRY_SHORTCUT = 'CommandOrControl+Shift+Space'
 const QUICK_ENTRY_WINDOW_WIDTH = 640
 const QUICK_ENTRY_WINDOW_HEIGHT = 168
 
-// Spotlight-ish placement: horizontally centered on the active display, a
-// comfortable fraction down from the top rather than dead center.
-const QUICK_ENTRY_TOP_FRACTION = 0.22
+// Spotlight-ish placement, as fractions (0..1) of the target display's work
+// area: `x` is where the window's HORIZONTAL CENTRE sits (0.5 = centered),
+// `y` is where its TOP EDGE sits. This is only the SHIPPED default — the live
+// value comes from the user's saved settings (quick-entry.json), so a chosen
+// placement never has to be hard-coded here.
+const DEFAULT_QUICK_ENTRY_POSITION: QuickEntryPosition = { x: 0.5, y: 0.22 }
 
 export interface QuickEntrySubmitRelayResult {
   ok: boolean
@@ -348,10 +351,49 @@ function canonicalKey(key: string): string {
   return key
 }
 
+/**
+ * Where the window sits on a display's work area — both axes are FRACTIONS of
+ * that work area (0..1), not pixels, so one setting is correct on every
+ * monitor. `x` places the window's horizontal centre, `y` its top edge.
+ *
+ * Fractions rather than absolute pixels on purpose: summoning re-anchors the
+ * window to whichever display the CURSOR is on, so a stored pixel pair would
+ * land in the wrong corner (or off-screen) the moment a portrait second
+ * display becomes the target. A fraction stays valid wherever it is applied.
+ */
+export interface QuickEntryPosition {
+  x: number
+  y: number
+}
+
 /** The persisted shape of `quick-entry.json` (main-process owned). */
 export interface QuickEntrySettings {
   enabled: boolean
+  position: QuickEntryPosition
   shortcut: string
+}
+
+/** One axis: a real, finite number clamped into 0..1. Anything else is junk. */
+function sanitizePositionAxis(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+
+  return Math.min(1, Math.max(0, value))
+}
+
+/**
+ * Position → usable position. A missing `position` (legacy `{enabled, shortcut}`
+ * files), a non-object, or a junk axis falls back to the shipped default per
+ * axis; a present axis is clamped rather than discarded.
+ */
+function sanitizeQuickEntryPosition(raw: unknown): QuickEntryPosition {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+
+  return {
+    x: sanitizePositionAxis(record.x, DEFAULT_QUICK_ENTRY_POSITION.x),
+    y: sanitizePositionAxis(record.y, DEFAULT_QUICK_ENTRY_POSITION.y)
+  }
 }
 
 /**
@@ -366,6 +408,7 @@ export function sanitizeQuickEntrySettings(raw: unknown): QuickEntrySettings {
   return {
     // Default ON: the feature is inert until the shortcut is pressed.
     enabled: record.enabled === undefined ? true : record.enabled === true,
+    position: sanitizeQuickEntryPosition(record.position),
     shortcut: parsed.ok ? parsed.accelerator : DEFAULT_QUICK_ENTRY_SHORTCUT
   }
 }
@@ -395,8 +438,14 @@ export interface QuickEntryShortcutController {
   current(): QuickEntryRegistration
   /** Release the shortcut (quit / feature off). Idempotent. */
   dispose(): void
-  /** Re-register to match `settings`. Returns the resulting state. */
-  apply(settings: QuickEntrySettings): QuickEntryRegistration
+  /**
+   * Re-register to match `settings`. Returns the resulting state.
+   *
+   * A Pick of the persisted shape, not the whole thing: `position` is
+   * placement, which main applies to the window itself — the shortcut
+   * controller never reads it.
+   */
+  apply(settings: Pick<QuickEntrySettings, 'enabled' | 'shortcut'>): QuickEntryRegistration
 }
 
 /**
@@ -474,11 +523,17 @@ export function createQuickEntryShortcut(
 }
 
 /**
- * Where the quick window opens on a given display work area. Centered
- * horizontally, a fraction down from the top, and clamped so it stays fully
- * inside the work area on small/odd displays.
+ * Where the quick window opens on a given display work area: the window's
+ * horizontal CENTRE and its TOP EDGE land on `position`'s fractions of that
+ * work area, then both axes clamp so the window stays fully inside it on small
+ * or odd displays. Omitted `position` means the shipped placement, so callers
+ * and tests that never think about position keep behaving exactly as before.
+ * Pure and Electron-free — unit-tested without booting Electron.
  */
-export function quickEntryWindowBounds(workArea?: { height: number; width: number; x: number; y: number }): {
+export function quickEntryWindowBounds(
+  workArea?: { height: number; width: number; x: number; y: number },
+  position: QuickEntryPosition = DEFAULT_QUICK_ENTRY_POSITION
+): {
   height: number
   width: number
   x: number
@@ -491,11 +546,51 @@ export function quickEntryWindowBounds(workArea?: { height: number; width: numbe
     return { height, width, x: 0, y: 0 }
   }
 
-  const x = Math.round(workArea.x + (workArea.width - width) / 2)
+  const { x: xFraction, y: yFraction } = sanitizeQuickEntryPosition(position)
+  const centeredX = workArea.x + workArea.width * xFraction - width / 2
+  const topY = workArea.y + workArea.height * yFraction
+  const maxX = workArea.x + workArea.width - width
   const maxY = workArea.y + workArea.height - height
-  const y = Math.round(Math.min(Math.max(workArea.y, workArea.y + workArea.height * QUICK_ENTRY_TOP_FRACTION), maxY))
+
+  // Round first, clamp second: the clamp must win so no edge of the window can
+  // land outside the work area even when its origin is fractional.
+  const x = Math.min(Math.max(Math.round(centeredX), workArea.x), maxX)
+  const y = Math.min(Math.max(Math.round(topY), workArea.y), maxY)
 
   return { height, width, x, y }
 }
 
-export { DEFAULT_QUICK_ENTRY_SHORTCUT, QUICK_ENTRY_TOP_FRACTION, QUICK_ENTRY_WINDOW_HEIGHT, QUICK_ENTRY_WINDOW_WIDTH }
+/**
+ * Inverse of {@link quickEntryWindowBounds}: where the window actually sits,
+ * expressed as fractions of the work area it is on (its horizontal centre and
+ * its top edge), clamped to 0..1. This is how a drag the user performed gets
+ * persisted — main measures the live bounds and stores them through the same
+ * settings file the numeric fields write.
+ *
+ * The round trip is stable: for a window already placed by
+ * `quickEntryWindowBounds`, feeding these fractions back reproduces the same
+ * bounds (the only rounding is `Math.round` of a value that is already an
+ * integer ±floating-point noise), so a programmatic reposition re-persisting
+ * itself does not drift a pixel at a time.
+ */
+export function quickEntryPositionFromBounds(
+  bounds: { height: number; width: number; x: number; y: number },
+  workArea: { height: number; width: number; x: number; y: number }
+): QuickEntryPosition {
+  // A degenerate work area cannot locate anything — fall back to the defaults
+  // rather than dividing by zero into NaN/Infinity.
+  const axis = (value: number, origin: number, extent: number, fallback: number) =>
+    extent > 0 && Number.isFinite(value) ? Math.min(1, Math.max(0, (value - origin) / extent)) : fallback
+
+  return {
+    x: axis(bounds.x + bounds.width / 2, workArea.x, workArea.width, DEFAULT_QUICK_ENTRY_POSITION.x),
+    y: axis(bounds.y, workArea.y, workArea.height, DEFAULT_QUICK_ENTRY_POSITION.y)
+  }
+}
+
+export {
+  DEFAULT_QUICK_ENTRY_POSITION,
+  DEFAULT_QUICK_ENTRY_SHORTCUT,
+  QUICK_ENTRY_WINDOW_HEIGHT,
+  QUICK_ENTRY_WINDOW_WIDTH
+}

@@ -6,6 +6,7 @@ import {
   DEFAULT_QUICK_ENTRY_SHORTCUT,
   type GlobalShortcutLike,
   parseQuickEntryShortcut,
+  quickEntryPositionFromBounds,
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
@@ -204,24 +205,57 @@ describe('parseQuickEntryShortcut', () => {
 })
 
 describe('sanitizeQuickEntrySettings', () => {
-  it('defaults to enabled with the default shortcut', () => {
-    expect(sanitizeQuickEntrySettings(undefined)).toEqual({ enabled: true, shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT })
-    expect(sanitizeQuickEntrySettings('not an object')).toEqual({
-      enabled: true,
-      shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT
-    })
+  it('defaults to enabled with the default shortcut and the shipped position', () => {
+    const shipped = { enabled: true, position: { x: 0.5, y: 0.22 }, shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT }
+
+    expect(sanitizeQuickEntrySettings(undefined)).toEqual(shipped)
+    expect(sanitizeQuickEntrySettings('not an object')).toEqual(shipped)
   })
 
   it('keeps an explicit disable and normalizes a stored shortcut', () => {
     expect(sanitizeQuickEntrySettings({ enabled: false, shortcut: 'alt+j' })).toEqual({
       enabled: false,
+      position: { x: 0.5, y: 0.22 },
       shortcut: 'Alt+J'
+    })
+  })
+
+  it('keeps a saved position and falls back per axis when one is missing', () => {
+    expect(sanitizeQuickEntrySettings({ position: { x: 0.8, y: 0.1 } }).position).toEqual({ x: 0.8, y: 0.1 })
+    expect(sanitizeQuickEntrySettings({ position: { x: 0.8 } }).position).toEqual({ x: 0.8, y: 0.22 })
+    expect(sanitizeQuickEntrySettings({ position: { y: 0.9 } }).position).toEqual({ x: 0.5, y: 0.9 })
+  })
+
+  it('clamps an out-of-range position instead of dropping it', () => {
+    expect(sanitizeQuickEntrySettings({ position: { x: 1.4, y: -0.25 } }).position).toEqual({ x: 1, y: 0 })
+  })
+
+  it('falls back to the shipped position for junk values', () => {
+    const shipped = { x: 0.5, y: 0.22 }
+
+    expect(sanitizeQuickEntrySettings({ position: { x: '0.8', y: Number.NaN } }).position).toEqual(shipped)
+    expect(sanitizeQuickEntrySettings({ position: { x: Number.POSITIVE_INFINITY } }).position).toEqual(shipped)
+    expect(sanitizeQuickEntrySettings({ position: 'center' }).position).toEqual(shipped)
+    expect(sanitizeQuickEntrySettings({ position: null }).position).toEqual(shipped)
+  })
+
+  it('round-trips a sanitized settings object unchanged (legacy file included)', () => {
+    // A pre-position file ({enabled, shortcut} only) sanitizes to defaults and
+    // then survives a write/read cycle byte-for-byte.
+    const legacy = sanitizeQuickEntrySettings({ enabled: false, shortcut: 'Alt+J' })
+
+    expect(legacy.position).toEqual({ x: 0.5, y: 0.22 })
+    expect(sanitizeQuickEntrySettings(legacy)).toEqual(legacy)
+    expect(sanitizeQuickEntrySettings({ ...legacy, position: { x: 0.7, y: 0.4 } })).toEqual({
+      ...legacy,
+      position: { x: 0.7, y: 0.4 }
     })
   })
 
   it('falls back to the default when the stored shortcut is unusable', () => {
     expect(sanitizeQuickEntrySettings({ enabled: true, shortcut: 'Q' })).toEqual({
       enabled: true,
+      position: { x: 0.5, y: 0.22 },
       shortcut: DEFAULT_QUICK_ENTRY_SHORTCUT
     })
   })
@@ -341,13 +375,39 @@ describe('createQuickEntryShortcut', () => {
 })
 
 describe('quickEntryWindowBounds', () => {
-  it('centers horizontally and sits below the top edge of the work area', () => {
-    const bounds = quickEntryWindowBounds({ height: 1000, width: 1600, x: 0, y: 0 })
+  it('keeps the shipped defaults: centred, 22% down the work area', () => {
+    const area = { height: 1000, width: 1600, x: 0, y: 0 }
+    const bounds = quickEntryWindowBounds(area)
 
     expect(bounds.width).toBe(640)
     expect(bounds.x).toBe((1600 - 640) / 2)
-    expect(bounds.y).toBeGreaterThan(0)
+    // 0.22 * 1000 — the placement the feature has always shipped.
+    expect(bounds.y).toBe(220)
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(1000)
+    expect(bounds).toEqual(quickEntryWindowBounds(area, { x: 0.5, y: 0.22 }))
+  })
+
+  it('puts the horizontal centre and the top edge on the given fractions', () => {
+    const bounds = quickEntryWindowBounds({ height: 2112, width: 3840, x: 0, y: 0 }, { x: 0.75, y: 0.5 })
+
+    // Centre at 75% of 3840 = 2880 → left edge 2880 - 320; top at 50% of 2112.
+    expect(bounds.x).toBe(2560)
+    expect(bounds.y).toBe(1056)
+  })
+
+  it('clamps at all four edges of the work area', () => {
+    const area = { height: 400, width: 1000, x: 100, y: 50 }
+
+    expect(quickEntryWindowBounds(area, { x: 0, y: 0 })).toEqual({ height: 168, width: 640, x: 100, y: 50 })
+
+    const bottomRight = quickEntryWindowBounds(area, { x: 1, y: 1 })
+    expect(bottomRight.x).toBe(100 + 1000 - 640)
+    expect(bottomRight.y).toBe(50 + 400 - 168)
+
+    // Fractions outside 0..1 cannot push any part of the window off-screen.
+    const outside = quickEntryWindowBounds(area, { x: -0.5, y: 1.5 })
+    expect(outside.x).toBe(100)
+    expect(outside.y).toBe(50 + 400 - 168)
   })
 
   it('respects a display origin offset (second monitor)', () => {
@@ -355,17 +415,94 @@ describe('quickEntryWindowBounds', () => {
 
     expect(bounds.x).toBe(1600 + (1440 - 640) / 2)
     expect(bounds.y).toBeGreaterThanOrEqual(-200)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(1600 + 1440)
   })
 
   it('stays inside a tiny work area', () => {
-    const bounds = quickEntryWindowBounds({ height: 120, width: 320, x: 0, y: 0 })
+    const bounds = quickEntryWindowBounds({ height: 120, width: 320, x: 0, y: 0 }, { x: 1, y: 1 })
 
     expect(bounds.width).toBeLessThanOrEqual(320)
     expect(bounds.height).toBeLessThanOrEqual(120)
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(120)
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(320)
   })
 
   it('falls back to the origin without a work area', () => {
     expect(quickEntryWindowBounds()).toEqual({ height: 168, width: 640, x: 0, y: 0 })
+    expect(quickEntryWindowBounds(undefined, { x: 1, y: 1 })).toEqual({ height: 168, width: 640, x: 0, y: 0 })
+  })
+})
+
+describe('quickEntryPositionFromBounds', () => {
+  type Box = { height: number; width: number; x: number; y: number }
+
+  it('round-trips bounds placed by quickEntryWindowBounds on any display', () => {
+    // The persisted shape must survive the trip back into a placement: measure
+    // where the window sits, feed the fractions back, get the same pixels —
+    // otherwise every re-summon would creep the window by a pixel.
+    const cases: [Box, Box][] = [
+      // Shipped default, and both extremes of one display.
+      [
+        { height: 1000, width: 1600, x: 0, y: 0 },
+        { height: 168, width: 640, x: 480, y: 220 }
+      ],
+      [
+        { height: 1000, width: 1600, x: 0, y: 0 },
+        { height: 168, width: 640, x: 0, y: 0 }
+      ],
+      [
+        { height: 1000, width: 1600, x: 0, y: 0 },
+        { height: 168, width: 640, x: 960, y: 832 }
+      ],
+      // A 4K display with a custom placement.
+      [
+        { height: 2112, width: 3840, x: 0, y: 0 },
+        { height: 168, width: 640, x: 2560, y: 1056 }
+      ],
+      // A second monitor with a non-zero origin, including a negative one.
+      [
+        { height: 1080, width: 1920, x: 3840, y: 0 },
+        { height: 168, width: 640, x: 4000, y: 500 }
+      ],
+      [
+        { height: 2560, width: 1440, x: -1440, y: -200 },
+        { height: 168, width: 640, x: -1040, y: 1000 }
+      ]
+    ]
+
+    for (const [workArea, bounds] of cases) {
+      expect(quickEntryWindowBounds(workArea, quickEntryPositionFromBounds(bounds, workArea))).toEqual(bounds)
+    }
+  })
+
+  it('clamps a window hanging off any edge back into 0..1', () => {
+    const workArea = { height: 800, width: 1200, x: 0, y: 0 }
+
+    expect(quickEntryPositionFromBounds({ height: 168, width: 640, x: -400, y: -120 }, workArea)).toEqual({
+      x: 0,
+      y: 0
+    })
+    expect(quickEntryPositionFromBounds({ height: 168, width: 640, x: 1000, y: 900 }, workArea)).toEqual({ x: 1, y: 1 })
+  })
+
+  it('measures against a non-zero work-area origin (second monitor)', () => {
+    const workArea = { height: 1440, width: 2560, x: 3840, y: 200 }
+
+    // Parked in the work area's top-left corner: its centre sits half a window
+    // (320 of 2560) inside the origin, and its top edge exactly on it.
+    expect(quickEntryPositionFromBounds({ height: 168, width: 640, x: 3840, y: 200 }, workArea)).toEqual({
+      x: 0.125,
+      y: 0
+    })
+    expect(quickEntryPositionFromBounds({ height: 168, width: 640, x: 4800, y: 344 }, workArea)).toEqual({
+      x: 0.5,
+      y: 0.1
+    })
+  })
+
+  it('falls back to the shipped placement for a degenerate work area', () => {
+    const bounds = { height: 168, width: 640, x: 0, y: 0 }
+
+    expect(quickEntryPositionFromBounds(bounds, { height: 0, width: 0, x: 0, y: 0 })).toEqual({ x: 0.5, y: 0.22 })
   })
 })

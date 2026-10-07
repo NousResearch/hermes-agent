@@ -183,6 +183,24 @@ export const SETTINGS_MANIFEST = {
       keywords: ['quick entry', 'shortcut', 'hotkey', 'keybind', 'chord'],
       available: canUseQuickEntry,
       copy: t => ({ label: t.settings.quickEntry.shortcutTitle, description: t.settings.quickEntry.shortcutDesc })
+    },
+    quickEntryPosition: {
+      subpage: 'desktop',
+      keywords: [
+        'quick entry',
+        'position',
+        'placement',
+        'where',
+        'screen',
+        'monitor',
+        'center',
+        'centre',
+        'top',
+        'vertical',
+        'horizontal'
+      ],
+      available: canUseQuickEntry,
+      copy: t => ({ label: t.settings.quickEntry.positionTitle, description: t.settings.quickEntry.positionDesc })
     }
   },
   keybinds: {

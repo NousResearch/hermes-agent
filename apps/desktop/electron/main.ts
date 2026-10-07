@@ -507,6 +507,7 @@ import {
 import {
   createQuickEntryShortcut,
   createQuickEntrySubmitRelay,
+  quickEntryPositionFromBounds,
   quickEntryWindowBounds,
   sanitizeQuickEntrySettings
 } from './quick-entry'
@@ -679,6 +680,7 @@ import {
   computeWindowOptions,
   debounce,
   firstLaunchSize,
+  matchingWorkArea,
   sanitizeWindowState,
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
@@ -14871,6 +14873,37 @@ function writeQuickEntrySettings(settings) {
   }
 }
 
+// Persist a drag: the renderer never reports where the user dropped the window
+// — main measures the live bounds, turns them into work-area FRACTIONS (see
+// QuickEntryPosition for why fractions and not pixels), and merges them into
+// the stored settings. Merging through `readQuickEntrySettings` is what keeps
+// `enabled`/`shortcut` intact: this path only ever owns `position`.
+function persistQuickEntryPosition() {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
+    return
+  }
+
+  try {
+    const bounds = quickEntryWindow.getBounds()
+    // The work area the window is actually ON, not the cursor's: at drag time
+    // the pointer is on this window's display by definition.
+    const workArea = matchingWorkArea(bounds, screen.getAllDisplays())
+
+    if (!workArea) {
+      return
+    }
+
+    writeQuickEntrySettings({ ...readQuickEntrySettings(), position: quickEntryPositionFromBounds(bounds, workArea) })
+  } catch (error) {
+    rememberLog(`[quick-entry] position persist failed: ${error.message}`)
+  }
+}
+
+// Trailing debounce — geometry events fire continuously mid-drag (same reason
+// the HUD and main window debounce theirs), and a summon reposition re-runs it
+// harmlessly: the round trip is idempotent, so it re-writes the same fractions.
+const schedulePersistQuickEntryPosition = debounce(persistQuickEntryPosition, 250)
+
 function quickEntryUrl() {
   if (DEV_SERVER) {
     return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/?win=quick#/`
@@ -14882,7 +14915,7 @@ function quickEntryUrl() {
 function spawnQuickEntryWindow() {
   const cursor = screen.getCursorScreenPoint()
   const display = screen.getDisplayNearestPoint(cursor)
-  const bounds = quickEntryWindowBounds(display?.workArea)
+  const bounds = quickEntryWindowBounds(display?.workArea, readQuickEntrySettings().position)
 
   const win = new BrowserWindow({
     ...bounds,
@@ -14935,6 +14968,13 @@ function spawnQuickEntryWindow() {
   // its own OS window and a zoomed composer would overflow it.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
 
+  // Remember where the user parks the card. The renderer declares the drag
+  // region (quick-entry-app), so dragging fires geometry events here; the
+  // debounced persist measures the drop and stores it as work-area fractions.
+  // Flushed on close so a drag immediately followed by teardown is not lost.
+  bindGeometryPersistence(win, schedulePersistQuickEntryPosition)
+  win.on('close', () => schedulePersistQuickEntryPosition.flush())
+
   // Log-only renderer lifecycle (#81290): a dead quick-entry window must never
   // resurrect itself over the app, but its loss belongs in desktop.log.
   installWindowRendererLifecycle(win, { kind: 'quick', callbacks: { log: rememberLog } })
@@ -14968,12 +15008,15 @@ function spawnQuickEntryWindow() {
   return win
 }
 
-// Move the (already-open) window to the display the cursor is on, so the chord
-// summons it where the user is looking rather than where they last were.
-function repositionQuickEntryWindow(win) {
+// Move the (already-open) window onto `display` — the display the cursor is on
+// when the chord summons it, so it opens where the user is looking rather than
+// where it last was. Saving a new position passes the window's OWN display
+// instead, so an edit is visible immediately without teleporting the window to
+// whichever screen the pointer happened to be over.
+function repositionQuickEntryWindow(win, display = null) {
   try {
-    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
-    win.setBounds(quickEntryWindowBounds(display?.workArea))
+    const target = display ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    win.setBounds(quickEntryWindowBounds(target?.workArea, readQuickEntrySettings().position))
   } catch (error) {
     rememberLog(`[quick-entry] reposition failed: ${error.message}`)
   }
@@ -18347,6 +18390,7 @@ ipcMain.handle('hermes:quick-entry:settings:get', async () => {
   return {
     enabled: settings.enabled,
     error: state.error,
+    position: settings.position,
     registered: state.registered,
     shortcut: settings.enabled ? state.shortcut : settings.shortcut
   }
@@ -18354,15 +18398,32 @@ ipcMain.handle('hermes:quick-entry:settings:get', async () => {
 
 ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
   const current = readQuickEntrySettings()
+  // Per-axis merge: a patch carrying only one axis keeps the other, and a
+  // missing/garbage `position` keeps the stored one (sanitize clamps it).
+  const patchPosition = patch?.position && typeof patch.position === 'object' ? patch.position : null
 
   const next = sanitizeQuickEntrySettings({
     enabled: patch?.enabled === undefined ? current.enabled : patch.enabled === true,
+    position: patchPosition
+      ? {
+          x: patchPosition.x === undefined ? current.position.x : patchPosition.x,
+          y: patchPosition.y === undefined ? current.position.y : patchPosition.y
+        }
+      : current.position,
     shortcut: typeof patch?.shortcut === 'string' && patch.shortcut.trim() ? patch.shortcut : current.shortcut
   })
 
   writeQuickEntrySettings(next)
 
-  return applyQuickEntrySettings(next)
+  const state = applyQuickEntrySettings(next)
+
+  // A saved position must land while the window is still up: the user is
+  // looking at it, so the edit moves it now instead of at the next summon.
+  if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+    repositionQuickEntryWindow(quickEntryWindow, screen.getDisplayMatching(quickEntryWindow.getBounds()))
+  }
+
+  return state
 })
 
 // Quick window → main → PRIMARY renderer. We never submit here: the renderer

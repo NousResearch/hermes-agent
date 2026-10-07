@@ -1645,6 +1645,12 @@ export const deOverrides = {
         'Öffnen Sie mit einem globalen Tastaturkürzel von überall einen kleinen Eingabebereich und senden Sie einen Prompt, ohne Hermes zu öffnen.',
       shortcutTitle: 'Tastaturkürzel der Schnelleingabe',
       shortcutDesc: 'Benötigt mindestens eine Zusatztaste, z. B. CommandOrControl+Shift+Leertaste.',
+      positionTitle: 'Position der Schnelleingabe',
+      positionDesc:
+        'Wo das Fenster auf dem Bildschirm erscheint: ein Prozentsatz nach rechts (Mitte des Fensters) und nach unten (obere Kante) des Arbeitsbereichs.',
+      positionHorizontal: 'Waagerechte Mitte (%)',
+      positionVertical: 'Oberkante (%)',
+      positionDefaultHint: 'Leer setzt den Standard (50 / 22); Werte werden auf 0–100 begrenzt.',
       active: 'Das Tastaturkürzel ist aktiv.',
       takenBy: 'Eine andere App verwendet dieses Tastaturkürzel bereits — wählen Sie ein anderes.',
       invalidShortcut: 'Kein gültiges Tastaturkürzel. Fügen Sie mindestens eine Zusatztaste hinzu.'

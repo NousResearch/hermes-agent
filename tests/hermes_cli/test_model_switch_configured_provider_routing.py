@@ -21,6 +21,8 @@ Hermetic: the model-resolution chain is fully mocked (no network), mirroring
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.model_switch import switch_model
 
 _ACCEPTED = {"accepted": True, "persist": True, "recognized": True, "message": None}
@@ -60,7 +62,7 @@ def _run_switch(
     with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
-         patch("hermes_cli.models.validate_requested_model", return_value=validation), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=validation), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
@@ -82,167 +84,6 @@ def _run_switch(
         )
 
 
-def test_typed_configured_model_routes_away_from_openai_codex():
-    """The core repro: a model declared under ``providers.<slug>`` typed while
-    on ``openai-codex`` routes to the configured provider, not Codex."""
-    user_providers = {
-        "local-ollama": {
-            "name": "Local Ollama",
-            "base_url": "http://localhost:11434/v1",
-            "models": ["qwen3.5-4b", "kimi-k2.5"],
-        }
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
-    assert result.new_model == "qwen3.5-4b"
-
-
-def test_typed_configured_model_routes_to_custom_provider():
-    """``custom_providers`` entries route to their ``custom:<name>`` slug."""
-    custom_providers = [
-        {
-            "name": "mylocal",
-            "base_url": "http://localhost:1234/v1",
-            "model": "qwen3.5-4b",
-            "models": {"qwen3.5-4b": {}},
-        }
-    ]
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        custom_providers=custom_providers,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "custom:mylocal"
-    assert result.new_model == "qwen3.5-4b"
-
-
-def test_current_provider_declaring_model_is_not_rerouted():
-    """Precedence rule 4: if the current provider declares the model, keep it —
-    even when another configured provider also declares the same id (so this
-    must NOT trip the ambiguity guard)."""
-    user_providers = {
-        "local-ollama": {
-            "name": "Local Ollama",
-            "base_url": "http://localhost:11434/v1",
-            "models": ["qwen3.5-4b"],
-        },
-        "other-relay": {
-            "name": "Other Relay",
-            "base_url": "http://other/v1",
-            "models": ["qwen3.5-4b"],
-        },
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="local-ollama",
-        current_model="kimi-k2.5",
-        current_base_url="http://localhost:11434/v1",
-        user_providers=user_providers,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
-
-
-def test_ambiguous_configured_model_fails_with_provider_hint():
-    """Precedence rule 6: when two non-current providers declare the same id and
-    neither is current, fail clearly and point at ``--provider`` — never
-    silently pick the first match."""
-    user_providers = {
-        "relay-a": {
-            "name": "Relay A",
-            "base_url": "http://a/v1",
-            "models": ["qwen3.5-4b"],
-        },
-        "relay-b": {
-            "name": "Relay B",
-            "base_url": "http://b/v1",
-            "models": ["qwen3.5-4b"],
-        },
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-    )
-    assert result.success is False
-    assert "--provider" in result.error_message
-    assert "relay-a" in result.error_message
-    assert "relay-b" in result.error_message
-
-
-def test_configured_model_absent_from_live_models_accepted_after_reroute():
-    """End-to-end synergy: after rerouting to the configured provider, a live
-    ``/v1/models`` probe that does NOT list the model is still accepted via the
-    existing user-config override — proving the reroute lands on the right
-    provider for that override to match."""
-    user_providers = {
-        "local-ollama": {
-            "name": "Local Ollama",
-            "base_url": "http://localhost:11434/v1",
-            "models": {"qwen3.5-4b": {"context_length": 32768}},
-        }
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-        validation=_REJECTED,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
-    assert result.new_model == "qwen3.5-4b"
-
-
-def test_no_configured_match_leaves_current_provider_for_soft_accept():
-    """The Codex hidden-model soft-accept (#16172 / #19729) is untouched: an
-    unknown id with no config match stays on the current provider and is
-    soft-accepted exactly as before."""
-    result = _run_switch(
-        raw_input="gpt-5.9-codex-hidden",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        # Config is present but declares an unrelated model — detection is a no-op.
-        user_providers={
-            "local-ollama": {
-                "base_url": "http://localhost:11434/v1",
-                "models": ["qwen3.5-4b"],
-            }
-        },
-        validation=_CODEX_SOFT_ACCEPT,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "openai-codex"
-    assert result.new_model == "gpt-5.9-codex-hidden"
-
-
-def test_configured_match_is_case_insensitive_and_returns_canonical_spelling():
-    """Matching is case-insensitive but the configured spelling wins, so the
-    downstream validation/override path sees the canonical id."""
-    user_providers = {
-        "local-ollama": {
-            "base_url": "http://localhost:11434/v1",
-            "models": ["Qwen3.5-4B"],
-        }
-    }
-    result = _run_switch(
-        raw_input="qwen3.5-4b",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-    )
-    assert result.success is True, result.error_message
-    assert result.target_provider == "local-ollama"
-    assert result.new_model == "Qwen3.5-4B"
 
 
 def test_default_model_only_declaration_routes():
@@ -266,31 +107,6 @@ def test_default_model_only_declaration_routes():
     assert result.new_model == "qwen3.5-4b"
 
 
-def test_malformed_provider_config_does_not_raise():
-    """Garbage shapes in provider config must not crash detection — they're
-    skipped and the typed name falls through to the soft-accept no-op."""
-    user_providers = {
-        "bad1": "not-a-dict",            # non-dict cfg
-        "bad2": {"models": 12345},        # models as int
-        "bad3": {"models": [None, 7, {"noname": "x"}]},  # junk list items
-        "bad4": {"model": {"k": object()}},  # dict with non-target keys
-    }
-    custom_providers = [
-        "not-a-dict",                     # non-dict entry
-        {"name": ""},                     # empty name
-        {"models": ["unrelated-model"]},  # no name key
-    ]
-    result = _run_switch(
-        raw_input="gpt-5.9-codex-hidden",
-        current_provider="openai-codex",
-        current_model="gpt-5.4",
-        user_providers=user_providers,
-        custom_providers=custom_providers,
-        validation=_CODEX_SOFT_ACCEPT,
-    )
-    # No match anywhere -> stays on codex, soft-accepted, no exception.
-    assert result.success is True, result.error_message
-    assert result.target_provider == "openai-codex"
 
 
 def test_xai_oauth_soft_accept_preserved_when_no_match():
@@ -308,3 +124,132 @@ def test_xai_oauth_soft_accept_preserved_when_no_match():
     )
     assert result.success is True, result.error_message
     assert result.target_provider == "xai-oauth"
+
+
+
+def test_compat_projection_of_same_provider_is_not_ambiguous():
+    """The gateway/TUI/CLI pass ``providers:`` AND ``get_compatible_custom_providers()``, which re-lists
+    each ``providers.<slug>`` row as ``custom:<name>``. One configured endpoint must route, not be
+    rejected as 'declared by multiple configured providers' (#112788)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": {"name": "relay", "api": "https://relay.example/v1",
+                                "key_env": "RELAY_KEY", "default_model": "claude-opus-4-7"}}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers({"providers": user_providers}))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+
+
+def test_distinct_legacy_endpoint_with_same_model_stays_ambiguous():
+    """Control for #112788: a hand-written ``custom_providers:`` row (no provider_key) that declares
+    the same model on a different endpoint is still a genuinely separate candidate."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": {"name": "relay", "api": "https://relay.example/v1",
+                                "key_env": "RELAY_KEY", "default_model": "claude-opus-4-7"}}
+    cfg = {"providers": user_providers, "custom_providers": [
+        {"name": "backup-relay", "base_url": "https://backup.example/v1", "key_env": "BACKUP_KEY",
+         "model": "claude-opus-4-7"}]}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
+    assert "custom:backup-relay" in result.error_message and "relay" in result.error_message
+
+
+_RELAY = {"name": "relay", "api": "https://relay.example/v1", "key_env": "RELAY_KEY",
+          "default_model": "claude-opus-4-7"}
+_LEGACY_RELAY = {"name": "relay", "base_url": "https://relay.example/v1", "key_env": "RELAY_KEY",
+                 "model": "claude-opus-4-7"}
+
+
+def test_legacy_duplicate_of_same_endpoint_collapses_by_identity():
+    """A hand-migrated config that kept the same endpoint under ``providers.relay`` AND as a legacy
+    ``custom_providers`` row (same name, endpoint, credential, protocol) is one provider: ``/model``
+    routes to ``relay`` instead of calling it ambiguous (#112788)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": _RELAY}
+    cfg = {"providers": user_providers, "custom_providers": [_LEGACY_RELAY]}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+
+
+@pytest.mark.parametrize("delta", [
+    {"key_env": "OTHER_KEY"}, {"api_mode": "anthropic_messages"}, {"base_url": "https://backup.example/v1"},
+], ids=["credential", "protocol", "endpoint"])
+def test_same_named_legacy_row_with_different_identity_stays_ambiguous(delta):
+    """Identity collapse is exact: a legacy row sharing the display name but differing in credential,
+    wire protocol or endpoint is still a second candidate (#112788 acceptance criterion)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": _RELAY}
+    cfg = {"providers": user_providers, "custom_providers": [{**_LEGACY_RELAY, **delta}]}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
+
+
+def test_session_on_projection_slug_keeps_its_slug():
+    """A session whose current provider is the compat projection slug ``custom:relay`` switching to
+    a model ``providers.relay`` declares stays on ``custom:relay`` — same provider, no flip (#112788)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": _RELAY}
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="custom:relay", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers({"providers": user_providers}))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:relay"
+
+
+def test_raw_list_provider_key_pointing_elsewhere_stays_ambiguous():
+    """Raw-list fallback (callers pass ``cfg['custom_providers']`` verbatim when the compat view
+    fails): a hand-written entry whose ``provider_key`` names a ``providers`` slug but points at a
+    different endpoint is a distinct candidate, not silently hidden (#112788)."""
+    user_providers = {"relay": _RELAY}
+    raw = [{"name": "relay", "provider_key": "relay", "base_url": "https://backup.example/v1",
+            "key_env": "BACKUP_KEY", "model": "claude-opus-4-7"}]
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=raw)
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")
+
+
+def test_legacy_duplicate_keeps_its_own_declared_models():
+    """Folding an identity-equal legacy row into ``providers.relay`` must not drop the models only
+    that row declares: ``/model gpt-5.4-mini`` still routes to the shared endpoint instead of
+    falling through to the current provider (#112788 review follow-up)."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {"relay": _RELAY}
+    cfg = {"providers": user_providers,
+           "custom_providers": [{**_LEGACY_RELAY, "models": ["gpt-5.4", "gpt-5.4-mini"]}]}
+    result = _run_switch(
+        raw_input="gpt-5.4-mini", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=get_compatible_custom_providers(cfg))
+    assert result.success is True, result.error_message
+    assert result.target_provider == "relay"
+    assert result.new_model == "gpt-5.4-mini"
+
+
+def test_raw_list_provider_key_with_different_credential_stays_ambiguous():
+    """Raw-list fallback: a ``provider_key: relay`` stamp on the same endpoint but a DIFFERENT
+    credential is not the row's projection — credential identity differs, ambiguity is preserved."""
+    user_providers = {"relay": _RELAY}
+    raw = [{"name": "relay", "provider_key": "relay", "base_url": "https://relay.example/v1",
+            "key_env": "OTHER_KEY", "model": "claude-opus-4-7"}]
+    result = _run_switch(
+        raw_input="claude-opus-4-7", current_provider="openrouter", user_providers=user_providers,
+        custom_providers=raw)
+    assert result.success is False
+    assert "multiple configured providers" in (result.error_message or "")

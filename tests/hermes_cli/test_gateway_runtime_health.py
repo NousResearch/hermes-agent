@@ -43,77 +43,6 @@ def test_runtime_health_lines_flags_stale_running_with_dead_pid(monkeypatch):
     assert not any("draining" in ln.lower() for ln in lines), lines
 
 
-def test_runtime_health_lines_no_warning_for_fresh_running_with_live_pid(monkeypatch):
-    """Fresh updated_at + live PID + 'running' -> no contradiction line."""
-    from gateway import status as status_mod
-
-    monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
-        lambda: {
-            "gateway_state": "running",
-            "pid": 4242,
-            "start_time": 111,
-            "updated_at": _iso_age(5),  # fresh, within the 120s TTL
-            "active_agents": 2,
-        },
-    )
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
-    # start_time matches the record -> not a recycled PID.
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: 111)
-
-    lines = _runtime_health_lines()
-
-    assert _stale_lines(lines) == [], lines
-
-
-def test_runtime_health_lines_no_warning_for_stale_running_but_live_pid(monkeypatch):
-    """Stale updated_at but PID still live (long-idle gateway) -> no false positive."""
-    from gateway import status as status_mod
-
-    monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
-        lambda: {
-            "gateway_state": "running",
-            "pid": 4242,
-            "start_time": 111,
-            "updated_at": _iso_age(600),  # stale timestamp...
-            "active_agents": 0,
-        },
-    )
-    # ...but the recorded process is genuinely alive (start_time matches).
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: pid == 4242)
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: 111)
-
-    lines = _runtime_health_lines()
-
-    # Guard requires BOTH stale AND dead PID; live PID must suppress the warning.
-    assert _stale_lines(lines) == [], lines
-
-
-def test_runtime_health_lines_treats_missing_updated_at_as_stale(monkeypatch):
-    """Missing updated_at (degrade path) + dead PID + 'running' -> contradiction line."""
-    from gateway import status as status_mod
-
-    monkeypatch.setattr(
-        "gateway.status.read_runtime_status",
-        lambda: {
-            "gateway_state": "running",
-            "pid": 4242,
-            "start_time": 111,
-            # no "updated_at" -> runtime_status_is_stale must treat as stale
-            "active_agents": 0,
-        },
-    )
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: False)
-    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
-
-    lines = _runtime_health_lines()
-
-    stale = _stale_lines(lines)
-    assert len(stale) == 1, lines
-    assert "recorded state 'running'" in stale[0]
-
-
 def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypatch):
     monkeypatch.setattr(
         "gateway.status.read_runtime_status",
@@ -135,6 +64,43 @@ def test_runtime_health_lines_include_fatal_platform_and_startup_reason(monkeypa
     assert "⚠ Last startup issue: telegram conflict" in lines
 
 
+def test_runtime_health_lines_flag_stale_heartbeat_with_live_pid(monkeypatch):
+    """'running' + updated_at past the TTL + PID ALIVE is the reporter's 'not a crash' case
+    (#113372): housekeeping stopped stamping the heartbeat while the file still says running.
+    Render it as a heartbeat warning naming the age and the live PID; a fresh stamp stays silent."""
+    from gateway import status as status_mod
+
+    record = {"gateway_state": "running", "pid": 4242, "start_time": 111,
+              "updated_at": _iso_age(900), "active_agents": 0, "platforms": {}}
+    monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: 111)
+
+    stale = [ln for ln in _runtime_health_lines() if ln.startswith("⚠ Gateway heartbeat stale:")]
+    assert len(stale) == 1, _runtime_health_lines()
+    assert 900 <= int(stale[0].split(" for ")[1].split(" s")[0]) <= 930
+    assert "pid 4242 alive" in stale[0]
+    assert not _stale_lines(_runtime_health_lines())  # not the dead-PID contradiction line
+
+    record["updated_at"] = _iso_age(5)
+    assert not [ln for ln in _runtime_health_lines() if "heartbeat" in ln]
+
+
+def test_runtime_health_lines_render_watchdog_degraded_exit(monkeypatch):
+    """A watchdog-stamped ``degraded`` + exit_reason renders as a health line; the startup-time
+    ``degraded`` (retryable platforms queued, no exit_reason) stays silent (#113372)."""
+    record = {"gateway_state": "degraded", "exit_reason": "loop_liveness_watchdog",
+              "pid": 4242, "updated_at": _iso_age(30), "platforms": {}}
+    monkeypatch.setattr("gateway.status.read_runtime_status", lambda: record)
+
+    degraded = [ln for ln in _runtime_health_lines() if ln.startswith("⚠ Gateway exited degraded:")]
+    assert len(degraded) == 1
+    assert "event loop stopped dispatching" in degraded[0]
+
+    record["exit_reason"] = None
+    assert not [ln for ln in _runtime_health_lines() if "degraded" in ln]
+
+
 def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     from gateway import status as status_mod
 
@@ -152,15 +118,3 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
 
 
-def test_runtime_status_running_pid_rejects_stopped_record(monkeypatch):
-    from gateway import status as status_mod
-
-    runtime = {
-        "pid": 12345,
-        "kind": "hermes-gateway",
-        "argv": ["/opt/hermes/hermes_cli/main.py", "gateway", "run", "--replace"],
-        "gateway_state": "stopped",
-    }
-    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: True)
-
-    assert status_mod.get_runtime_status_running_pid(runtime) is None

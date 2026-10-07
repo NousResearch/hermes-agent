@@ -2,9 +2,9 @@
 
 Slow summary models must not be punished like hung ones (#see PR): when a
 forward-progress hook is installed (context compression), the primary
-auxiliary call streams and ticks the hook per chunk, so outer watchdogs
-(gateway session hygiene) can extend their deadline on liveness. Without a
-hook, behavior is byte-for-byte the old non-streaming call.
+auxiliary call streams and ticks the hook only for substantive payloads, so
+outer watchdogs (gateway session hygiene) can extend their deadline on
+liveness. Without a hook, behavior is byte-for-byte the old non-streaming call.
 """
 
 import threading
@@ -15,15 +15,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.auxiliary_client import (
+    _AnthropicCompletionsAdapter,
+    _ChatStreamAccumulator,
+    _CodexCompletionsAdapter,
+    _acreate_with_progress,
     _acreate_with_stream,
     _aggregate_chat_stream,
     _aggregate_chat_stream_async,
-    _aux_stream_total_ceiling,
+    _anthropic_event_has_content,
+    _aux_dispatch,
+    _aux_thread_local_hook,
     _create_with_progress,
+    _create_with_progress_once,
     _notify_aux_progress,
     _provider_requires_stream,
     aux_progress_hook,
 )
+from agent.codex_runtime import _codex_event_has_content
 from agent.conversation_compression import CompressionCommitFence
 
 
@@ -31,12 +39,14 @@ from agent.conversation_compression import CompressionCommitFence
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _chunk(content=None, reasoning=None, finish_reason=None, usage=None,
-           tool_calls=None, model="m1", chunk_id="c1"):
+def _chunk(content=None, reasoning=None, reasoning_details=None,
+           finish_reason=None, usage=None, tool_calls=None, model="m1",
+           chunk_id="c1"):
     delta = SimpleNamespace(
         content=content,
         reasoning=reasoning,
         reasoning_content=None,
+        reasoning_details=reasoning_details,
         tool_calls=tool_calls,
     )
     choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
@@ -88,15 +98,7 @@ class TestAuxProgressHook:
         _notify_aux_progress()  # outside — must not tick
         assert ticks == [1]
 
-    def test_none_hook_is_noop_passthrough(self):
-        with aux_progress_hook(None):
-            _notify_aux_progress()  # must not raise
 
-    def test_hook_exception_is_swallowed(self):
-        def _boom():
-            raise RuntimeError("hook blew up")
-        with aux_progress_hook(_boom):
-            _notify_aux_progress()  # must not raise
 
     def test_hook_is_thread_local(self):
         ticks = []
@@ -119,15 +121,16 @@ class TestAuxProgressHook:
 # ---------------------------------------------------------------------------
 
 class TestCreateWithProgress:
-    def test_no_hook_means_plain_nonstreaming_call(self):
-        client = _FakeClient(response=_COMPLETE)
-        result = _create_with_progress(client, {"model": "m1", "messages": []})
-        assert result is _COMPLETE
-        assert len(client.calls) == 1
-        assert "stream" not in client.calls[0]
 
-    def test_hook_upgrades_to_streaming_and_ticks_per_chunk(self):
+    def test_hook_upgrades_to_streaming_and_ticks_only_for_payload(self):
+        empty_tool_call = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name=None, arguments=""),
+        )
         chunks = [
+            SimpleNamespace(id=None, model=None, choices=[], usage=None),
+            _chunk(content="", reasoning="", tool_calls=[empty_tool_call]),
             _chunk(reasoning="thinking..."),
             _chunk(content="Hello "),
             _chunk(content="world", finish_reason="stop",
@@ -145,8 +148,42 @@ class TestCreateWithProgress:
         assert result.choices[0].message.reasoning == "thinking..."
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.total_tokens == 7
-        # 1 dispatch tick + 1 per chunk
-        assert len(ticks) >= len(chunks) + 1
+        # 1 tick per substantive chunk (reasoning, "Hello ", "world"); the
+        # dispatch itself is not progress (#114938).
+        assert ticks == [1, 1, 1]
+
+    def test_reasoning_only_in_model_extra_is_captured_and_counts_as_progress(self):
+        # Non-SDK delta objects (proxies, relays) may carry reasoning only in ``model_extra``;
+        # the accumulator must read it like the main streaming path does (#56516).
+        chunk = _chunk(finish_reason="stop")
+        chunk.choices[0].delta.model_extra = {"reasoning_content": "thinking..."}
+        client = _FakeClient(stream_chunks=[chunk])
+        ticks = []
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _create_with_progress(client, {"model": "m1", "messages": [], "timeout": 30})
+        assert result.choices[0].message.reasoning == "thinking..."
+        assert ticks == [1]  # the reasoning chunk only; dispatch is not progress (#114938)
+
+    def test_completed_response_ticks_only_terminal_signals(self):
+        calls = []
+
+        def _create(**kwargs):
+            calls.append(kwargs)
+            return _COMPLETE
+
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+        )
+        ticks = []
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            result = _create_with_progress(client, {"model": "m1", "messages": []})
+
+        assert calls[0]["stream"] is True
+        assert result is _COMPLETE
+        # A completed response object carries the full summary payload: one
+        # terminal tick, and no dispatch tick (#114938).
+        assert ticks == [1]
 
     def test_streaming_rejected_falls_back_to_plain_call(self):
         client = _FakeClient(
@@ -163,25 +200,29 @@ class TestCreateWithProgress:
         assert client.calls[0].get("stream") is True
         assert "stream" not in client.calls[1]
 
-    def test_auth_error_propagates_without_nonstreaming_retry(self):
-        class _FakeAuthError(Exception):
-            status_code = 401
-        client = _FakeClient(stream_error=_FakeAuthError("Error code: 401 - unauthorized"))
-        with aux_progress_hook(lambda: None):
-            with pytest.raises(_FakeAuthError):
-                _create_with_progress(client, {"model": "m1", "messages": []})
-        assert len(client.calls) == 1  # no silent non-streaming retry
+    def test_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Bug pin (#114938): a dispatch that dies before any payload (401) must
+        not reset the compression inactivity fence. Dispatch telemetry still
+        fires, but progress_observed stays False."""
+        fence = CompressionCommitFence()
+        dispatches = []
 
-    def test_shim_returning_complete_response_passes_through(self):
-        # Adapters may ignore stream=True and hand back a full response.
-        class _ShimClient(_FakeClient):
-            def _create(self, **kwargs):
-                self.calls.append(kwargs)
-                return _COMPLETE
-        client = _ShimClient()
-        with aux_progress_hook(lambda: None):
-            result = _create_with_progress(client, {"model": "m1", "messages": []})
-        assert result is _COMPLETE
+        class _AuthError(Exception):
+            status_code = 401
+
+        client = _FakeClient(stream_error=_AuthError("unauthorized"))
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            _create_with_progress_once(
+                client, {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]  # dispatch telemetry preserved
+        assert fence.progress_observed is False
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +251,6 @@ class TestAggregateChatStream:
         assert tool_calls[0].function.arguments == '{"a": 1}'
         assert result.choices[0].finish_reason == "tool_calls"
 
-    def test_total_ceiling_kills_trickle_stream_as_timeout(self):
-        def _trickle():
-            while True:
-                time.sleep(0.01)
-                yield _chunk(content="x")
-        with pytest.raises(TimeoutError, match="timed out"):
-            _aggregate_chat_stream(_trickle(), total_ceiling=0.05)
 
     def test_stream_close_is_called(self):
         closed = []
@@ -232,48 +266,463 @@ class TestAggregateChatStream:
         assert result.choices[0].message.content == "ok"
         assert closed == [True]
 
-    def test_empty_choices_chunks_are_skipped(self):
-        empty = SimpleNamespace(id="c", model="m", choices=[], usage=None)
-        chunks = [empty, _chunk(content="ok", finish_reason="stop")]
-        result = _aggregate_chat_stream(iter(chunks))
-        assert result.choices[0].message.content == "ok"
+    @staticmethod
+    def _sse_server(gates: dict):
+        """Loopback HTTP/1.1 keepalive SSE endpoint; the request's ``model`` picks the script."""
+        import http.server
+        import json
+
+        def frame(handler, payload):
+            raw = (payload if isinstance(payload, str) else f"data: {json.dumps(payload)}\n\n").encode()
+            handler.wfile.write(b"%x\r\n%s\r\n" % (len(raw), raw))
+            handler.wfile.flush()
+
+        def chunk(content=None, finish=None, usage=None):
+            return {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m",
+                    "choices": [{"index": 0, "delta": {"content": content} if content else {},
+                                 "finish_reason": finish}], **({"usage": usage} if usage else {})}
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                script = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["model"]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                self.wfile.flush()
+                try:
+                    if script in ("openai/o3", "slow"):  # silent reasoning before the first token
+                        time.sleep(2.0)
+                    if script == "b":
+                        gates["b_started"].set()
+                    frame(self, chunk(content="partial"))
+                    if script == "usage":  # terminal chunk with billed usage, then a stalled teardown
+                        frame(self, chunk(finish="stop", usage={
+                            "prompt_tokens": 100, "completion_tokens": 9, "total_tokens": 109}))
+                    gates.get(script, gates["release"]).wait(30)
+                    if script != "a":  # "a" ends its body at EOF (no [DONE]), freeing the keepalive socket
+                        frame(self, "data: [DONE]\n\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    @pytest.fixture
+    def sse(self, monkeypatch):
+        """(gates, call(model, task)) against the real OpenAI SDK + loopback transport. The default
+        window is 3s and ``auxiliary.compression.no_progress_timeout`` is 0.4s."""
+        import openai
+
+        gates = {name: threading.Event() for name in ("release", "a", "b", "b_started", "usage")}
+        server = self._sse_server(gates)
+        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 3.0)
+        monkeypatch.setattr("agent.auxiliary_client._get_task_no_progress_timeout",
+                            lambda task: 0.4 if task == "compression" else None)
+        # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
+        monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
+        client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
+
+        def call(model, task, *, via_relay_seam=False, provider=None):
+            from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
+
+            request = {"model": model, "messages": [], "timeout": 20.0}
+            with aux_progress_hook(lambda: None):
+                if via_relay_seam:  # a recovery rung / credential retry: the default relay callback
+                    with _relay_aux_call_scope((task,), {}):
+                        return _relay_sync_completion(client, request, provider=provider)
+                return _create_with_progress(client, request, task)
+
+        try:
+            yield gates, call
+        finally:
+            for gate in gates.values():
+                gate.set()
+            server.shutdown()
+            client.close()
+
+    @pytest.mark.parametrize("via_relay_seam", [False, True], ids=["primary", "recovery_rung"])
+    def test_silent_stream_fails_fast_through_the_real_transport(self, sse, via_relay_seam):
+        """#100501: an endpoint that sends one chunk then goes silent fails at the task's no-progress
+        window as a timeout (so retry/fallback run), not at the request read timeout. Recovery rungs
+        go through the default relay callback and must keep the task's window."""
+        from agent.auxiliary_client import _should_skip_same_provider_retry
+
+        _gates, call = sse
+        started = time.monotonic()
+        with pytest.raises(TimeoutError) as excinfo:
+            call("m", "compression", via_relay_seam=via_relay_seam)
+        assert time.monotonic() - started < 5.0
+        assert "stalled: no new output for 0.4s" in str(excinfo.value)
+        assert _should_skip_same_provider_retry("compression", excinfo.value)
+
+    @pytest.mark.parametrize("case", ["reasoning_before_first_token", "provider_stale_timeout_before_first_token",
+                                      "stall_after_terminal_usage", "late_timer_after_pool_reuse"])
+    def test_watchdog_only_cuts_its_own_unfinished_stream(self, sse, case, monkeypatch):
+        """The no-progress watchdog must not cut (a) a model thinking silently before its first token
+        for 5x the inter-chunk window (main-loop reasoning floor, or the routed provider's explicit
+        ``providers.<id>.stale_timeout_seconds`` over a shorter env stale timeout), (b) a response
+        whose terminal chunk and billed usage already arrived, nor (c) a later request that reused
+        the keepalive connection after a stalled attempt's timer had already woken."""
+        gates, call = sse
+        if case == "reasoning_before_first_token":
+            gates["release"].set()  # the stream ends right after its first chunk
+            assert call("openai/o3", "compression").choices[0].message.content == "partial"
+            return
+        if case == "provider_stale_timeout_before_first_token":
+            gates["release"].set()
+            monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+            monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                                lambda: {"providers": {"openrouter": {"stale_timeout_seconds": 900}}})
+            result = call("slow", "compression", via_relay_seam=True, provider="openrouter")
+            assert result.choices[0].message.content == "partial"
+            return
+        if case == "stall_after_terminal_usage":
+            result = call("usage", "compression")
+            assert result.choices[0].message.content == "partial"
+            assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (100, 9)
+            return
+        # Hold the stalled attempt's timer at the moment it shuts a socket down; meanwhile let
+        # attempt A end at EOF (its connection may return to the pool) and start B on the client.
+        paused, resume, outcome = threading.Event(), threading.Event(), {}
+
+        def tracer(frame, event, _arg):
+            if (event == "call" and frame.f_code.co_name == "_shutdown_socket"
+                    and not paused.is_set()):
+                paused.set()
+                resume.wait(3)
+
+        def run(name, model, task):
+            try:
+                outcome[name] = call(model, task)
+            except Exception as exc:
+                outcome[name] = exc
+
+        threading.settrace(tracer)
+        try:
+            attempt_a = threading.Thread(target=run, args=("a", "a", "compression"))
+            attempt_a.start()
+            assert paused.wait(3)
+            gates["a"].set()
+            attempt_a.join(0.3)
+            attempt_b = threading.Thread(target=run, args=("b", "b", None))
+            attempt_b.start()
+            assert gates["b_started"].wait(3)
+            resume.set()
+            time.sleep(0.2)
+            gates["b"].set()
+            attempt_b.join(5)
+            attempt_a.join(5)
+        finally:
+            threading.settrace(None)
+            resume.set()
+        assert isinstance(outcome["a"], TimeoutError)
+        assert getattr(outcome["b"], "choices", None), outcome["b"]
+        assert outcome["b"].choices[0].message.content == "partial"
+
+
+
+# ---------------------------------------------------------------------------
+# Content-bearing progress classification
+# ---------------------------------------------------------------------------
+
+
+class TestContentBearingProgress:
+    @pytest.mark.parametrize(
+        "event",
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.added", item={"type": "message"}),
+            SimpleNamespace(type="response.content_part.added", part={"type": "output_text"}),
+            SimpleNamespace(type="response.output_text.delta", delta=""),
+            SimpleNamespace(type="response.reasoning_summary_text.delta", delta=""),
+            SimpleNamespace(type="response.function_call_arguments.delta", delta=""),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="function_call"),
+            ),
+            {"type": "response.output_text.delta", "delta": ""},
+        ],
+    )
+    def test_codex_empty_and_structural_events_are_not_progress(self, event):
+        assert _codex_event_has_content(event) is False
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="token"),
+            SimpleNamespace(type="response.reasoning_summary_text.delta", delta="thought"),
+            SimpleNamespace(type="response.function_call_arguments.delta", delta='{"x"'),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(
+                    type="function_call",
+                    id="item_1",
+                    call_id="call_1",
+                    name="lookup",
+                ),
+            ),
+            {"type": "response.output_text.delta", "delta": "token"},
+        ],
+    )
+    def test_codex_nonempty_deltas_are_progress(self, event):
+        assert _codex_event_has_content(event) is True
+
+    @pytest.mark.parametrize(
+        ("delta", "expected"),
+        [
+            (SimpleNamespace(type="text_delta", text="", thinking=None), False),
+            (SimpleNamespace(type="text_delta", text="token", thinking=None), True),
+            (SimpleNamespace(type="thinking_delta", text=None, thinking="thought"), True),
+            (SimpleNamespace(type="input_json_delta", partial_json=""), False),
+            (SimpleNamespace(type="input_json_delta", partial_json='{"x"'), True),
+            # Signed-thinking / citation payloads the transport emits
+            # (relay_llm.py signature_delta + citations_delta).
+            (SimpleNamespace(type="signature_delta", signature="sig-1"), True),
+            (SimpleNamespace(type="signature_delta", signature=""), False),
+            (SimpleNamespace(type="citations_delta", citation={"cited": 1}), True),
+        ],
+    )
+    def test_anthropic_requires_nonempty_delta_payload(self, delta, expected):
+        event = SimpleNamespace(type="content_block_delta", delta=delta)
+        assert _anthropic_event_has_content(event) is expected
+
+    @pytest.mark.parametrize(
+        ("block", "expected"),
+        [
+            (SimpleNamespace(type="text"), False),
+            (SimpleNamespace(type="tool_use", id=None, name=None), False),
+            (SimpleNamespace(type="tool_use", id="toolu_1", name="lookup"), True),
+        ],
+    )
+    def test_anthropic_tool_start_requires_identity(self, block, expected):
+        event = SimpleNamespace(type="content_block_start", content_block=block)
+        assert _anthropic_event_has_content(event) is expected
+
+    def test_chat_stream_empty_tool_scaffolding_is_not_progress(self):
+        ticks = []
+        empty_tool_call = SimpleNamespace(
+            index=0,
+            id=None,
+            function=SimpleNamespace(name=None, arguments=""),
+        )
+        accumulator = _ChatStreamAccumulator()
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(_chunk(tool_calls=[empty_tool_call]))
+
+        assert ticks == []
+
+    @pytest.mark.parametrize(
+        "tool_call",
+        [
+            SimpleNamespace(index=0, id="call_1", function=None),
+            SimpleNamespace(
+                index=0,
+                id=None,
+                function=SimpleNamespace(name="lookup", arguments=""),
+            ),
+            SimpleNamespace(
+                index=0,
+                id=None,
+                function=SimpleNamespace(name=None, arguments='{"q"'),
+            ),
+        ],
+    )
+    def test_chat_stream_substantive_tool_fragments_are_progress(self, tool_call):
+        ticks = []
+        accumulator = _ChatStreamAccumulator()
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(_chunk(tool_calls=[tool_call]))
+
+        assert ticks == [1]
+
+    def test_openrouter_reasoning_details_keep_compression_alive(self):
+        """Reasoning-only streams must refresh the compression idle fence."""
+        ticks = []
+        accumulator = _ChatStreamAccumulator()
+        detail = {"type": "reasoning.summary", "summary": "working..."}
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(_chunk(reasoning_details=[detail]))
+
+        result = accumulator.finish()
+        assert ticks == [1]
+        assert result.choices[0].message.reasoning_details == [detail]
+
+    def test_structural_reasoning_details_are_not_progress(self):
+        ticks = []
+        accumulator = _ChatStreamAccumulator()
+
+        with aux_progress_hook(lambda: ticks.append(1)):
+            accumulator.feed(
+                _chunk(
+                    reasoning_details=[
+                        {"type": "reasoning.encrypted", "signature": "sig"}
+                    ]
+                )
+            )
+
+        assert ticks == []
+
+    def test_codex_adapter_updates_fence_only_for_substantive_events(self):
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta=""),
+            SimpleNamespace(type="response.output_text.delta", delta="token"),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(
+                    type="function_call", id="item_1", call_id="call_1", name="lookup"
+                ),
+            ),
+        ]
+        real_client = SimpleNamespace(
+            base_url="https://chatgpt.com/backend-api/codex",
+            responses=SimpleNamespace(create=lambda **_kwargs: iter(events)),
+        )
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.6-sol")
+        fence = CompressionCommitFence()
+        touches = []
+
+        def _touch():
+            touches.append(1)
+            fence.touch_progress()
+
+        def _consume(stream, *, model, on_event):
+            del model
+            for event in stream:
+                on_event(event)
+            return SimpleNamespace(output=[], usage=None)
+
+        with (
+            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            aux_progress_hook(_touch),
+        ):
+            adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert touches == [1, 1]
+
+    def test_anthropic_adapter_updates_fence_only_for_substantive_events(self):
+        events = [
+            SimpleNamespace(type="ping"),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text=""),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="input_json_delta", partial_json='{"q"'),
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(
+                    type="tool_use", id="toolu_1", name="lookup"
+                ),
+            ),
+        ]
+        adapter = _AnthropicCompletionsAdapter(
+            MagicMock(), "claude-sonnet-4-6", is_oauth=False
+        )
+        fence = CompressionCommitFence()
+        touches = []
+
+        def _touch():
+            touches.append(1)
+            fence.touch_progress()
+
+        def _create_message(*_args, **kwargs):
+            for event in events:
+                kwargs["on_stream_event"](event)
+            raise RuntimeError("stop after callback verification")
+
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_kwargs",
+                return_value={"model": "claude-sonnet-4-6", "messages": []},
+            ),
+            patch(
+                "agent.anthropic_adapter.create_anthropic_message",
+                side_effect=_create_message,
+            ),
+            aux_progress_hook(_touch),
+            pytest.raises(RuntimeError, match="stop after callback verification"),
+        ):
+            adapter.create(messages=[{"role": "user", "content": "summarize"}])
+
+        assert touches == [1, 1]
+
+    def test_keepalive_chunks_do_not_reset_the_compression_fence(self, monkeypatch):
+        """End-to-end bug pin (#96707): content-free frames must not refresh
+        CompressionCommitFence._last_progress.
+
+        The waiter in conversation_compression charges its idle budget from
+        seconds_since_progress(); before the fix, every keepalive chunk fed
+        through _ChatStreamAccumulator ticked the fence, so a stalled
+        summary stream never hit the inactivity timeout."""
+        now = [10.0]
+        monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
+        fence = CompressionCommitFence()
+        now[0] = 20.0
+        accumulator = _ChatStreamAccumulator()
+        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
+        empty_role_chunk = _chunk(content="", reasoning="")
+
+        with aux_progress_hook(fence.touch_progress):
+            for _ in range(5):
+                accumulator.feed(keepalive)
+                accumulator.feed(empty_role_chunk)
+        # No substantive payload arrived: the fence must have stayed stale.
+        assert fence.seconds_since_progress() > 0.0
+
+        with aux_progress_hook(fence.touch_progress):
+            accumulator.feed(_chunk(content="token"))
+        assert fence.seconds_since_progress() < 0.05
+
+    def test_content_free_frames_still_record_ttfp_timing(self):
+        """The fast-lane telemetry contract (#96945/#96963) survives the
+        #96707 gating: the provider-response (time_to_first_progress_ms)
+        hook must fire on the FIRST frame of any kind (transport liveness),
+        not only on the first token."""
+        from agent.auxiliary_client import (
+            _aux_provider_response,
+            _aux_thread_local_hook,
+        )
+
+        responses: list = []
+        keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
+        accumulator = _ChatStreamAccumulator()
+
+        with (
+            _aux_thread_local_hook(_aux_provider_response, lambda: responses.append("response")),
+            aux_progress_hook(lambda: None),
+        ):
+            accumulator.feed(keepalive)
+
+        assert responses, "content-free first frame must still record TTFP"
+
 
 
 # ---------------------------------------------------------------------------
 # Ceiling arithmetic
 # ---------------------------------------------------------------------------
 
-class TestStreamCeiling:
-    def test_floor_applies_to_small_timeouts(self):
-        assert _aux_stream_total_ceiling(30) == 600.0
-
-    def test_multiplier_wins_for_large_timeouts(self):
-        assert _aux_stream_total_ceiling(300) == 1200.0
-
-    def test_none_timeout_gets_floor(self):
-        assert _aux_stream_total_ceiling(None) == 600.0
 
 
 # ---------------------------------------------------------------------------
 # CompressionCommitFence progress surface
 # ---------------------------------------------------------------------------
 
-class TestFenceProgress:
-    def test_touch_progress_resets_idle_clock(self):
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        assert fence.seconds_since_progress() >= 0.04
-        fence.touch_progress()
-        assert fence.seconds_since_progress() < 0.05
-
-    def test_fence_hook_wiring_matches_compressor_usage(self):
-        # conversation_compression installs fence.touch_progress as the hook;
-        # verify the pair works end-to-end through _notify_aux_progress.
-        fence = CompressionCommitFence()
-        time.sleep(0.05)
-        with aux_progress_hook(fence.touch_progress):
-            _notify_aux_progress()
-        assert fence.seconds_since_progress() < 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +730,6 @@ class TestFenceProgress:
 # ---------------------------------------------------------------------------
 
 class TestProviderRequiresStream:
-    def test_tencent_copilot_is_stream_only(self):
-        assert _provider_requires_stream(
-            "custom", "https://copilot.tencent.com/v1"
-        ) is True
 
     def test_normal_endpoints_are_not(self):
         assert _provider_requires_stream(
@@ -305,14 +750,6 @@ class TestProviderRequiresStream:
                 "custom", "https://other.example.com/v1"
             ) is False
 
-    def test_config_read_failure_fails_open_to_non_streaming(self):
-        with patch(
-            "hermes_cli.config.load_config",
-            side_effect=RuntimeError("config broken"),
-        ):
-            assert _provider_requires_stream(
-                "custom", "https://other.example.com/v1"
-            ) is False
 
 
 class TestForceStream:
@@ -415,3 +852,31 @@ class TestAsyncStreamAggregation:
         )
         assert calls[0]["stream"] is True
         assert result.choices[0].message.content == "ok"
+    @pytest.mark.asyncio
+    async def test_async_dispatch_only_auth_failure_does_not_tick_progress(self):
+        """Async twin of the #114938 pin: a 401 dispatch must not reset the
+        compression inactivity fence."""
+        fence = CompressionCommitFence()
+        dispatches = []
+
+        class _AuthError(Exception):
+            status_code = 401
+
+        class _AsyncClient:
+            def __init__(self):
+                completions = SimpleNamespace(create=self._create)
+                self.chat = SimpleNamespace(completions=completions)
+
+            async def _create(self, **kwargs):
+                raise _AuthError("unauthorized")
+
+        with (
+            aux_progress_hook(fence.touch_progress),
+            _aux_thread_local_hook(_aux_dispatch, lambda: dispatches.append(1)),
+            pytest.raises(_AuthError),
+        ):
+            await _acreate_with_progress(
+                _AsyncClient(), {"model": "m1", "messages": [], "timeout": 30},
+            )
+        assert dispatches == [1]
+        assert fence.progress_observed is False

@@ -12,16 +12,16 @@ name: Supply Chain Audit
 # Path-gating is handled centrally by the ``ci.yml`` orchestrator's
 # ``detect`` job. The orchestrator passes ``scan`` / ``deps`` booleans as
 # inputs; this workflow's jobs gate on those inputs instead of re-computing
-# the diff. MCP catalog review was previously here but has moved to
-# ``review-labels.yml`` so it can be rerun independently.
+# the diff. Files that run at install/startup (.pth, setup.py, ...) and the
+# MCP catalog are not scanned here: .github/CODEOWNERS requires a maintainer
+# review for them.
 #
 # Outputs:
-#   review_status      — JSON array of status objects consumed by the review
-#                         comment assembler (scripts/ci/assemble_review_comment.py).
-#   critical_findings  — "true" when the narrow critical-pattern scan found
-#                         something. The review-label gate consumes this and
-#                         owns the action-required result, so adding
-#                         ``ci-reviewed`` can heal the run on rerun.
+#   review_status  — JSON array of status objects consumed by the review
+#                    comment assembler (scripts/ci/assemble_review_comment.py).
+#                    Each job (``scan``, ``dep-bounds``) emits its own
+#                    array; an ``aggregate`` job merges them into the
+#                    workflow-level output.
 
 on:
   workflow_call:
@@ -42,9 +42,6 @@ on:
       review_status:
         description: JSON array of review status objects for the review comment assembler.
         value: ${{ jobs.aggregate.outputs.review_status }}
-      critical_findings:
-        description: Whether the critical-pattern scan found a risk requiring maintainer review.
-        value: ${{ jobs.aggregate.outputs.critical_findings }}
 
 permissions:
   pull-requests: write
@@ -58,10 +55,9 @@ jobs:
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.emit-status.outputs.review_status }}
-      critical_findings: ${{ steps.scan.outputs.found }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0
 
@@ -69,7 +65,6 @@ jobs:
         id: scan
         env:
           GH_TOKEN: ${{ github.token }}
-          CI_REVIEWED: ${{ contains(github.event.pull_request.labels.*.name, 'ci-reviewed') }}
         run: |
           set -euo pipefail
 
@@ -83,22 +78,6 @@ jobs:
           DIFF=$(git diff "$BASE"..."$HEAD" -- . ':!uv.lock' ':!*.lock' ':!package-lock.json' ':!yarn.lock' || true)
 
           FINDINGS=""
-
-          # --- .pth files (auto-execute on Python startup) ---
-          # The exact mechanism used in the litellm supply chain attack:
-          # https://github.com/BerriAI/litellm/issues/24512
-          PTH_FILES=$(git diff --diff-filter=d --name-only "$BASE"..."$HEAD" | grep '\.pth$' || true)
-          if [ -n "$PTH_FILES" ]; then
-            FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: .pth file added or modified
-          Python \`.pth\` files in \`site-packages/\` execute automatically when the interpreter starts — no import required.
-
-          **Files:**
-          \`\`\`
-          ${PTH_FILES}
-          \`\`\`
-          "
-          fi
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
           B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
@@ -128,29 +107,6 @@ jobs:
           "
           fi
 
-          # --- Install-hook files (setup.py/sitecustomize/usercustomize/__init__.pth) ---
-          # These execute during pip install or interpreter startup.
-          # Anchored at repo root: only the top-level setup.py/setup.cfg run during
-          # `pip install`, and only top-level sitecustomize.py/usercustomize.py are
-          # auto-loaded by the interpreter via site.py. Any nested file with the
-          # same name (e.g. hermes_cli/setup.py — the CLI setup wizard) is unrelated
-          # and produced false positives that trained reviewers to ignore the scanner.
-          SETUP_HITS=$(git diff --diff-filter=d --name-only "$BASE"..."$HEAD" | grep -E '^(setup\.py|setup\.cfg|sitecustomize\.py|usercustomize\.py|__init__\.pth)$' || true)
-          # A maintainer-applied ci-reviewed label records the manual review
-          # required for intentional changes to an install hook. The scanner
-          # still blocks every unreviewed addition or modification.
-          if [ -n "$SETUP_HITS" ] && [ "$CI_REVIEWED" != "true" ]; then
-            FINDINGS="${FINDINGS}
-          ### 🚨 CRITICAL: Install-hook file added or modified
-          These files can execute code during package installation or interpreter startup.
-
-          **Files:**
-          \`\`\`
-          ${SETUP_HITS}
-          \`\`\`
-          "
-          fi
-
           if [ -n "$FINDINGS" ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "$FINDINGS" > /tmp/findings.md
@@ -167,15 +123,33 @@ jobs:
           python3 - <<'PYEOF'
           import json, os
 
-          # The review-label gate renders and blocks critical findings. Keep
-          # this scan a fact-finder so adding ci-reviewed can rerun the gate
-          # without requiring the scanner itself to fail again.
-          status = []
+          found = os.environ.get("FOUND", "") == "true"
+
+          if found:
+              with open("/tmp/findings.md", encoding="utf-8") as f:
+                  detail = f.read()
+              status = [{
+                  "source": "supply chain",
+                  "results": [{
+                      "kind": "action_required",
+                      "title": "Critical supply chain risk",
+                      "summary": "Critical supply chain risk patterns detected in this PR.",
+                      "detail": detail,
+                      "how_to_fix": "Review the flagged code carefully. If it is a false positive, narrow the pattern in .github/workflows/supply-chain-audit.yml."
+                  }]
+              }]
+          else:
+              status = []
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"review_status={json.dumps(status)}\n")
           PYEOF
 
+      - name: Fail on critical findings
+        if: steps.scan.outputs.found == 'true'
+        run: |
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
+          exit 1
 
   dep-bounds:
     name: Check PyPI dependency upper bounds
@@ -186,7 +160,7 @@ jobs:
       review_status: ${{ steps.emit-status.outputs.review_status }}
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           fetch-depth: 0
 
@@ -263,14 +237,12 @@ jobs:
     timeout-minutes: 15
     outputs:
       review_status: ${{ steps.merge.outputs.review_status }}
-      critical_findings: ${{ steps.merge.outputs.critical_findings }}
     steps:
       - name: Merge review statuses
         id: merge
         env:
           SCAN_STATUS: ${{ needs.scan.outputs.review_status }}
           DEP_STATUS: ${{ needs.dep-bounds.outputs.review_status }}
-          CRITICAL_FINDINGS: ${{ needs.scan.outputs.critical_findings }}
         run: |
           python3 - <<'PYEOF'
           import json, os
@@ -289,5 +261,19 @@ jobs:
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"review_status={json.dumps(merged)}\n")
-              f.write("critical_findings=" + os.environ.get("CRITICAL_FINDINGS", "false") + "\n")
+
+          # Write review-status.json for the live comment poller artifact.
+          with open("review-status.json", "w", encoding="utf-8") as f:
+              f.write(f"review_status={json.dumps(merged)}\n")
           PYEOF
+
+      - name: Upload review status artifact
+        if: always() && steps.merge.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-supply-chain
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore

@@ -1,83 +1,268 @@
-"""Billing and subscription handlers for the interactive CLI (god-file decomposition).
+"""Billing and subscription handlers for the interactive CLI (mixed into ``HermesCLI``).
+cli.py symbols are imported LAZILY inside methods — never at module load (import cycle).
 
-This module hosts the Nous billing/subscription methods lifted out of
-``cli.py``'s ``HermesCLI`` class. ``HermesCLI`` inherits
-``CLIBillingMixin`` so every ``self.<handler>`` call resolves unchanged
-via the MRO — behavior-neutral apart from focused billing fixes.
-
-Import discipline mirrors ``hermes_cli.cli_commands_mixin``:
-  * Neutral, non-cyclic dependencies are imported at module top level below.
-  * cli.py-internal symbols (the ``_cprint``/``_b``/``_d`` helpers and
-    display constants) are imported LAZILY inside each method via
-    ``from cli import ...``. The mixin never imports ``cli`` at module load
-    time, avoiding the cycle created when ``cli.py`` imports this mixin.
-"""
+User-facing copy is looked up through ``agent.i18n.t`` at call time (never at import — the
+active language is not known when this module loads), under ``cli.billing.*`` (shared /topup
+copy) and ``cli.subscription.*`` (/subscription copy). Modal choice VALUES (index 0) stay
+English identifiers; only labels/descriptions are translated."""
 
 from __future__ import annotations
 
-import time
+from agent.i18n import t
+
+_RULE = "─" * 41
+
+# Poll `failed` reasons → copy key (default: generic line carrying the raw reason).
+_CHARGE_FAILED_KEYS = {
+    "authentication_required": "cli.billing.charge_failed_authentication_required",
+    "payment_method_expired": "cli.billing.charge_failed_payment_method_expired",
+    "card_declined": "cli.billing.charge_failed_card_declined"}
+
+# Submit-time BillingError codes with a fixed copy key (no payload/type inspection).
+_CHARGE_ERROR_KEYS = {
+    "no_payment_method": "cli.billing.charge_error_no_payment_method",
+    "cli_billing_disabled": "cli.billing.charge_error_remote_spending_disabled",
+    "remote_spending_disabled": "cli.billing.charge_error_remote_spending_disabled",
+    "role_required": "cli.billing.charge_error_role_required",
+    "idempotency_conflict": "cli.billing.charge_error_idempotency_conflict"}
+
+# Upgrade 2xx `status` → (copy key, echo recoveryUrl as "Portal:"). Missing status → ambiguous.
+_UPGRADE_STATUS_KEYS = {
+    "requires_action": ("cli.subscription.upgrade_requires_action", True),
+    "payment_failed": ("cli.subscription.upgrade_payment_failed", True)}
+
+# Upgrade 2xx terminal statuses → dim ✓ copy key ({name} = target tier).
+_UPGRADE_OK_KEYS = {
+    "already_on_tier": "cli.subscription.upgrade_already_on_tier",
+    "upgraded": "cli.subscription.upgrade_upgraded"}
+# Pending-change mutations → dim ✓ copy key.
+_PENDING_OK_KEYS = {
+    "schedule": "cli.subscription.pending_scheduled",
+    "cancel": "cli.subscription.pending_cancel_scheduled",
+    "resume": "cli.subscription.pending_resumed"}
+
+
+# ── Static modal menus (value, label, description) — built at call time so labels follow the
+#    active language; order is the rendered order. ──
+
+def _cancel_row(value: str = "cancel", label_key: str = "cli.billing.choice_cancel",
+                desc_key: str = "cli.billing.desc_do_nothing") -> tuple[str, str, str]:
+    return (value, t(label_key), t(desc_key))
+
+
+def _portal_row(value: str = "portal") -> tuple[str, str, str]:
+    return (value, t("cli.billing.choice_manage_on_portal"), t("cli.billing.desc_open_billing_page"))
+
+
+def _allow_remote_spending_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("yes", t("cli.billing.choice_allow_remote_spending"), t("cli.billing.desc_allow_remote_spending")),
+        ("no", t("cli.billing.choice_not_now"), t("cli.billing.desc_not_now"))]
+
+
+def _topup_menu_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("buy", t("cli.billing.choice_add_funds"), t("cli.billing.desc_add_funds")),
+        ("auto", t("cli.billing.choice_auto_reload"), t("cli.billing.desc_auto_reload")),
+        ("limit", t("cli.billing.choice_monthly_limit"), t("cli.billing.desc_monthly_limit")),
+        _portal_row(),
+        _cancel_row()]
+
+
+def _add_card_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("portal", t("cli.billing.choice_add_card_on_portal"), t("cli.billing.desc_add_card_on_portal")),
+        ("recheck", t("cli.billing.choice_recheck_card"), t("cli.billing.desc_recheck_card")),
+        _cancel_row(label_key="cli.billing.choice_back")]
+
+
+def _auto_reload_top_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("edit", t("cli.billing.choice_edit_thresholds"), t("cli.billing.desc_edit_thresholds")),
+        ("off", t("cli.billing.choice_turn_off"), t("cli.billing.desc_turn_off")),
+        _cancel_row()]
+
+
+def _auto_reload_agree_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("agree", t("cli.billing.choice_agree_turn_on"), t("cli.billing.desc_agree_turn_on")),
+        _cancel_row()]
+
+
+def _change_plan_row() -> tuple[str, str, str]:
+    return ("change", t("cli.subscription.choice_change_plan"), t("cli.subscription.desc_change_plan"))
+
+
+def _change_menu_tail() -> list[tuple[str, str, str]]:
+    return [_portal_row(), _cancel_row("close", "cli.billing.choice_close")]
+
+
+def _cancel_sub_choices() -> list[tuple[str, str, str]]:
+    return [
+        ("yes", t("cli.subscription.choice_cancel_subscription"), t("cli.subscription.desc_cancel_subscription")),
+        ("cancel", t("cli.billing.choice_go_back"), t("cli.subscription.desc_keep_your_plan"))]
 
 
 class CLIBillingMixin:
     """Mixin holding interactive-CLI billing and subscription handlers."""
 
-    def _print_nous_credits_block(self) -> bool:
-        """Print the Nous dollar balance block (two-bar view) when a Nous account
-        is logged in. Returns True if it printed anything.
+    # ── Shared helpers ──
 
-        Prefers the shared dollar usage model (``agent.billing_usage`` — two-bar
-        plan/top-up view, dollars-only, the /usage + /subscription source of
-        truth). Falls back to the legacy ``nous_credits_lines`` text only when the
-        model is unavailable. Agent-independent (a portal fetch gated on "a Nous
-        account is logged in"), so /usage shows the block even in the TUI
-        slash-worker subprocess that resumes WITHOUT a live agent. Fail-open and
-        wall-clock-bounded; honors HERMES_DEV_CREDITS_FIXTURE for offline testing.
-        """
-        from cli import _cprint, _b, _d
+    def _modal_choice(self, title, detail, choices):
+        """Run the choice modal and return the normalized choice value."""
+        raw = self._prompt_text_input_modal(title=title, detail=detail, choices=choices)
+        return self._normalize_slash_confirm_choice(raw, choices)
 
+    def _block_header(self, icon, title, *, rule=True) -> None:
+        """Blank line, ``<icon> <bold title>`` via _cprint, then (optionally) the rule via print."""
+        from cli import _cprint, _b
+        print()
+        _cprint(f"  {icon} {_b(title)}")
+        if rule:
+            print(f"  {_RULE}")
+
+    def _dim(self, msg, *, icon="", lead=False) -> None:
+        """Dim ``  <icon><msg>`` line via _cprint; ``lead`` prints a blank line first."""
+        from cli import _cprint, _d
+        if lead:
+            print()
+        _cprint(f"  {icon}{_d(msg)}")
+
+    def _ok(self, msg) -> None:
+        """Dim ``✓ <msg>`` success line."""
+        from cli import _cprint, _DIM, _RST
+        _cprint(f"  {_DIM}✓ {msg}{_RST}")
+
+    def _print_logged_out(self, state, load_failed, cmd) -> None:
+        """Logged-out / fetch-failed block shared by /subscription and /topup."""
+        if state.error:
+            self._dim(t("cli.billing.load_failed", label=load_failed, error=state.error), icon="💳 ", lead=True)
+        else:
+            self._dim(t("cli.billing.not_logged_in"), icon="💳 ", lead=True)
+            print(f"  {t('cli.billing.run_portal_then', cmd=cmd)}")
+
+    def _print_org_line(self, state) -> None:
+        """Dim ``Org: <name> · <Role>`` line (skipped when there is no org)."""
+        if state.org_name:
+            role = (state.role or "").title()
+            if role:
+                self._dim(t("cli.billing.org_line_role", org=state.org_name, role=role))
+            else:
+                self._dim(t("cli.billing.org_line", org=state.org_name))
+
+    def _try_usage_model(self):
+        """Shared dollar usage model (the only source with top-up dollars); None on any failure."""
         try:
-            from agent.billing_usage import build_usage_model, format_renews
-
-            usage = build_usage_model()
+            from agent.billing_usage import build_usage_model
+            return build_usage_model()
         except Exception:
-            usage = None
-            format_renews = None  # type: ignore
+            return None
 
-        if usage is not None and usage.available and format_renews is not None:
-            printed_any = False
-            plan = usage.plan_name or ("Free" if usage.status == "free" else None)
-            renews_display = getattr(usage, "renews_display", None) or format_renews(usage.renews_at)
-            renews = f" · renews {renews_display}" if renews_display else ""
+    def _usage_bar_lines(self, usage, plan_name) -> list:
+        """Plan + top-up bars as lines (filled = remaining). Caller picks the print fn: ordering differs per surface."""
+        lines: list = []
+        pb = usage.plan_bar if usage else None
+        if pb is not None and pb.total_usd > 0:
+            filled = max(0, min(10, round(pb.fill_fraction * 10)))
+            bar = ("█" * filled) + ("░" * (10 - filled))
+            pct_s = t("cli.billing.bar_pct_used", pct=pb.pct_used) if pb.pct_used is not None else ""
+            label = (plan_name or t("cli.billing.bar_plan_label")).ljust(8)[:8]
+            lines.append("  " + t("cli.billing.bar_plan", label=label, bar=bar, remaining=f"{pb.remaining_usd:,.2f}",
+                                  total=f"{pb.total_usd:,.2f}", pct=pct_s))
+        tb = usage.topup_bar if usage else None
+        if tb is not None and tb.remaining_usd > 0:
+            lines.append("  " + t("cli.billing.bar_topup", label=t("cli.billing.bar_topup_label").ljust(8)[:8],
+                                  bar="█" * 10, remaining=f"{tb.remaining_usd:,.2f}"))
+        return lines
+
+    def _print_total_spendable(self, usage, print_fn) -> None:
+        if usage and usage.has_topup and usage.total_spendable_usd is not None:
+            print_fn(f"  {t('cli.billing.total_spendable', amount=f'{usage.total_spendable_usd:,.2f}')}")
+
+    def _step_up_remote_spending(self, *, explain, noninteractive_msg, declined_msg, not_granted_msg) -> bool:
+        """"! One-time setup" step-up (explain → confirm → device-flow). True only when granted; refusals print."""
+        print()
+        print(f"  {t('cli.billing.one_time_setup')}")
+        self._dim(explain)
+        if not self._app:
+            print(noninteractive_msg)
+            return False
+        choice = self._modal_choice(
+            t("cli.billing.allow_remote_spending_title"), t("cli.billing.allow_remote_spending_detail"),
+            _allow_remote_spending_choices())
+        if choice != "yes":
+            print(declined_msg)
+            return False
+        print(f"  {t('cli.billing.opening_browser_remote_spending')}")
+        try:
+            from hermes_cli.auth import step_up_nous_billing_scope
+            granted = step_up_nous_billing_scope(open_browser=True)
+        except Exception as exc:
+            print(f"  {t('cli.billing.couldnt_allow_remote_spending', error=exc)}")
+            return False
+        if not granted:
+            print(not_granted_msg)
+        return bool(granted)
+
+    def _print_portal_line(self, exc) -> None:
+        """``Portal: <url>`` via _cprint when the error carries a portal deep-link."""
+        from cli import _cprint
+        if exc is not None and exc.portal_url:
+            _cprint(f"  {t('cli.billing.portal_line', url=exc.portal_url)}")
+
+    def _open_url_in_browser(self, url: str) -> bool:
+        """The one portal opener. Refuses TTY-hijacking text browsers (w3m/lynx over SSH) via the auth guard."""
+        if not url:
+            return False
+        try:
+            from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
+            if _is_remote_session() or not _can_open_graphical_browser():
+                return False
+        except Exception:
+            pass  # guard unavailable → plain best-effort open
+        try:
+            import webbrowser
+            return bool(webbrowser.open(url))
+        except Exception:
+            return False
+
+    def _open_or_print_url(self, url) -> None:
+        """Open ``url`` in the browser, or print it when no graphical browser can be used."""
+        if not self._open_url_in_browser(url):
+            print(f"  {t('cli.billing.open_this_url', url=url)}")
+
+    # ── /usage — Nous balance block ──
+
+    def _print_nous_credits_block(self) -> bool:
+        """Nous dollar balance block (two bars); True if anything printed. Shared dollar model first, then
+        legacy ``nous_credits_lines``. Agent-independent (TUI slash-worker has no live agent). Fail-open."""
+        from cli import _cprint, _b, _d
+        usage = self._try_usage_model()
+        if usage is not None and usage.available:
+            from agent.billing_usage import format_renews
+            plan = usage.plan_name or (t("cli.billing.plan_free") if usage.status == "free" else None)
+            renews_display = usage.renews_display or format_renews(usage.renews_at)
+            renews = t("cli.billing.renews_suffix", date=renews_display) if renews_display else ""
+            head = [f"  {_b(t('cli.billing.plan_line', plan=plan, renews=renews))}"] if plan else []
+            head += self._usage_bar_lines(usage, usage.plan_name)
+            tail = []
+            if usage.status == "free":
+                tail.append(f"  {_d(t('cli.billing.free_models_only_hint'))}")
+            elif usage.status == "low":
+                _amt = f"${usage.total_spendable_usd:,.2f}" if usage.total_spendable_usd is not None else t("cli.billing.under_five")
+                tail.append(f"  {t('cli.billing.low_balance_usage', amount=_amt)}")
+            # All via _cprint like the Plan line: print()/_cprint() flush to different buffers under
+            # patch_stdout. "Total spendable" alone does not count as printed (legacy lines still follow).
             if plan:
                 print()
-                _cprint(f"  {_b(f'Plan: {plan}{renews}')}")
-                printed_any = True
-
-            # All lines below go through _cprint (same renderer as the Plan line) so
-            # ordering is deterministic: raw print() and _cprint() flush to different
-            # buffers under patch_stdout and interleave nondeterministically (the bar
-            # would race above/below the Plan line across states). Keep one path.
-            for _bar_ln in self._usage_bar_lines(usage, usage.plan_name):
-                _cprint(_bar_ln)
-                printed_any = True
-            if usage.has_topup and usage.total_spendable_usd is not None:
-                _cprint(f"  Total spendable: ${usage.total_spendable_usd:,.2f}")
-
-            if usage.status == "free":
-                _cprint(f"  {_d('> Free · free models only. Run /subscription to reach paid models.')}")
-                printed_any = True
-            elif usage.status == "low":
-                _amt = f"${usage.total_spendable_usd:,.2f}" if usage.total_spendable_usd is not None else "under $5"
-                _low = f"! Low balance · {_amt} left. Run /topup or /subscription."
-                _cprint(f"  {_low}")
-                printed_any = True
-
-            if printed_any:
+            for ln in head:
+                _cprint(ln)
+            self._print_total_spendable(usage, _cprint)
+            for ln in tail:
+                _cprint(ln)
+            if head or tail:
                 return True
-
-        # Fallback: legacy text lines (only when the model is unavailable).
         from agent.account_usage import nous_credits_lines
-
         lines = nous_credits_lines()
         if not lines:
             return False
@@ -87,921 +272,496 @@ class CLIBillingMixin:
         return True
 
     def _print_usage_cta(self) -> None:
-        """Print the `/usage` call-to-action pointing at /subscription + /topup.
+        """The `/usage` call-to-action; mirrors the TUI's ``USAGE_CTA``. Nous-account only."""
+        self._dim(t("cli.billing.usage_cta"))
 
-        Mirrors the TUI's ``USAGE_CTA`` (``session.ts``) so every surface ends a
-        usage read with the same nudge. Only called when a Nous account is logged
-        in (the balance block printed), since both commands are Nous-account only.
-        """
-        from cli import _cprint, _d
-
-        _cprint(f"  {_d('Run /subscription to change plan · /topup to add to your balance')}")
-
-    # ------------------------------------------------------------------
-    # /subscription — view plan + change it in the browser (CLI surface)
-    # ------------------------------------------------------------------
+    # ── /subscription — view plan + change it (CLI surface) ──
 
     def _show_subscription(self):
-        """`/subscription` (alias `/upgrade`) — view the Nous plan + browser hand-off.
-
-        The CLI mirror of the TUI ``SubscriptionOverlay``: a read of the current
-        plan, this cycle's subscription credits, renewal date, and the plans you
-        could switch to — then a deep-link to NAS's own ``/manage-subscription``
-        page (NOT the Stripe portal; that page routes upgrade→Checkout /
-        downgrade→scheduled internally). The terminal NEVER charges for a
-        subscription. Fail-open: logged-out / portal hiccup degrades to a clear
-        message, never a crash. Mirrors ``_show_billing``
-        discipline for the interactive-vs-text split.
-        """
-        from cli import _cprint, _b, _d
-
+        """`/subscription` (alias `/upgrade`). Deep-links NAS's ``/manage-subscription`` (NOT Stripe); never charges."""
         from agent.subscription_view import build_subscription_state, subscription_manage_url
-
         state = build_subscription_state()
-
         if not state.logged_in:
-            print()
-            if state.error:
-                _cprint(f"  💳 {_d(f'Could not load subscription: {state.error}')}")
-            else:
-                _cprint(f"  💳 {_d('Not logged into Nous Portal.')}")
-                print("  Run `hermes portal` to log in, then /subscription.")
+            self._print_logged_out(state, t("cli.subscription.load_failed_label"), "/subscription")
             return
-
-        # Team context: no personal plan — teams run on a shared balance.
-        if state.context == "team":
-            print()
-            _cprint(f"  ⚕ {_b('Team subscription')}")
-            print(f"  {'─' * 41}")
-            if state.org_name:
-                role = (state.role or "").title()
-                _org_line = f"Org: {state.org_name}{f' · {role}' if role else ''}"
-                _cprint(f"  {_d(_org_line)}")
-            org = state.org_name or "a team org"
-            print(f"  This terminal is connected to {org}. Teams run on a shared")
-            print("  balance · use /topup to add funds.")
-            _cprint(f"  {_d('Personal subscriptions live on your personal account.')}")
+        if state.context == "team":  # no personal plan — teams run on a shared balance
+            self._block_header("☤", t("cli.subscription.team_header"))
+            self._print_org_line(state)
+            print(f"  {t('cli.subscription.team_connected', org=state.org_name or t('cli.subscription.a_team_org'))}")
+            self._dim(t("cli.subscription.personal_note"))
             return
-
         self._subscription_overview(state, subscription_manage_url(state))
 
     def _subscription_overview(self, state, manage_url):
-        """Print the plan read block, then the browser hand-off to manage it.
-
-        Dollars-only (no "credits") — mirrors the TUI overlay: a status line, the
-        shared two-bar dollar usage view (plan + top-up) with the plan name on
-        the bar, and state-matched free/low nudges. No in-terminal tier picker —
-        the only action is managing the subscription on the portal.
-        """
+        """Plan read block, then the action: portal hand-off (member / non-interactive), catalog (Free), change menu."""
         from cli import _cprint, _b, _d
-
-        # Shared dollar usage model (the only source with top-up dollars).
         from agent.billing_usage import format_renews
-        try:
-            from agent.billing_usage import build_usage_model
-
-            usage = build_usage_model()
-        except Exception:
-            usage = None
-
+        usage = self._try_usage_model()
         c = state.current
         is_free = not (c and c.tier_id)
         can_change = state.can_change_plan
-
         plan_name = (c.tier_name or c.tier_id) if c else (usage.plan_name if usage else None)
-        u_status = getattr(usage, "status", None) if usage else None
-        view_only = not can_change
-        renews_display = getattr(usage, "renews_display", None) if usage else None
+        u_status = usage.status if usage else None
+        _spend = usage.total_spendable_usd if usage else None
+        renews_display = usage.renews_display if usage else None
         if not renews_display and c and c.cycle_ends_at:
             renews_display = format_renews(c.cycle_ends_at)
-
-        # Status line — dollars-only, with a "→ Plus" echo of a pending change so
-        # the headline itself carries a scheduled downgrade/cancellation.
-        _flip = ""
+        # Headline flags the pending change ("→ Plus" / "→ cancels"); the banner (cancel > downgrade)
+        # leads so it can't read as "nothing happened".
+        _flip, _trans = "", None
+        _your_plan = t("cli.subscription.your_plan")
         if c and c.cancel_at_period_end:
-            _flip = " → cancels"
+            _flip = t("cli.subscription.status_flip_cancels")
+            _trans = (c.tier_name or _your_plan, t("cli.subscription.cancels"),
+                      format_renews(c.cancellation_effective_at) or t("cli.subscription.end_of_billing_period"))
         elif c and c.pending_downgrade_tier_name:
-            _flip = f" → {c.pending_downgrade_tier_name}"
-        if not plan_name:
-            status = "Plan: Free · free models only"
-        elif usage is not None and u_status == "low" and usage.total_spendable_usd is not None:
-            _tot = f"${usage.total_spendable_usd:,.2f}"
-            status = f"Plan: {plan_name}{_flip} · {_tot} left"
+            _flip = t("cli.subscription.status_flip_to", tier=c.pending_downgrade_tier_name)
+            _trans = (c.tier_name or _your_plan, c.pending_downgrade_tier_name,
+                      format_renews(c.pending_downgrade_at) or t("cli.subscription.end_of_cycle"))
+        _left = t("cli.subscription.status_left", amount=f"{_spend:,.2f}") if _spend is not None else ""
+        if u_status == "low" and _spend is not None:
+            _tail = ""
+        elif not can_change:
+            _tail = t("cli.subscription.status_view_only")
         else:
-            _spend = getattr(usage, "total_spendable_usd", None) if usage else None
-            _left = f" · ${_spend:,.2f} left" if _spend is not None else ""
-            _tail = " · view only" if view_only else (f" · renews {renews_display}" if renews_display else "")
-            status = f"Plan: {plan_name}{_flip}{_left}{_tail}"
-
-        # Lead with the scheduled change (cancel > downgrade) so it can't read as
-        # "nothing happened" — mirrors the TUI banner. All-`_cprint` (blanks
-        # included) so the block orders deterministically even when piped.
-        _trans = None
-        if c and c.cancel_at_period_end:
-            _when = format_renews(c.cancellation_effective_at) or "the end of the billing period"
-            _trans = ((c.tier_name or "your plan"), "cancels", _when)
-        elif c and c.pending_downgrade_tier_name:
-            _when = format_renews(c.pending_downgrade_at) or "the end of the cycle"
-            _trans = ((c.tier_name or "your plan"), c.pending_downgrade_tier_name, _when)
+            _tail = t("cli.subscription.status_renews", date=renews_display) if renews_display else ""
+        if plan_name:
+            status = t("cli.subscription.status_line", plan=plan_name, flip=_flip, left=_left, tail=_tail)
+        else:
+            status = t("cli.subscription.status_free")
+        # All-_cprint (blanks included) so the block orders deterministically even when piped.
         _cprint("")
         if _trans:
             _from, _to, _when = _trans
-            _cprint(f"  ⏳ {_b('Scheduled change')}")
-            _cprint(f"  {_from} ──▶ {_to}  {_d('· ' + _when)}")
-            _cprint(f"  {_d(f'You keep {_from} (and its credits) until then.')}")
+            _cprint(f"  ⏳ {_b(t('cli.subscription.scheduled_change'))}")
+            _cprint("  " + t("cli.subscription.scheduled_change_line", from_plan=_from, to_plan=_to,
+                             when=_d(t("cli.subscription.scheduled_when", when=_when))))
+            self._dim(t("cli.subscription.keep_until_then", plan=_from))
             _cprint("")
-
-        _cprint(f"  ⚕ {_b(status)}")
-        print(f"  {'─' * 41}")
-
-        # Two-bar dollar usage view — plan name labels the plan bar.
+        _cprint(f"  ☤ {_b(status)}")
+        print(f"  {_RULE}")
         for _bar_ln in self._usage_bar_lines(usage, plan_name):
             print(_bar_ln)
-        if usage and getattr(usage, "has_topup", False) and getattr(usage, "total_spendable_usd", None) is not None:
-            print(f"  Total spendable: ${usage.total_spendable_usd:,.2f}")
-
-        # State-matched nudge (free upsell / low alert; healthy stays silent).
+        self._print_total_spendable(usage, print)
         if is_free:
-            _cprint(f"  {_d('> Paid models need a subscription. Start one to reach them.')}")
+            self._dim(t("cli.subscription.paid_models_need_subscription"))
         elif u_status == "low":
-            _amt = f"${usage.total_spendable_usd:,.2f}" if usage is not None and usage.total_spendable_usd is not None else "under $5"
-            _low = f"! Low balance · {_amt} left. Top up or upgrade before a mid-run cutoff."
-            _cprint(f"  {_low}")
-
-        if state.org_name:
-            role = (state.role or "").title()
-            _org_line = f"Org: {state.org_name}{f' · {role}' if role else ''}"
-            _cprint(f"  {_d(_org_line)}")
-        print(f"  {'─' * 41}")
-
-        # ── Actions ── Members (non-admin) and non-interactive contexts fall back
-        # to the portal hand-off; a paid admin/owner gets the full in-terminal
-        # change flow (parity with the TUI overlay).
+            _amt = f"${_spend:,.2f}" if _spend is not None else t("cli.billing.under_five")
+            _cprint(f"  {t('cli.subscription.low_balance', amount=_amt)}")
+        self._print_org_line(state)
+        print(f"  {_RULE}")
         if not can_change:
-            print()
-            _cprint(f"  {_d('Plan changes need an org admin/owner.')}")
+            self._dim(t("cli.subscription.plan_changes_need_admin"), lead=True)
             if manage_url:
-                print(f"  Manage on portal: {manage_url}")
-            return
-
-        if not getattr(self, "_app", None):
-            # Non-interactive (TUI slash-worker / piped): the modal can't run.
+                print(f"  {t('cli.billing.manage_on_portal_url', url=manage_url)}")
+        elif not self._app:  # non-interactive (TUI slash-worker / piped): the modal can't run
             print()
             if manage_url:
-                print(f"  Manage your subscription: {manage_url}")
-                print("  Open it in your browser, then re-run /subscription.")
-            return
-
-        if is_free:
-            # Starting a NEW subscription needs a fresh card — deep-link only.
-            # Show the plan catalog, let the user pick, and carry ``plan=<tier_id>``
-            # into the portal deep-link so it preselects the chosen plan.
+                print(f"  {t('cli.subscription.manage_url_line', url=manage_url)}")
+                print(f"  {t('cli.subscription.open_then_rerun')}")
+        elif is_free:  # a NEW subscription needs a fresh card → catalog + portal deep-link only
             self._subscription_free_catalog(state, manage_url)
-            return
-
-        # Paid + admin/owner + interactive → the in-terminal change flow.
-        self._subscription_change_menu(state, manage_url)
-
-    def _open_url_in_browser(self, url: str) -> bool:
-        """Open ``url`` in a REAL graphical browser; return whether one opened.
-
-        The one opener behind every "open the portal" path in this mixin. Applies
-        the same console-browser / remote-session guard the device-code auth flows
-        use (``hermes_cli.auth``): ``webbrowser.open()`` returns ``True`` even when
-        it launched a text-mode browser (w3m/lynx over SSH) that hijacks the TTY,
-        so we refuse those and let the caller print the URL instead. Returns
-        ``False`` on any guard refusal or open failure, ``True`` only when a real
-        graphical browser launched.
-        """
-        if not url:
-            return False
-        try:
-            from hermes_cli.auth import _can_open_graphical_browser, _is_remote_session
-
-            if _is_remote_session() or not _can_open_graphical_browser():
-                return False
-        except Exception:
-            # Guard unavailable → fall through to a plain best-effort open.
-            pass
-        try:
-            import webbrowser
-
-            return bool(webbrowser.open(url))
-        except Exception:
-            return False
+        else:
+            self._subscription_change_menu(state, manage_url)
 
     def _subscription_free_catalog(self, state, manage_url):
-        """Free + admin/owner + interactive: print the plan catalog, pick one, then
-        open the portal manage-subscription deep-link with ``plan=<tier_id>``.
-
-        The catalog mirrors the TUI Free rows (name · $/mo · $credits/mo, from the
-        same ``tiers[]`` data via the shared ``selectable_tiers`` / ``format_tier_row``
-        helpers). Monthly credits are DOLLARS — rendered ``$X credits/mo`` (hidden
-        when absent/zero). Starting a NEW subscription needs a fresh card, so the
-        only action is the portal hand-off (the terminal never charges here); the
-        picked tier rides along as ``plan=`` so the portal preselects it.
-        """
-        from cli import _cprint, _b, _d
-
-        from agent.subscription_view import (
-            format_tier_row,
-            selectable_tiers,
-            subscription_manage_url,
-        )
-
+        """Free + admin + interactive: catalog → pick → portal deep-link ``plan=<tier_id>`` (a new sub needs a card)."""
+        from agent.subscription_view import format_tier_row, selectable_tiers, subscription_manage_url
         tiers = selectable_tiers(state)
         if not tiers:
-            # No catalog to show → the plain portal hand-off (no plan= to append).
-            self._subscription_open_portal(state, manage_url, verb="Start a subscription")
+            self._subscription_open_portal(state, manage_url, verb=t("cli.subscription.start_subscription"))
             return
-
-        print()
-        _cprint(f"  ⚕ {_b('Choose a plan')}")
-        print(f"  {'─' * 41}")
-        for i, t in enumerate(tiers, 1):
-            print(f"  {i}. {format_tier_row(t)}")
-        _cprint(f"  {_d('Starting a subscription opens the portal to add your card.')}")
-
-        choices = [(t.tier_id, format_tier_row(t), f"start {t.name} on the portal") for t in tiers]
-        choices.append(("cancel", "Cancel", "do nothing"))
+        self._block_header("☤", t("cli.subscription.choose_plan"))
+        for i, tier in enumerate(tiers, 1):
+            print(f"  {i}. {format_tier_row(tier)}")
+        self._dim(t("cli.subscription.start_opens_portal"))
+        choices = [(tier.tier_id, format_tier_row(tier), t("cli.subscription.desc_start_on_portal", name=tier.name))
+                   for tier in tiers]
+        choices.append(_cancel_row())
         raw = self._prompt_text_input_modal(
-            title="Start a subscription",
-            detail="Pick a plan to open it on the portal.",
-            choices=choices,
-        )
-        # The rows are printed numbered, so accept a bare number as a pick (the
-        # shared normalizer only knows the confirm-dialog digit aliases).
+            title=t("cli.subscription.start_subscription"), detail=t("cli.subscription.pick_plan_detail"), choices=choices)
+        # Rows are numbered → accept a bare number (the normalizer only knows confirm-dialog digits).
         _digit = (raw or "").strip()
-        if _digit.isdigit() and 1 <= int(_digit) <= len(tiers):
-            choice = tiers[int(_digit) - 1].tier_id
-        else:
-            choice = self._normalize_slash_confirm_choice(raw, choices)
+        _by_row = tiers[int(_digit) - 1] if _digit.isdigit() and 1 <= int(_digit) <= len(tiers) else None
+        choice = _by_row.tier_id if _by_row else self._normalize_slash_confirm_choice(raw, choices)
         if not choice or choice == "cancel":
-            print("  🟡 Cancelled. No plan started.")
+            print(f"  {t('cli.subscription.cancelled_no_plan_started')}")
             return
-        # Numbered pick → open the portal deep-link directly, with the picked tier's
-        # plan= param so the portal preselects it (spec: pick → opens the portal).
         tier_url = subscription_manage_url(state, tier_id=choice) or manage_url
         if not tier_url:
-            _cprint(f"  {_d('No manage URL available — is your portal configured?')}")
+            self._dim(t("cli.billing.no_manage_url"))
             return
-        picked = next((t for t in tiers if t.tier_id == choice), None)
-        label = picked.name if picked else "your plan"
+        picked = next((tier for tier in tiers if tier.tier_id == choice), None)
+        label = picked.name if picked else t("cli.subscription.your_plan")
         if self._open_url_in_browser(tier_url):
-            print(f"  Opening the portal to start {label}…")
+            print(f"  {t('cli.subscription.opening_portal_to_start', plan=label)}")
         else:
-            # No graphical browser (headless / SSH / console browser): print the
-            # link so it stays actionable.
-            print(f"  Open this URL to start {label}: {tier_url}")
-        print("  Finish in your browser, then re-run /subscription.")
+            print(f"  {t('cli.subscription.open_url_to_start', plan=label, url=tier_url)}")
+        print(f"  {t('cli.subscription.finish_in_browser')}")
 
-    def _subscription_open_portal(self, state, manage_url, *, verb="Manage your subscription"):
+    def _subscription_open_portal(self, state, manage_url, *, verb=None):
         """Open / copy the manage-subscription URL — the portal hand-off."""
-        from cli import _cprint, _d
-
-        if not manage_url:
-            print()
-            _cprint(f"  {_d('No manage URL available — is your portal configured?')}")
-            return
+        verb = verb or t("cli.subscription.manage_your_subscription")
         print()
+        if not manage_url:
+            self._dim(t("cli.billing.no_manage_url"))
+            return
         choices = [
-            ("open", verb, "open the subscription page in your browser"),
-            ("copy", "Copy link", "copy the manage-subscription URL to your clipboard"),
-            ("cancel", "Cancel", "do nothing"),
-        ]
-        raw = self._prompt_text_input_modal(title=verb, detail="", choices=choices)
-        choice = self._normalize_slash_confirm_choice(raw, choices)
+            ("open", verb, t("cli.subscription.desc_open_subscription_page")),
+            ("copy", t("cli.subscription.choice_copy_link"), t("cli.subscription.desc_copy_link")),
+            _cancel_row()]
+        choice = self._modal_choice(verb, "", choices)
         if choice == "open":
-            if not self._open_url_in_browser(manage_url):
-                print(f"  Open this URL: {manage_url}")
+            self._open_or_print_url(manage_url)
             print()
-            print("  Finish in your browser, then re-run /subscription.")
+            print(f"  {t('cli.subscription.finish_in_browser')}")
         elif choice == "copy":
             try:
                 self._write_osc52_clipboard(manage_url)
-                print(f"  📋 Copied: {manage_url}")
+                print(f"  {t('cli.subscription.copied', url=manage_url)}")
             except Exception:
-                print(f"  Manage URL: {manage_url}")
+                print(f"  {t('cli.subscription.manage_url', url=manage_url)}")
         else:
-            print("  🟡 Cancelled.")
+            print(f"  {t('cli.billing.cancelled_yellow')}")
 
     def _subscription_change_menu(self, state, manage_url):
         """The in-terminal change menu for a paid admin/owner (interactive)."""
         c = state.current
-        has_pending = bool(c and (c.cancel_at_period_end or c.pending_downgrade_tier_name))
-        keep_name = (c.tier_name if c else None) or "your plan"
-        # When a change is already scheduled, undo is the most likely next intent →
-        # promote it first (parity with the TUI). The Close row uses value "close"
-        # (not "cancel") so typing the word "cancel" — which the alias table would
-        # map to a Close row — can't be confused with "Cancel subscription".
-        if has_pending:
-            choices = [
-                ("keep", f"Keep {keep_name} (undo the scheduled change)", "cancel the pending change"),
-                ("change", "Change plan", "upgrade or downgrade in the terminal"),
-            ]
+        # A scheduled change makes undo the likeliest intent → promote it first. The Close row is
+        # "close" (not "cancel") so typing "cancel" can't be confused with "Cancel subscription".
+        if c and (c.cancel_at_period_end or c.pending_downgrade_tier_name):
+            keep_name = c.tier_name or t("cli.subscription.your_plan")
+            head = [("keep", t("cli.subscription.choice_keep_plan", plan=keep_name), t("cli.subscription.desc_keep_plan")),
+                    _change_plan_row()]
         else:
-            choices = [
-                ("change", "Change plan", "upgrade or downgrade in the terminal"),
-                ("cancel_sub", "Cancel subscription", "schedule cancellation at period end"),
-            ]
-        choices.append(("portal", "Manage on portal", "open the billing page in your browser"))
-        choices.append(("close", "Close", "do nothing"))
-        raw = self._prompt_text_input_modal(title="Manage your subscription", detail="", choices=choices)
-        choice = self._normalize_slash_confirm_choice(raw, choices)
-        if choice == "change":
-            self._subscription_pick_tier(state)
-        elif choice == "keep":
-            self._subscription_apply(state, ("resume", None))
-        elif choice == "cancel_sub":
-            self._subscription_confirm_cancel(state)
-        elif choice == "portal":
-            self._subscription_open_portal(state, manage_url)
+            head = [_change_plan_row(),
+                    ("cancel_sub", t("cli.subscription.choice_cancel_subscription"), t("cli.subscription.desc_cancel_subscription"))]
+        choice = self._modal_choice(t("cli.subscription.manage_your_subscription"), "", head + _change_menu_tail())
+        action = {
+            "change": lambda: self._subscription_pick_tier(state),
+            "keep": lambda: self._subscription_apply(state, ("resume", None)),
+            "cancel_sub": lambda: self._subscription_confirm_cancel(state),
+            "portal": lambda: self._subscription_open_portal(state, manage_url)}.get(choice)
+        if action:
+            action()
         else:
-            print("  🟡 Closed. No plan change.")
+            print(f"  {t('cli.subscription.closed_no_change')}")
 
     def _subscription_pick_tier(self, state):
-        """Tier picker → preview → confirm (mirrors the TUI picker screen)."""
+        """Tier picker → preview → confirm. Paid tiers other than current (dropping to free = cancellation)."""
         from agent.subscription_view import format_tier_row, is_upgrade, selectable_tiers
-
         c = state.current
-        # Selectable = enabled paid tiers other than current (free/no-sub excluded;
-        # dropping to free is a cancellation, on the change menu). Sorted by price.
-        # Shared with the Free catalog + blocked-preview branch (one derivation).
         selectable = selectable_tiers(state)
         if not selectable:
-            print("  No other plans are available to switch to right now.")
+            print(f"  {t('cli.subscription.no_other_plans')}")
             return
         choices = []
-        for t in selectable:
-            direction = "upgrade" if is_upgrade(state, t.tier_id) else "downgrade"
-            choices.append((t.tier_id, f"{format_tier_row(t)} · {direction}", f"switch to {t.name}"))
-        choices.append(("cancel", "Back", "do nothing"))
-        raw = self._prompt_text_input_modal(
-            title="Change plan",
-            detail=f"Current: {c.tier_name if c else 'Free'}. Pick a plan to preview the effect.",
-            choices=choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, choices)
+        for tier in selectable:
+            direction = t("cli.subscription.direction_upgrade") if is_upgrade(state, tier.tier_id) else t("cli.subscription.direction_downgrade")
+            choices.append((tier.tier_id, t("cli.subscription.tier_row", row=format_tier_row(tier), direction=direction),
+                            t("cli.subscription.desc_switch_to", name=tier.name)))
+        choices.append(_cancel_row(label_key="cli.billing.choice_back"))
+        choice = self._modal_choice(
+            t("cli.subscription.change_plan_title"),
+            t("cli.subscription.current_pick_detail", plan=c.tier_name if c else t("cli.billing.plan_free")), choices)
         if not choice or choice == "cancel":
-            print("  🟡 Cancelled. No plan change.")
+            print(f"  {t('cli.subscription.cancelled_no_plan_change')}")
             return
         self._subscription_preview_and_confirm(state, choice)
 
     def _subscription_preview_and_confirm(self, state, tier_id, *, allow_stepup=True):
-        """Preview the change (chargeless quote), show the effect, then confirm+apply.
-
-        ``allow_stepup=False`` (a post-grant replay) declines a second step-up on a
-        repeated scope denial so the flow can't re-prompt/re-open the browser in a
-        loop.
-        """
+        """Preview → effect → confirm+apply. ``allow_stepup=False`` (post-grant replay) never re-prompts a step-up."""
         from cli import _cprint, _b, _d
-
-        from agent.subscription_view import subscription_change_preview_from_payload
+        from agent.subscription_view import is_upgrade, subscription_change_preview_from_payload, subscription_manage_url
         from hermes_cli.nous_billing import BillingError, BillingScopeRequired, post_subscription_preview
-
-        _cprint(f"  {_d('Checking the change…')}")
+        self._dim(t("cli.subscription.checking_change"))
         try:
             payload = post_subscription_preview(subscription_type_id=tier_id)
         except BillingScopeRequired:
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=("preview", tier_id))
             else:
-                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
+                print(f"  {t('cli.billing.stepup_stale')}")
             return
         except BillingError as exc:
             self._subscription_render_error(state, exc)
             return
         p = subscription_change_preview_from_payload(payload)
         effect = p.effect
-        target = p.target_tier_name or "the selected plan"
+        target = p.target_tier_name or t("cli.subscription.the_selected_plan")
         print()
         if effect == "no_op":
-            _cprint(f"  {_d(f'You are already on {target} — nothing to change.')}")
+            self._dim(t("cli.subscription.already_on_nothing_to_change", plan=target))
             return
         if effect not in ("charge_now", "scheduled"):
-            # blocked OR an unknown/unexpected effect → fail SAFE (never schedule a
-            # real change on an unrecognized string, unlike a bare `else`), and
-            # re-offer the portal hand-off like the TUI's blocked branch. The picked
-            # tier rides along as plan= only for an UPGRADE hand-off — new-sub /
-            # upgrade deep-links carry the plan; downgrades stay native (binding
-            # ruling), so a blocked downgrade keeps the generic manage link.
-            from agent.subscription_view import is_upgrade, subscription_manage_url
-
+            # blocked OR unknown effect → fail SAFE (never schedule on an unrecognized string) and
+            # re-offer the portal. plan= rides along only for an UPGRADE hand-off (downgrades stay native).
+            _cprint(f"  🟡 {p.reason or t('cli.subscription.cannot_confirm_here')}")
             _plan = tier_id if is_upgrade(state, tier_id) else None
-            _cprint(f"  🟡 {p.reason or 'This change cannot be confirmed here — manage it on the portal.'}")
             _mu = subscription_manage_url(state, tier_id=_plan)
             if _mu:
-                print(f"  Manage on portal: {_mu}")
+                print(f"  {t('cli.billing.manage_on_portal_url', url=_mu)}")
             return
+        _tag = t("cli.subscription.tag_charged_now") if effect == "charge_now" else t("cli.subscription.tag_scheduled_not_today")
+        _cprint(f"  {_b(t('cli.subscription.confirm_plan_change'))}  {_d(_tag)}")
         if effect == "charge_now":
             _amt = f"${p.amount_due_now_cents / 100:.2f}" if p.amount_due_now_cents is not None else None
-            _cprint(f"  {_b('Confirm plan change')}  {_d('· charged now')}")
-            if _amt:
-                _cprint(f"  Upgrade to {target}. You will be charged {_amt} now (prorated).")
-            else:
-                _cprint(f"  Upgrade to {target}. You will be charged the prorated amount now.")
-            # Best-effort: name the exact card (billing.state), but only when the
-            # resolver rung matches what a subscription charge actually uses
-            # (subPin / customerDefault — Stripe's own precedence). Any failure or
-            # older NAS → the generic line stands.
-            _card_line = "The card on your subscription will be charged."
+            _charged = t("cli.subscription.charged_amount_now", amount=_amt) if _amt else t("cli.subscription.charged_prorated_now")
+            _cprint(f"  {t('cli.subscription.upgrade_will_be_charged', plan=target, charged=_charged)}")
+            # Best-effort: name the exact card, but only when the resolver rung matches what a
+            # subscription charge actually uses (subPin / customerDefault — Stripe's precedence).
+            _card_line = t("cli.subscription.card_on_subscription_charged")
             try:
                 from agent.billing_view import build_billing_state
-
                 _bs = build_billing_state(timeout=6.0)
                 _c = _bs.card if _bs.logged_in else None
                 if _c is not None and _c.resolved_via in ("subPin", "customerDefault"):
-                    _card_line = f"{_c.masked} — the card on your subscription — will be charged."
+                    _card_line = t("cli.subscription.named_card_on_subscription_charged", card=_c.masked)
             except Exception:
                 pass
-            _cprint(f"  {_d(_card_line)}")
-            pay_label = f"Pay {_amt} & upgrade now" if _amt else "Upgrade now (prorated charge)"
+            self._dim(_card_line)
+            pay_label = (t("cli.subscription.choice_pay_and_upgrade", amount=_amt) if _amt
+                         else t("cli.subscription.choice_upgrade_now_prorated"))
             action = ("upgrade", tier_id)
-            # The money-moving row is NOT the default — a bare Enter hits "Go back",
-            # so a single stray keystroke can't charge the card.
+            # The money-moving row is NOT the default — a bare Enter hits "Go back", so a stray keystroke can't charge.
             confirm_choices = [
-                ("cancel", "Go back", "do not charge"),
-                ("yes", pay_label, "charge + upgrade now"),
-            ]
+                _cancel_row(label_key="cli.billing.choice_go_back", desc_key="cli.billing.desc_do_not_charge"),
+                ("yes", pay_label, t("cli.subscription.desc_charge_and_upgrade"))]
         else:  # scheduled (whitelisted above)
-            _when = p.effective_at[:10] if (p.effective_at and len(p.effective_at) >= 10) else "the end of the billing period"
-            _cprint(f"  {_b('Confirm plan change')}  {_d('· scheduled · not today')}")
-            _cprint(f"  Change to {target} — takes effect {_when}. No charge now; you keep your current plan until then.")
-            pay_label = f"Schedule change to {target}"
+            _when = (p.effective_at[:10] if (p.effective_at and len(p.effective_at) >= 10)
+                     else t("cli.subscription.end_of_billing_period"))
+            _cprint(f"  {t('cli.subscription.change_takes_effect', plan=target, when=_when)}")
+            pay_label = t("cli.subscription.choice_schedule_change", plan=target)
             action = ("schedule", tier_id)
             confirm_choices = [
-                ("yes", pay_label, "apply this change"),
-                ("cancel", "Go back", "do not change"),
-            ]
+                ("yes", pay_label, t("cli.subscription.desc_apply_change")),
+                _cancel_row(label_key="cli.billing.choice_go_back", desc_key="cli.subscription.desc_do_not_change")]
         if p.monthly_credits_delta:
-            _cprint(f"  {_d(f'Monthly credits change: {p.monthly_credits_delta}.')}")
-        raw = self._prompt_text_input_modal(title=pay_label, detail="", choices=confirm_choices)
-        if self._normalize_slash_confirm_choice(raw, confirm_choices) != "yes":
-            print("  🟡 Cancelled. No plan change.")
+            self._dim(t("cli.subscription.monthly_credits_change", delta=p.monthly_credits_delta))
+        if self._modal_choice(pay_label, "", confirm_choices) != "yes":
+            print(f"  {t('cli.subscription.cancelled_no_plan_change')}")
             return
         self._subscription_apply(state, action, allow_stepup=allow_stepup)
 
     def _subscription_confirm_cancel(self, state):
         """Confirm, then schedule a cancellation at period end."""
         from cli import _cprint, _b, _d
-
         from agent.billing_usage import format_renews
-
         c = state.current
-        _end = (format_renews(c.cycle_ends_at) if (c and c.cycle_ends_at) else None) or "the end of the billing period"
+        _end = ((format_renews(c.cycle_ends_at) if (c and c.cycle_ends_at) else None)
+                or t("cli.subscription.end_of_billing_period"))
         print()
-        _cprint(f"  {_b('Confirm cancellation')}  {_d('· scheduled · not today')}")
-        _cprint(f"  Cancel {(c.tier_name if c else 'your plan')} — it stays active until {_end}, then won't renew.")
-        _cprint(f"  {_d('You keep your remaining credits for this period. You can resume before it ends.')}")
-        confirm_choices = [
-            ("yes", "Cancel subscription", "schedule cancellation at period end"),
-            ("cancel", "Go back", "keep your plan"),
-        ]
-        raw = self._prompt_text_input_modal(title="Cancel subscription?", detail="", choices=confirm_choices)
-        if self._normalize_slash_confirm_choice(raw, confirm_choices) != "yes":
-            print("  🟡 Cancelled. Your plan is unchanged.")
+        _cprint(f"  {_b(t('cli.subscription.confirm_cancellation'))}  {_d(t('cli.subscription.tag_scheduled_not_today'))}")
+        _cprint("  " + t("cli.subscription.cancel_stays_active_until",
+                         plan=(c.tier_name if c else t("cli.subscription.your_plan")), end=_end))
+        self._dim(t("cli.subscription.keep_remaining_credits"))
+        if self._modal_choice(t("cli.subscription.cancel_subscription_question"), "", _cancel_sub_choices()) != "yes":
+            print(f"  {t('cli.subscription.cancelled_plan_unchanged')}")
             return
         self._subscription_apply(state, ("cancel", None))
 
     def _subscription_apply(self, state, action, idempotency_key=None, *, allow_stepup=True):
-        """Run the mutation for `action`, handling the scope step-up + the result.
-
-        `action` is one of ("upgrade", tier_id) / ("schedule", tier_id) /
-        ("cancel", None) / ("resume", None). insufficient_scope routes to the
-        step-up and replays; the upgrade idempotency key is reused across the replay.
-        ``allow_stepup=False`` (a post-grant replay) declines a second step-up on a
-        repeated scope denial so the flow can't re-prompt/re-open the browser in a loop.
-        """
-        from cli import _cprint, _d, _DIM, _RST
-
+        """Run ("upgrade"|"schedule", tier_id) / ("cancel"|"resume", None); scope denial → step-up + ONE replay, same key."""
+        from cli import _cprint
         from hermes_cli.nous_billing import (
-            BillingError,
-            BillingTransient,
-            BillingRemoteSpendingRevoked,
-            BillingScopeRequired,
-            BillingSessionRevoked,
-            delete_subscription_pending_change,
-            post_subscription_upgrade,
-            put_subscription_pending_change,
-        )
-
+            BillingError, BillingTransient, BillingRemoteSpendingRevoked, BillingScopeRequired, BillingSessionRevoked,
+            delete_subscription_pending_change, post_subscription_upgrade, put_subscription_pending_change)
         kind, arg = action
         key = None
         if kind == "upgrade":
             from agent.billing_view import new_idempotency_key
-
             key = idempotency_key or new_idempotency_key()
         try:
             if kind == "upgrade":
-                try:
-                    res = post_subscription_upgrade(subscription_type_id=arg, idempotency_key=key) or {}
-                except BillingScopeRequired:
-                    raise  # a scope denial rejects BEFORE charging → route to the step-up
-                except (BillingTransient, BillingSessionRevoked, BillingRemoteSpendingRevoked) as exc:
-                    # Deterministic PRE-charge typed rejections (429 / 401 / 403) never
-                    # reached Stripe → surface the CORRECT recovery (retry_after / re-login /
-                    # reconnect), NOT the "maybe charged" ambiguity copy.
-                    self._subscription_render_error(state, exc)
-                    return
-                except BillingError as exc:
-                    _status = getattr(exc, "status", None)
-                    _code = getattr(exc, "error", None)
-                    if _code in ("network_error", "endpoint_unavailable") or _status is None or _status >= 500:
-                        # Genuinely INDETERMINATE — transport / unparseable 2xx / a 5xx the
-                        # server hit mid-request: NAS may have already prorated + charged.
-                        # Steer to a re-check, never a blind retry (a fresh key can't dedup →
-                        # a real second charge).
-                        self._subscription_render_upgrade_ambiguous(exc)
-                    else:
-                        # A deterministic 4xx (role_required / no_payment_method / …) → the
-                        # normal error copy, not "maybe charged".
-                        self._subscription_render_error(state, exc)
-                    return
+                res = post_subscription_upgrade(subscription_type_id=arg, idempotency_key=key) or {}
                 status = res.get("status")
-                name = res.get("targetTierName") or "your new plan"
-                _url = res.get("recoveryUrl")
-                if status == "already_on_tier":
-                    _cprint(f"  {_DIM}✓ You are already on {name}.{_RST}")
-                elif status == "upgraded":
-                    _cprint(f"  {_DIM}✓ Upgraded to {name}. Your new monthly credits land in a moment.{_RST}")
-                elif status == "requires_action":
-                    _cprint("  🟡 This upgrade needs extra verification (3DS). Finish it on the portal.")
-                    if _url:
-                        _cprint(f"  Portal: {_url}")
-                elif status == "payment_failed":
-                    _cprint("  🔴 Your card was declined. Update your payment method on the portal and try again.")
-                    if _url:
-                        _cprint(f"  Portal: {_url}")
-                else:
-                    # Unknown / absent 2xx status → also ambiguous, not a flat failure.
+                name = res.get("targetTierName") or t("cli.subscription.your_new_plan")
+                if status in _UPGRADE_OK_KEYS:
+                    self._ok(t(_UPGRADE_OK_KEYS[status], name=name))
+                elif status in _UPGRADE_STATUS_KEYS:
+                    line_key, echo_url = _UPGRADE_STATUS_KEYS[status]
+                    _cprint(f"  {t(line_key)}")
+                    if echo_url and res.get("recoveryUrl"):
+                        _cprint(f"  {t('cli.billing.portal_line', url=res.get('recoveryUrl'))}")
+                else:  # unknown / absent 2xx status → also ambiguous, not a flat failure
                     self._subscription_render_upgrade_ambiguous(None)
                 return
-            if kind == "schedule":
-                put_subscription_pending_change(subscription_type_id=arg)
-                _cprint(f"  {_DIM}✓ Scheduled — your plan doesn't change today. You keep it until the end of the billing period, then it switches.{_RST}")
-            elif kind == "cancel":
-                put_subscription_pending_change(cancel=True)
-                _cprint(f"  {_DIM}✓ Scheduled — your plan stays active until the end of the billing period, then it cancels. Nothing changes today.{_RST}")
-            elif kind == "resume":
-                delete_subscription_pending_change()
-                _cprint(f"  {_DIM}✓ Undone — you stay on your current plan.{_RST}")
-            _cprint(f"  {_d('Re-run /subscription anytime to review it.')}")
-        except BillingScopeRequired:
+            pending = {
+                "schedule": (put_subscription_pending_change, {"subscription_type_id": arg}),
+                "cancel": (put_subscription_pending_change, {"cancel": True}),
+                "resume": (delete_subscription_pending_change, {})}.get(kind)
+            if pending:
+                pending[0](**pending[1])
+                self._ok(t(_PENDING_OK_KEYS[kind]))
+            self._dim(t("cli.subscription.rerun_to_review"))
+        except BillingScopeRequired:  # rejects BEFORE charging → route to the step-up
             if allow_stepup:
                 self._subscription_handle_scope_required(state, retry=action, idempotency_key=key)
             else:
-                print("  Remote Spending still isn't active for this terminal — the authorization didn't take. Retry, or make this change on the portal.")
+                print(f"  {t('cli.billing.stepup_stale')}")
         except BillingError as exc:
-            self._subscription_render_error(state, exc)
+            # Upgrade only: deterministic PRE-charge rejections (Transient/401/403 types, 4xx codes)
+            # never reached Stripe → recovery copy. Transport / 5xx is INDETERMINATE (NAS may have
+            # charged) → steer to a re-check, never a blind retry (a fresh key can't dedup).
+            _pre_charge = (BillingTransient, BillingSessionRevoked, BillingRemoteSpendingRevoked)
+            _ambiguous = (exc.error in ("network_error", "endpoint_unavailable")
+                          or exc.status is None or exc.status >= 500)
+            if kind == "upgrade" and _ambiguous and not isinstance(exc, _pre_charge):
+                self._subscription_render_upgrade_ambiguous(exc)
+            else:
+                self._subscription_render_error(state, exc)
 
     def _subscription_handle_scope_required(self, state, *, retry, idempotency_key=None):
-        """insufficient_scope → allow remote spending (step-up), then replay `retry`.
-
-        Mirrors _billing_handle_scope_required: the classic CLI calls
-        step_up_nous_billing_scope directly (it opens the browser + blocks), then
-        replays the held preview/mutation so the user never re-runs the command.
-        """
-        from cli import _cprint, _d, _DIM, _RST
-
-        print()
-        print("  ! One-time setup")
-        _cprint(f"  {_d('To change your plan from the terminal, allow Remote Spending once. It opens your browser to authorize, then your change picks up right here.')}")
-        if not getattr(self, "_app", None):
-            print("  Run `hermes portal` and allow Remote Spending, then re-run /subscription.")
-            return
-        confirm_choices = [
-            ("yes", "Allow Remote Spending", "open your browser to authorize"),
-            ("no", "Not now", "cancel"),
-        ]
-        raw = self._prompt_text_input_modal(
-            title="Allow Remote Spending",
-            detail="Opens your browser to authorize this terminal.",
-            choices=confirm_choices,
-        )
-        if self._normalize_slash_confirm_choice(raw, confirm_choices) != "yes":
-            print("  No change made. Allow Remote Spending when you're ready.")
-            return
-        print("  Opening your browser to allow Remote Spending…")
-        try:
-            from hermes_cli.auth import step_up_nous_billing_scope
-
-            granted = step_up_nous_billing_scope(open_browser=True)
-        except Exception as exc:
-            print(f"  Couldn't allow Remote Spending: {exc}")
-            return
+        """insufficient_scope → step-up, then replay `retry` ONCE so the user never re-runs the command."""
+        granted = self._step_up_remote_spending(
+            explain=t("cli.subscription.stepup_explain"),
+            noninteractive_msg=f"  {t('cli.subscription.stepup_noninteractive')}",
+            declined_msg=f"  {t('cli.subscription.stepup_declined')}",
+            not_granted_msg=f"  {t('cli.subscription.stepup_not_granted')}")
         if not granted:
-            print("  Couldn't allow Remote Spending — an org admin or owner has to approve it for this org.")
             return
-        _cprint(f"  {_DIM}✓ Remote Spending allowed.{_RST}")
-        # Bust the 30s token cache so the replay uses the freshly-scoped token. The
-        # cache still holds the pre-grant unscoped token, and _request only busts it
-        # on a 401 (not a 403 scope denial) — without this, the replay would 403
-        # again and (before the allow_stepup guard) re-prompt in a loop.
+        self._ok(t("cli.billing.remote_spending_allowed"))
+        # Bust the 30s token cache (it still holds the pre-grant token; _request only busts on 401).
         try:
             from hermes_cli import nous_billing as _nb
-
             _nb.invalidate_cached_token()
         except Exception:
             pass
-        # Re-fetch fresh state, then replay the held action ONCE (allow_stepup=False
-        # so a repeated scope denial can't re-enter the step-up).
+        # Re-fetch fresh state, then replay the held action ONCE (allow_stepup=False).
         from agent.subscription_view import build_subscription_state
-
         try:
             fresh = build_subscription_state()
         except Exception:
             fresh = state
-        rkind, rarg = retry
-        if rkind == "preview":
-            self._subscription_preview_and_confirm(fresh, rarg, allow_stepup=False)
+        if retry[0] == "preview":
+            self._subscription_preview_and_confirm(fresh, retry[1], allow_stepup=False)
         else:
             self._subscription_apply(fresh, retry, idempotency_key=idempotency_key, allow_stepup=False)
 
     def _subscription_render_error(self, state, exc):
         """Render a subscription BillingError (a lighter _billing_render_charge_error)."""
         from cli import _cprint
-
-        code = getattr(exc, "error", None)
-        msg = str(exc) or "Something went wrong."
-        if code == "insufficient_scope":
-            # Defensive: the flow routes scope to the step-up before reaching here.
-            _cprint("  🟡 Remote Spending isn't allowed yet. Allow it, then retry.")
-        elif code in ("subscription_mutation_rejected", "preview_rejected"):
+        msg = str(exc) or t("cli.billing.something_went_wrong")
+        if exc.error == "insufficient_scope":  # defensive: the flow routes scope to the step-up before here
+            _cprint(f"  {t('cli.subscription.remote_spending_not_allowed_yet')}")
+        elif exc.error in ("subscription_mutation_rejected", "preview_rejected"):
             _cprint(f"  🟡 {msg}")
         else:
             _cprint(f"  🔴 {msg}")
-        _url = getattr(exc, "portal_url", None)
-        if _url:
-            _cprint(f"  Portal: {_url}")
+        self._print_portal_line(exc)
 
     def _subscription_render_upgrade_ambiguous(self, exc):
-        """A charge-route failure (transport / timeout / 500 / unknown status) is
-        AMBIGUOUS — NAS may have already prorated + charged. Steer to a re-check,
-        never a flat failure that invites a blind retry (mirrors the TUI's
-        upgradeResult(null) — the CLI can't persist the key across a command re-run,
-        so a re-check is the safe path)."""
-        from cli import _cprint, _d
+        """AMBIGUOUS outcome (NAS may have charged) → steer to a re-check, never a blind retry (key isn't persisted)."""
+        from cli import _cprint
+        _cprint(f"  {t('cli.subscription.upgrade_ambiguous')}")
+        self._dim(t("cli.subscription.rerun_to_check_plan"))
+        self._print_portal_line(exc)
 
-        _cprint("  🟡 Couldn't confirm the upgrade — your card may or may not have been charged.")
-        _cprint(f"  {_d('Re-run /subscription to check your plan before trying again.')}")
-        _url = getattr(exc, "portal_url", None) if exc is not None else None
-        if _url:
-            _cprint(f"  Portal: {_url}")
-
-    # ------------------------------------------------------------------
-    # /billing — Phase 2b Remote Spending (CLI surface, all 5 screens)
-    # ------------------------------------------------------------------
+    # ── /topup — Remote Spending (CLI surface, all 5 screens) ──
 
     def _show_billing(self, command: str = "/topup"):
-        """`/topup` — Remote Spending for Nous (one interactive modal).
-
-        ZERO sub-commands: any argument is ignored. Bare ``/topup`` always
-        opens the Overview (Screen 1), whose numbered menu is the *only* way to
-        reach the Buy / Auto-reload / Monthly-limit sub-screens. (Per the unified
-        UX spec §0.4 — ``/topup buy`` etc. are gone; we don't error on a stray
-        arg, we just open the menu.)
-
-        Interactive CLI uses the prompt_toolkit modal; non-interactive contexts
-        (TUI slash-worker / no live app) render text + the portal deep-link, never
-        prompting (the URL is the affordance), same discipline as ``_show_subscription``.
-        All money is Decimal end-to-end; the terminal never collects card details.
-        """
-        from cli import _cprint, _d
-
+        """`/topup` — ZERO sub-commands (argument ignored; Overview is the only route). Non-interactive never
+        prompts. Money is Decimal end-to-end; the terminal never collects card details."""
         from agent.billing_view import build_billing_state
-
         state = build_billing_state()
         if not state.logged_in:
-            print()
-            if state.error:
-                _msg = f"Couldn't load billing: {state.error}"
-                _cprint(f"  💳 {_d(_msg)}")
-            else:
-                _cprint(f"  💳 {_d('Not logged into Nous Portal.')}")
-                print("  Run `hermes portal` to log in, then /topup.")
+            self._print_logged_out(state, t("cli.billing.load_failed_label"), "/topup")
             return
-
-        # Any sub-arg is intentionally ignored — always open the menu.
         self._billing_overview(state)
 
     def _billing_portal_hint(self, state, *, reason: str = "") -> None:
         """Print a portal deep-link line (the funnel for portal-only actions)."""
-        url = getattr(state, "portal_url", None)
-        if not url:
+        if not state.portal_url:
             return
         if reason:
             print(f"  {reason}")
-        print(f"  Manage on portal: {url}")
+        print(f"  {t('cli.billing.manage_on_portal_url', url=state.portal_url)}")
+
+    def _billing_require_admin(self, state, *, icon="💳 ", off_reason_key="cli.billing.killswitch_reason_buy") -> bool:
+        """Admin + org kill-switch gate; portal funnel + False when blocked. ``icon`` adds a blank line + prefix."""
+        if state.can_change_plan and state.cli_billing_enabled:
+            return True
+        if icon:
+            print()
+        if not state.can_change_plan:
+            self._dim(t("cli.billing.actions_require_admin"), icon=icon)
+            self._billing_portal_hint(state)
+        else:
+            self._dim(t("cli.billing.remote_spending_off_for_org"), icon=icon)
+            self._billing_portal_hint(state, reason=t(off_reason_key))
+        return False
 
     def _billing_overview(self, state):
-        """Screen 1 — overview: balance in title, two-bar dollar usage, action menu.
-
-        Dollars-only (no "credits") — mirrors the TUI /topup overlay: balance
-        leads in the title, the shared plan + top-up bars render below, then the
-        reordered menu (Add funds first). No scope preflight — remote spending
-        is discovered reactively when a charge 403s insufficient_scope.
-        """
-        from cli import _cprint, _b, _d
-
+        """Screen 1 — balance, bars, menu. No scope preflight (a charge 403s); a missing card does NOT gate it."""
+        from cli import _cprint, _b
         from agent.billing_view import format_money
-
-        # Shared dollar usage model (plan + top-up bars), same source as /usage.
-        try:
-            from agent.billing_usage import build_usage_model
-
-            usage = build_usage_model()
-        except Exception:
-            usage = None
-
+        usage = self._try_usage_model()
         print()
-        _cprint(f"  💳 {_b(f'Top up · balance {format_money(state.balance_usd)}')}")
-        if state.org_name:
-            role = (state.role or "").title()
-            _org_line = f"Org: {state.org_name}{f' · {role}' if role else ''}"
-            _cprint(f"  {_d(_org_line)}")
-        print(f"  {'─' * 41}")
-
-        # Two-bar dollar usage view (plan name on the plan bar; top-up below).
-        for _bar_ln in self._usage_bar_lines(usage, getattr(usage, "plan_name", None)):
+        _cprint(f"  💳 {_b(t('cli.billing.topup_header', balance=format_money(state.balance_usd)))}")
+        self._print_org_line(state)
+        print(f"  {_RULE}")
+        for _bar_ln in self._usage_bar_lines(usage, usage.plan_name if usage else None):
             print(_bar_ln)
-
         ar = state.auto_reload
         if ar is not None:
             if ar.enabled:
-                print(
-                    f"  Auto-reload: on — below {format_money(ar.threshold_usd)} "
-                    f"→ reload to {format_money(ar.reload_to_usd)}"
-                )
+                print(f"  {t('cli.billing.auto_reload_on_line', threshold=format_money(ar.threshold_usd), reload_to=format_money(ar.reload_to_usd))}")
             else:
-                print("  Auto-reload: off")
-        # Card presence at a glance: which card a charge would use (with why —
-        # "the card on your subscription"), or that none is saved. Only for the
-        # full-menu case (admin + billing on) — others get the portal note below.
-        if state.can_change_plan and state.cli_billing_enabled:
+                print(f"  {t('cli.billing.auto_reload_off_line')}")
+        if state.can_change_plan and state.cli_billing_enabled:  # card at a glance, full-menu case only
             if state.card is not None:
-                print(f"  Card: {state.card.display}")
+                print(f"  {t('cli.billing.card_line', card=state.card.display)}")
             else:
-                _cprint(f"  {_d('No saved card on file — “Add funds” walks you through adding one.')}")
-        print(f"  {'─' * 41}")
-
+                self._dim(t("cli.billing.no_saved_card_add_funds_hint"))
+        print(f"  {_RULE}")
         # Action gating: admin + kill-switch for charge/auto-reload; everyone gets portal.
-        if not state.can_change_plan:
-            _cprint(f"  {_d('Billing actions require an org admin/owner.')}")
+        if not self._billing_require_admin(state, icon="", off_reason_key="cli.billing.killswitch_reason_overview"):
+            return
+        if not self._app:  # non-interactive: no modal, just the portal funnel
             self._billing_portal_hint(state)
             return
-        if not state.cli_billing_enabled:
-            _cprint(f"  {_d('Remote spending is off for this org.')}")
-            self._billing_portal_hint(
-                state,
-                reason="A billing admin can turn it on from the portal's Hermes Agent page to add funds here.",
-            )
-            return
-
-        # A missing card does NOT gate the whole overview — the org may already have
-        # balance, auto-reload, or a limit to view/manage. The card only matters at
-        # CHARGE time: "Add funds" -> _billing_buy_flow, which detects no card and
-        # hands off to the portal there. So always show the full menu below.
-
-        # Non-interactive (slash-worker / no live app): no modal, no sub-command
-        # advertising — just the portal funnel (the URL is the affordance).
-        if not getattr(self, "_app", None):
-            self._billing_portal_hint(state)
-            return
-
-        # One-time vs automatic — the two ways to add funds, the distinction stated
-        # up front in each first sentence (parity with the desktop revamp's split
-        # copy). "credits" stays out of the dollars-only /topup surface: "Add funds
-        # now" carries the one-time meaning without it.
-        _cprint(f"  {_d('Add funds now — a single charge, added to your balance today.')}")
-        if (
-            ar is not None
-            and ar.enabled
-            and ar.reload_to_usd is not None
-            and ar.reload_to_usd.is_finite()
-            and ar.threshold_usd is not None
-            and ar.threshold_usd.is_finite()
-        ):
-            _auto_line = (
-                f"Refill when low — charges {format_money(ar.reload_to_usd)} automatically "
-                f"when your balance falls below {format_money(ar.threshold_usd)}."
-            )
+        # One-time vs automatic — the distinction stated up front in each first sentence.
+        self._dim(t("cli.billing.add_funds_now_hint"))
+        _amounts = [ar.reload_to_usd, ar.threshold_usd] if ar is not None and ar.enabled else [None]
+        if all(a is not None and a.is_finite() for a in _amounts):
+            _auto_line = t("cli.billing.refill_when_low_amounts", reload_to=format_money(ar.reload_to_usd),
+                           threshold=format_money(ar.threshold_usd))
         else:
-            _auto_line = (
-                "Refill when low — charges your card automatically when your balance "
-                "falls below the amount you set."
-            )
-        _cprint(f"  {_d(_auto_line)}")
-        print(f"  {'─' * 41}")
-
-        # Add funds first, then settings, then the scopeless browser handoff.
-        # No "Allow Remote Spending" item — that's discovered at pay time.
-        # "Add funds" charges in-terminal against the org's portal-saved card
-        # (server-held via POST /charge — no card ref leaves the client). A
-        # missing card is NOT gated here: the buy flow reacts to the server's
-        # no_payment_method 403 and hands off to the portal at charge time.
-        choices = [
-            ("buy", "Add funds", "a single charge, added to your balance today"),
-            ("auto", "Auto-reload", "refill automatically when your balance runs low"),
-            ("limit", "Monthly limit", "show the monthly spend cap (read-only)"),
-            ("portal", "Manage on portal", "open the billing page in your browser"),
-            ("cancel", "Cancel", "do nothing"),
-        ]
-        # The overview summary is already printed above; the modal only needs to
-        # present the action menu — repeating the title/balance reads as a dupe.
-        raw = self._prompt_text_input_modal(
-            title="Top up your balance", detail="",
-            choices=choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, choices)
-        if choice == "buy":
-            self._billing_buy_flow(state)
-        elif choice == "auto":
-            self._billing_auto_reload_flow(state)
-        elif choice == "limit":
-            self._billing_limit_screen(state)
-        elif choice == "portal":
-            self._billing_open_portal(state)
+            _auto_line = t("cli.billing.refill_when_low_generic")
+        self._dim(_auto_line)
+        print(f"  {_RULE}")
+        # No "Allow Remote Spending" item — discovered at pay time. "Add funds" charges the org's
+        # portal-saved card (server-held; no card ref leaves the client).
+        action = {
+            "buy": self._billing_buy_flow,
+            "auto": self._billing_auto_reload_flow,
+            "limit": self._billing_limit_screen,
+            "portal": self._billing_open_portal}.get(self._modal_choice(t("cli.billing.topup_title"), "", _topup_menu_choices()))
+        if action:
+            action(state)
         else:
-            print("  Cancelled.")
-
-    def _usage_bar_lines(self, usage, plan_name) -> list:
-        """The plan + top-up dollar bars as ready-to-print lines (filled = remaining).
-
-        Returns [] when there's nothing to draw. The caller resolves ``plan_name``
-        (the plan-bar label) and picks its own print fn — block ordering differs
-        per surface (``_cprint`` vs ``print`` under patch_stdout). One source of
-        truth for the bar format across /usage, /subscription, and /topup.
-        """
-        lines: list = []
-        pb = getattr(usage, "plan_bar", None) if usage else None
-        if pb is not None and pb.total_usd > 0:
-            filled = max(0, min(10, round(pb.fill_fraction * 10)))
-            bar = ("█" * filled) + ("░" * (10 - filled))
-            pct_s = f" · {pb.pct_used}% used" if pb.pct_used is not None else ""
-            label = (plan_name or "plan").ljust(8)[:8]
-            lines.append(f"  {label}[{bar}]  ${pb.remaining_usd:,.2f} left of ${pb.total_usd:,.2f}{pct_s}")
-        tb = getattr(usage, "topup_bar", None) if usage else None
-        if tb is not None and tb.remaining_usd > 0:
-            lines.append(f"  {'top-up'.ljust(8)}[{'█' * 10}]  ${tb.remaining_usd:,.2f} · never expires")
-        return lines
+            print(f"  {t('cli.billing.cancelled')}")
 
     def _billing_open_portal(self, state):
-        url = getattr(state, "portal_url", None)
-        if not url:
-            print("  No portal URL available.")
+        if not state.portal_url:
+            print(f"  {t('cli.billing.no_portal_url')}")
             return
-        if not self._open_url_in_browser(url):
-            print(f"  Open this URL: {url}")
-        print("  Complete billing changes in the browser.")
-
-    def _billing_require_admin(self, state) -> bool:
-        """Guard charge/auto-reload entry points; print + return False if blocked."""
-        from cli import _cprint, _d
-
-        if not state.can_change_plan:
-            print()
-            _cprint(f"  💳 {_d('Billing actions require an org admin/owner.')}")
-            self._billing_portal_hint(state)
-            return False
-        if not state.cli_billing_enabled:
-            print()
-            _cprint(f"  💳 {_d('Remote spending is off for this org.')}")
-            self._billing_portal_hint(
-                state,
-                reason="A billing admin can turn it on from the portal's Hermes Agent page before adding funds.",
-            )
-            return False
-        return True
+        self._open_or_print_url(state.portal_url)
+        print(f"  {t('cli.billing.complete_in_browser')}")
 
     def _billing_add_card_flow(self, state):
-        """No saved card → guide adding one on the portal, with a re-check loop.
-
-        Cards are added on the portal (never in-terminal). "I've added it" re-fetches
-        billing state so the purchase continues right here once the card is saved —
-        this also recovers a transient miss (the card display is best-effort
-        server-side). Returns the refreshed state (card present), or None to abandon.
-        """
-        from cli import _cprint, _b, _d, _DIM, _RST
-
-        print()
-        _cprint(f"  💳 {_b('Add a card first')}")
-        _cprint("  No saved card on file.")
-        _cprint(f"  {_d('Add a card once on the portal billing page — after that you can top up right from the terminal.')}")
-        choices = [
-            ("portal", "Add a card on the portal", "opens the billing page in your browser"),
-            ("recheck", "I've added it — check again", "re-check for the card and continue"),
-            ("cancel", "Back", "do nothing"),
-        ]
+        """No card → add it on the portal (never in-terminal), bounded re-check loop. Refreshed state, or None."""
+        from cli import _cprint
+        self._block_header("💳", t("cli.billing.add_card_first"), rule=False)
+        _cprint(f"  {t('cli.billing.no_saved_card')}")
+        self._dim(t("cli.billing.add_card_once_hint"))
         for _ in range(8):  # bounded: portal-open plus a handful of re-checks
-            raw = self._prompt_text_input_modal(title="Add a card", detail="", choices=choices)
-            choice = self._normalize_slash_confirm_choice(raw, choices)
+            choice = self._modal_choice(t("cli.billing.add_card_title"), "", _add_card_choices())
             if choice == "portal":
                 self._billing_open_portal(state)
-                _cprint(f"  {_d('Add the card on the billing page, then pick “check again” here.')}")
-                continue
-            if choice == "recheck":
+                self._dim(t("cli.billing.add_card_then_recheck"))
+            elif choice == "recheck":
                 from agent.billing_view import build_billing_state
-
                 try:
                     fresh = build_billing_state()
                 except Exception:
@@ -1009,74 +769,47 @@ class CLIBillingMixin:
                 if fresh is not None and fresh.logged_in:
                     state = fresh
                 if state.card is not None:
-                    _cprint(f"  {_DIM}✓ Card found: {state.card.display} — continuing.{_RST}")
+                    self._ok(t("cli.billing.card_found_continuing", card=state.card.display))
                     return state
-                print("  Still no card on file — finish adding it on the portal, then check again.")
-                continue
-            break
-        print("  Cancelled. No funds added.")
+                print(f"  {t('cli.billing.still_no_card')}")
+            else:
+                break
+        print(f"  {t('cli.billing.cancelled_no_funds')}")
         return None
 
     def _billing_buy_flow(self, state):
-        """Screen 2 (preset select) → Screen 3 (confirm + charge + poll)."""
-        from cli import _cprint, _b
-
+        """Screen 2 (presets) → Screen 3 (confirm+charge+poll). No scope preflight: react to the server's 403s."""
         from agent.billing_view import format_money, validate_charge_amount
-
         if not self._billing_require_admin(state):
             return
-
-        # No card / scope preflight here — that's the rejected anti-pattern. We let
-        # the charge fly and react to whatever 403 the server returns: scope first
-        # (insufficient_scope → in-flight reauth), then card (no_payment_method →
-        # portal handoff via _billing_render_charge_error). Mirrors the server's gate
-        # order; the user only hits the flow they actually need.
-
-        # Screen 3 — preset selection.
-        if not getattr(self, "_app", None):
-            presets = ", ".join(format_money(p) for p in state.charge_presets)
-            print()
-            _cprint(f"  💳 {_b('Add funds')}")
-            print(f"  Presets: {presets}")
-            print("  Run this in the interactive CLI to complete a purchase.")
+        if not self._app:
+            self._block_header("💳", t("cli.billing.add_funds"), rule=False)
+            print(f"  {t('cli.billing.presets', presets=', '.join(format_money(p) for p in state.charge_presets))}")
+            print(f"  {t('cli.billing.run_interactive_to_purchase')}")
             self._billing_portal_hint(state)
             return
-
-        # No card on file → the guided ADD-CARD path first (portal + re-check),
-        # so the user isn't walked through picking an amount that will 403.
-        # Returns refreshed state with a card, or None (abandoned).
-        if state.card is None:
+        if state.card is None:  # guided add-card path first, so the amount pick can't 403
             state = self._billing_add_card_flow(state)
             if state is None or state.card is None:
                 return
-
-        preset_choices = []
-        for p in state.charge_presets:
-            preset_choices.append((str(p), format_money(p), "one-time credit purchase"))
-        preset_choices.append(("custom", "Custom amount…", "enter your own amount"))
-        preset_choices.append(("cancel", "Cancel", "do nothing"))
-
+        preset_choices = [(str(p), format_money(p), t("cli.billing.desc_one_time_purchase")) for p in state.charge_presets]
+        preset_choices.append(("custom", t("cli.billing.choice_custom_amount"), t("cli.billing.desc_custom_amount")))
+        preset_choices.append(_cancel_row())
         card = state.card
-        detail = f"Payment: {card.display}" if card else "No saved card on file"
-        raw = self._prompt_text_input_modal(
-            title="Add funds", detail=detail, choices=preset_choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, preset_choices)
+        choice = self._modal_choice(
+            t("cli.billing.add_funds"),
+            t("cli.billing.payment_line", card=card.display) if card else t("cli.billing.no_saved_card_short"),
+            preset_choices)
         if not choice or choice == "cancel":
-            print("  Cancelled. No funds added.")
+            print(f"  {t('cli.billing.cancelled_no_funds')}")
             return
-
         from decimal import Decimal
-
         if choice == "custom":
-            entered = self._prompt_text_input("  Amount (USD): ")
-            if entered is None:
-                # None = cancelled (e.g. slash-worker can't prompt off-thread).
-                print("  Cancelled. No funds added.")
+            entered = self._prompt_text_input(f"  {t('cli.billing.amount_prompt')} ")
+            if entered is None:  # cancelled (e.g. slash-worker can't prompt off-thread)
+                print(f"  {t('cli.billing.cancelled_no_funds')}")
                 return
-            v = validate_charge_amount(
-                entered or "", min_usd=state.min_usd, max_usd=state.max_usd
-            )
+            v = validate_charge_amount(entered or "", min_usd=state.min_usd, max_usd=state.max_usd)
             if not v.ok:
                 print(f"  🔴 {v.error}")
                 return
@@ -1085,483 +818,268 @@ class CLIBillingMixin:
             try:
                 amount = Decimal(choice)
             except Exception:
-                print("  🔴 Invalid selection.")
+                print(f"  {t('cli.billing.invalid_selection')}")
                 return
-
         self._billing_confirm_and_charge(state, amount)
 
     def _billing_confirm_and_charge(self, state, amount):
         """Screen 3 — confirm total + consent, charge, then poll to settlement."""
-        from cli import _cprint, _b, _d
-
         from agent.billing_view import format_money, new_idempotency_key
-
         card = state.card
-        print()
-        _cprint(f"  💳 {_b('Confirm purchase')}")
-        print(f"  {'─' * 41}")
-        print(f"  Total: {format_money(amount)}")
+        self._block_header("💳", t("cli.billing.confirm_purchase"))
+        print(f"  {t('cli.billing.total_line', amount=format_money(amount))}")
         if card:
-            print(f"  Payment: {card.display}")
-            # Provenance-less payloads (older NAS) keep the generic line; when
-            # the resolver says WHY this card, the Payment line carries it.
-            if card.provenance is None:
-                _cprint(f"  {_d('Your card saved on the portal will be charged.')}")
-        print(f"  {'─' * 41}")
-        _consent = (
-            "By confirming, you allow Nous Research to charge your card."
-        )
-        _cprint(f"  {_d(_consent)}")
-
+            print(f"  {t('cli.billing.payment_line', card=card.display)}")
+            if card.provenance is None:  # older NAS without provenance → generic line
+                self._dim(t("cli.billing.portal_card_will_be_charged"))
+        print(f"  {_RULE}")
+        self._dim(t("cli.billing.consent_charge"))
         confirm_choices = [
-            ("pay", f"Pay {format_money(amount)} now", "submit the charge"),
-            ("portal", "Manage on portal", "manage your card / billing in the browser"),
-            ("cancel", "Go back", "do not charge"),
-        ]
-        if not getattr(self, "_app", None):
-            print("  Run in the interactive CLI to confirm a purchase.")
+            ("pay", t("cli.billing.choice_pay_now", amount=format_money(amount)), t("cli.billing.desc_submit_charge")),
+            ("portal", t("cli.billing.choice_manage_on_portal"), t("cli.billing.desc_manage_card_billing")),
+            _cancel_row(label_key="cli.billing.choice_go_back", desc_key="cli.billing.desc_do_not_charge")]
+        if not self._app:
+            print(f"  {t('cli.billing.run_interactive_to_confirm')}")
             return
-        raw = self._prompt_text_input_modal(
-            title=f"Pay {format_money(amount)}?",
-            detail=(card.display if card else "no saved card"),
-            choices=confirm_choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, confirm_choices)
+        choice = self._modal_choice(
+            t("cli.billing.pay_question", amount=format_money(amount)),
+            card.display if card else t("cli.billing.no_saved_card_lower"), confirm_choices)
         if choice == "portal":
             self._billing_open_portal(state)
             return
         if choice != "pay":
-            print("  Cancelled. No funds added.")
+            print(f"  {t('cli.billing.cancelled_no_funds')}")
             return
+        key = new_idempotency_key()  # reused on the post-step-up resume so a double-submit collapses
+        self._billing_submit_and_poll(
+            state, amount, key, missing_msg=f"  🔴 {t('cli.billing.no_charge_id')}",
+            status_msg=t("cli.billing.charge_submitted"),
+            on_scope=lambda: self._billing_handle_scope_required(state, amount=amount, idempotency_key=key))
 
-        # Submit the charge with a fresh idempotency key (reused on retry).
-        from hermes_cli.nous_billing import (
-            BillingError,
-            BillingScopeRequired,
-            post_charge,
-        )
-
-        key = new_idempotency_key()
+    def _billing_submit_and_poll(self, state, amount, key, *, missing_msg, status_msg, on_scope=None):
+        """POST the charge, then poll. ``on_scope`` handles a scope denial (first submit); else it renders."""
+        from cli import _cprint, _d
+        from hermes_cli.nous_billing import BillingError, BillingScopeRequired, post_charge
         try:
             result = post_charge(amount_usd=amount, idempotency_key=key)
-        except BillingScopeRequired:
-            # In-flight reauth: allow remote spending, then resume THIS charge
-            # (press-Enter beat) — no command re-run. Reuses the same idem key.
-            self._billing_handle_scope_required(state, amount=amount, idempotency_key=key)
-            return
         except BillingError as exc:
-            self._billing_render_charge_error(state, exc)
+            if on_scope is not None and isinstance(exc, BillingScopeRequired):
+                on_scope()
+            else:
+                self._billing_render_charge_error(state, exc)
             return
-
         charge_id = result.get("chargeId")
         if not charge_id:
-            print("  🔴 No charge id returned; please check the portal.")
+            print(missing_msg)
             return
-        _cprint(f"  {_d('Charge submitted — confirming settlement…')}")
+        _cprint(f"  {_d(status_msg)}")
         self._billing_poll_charge(state, charge_id, amount)
 
     def _billing_poll_charge(self, state, charge_id, amount):
         """Poll loop: 2s interval, 5-min cap, cancellable. settled = ledger truth."""
         import time as _time
-
-        from agent.billing_view import format_money
-        from hermes_cli.nous_billing import (
-            BillingError,
-            BillingTransient,
-            get_charge_status,
-        )
-
-        deadline = _time.time() + 300  # 5-minute cap
-        interval = 2.0
+        from agent.billing_view import format_money, parse_money
+        from hermes_cli.nous_billing import BillingError, BillingTransient, get_charge_status
+        deadline = _time.time() + 300
         while _time.time() < deadline:
             try:
                 status = get_charge_status(charge_id)
-            except BillingTransient as exc:
-                # Retry-after, NOT a failure — back off and keep polling.
-                wait = exc.retry_after or 5
-                _time.sleep(min(wait, 30))
+            except BillingTransient as exc:  # retry-after, NOT a failure — back off and keep polling
+                _time.sleep(min(exc.retry_after or 5, 30))
                 continue
             except BillingError as exc:
-                print(f"  🔴 Could not check the charge: {exc}")
+                print(f"  {t('cli.billing.could_not_check_charge', error=exc)}")
                 return
-
             state_str = status.get("status")
             if state_str == "settled":
                 amt = status.get("amountUsd")
-                from agent.billing_view import parse_money
-
-                shown = format_money(parse_money(amt)) if amt else format_money(amount)
-                print(f"  ✓ {shown} added to your balance.")
+                _added = format_money(parse_money(amt)) if amt else format_money(amount)
+                print(f"  {t('cli.billing.added_to_balance', amount=_added)}")
                 return
             if state_str == "failed":
                 self._billing_render_charge_failed(state, status.get("reason"))
                 return
-            # pending → wait and poll again
-            _time.sleep(interval)
-
-        # Past the cap with no terminal state = timeout (not an error).
-        print("  🟡 Still processing after 5 minutes — this is a timeout, not a "
-              "failure. Check /billing or the portal shortly.")
+            _time.sleep(2.0)  # pending
+        print(f"  {t('cli.billing.still_processing')}")
         self._billing_portal_hint(state)
 
     def _billing_render_charge_failed(self, state, reason):
-        """Branch the poll `failed` reasons to the right copy + portal funnel."""
+        """Poll `failed` reasons → the right copy + portal funnel."""
         reason = (reason or "").strip()
-        if reason == "authentication_required":
-            print("  🔴 Your bank requires verification (3DS). Complete it on the "
-                  "portal to finish this purchase.")
-        elif reason == "payment_method_expired":
-            print("  🔴 Your card has expired. Update it on the portal.")
-        elif reason == "card_declined":
-            print("  🔴 Your card was declined. Try another card on the portal.")
-        else:
-            print(f"  🔴 The charge didn't go through ({reason or 'processing_error'}).")
+        key = _CHARGE_FAILED_KEYS.get(reason)
+        print(f"  {t(key)}" if key else f"  {t('cli.billing.charge_failed_generic', reason=reason or 'processing_error')}")
         self._billing_portal_hint(state)
 
     def _billing_render_charge_error(self, state, exc):
-        """Render a typed BillingError at submit time (pre-poll)."""
-        from hermes_cli.nous_billing import (
-            BillingTransient,
-            BillingRemoteSpendingRevoked,
-            BillingSessionRevoked,
-        )
-
-        code = getattr(exc, "error", None)
-        actor = getattr(exc, "actor", None)
-        portal_url = getattr(exc, "portal_url", None) or getattr(state, "portal_url", None)
+        """Submit-time BillingError. Order matters: revoked/session before code lookups; Transient before scope."""
+        from hermes_cli.nous_billing import BillingTransient, BillingRemoteSpendingRevoked, BillingSessionRevoked
+        code = exc.error
+        portal_url = exc.portal_url or state.portal_url
         if isinstance(exc, BillingRemoteSpendingRevoked) or code == "remote_spending_revoked":
-            # CF-4: this terminal's spend was revoked. Recovery is reconnect.
-            who = ("An admin stopped this terminal's spending."
-                   if actor == "admin"
-                   else "You stopped this terminal's spending.")
-            print(f"  🔴 {who} Reconnect to restore — run `hermes portal` to re-authorize.")
+            # This terminal's spend was revoked; recovery is reconnect.
+            who = t("cli.billing.revoked_by_admin") if exc.actor == "admin" else t("cli.billing.revoked_by_you")
+            print(f"  {t('cli.billing.revoked_reconnect', who=who)}")
         elif isinstance(exc, BillingSessionRevoked) or code == "session_revoked":
-            print("  🔴 Your session was logged out. Run `hermes portal` to log in again.")
-        elif code == "no_payment_method":
-            print("  💳 No card on file — top up and manage billing on the portal.")
-        elif code in ("cli_billing_disabled", "remote_spending_disabled") or \
-                getattr(exc, "code", None) == "remote_spending_disabled":
-            print("  Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page.")
-        elif code == "role_required":
-            print("  Adding funds needs an org admin/owner. Ask an admin, or manage on the portal.")
-        elif code == "idempotency_conflict":
-            print("  🔴 That charge key was already used for a different amount. Start a fresh top-up.")
+            print(f"  {t('cli.billing.session_logged_out')}")
+        elif code in _CHARGE_ERROR_KEYS or exc.code == "remote_spending_disabled":
+            # Fixed copy by `error`; the gate's dual error/code payload may carry it in `.code` only.
+            print(f"  {t(_CHARGE_ERROR_KEYS.get(code) or _CHARGE_ERROR_KEYS['cli_billing_disabled'])}")
         elif code == "monthly_cap_exceeded":
-            remaining = (getattr(exc, "payload", {}) or {}).get("remainingUsd")
+            remaining = (exc.payload or {}).get("remainingUsd")
             if remaining is not None:
-                print(f"  🔴 Monthly spend cap reached — ${remaining} headroom left.")
+                print(f"  {t('cli.billing.monthly_cap_reached_headroom', remaining=remaining)}")
             else:
-                print("  🔴 Monthly spend cap reached.")
+                print(f"  {t('cli.billing.monthly_cap_reached')}")
         elif isinstance(exc, BillingTransient):
-            wait = getattr(exc, "retry_after", None)
-            mins = f" (try again in ~{max(1, round(wait / 60))} min)" if wait else ""
-            print(f"  🟡 Too many charges right now{mins}. This isn't a payment failure.")
+            wait = exc.retry_after
+            mins = t("cli.billing.try_again_in_min", minutes=max(1, round(wait / 60))) if wait else ""
+            print(f"  {t('cli.billing.too_many_charges', mins=mins)}")
         elif code == "insufficient_scope":
-            # Never leak the raw billing:manage scope (the post-grant replay can
-            # re-raise it if the grant raced) — the concept is "Remote Spending".
-            print("  🔴 Remote Spending needs approval — run /topup to allow it, then retry.")
+            # Never leak the raw billing:manage scope (a raced post-grant replay can re-raise it).
+            print(f"  {t('cli.billing.remote_spending_needs_approval')}")
         else:
             print(f"  🔴 {exc}")
         if portal_url:
-            print(f"  Portal: {portal_url}")
+            print(f"  {t('cli.billing.portal_line', url=portal_url)}")
 
     def _billing_handle_scope_required(self, state, *, amount=None, idempotency_key=None):
-        """403 insufficient_scope → in-flight reauth, then resume the held charge.
-
-        The buy path discovers remote spending isn't allowed only when the
-        charge 403s — there is no preflight. We allow it in-flight ("Allow
-        Remote Spending" → browser device-flow), then on return ask the user to
-        press Enter to resume the held ``amount`` (reusing ``idempotency_key`` so
-        the resumed charge collapses with the original). Never leaks the raw
-        billing:manage scope.
-        """
-        from cli import _cprint, _d
-
-        from agent.billing_view import format_money
-
-        amount_str = format_money(amount) if amount is not None else "your top-up"
-        print()
-        print("  ! One-time setup")
-        _cprint(f"  {_d(f'To charge from this terminal, allow Remote Spending once. It opens your browser to authorize, then {amount_str} picks up right here.')}")
-        if not getattr(self, "_app", None):
-            print("  Run `hermes portal` and allow Remote Spending, then retry.")
-            return
-        confirm_choices = [
-            ("yes", "Allow Remote Spending", "open your browser to authorize"),
-            ("no", "Not now", "cancel"),
-        ]
-        raw = self._prompt_text_input_modal(
-            title="Allow Remote Spending",
-            detail="Opens your browser to authorize this terminal.",
-            choices=confirm_choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, confirm_choices)
-        if choice != "yes":
-            print("  No charge made. Run /topup when you want to allow Remote Spending.")
-            return
-        print("  Opening your browser to allow Remote Spending…")
-        try:
-            from hermes_cli.auth import step_up_nous_billing_scope
-
-            granted = step_up_nous_billing_scope(open_browser=True)
-        except Exception as exc:
-            print(f"  Couldn't allow Remote Spending: {exc}")
-            return
+        """403 insufficient_scope → reauth, then resume ``amount`` on explicit confirm, reusing the idempotency key."""
+        from agent.billing_view import build_billing_state, format_money, new_idempotency_key
+        amount_str = format_money(amount) if amount is not None else t("cli.billing.your_topup")
+        granted = self._step_up_remote_spending(
+            explain=t("cli.billing.charge_stepup_explain", amount=amount_str),
+            noninteractive_msg=f"  {t('cli.billing.charge_stepup_noninteractive')}",
+            declined_msg=f"  {t('cli.billing.charge_stepup_declined')}",
+            not_granted_msg=f"  {t('cli.billing.charge_stepup_not_granted')}")
         if not granted:
-            print("  Couldn't allow Remote Spending — an org admin or owner has to approve it. Your card was not charged.")
             return
-
-        # Granted. The token now carries the scope, but the ORG kill-switch
-        # (cli_billing_enabled) is a separate gate — re-fetch /state so we don't
-        # over-promise when a charge would still hit cli_billing_disabled.
-        from agent.billing_view import build_billing_state
-
+        # The token now has the scope, but the ORG kill-switch is a separate gate — re-fetch /state.
         fresh = build_billing_state()
         if not (fresh.logged_in and fresh.cli_billing_enabled):
-            print("  Remote Spending is allowed for this terminal, but it's still off for this org. A billing admin can turn it on from the portal's Hermes Agent page, then run /topup again.")
+            print(f"  {t('cli.billing.allowed_but_org_off')}")
             self._billing_portal_hint(fresh)
             return
-
-        # Scope granted + org kill-switch on — but a charge still needs a card on
-        # file. If there's none, this is a half-done state: say so and route to the
-        # portal to top up / manage billing, rather than a bare "✓ enabled" that reads as done.
-        if fresh.card is None:
-            print("  ✓ Remote Spending allowed — but there's no card on file yet.")
-            _cprint(f"  {_d('Top up and manage billing on the portal to continue.')}")
+        if fresh.card is None:  # half-done state: say so rather than a bare "✓ enabled"
+            print(f"  ✓ {t('cli.billing.allowed_no_card')}")
+            self._dim(t("cli.billing.topup_on_portal_to_continue"))
             self._billing_portal_hint(fresh)
             return
-
-        # Nothing to resume (scope-required hit outside a charge, e.g. auto-reload
-        # config) → just tell the user it's ready.
-        if amount is None:
-            print("  ✓ Remote Spending allowed. Run /topup to continue.")
+        if amount is None:  # scope-required hit outside a charge (e.g. auto-reload config)
+            print(f"  ✓ {t('cli.billing.allowed_run_topup')}")
             return
-
-        # Press-Enter beat: the user is back from the browser; resume the held
-        # purchase on an explicit confirm (reassuring, not silent).
-        print("  ✓ Remote Spending allowed.")
+        print(f"  ✓ {t('cli.billing.remote_spending_allowed')}")
         resume_choices = [
-            ("resume", f"Resume {format_money(amount)} top-up", "finish the held purchase"),
-            ("cancel", "Cancel", "do not charge"),
-        ]
-        raw = self._prompt_text_input_modal(
-            title="Resume your top-up",
-            detail=f"{format_money(amount)} is ready to finish — press Enter to resume.",
-            choices=resume_choices,
-        )
-        if self._normalize_slash_confirm_choice(raw, resume_choices) != "resume":
-            print("  Cancelled. No funds added.")
+            ("resume", t("cli.billing.choice_resume_topup", amount=format_money(amount)), t("cli.billing.desc_resume_topup")),
+            _cancel_row(desc_key="cli.billing.desc_do_not_charge")]
+        if self._modal_choice(
+                t("cli.billing.resume_topup_title"),
+                t("cli.billing.resume_topup_detail", amount=format_money(amount)), resume_choices) != "resume":
+            print(f"  {t('cli.billing.cancelled_no_funds')}")
             return
-
-        # Replay the held charge, reusing the original idempotency key so a
-        # double-submit collapses to one charge.
-        from hermes_cli.nous_billing import BillingError, post_charge
-
-        from agent.billing_view import new_idempotency_key
-
-        key = idempotency_key or new_idempotency_key()
-        try:
-            result = post_charge(amount_usd=amount, idempotency_key=key)
-        except BillingError as exc:
-            self._billing_render_charge_error(fresh, exc)
-            return
-        charge_id = result.get("chargeId")
-        if not charge_id:
-            print("  No charge id returned; please check the portal.")
-            return
-        _cprint(f"  {_d('Resuming your top-up — confirming settlement…')}")
-        self._billing_poll_charge(fresh, charge_id, amount)
+        self._billing_submit_and_poll(
+            fresh, amount, idempotency_key or new_idempotency_key(),
+            missing_msg=f"  {t('cli.billing.no_charge_id')}",
+            status_msg=t("cli.billing.resuming_topup"))
 
     def _billing_auto_reload_flow(self, state):
-        """Screen 4 — auto-reload config: threshold + reload-to → PATCH.
-
-        Prefills the current values from ``state.auto_reload``. Validates both
-        amounts (2dp, within bounds, ``reload_to > threshold``). When auto-reload
-        is already on, offers a "Turn off" path (PATCH ``enabled:false``).
-        """
-        from cli import _cprint, _b, _d
-
+        """Screen 4 — threshold + reload-to → PATCH. Prefills; validates ``reload_to > threshold``; "Turn off" if on."""
         from agent.billing_view import format_money, validate_charge_amount
-
         if not self._billing_require_admin(state):
             return
-
         card = state.card
         ar = state.auto_reload
         currently_on = bool(ar and ar.enabled)
-
-        print()
-        _cprint(f"  💳 {_b('Auto-reload')}")
-        print(f"  {'─' * 41}")
-        _cprint(f"  {_d('Automatically add funds when your balance is low.')}")
+        self._block_header("💳", t("cli.billing.auto_reload"))
+        self._dim(t("cli.billing.auto_reload_hint"))
         if card:
-            print(f"  Card on file: {card.masked}")
+            print(f"  {t('cli.billing.card_on_file', card=card.masked)}")
         else:
-            print("  No saved card — manage billing on the portal.")
+            print(f"  {t('cli.billing.no_saved_card_manage_portal')}")
             self._billing_portal_hint(state)
             return
+        _current = (t("cli.billing.auto_reload_rule", threshold=format_money(ar.threshold_usd), reload_to=format_money(ar.reload_to_usd))
+                    if currently_on else "")
         if currently_on:
-            print(
-                f"  Currently: below {format_money(ar.threshold_usd)} → "
-                f"reload to {format_money(ar.reload_to_usd)}"
-            )
-
-        if not getattr(self, "_app", None):
-            print("  Run in the interactive CLI to configure auto-reload.")
+            print(f"  {t('cli.billing.currently', rule=_current)}")
+        if not self._app:
+            print(f"  {t('cli.billing.run_interactive_to_configure')}")
             self._billing_portal_hint(state)
             return
-
-        # When already enabled, let the user turn it off without re-entering values.
-        if currently_on:
-            top_choices = [
-                ("edit", "Edit thresholds", "change when / how much to reload"),
-                ("off", "Turn off", "disable auto-reload"),
-                ("cancel", "Cancel", "do nothing"),
-            ]
-            raw = self._prompt_text_input_modal(
-                title="Auto-reload",
-                detail=(
-                    f"On — below {format_money(ar.threshold_usd)} → "
-                    f"reload to {format_money(ar.reload_to_usd)}"
-                ),
-                choices=top_choices,
-            )
-            top = self._normalize_slash_confirm_choice(raw, top_choices)
+        if currently_on:  # let the user turn it off without re-entering values
+            top = self._modal_choice(t("cli.billing.auto_reload"), t("cli.billing.auto_reload_on_detail", rule=_current),
+                                     _auto_reload_top_choices())
             if top == "off":
                 self._billing_auto_reload_disable(state)
                 return
             if top != "edit":
-                print("  🟡 Cancelled.")
+                print(f"  {t('cli.billing.cancelled_yellow')}")
                 return
+        _CANCELLED = object()
 
-        # Field 1 — threshold (prefilled when editing an existing config).
-        cur_thr = format_money(ar.threshold_usd) if currently_on else None
-        thr_prompt = "  When balance falls below (USD)"
-        thr_prompt += f" [{cur_thr}]: " if cur_thr else ": "
-        threshold_raw = self._prompt_text_input(thr_prompt)
-        if threshold_raw is None:
-            # None = cancelled (e.g. slash-worker can't prompt off-thread).
-            print("  🟡 Cancelled.")
+        def _ask_amount(label, current):
+            """One amount; empty keeps `current` when editing. Decimal / kept value, or _CANCELLED (already printed)."""
+            cur = format_money(current) if currently_on else None
+            prompt = f"  {t('cli.billing.amount_prompt_labeled', label=label)}" + (f" [{cur}]: " if cur else ": ")
+            raw = self._prompt_text_input(prompt)
+            if raw is None:  # cancelled (e.g. slash-worker can't prompt off-thread)
+                print(f"  {t('cli.billing.cancelled_yellow')}")
+                return _CANCELLED
+            if not (raw or "").strip() and currently_on:
+                return current
+            v = validate_charge_amount(raw or "", min_usd=state.min_usd, max_usd=state.max_usd)
+            if not v.ok or v.amount is None:
+                print(f"  🔴 {v.error}")
+                return _CANCELLED
+            return v.amount
+        threshold_amt = _ask_amount(t("cli.billing.threshold_label"), ar.threshold_usd if currently_on else None)
+        if threshold_amt is _CANCELLED:
             return
-        if not (threshold_raw or "").strip() and currently_on:
-            threshold_amt = ar.threshold_usd  # keep current value on empty input
-        else:
-            tv = validate_charge_amount(
-                threshold_raw or "", min_usd=state.min_usd, max_usd=state.max_usd
-            )
-            if not tv.ok or tv.amount is None:
-                print(f"  🔴 {tv.error}")
-                return
-            threshold_amt = tv.amount
-
-        # Field 2 — reload-to (prefilled when editing an existing config).
-        cur_rel = format_money(ar.reload_to_usd) if currently_on else None
-        rel_prompt = "  Reload balance to (USD)"
-        rel_prompt += f" [{cur_rel}]: " if cur_rel else ": "
-        reload_raw = self._prompt_text_input(rel_prompt)
-        if reload_raw is None:
-            print("  🟡 Cancelled.")
+        reload_amt = _ask_amount(t("cli.billing.reload_to_label"), ar.reload_to_usd if currently_on else None)
+        if reload_amt is _CANCELLED:
             return
-        if not (reload_raw or "").strip() and currently_on:
-            reload_amt = ar.reload_to_usd  # keep current value on empty input
-        else:
-            rv = validate_charge_amount(
-                reload_raw or "", min_usd=state.min_usd, max_usd=state.max_usd
-            )
-            if not rv.ok or rv.amount is None:
-                print(f"  🔴 {rv.error}")
-                return
-            reload_amt = rv.amount
-
         if reload_amt is None or threshold_amt is None or reload_amt <= threshold_amt:
-            print("  🔴 Reload-to amount must be greater than the threshold.")
+            print(f"  {t('cli.billing.reload_must_exceed_threshold')}")
             return
-
-        print()
-        _ar_consent = (
-            f"By confirming, you authorize Nous Research to charge {card.masked} "
-            f"whenever your balance reaches {format_money(threshold_amt)}. "
-            f"Turn off any time here or on the portal."
-        )
-        _cprint(f"  {_d(_ar_consent)}")
-        confirm_choices = [
-            ("agree", "Agree and turn on", "enable auto-reload"),
-            ("cancel", "Cancel", "do nothing"),
-        ]
-        raw = self._prompt_text_input_modal(
-            title="Turn on auto-reload?",
-            detail=f"Below {format_money(threshold_amt)} → reload to {format_money(reload_amt)}",
-            choices=confirm_choices,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, confirm_choices)
-        if choice != "agree":
-            print("  🟡 Cancelled.")
+        self._dim(t("cli.billing.auto_reload_consent", card=card.masked, threshold=format_money(threshold_amt)), lead=True)
+        if self._modal_choice(
+                t("cli.billing.turn_on_auto_reload_question"),
+                t("cli.billing.auto_reload_rule_cap", threshold=format_money(threshold_amt), reload_to=format_money(reload_amt)),
+                _auto_reload_agree_choices()) != "agree":
+            print(f"  {t('cli.billing.cancelled_yellow')}")
             return
+        if self._billing_patch_auto_top_up(state, enabled=True, threshold=float(threshold_amt), top_up_amount=float(reload_amt)):
+            print(f"  {t('cli.billing.auto_reload_enabled', threshold=format_money(threshold_amt), reload_to=format_money(reload_amt))}")
 
-        from hermes_cli.nous_billing import (
-            BillingError,
-            BillingScopeRequired,
-            patch_auto_top_up,
-        )
-
+    def _billing_patch_auto_top_up(self, state, **kwargs) -> bool:
+        """PATCH auto-top-up; scope denials → step-up, other errors → renderer. True on success."""
+        from hermes_cli.nous_billing import BillingError, BillingScopeRequired, patch_auto_top_up
         try:
-            patch_auto_top_up(
-                enabled=True, threshold=float(threshold_amt), top_up_amount=float(reload_amt)
-            )
+            patch_auto_top_up(**kwargs)
         except BillingScopeRequired:
             self._billing_handle_scope_required(state)
-            return
+            return False
         except BillingError as exc:
             self._billing_render_charge_error(state, exc)
-            return
-        print(f"  ✅ Auto-reload on: below {format_money(threshold_amt)} → "
-              f"reload to {format_money(reload_amt)}.")
+            return False
+        return True
 
     def _billing_auto_reload_disable(self, state):
-        """Turn off auto-reload (PATCH ``enabled:false``).
-
-        The endpoint requires ``threshold``/``topUpAmount`` in the body even when
-        disabling, so we echo back the current values (falling back to 0).
-        """
-        from hermes_cli.nous_billing import (
-            BillingError,
-            BillingScopeRequired,
-            patch_auto_top_up,
-        )
-
+        """PATCH ``enabled:false``; the endpoint still requires threshold/topUpAmount → echo current (or 0)."""
         ar = state.auto_reload
         thr = float(ar.threshold_usd) if ar and ar.threshold_usd is not None else 0.0
         rel = float(ar.reload_to_usd) if ar and ar.reload_to_usd is not None else 0.0
-        try:
-            patch_auto_top_up(enabled=False, threshold=thr, top_up_amount=rel)
-        except BillingScopeRequired:
-            self._billing_handle_scope_required(state)
-            return
-        except BillingError as exc:
-            self._billing_render_charge_error(state, exc)
-            return
-        print("  ✅ Auto-reload turned off.")
+        if self._billing_patch_auto_top_up(state, enabled=False, threshold=thr, top_up_amount=rel):
+            print(f"  {t('cli.billing.auto_reload_disabled')}")
 
     def _billing_limit_screen(self, state):
         """Screen 5 — monthly spend limit (read-only; cap is portal-only)."""
-        from cli import _cprint, _b, _d
-
         from agent.billing_view import format_money
-
-        print()
-        _cprint(f"  💳 {_b('Monthly spend limit')}")
-        print(f"  {'─' * 41}")
+        self._block_header("💳", t("cli.billing.monthly_spend_limit"))
         cap = state.monthly_cap
         if cap is None or cap.limit_usd is None:
-            _cprint(f"  {_d('No monthly cap visible (managed on the portal).')}")
+            self._dim(t("cli.billing.no_monthly_cap"))
         else:
-            spent = format_money(cap.spent_this_month_usd)
-            limit = format_money(cap.limit_usd)
-            ceiling = " (default ceiling)" if cap.is_default_ceiling else ""
-            print(f"  {spent} of {limit} used this month{ceiling}")
-        _limit_note = (
-            "The monthly limit is set on the portal — the terminal shows "
-            "it read-only."
-        )
-        _cprint(f"  {_d(_limit_note)}")
+            ceiling = t("cli.billing.default_ceiling_suffix") if cap.is_default_ceiling else ""
+            print(f"  {t('cli.billing.used_this_month', spent=format_money(cap.spent_this_month_usd), limit=format_money(cap.limit_usd), ceiling=ceiling)}")
+        self._dim(t("cli.billing.monthly_limit_read_only"))
         self._billing_portal_hint(state)

@@ -1,23 +1,9 @@
 import { LONG_MSG } from '../config/limits.js'
-import { buildToolTrailLine, fmtK } from '../lib/text.js'
+import { t } from '../i18n/runtime.js'
+import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
-
-export const imageTokenMeta = (info?: ImageMeta | null) => {
-  const { width, height, token_estimate: t } = info ?? {}
-
-  return [width && height ? `${width}x${height}` : '', (t ?? 0) > 0 ? `~${fmtK(t!)} tok` : '']
-    .filter(Boolean)
-    .join(' · ')
-}
-
-export const attachedImageNotice = (info?: ({ name?: string } & ImageMeta) | null) => {
-  const meta = imageTokenMeta(info)
-  const label = info?.name ? `📎 Attached image: ${info.name}` : '📎 Attached image'
-
-  return `${label}${meta ? ` · ${meta}` : ''}`
-}
 
 export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
@@ -28,7 +14,7 @@ export const userDisplay = (text: string) => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || '(message)'} [long message]`
+  return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
 }
 
 export const toTranscriptMessages = (rows: unknown): Msg[] => {
@@ -44,7 +30,10 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, display_kind, name, role, text } = row as TranscriptRow
+    const { context, display_kind, name, role, text, timestamp } = row as TranscriptRow
+
+    const createdAt =
+      typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
 
     if (role === 'tool') {
       pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
@@ -63,32 +52,57 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: 'model changed' })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
       pending = []
 
       continue
     }
 
-    if (display_kind === 'async_delegation_complete') {
+    if (display_kind === 'auto_continue') {
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'personality_switch') {
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
+      pending = []
+
+      continue
+    }
+
+    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
 
       const label =
-        count === undefined
-          ? 'background agent work finished'
-          : `${count} background agent${count === 1 ? '' : 's'} finished`
+        display_kind === 'process_complete'
+          ? t('libText.messages.backgroundProcessFinished')
+          : count === undefined
+            ? t('libText.messages.backgroundAgentWorkFinished')
+            : t(
+                count === 1
+                  ? 'libText.messages.backgroundAgentsFinishedOne'
+                  : 'libText.messages.backgroundAgentsFinishedOther',
+                count
+              )
 
-      out.push({ kind: 'event', role: 'system', text: label })
+      out.push({
+        kind: 'event',
+        role: 'system',
+        text: typeof meta?.display_text === 'string' ? meta.display_text : label
+      })
       pending = []
 
       continue
     }
 
     if (role === 'assistant') {
-      out.push({ role, text, ...(pending.length && { tools: pending }) })
+      out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text })
+      out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
       pending = []
     }
   }
@@ -105,12 +119,6 @@ export const fmtDuration = (ms: number) => {
   return h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-interface ImageMeta {
-  height?: number
-  token_estimate?: number
-  width?: number
-}
-
 interface TranscriptRow {
   context?: string
   display_kind?: string
@@ -118,4 +126,5 @@ interface TranscriptRow {
   name?: string
   role?: string
   text?: string
+  timestamp?: number
 }

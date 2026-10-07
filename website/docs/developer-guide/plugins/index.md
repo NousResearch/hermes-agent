@@ -15,32 +15,206 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | If you want to add… | Read |
 |---|---|
 | Custom tools, hooks, slash commands, skills, or CLI subcommands | **This guide** (the general plugin surface) |
-| A **native desktop app** extension (panes, pages, status bar, palette, themes) | [Desktop Plugin SDK](/developer-guide/desktop-plugin-sdk) |
-| A **web dashboard** extension (tabs, shell slots, themes) | [Extending the Dashboard](/user-guide/features/extending-the-dashboard) |
-| An **LLM / inference backend** (new provider) | [Model Provider Plugins](/developer-guide/model-provider-plugin) |
-| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](/developer-guide/adding-platform-adapters) |
-| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](/developer-guide/memory-provider-plugin) |
-| A **context-compression engine** | [Context Engine Plugins](/developer-guide/context-engine-plugin) |
-| An **image-generation backend** | [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
-| A **video-generation backend** | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
-| A **web-search / extract backend** | [Web Search Provider Plugins](/developer-guide/web-search-provider-plugin) |
-| A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](/developer-guide/browser-provider-plugin) |
-| A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](/developer-guide/secret-source-plugin) |
-| A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](/user-guide/features/web-dashboard#custom-providers) — `ctx.register_dashboard_auth_provider()` |
-| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](/user-guide/features/tts#custom-command-providers) — config-driven, no Python needed |
-| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](/user-guide/features/tts#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to a shell template |
-| **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](/user-guide/features/mcp) — declare `mcp_servers.<name>` in `config.yaml` |
-| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
-| **Shell hooks** (run a shell command on events) | [Shell Hooks](/user-guide/features/hooks#shell-hooks) — declare under `hooks:` in `config.yaml` |
-| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](/user-guide/features/skills) — `hermes skills tap add <repo>` · [Publishing a tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
-| A first-class **core** inference provider (not a plugin) | [Adding Providers](/developer-guide/adding-providers) |
+| A **native desktop app** extension (panes, pages, status bar, palette, themes) | [Desktop Plugin SDK](../desktop-plugin-sdk.md) |
+| A **web dashboard** extension (tabs, shell slots, themes) | [Extending the Dashboard](../../user-guide/features/extending-the-dashboard.md) |
+| An **LLM / inference backend** (new provider) | [Model Provider Plugins](../model-provider-plugin.md) |
+| A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](../adding-platform-adapters.md) |
+| A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](../memory-provider-plugin.md) |
+| A **context-compression engine** | [Context Engine Plugins](../context-engine-plugin.md) |
+| An **image-generation backend** | [Image Generation Provider Plugins](../image-gen-provider-plugin.md) |
+| A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
+| A **web-search / extract backend** | [Web Search Provider Plugins](../web-search-provider-plugin.md) |
+| A **cloud browser backend** (Browserbase-style CDP session provider) | [Browser Provider Plugins](../browser-provider-plugin.md) |
+| A **computer-use driver** (desktop control behind the `computer_use` tool) | [Computer-use backend plugins](#computer-use-backend-plugins) — `ctx.register_computer_use_provider()` |
+| A **secret-manager backend** (vault / password manager / OS keystore) | [Secret Source Plugins](../secret-source-plugin.md) |
+| A **dashboard OIDC/auth provider** | [Web Dashboard — custom providers](../../user-guide/features/web-dashboard.md#custom-providers) — `ctx.register_dashboard_auth_provider()` |
+| A **TTS backend** (any CLI — Piper, VoxCPM, Kokoro, voice cloning, …) | [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) — config-driven, no Python needed |
+| An **STT backend** (custom whisper / ASR CLI) | [Voice Message Transcription](../../user-guide/features/tts.md#voice-message-transcription-stt) — set `HERMES_LOCAL_STT_COMMAND` to an argv-tokenized template |
+| **External tools via MCP** (filesystem, GitHub, Linear, any MCP server) | [MCP](../../user-guide/features/mcp.md) — declare `mcp_servers.<name>` in `config.yaml` |
+| **Gateway event hooks** (fire on startup, session events, commands) | [Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks) — drop `HOOK.yaml` + `handler.py` into `~/.hermes/hooks/<name>/` |
+| **Shell hooks** (run a shell command on events) | [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks) — declare under `hooks:` in `config.yaml` |
+| **Additional skill sources** (custom GitHub repos, private skill indexes) | [Skills](../../user-guide/features/skills.md) — `hermes skills tap add <repo>` · [Publishing a tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) |
+| A first-class **core** inference provider (not a plugin) | [Adding Providers](../adding-providers.md) |
 
-See the full [Pluggable interfaces table](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
+See the full [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each) for a consolidated view of every extension surface including config-driven (TTS, STT, MCP, shell hooks) and drop-in directory (gateway hooks) styles.
 :::
 
 :::caution Third-party-product plugins ship standalone — not into the core tree
 Plugins that integrate **someone else's product or project** — observability/metrics backends, vendor SaaS connectors, analytics dashboards, paid-service tie-ins — are built and distributed as **standalone plugin repos**, not merged into `NousResearch/hermes-agent`. Users install them into `~/.hermes/plugins/` or via a pip entry point; everything in this guide works the same way from a standalone repo. This is a coupling-and-maintenance decision (the core moves fast and we don't own your backend), not a quality bar — a plugin can be excellent and still belong in its own repo. Promote it in the Nous Research Discord `#plugins-skills-and-skins` channel. See [CONTRIBUTING.md](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md) for the policy.
 :::
+
+## Portable Agent Plugins v1 packages
+
+Hermes can also install and load directory packages that target the Agent
+Plugins v1.0.0 format. This is a compatibility adapter for the portable
+components Hermes already owns. It does not replace native `plugin.yaml` plus
+`register(ctx)` plugins.
+
+```text
+my-portable-plugin/
+├── plugin.json
+├── skills/
+│   └── summarize/
+│       ├── SKILL.md
+│       └── references/
+└── mcp.json
+```
+
+Install and activate a portable package through the normal workflow:
+
+```bash
+hermes plugins install owner/repository --no-enable
+hermes plugins list
+hermes plugins enable <plugin-name>
+```
+
+Portable packages are disabled after installation unless you explicitly enable
+them. An enabled package may provide immediate `skills/*/SKILL.md` directories
+and stdio MCP servers from root `mcp.json`. Skills are read-only, namespaced,
+and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
+one executable token with a separate argument list, never through a shell.
+Use `skills_list` to discover the full qualified skill name. Portable skill
+namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
+from the discovered plugin key so sanitized names cannot collide. A portable
+package's MCP servers keep the names their `mcp.json` gives them, the same rule
+as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
+name keeps the tool verb inside the 64-character provider cap. A duplicate server
+name is a load-time conflict: a `config.yaml` server wins over a package, and the
+first-loaded package wins over the next; the loser is skipped with a warning
+naming both.
+
+Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
+locations, `mcp.json`, resolved paths, and symlink containment locally. It does
+not fetch JSON schemas while loading a package. A bad skill or MCP entry is
+skipped at its own boundary when valid sibling components can still load.
+`PLUGIN_ROOT` points to the resolved package root. `PLUGIN_DATA` points to a
+profile-scoped writable directory managed by Hermes.
+Values declared in portable MCP `env` are visible package data, not a secret
+storage mechanism. Do not place credentials in `mcp.json`.
+
+The current portable subset supports stdio and Streamable HTTP MCP entries.
+Portable `streamable-http` entries are routed through Hermes' existing native
+remote MCP client (the same runtime that powers URL-based `mcp_servers`
+config), with the v1 boundary rules enforced: the URL must be absolute
+http(s) with no user information or fragment, plain HTTP is accepted only
+for `localhost`/loopback hosts, and configured headers are never forwarded
+across a cross-origin redirect. Legacy `sse` entries are reported and
+skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
+sandbox. Enabling a package grants its instructions and local executable the
+same full-trust posture as other installed Hermes plugins.
+
+A package can ask Hermes to gate one of its MCP servers, the same way a user's
+`trust: untrusted` does in `config.yaml`. Use it for servers whose tools spend
+money, trade, send messages or change accounts, so the user approves each
+write-capable call instead of relying on the skill's instructions alone:
+
+```json
+{
+  "extensions": {
+    "com.nousresearch.hermes": {
+      "servers": {
+        "trade": { "trust": "untrusted" }
+      }
+    }
+  }
+}
+```
+
+The server name must match an `mcp.json` entry. With `untrusted`, every tool
+call to that server that is not annotated `readOnlyHint: true` asks the user
+first, and fails closed where nobody can answer (cron, unattended runs). The
+only other accepted value is `full`, the default, so a package can narrow
+access but never widen it. A `config.yaml` server with the same name replaces
+the package's entry, including its trust. Other harnesses ignore this extension.
+`trust` can sit beside `app`, `requires` and `liveness` in the same server
+entry (see [Application declarations](./application-declarations.md)).
+
+The [rendered specification](https://agent-plugins.org/specification) currently
+labels v1.0.0 a Working Draft, while the
+[versioned specification repository](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)
+records it as Published. Hermes keys behavior on the canonical v1.0.0 schema
+identifiers and normative text, not either mutable status label. This is an
+explicit supported subset, not a claim of full Agent Plugins conformance.
+
+## Native plugin compatibility contract
+
+Native `plugin.yaml` plus `register(ctx)` plugins are protected by behavior,
+not by one global plugin API number. Hermes does not expose a
+`PLUGIN_API_VERSION`, require a manifest-wide `api:` match, or attach an API
+version to unrelated values. A plugin that uses a documented behavior should
+continue to work after a normal Hermes upgrade.
+
+The compatibility rules are:
+
+- **Evolve additively.** Documented `PluginContext` methods are not removed or
+  renamed. New parameters are optional, have defaults, and should be
+  keyword-only. Existing return fields are not removed or silently retyped.
+- **Hook payloads are keyword payloads.** New hook data is added as keyword
+  fields, never by changing the meaning or position of an existing field.
+  Hermes inspects callback signatures: a legacy callback receives the fields it
+  declares, while a callback with `**kwargs` receives the complete current
+  payload. New plugins should accept `**kwargs` so they can opt into additive
+  data without another signature change.
+- **Manifests are open to additions.** Unknown `plugin.yaml` fields are ignored.
+  Older Hermes releases can therefore load a plugin whose manifest contains
+  metadata introduced by a newer release, provided the plugin code itself uses
+  supported runtime behavior.
+- **Provider interfaces grow through defaults.** New provider methods have a
+  default implementation. New callback context is optional and forwarded only
+  when signature inspection shows that a provider accepts it. Adding an
+  abstract method or an unconditionally forwarded argument requires a
+  migration window rather than a flag-day signature change.
+- **Version the contract that crosses a boundary.** A capability may carry its
+  own schema version when it defines a wire payload or persisted format (for
+  example, observer payloads or secret-source state). Keep fields additive
+  within that local schema. Persisted plugin state and config must remain
+  readable, or ship an explicit migration; resumed sessions written by the old
+  format must still replay. Do not add version literals to unrelated callback
+  or context values.
+
+The contract covers documented surfaces only. Replacing or wrapping core
+functions, methods, module attributes or private tables at runtime (assigning
+`AIAgent.<method>`, `setattr` on a Hermes module, writing into
+`sys.modules` or a core dict) is not a supported extension point. It breaks
+whenever the internals move, and it collides with every other plugin patching
+the same seam. The plugin catalog refuses it at admission (`hermes plugins
+validate`, `no core override` check). If a public hook you need is missing,
+open an issue describing it.
+
+### Deprecation policy
+
+A documented native plugin behavior may be deprecated only with all of the
+following:
+
+1. a replacement and migration instructions in the plugin guide and release
+   notes;
+2. a warning emitted at most once per process, naming the replacement and the
+   earliest removal release;
+3. support for the old behavior through at least two subsequent minor
+   releases; and
+4. behavior-based compatibility coverage for both the legacy path and the
+   replacement throughout that window.
+
+Removal after the window must include any migration needed for persisted data
+or resumable sessions. In practice, additive aliases and adapters are preferred
+to removal.
+
+Hermes enforces this contract with frozen external-plugin fixtures discovered
+from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
+`PluginManager`; they assert real registration and callback outcomes rather
+than internal symbol lists or source-code shape.
+
+### Sep 2026 module decomposition: old import paths removed
+
+Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
+import paths were never part of the plugin contract** above. A temporary compatibility layer kept the old
+paths resolving until 2026-09-14; it has been removed, so a plugin that still imports an old path fails to
+load with an `ImportError` (the reason shows in `hermes plugins list`).
+
+To fix such a plugin, import the name from the module that defines it now, or better, use `ctx` and the
+documented ABCs instead of internals. The full old-to-new map is the
+[`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
+from the last commit that shipped the layer.
 
 ## What you're building
 
@@ -52,10 +226,30 @@ Plus a hook that logs every tool call, and a bundled skill file.
 
 ## Step 1: Create the plugin directory
 
+Create a directory and continue with Step 2:
+
 ```bash
 mkdir -p ~/.hermes/plugins/calculator
 cd ~/.hermes/plugins/calculator
 ```
+
+### Validate with Plugin Doctor
+
+`hermes plugins doctor [path-or-id]` runs the same directory discovery,
+manifest parser, namespaced import, `register(ctx)`, hook registry, and tool
+registry used by Hermes itself. It reports invalid hook names, callbacks that do
+not accept `**kwargs`, registration failures, and drift between declared and
+registered tools/hooks. Pass `--ci` to exit non-zero on an error:
+
+```bash
+hermes plugins doctor . --ci
+```
+
+Doctor uses a temporary `HERMES_HOME`, restores plugin registration state after
+the check, and blocks direct Python socket connections to catch accidental
+network access while registration runs. This is not a sandbox: plugin code still
+executes in-process with the current user's permissions and can spawn subprocesses,
+so only run Doctor on code you trust enough to import.
 
 ## Step 2: Write the manifest
 
@@ -83,7 +277,180 @@ requires_env:          # gate loading on env vars; prompted during install
     description: "Key for the Other service"
     url: "https://other.com/keys"
     secret: true
+capabilities:          # privileged host surfaces you request (consent flow)
+  - tools.override     # replace built-in tools (needs user consent)
+  - llm.model_override # choose the model for host-owned LLM calls
 ```
+
+### Declaring capabilities
+
+If your plugin needs a privileged host surface — overriding a built-in tool,
+picking the model for `ctx.llm` calls, etc. — declare it in `capabilities:`.
+At install/enable time the user sees the list and consents once; if a later
+version adds a capability, the update flow asks again for just the addition.
+Undeclared or unconsented capabilities are simply off (fail closed), so
+**probe before using them and degrade gracefully**:
+
+```python
+def register(ctx):
+    if ctx.has_capability("tools.override"):
+        ctx.register_tool(..., override=True)
+    else:
+        ctx.register_tool(...)   # register under a non-conflicting name
+```
+
+Known capability ids: `tools.override`, `llm.provider_override`,
+`llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
+`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+canonical registry). Unknown ids are ignored. The older per-capability
+config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
+are deprecated — declare capabilities instead so users get a single,
+auditable consent screen. Capabilities are consent + audit, **not a
+sandbox**: they gate host API surfaces, nothing more.
+
+**Pip-distributed plugins** have no `plugin.yaml` directory once installed,
+so declare capabilities in distribution metadata instead, via the companion
+`hermes_agent.plugin_capabilities` entry-point group. Each declaration is
+named `<plugin-id>.<capability-id>` and points at the same object as your
+`hermes_agent.plugins` entry point:
+
+```toml
+[project.entry-points."hermes_agent.plugins"]
+calculator = "my_pkg:register"
+
+[project.entry-points."hermes_agent.plugin_capabilities"]
+"calculator.tools.override" = "my_pkg:register"
+```
+
+Hermes reads these from installed metadata without importing your code, so
+`hermes plugins capabilities` and the consent flow stay accurate for pip
+installs.
+
+### Manifest v2 reference
+
+`plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
+optional; a manifest without `manifest_version` is a v1 manifest and stays
+fully supported forever. Unknown fields never break loading — they are ignored
+with a warning (forward compatibility), and a `manifest_version` newer than
+this Hermes understands still loads with a warning.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
+| `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
+| `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
+| `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
+| `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
+| `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
+| `license` | str | SPDX-style license id (e.g. `MIT`). |
+| `homepage` | str | Project URL. |
+| `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+| `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
+
+```yaml
+# plugin.yaml — manifest v2 example
+name: my-plugin
+version: 1.2.0
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/owner/my-plugin
+tags: [gateway, demo]
+requires_plugins:
+  - id: other-plugin
+    version_range: ">=1.0,<2"
+python_dependencies:
+  - "somepkg>=1.0,<2"     # consent before PM admission
+config_schema:
+  api_url: {type: str, default: "", description: "Service endpoint"}
+```
+
+:::note Shared dependency admission
+Plugin installation requests Python dependency consent. Enabling the plugin
+prepares its requirements with core dependencies, extras, and enabled plugins
+through PM. Pack enables use the same admission transaction. Reinstalling an
+active plugin requests consent against its staged declaration before publication.
+A refusal preserves the installed plugin and selected environment.
+
+The installer and PM admission reject unsupported `manifest_version` values
+and unmet `requires_hermes` constraints before publication.
+:::
+
+### Python dependencies
+
+A directory plugin can bring its own PyPI packages. Declare them either in the manifest
+(`python_dependencies`, above) or, preferably, in a `pyproject.toml` next to `plugin.yaml`:
+
+```toml
+[project]
+name = "my-plugin"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "somepkg>=1.0,<2",
+    "other[extra]>=3.11",
+]
+```
+
+When both exist the `pyproject.toml` wins. What Hermes does with them:
+
+- **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
+  across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
+  A new plugin is downloaded disabled; Python dependency consent precedes enablement.
+  `pyproject.toml` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
+- **Atomic publication** — PM prepares a fresh environment generation before publishing
+  an enablement or an active plugin replacement. Resolution, download, or build failure
+  preserves the previous environment and plugin selection; no existing plugin is sacrificed.
+- **Updates retain the union** — `hermes update` includes enabled plugins while preparing
+  its new generation. There is no post-update pip reinstall. `hermes plugins update` prepares
+  active replacements before swapping their code and dependency generation together.
+- **Requirement hygiene** — malformed PEP 508 requirements are refused. Environment markers
+  remain intact for the target interpreter to evaluate. `hermes-agent` self-dependencies are
+  omitted because the checkout supplies Hermes. Direct-URL requirements are not managed;
+  use a plugin-owned external runtime for them.
+- **`--no-deps`** downloads a new plugin without dependency consent and leaves it disabled,
+  even with `--enable`. It cannot bypass PM admission when replacing an active plugin.
+- **`--yes-deps`** answers the dependency question up front, so a headless install (CI, SSH
+  automation, a container entrypoint) prepares the declared dependencies instead of being refused.
+  It is mutually exclusive with `--no-deps`.
+- **`python_runtime: external`** keeps a sidecar's dependencies out of the shared union.
+  Hermes does not install that Python runtime or modify its declaration.
+- **Nothing to load is an error** — `hermes plugins validate` rejects `plugin.yaml` without
+  `__init__.py`, `desktop/plugin.js`, or `plugin.json` beside it. Pip-layout packages need
+  a directory-plugin wrapper.
+- `security.allow_lazy_installs: false` blocks on-demand acquisition. Explicit dependency
+  consent and explicit enablement authorize PM preparation; discovery never installs.
+
+`HERMES_HOME/plugins/` survives `hermes update` and Desktop updates: the updater only rebuilds the
+venv and the checkout, never the home directory.
+
+### Dependency security policy
+
+Hermes quarantines **its own** dependencies: the checkout's `[tool.uv] exclude-newer = "14 days"`
+keeps a freshly published release of any package Hermes itself depends on out of `hermes update`
+and the built-in lazy installs for two weeks, so a hijacked upload is caught upstream before it
+reaches users. **That quarantine does not apply to your plugin's dependencies.** When Hermes
+resolves your plugin into its environment, the cutoff stays on the packages Hermes itself locks
+and nowhere else, so a plugin can floor on a release published yesterday and install today — and the
+plugin's author, not Hermes, is responsible for what that pulls in. (A plugin that needs a newer
+version of a package Hermes itself depends on still waits out that package's window.)
+
+Set your own policy and hold yourself to it. Strongly recommended:
+
+- **Upper bounds on every dependency** — `>=floor,<next_major` for stable packages,
+  `>=0.29,<0.32` for pre-1.0 ones. A bare `>=X.Y` adopts every future release unreviewed.
+- **Floor on the oldest API-compatible version**, not the release of the week. A floor on a
+  fresh wheel forces every installer onto it the day it appears; `>=old,!=broken,<next` keeps the
+  wide range and skips the one bad release.
+- **Adopt a new-release quarantine of your own** — wait ~14 days before floors move to a new
+  release, and resolve with `uv --exclude-newer "14 days"` (or `UV_EXCLUDE_NEWER`) in your own CI so
+  the lock you test is the one users get.
+- **Pin your lock, review your bumps.** Treat a dependency bump as a code change: read the
+  upstream diff, then re-pin.
+
+The plugin catalog review reads your dependency list at the pinned SHA (`plugin.yaml` or
+`pyproject.toml`) and flags bare floors and missing bounds; an entry is not held for a floor that
+is merely recent.
 
 ## Step 3: Write the tool schemas
 
@@ -233,7 +600,9 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes may pass additional context in the future.
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
+   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
+   works; `**kwargs` is how you opt into the full, additively growing context.
 
 ## Step 5: Write the registration
 
@@ -277,6 +646,7 @@ def register(ctx):
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
+- `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 **`dispatch_tool` example — a slash command that runs a tool:**
@@ -297,6 +667,76 @@ def register(ctx):
 ```
 
 The dispatched tool goes through the normal approval, redaction, and budget pipelines — it's a real tool invocation, not a shortcut around them.
+
+### Store settings and runtime state
+
+Use plugin-relative config keys for user-visible behavior. Hermes resolves them
+under `plugins.entries.<plugin-id>.settings` and rejects global, cross-plugin,
+and traversal paths:
+
+```python
+def register(ctx):
+    endpoint = ctx.get_config("endpoint", default="https://example.invalid")
+    retries = ctx.get_config("retry.attempts", default=3)
+
+    ctx.set_config("endpoint", endpoint)
+    ctx.set_config("retry.attempts", retries)
+```
+
+Use `ctx.state` for plugin-owned cursors, caches, and deduplication data rather
+than placing runtime bookkeeping in `config.yaml`:
+
+```python
+def register(ctx):
+    cursor = ctx.state.get("cursor", default={"page": 0})
+    ctx.state.set("cursor", {"page": cursor["page"] + 1})
+```
+
+State is profile-scoped, atomically replaced, safe across concurrent writers,
+and limited to 10 MiB per plugin. Portable packages share the same directory as
+their `PLUGIN_DATA`; native plugins receive a collision-resistant,
+Windows-safe namespace. Malformed existing state is reported and preserved.
+
+Config and state have different owners: settings are user-visible behavior in
+`config.yaml`, while state is plugin-owned runtime data under
+`<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
+
+### Settings form in the Desktop
+
+Every key you declare in the manifest's `config_schema` renders as a row on the
+plugin's own page under the Desktop app's **Settings → Plugins** (the gear on the
+plugin's Capabilities → Plugins row opens it). No
+Desktop code is needed: the backend's `plugins.manage list` returns the schema
+plus each key's current value, and saving writes through the same writer as
+`ctx.set_config()`, so `plugins.entries.<id>.settings.<key>` is what your plugin
+reads back. The form is table-driven by `type`:
+
+| Manifest `type` | Field | Extra keys |
+|---|---|---|
+| `str` (default) | text input | `choices: [a, b]` (or `enum:`) turns it into a dropdown |
+| `int`, `float` | number input | |
+| `bool` | switch | |
+| `list`, `dict` | JSON editor | |
+| `secret` | masked input | `env: MY_PLUGIN_TOKEN` — the `.env` variable it is stored under (default `<PLUGIN_ID>_<KEY>` upper-snaked) |
+
+Every entry also accepts `label` (or `title`; without one the key is shown in
+sentence case, `maps_api_key` → "Maps API key"), `description` (help text under
+the label), `default` and `required` (marks the row **Required**).
+
+```yaml
+config_schema:
+  api_url: {type: str, default: "https://api.example.com", label: "API URL", description: "Service endpoint"}
+  retries: {type: int, default: 3}
+  mode: {type: str, choices: [fast, careful], default: fast}
+  api_key: {type: secret, env: MY_PLUGIN_API_KEY, description: "Personal access token"}
+```
+
+**Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`
+name and whether a value is set; the Desktop stores the value through the same
+credential route as provider API keys (`PUT /api/env`), and your plugin reads it
+with `os.environ.get("MY_PLUGIN_API_KEY")` — exactly like a `requires_env` entry.
+The `plugins.manage settings` action refuses secret keys and any value whose type
+or `choices` disagree with the schema.
 
 ## Step 6: Test it
 
@@ -353,8 +793,8 @@ hermes logs --level WARNING | grep -i plugin
 Common reasons a plugin doesn't appear:
 
 - **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
-- **Wrong directory layout** — must be `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or `~/.hermes/plugins/<category>/<plugin-name>/plugin.yaml` (one level of category nesting, max). Anything deeper is ignored.
-- **Missing `__init__.py`** — the plugin directory needs both `plugin.yaml` and `__init__.py` with a `register(ctx)` function.
+- **Wrong directory layout:** Native packages use `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or one category level. Portable packages use root `plugin.json` in the same locations. Anything deeper is ignored.
+- **Missing `__init__.py`:** Native packages need both `plugin.yaml` and `__init__.py` with a `register(ctx)` function. Portable packages do not import Python and do not require `__init__.py`.
 - **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
 
 ## Your plugin's final structure
@@ -382,13 +822,39 @@ Put any files in your plugin directory and read them at import time:
 ```python
 # In tools.py or __init__.py
 from pathlib import Path
+from ruamel.yaml import YAML
 
 _PLUGIN_DIR = Path(__file__).parent
 _DATA_FILE = _PLUGIN_DIR / "data" / "languages.yaml"
 
 with open(_DATA_FILE) as f:
-    _DATA = yaml.safe_load(f)
+    _DATA = YAML(typ="safe").load(f)
 ```
+
+That's for files you *ship*. State you *write* is different — see the next
+section.
+
+### Store durable state
+
+Never write runtime state into your plugin directory: that's the install
+tree, and `hermes plugins update` / `remove` git-pull or delete it — your
+users' data dies with it. The sanctioned home is the per-plugin data root,
+which survives both and follows the active profile:
+
+```python
+from plugins.plugin_storage import plugin_data_dir, plugin_db
+
+# <hermes home>/plugin-data/<name>/ — created on first use
+state_file = plugin_data_dir("my-plugin") / "state.json"
+
+# Or a SQLite database at <data dir>/data.db (WAL mode, thread-friendly)
+conn = plugin_db("my-plugin")
+conn.execute("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY)")
+```
+
+One directory per plugin means every plugin's data is inspectable in one
+predictable place. Secrets don't belong here — credential reads go through
+the standard `.env` / secret-scope path like everywhere else.
 
 ### Bundle skills
 
@@ -433,6 +899,55 @@ skill_view("my-workflow")              # → built-in version (unchanged)
 The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
 :::
 
+### Ship a language pack
+
+A plugin can add a UI language or override the wording of an existing one for every surface at once —
+Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
+interface and the Desktop app. Declare `provides_locales` and ship the YAML; **no Python is needed**:
+
+```
+~/.hermes/plugins/hermes-lang-pl/
+├── plugin.yaml
+└── locales/
+    ├── pl.yaml            # core (Python) strings — same key tree as the bundled locales/en.yaml
+    ├── pl.tui.yaml        # optional: TUI strings (keys in locales/_keys.tui.json)
+    └── pl.desktop.yaml    # optional: Desktop strings (keys in locales/_keys.desktop.json)
+```
+
+```yaml
+name: hermes-lang-pl
+version: 1.0.0
+description: Polish language pack
+provides_locales:
+  - id: pl              # lowercase BCP-47-style id: pl, pt-br, zh-hant
+    endonym: Polski     # what language switchers show
+    rtl: false
+```
+
+When `provides_locales` is declared the loader calls `ctx.register_locale_dir(<plugin>/locales)` before
+`register()` (a manifest-only pack with no `__init__.py` loads like a manifest-only Desktop plugin).
+Catalogs are **layered and partial**: pack → user overlay (`<HERMES_HOME>/locales/`) → bundled →
+English → key; a pack only needs the keys it changes, and the last pack loaded wins per key.
+Core values keep English's named `{placeholders}`; TUI/Desktop entries whose English value is a
+function are written as strings with positional `{0}`, `{1}` placeholders.
+
+Plugins with code can register programmatically — the handles are `PluginRegistration`s, so unloading
+the plugin removes the layer, and registration never changes `display.language`:
+
+```python
+def register(ctx):
+    here = Path(__file__).parent
+    ctx.register_locale("pl", here / "locales" / "pl.yaml", endonym="Polski")        # YAML path
+    ctx.register_locale("pl", {"approval": {"denied": "      ✗ Odrzucono"}})          # mapping, nested or flat
+    ctx.register_locale("pl", here / "locales" / "pl.tui.yaml", surface="tui")       # core | tui | desktop
+    ctx.register_locale_dir(here / "locales")                                         # every <lang>[.surface].yaml
+```
+
+`hermes plugins validate` checks each declared id has a parseable, text-only `locales/<id>.yaml`
+(a non-text leaf is an error) and **warns** with the names of keys absent from the English catalog of
+that surface. Renderers fetch the pack layer through the `i18n.languages` / `i18n.catalog` RPCs.
+User-facing guide: [Language Packs](../../user-guide/features/language-packs.md).
+
 ### Gate on environment variables
 
 If your plugin needs an API key:
@@ -469,32 +984,50 @@ Both formats can be mixed in the same list. Already-set variables are skipped si
 
 ### Lazy-install optional Python dependencies
 
-If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+For an SDK covered by a Hermes project extra, use `pm.ensure_import` at the
+operation that needs it. Use `pm.available` for a read-only availability check.
+Do not install dependencies from a frequently polled `check_fn`.
+
+This example requests the existing `bedrock` extra:
 
 ```python
-# tools.py
-from tools.lazy_deps import ensure, FeatureUnavailable
+from pm import InstallError, ensure_import
 
 def my_tool_handler(args, **kwargs):
     try:
-        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
-    except FeatureUnavailable as exc:
+        ensure_import("bedrock")
+    except InstallError as exc:
         return {"error": str(exc)}
 
-    import my_backend_sdk   # safe now
-    ...
+    import boto3
+    # Use the SDK here.
 ```
 
-Two rules from the security model in `tools/lazy_deps.py`:
+The argument is a `pyproject.toml` extra name. It is not an arbitrary package
+specification or a plugin-qualified key. The old `LAZY_DEPS` registry and
+`FeatureUnavailable` exception no longer exist.
 
-| Rule | Why |
-|---|---|
-| Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
-| Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
+If a new environment is selected, the helper can report a required restart.
+Return that error instead of importing from a second environment inside the
+running process. Already available dependencies need no installation, even
+when `security.allow_lazy_installs` is false.
 
-For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+For a directory plugin's own Python dependencies, declare `dependencies` under
+`[project]` in its `pyproject.toml`. Without an authored project file, PM combines
+legacy `pip_dependencies` and `python_dependencies` lists from `plugin.yaml` or
+`plugin.yml`. Old PM-generated project files do not override these lists.
+Consent, workspace membership, and currency checks use the same declaration.
+PM prepares their dependencies together with core requirements before enabling
+the plugin. The generated workspace does not rewrite the plugin directory or
+the shipped lockfile. Dependency conflicts refuse admission and preserve the
+previous selection. PM does not automatically disable other plugins.
 
-When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
+Dependencies installed manually with pip are not durable PM declarations.
+A later environment replacement need not retain them. Wrapper plugins whose
+Python runtimes remain outside PM can use the
+[memory-provider survival contract](../memory-provider-plugin.md#hermes_home-survival-contract-what-wrappers-can-rely-on).
+See [Package management](../../reference/package-management.md) for the
+runtime layout and lazy-install policy.
 
 
 
@@ -539,7 +1072,7 @@ def reset_client():
     _slot.reset()
 ```
 
-Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The honcho memory plugin (`plugins/memory/honcho/client.py`) is the reference consumer.
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The [Honcho memory plugin](https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho) (`client.py`) is the reference consumer.
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
@@ -577,10 +1110,45 @@ def register(ctx):
 
 Without `override=True`, the registry rejects any registration that would
 shadow an existing tool from a different toolset — this prevents
-accidental overwrites. The override is logged at INFO level so it's
+accidental overwrites. Overriding a **built-in** tool additionally
+requires the operator to opt in via
+`plugins.entries.<plugin_id>.allow_tool_override: true` in `config.yaml`;
+without that gate, `register_tool(override=True)` raises
+`PluginToolOverrideError`. The override is logged so it's
 auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
 tools, so the registration order is correct: your handler replaces the
 built-in one.
+
+**Non-bundled plugins also need an operator grant.** For any plugin that
+does not ship with Hermes core (user, project, or pip source),
+`override=True` against an existing built-in tool additionally requires a
+per-plugin opt-in in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:                    # the plugin's registry key from `hermes plugins list`
+      allow_tool_override: true
+```
+
+Without the grant, `ctx.register_tool(..., override=True)` raises
+`PluginToolOverrideError`; since `register()` exceptions are caught by the
+loader, the plugin is disabled and Hermes continues. The gate exists
+because an enabled plugin that silently replaces a privileged built-in
+like `shell_exec` or `write_file` could intercept everything the model
+routes through it. Bundled plugins are exempt: an override there is a
+maintainer decision. If config cannot be loaded, the gate fails closed.
+
+You normally never edit this key by hand. `hermes plugins enable <name>`
+asks whether to grant the capability only when the plugin's manifest
+declares it under `capabilities:` (the consent screen, defaulting to no);
+a plugin that declares no capabilities is enabled without any grant
+prompt. The `--allow-tool-override` / `--no-allow-tool-override` flags set
+or revoke the grant explicitly in either case, for scripted installs or
+for pre-authorizing a plugin that has not adopted the manifest block.
+The same grant also gates `deregister()`: without it, a plugin cannot
+remove a tool it does not own (which would otherwise be a way around the
+override check).
 
 ### Register multiple hooks
 
@@ -595,27 +1163,35 @@ def register(ctx):
 
 ### Hook reference
 
-Each hook is documented in full on the **[Event Hooks reference](/user-guide/features/hooks#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:
+Each hook is documented in full on the **[Event Hooks reference](../../user-guide/features/hooks.md#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:
 
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
-| [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
-| [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
-| [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
-| [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
-| [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
-| [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
-| [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
-| [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`pre_tool_call`](../../user-guide/features/hooks.md#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
+| [`post_tool_call`](../../user-guide/features/hooks.md#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
+| [`pre_llm_call`](../../user-guide/features/hooks.md#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
+| [`post_llm_call`](../../user-guide/features/hooks.md#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
+| `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
+| `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
+| `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...); not a `pre_api_request` | `aux_task: str` plus the `pre_api_request` fields (`session_id`/`task_id`/`turn_id` are the parent turn's or empty, `api_request_id: str`, `retry_count: int`, `streaming: bool`, `request: dict`) | ignored |
+| `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
+| [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
+| [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
+| [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
+| [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
+| [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+
+The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
 ### `pre_llm_call` context injection
 
@@ -728,6 +1304,44 @@ def register(ctx):
 
 When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name).
 
+### Middleware: change what happens
+
+Hooks observe the agent loop (with the few documented steering shapes above). **Middleware changes what happens**: request middleware rewrites the effective payload before anything downstream sees it, and execution middleware wraps the actual call. Register it from the same `register(ctx)` entry point:
+
+```python
+def cap_find_output(tool_name, args, **kwargs):
+    """Rewrite terminal find commands to cap their output."""
+    command = args.get("command", "")
+    if tool_name == "terminal" and command.startswith("find "):
+        return {
+            "args": {**args, "command": command + " | head -100"},
+            "source": "my-plugin",
+            "reason": "cap find output",
+        }
+    return None  # leave the call unchanged
+
+def register(ctx):
+    ctx.register_middleware("tool_request", cap_find_output)
+```
+
+The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
+
+| Kind | Receives | Return contract |
+|------|----------|-----------------|
+| `tool_request` | `tool_name`, `args`, `original_args`, context kwargs | Return `{"args": {...}}` to replace the effective tool arguments before hooks, guardrails, approvals, and execution see them. Return `None` to leave the call unchanged. |
+| `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
+| `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
+| `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
+
+**Rules that matter in practice:**
+
+- Request middleware chains: each callback sees the payload as rewritten by earlier callbacks, while `original_args` / `original_request` always carries the pre-middleware copy. Payloads are copied between callbacks, so mutate freely.
+- You can include `source`, `reason`, and `name` strings in the returned dict. They land in the middleware trace, which downstream observer hooks receive as the `middleware_trace` kwarg.
+- `next_call` in execution middleware is **single-use**. Calling it twice raises, because it would re-run the provider or tool.
+- A middleware callback that raises is logged and skipped; the chain continues. A downstream failure raised after your `next_call` propagates as itself. Middleware can never break the base runtime path.
+- Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
+- Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
+
 ### Register CLI commands
 
 Plugins can add their own `hermes <plugin>` subcommand tree:
@@ -762,7 +1376,7 @@ def register(ctx):
 
 After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
 
-**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
+**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](../memory-provider-plugin.md#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
@@ -878,6 +1492,75 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Send raw CDP commands to the agent's browser
+
+A plugin that must drive the agent's browser below the browser tools can get a
+CDP handle pinned to a task's live supervisor connection with
+`SUPERVISOR_REGISTRY.capture(task_id)` and send commands with
+`call(method, params=None, *, session_id=None, timeout=10.0)`. The handle
+raises `CapturedCDPInvalid` once that connection is gone and never retargets a
+newer one. Use it instead of reading or writing `CDPSupervisor` private
+attributes, which the catalog rejects. It is trusted in-process transport only:
+it performs no origin, consent or ownership checks for you. Full contract:
+[Browser CDP Supervisor](../browser-supervisor.md#trusted-plugin-cdp-access).
+
+### Know which cron run you are in
+
+`ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:
+
+| Field | Meaning |
+|---|---|
+| `job_id`, `job_name` | The cron job. |
+| `execution_id` | This run's row in the executions ledger (`hermes cron runs`). |
+| `source` | Which path fired the run: `"builtin"` (the built-in scheduler), `"direct"` (a run fired outside it, e.g. `hermes cron run`), or an external scheduler's name. |
+| `scheduled_instant` | The schedule occurrence this run fires. `None` for a manual or other off-schedule run, so check this field to tell a scheduled run from a manual one. |
+| `started_at` | When the run started. |
+| `profile` | The profile that owns the job. |
+
+The scheduler sets it only after the run has won its execution claim, and clears it when the run ends. It is per-run, so two jobs or profiles firing at the same time never see each other's value. The model cannot forge it: hook arguments come from Hermes, and tool subprocesses (terminal, `execute_code`) run in a separate interpreter. Subagents spawned with `delegate_task` get `None` because they are not the scheduled run itself.
+
+```python
+def register(ctx):
+    def guard(*, tool_name, args, **kw):
+        run = ctx.current_cron_execution()
+        if tool_name == "deploy" and (run is None or run.scheduled_instant is None):
+            return {"action": "block", "message": "deploy only runs from its scheduled cron job"}
+    ctx.register_hook("pre_tool_call", guard)
+```
+
+### Add Automation Blueprints
+
+`ctx.register_automation_blueprint(key, *, title, description, schedule_template, prompt_template, category="general", slots=(), deliver_default="origin", skills=(), tags=())` adds a fill-in-the-blanks automation to the [Automation Blueprints catalog](../../reference/automation-blueprints-catalog.mdx). It appears next to the built-ins in `/blueprint` (CLI, TUI, messengers), the dashboard's Blueprints tab, and the Desktop Cron page, labelled with your plugin's name. The arguments are the fields of the built-in `AutomationBlueprint` (`cron/blueprint_catalog.py`); each slot is a dict of `BlueprintSlot` fields.
+
+```python
+def register(ctx):
+    ctx.register_automation_blueprint(
+        "standup",
+        title="Team standup digest",
+        description="Every weekday, summarize what changed in a repo since yesterday.",
+        category="work",
+        schedule_template="{minute} {hour} * * 1-5",
+        prompt_template="Summarize yesterday's commits and open PRs for {repo} as a short standup digest.",
+        slots=[
+            {"name": "repo", "type": "text", "label": "Which repo?", "default": "acme/app"},
+            {"name": "time", "type": "time", "label": "What time?", "default": "09:15"},
+            {"name": "deliver", "type": "enum", "label": "Where to deliver?", "default": "origin",
+             "options": ["origin", "local"], "strict": False},
+        ],
+        tags=["work", "daily"],
+    )
+```
+
+Users then run `/blueprint teamtools:standup` (or just `/blueprint standup`) or pick it in the Desktop/dashboard form.
+
+- **Keys are namespaced.** The catalog key is `<plugin>:<key>` (`teamtools:standup`), so a plugin can never replace a built-in or another plugin's blueprint. Pass the bare key; a key containing `:` is rejected.
+- **Slots and templates.** Slot `type` is `time` (`HH:MM`), `enum`, `weekdays`, or `text`. `prompt_template` may use any slot as `{name}`. `schedule_template` may use slot names plus `{minute}`/`{hour}` (from a slot named `time`) and `{dow}` (from a `recurrence`/`day` slot, else `*`). A slot named `deliver` gets the profile's real delivery targets in the Desktop and dashboard forms.
+- **Validated at registration.** An unknown placeholder, bad slot type, duplicate key, or schedule that does not parse logs a warning and skips that blueprint; the rest of your plugin still loads. When every slot has a default, Hermes fills the blueprint once at load, so a broken template fails then instead of on the user's first *Schedule it*.
+- **Per profile.** Plugins load per profile, so the blueprint is listed only in profiles where your plugin is enabled.
+- **Jobs outlive the plugin.** Scheduling a blueprint creates an ordinary cron job with the prompt and schedule already filled in. Disabling or uninstalling the plugin removes the blueprint from the catalog but leaves those jobs running. If a job's `skills` name a skill your plugin bundles, the job skips that skill (and logs it) while the plugin is disabled.
+
+This needs no manifest capability. It also works under plugin host isolation, because slots are plain dicts.
+
 ### Handle Slack Block Kit button clicks
 
 Plugins that post Block Kit messages with interactive elements (buttons, overflow menus, datepickers, etc.) can register the click handlers directly with the Slack adapter — no monkey-patching of `slack_bolt.AsyncApp` required.
@@ -909,7 +1592,115 @@ def register(ctx):
 - Standard slack_bolt rules apply — `await ack()` within 3 seconds, then do longer work.
 - For multi-workspace deployments the handler fires for clicks from any connected workspace; use `body["team"]["id"]` if you need to scope behaviour.
 
-This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
+This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead. For the full slack_bolt surface (events, shortcuts, commands — not just Block Kit actions), use the generic `register_platform_handler("slack", ...)` below.
+
+### Register native platform handlers (any platform)
+
+Plugins that need to receive platform events the core adapter doesn't route — extra update types, native button callbacks, reaction/member events, webhook routes — can register a handler factory that the platform's adapter invokes at connect time. This works on **every** gateway platform.
+
+```python
+def register(ctx):
+    def _wire(native, adapter):
+        # native: the platform's client/app object (see table below)
+        # adapter: the platform adapter instance (treat as read-only)
+        # Import platform SDKs HERE so register() works without them.
+        ...
+
+    ctx.register_platform_handler("discord", _wire)
+```
+
+**Signature:** `ctx.register_platform_handler(platform, factory) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `platform` | `str` | Gateway platform name, lowercase (`"telegram"`, `"discord"`, `"slack"`, `"matrix"`, ...) |
+| `factory` | callable | Receives `(native, adapter)` at connect time |
+
+**What `native` is, per platform:**
+
+| Platform | `native` object | Typical hooks |
+|----------|-----------------|---------------|
+| `telegram` | PTB `Application` | `add_handler` — any update type, pattern-scoped callbacks |
+| `discord` | `discord.ext.commands.Bot` | `add_listener` — reactions, member events, threads, voice |
+| `slack` | `slack_bolt.AsyncApp` | `app.event()` / `app.action()` / `app.command()` |
+| `matrix` | Matrix client | event callbacks |
+| `teams` | Teams `App` | `on_message` / `on_card_action` decorators |
+| `dingtalk` | `DingTalkStreamClient` | `register_callback_handler` for other stream topics |
+| `feishu` | lark_oapi client | API calls; event routing |
+| `line`, `api_server`, `msgraph_webhook` | aiohttp `web.Application` | `router.add_get/post` — custom routes (wired before the router freezes) |
+| everything else (whatsapp, signal, irc, email, sms, ntfy, wecom, weixin, bluebubbles, yuanbao, ...) | `None` | connect-time hook; work through the `adapter` handle |
+
+**Runtime behavior:**
+
+- Factories are queued at plugin-load time and invoked when the platform connects — for platforms where dispatch order matters (Telegram, Slack, Teams, aiohttp routers) they run **before** the core handlers register, so scoped plugin handlers take precedence and everything else falls through.
+- **Always scope handlers you add to first-match dispatch tables.** On Telegram, use `CallbackQueryHandler(..., pattern=r"^myplugin:")` — an unscoped handler would swallow the core button flows (exec approvals, model picker, clarify prompts).
+- Each factory is isolated: if it raises, the error is logged and the platform still connects.
+- Import platform SDKs inside the factory body, not at module level — `register()` must work when the SDK isn't installed.
+- One plugin can register factories for several platforms; each fires only when its platform connects.
+
+**Telegram alias:** `ctx.register_telegram_handler(factory)` is a back-compat alias for `ctx.register_platform_handler("telegram", factory)`.
+
+Example — Telegram, pattern-scoped inline buttons:
+
+```python
+def register(ctx):
+    def _wire(application, adapter):
+        from telegram.ext import CallbackQueryHandler
+
+        async def _on_button(update, context):
+            query = update.callback_query
+            await query.answer()
+            # ...handle "myplugin:*" callbacks
+
+        application.add_handler(
+            CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+        )
+
+    ctx.register_platform_handler("telegram", _wire)
+```
+
+Example — Discord, reaction events:
+
+```python
+def register(ctx):
+    def _wire(bot, adapter):
+        async def on_raw_reaction_add(payload):
+            ...  # e.g. reaction-based voting / moderation
+
+        bot.add_listener(on_raw_reaction_add, "on_raw_reaction_add")
+
+    ctx.register_platform_handler("discord", _wire)
+```
+
+### Mid-run plugin loading: what activates now vs next session
+
+A plugin can load while the gateway (or the TUI/Desktop server) is already running: `hermes plugins
+install`/`enable`, a Desktop or dashboard install, a catalog re-pin, or a tool-triggered force
+re-discovery. Every one of those paths runs a **real forced rescan** (`discover_plugins(force=True)`) and
+`PluginManager.on_plugin_loaded(callback)` fires from inside it with one summary per **newly** loaded plugin
+(`hermes_cli/plugins_activation.py`):
+
+```python
+{"name": "late-mcp", "key": "late-mcp",
+ "activated_now": {"gateway_commands": ["late"], "callbacks": ["telegram"]},
+ "deferred": {"tools": ["late_tool"], "prompt": ["late.section"], "mcp_servers": ["worker"]}}
+```
+
+- **Active immediately** — gateway slash commands, gateway transform hooks / other hooks, and platform
+  callbacks: the gateway runner subscribes at boot and calls every live adapter's idempotent
+  `rewire_plugin_handlers()`, so a `register_platform_handler` factory (or Slack action handler) registered
+  by a late plugin is wired without a restart. Re-wiring is deduped per native client by `(plugin, factory
+  qualname)`; on Telegram the late handlers are hoisted ahead of core's catch-all `filters.COMMAND` /
+  `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
+- **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
+  prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
+  `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
+- There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
+  restarts, and the surfaces say so.
+
+Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
+gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
+`gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
@@ -950,7 +1741,7 @@ description: Acme Inference — OpenAI-compatible direct API
 
 Lazy-discovered the first time anything calls `get_provider_profile()` or `list_providers()` — `auth.py`, `config.py`, `doctor.py`, `models.py`, `runtime_provider.py`, and the chat_completions transport auto-wire to it. User plugins override bundled ones by name.
 
-**Full guide:** [Model Provider Plugins](/developer-guide/model-provider-plugin) — field reference, overridable hooks (`prepare_messages`, `build_extra_body`, `build_api_kwargs_extras`, `fetch_models`), api_mode selection, auth types, testing.
+**Full guide:** [Model Provider Plugins](../model-provider-plugin.md) — field reference, overridable hooks (`prepare_messages`, `build_extra_body`, `build_api_kwargs_extras`, `fetch_models`), api_mode selection, auth types, testing.
 
 ### Platform plugins — add a gateway channel
 
@@ -1010,7 +1801,7 @@ optional_env:
     password: false
 ```
 
-**Full guide:** [Adding Platform Adapters](/developer-guide/adding-platform-adapters) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
+**Full guide:** [Adding Platform Adapters](../adding-platform-adapters.md) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
 
 ### Memory provider plugins — add a cross-session knowledge backend
 
@@ -1048,7 +1839,9 @@ def register(ctx):
 
 Memory providers are single-select — only one is active at a time, chosen via `memory.provider` in `config.yaml`.
 
-**Full guide:** [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
+If a provider also loads as a general plugin, general discovery owns its lifecycle hooks. The memory loader supplies hooks only as a fallback until that same plugin source loads successfully through general discovery. Repeated provider loads replace the fallback hook group; distinct callbacks within the group are preserved. This does not deduplicate hooks from different plugin sources or change provider activation.
+
+**Full guide:** [Memory Provider Plugins](../memory-provider-plugin.md) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
 
 ### Context engine plugins — replace the context compressor
 
@@ -1063,7 +1856,8 @@ class MyContextEngine(ContextEngine):
 
     def update_from_response(self, usage) -> None: ...
     def should_compress(self, prompt_tokens: int = None) -> bool: ...
-    def compress(self, messages, current_tokens=None, focus_topic=None) -> list: ...
+    def compress(self, messages, current_tokens=None, focus_topic=None,
+                 force=False, memory_context="") -> list: ...
 
 def register(ctx):
     ctx.register_context_engine(MyContextEngine())
@@ -1071,7 +1865,7 @@ def register(ctx):
 
 Context engines are single-select — chosen via `context.engine` in `config.yaml`.
 
-**Full guide:** [Context Engine Plugins](/developer-guide/context-engine-plugin).
+**Full guide:** [Context Engine Plugins](../context-engine-plugin.md).
 
 ### Image-generation backends
 
@@ -1103,13 +1897,97 @@ version: 1.0.0
 description: Custom image generation backend
 ```
 
-**Full guide:** [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
+**Full guide:** [Image Generation Provider Plugins](../image-gen-provider-plugin.md) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
 
 **Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
 
+### Computer-use backend plugins
+
+The `computer_use` tool talks to exactly one **driver** through the `ComputerUseBackend` ABC
+(`tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
+built-in cua-driver, which ships as an ordinary provider at `plugins/computer_use/cua/`. Another driver
+is a provider plugin in `~/.hermes/plugins/<name>/` whose `register(ctx)` calls
+`ctx.register_computer_use_provider()`. The directory name is the value you put in `computer_use.backend`.
+Computer-use providers are single-select, like memory providers and context engines:
+
+```python
+# ~/.hermes/plugins/my-driver/__init__.py
+from tools.computer_use.backend import (
+    ActionResult, CaptureResult, ComputerUseBackend, ComputerUseProvider,
+)
+
+class MyBackend(ComputerUseBackend):
+    def start(self): ...                    # open the driver session
+    def stop(self): ...                     # tear it down (also called at exit)
+    def is_available(self): return True
+    def capture(self, mode="som", app=None, pid=None, window_id=None):
+        return CaptureResult(mode=mode, width=1920, height=1080, png_b64=...)
+    def click(self, **kw): return ActionResult(ok=True, action="click")
+    def drag(self, **kw): return ActionResult(ok=True, action="drag")
+    def scroll(self, **kw): return ActionResult(ok=True, action="scroll")
+    def type_text(self, text, **kw): return ActionResult(ok=True, action="type")
+    def key(self, keys, **kw): return ActionResult(ok=True, action="key")
+    def list_apps(self): return []
+    def focus_app(self, app, raise_window=False): return ActionResult(ok=True, action="focus_app")
+    def set_value(self, value, element=None):
+        # A driver that can't do an action says so per call; the tool schema never changes.
+        return ActionResult(ok=False, action="set_value", code="unsupported_action",
+                            message="my-driver has no accessibility value setter")
+
+class MyDriverProvider(ComputerUseProvider):
+    name = "my-driver"
+    display_name = "My driver"
+
+    def create_backend(self, *, permission_mode):
+        return MyBackend()                  # permission_mode: standard | bounded | unrestricted
+
+    def is_available(self):                 # gates the tool; cheap, no network
+        return True
+
+    def doctor(self):                       # optional: `hermes computer-use doctor`
+        print("my-driver: ok")
+        return 0
+
+def register(ctx):
+    ctx.register_computer_use_provider(MyDriverProvider())
+```
+
+```yaml
+# ~/.hermes/plugins/my-driver/plugin.yaml
+name: my-driver
+version: 1.0.0
+description: Alternative computer-use driver   # shown in the picker
+```
+
+Select it in `hermes tools` → Computer Use (installed providers are listed under cua-driver, in the
+CLI and in the Desktop toolset panel), or set it directly. No `plugins.enabled` entry is needed:
+
+```yaml
+# config.yaml
+computer_use:
+  backend: my-driver     # default: cua
+```
+
+Rules:
+
+- **One provider is active at a time.** Only the selected one is imported and instantiated. Installed
+  providers that aren't selected stay on disk and are only listed (from `plugin.yaml`) as options. A
+  provider never activates itself.
+- **Selection is per profile and read when a session starts its driver.** If the configured name
+  doesn't resolve, the call fails with an error naming it and the installed providers. Hermes never
+  falls back to another driver.
+- **The model-facing schema is the same for every provider**, so the prompt cache survives a driver
+  swap. Report gaps per action with `ActionResult(ok=False, code="unsupported_action", ...)`.
+- Approval gating, the Bot Desktop lease, screenshot dedup, element caps and vision routing all run
+  in the tool, above the backend. The backend only drives the screen.
+- `hermes computer-use status`/`doctor`/`permissions` run cua-driver checks only when `cua` is
+  selected. For any other provider they report its `is_available()` and run its `doctor()` if it has one.
+- Providers return live driver sessions, so they load in-process only. Under
+  `plugins.isolation: host`, a user provider is refused and the call reports that it could not be loaded.
+
 ## Non-Python extension surfaces
 
-Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](/user-guide/features/plugins#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
+Hermes also accepts extensions that aren't Python plugins at all. These are shown in the [Pluggable interfaces table](../../user-guide/features/plugins.md#pluggable-interfaces--where-to-go-for-each); the sections below sketch each authoring style briefly.
 
 ### MCP servers — register external tools
 
@@ -1128,11 +2006,11 @@ mcp_servers:
       type: "oauth"
 ```
 
-Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](/user-guide/features/mcp).
+Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](../../user-guide/features/mcp.md).
 
 ### Gateway event hooks — fire on lifecycle events
 
-Drop a manifest + handler into `~/.hermes/hooks/<name>/`:
+Drop a manifest + handler into `~/.hermes/hooks/<name>/`. Unlike plugins there is no `plugins.enabled` step: the gateway imports every valid hook directory at startup, so placing the files **is** the opt-in ([trust model](../../user-guide/features/hooks.md#gateway-hook-trust)):
 
 ```yaml
 # ~/.hermes/hooks/long-task-alert/HOOK.yaml
@@ -1152,7 +2030,7 @@ async def handle(event_type: str, context: dict) -> None:
 
 Events include `gateway:startup`, `session:start`, `session:end`, `session:reset`, `agent:start`, `agent:step`, `agent:end`, and wildcard `command:*`. Errors in hooks are caught and logged — they never block the main pipeline.
 
-**Full guide:** [Gateway Event Hooks](/user-guide/features/hooks#gateway-event-hooks).
+**Full guide:** [Gateway Event Hooks](../../user-guide/features/hooks.md#gateway-event-hooks).
 
 ### Shell hooks — run a shell command on tool calls
 
@@ -1168,7 +2046,7 @@ hooks:
 
 Supports all the same events as Python plugin hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `pre_gateway_dispatch`) plus structured JSON output for `pre_tool_call` blocking decisions.
 
-**Full guide:** [Shell Hooks](/user-guide/features/hooks#shell-hooks).
+**Full guide:** [Shell Hooks](../../user-guide/features/hooks.md#shell-hooks).
 
 ### Skill sources — add a custom skill registry
 
@@ -1182,7 +2060,7 @@ hermes skills install myorg/skills-repo/my-workflow
 
 Publishing your own tap is just a GitHub repo with `skills/<skill-name>/SKILL.md` directories — no server or registry signup needed.
 
-**Full guides:** [Skills Hub](/user-guide/features/skills#skills-hub) · [Publishing a custom tap](/user-guide/features/skills#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
+**Full guides:** [Skills Hub](../../user-guide/features/skills.md#skills-hub) · [Publishing a custom tap](../../user-guide/features/skills.md#publishing-a-custom-skill-tap) (repo layout, minimal example, non-default paths, trust levels).
 
 ### TTS / STT via command templates
 
@@ -1199,9 +2077,9 @@ tts:
       voice_compatible: true
 ```
 
-For STT, point `HERMES_LOCAL_STT_COMMAND` at a shell template. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
+For STT, point `HERMES_LOCAL_STT_COMMAND` at an argv-tokenized template. It runs without implicit shell interpretation; wrap it in `sh -c`, `cmd /c`, or PowerShell explicitly if the trusted local command requires shell syntax. Supported placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, `{speed}` (TTS); `{input_path}`, `{output_dir}`, `{language}`, `{model}` (STT). Any path-interacting CLI is automatically a plugin.
 
-**Full guides:** [TTS custom command providers](/user-guide/features/tts#custom-command-providers) · [STT](/user-guide/features/tts#voice-message-transcription-stt).
+**Full guides:** [TTS custom command providers](../../user-guide/features/tts.md#custom-command-providers) · [STT](../../user-guide/features/tts.md#voice-message-transcription-stt).
 
 ## Distribute via pip
 
@@ -1213,15 +2091,18 @@ For sharing plugins publicly, add an entry point to your Python package:
 my-plugin = "my_plugin_package"
 ```
 
-```bash
-pip install hermes-plugin-calculator
-# Plugin auto-discovered on next hermes startup
-```
+Entry-point discovery remains supported when the distribution is present in the
+environment supplied by the installation owner (for example, a Nix derivation).
+It is discovery, not permission to inject packages into a PM-selected generation.
+For managed installs, distribute a directory plugin with `pyproject.toml` or
+manifest Python requirements and use `hermes plugins install` / `enable` so PM
+can admit it transactionally. Restart Hermes after a new environment is selected.
+`hermes pm install` accepts managed tool names, not arbitrary PyPI packages.
 
 ## Distribute for NixOS
 
 :::warning Nix is no longer explicitly supported
-Nix/NixOS is no longer an explicitly supported install path (best-effort only) — see [Nix Setup](/getting-started/nix-setup). This section is kept for users already deploying on NixOS.
+Nix/NixOS is no longer an explicitly supported install path (best-effort only) — see [Nix Setup](../../getting-started/nix-setup.md). This section is kept for users already deploying on NixOS.
 :::
 
 NixOS users can install your plugin declaratively if you provide a `pyproject.toml` with entry points:
@@ -1230,7 +2111,7 @@ NixOS users can install your plugin declaratively if you provide a `pyproject.to
 ```nix
 # User's configuration.nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "my-plugin";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -1240,7 +2121,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";  # nix-prefetch-url --unpack
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
@@ -1257,7 +2138,7 @@ services.hermes-agent.extraPlugins = [
 ];
 ```
 
-See the [Nix Setup guide](/getting-started/nix-setup#plugins) for complete documentation including overlay usage and collision checking.
+See the [Nix Setup guide](../../getting-started/nix-setup.md#plugins) for complete documentation including overlay usage and collision checking.
 
 ## Common mistakes
 
@@ -1274,11 +2155,11 @@ def handler(args, **kwargs):
 
 **Missing `**kwargs` in handler signature:**
 ```python
-# Wrong — will break if Hermes passes extra context
+# Works — the dispatcher only forwards the context keywords a signature names
 def handler(args):
     ...
 
-# Right
+# Better — receives every injected context field (task_id, session_id, parent_agent, ...)
 def handler(args, **kwargs):
     ...
 ```

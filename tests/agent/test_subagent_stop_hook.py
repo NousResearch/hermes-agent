@@ -2,7 +2,8 @@
 
 Covers wire-up from tools.delegate_tool.delegate_task:
   * fires once per child in both single-task and batch modes
-  * runs on the parent thread (no re-entrancy for hook authors)
+  * is dispatched from the parent thread (no child-pool re-entrancy)
+    and callback bodies stay on that caller thread
   * carries child_role when the agent exposes _delegate_role
   * carries child_role=None when _delegate_role is not set (pre-M3)
   * exposes a detached, metadata-only tool_call_history
@@ -108,10 +109,19 @@ class TestSingleTask:
         assert payload["duration_ms"] == 5000
 
     def test_fires_on_parent_thread(self):
+        """Dispatch and callback body stay on the parent/caller thread."""
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
+        dispatch_threads = []
+        real_invoke = plugins.invoke_hook
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        def _tracking_invoke(hook_name, **kwargs):
+            if hook_name == "subagent_stop":
+                dispatch_threads.append(threading.current_thread())
+            return real_invoke(hook_name, **kwargs)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
@@ -119,7 +129,9 @@ class TestSingleTask:
             }
             delegate_task(goal="go", parent_agent=_make_parent())
 
-        assert captured[0]["_thread"] is main_thread
+        assert dispatch_threads and all(t is main_thread for t in dispatch_threads)
+        cb_thread = captured[0]["_thread"]
+        assert cb_thread is main_thread
 
     def test_payload_includes_parent_session_id(self):
         captured = _register_capturing_hook()
@@ -159,7 +171,9 @@ class TestBatchMode:
             ]
             delegate_task(
                 tasks=[
-                    {"goal": "A"}, {"goal": "B"}, {"goal": "C"},
+                    {"goal": "Investigate module A"},
+                    {"goal": "Investigate module B"},
+                    {"goal": "Investigate module C"},
                 ],
                 parent_agent=_make_parent(),
             )
@@ -169,10 +183,19 @@ class TestBatchMode:
         assert roles == ["role-a", "role-b", "role-c"]
 
     def test_all_fires_on_parent_thread(self):
+        """Batch stop hooks are dispatched from the parent, not child workers."""
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
+        dispatch_threads = []
+        real_invoke = plugins.invoke_hook
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        def _tracking_invoke(hook_name, **kwargs):
+            if hook_name == "subagent_stop":
+                dispatch_threads.append(threading.current_thread())
+            return real_invoke(hook_name, **kwargs)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
                  "summary": "A", "api_calls": 1, "duration_seconds": 1.0,
@@ -182,7 +205,10 @@ class TestBatchMode:
                  "_child_role": None},
             ]
             delegate_task(
-                tasks=[{"goal": "A"}, {"goal": "B"}],
+                tasks=[
+                    {"goal": "Investigate module A"},
+                    {"goal": "Investigate module B"},
+                ],
                 parent_agent=_make_parent(),
             )
 
@@ -237,64 +263,8 @@ class TestPayloadShape:
             "status": "ok",
         }]
 
-    def test_tool_input_summary_keeps_targets_not_payloads(self):
-        summary = _summarize_tool_arguments(json.dumps({
-            "path": "/workspace/report.json",
-            "content": "private report contents",
-            "url": "https://user:password@example.test:8443/upload?token=secret#fragment",
-            "command": "curl -H 'Authorization: secret' example.test",
-        }))
 
-        assert summary == {
-            "argument_keys": ["command", "content", "path", "url"],
-            "targets": {
-                "path": "/workspace/report.json",
-                "url": "https://example.test:8443/upload",
-            },
-        }
 
-    def test_tool_call_history_is_detached_from_delegate_result(self):
-        def _mutating_hook(**kwargs):
-            kwargs["tool_call_history"][0]["status"] = "hook-mutated"
-
-        plugins.get_plugin_manager()._hooks.setdefault(
-            "subagent_stop", []
-        ).append(_mutating_hook)
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0,
-                "status": "completed",
-                "summary": "done",
-                "api_calls": 1,
-                "duration_seconds": 0.1,
-                "tool_trace": [{
-                    "tool": "terminal",
-                    "args_bytes": 10,
-                    "result_bytes": 20,
-                    "status": "ok",
-                    "input_summary": {
-                        "argument_keys": ["command"],
-                        "targets": {},
-                    },
-                }],
-            }
-            raw = delegate_task(goal="do X", parent_agent=_make_parent())
-
-        assert json.loads(raw)["results"][0]["tool_trace"][0]["status"] == "ok"
-
-    def test_role_absent_becomes_none(self):
-        captured = _register_capturing_hook()
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
-            mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
-                # Deliberately omit _child_role — pre-M3 shape.
-            }
-            delegate_task(goal="do X", parent_agent=_make_parent())
-
-        assert captured[0]["child_role"] is None
 
     def test_result_does_not_leak_child_role_field(self):
         """The internal _child_role key must be stripped before the

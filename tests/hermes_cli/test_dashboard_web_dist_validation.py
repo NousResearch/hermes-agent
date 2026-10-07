@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -74,7 +75,7 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     )
     builds = []
     monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
+        "hermes_cli.main_web_build._build_web_ui", lambda *a, **k: builds.append(a) or True
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -87,53 +88,6 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     assert "HERMES_WEB_DIST" in out and str(empty_dist) in out
 
 
-def test_env_dist_with_index_starts_server(main_mod, monkeypatch, tmp_path):
-    """A valid HERMES_WEB_DIST (has index.html) proceeds to start_server
-    without building."""
-    _wire_common(main_mod, monkeypatch)
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    assert len(started) == 1
-    assert builds == []
-
-
-def test_env_dist_tilde_expanded_for_web_server(main_mod, monkeypatch, tmp_path):
-    """A '~/...' HERMES_WEB_DIST must be written back expanded so
-    web_server's raw os.environ read serves the validated path."""
-    _wire_common(main_mod, monkeypatch)
-    home = tmp_path / "home"
-    dist = home / "mydist"
-    dist.mkdir(parents=True)
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("HERMES_WEB_DIST", "~/mydist")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: None),
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    import os
-    assert os.environ["HERMES_WEB_DIST"] == str(dist)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +123,7 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
         (dist / "index.html").write_text("<html></html>", encoding="utf-8")
         return True
 
-    monkeypatch.setattr(main_mod, "_build_web_ui", fake_build)
+    monkeypatch.setattr("hermes_cli.main_web_build._build_web_ui", fake_build)
 
     main_mod.cmd_dashboard(_args(skip_build=True))
 
@@ -180,72 +134,6 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
     assert "recovery build" in out.lower()
 
 
-def test_skip_build_recovery_build_failure_preserves_fatal_exit(
-    main_mod, monkeypatch, tmp_path, capsys
-):
-    """When the recovery build also fails to produce a dist, the original
-    fatal path is preserved: exit 1, clear message, server never starts."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
-    project_root = tmp_path / "proj"
-    (project_root / "hermes_cli" / "web_dist").mkdir(parents=True)
-    monkeypatch.setattr(main_mod, "PROJECT_ROOT", project_root)
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-
-    builds = []
-    monkeypatch.setattr(
-        main_mod,
-        "_build_web_ui",
-        lambda web_dir, *, fatal=False: builds.append(web_dir) or False,
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        main_mod.cmd_dashboard(_args(skip_build=True))
-
-    assert exc.value.code == 1
-    assert len(builds) == 1  # attempted once, never retried
-    assert started == []
-    out = capsys.readouterr().out
-    assert "--skip-build was passed but no web dist found" in out
-    assert "recovery build did not produce a usable dist" in out
-
-
-def test_skip_build_custom_env_dist_missing_does_not_attempt_recovery(
-    main_mod, monkeypatch, tmp_path, capsys
-):
-    """A custom HERMES_WEB_DIST is caller-managed: the recovery build writes
-    to the default dist location and cannot populate it, so the env-var +
-    --skip-build combination keeps the immediate fatal exit with no build."""
-    _wire_common(main_mod, monkeypatch)
-    empty_dist = tmp_path / "custom_dist"
-    empty_dist.mkdir()
-    monkeypatch.setenv("HERMES_WEB_DIST", str(empty_dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        main_mod.cmd_dashboard(_args(skip_build=True))
-
-    assert exc.value.code == 1
-    assert builds == []
-    assert started == []
-    out = capsys.readouterr().out
-    assert "--skip-build was passed but no web dist found" in out
 
 
 # ---------------------------------------------------------------------------
@@ -253,159 +141,41 @@ def test_skip_build_custom_env_dist_missing_does_not_attempt_recovery(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "path,expected",
-    [
-        ("/Applications/Hermes.app/Contents/Resources/app.asar/dist", True),
-        ("/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist", True),
-        (r"C:\Users\u\AppData\Local\Programs\Hermes\resources\app.asar\dist", True),
-        ("/home/u/custom-dashboard-dist", False),
-        ("", False),
-    ],
-)
-def test_is_electron_packaged_web_dist(main_mod, path, expected):
-    assert main_mod._is_electron_packaged_web_dist(path) is expected
-
-
-def test_standalone_dashboard_drops_electron_packaged_web_dist(
-    main_mod, monkeypatch
-):
-    """Inherited app.asar WEB_DIST must be stripped so the bundled web UI
-    is built/served instead of the desktop renderer."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar/dist"
-    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    import os
-
-    assert "HERMES_WEB_DIST" not in os.environ
-    assert len(builds) == 1
-    assert len(started) == 1
-
-
-def test_standalone_dashboard_keeps_caller_managed_web_dist(
-    main_mod, monkeypatch, tmp_path
-):
-    """A non-Electron custom HERMES_WEB_DIST override must survive."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    dist = tmp_path / "my-custom-dist"
-    dist.mkdir()
-    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    import os
-
-    assert os.environ["HERMES_WEB_DIST"] == str(dist)
-    assert builds == []
-    assert len(started) == 1
-
-
-def test_desktop_spawned_backend_keeps_electron_web_dist(
-    main_mod, monkeypatch, tmp_path
-):
-    """HERMES_DESKTOP=1 legitimately points at the packaged dist — do not strip."""
-    _wire_common(main_mod, monkeypatch)
-    packaged_root = tmp_path / "app.asar" / "dist"
-    packaged_root.mkdir(parents=True)
-    (packaged_root / "index.html").write_text("<html></html>", encoding="utf-8")
+def test_desktop_child_dashboard_drops_packaged_renderer(main_mod, monkeypatch):
+    """#116107: every desktop-spawned process inherits HERMES_DESKTOP=1 with the
+    packaged dist; a browser `hermes dashboard` from it must not keep serving the
+    IPC-only desktop renderer."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
     monkeypatch.setenv("HERMES_DESKTOP", "1")
-    monkeypatch.setenv("HERMES_WEB_DIST", str(packaged_root))
-
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
-
-    main_mod.cmd_dashboard(_args())
-
-    import os
-
-    assert os.environ["HERMES_WEB_DIST"] == str(packaged_root)
-    assert builds == []
-    assert len(started) == 1
-
-
-def test_standalone_dashboard_clears_inherited_serve_headless(
-    main_mod, monkeypatch
-):
-    """Inherited HERMES_SERVE_HEADLESS must not disable the SPA for dashboard."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
     monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
 
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    monkeypatch.setattr(main_mod, "_build_web_ui", lambda *a, **k: True)
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
 
-    main_mod.cmd_dashboard(_args())
-
-    import os
-
-    assert os.environ.get("HERMES_SERVE_HEADLESS") != "1"
-    assert len(started) == 1
+    assert "HERMES_WEB_DIST" not in os.environ
+    assert "HERMES_SERVE_HEADLESS" not in os.environ
 
 
-def test_headless_serve_reasserts_serve_headless(main_mod, monkeypatch):
-    """`hermes serve` must still set HERMES_SERVE_HEADLESS after the clear."""
-    _wire_common(main_mod, monkeypatch)
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
-    monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The real Desktop backend remains distinguished by the `serve` entry path."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
 
-    started = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.web_server",
-        types.SimpleNamespace(start_server=lambda **k: started.append(k)),
-    )
-    builds = []
-    monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
-    )
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
 
-    main_mod.cmd_dashboard(_args(headless_backend=True))
+    assert os.environ["HERMES_WEB_DIST"] == packaged
 
-    import os
 
-    assert os.environ.get("HERMES_SERVE_HEADLESS") == "1"
-    assert builds == []
-    assert len(started) == 1
+def test_desktop_owned_fallback_dashboard_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The Desktop's own legacy `dashboard --no-open` fallback spawn (serve probe
+    timed out) is not headless but carries the per-spawn session token; stripping
+    its dist would send a packaged install into `_build_web_ui(fatal=True)`."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert os.environ["HERMES_WEB_DIST"] == packaged

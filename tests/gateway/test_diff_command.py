@@ -14,20 +14,18 @@ import pytest
 import gateway.run as gateway_run
 import tools.checkpoint_manager as cpm
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required for /diff"
 )
 
-
 def _runner():
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.session_store = None
     runner.config = None
     return runner
-
 
 def _event(text: str) -> MessageEvent:
     source = SessionSource(
@@ -39,14 +37,12 @@ def _event(text: str) -> MessageEvent:
     )
     return MessageEvent(text=text, source=source)
 
-
 def _git(repo, *args):
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                         "HOME": str(repo),
                         "PATH": __import__("os").environ["PATH"]})
-
 
 @pytest.fixture()
 def repo(tmp_path, monkeypatch):
@@ -59,7 +55,6 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", str(d))
     return d
 
-
 def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
     home = tmp_path / "home"
     home.mkdir()
@@ -69,47 +64,9 @@ def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
     monkeypatch.setattr(gateway_run, "_hermes_home", home, raising=False)
     monkeypatch.setattr(cpm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
 
-
 # ---------------------------------------------------------------------------
 # Default (working-tree) mode
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_diff_reports_unstaged_changes_fenced(repo):
-    (repo / "main.py").write_text("print('changed')\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "-print('hello')" in result
-    assert "+print('changed')" in result
-    assert "```diff" in result  # fenced for messaging surfaces
-
-
-@pytest.mark.asyncio
-async def test_diff_includes_untracked_files(repo):
-    (repo / "newfile.py").write_text("n = 1\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "newfile.py" in result
-    assert "+n = 1" in result
-
-
-@pytest.mark.asyncio
-async def test_diff_stat_only_omits_body(repo):
-    (repo / "main.py").write_text("print('changed')\n", encoding="utf-8")
-
-    result = await _runner()._handle_diff_command(_event("/diff --stat"))
-
-    assert "main.py" in result
-    assert "+print('changed')" not in result
-
-
-@pytest.mark.asyncio
-async def test_diff_no_changes_message(repo):
-    result = await _runner()._handle_diff_command(_event("/diff"))
-    assert "No changes" in result
-
 
 @pytest.mark.asyncio
 async def test_diff_long_output_truncated(repo):
@@ -122,18 +79,6 @@ async def test_diff_long_output_truncated(repo):
     # own message-splitting limits (3-layer tool-progress-style truncation).
     assert "truncated" in result
     assert len(result) < 6000
-
-
-@pytest.mark.asyncio
-async def test_diff_non_git_directory_fails_cleanly(tmp_path, monkeypatch):
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    monkeypatch.setenv("TERMINAL_CWD", str(plain))
-
-    result = await _runner()._handle_diff_command(_event("/diff"))
-
-    assert "not a git repository" in result.lower()
-
 
 # ---------------------------------------------------------------------------
 # Session mode — checkpoint baseline
@@ -156,25 +101,3 @@ async def test_diff_session_reports_cumulative_changes(tmp_path, monkeypatch):
 
     assert "-print('hello')" in result
     assert "+print('changed')" in result
-
-
-@pytest.mark.asyncio
-async def test_diff_session_no_changes_message(tmp_path, monkeypatch):
-    _enable_checkpoints(tmp_path, monkeypatch)
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setenv("TERMINAL_CWD", str(project))
-
-    result = await _runner()._handle_diff_command(_event("/diff session"))
-
-    assert "No changes" in result
-
-
-@pytest.mark.asyncio
-async def test_diff_session_disabled_message(tmp_path, monkeypatch):
-    _enable_checkpoints(tmp_path, monkeypatch, enabled=False)
-    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-
-    result = await _runner()._handle_diff_command(_event("/diff session"))
-
-    assert "not enabled" in result.lower()

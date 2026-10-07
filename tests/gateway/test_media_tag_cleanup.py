@@ -33,29 +33,66 @@ class TestMediaTagCleanup:
         assert "MEDIA:" not in stripped
         assert "/tmp/chart.png" not in stripped
 
-    def test_media_tag_with_whitespace_still_works(self):
-        """Baseline: MEDIA tags with whitespace before/after still match."""
+
+class TestMediaTagCjkTerminators:
+    """#88038: CJK full-width punctuation after a MEDIA path is a valid
+    terminator, exactly like its ASCII counterparts. Chinese-language agent
+    output naturally writes ``MEDIA:D:\\...\\zhibao.pdf（782.6 KB）`` — the
+    ASCII-only lookahead silently dropped the attachment."""
+
+    def test_full_width_suffixes_terminate_the_path(self):
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
-        # Space before closing quote
-        text = "Here is your report: MEDIA:/tmp/report.md "
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
-        assert "MEDIA:" not in stripped
-        assert "/tmp/report.md" not in stripped
+        cases = [
+            "MEDIA:D:/workspace/out/report.pdf（782.6 KB）",
+            "MEDIA:D:/workspace/out/report.pdf：内容",
+            "MEDIA:D:/workspace/out/report.pdf。",
+            "MEDIA:D:/workspace/out/report.pdf，下一条",
+            "MEDIA:D:/workspace/out/report.pdf；",
+            "MEDIA:D:/workspace/out/report.pdf！",
+            "MEDIA:D:/workspace/out/report.pdf？",
+            "MEDIA:D:/workspace/out/report.pdf、",
+            "MEDIA:D:/workspace/out/report.pdf”",
+            "MEDIA:D:/workspace/out/report.pdf’",
+        ]
+        for text in cases:
+            m = MEDIA_TAG_CLEANUP_RE.search(text)
+            assert m is not None, text
+            assert m.group("path").endswith(".pdf"), (text, m.group("path"))
 
-        # Multiple spaces (regex removes tag but preserves surrounding whitespace)
-        text = "Report at MEDIA:/tmp/data.pdf  done"
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
-        assert "MEDIA:" not in stripped
-        assert "/tmp/data.pdf" not in stripped
-        assert "Report at" in stripped and "done" in stripped
-
-    def test_media_tag_at_end_of_string(self):
-        """MEDIA tags at the end of a string should match ($ anchor)."""
+    def test_real_chinese_cron_delivery_line(self):
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 
-        text = "Here is the file: MEDIA:/tmp/file.docx"
-        stripped = MEDIA_TAG_CLEANUP_RE.sub("", text).strip()
-        assert "MEDIA:" not in stripped
-        assert "/tmp/file.docx" not in stripped
-        assert "Here is the file:" in stripped
+        text = (
+            "## 交付物\n\n- **PDF 早报**："
+            "MEDIA:D:/workspace/zaobao/output/早报_2026-08-16.pdf（782.6 KB）"
+        )
+        m = MEDIA_TAG_CLEANUP_RE.search(text)
+        assert m is not None
+        assert m.group("path") == "D:/workspace/zaobao/output/早报_2026-08-16.pdf"
+
+    def test_ascii_terminators_still_work(self):
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+        for text in (
+            "MEDIA:/tmp/report.pdf",
+            "MEDIA:/tmp/report.pdf 782 KB",
+            "MEDIA:/tmp/report.pdf, next",
+        ):
+            m = MEDIA_TAG_CLEANUP_RE.search(text)
+            assert m is not None and m.group("path").endswith(".pdf"), text
+
+    def test_adjacent_tags_still_split(self):
+        """#68773 guard: the widened class must not let tags glue together."""
+        from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+
+        found = MEDIA_TAG_CLEANUP_RE.findall("MEDIA:/a.pngMEDIA:/b.png")
+        assert list(found) == ["/a.png", "/b.png"]
+
+    def test_extensionless_variant_accepts_full_width_colon(self):
+        from gateway.platforms.base import MEDIA_EXTENSIONLESS_TAG_RE
+
+        m = MEDIA_EXTENSIONLESS_TAG_RE.search("MEDIA:/tmp/Caddyfile：内容")
+        assert m is not None and m.group("path") == "/tmp/Caddyfile"
+
+

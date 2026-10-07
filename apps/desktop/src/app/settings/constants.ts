@@ -1,6 +1,9 @@
+import { REASONING_EFFORTS } from '@hermes/shared'
+
 import {
   Box,
   Brain,
+  Globe,
   type IconComponent,
   Lock,
   MessageCircle,
@@ -11,8 +14,11 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
-import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
+
+// Single source of truth for built-in personality names lives in
+// lib/personalities (mirrors hermes_cli/personality.py BUILTIN_PERSONALITIES).
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 import { defineFieldCopy } from './field-copy'
 import type { DesktopConfigSection } from './types'
@@ -223,23 +229,6 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   }
 ]
 
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
-
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
@@ -259,12 +248,33 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
-  'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
-  // Speech-to-text backends — kept in sync with the stt block in
-  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
-  // gpt-4o-mini-tts voice set (the tts-1 era stopped at shimmer). Free-input
-  // field — the list is suggestions, not a gate (see FREE_INPUT_KEYS).
+  'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
+  // Speech-to-text backends — kept in sync with BUILTIN_STT_PROVIDERS in
+  // tools/transcription_common.py (local_command is auto-detected, not picked).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'deepinfra'],
+  // How the desktop voice conversation is wired — tools/voice_live.py owns the
+  // gpt-live branch (one full-duplex voice model delegating to Hermes).
+  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  'voice.gpt_live.voice': [
+    'marin',
+    'cedar',
+    'quartz',
+    'ripple',
+    'vesper',
+    'willow',
+    'stone',
+    'gleam',
+    'meridian',
+    'bossa',
+    'tempo',
+    'beacon',
+    'delta',
+    'cinder'
+  ],
+  // OpenAI TTS voices — the union across models (per the OpenAI TTS API
+  // docs). Model-specific narrowing happens in enumOptionsFor():
+  // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.
+  // Free-input field — the list is suggestions, not a gate (FREE_INPUT_KEYS).
   'tts.openai.voice': [
     'alloy',
     'ash',
@@ -349,10 +359,22 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'kittentts',
     'piper'
   ],
-  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
+  // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
+  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  'stt.openai.streaming_model': ['gpt-live-transcribe', 'gpt-transcribe', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
+  'stt.groq.model': ['whisper-large-v3-turbo', 'whisper-large-v3'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
+  'stt.xai.model': ['grok-voice-transcribe-2.0', 'grok-voice-transcribe-1.0'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
-  'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  'tts.elevenlabs.model_id': [
+    'eleven_v3',
+    'eleven_ttv_v3',
+    'eleven_multilingual_v2',
+    'eleven_turbo_v2',
+    'eleven_turbo_v2_5',
+    'eleven_flash_v2',
+    'eleven_flash_v2_5'
+  ],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
@@ -365,9 +387,16 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 // suggestions rather than a gate for these keys.
 export const FREE_INPUT_KEYS = new Set([
   'tts.edge.voice',
+  'voice.gpt_live.voice',
   'tts.openai.model',
   'tts.openai.voice',
   'tts.elevenlabs.voice_id',
+  'tts.elevenlabs.model_id',
+  'stt.openai.model',
+  'stt.groq.model',
+  'stt.mistral.model',
+  'stt.xai.model',
+  'stt.deepinfra.model',
   'tts.gemini.model',
   'tts.gemini.voice',
   'tts.xai.voice_id',
@@ -385,7 +414,7 @@ export const FREE_INPUT_KEYS = new Set([
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
-  modelContextLength: 'Context Window',
+  modelContextLength: 'Main model context window (override)',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
@@ -437,33 +466,46 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   browser: {
     allowPrivateUrls: 'Browser Private URLs',
-    autoLocalForPrivateUrls: 'Local Browser For Private URLs'
+    autoLocalForPrivateUrls: 'Local Browser For Private URLs',
+    useRealProfile: 'Use My Real Browser Profile'
   },
   checkpoints: {
     enabled: 'File Checkpoints',
     maxSnapshots: 'Checkpoint Limit'
   },
   voice: {
-    recordKey: 'Voice Shortcut',
     maxRecordingSeconds: 'Max Recording Length',
-    autoTts: 'Read Responses Aloud'
+    autoTts: 'Read Responses Aloud',
+    voiceChatMode: 'Voice Chat Mode',
+    gptLive: {
+      voice: 'GPT-Live Voice',
+      instructions: 'GPT-Live Persona'
+    }
   },
   stt: {
     enabled: 'Speech To Text',
     echoTranscripts: 'Echo Transcripts',
     provider: 'Speech-To-Text Provider',
+    streaming: 'Live Transcription',
     local: {
       model: 'Local Transcription Model',
       language: 'Transcription Language'
     },
     openai: {
-      model: 'OpenAI STT Model'
+      model: 'OpenAI STT Model',
+      streamingModel: 'OpenAI Live Transcription Model'
     },
     groq: {
       model: 'Groq STT Model'
     },
     mistral: {
       model: 'Mistral STT Model'
+    },
+    xai: {
+      model: 'xAI STT Model'
+    },
+    deepinfra: {
+      model: 'DeepInfra STT Model'
     },
     elevenlabs: {
       modelId: 'ElevenLabs STT Model',
@@ -535,8 +577,14 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Auto-Compression',
     threshold: 'Compression Threshold',
+    codexGpt55Autoraise: 'Codex Compression Auto-Raise',
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
+  },
+  auxiliary: {
+    compression: {
+      timeout: 'Compression model timeout (s)'
+    }
   },
   delegation: {
     model: 'Subagent Model',
@@ -553,7 +601,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
-  modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  modelContextLength:
+    "Overrides the detected context window of the MAIN chat model only (tokens). Leave at 0 to use the selected model's detected value. Does not affect auxiliary/MoA models.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
@@ -564,7 +613,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     repoScanRoots: 'Folders to scan. Leave empty to scan your home directory.',
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
   },
-  timezone: 'Used when Hermes needs local time context. Blank uses the system timezone.',
+  timezone: 'IANA timezone identifier. Blank uses the system timezone.',
+  browser: {
+    useRealProfile:
+      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+  },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
@@ -600,10 +653,24 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     engine: 'Strategy for managing long conversations near the context limit.'
   },
   compression: {
-    enabled: 'Summarize older context when conversations get large.'
+    enabled: 'Summarize older context when conversations get large.',
+    codexGpt55Autoraise: 'Raise compression to 85% for supported ChatGPT Codex OAuth models.'
+  },
+  auxiliary: {
+    compression: {
+      timeout:
+        'Seconds to wait for the auxiliary compression model per call (default 120). Raise for slow local models.'
+    }
   },
   voice: {
-    autoTts: 'Automatically speak assistant responses.'
+    autoTts: 'Automatically speak assistant responses.',
+    voiceChatMode:
+      'chained: speech-to-text → Hermes → text-to-speech with the providers below. gpt-live: one full-duplex OpenAI voice model (gpt-live-1) listens and talks, and hands every real request to Hermes — any model you have selected answers with the full toolset. Needs an OpenAI API key; the voice layer bills $0.05 per minute.',
+    gptLive: {
+      voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
+      instructions:
+        'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
+    }
   },
   tts: {
     xai: {
@@ -622,6 +689,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   stt: {
     enabled: 'Enable local or provider-backed speech transcription.',
     echoTranscripts: 'Post the raw 🎙️ transcript of voice messages back to the chat.',
+    streaming: 'Show text while you speak (OpenAI, xAI, ElevenLabs). Falls back to the recording on any failure.',
     elevenlabs: {
       languageCode: 'Optional ISO-639-3 language code. Blank lets ElevenLabs auto-detect.'
     }
@@ -678,10 +746,14 @@ export const SECTIONS: DesktopConfigSection[] = [
       'command_allowlist',
       'security.redact_secrets',
       'security.allow_private_urls',
-      'browser.allow_private_urls',
-      'browser.auto_local_for_private_urls',
       'checkpoints.enabled'
     ]
+  },
+  {
+    id: 'browser',
+    label: 'Browser',
+    icon: Globe,
+    keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
   },
   {
     id: 'memory',
@@ -696,8 +768,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'context.engine',
       'compression.enabled',
       'compression.threshold',
+      'compression.codex_gpt55_autoraise',
       'compression.target_ratio',
-      'compression.protect_last_n'
+      'compression.protect_last_n',
+      'auxiliary.compression.timeout'
     ]
   },
   {
@@ -705,10 +779,14 @@ export const SECTIONS: DesktopConfigSection[] = [
     label: 'Voice',
     icon: Mic,
     keys: [
+      'voice.voice_chat_mode',
+      'voice.gpt_live.voice',
+      'voice.gpt_live.instructions',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',
       'stt.provider',
+      'stt.streaming',
       'voice.auto_tts',
       'tts.edge.voice',
       'tts.openai.model',
@@ -738,14 +816,17 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',
+      'stt.openai.streaming_model',
       'stt.groq.model',
       'stt.mistral.model',
+      'stt.xai.model',
+      'stt.deepinfra.model',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
-      'voice.record_key',
-      'voice.max_recording_seconds'
+      'voice.max_recording_seconds',
+      'voice.client_direct'
     ]
   },
   {

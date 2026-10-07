@@ -2,6 +2,8 @@
 name: bioinformatics
 description: Gateway to 400+ genomics and computational biology skills.
 version: 1.0.0
+author: Teknium (teknium1), Hermes Agent
+license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -31,18 +33,18 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
 2. Clone the relevant repo (shallow clone to save time):
    ```bash
    # bioSkills (reference material)
-   git clone --depth 1 https://github.com/GPTomics/bioSkills.git /tmp/bioSkills
+   git clone --depth 1 https://github.com/GPTomics/bioSkills.git ~/.hermes/cache/scratch/bioSkills
 
    # ClawBio (runnable pipelines)
-   git clone --depth 1 https://github.com/ClawBio/ClawBio.git /tmp/ClawBio
+   git clone --depth 1 https://github.com/ClawBio/ClawBio.git ~/.hermes/cache/scratch/ClawBio
    ```
 3. Read the specific skill:
    ```bash
    # bioSkills — each skill is at: <category>/<skill-name>/SKILL.md
-   cat /tmp/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
+   cat ~/.hermes/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
 
    # ClawBio — each skill is at: skills/<skill-name>/
-   cat /tmp/ClawBio/skills/pharmgx-reporter/README.md
+   cat ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
    ```
 4. Follow the fetched skill as reference material. These are NOT Hermes-format skills — treat them as expert domain guides. They contain correct parameters, proper tool flags, and validated pipelines.
 

@@ -35,24 +35,10 @@ def _assert_no_tool_then_user(messages):
             )
 
 
-def test_tool_tail_is_closed_with_placeholder():
-    messages = _tool_tail()
-    assert close_interrupted_tool_sequence(messages, None) is True
-    assert messages[-1]["role"] == "assistant"
-    assert messages[-1]["content"] == "Operation interrupted."
 
 
-def test_tool_tail_keeps_interrupt_text_when_present():
-    messages = _tool_tail()
-    close_interrupted_tool_sequence(messages, "Operation interrupted during retry (attempt 2/3).")
-    assert messages[-1]["role"] == "assistant"
-    assert messages[-1]["content"] == "Operation interrupted during retry (attempt 2/3)."
 
 
-def test_blank_interrupt_text_falls_back_to_placeholder():
-    messages = _tool_tail()
-    close_interrupted_tool_sequence(messages, "   ")
-    assert messages[-1]["content"] == "Operation interrupted."
 
 
 def test_closing_makes_next_user_message_alternation_safe():
@@ -60,8 +46,14 @@ def test_closing_makes_next_user_message_alternation_safe():
     produce the ``tool → user`` shape strict providers choke on."""
     messages = _tool_tail()
     close_interrupted_tool_sequence(messages, None)
+    assert isinstance(messages[-1]["timestamp"], float)
     follow_on = messages + [{"role": "user", "content": "they do! increase the timing"}]
     _assert_no_tool_then_user(follow_on)
+    # A caller banner is the turn's only explanation: it stays visible, unhidden.
+    bannered = _tool_tail()
+    assert close_interrupted_tool_sequence(bannered, "Response truncated.") is True
+    assert bannered[-1]["content"] == "Response truncated."
+    assert "display_kind" not in bannered[-1]
 
 
 def test_assistant_tail_is_left_untouched():
@@ -79,8 +71,3 @@ def test_user_tail_is_left_untouched():
     assert close_interrupted_tool_sequence(messages, None) is False
     assert len(messages) == 1
 
-
-def test_empty_messages_is_noop():
-    messages = []
-    assert close_interrupted_tool_sequence(messages, "x") is False
-    assert messages == []

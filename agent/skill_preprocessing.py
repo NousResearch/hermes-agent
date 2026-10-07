@@ -1,23 +1,21 @@
-"""Shared SKILL.md preprocessing helpers."""
+"""Shared SKILL.md preprocessing helpers: ``${HERMES_*}`` template tokens and
+inline ``!`cmd``` shell expansion."""
 
 import logging
 import re
 import subprocess
 from pathlib import Path
 
+from agent.compression_marker import elide
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
-# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
-# Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
-# left as-is so the user can debug them.
+# ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens. Unresolvable ones (e.g. no
+# session) are left as-is so the author can spot them.
 _SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
-
-# Matches inline shell snippets like:  !`date +%Y-%m-%d`
-# Non-greedy, single-line only -- no newlines inside the backticks.
+# Inline shell snippets like !`date +%Y-%m-%d` — single-line only.
 _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
-
 # Cap inline-shell output so a runaway command can't blow out the context.
 _INLINE_SHELL_MAX_OUTPUT = 4000
 
@@ -25,10 +23,8 @@ _INLINE_SHELL_MAX_OUTPUT = 4000
 def load_skills_config() -> dict:
     """Load the ``skills`` section of config.yaml (best-effort)."""
     try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config() or {}
-        skills_cfg = cfg.get("skills")
+        from hermes_cli.config import load_config_readonly
+        skills_cfg = (load_config_readonly() or {}).get("skills")
         if isinstance(skills_cfg, dict):
             return skills_cfg
     except Exception:
@@ -36,93 +32,100 @@ def load_skills_config() -> dict:
     return {}
 
 
-def substitute_template_vars(
-    content: str,
-    skill_dir: Path | None,
-    session_id: str | None,
-) -> str:
-    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
-
-    Only substitutes tokens for which a concrete value is available --
-    unresolved tokens are left in place so the author can spot them.
-    """
+def substitute_template_vars(content: str, skill_dir: Path | None, session_id: str | None) -> str:
+    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID}; tokens without a value stay in place."""
     if not content:
         return content
-
-    skill_dir_str = str(skill_dir) if skill_dir else None
-
-    def _replace(match: re.Match) -> str:
-        token = match.group(1)
-        if token == "HERMES_SKILL_DIR" and skill_dir_str:
-            return skill_dir_str
-        if token == "HERMES_SESSION_ID" and session_id:
-            return str(session_id)
-        return match.group(0)
-
-    return _SKILL_TEMPLATE_RE.sub(_replace, content)
+    values = {
+        "HERMES_SKILL_DIR": str(skill_dir) if skill_dir else None,
+        "HERMES_SESSION_ID": str(session_id) if session_id else None,
+    }
+    return _SKILL_TEMPLATE_RE.sub(lambda m: values[m.group(1)] or m.group(0), content)
 
 
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
-    """Execute a single inline-shell snippet and return its stdout (trimmed).
-
-    Failures return a short ``[inline-shell error: ...]`` marker instead of
-    raising, so one bad snippet can't wreck the whole skill message.
-    """
+    """Run one inline-shell snippet and return its stdout (trimmed; stderr when
+    stdout is empty). Failures return an ``[inline-shell ...]`` marker instead
+    of raising, so one bad snippet can't wreck the whole skill message."""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    from agent.delegation_context import delegated_child_subprocess_env
     try:
+        bash = "bash"
+        if IS_WINDOWS:
+            # CreateProcess searches System32 before PATH and may pick WSL's
+            # launcher. Reuse the terminal's native Git Bash resolution.
+            from tools.environments.local import _find_bash
+            bash = _find_bash()
         completed = subprocess.run(
-            ["bash", "-c", command],
+            [bash, "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
             **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
-    except RuntimeError as exc:
-        # tests/conftest.py installs a live-system guard that blocks real
-        # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
-        # that guard while trying to clean up the timed-out shell; treat that
-        # as the same timeout outcome instead of surfacing the guard error.
-        if "live-system guard: blocked os.kill" in str(exc):
+    except Exception as exc:
+        # tests/conftest.py's live-system guard may block the os.kill that
+        # subprocess.run uses to clean up a timed-out shell; report the timeout.
+        if isinstance(exc, RuntimeError) and "live-system guard: blocked os.kill" in str(exc):
             return f"[inline-shell timeout after {timeout}s: {command}]"
         return f"[inline-shell error: {exc}]"
-    except Exception as exc:
-        return f"[inline-shell error: {exc}]"
-
-    output = (completed.stdout or "").rstrip("\n")
-    if not output and completed.stderr:
-        output = completed.stderr.rstrip("\n")
-    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
-        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
-    return output
+    output = (completed.stdout or "").rstrip("\n") or (completed.stderr or "").rstrip("\n")
+    if completed.returncode != 0 and not output:
+        # rc!=0 with no output at all is indistinguishable from a legit empty result; it is the
+        # "interpreter never ran the command" signature (WSL stub without a distro) — say so.
+        return f"[inline-shell exit {completed.returncode} with no output: {command}]"
+    return elide(output, _INLINE_SHELL_MAX_OUTPUT)
 
 
-def expand_inline_shell(
-    content: str,
-    skill_dir: Path | None,
-    timeout: int,
-) -> str:
-    """Replace every !`cmd` snippet in ``content`` with its stdout.
-
-    Runs each snippet with the skill directory as CWD so relative paths in
-    the snippet work the way the author expects.
-    """
+def expand_inline_shell(content: str, skill_dir: Path | None, timeout: int) -> str:
+    """Replace every !`cmd` snippet with its stdout, run with the skill dir as CWD."""
     if "!`" not in content:
         return content
-
     def _replace(match: re.Match) -> str:
         cmd = match.group(1).strip()
-        if not cmd:
-            return ""
-        return run_inline_shell(cmd, skill_dir, timeout)
-
+        return run_inline_shell(cmd, skill_dir, timeout) if cmd else ""
     return _INLINE_SHELL_RE.sub(_replace, content)
+
+
+def _is_community_hub_skill(skill_dir: Path | None) -> bool:
+    """Whether *skill_dir* is a hub-installed skill the scan gate classifies as community trust.
+
+    The hub's INSTALL_POLICY blocks a community install on a caution/dangerous verdict — but
+    ``--force`` (or a pre-scanner install) puts that skill on disk anyway, and the inline-shell
+    DSL scans as high severity, so auto-executing it on view would re-arm exactly what the
+    gate refused (#63307). Provenance is the hub lock entry (trusted/builtin entries expand;
+    anything without one — bundled-synced, user-created, project/external — keeps the flag's
+    contract). A lock read failure skips the gate, like every other provenance consumer.
+    """
+    if skill_dir is None:
+        return False
+    try:
+        from tools.skills_tool import _skills_dir
+        from tools.skills_hub import HubLockFile
+        installed = HubLockFile().load().get("installed") or {}
+        for entry in installed.values():
+            if not (isinstance(entry, dict) and entry.get("trust_level") == "community"):
+                continue
+            rel = str(entry.get("install_path") or "")
+            if not rel:
+                continue
+            try:
+                if skill_dir.resolve() == (_skills_dir() / rel).resolve():
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+    except Exception:
+        logger.debug("Could not read hub lock for inline-shell trust scoping", exc_info=True)
+        return False
 
 
 def preprocess_skill_content(
@@ -134,11 +137,9 @@ def preprocess_skill_content(
     """Apply configured SKILL.md template and inline-shell preprocessing."""
     if not content:
         return content
-
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
     if cfg.get("template_vars", True):
         content = substitute_template_vars(content, skill_dir, session_id)
-    if cfg.get("inline_shell", False):
-        timeout = int(cfg.get("inline_shell_timeout", 10) or 10)
-        content = expand_inline_shell(content, skill_dir, timeout)
+    if cfg.get("inline_shell", False) and not _is_community_hub_skill(skill_dir):
+        content = expand_inline_shell(content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10))
     return content

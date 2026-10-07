@@ -2,12 +2,15 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   $currentCwd,
   $currentFastMode,
   $currentReasoningEffort,
+  $currentServiceTier,
   $defaultReasoningEffort,
   markComposerSelectionManual,
   setCurrentCwd,
@@ -16,6 +19,9 @@ import {
   setCurrentReasoningEffort,
   setDefaultReasoningEffort
 } from '@/store/session'
+import { $showToolActivity, setShowToolActivityFromConfig } from '@/store/tool-activity'
+
+import { deferred } from '../../../test/deferred'
 
 import { useHermesConfig } from './use-hermes-config'
 
@@ -26,28 +32,56 @@ vi.mock('@/hermes', () => ({
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
-
 const mockConfig = (config: Record<string, unknown>) =>
   vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)
 
 describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
+    setShowReasoningFromConfig(undefined)
+    setShowToolActivityFromConfig(undefined)
     setCurrentCwd('')
     setCurrentFastMode(false)
     setCurrentModelSource('')
     setCurrentReasoningEffort('')
     setDefaultReasoningEffort('')
+    setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  // #49664: the Reasoning Blocks toggle wrote config but the renderer never
+  // read it. A refresh mirrors the key (quoted "false" included) and a
+  // missing key falls back to the DEFAULT_CONFIG default (on).
+  it('mirrors display.show_reasoning and resets a missing key to the default', async () => {
+    mockConfig({ display: { show_reasoning: 'false' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showReasoning.get()).toBe(false)
+
+    mockConfig({})
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showReasoning.get()).toBe(true)
+  })
+
+  it('mirrors display.tool_progress independently of show_reasoning', async () => {
+    mockConfig({ display: { show_reasoning: false, tool_progress: 'off' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(false)
+
+    mockConfig({ display: { show_reasoning: false } })
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showToolActivity.get()).toBe(true)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the
@@ -126,6 +160,35 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentFastMode.get()).toBe(false)
   })
 
+  it('does not publish config after its switch loses ownership', async () => {
+    const staleConfig = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(staleConfig.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+    let ownsSwitch = true
+
+    let refresh!: Promise<void>
+    act(() => {
+      refresh = result.current.refreshHermesConfig(false, () => ownsSwitch)
+    })
+
+    ownsSwitch = false
+    staleConfig.resolve({
+      display: { show_reasoning: false },
+      agent: { reasoning_effort: 'high', service_tier: 'priority' },
+      terminal: { font_family: 'MesloLGS NF' }
+    } as Awaited<ReturnType<typeof getHermesConfig>>)
+
+    await act(async () => {
+      await refresh
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
+    expect($terminalFontFamily.get()).toBe('')
+    expect($showReasoning.get()).toBe(true)
+  })
+
   it('does not let an older profile config overwrite a newer profile', async () => {
     const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
     const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
@@ -140,7 +203,8 @@ describe('useHermesConfig refreshHermesConfig', () => {
       refreshC = result.current.refreshHermesConfig(true)
     })
 
-    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'normal' } })
+    // A raw OpenAI tier word the composer cannot send (create would 4002) seeds Standard.
+    profileC.resolve({ agent: { reasoning_effort: 'low', service_tier: 'flex' } })
     await act(async () => {
       await refreshC
     })
@@ -151,5 +215,31 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('low')
     expect($currentFastMode.get()).toBe(false)
+    expect($currentServiceTier.get()).toBe('normal')
+  })
+
+  it('does not let an older profile response restore its terminal font', async () => {
+    const profileB = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    const profileC = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(profileB.promise).mockReturnValueOnce(profileC.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    let refreshB!: Promise<void>
+    let refreshC!: Promise<void>
+    act(() => {
+      refreshB = result.current.refreshHermesConfig(true)
+      refreshC = result.current.refreshHermesConfig(true)
+    })
+
+    profileC.resolve({ terminal: { font_family: 'Hack Nerd Font' } })
+    await act(async () => {
+      await refreshC
+    })
+    profileB.resolve({ terminal: { font_family: 'MesloLGS NF' } })
+    await act(async () => {
+      await refreshB
+    })
+
+    expect($terminalFontFamily.get()).toBe('Hack Nerd Font')
   })
 })

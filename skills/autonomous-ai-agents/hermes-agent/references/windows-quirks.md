@@ -26,24 +26,32 @@ a UTF-8 BOM (Notepad does this). Re-save as UTF-8 without BOM;
 `AF_INET` socket. Root cause is usually Hermes's env scrubber dropping
 `SYSTEMROOT`/`WINDIR`/`COMSPEC` (Python's `socket` needs `SYSTEMROOT` to find
 `mswsock.dll`), not a broken Winsock LSP. The `_WINDOWS_ESSENTIAL_ENV_VARS`
-allowlist in `tools/code_execution_tool.py` covers it; if you still hit it,
+allowlist in `tools/code_execution_env.py` covers it; if you still hit it,
 echo `os.environ` inside an `execute_code` block to confirm `SYSTEMROOT` is set.
 
 ### Testing on Windows
 
-`scripts/run_tests.sh` is POSIX-only (expects `.venv/bin/activate`); the
-Hermes-installed `venv/Scripts/` has no pip/pytest (stripped for size).
-Install pytest into a system Python and run directly with `-n 0`
-(`pyproject.toml`'s `addopts` already sets `-n`):
+Prepare the checkout through PM first. With its Python 3.14, build an independent
+test environment at a fresh path:
 
-```bash
-"/c/Program Files/Python311/python" -m pip install --user pytest pytest-xdist pyyaml
-export PYTHONPATH="$(pwd)"
-"/c/Program Files/Python311/python" -m pytest tests/foo/test_bar.py -v --tb=short -n 0
+```powershell
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
-(POSIX-only tests need skip guards — see the cross-platform guard list in
-`references/contributor-guide.md`.)
+The output must not exist. Before regeneration, stop its processes and explicitly
+remove only that disposable environment. Do not install into the application
+payload or modify a selected dependency generation.
+
+Run the canonical runner through Git Bash:
+
+```bash
+scripts/run_tests.sh tests/foo/test_bar.py -v --tb=short
+```
+
+The runner discovers `.venv/Scripts/python.exe`, clears credentials and
+`PYTHONPATH`, and isolates each test file. For an external test environment,
+set `HERMES_PYTHON` to its Python executable. PM shell activation alone does
+not supply pytest after the runner clears `PYTHONPATH`.
 
 ### Path / Filesystem
 

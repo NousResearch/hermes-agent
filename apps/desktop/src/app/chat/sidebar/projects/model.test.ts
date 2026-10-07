@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { orderProjectsByIds } from './model'
-import type { SidebarProjectTree } from './workspace-groups'
+import { orderProjectsByIds, sortProjectsForOverview } from './model'
+import { NO_PROJECT_ID, type SidebarProjectTree } from './workspace-groups'
 
 function makeProject(id: string, sessionCount: number): SidebarProjectTree {
   return {
@@ -15,6 +15,13 @@ function makeProject(id: string, sessionCount: number): SidebarProjectTree {
     sessionCount
   }
 }
+
+const home = (): SidebarProjectTree => ({
+  ...makeProject(NO_PROJECT_ID, 2),
+  isAuto: false,
+  isNoProject: true,
+  path: null
+})
 
 const ids = (projects: SidebarProjectTree[]) => projects.map(project => project.id)
 
@@ -52,5 +59,20 @@ describe('orderProjectsByIds', () => {
     const projects = [makeProject('a', 1)]
 
     expect(ids(orderProjectsByIds(projects, ['gone', 'a']))).toEqual(['a'])
+  })
+
+  it('keeps Home on top of a hand-picked order', () => {
+    const projects = [makeProject('a', 1), home(), makeProject('b', 1)]
+
+    expect(ids(orderProjectsByIds(projects, ['b', 'a']))).toEqual([NO_PROJECT_ID, 'b', 'a'])
+  })
+})
+
+describe('sortProjectsForOverview', () => {
+  it('puts Home above the active project', () => {
+    const active = { ...makeProject('active', 5), isAuto: false }
+    const projects = [makeProject('scanned', 0), active, home()]
+
+    expect(ids(sortProjectsForOverview(projects, 'active'))).toEqual([NO_PROJECT_ID, 'active', 'scanned'])
   })
 })

@@ -95,6 +95,7 @@ export const zhHant: Translations = {
   status: {
     actionFailed: "動作失敗",
     actionFinished: "已完成",
+    actionFinishedOwed: "已更新，但仍有待完成的步驟（重新執行 `hermes update` 以完成）",
     actions: "動作",
     agent: "代理",
     activeSessions: "使用中工作階段",
@@ -129,8 +130,14 @@ export const zhHant: Translations = {
     title: "工作階段",
     history: "歷史",
     overview: "總覽",
+    filterChats: "聊天",
+    filterAutomation: "自動化",
+    filterAll: "全部",
+    sourceFilter: "工作階段來源",
+    anySource: "任何來源",
     searchPlaceholder: "搜尋訊息內容...",
     noSessions: "尚無工作階段",
+    noSessionsInFilter: "此篩選條件下沒有工作階段",
     noMatch: "沒有符合的工作階段",
     startConversation: "開始對話後將顯示於此",
     noMessages: "尚無訊息",
@@ -156,9 +163,14 @@ export const zhHant: Translations = {
     deleteSelectedConfirmMessage:
       "此操作將永久刪除所選的 {count} 個工作階段及其所有訊息。無法復原。",
     selectedSessionsDeleted: "已刪除 {count} 個工作階段",
+    selectedSessionsSkippedActive: "已刪除 {deleted} 個；{count} 個因仍有回合執行中而保留",
     failedToDeleteSelected: "刪除所選工作階段失敗",
     resumeInChat: "在對話中繼續",
     newChat: "新對話",
+    workspace: "工作區",
+    workspaceDefault: "預設",
+    workspaceRescan: "重新掃描儲存庫",
+    workspaceCustom: "其他路徑…",
     previousPage: "上一頁",
     nextPage: "下一頁",
     roles: {
@@ -317,6 +329,8 @@ export const zhHant: Translations = {
     disableRuntime: "停用",
     enableAfterInstall: "安裝後啟用",
     enableRuntime: "啟用",
+    toggleTakesEffectAfterRestart:
+      "已儲存 — 重新啟動閘道以套用變更。",
     forceReinstall: "強制重新安裝（先刪除既有資料夾）",
     headline:
       "探索、安裝、啟用並更新 Hermes 外掛（對齊 `hermes plugins` CLI）。",
@@ -462,6 +476,8 @@ export const zhHant: Translations = {
     copyCliCommand: "複製 CLI 指令（外部 / 備援用）",
     connect: "連線",
     sessionExpires: "工作階段將於 {time} 後過期",
+    sessionExpiredNoError:
+      "登入已過期，且未能連線到提供方。這通常表示登入頁面在開啟的分頁中卡住了（伺服器端問題）——請在該分頁完成登入後點擊重試。若仍失敗，請改用 API 金鑰或 CLI。",
     initiatingLogin: "正在啟動登入流程…",
     exchangingCode: "正在交換權杖…",
     connectedClosing: "已連線！正在關閉…",
@@ -611,6 +627,12 @@ export const zhHant: Translations = {
       "看板可將不相關的工作流分開——每個專案、程式碼庫或網域一個看板。一個看板上的工作者不會看到另一個看板的任務。",
     slug: "識別碼",
     slugHint: "— 小寫字母、連字號，例如 atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "顯示名稱",
     displayNameHint: "（選填）",
     description: "描述",

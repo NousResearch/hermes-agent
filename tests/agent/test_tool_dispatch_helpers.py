@@ -232,7 +232,7 @@ class TestFileMutationTargets:
             {"path": "tests/agent/test_x.py"},
             execution_cwd=worktree,
         )
-        assert targets == [os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py"))]
+        assert targets == [os.path.normcase(os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py")))]
 
     def test_without_execution_cwd_preserves_raw_relative_target(self, tmp_path, monkeypatch):
         # Historical behaviour: without an execution cwd the raw paths are
@@ -263,8 +263,8 @@ class TestFileMutationTargets:
             execution_cwd=worktree,
         )
         assert targets == [
-            os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py")),
-            os.path.realpath(str(worktree / "new" / "module.py")),
+            os.path.normcase(os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py"))),
+            os.path.normcase(os.path.realpath(str(worktree / "new" / "module.py"))),
         ]
 
     def test_landed_paths_resolved_against_execution_cwd(self, tmp_path, monkeypatch):
@@ -278,4 +278,4 @@ class TestFileMutationTargets:
             '{"success": true, "files_modified": ["tests/agent/test_x.py"]}',
             execution_cwd=worktree,
         )
-        assert landed == [os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py"))]
+        assert landed == [os.path.normcase(os.path.realpath(str(worktree / "tests" / "agent" / "test_x.py")))]

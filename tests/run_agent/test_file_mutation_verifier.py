@@ -246,8 +246,10 @@ class TestRecordFileMutationResult:
             is_error=True,
             execution_cwd=worktree,
         )
-        expected = os.path.realpath(
-            str(worktree / "tests" / "agent" / "test_auxiliary_client.py")
+        expected = os.path.normcase(
+            os.path.realpath(
+                str(worktree / "tests" / "agent" / "test_auxiliary_client.py")
+            )
         )
         state = agent._turn_failed_file_mutations
         assert expected in state
@@ -272,8 +274,48 @@ class TestRecordFileMutationResult:
             execution_cwd=worktree,
         )
         assert agent._turn_file_mutation_paths == {
-            os.path.realpath(str(worktree / "tests" / "agent" / "test_auxiliary_client.py"))
+            os.path.normcase(
+                os.path.realpath(str(worktree / "tests" / "agent" / "test_auxiliary_client.py"))
+            )
         }
+
+    def test_absolute_and_relative_retry_share_canonical_identity(self, tmp_path):
+        """#81650: a failed patch using an absolute path is cleared when a retry
+        succeeds using an equivalent relative path resolved against execution_cwd."""
+        agent = _bare_agent()
+        worktree = tmp_path / "hermes-agent-pr-252"
+        worktree.mkdir()
+        target_file = worktree / "tests" / "agent" / "test_auxiliary_client.py"
+        abs_path = str(target_file)
+        rel_path = "tests/agent/test_auxiliary_client.py"
+
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": abs_path,
+                "old_string": "x",
+                "new_string": "y",
+            },
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True,
+            execution_cwd=worktree,
+        )
+        assert len(agent._turn_failed_file_mutations) == 1
+
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": rel_path,
+                "old_string": "x",
+                "new_string": "y",
+            },
+            json.dumps({"success": True, "files_modified": [abs_path]}),
+            is_error=False,
+            execution_cwd=worktree,
+        )
+        assert len(agent._turn_failed_file_mutations) == 0
 
     def test_without_execution_cwd_keeps_raw_relative_key(self, tmp_path, monkeypatch):
         # Historical behaviour preserved: no execution cwd -> raw relative

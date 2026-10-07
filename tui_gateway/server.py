@@ -3028,16 +3028,6 @@ def _session_pending_kind(sid: str) -> str:
     return server_requests.pending_kind(sid)
 
 
-def _session_live_status(sid: str, session: dict) -> str:
-    if _session_pending_kind(sid):
-        return "waiting"
-    ready = session.get("agent_ready")
-    # Unset + build never started = a lazy watch session idling, not one stuck mid-construction.
-    if ready is not None and not ready.is_set() and session.get("agent_build_started"):
-        return "starting"
-    return "working" if session.get("running") else "idle"
-
-
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
     with contextlib.suppress(Exception), _session_db(session) as db:
@@ -3144,6 +3134,7 @@ def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False, inline_images: bool = True) -> dict:
     with session["history_lock"]:
+        _reconcile_finished_run_thread(session)
         if cols is not None:
             session["cols"] = cols
         if transport is not None:

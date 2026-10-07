@@ -38,12 +38,47 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
     try:
         thread = spawn_context_thread(run, name=name)
         if session is not None:
+            thread._hermes_run_turn = session.get("_run_turn")
             session["_run_thread"] = thread
         thread.start()
         return thread
     except BaseException:
         retirement.release()
         raise
+
+
+def _session_live_status(sid: str, session: dict) -> str:
+    if _session_pending_kind(sid):
+        return "waiting"
+    ready = session.get("agent_ready")
+    # Unset + build never started = a lazy watch session idling, not one stuck mid-construction.
+    if ready is not None and not ready.is_set() and session.get("agent_build_started"):
+        return "starting"
+    return "working" if session.get("running") else "idle"
+
+
+def _reconcile_finished_run_thread(session: dict) -> bool:
+    """Under history_lock, clear busy state only when the current admitted worker exited."""
+    if not session.get("running"):
+        return False
+    run_thread, turn = session.get("_run_thread"), session.get("_run_turn")
+    if run_thread is None or turn is None or getattr(run_thread, "_hermes_run_turn", None) != turn:
+        return False
+    try:
+        # A nonblocking join rejects an unstarted worker; unknown liveness stays busy.
+        run_thread.join(timeout=0)
+        alive = run_thread.is_alive()
+    except Exception:
+        logger.debug("prompt worker liveness unavailable", exc_info=True)
+        return False
+    # prompt.submit's outer thread publishes its successor before exiting, with the same token.
+    if alive or session.get("_run_thread") is not run_thread:
+        return False
+    if _session_uses_compute_host(session):
+        return False
+    session["running"] = False
+    _clear_inflight_turn(session)
+    return True
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:

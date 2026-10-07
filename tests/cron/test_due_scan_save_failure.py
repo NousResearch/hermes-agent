@@ -369,7 +369,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     lock.write_text("")
     os.chmod(lock, 0o400)
     try:
-        assert store_health.probe_store(cron_dir) is not None
+        assert store_health.probe_store(cron_dir).filename == str(lock)
     finally:
         os.chmod(lock, 0o600)
 

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.resolver import locate_command
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH, _get_named_provider_config,
     _is_command_provider_config)
@@ -256,8 +257,8 @@ def _apply_local_tempo(input_path: str, speed: float) -> str:
     """
     if math.isclose(speed, 1.0, rel_tol=1e-9, abs_tol=1e-9):
         return input_path
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
+    command = locate_command("ffmpeg").command
+    if not command:
         raise RuntimeError(
             "tts.openai.speed_mode 'local' requires ffmpeg on PATH; "
             "install ffmpeg or use speed_mode: forward")
@@ -269,7 +270,7 @@ def _apply_local_tempo(input_path: str, speed: float) -> str:
     codec_args = _OPUS_VOICE_ARGS if output_suffix.lower() in {".ogg", ".opus"} else []
     try:
         result = _ffmpeg_run(
-            ffmpeg,
+            command[0],
             ["-y", "-loglevel", "error", "-i", str(source), "-vn", "-filter:a",
              _build_atempo_filter(speed), *codec_args, str(temp_output)],
             timeout=120,

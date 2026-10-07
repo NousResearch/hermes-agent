@@ -1693,28 +1693,23 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 
 
 def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
-    """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
+    """Per-home ``kanban.dispatch_profiles`` claim allowlist (#110995, #113620).
 
-    On a shared board (one ``kanban.db`` mounted across several Hermes homes),
-    every home's ``profile_exists`` returns True for ``default`` — the root
-    profile every home has — so a card assigned to ``default`` is claimable by
-    every home's dispatcher. A home opts out of foreign claims by declaring
-    which assignees it may claim::
-
-        kanban:
-          dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
-
-    Returns ``None`` only when the key is absent from the user config (upstream
-    behavior: any existing profile is claimable). A present value is
-    fail-closed: an empty list, ``null`` or a bare ``dispatch_profiles:`` claims
-    nothing. The user layer is read without the ``DEFAULT_CONFIG`` merge (whose
-    ``None`` placeholder would make the key look present in every home), and a
-    config read that raises also claims nothing — a corrupt config on a shared
-    board must never widen this home's claim scope silently (#113620).
+    Shared boards need explicit assignees, e.g. ``dispatch_profiles: [sage, researcher]``.
+    An absent key or user-only non-mapping section allows any existing profile.
+    A present empty/null key, invalid managed section, or read error claims nothing.
+    Strict managed-policy reads omit defaults and backup writes: corrupt policy
+    must never widen this home's shared-board scope.
     """
     try:
         from hermes_cli.config_effective import load_user_config_effective
-        kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
+        from hermes_cli.managed_scope import load_managed_config
+        managed = load_managed_config(strict_policy=True)
+        if "kanban" in managed and not isinstance(managed["kanban"], Mapping):
+            raise ValueError("managed kanban section is null or not a mapping")
+        kanban = load_user_config_effective(
+            fail_closed=True, strict_policy=True, side_effect_free=True
+        ).get("kanban", {})
     except Exception as exc:
         _kb._log.warning(
             "kanban: could not read kanban.dispatch_profiles (%s: %s) — "
@@ -1742,12 +1737,8 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
 
 
 def dispatch_profile_allowlist_summary() -> str:
-    """Human-readable resolution of ``kanban.dispatch_profiles`` for this home.
-
-    Surfaced by ``hermes kanban diagnostics`` so an operator on a shared board
-    can see what a home believes it may claim (#113620): ``any`` (key absent),
-    the sorted allowed names, or ``none (fail-closed: ...)``.
-    """
+    """Diagnostics show ``any`` (key absent), allowed names, or a fail-closed reason
+    for this home's shared-board claim policy (#113620)."""
     try:
         from hermes_cli.profiles import normalize_profile_name
     except Exception as exc:
@@ -1757,6 +1748,14 @@ def dispatch_profile_allowlist_summary() -> str:
         return "any"
     if allowlist:
         return ", ".join(sorted(allowlist))
+    from hermes_yaml import YAMLError
+    try:
+        from hermes_cli.managed_scope import load_managed_config
+        managed = load_managed_config(strict_policy=True)
+    except (OSError, ValueError, YAMLError) as exc:
+        return f"none (fail-closed: managed policy could not be read: {exc})"
+    if "kanban" in managed and not isinstance(managed["kanban"], Mapping):
+        return "none (fail-closed: managed kanban section is null or not a mapping)"
     return ("none (fail-closed: kanban.dispatch_profiles is present but names no valid "
             "profile, or the config could not be read — omit the key to allow any)")
 

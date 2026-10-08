@@ -29,6 +29,7 @@ def _parse(*argv):
 @pytest.fixture
 def launchd(tmp_path, monkeypatch):
     """launchd backend with every launchctl call recorded instead of run."""
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "checkout")
     state = SimpleNamespace(
         plist=tmp_path / "LaunchAgents" / f"{LABEL}.plist",
         supervised_pid=None, bootstraps=[], launchctl=[], refreshes=[], starts=[],

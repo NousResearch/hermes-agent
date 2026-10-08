@@ -15,7 +15,8 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_cmd
+# Bootstrap initialization belongs at collection, before the home-I/O guard.
+from hermes_cli import main as hermes_main, update_cmd
 
 
 GIT = ["git"]
@@ -72,7 +73,7 @@ def test_hermes_update_keeps_local_commit_behind_a_rescue_ref(
         diverged_checkout, monkeypatch, capsys):
     """The real apply path: ff-only fails, the reconcile resets, the local commit stays reachable."""
     checkout, local_sha = diverged_checkout
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", checkout)
 
     update_cmd._pull_updates(
         GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
@@ -101,7 +102,7 @@ def fast_forward_checkout(tmp_path):
 def test_live_index_lock_is_reported_without_false_divergence(
         fast_forward_checkout, monkeypatch, capsys):
     checkout, before = fast_forward_checkout
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", checkout)
     (checkout / ".git" / "index.lock").touch()
 
     with pytest.raises(SystemExit) as exc:
@@ -123,7 +124,7 @@ def test_live_index_lock_is_reported_without_false_divergence(
 def test_operational_ff_failure_preserves_git_error_without_reset(
         fast_forward_checkout, monkeypatch, capsys):
     checkout, before = fast_forward_checkout
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", checkout)
     real_git_run = update_cmd._git_run
 
     def fail_merge(git_cmd, args, *rest, **kwargs):

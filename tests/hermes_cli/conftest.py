@@ -5,6 +5,13 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_system_launchd_definitions(tmp_path, monkeypatch):
+    """A host LaunchDaemon must not affect hermetic gateway/update tests."""
+    from hermes_cli import gateway_launchd
+    monkeypatch.setattr(gateway_launchd, "SYSTEM_LAUNCHDAEMONS_DIR", tmp_path / "LaunchDaemons")
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

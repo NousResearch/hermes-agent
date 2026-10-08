@@ -836,18 +836,24 @@ def _restart_launchd_gateway_after_update(
     See #88848.
     """
     from hermes_cli.gateway import (
-        get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
+        get_launchd_label, get_launchd_service_plist_path, get_system_launchd_plist_path,
+        launchd_restart, wait_for_launchd_gateway_supervision,
         _is_pid_ancestor_of_current_process, _launchctl_supervised_pid,
     )
     current_label = get_launchd_label()
     old_pid = None
+    old_gateway_pid = None
     try:
-        if not get_launchd_plist_path().exists():
+        if not get_launchd_service_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
         # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
         # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
         # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
         old_pid = _launchctl_supervised_pid(current_label) if supervision_verify else None
+        from hermes_cli.gateway_launchd import gateway_pid_for_launchd_service
+        old_gateway_pid = (gateway_pid_for_launchd_service(old_pid)
+                           if get_launchd_service_plist_path() == get_system_launchd_plist_path()
+                           else old_pid)
         try:
             launchd_restart()
         except subprocess.CalledProcessError as e:
@@ -876,7 +882,7 @@ def _restart_launchd_gateway_after_update(
         # the gateway tree, #100179): it exits only after this process does, so no fresh supervised
         # pid can appear while we wait. Record it as pending for the fleet matrix (#119597).
         if self_restart_pending is not None:
-            self_restart_pending.add(old_pid)
+            self_restart_pending.add(old_gateway_pid or old_pid)
         return [current_label], []
 
     # launchd_restart() returning only means "restart REQUESTED" (async). A helper dying
@@ -912,11 +918,16 @@ def _restart_macos_launchd_gateways(
     cannot leave the rest of the fleet on old code (#68523).
     """
     from hermes_cli.gateway import (
-        get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
+        get_launchd_label, get_launchd_service_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
         _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
     )
-    if require_supervision:
+    # Session-scoped `list` says nothing about system LaunchDaemons. Their
+    # domain-explicit probes below decide supervision, even without a user session.
+    from hermes_cli.gateway import get_system_launchd_plist_path
+    system_labels = [label for label in launchd_gateway_labels_for_install() + legacy_launchd_labels_for_install()
+                     if get_system_launchd_plist_path(label).exists()]
+    if require_supervision and not system_labels:
         listing = subprocess.run(["launchctl", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
@@ -951,16 +962,18 @@ def _restart_macos_launchd_gateways(
             # reuse that domain so a sibling is never probed in one and restarted in another.
             domain, old_pid = _locate_launchd_gateway_service(label)
             if domain is None:
-                if require_supervision and get_launchd_plist_path().with_name(f"{label}.plist").exists():
+                if require_supervision and get_launchd_service_plist_path(label).exists():
                     failed_or_stale_units.append(label)
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
-            if old_pid is not None and old_pid > 0:
+            from hermes_cli.gateway_launchd import gateway_pid_for_launchd_service
+            gateway_pid = gateway_pid_for_launchd_service(old_pid) if domain == "system" else old_pid
+            if gateway_pid is not None and gateway_pid > 0:
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
-                    old_pid, drain_timeout=drain_budget,
-                    on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
+                    gateway_pid, drain_timeout=drain_budget,
+                    on_progress=drain_progress_reporter(_gateway_home_for_pid(gateway_pid), budget_s=drain_budget))
             if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)

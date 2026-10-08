@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from hermes_cli import gateway as gw
 
 def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
+    monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "checkout")
     plist_path = tmp_path / "com.hermes.plist"
     plist_path.write_text("<old/>", encoding="utf-8")
     monkeypatch.setattr(gw, "get_launchd_plist_path", lambda: plist_path)

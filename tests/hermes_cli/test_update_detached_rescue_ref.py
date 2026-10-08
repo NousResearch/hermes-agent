@@ -14,7 +14,8 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_cmd
+# Bootstrap initialization belongs at collection, before the home-I/O guard.
+from hermes_cli import main as hermes_main, update_cmd
 
 GIT = ["git"]
 
@@ -42,7 +43,7 @@ def detached_work(tmp_path, monkeypatch):
     _git(tmp_path, "clone", "-q", str(upstream), str(checkout))
     _git(checkout, "checkout", "-q", "--detach", "HEAD~1")
     work = _commit(checkout, "detached-work.txt", "work\n")
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", checkout)
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", checkout)
     return checkout, work, release
 
 

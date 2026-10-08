@@ -29,6 +29,7 @@ import hermes_cli.gateway as gateway_cli
 def launchd_seam(monkeypatch, tmp_path):
     """Neutralize process-side effects; record every launchctl invocation."""
     calls = []
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "checkout")
     plist_path = tmp_path / "ai.hermes.gateway.plist"
     plist_path.write_text("<plist>whatever</plist>", encoding="utf-8")
 

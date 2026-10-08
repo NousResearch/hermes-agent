@@ -29,6 +29,12 @@ from gateway.restart import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_service_checkout(tmp_path, monkeypatch):
+    """PM resolution must not probe the live install above the source tree."""
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "checkout")
+
+
 def _osascript_exec_argv(program_args: list[str]) -> list[str]:
     """The argv the launchd JXA wrapper's libc ``system()`` hands to ``exec``."""
     assert program_args[:4] == ["/usr/bin/osascript", "-l", "JavaScript", "-e"], program_args

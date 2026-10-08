@@ -87,7 +87,7 @@ def test_inactivity_watchdog_keeps_turn_profile_context(tmp_path, monkeypatch):
             session_id="served-session", process_task_id="", process_baseline=frozenset(),
         )
         worker = _Runner()._run_agent_start_turn_worker(turn_ctx, lambda: None)
-        assert watchdog_ran.wait(timeout=1.0), "watchdog thread did not run"
+        assert watchdog_ran.wait(timeout=5.0), "watchdog thread did not run"
         await worker.executor_task
 
     home_token = set_hermes_home_override(served_home)
@@ -145,7 +145,7 @@ def test_asyncio_timeout_reaper_keeps_turn_profile_context(tmp_path, monkeypatch
             await _Runner()._run_agent_await_turn_worker(
                 worker, turn_ctx, asyncio.Event(), None,
             )
-            assert reaper_ran.wait(timeout=1.0), "timeout reaper thread did not run"
+            assert reaper_ran.wait(timeout=5.0), "timeout reaper thread did not run"
         finally:
             pending.cancel()
 

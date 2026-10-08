@@ -2461,6 +2461,7 @@ DEFAULT_CONFIG = {
         "bitwarden": {
             "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
+            "unattended_helper": "", # opt-in executable returning a session key; no model-visible bootstrap secrets.
         },
     },
     "secrets": {

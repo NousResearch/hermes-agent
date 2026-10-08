@@ -147,6 +147,22 @@ def registry_lookup(provider_id: str) -> Optional[Any]:
     return pconfig
 
 
+def known_provider_id(requested: Optional[str]) -> Optional[str]:
+    """The canonical id when *requested* names a built-in/plugin provider (aliases applied), else None.
+
+    The non-raising half of :func:`hermes_cli.auth.resolve_provider` for an explicit name:
+    route-identity checks run on every auxiliary call and must not pay for the unknown-provider hint
+    (a full config validation). Late-imports the auth facade's aliases so discovery stays owned there.
+    """
+    from hermes_cli.auth import _plugin_aliases
+
+    normalized = (requested or "").strip().lower()
+    normalized = _plugin_aliases().get(normalized, normalized)
+    if normalized in ("openrouter", "custom") or registry_lookup(normalized) is not None:
+        return normalized
+    return None
+
+
 def plugin_profile(provider: str) -> Optional[Any]:
     """The registered ``ProviderProfile`` for *provider*, or None (also when the layer is unavailable)."""
     try:

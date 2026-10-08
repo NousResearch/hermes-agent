@@ -32,7 +32,7 @@ from agent.credential_pool import (
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.message_metadata import MERGED_TURN_PREFIX
-from agent.turn_context import drop_stale_api_content
+from agent.turn_context import drop_stale_api_content, live_route_base_url
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -1026,7 +1026,7 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
-        pool, current_provider, base_url=getattr(agent, "base_url", None)
+        pool, current_provider, base_url=live_route_base_url(agent)  # with the split-off query
     ):
         # Same fail-closed boundary predicate as runtime binding.
         _ra().logger.warning(
@@ -1065,7 +1065,7 @@ def recover_with_credential_pool(
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
-        if not credential_pool_entry_serves_endpoint(next_entry, getattr(agent, "base_url", None)):
+        if not credential_pool_entry_serves_endpoint(next_entry, live_route_base_url(agent)):
             # Mixed same-provider pool (#68237): the entry serves another endpoint and _swap_credential
             # would rebind this session to it. Treat as no recovery, like a rotation that yields nothing.
             _ra().logger.info(
@@ -1133,36 +1133,6 @@ def recover_with_credential_pool(
     return False, has_retried_429
 
 
-def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
-    """Copy the identity/transport fields of a ``_primary_runtime`` snapshot onto ``agent``
-    (shared by transport recovery and turn-start restore; the caller rebuilds the client)."""
-    agent.model = rt["model"]
-    agent.provider = rt["provider"]
-    agent.requested_provider = rt.get("requested_provider", agent.provider)
-    agent.base_url = rt["base_url"]           # setter updates _base_url_lower
-    from hermes_cli.providers import is_actual_route
-    agent.api_mode = "chat_completions" if is_actual_route(agent.provider, agent.base_url) else rt["api_mode"]
-    if hasattr(agent, "_transport_cache"):
-        agent._transport_cache.clear()
-    agent.api_key = rt["api_key"]
-    agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
-    agent.request_overrides = dict(rt.get("request_overrides") or {})
-    agent._client_kwargs = dict(rt["client_kwargs"])
-
-
-def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
-    """Rebuild the native Anthropic client from a ``_primary_runtime`` snapshot."""
-    from agent.anthropic_adapter import build_anthropic_client
-    agent._anthropic_api_key = rt["anthropic_api_key"]
-    agent._anthropic_base_url = rt["anthropic_base_url"]
-    agent._anthropic_client = build_anthropic_client(
-        rt["anthropic_api_key"], rt["anthropic_base_url"],
-        timeout=get_provider_request_timeout(agent.provider, agent.model),
-    )
-    agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
-    agent.client = None
-
-
 def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
     """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
     if (agent.provider or "").strip().lower() == "moa":
@@ -1179,6 +1149,7 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         from agent.bedrock_adapter import bind_bedrock_runtime
         bind_bedrock_runtime(agent, agent.base_url, agent.api_mode)
     elif agent.api_mode == "anthropic_messages":
+        from agent.agent_runtime_restore import _build_anthropic_client_from_runtime
         _build_anthropic_client_from_runtime(agent, rt)
     else:
         agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
@@ -1211,6 +1182,7 @@ def try_recover_primary_transport(
             with contextlib.suppress(Exception):
                 agent._retire_shared_openai_client(agent.client, reason="primary_recovery")
         rt = agent._primary_runtime
+        from agent.agent_runtime_restore import _apply_primary_runtime_fields
         _apply_primary_runtime_fields(agent, rt)
         _rebuild_primary_client(agent, rt, reason="primary_recovery")
         wait_time = min(3 + retry_count, 8)
@@ -2125,7 +2097,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_reasoning_echo_flag", "capabilities", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
@@ -2228,11 +2200,15 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
                 )
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(
+            agent._anthropic_base_url, effective_key, provider=new_provider,
+            oauth_proxy=bool(getattr(agent, "capabilities", {}).get("anthropic_oauth_proxy", False)),
+        )
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
+            force_oauth=agent._is_anthropic_oauth,
         )
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
         agent._client_kwargs = {}
         return
@@ -2403,6 +2379,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
@@ -2483,6 +2460,7 @@ def switch_model(
     )
     snapshot = _snapshot_switch_state(agent)
     try:
+        agent.capabilities = destination_capabilities
         _swap_switch_runtime(
             agent, new_model, new_provider, api_key, base_url, api_mode, old_provider, old_norm, new_norm
         )

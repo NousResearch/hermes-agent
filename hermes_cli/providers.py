@@ -85,7 +85,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
     "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
     # Vertex is OAuth2 (service-account JSON / ADC), resolved by agent/vertex_adapter.py. Without an
-    # overlay get_provider("vertex") is None and auxiliary_client._preserve_provider_with_base_url
+    # overlay get_provider("vertex") is None and auxiliary_named_route._preserve_provider_with_base_url
     # would treat a Vertex MoA slot as an unknown custom endpoint, losing the identity
     # _refresh_provider_credentials() needs to re-mint an expired token on 401.
     "vertex": HermesOverlay(auth_type="vertex"),

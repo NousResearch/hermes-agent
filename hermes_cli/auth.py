@@ -263,7 +263,7 @@ from hermes_cli.config import (  # noqa: E402
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
 from hermes_cli.auth_plugin_providers import (  # noqa: E402
-    get_plugin_oauth_auth_status, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
+    get_plugin_oauth_auth_status, known_provider_id, registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
 sync_plugin_provider_registry()
 
@@ -1652,10 +1652,10 @@ def resolve_provider(
     provider configured) See #29285.
     """
     normalized = (requested or "auto").strip().lower()
+    known = known_provider_id(normalized) if normalized != "auto" else None
+    if known is not None:
+        return known
     normalized = _plugin_aliases().get(normalized, normalized)
-
-    if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
-        return normalized
     if normalized != "auto":
         hint = _get_config_hint_for_unknown_provider(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "

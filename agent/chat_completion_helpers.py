@@ -1536,9 +1536,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """Build the keyword arguments dict for the active API mode.
 
     Wraps the per-api_mode builder so the conversation-affinity headers (OpenCode's
-    ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``) ride on
-    every request regardless of transport (chat_completions / codex_responses /
-    anthropic_messages). No-op for every other provider.
+    ``x-opencode-session``, a custom provider's opt-in ``session_affinity_header``, an
+    ``anthropic_oauth_proxy`` relay's ``x-claude-code-session-id``) ride every transport.
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
@@ -1548,6 +1547,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         getattr(agent, "provider", None),
         getattr(agent, "base_url", None),
         getattr(agent, "session_id", None),
+        getattr(agent, "capabilities", None),
     )
 
 

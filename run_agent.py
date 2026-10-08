@@ -501,13 +501,7 @@ class AIAgent(
             detail = detail[:217].rstrip() + "..."
         self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
-    def _current_main_runtime(self) -> Dict[str, str]:
-        """Return the live main runtime for session-scoped auxiliary routing."""
-        return {
-            key: getattr(self, key, "") or ""
-            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
-        }
-
+    _current_main_runtime = _forward("agent.runtime_projection", "live_main_runtime")
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")
 

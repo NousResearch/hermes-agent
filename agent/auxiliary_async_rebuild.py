@@ -40,3 +40,13 @@ def configured_default_headers(sync_client: Any) -> Dict[str, str]:
     """
     configured = getattr(sync_client, "_custom_headers", None) if isinstance(sync_client, OpenAI) else None
     return dict(configured) if isinstance(configured, Mapping) else {}
+
+
+def async_twin(async_cls: Any, sync_client: Any, kwargs: Dict[str, Any]) -> Any:
+    """``async_cls(**kwargs)`` aimed at the sync client's whole endpoint: the ``default_query`` its
+    query-bearing base URL was split into, sent as declared (``agent.sdk_query``)."""
+    from agent.sdk_query import declared_query_class
+    query = getattr(sync_client, "_custom_query", None) if isinstance(sync_client, OpenAI) else None
+    if isinstance(query, Mapping) and query:
+        kwargs = {**kwargs, "default_query": dict(query)}
+    return declared_query_class(async_cls, kwargs)(**kwargs)

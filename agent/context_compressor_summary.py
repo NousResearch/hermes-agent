@@ -47,15 +47,12 @@ class SummaryDispatchMixin:
             return
         if not getattr(self, "_summary_model_fallen_back", False):
             return
-        for key, value in (
-            ("provider", self.provider),
-            ("model", self.model),
-            ("base_url", self.base_url),
-            ("api_key", self.api_key),
-            ("api_mode", getattr(self, "api_mode", "")),
-        ):
-            if value:
-                call_kwargs[key] = value
+        # The live projection, not the five held fields: the main route's full URL (tenant query).
+        from agent.runtime_projection import compressor_main_runtime
+        runtime = compressor_main_runtime(self)
+        for key in ("provider", "model", "base_url", "api_key", "api_mode"):
+            if runtime.get(key):
+                call_kwargs[key] = runtime[key]
 
     def _summarize_window(
         self, messages: List[Dict[str, Any]], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",

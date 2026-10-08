@@ -543,6 +543,7 @@ class SessionManager:
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
+                "capabilities": runtime.get("capabilities"),
             })
             # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
             # elsewhere is another endpoint, which must not inherit it.

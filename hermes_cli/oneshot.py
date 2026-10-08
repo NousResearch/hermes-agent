@@ -587,6 +587,7 @@ def _run_agent(
             session_db=session_db,
             session_id=resume_sid,
             credential_pool=runtime.get("credential_pool"),
+            capabilities=runtime.get("capabilities"),
             fallback_model=get_fallback_chain(cfg) or None,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
             request_overrides=runtime.get("request_overrides"),

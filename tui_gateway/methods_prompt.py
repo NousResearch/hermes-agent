@@ -1070,9 +1070,8 @@ def _(rid, params: dict) -> dict:
         return err
     agent = session.get("agent")
     snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
-    main_runtime = {
-        k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
+    # The live projection: owner, full endpoint (tenant query), capabilities, conversation id.
+    main_runtime = _main_runtime_from_agent(agent)
 
     def body():
         from agent.side_question import answer_side_question

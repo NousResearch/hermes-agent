@@ -37,6 +37,7 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
+from agent.runtime_projection import compressor_main_runtime
 from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
@@ -3990,10 +3991,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _aux_route: Dict[str, str] = {}
         call_kwargs: Dict[str, Any] = {
             "task": "compression",
-            "main_runtime": {
-                "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
-                "api_mode": self.api_mode,
-            },
+            "main_runtime": compressor_main_runtime(self),
             "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.

@@ -852,7 +852,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.btw.no_provider")
         main_runtime = {
             "model": model,
-            **{k: rt.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            **{k: rt.get(k) for k in ("provider", "requested_provider", "base_url", "api_key", "api_mode", "capabilities")},
             "session_id": session_entry.session_id,
         }
         history_snapshot = list(history)

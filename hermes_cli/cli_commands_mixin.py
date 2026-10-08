@@ -1673,7 +1673,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     model=turn_route["model"], acp_command=runtime.get("command"),
                     acp_args=runtime.get("args"), max_iterations=self.max_turns,
                     **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
-                                                   "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
+                                                   "max_tokens", "capabilities")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     side_agent=True,
                     session_db=self._session_db, reasoning_config=self.reasoning_config,
@@ -1819,7 +1819,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         runtime = turn_route["runtime"]
         main_runtime = {
             "model": turn_route["model"],
-            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            **{k: runtime.get(k) for k in ("provider", "requested_provider", "base_url", "api_key", "api_mode", "capabilities")},
             "session_id": getattr(parent_agent, "session_id", None),
         }
         preview = _ellipsize(question, 60)

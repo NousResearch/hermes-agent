@@ -2686,6 +2686,7 @@ def _make_agent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
+        capabilities=runtime.get("capabilities"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
@@ -3198,18 +3199,13 @@ def _live_session_payload(
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
-    """Aux-client main_runtime override from a live agent, so a one-shot inherits the session's runtime."""
+    """Aux-client main_runtime override from a live agent, so a one-shot inherits the session's runtime:
+    its owner, full endpoint (tenant query) and capabilities, plus ``session_id`` for the conversation's
+    affinity headers (``x-opencode-session``, #112717)."""
     if agent is None:
         return None
-    runtime: dict = {}
-    # ``session_id`` rides along so a session-bound ``llm.oneshot`` (title, approval) on an OpenCode
-    # route sends the conversation's ``x-opencode-session`` like the main turn does (#112717).
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "session_id"):
-        value = getattr(agent, field, None)
-        if isinstance(value, str) and value.strip():
-            runtime[field] = value.strip()
-        elif field == "api_key" and callable(value):
-            runtime[field] = value
+    from agent.runtime_projection import live_main_runtime
+    runtime = {key: value for key, value in live_main_runtime(agent).items() if value}
     return runtime or None
 
 

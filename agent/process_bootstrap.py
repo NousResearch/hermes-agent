@@ -120,7 +120,9 @@ class _OpenAIProxy:
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
-        return _load_openai_cls()(*args, **kwargs)
+        # A ``default_query`` (a query-bearing base URL, split) goes on the wire as declared.
+        from agent.sdk_query import declared_query_class
+        return declared_query_class(_load_openai_cls(), kwargs)(*args, **kwargs)
 
     def __instancecheck__(self, obj):
         return isinstance(obj, _load_openai_cls())

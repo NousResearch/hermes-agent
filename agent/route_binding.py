@@ -65,6 +65,8 @@ def bind_route_entry(agent: Any, entry: Dict[str, Any], provider: str, model: st
     agent._config_context_length = None
     agent.model, agent.provider, agent.requested_provider = model, provider, provider
     agent.base_url, agent.api_mode = base_url, api_mode
+    from agent.auxiliary_oauth import routed_client_capabilities
+    agent.capabilities = routed_client_capabilities(client, provider, model)
     # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
     agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
     if hasattr(agent, "_transport_cache"):
@@ -98,8 +100,9 @@ def reinstall_runtime_snapshot(agent: Any, rt: Dict[str, Any]) -> None:
     identity, client, caching flags, compressor, reasoning and prompt identity. Credential pool
     and fallback bookkeeping are the caller's. Raises on failure."""
     from agent.agent_runtime_helpers import (
-        _apply_primary_runtime_fields, _rebuild_primary_client, _restore_runtime_capabilities,
+        _rebuild_primary_client, _restore_runtime_capabilities,
     )
+    from agent.agent_runtime_restore import _apply_primary_runtime_fields
     _apply_primary_runtime_fields(agent, rt)
     from agent.turn_recovery import reset_codex_reasoning_replay
     reset_codex_reasoning_replay(agent)
@@ -115,10 +118,12 @@ def reinstall_runtime_snapshot(agent: Any, rt: Dict[str, Any]) -> None:
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
     _rebuild_primary_client(agent, rt, reason="restore_primary")
+    # The init-time snapshot records no compressor_api_mode; "" would put an Anthropic-wire route's
+    # summary call on chat completions (and off the agent's route, losing its live projection).
     agent.context_compressor.update_model(
         model=rt["compressor_model"], context_length=rt["compressor_context_length"],
         base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-        provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+        provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", agent.api_mode),
     )
     # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
     if getattr(agent, "_compression_feasibility_checked", False) is True:

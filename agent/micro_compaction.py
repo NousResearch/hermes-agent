@@ -126,10 +126,8 @@ class MicroCompactionMixin:
         }
         self._apply_summary_route(call_kwargs)
         if self.model:
-            call_kwargs.setdefault("main_runtime", {
-                "model": self.model, "provider": self.provider or "", "base_url": self.base_url or "",
-                "api_key": self.api_key or "", "api_mode": getattr(self, "api_mode", "") or "",
-            })
+            from agent.runtime_projection import compressor_main_runtime
+            call_kwargs.setdefault("main_runtime", compressor_main_runtime(self))
 
         try:
             with aux_interrupt_protection():

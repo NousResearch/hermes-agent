@@ -299,6 +299,46 @@ class TestConvertMessagesToConverse:
 
 
 
+    # -- multimodal tool results ------------------------------------------
+    # Converse toolResult.content accepts image blocks. Flattening through
+    # json.dumps hid the image from the model AND inlined the raw base64 as
+    # text, pushing the request toward the size limit.
+
+    _IMG = "data:image/png;base64,iVBORw0KGgo="
+
+    def _tool_result_content(self, content):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        _, msgs = convert_messages_to_converse([
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "t1", "content": content},
+        ])
+        blocks = [b for turn in msgs for b in turn["content"] if "toolResult" in b]
+        assert len(blocks) == 1
+        return blocks[0]["toolResult"]["content"]
+
+    _PARTS = [{"type": "text", "text": "a cat"}, {"type": "image_url", "image_url": {"url": _IMG}}]
+
+    @pytest.mark.parametrize("content", [
+        _PARTS,  # list-shaped tool content (what _tool_result_content_for_active_model hands vision models)
+        {"_multimodal": True, "content": _PARTS, "text_summary": "a cat"},  # vision_analyze / computer_use envelope
+    ])
+    def test_image_tool_result_becomes_image_block(self, content):
+        blocks = self._tool_result_content(content)
+        assert blocks[0] == {"text": "a cat"}
+        assert blocks[1]["image"]["format"] == "png"
+        assert blocks[1]["image"]["source"]["bytes"] == b"\x89PNG\r\n\x1a\n"
+        assert "base64" not in json.dumps(blocks, default=str)
+
+    @pytest.mark.parametrize("payload,expected", [
+        ([{"file": "a.py"}, {"file": "b.py"}], '[{"file": "a.py"}, {"file": "b.py"}]'),
+        ([1, 2, 3], "[1, 2, 3]"),
+        ({"_multimodal": True, "content": [{"type": "bogus"}], "text_summary": "fallback summary"}, "fallback summary"),
+    ])
+    def test_non_content_lists_and_empty_envelopes_stay_text(self, payload, expected):
+        """Plain list data is not content parts (converting it would yield the ``(empty)`` placeholder);
+        an envelope whose parts convert to nothing sends its text summary instead of ``(empty)``."""
+        assert self._tool_result_content(payload) == [{"text": expected}]
+
 
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI

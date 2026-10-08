@@ -191,7 +191,7 @@ describe('project nest regions', () => {
     expect(parentRow.group.bottom).toBeGreaterThan(childRow.rect.bottom)
 
     // A release on the child's own row names the child — the region frame spans both, but the
-    // target is the row the pointer is actually on.
+    // target is the row the pointer is actually over.
     expect(
       resolveProjectDropIntent({
         activeId: 'p_other',
@@ -201,12 +201,23 @@ describe('project nest regions', () => {
       })
     ).toEqual({ kind: 'into', targetId: 'p_child' })
 
-    // A release in the gap between the two rows is a reorder — the drag must not fall back to "the
-    // region I am somewhere inside" and nest into the parent.
+    // A release on the parent's own session row is the parent: a project is as tall a target as it is
+    // drawn.
     expect(
       resolveProjectDropIntent({
         activeId: 'p_other',
-        pointer: { x: 40, y: (parentRow.rect.bottom + childRow.rect.top) / 2 },
+        pointer: { x: 40, y: parentRow.rect.bottom + 10 },
+        projects,
+        rows
+      })
+    ).toEqual({ kind: 'into', targetId: 'p_parent' })
+
+    // The gap between the two areas is still a reorder — the drag must not fall back to "the region I
+    // am somewhere inside" and nest into the parent.
+    expect(
+      resolveProjectDropIntent({
+        activeId: 'p_other',
+        pointer: { x: 40, y: (parentRow.box.bottom + childRow.box.top) / 2 },
         projects,
         rows
       })

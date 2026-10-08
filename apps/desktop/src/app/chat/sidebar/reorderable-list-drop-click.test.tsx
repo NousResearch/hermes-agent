@@ -4,10 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDropClickSwallow, findSessionRow } from './reorderable-list'
 
 /**
- * The regression the swallow exists for: freezing the rows during a project drag (so a nest target
- * cannot slide out from under the pointer) leaves the pointer over the target's row at release, and
- * the browser delivers a `click` to it. On a project row that click IS the row's activation, so a
- * nest release also entered the project and switched the view.
+ * The regression the swallow exists for: a nest release leaves the pointer over the region it landed
+ * in, and the browser delivers a `click` to whatever is under it — the target's own row, one of its
+ * session rows, a nested project. Each of those has a press of its own (entering the project, opening
+ * the session), so a nest release used to also do that.
  *
  * Tested directly rather than through a simulated drag: jsdom gives dnd-kit no layout to measure, so a
  * pointer drag there never reaches `handleDragEnd` and would assert nothing about the listener. The
@@ -19,7 +19,8 @@ describe('createDropClickSwallow', () => {
     vi.restoreAllMocks()
   })
 
-  /** A row shaped like the real ones: a wrapper carrying `blockAttr`, holding a row carrying `rowAttr`. */
+  /** A project shaped like the real ones: a wrapper carrying `blockAttr` (the region a drop lands in),
+   *  holding the project's own row carrying `rowAttr`, plus one of its session rows. */
   const projectRow = (blockAttr: string, rowAttr: string, id: string) => {
     const block = document.createElement('div')
     const row = document.createElement('button')
@@ -28,10 +29,16 @@ describe('createDropClickSwallow', () => {
     block.setAttribute(blockAttr, id)
     row.setAttribute(rowAttr, id)
     row.addEventListener('click', onActivate)
-    block.append(row)
+
+    const session = document.createElement('button')
+    const onOpenSession = vi.fn()
+
+    session.setAttribute('data-session-row', `${id}-session`)
+    session.addEventListener('click', onOpenSession)
+    block.append(row, session)
     document.body.append(block)
 
-    return { block, onActivate, row }
+    return { block, onActivate, onOpenSession, row, session }
   }
 
   const draggedSession = () => {
@@ -55,16 +62,23 @@ describe('createDropClickSwallow', () => {
     expect(dragged.onActivate).not.toHaveBeenCalled()
   })
 
-  it('eats the click that lands on the nest target row, which is a different row', () => {
+  it('eats the click that lands anywhere in the region the nest took', () => {
     const swallow = createDropClickSwallow()
     const dragged = draggedSession()
     const target = projectRow('data-sessions-project', 'data-project-row', 'p2')
 
-    swallow.arm(dragged.row, target.row)
+    swallow.arm(dragged.row, target.block)
     fireEvent.click(target.row)
 
     // The release click would otherwise "enter project 2" the instant the nest landed.
     expect(target.onActivate).not.toHaveBeenCalled()
+
+    // The same release a few pixels lower lands on one of the target's session rows: opening that
+    // session is just as wrong, and it is the same drag.
+    swallow.arm(draggedSession().row, target.block)
+    fireEvent.click(target.session)
+
+    expect(target.onOpenSession).not.toHaveBeenCalled()
   })
 
   it('leaves a click on any other row alone — one drag must not eat the next click', () => {
@@ -73,7 +87,7 @@ describe('createDropClickSwallow', () => {
     const target = projectRow('data-sessions-project', 'data-project-row', 'p2')
     const unrelated = projectRow('data-sessions-project', 'data-project-row', 'p3')
 
-    swallow.arm(dragged.row, target.row)
+    swallow.arm(dragged.row, target.block)
     fireEvent.click(unrelated.row)
 
     expect(unrelated.onActivate).toHaveBeenCalledTimes(1)
@@ -96,8 +110,8 @@ describe('createDropClickSwallow', () => {
 
     // Two drags in a row, the first one's click never delivered (a release the browser did not turn
     // into a click). The second drag's swallow must cover the second target, not resurrect the first.
-    swallow.arm(draggedSession().row, first.row)
-    swallow.arm(draggedSession().row, second.row)
+    swallow.arm(draggedSession().row, first.block)
+    swallow.arm(draggedSession().row, second.block)
 
     fireEvent.click(second.row)
 

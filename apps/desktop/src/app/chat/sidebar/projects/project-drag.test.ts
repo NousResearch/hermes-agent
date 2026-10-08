@@ -4,7 +4,8 @@ import {
   createProjectNestResolver,
   expandRowsToGroups,
   type ProjectNestRow,
-  resolveProjectDropIntent
+  resolveProjectDropIntent,
+  resolveProjectSlot
 } from './project-drag'
 import type { SidebarProjectTree } from './workspace-groups'
 
@@ -15,16 +16,18 @@ const project = (id: string, over: Partial<SidebarProjectTree> = {}): SidebarPro
  *  targets, so the fixture has them: `GAP` of nothing between one block's end and the next row. */
 const GAP = 4
 
-// Geometry only matters for the hit test; the element is never read by the pure resolver. `block` is
-// the project's wrapper (its row plus its session rows) and `rect` its own row inside it.
+// Geometry only matters for the hit test; the element is never read by the pure resolvers. `box` is
+// the project's whole area — its row plus its session rows — and `rect` its own row inside it.
 const row = (
   id: string,
+  index: number,
   top: number,
   height: number
-): Pick<ProjectNestRow, 'el' | 'id' | 'rect'> & { block: { bottom: number; left: number; right: number; top: number } } => ({
-  block: { bottom: top + height, left: 0, right: 220, top },
+): Pick<ProjectNestRow, 'box' | 'el' | 'id' | 'index' | 'rect'> => ({
+  box: { bottom: top + height, left: 0, right: 220, top },
   el: null as unknown as HTMLElement,
   id,
+  index,
   rect: { bottom: top + 18, left: 0, right: 220, top }
 })
 
@@ -37,10 +40,10 @@ const tree = [
 ]
 
 const laidOut = expandRowsToGroups(tree, [
-  row('dev', 0, 38), //        row 0–18,   session row 18–38
-  row('align', 42, 38), //     row 42–60,  session row 60–80
-  row('other', 84, 18), //     row 84–102
-  row('tail', 106, 18) //      row 106–124
+  row('dev', 0, 0, 38), //        row 0–18,   session row 18–38
+  row('align', 1, 42, 38), //     row 42–60,  session row 60–80
+  row('other', 2, 84, 18), //     row 84–102
+  row('tail', 3, 106, 18) //      row 106–124
 ])
 
 /** Release `activeId` at a point. */
@@ -48,16 +51,16 @@ const drop = (activeId: string, y: number, over: SidebarProjectTree[] = tree, ov
   resolveProjectDropIntent({ activeId, pointer: { x: 40, y }, projects: over, rows: overRows })
 
 describe('resolveProjectDropIntent', () => {
-  it("nests into the project whose own ROW the pointer is on — nested projects included", () => {
+  it('nests into the project whose whole area the pointer is over — session rows included', () => {
     expect(drop('tail', 10)).toEqual({ kind: 'into', targetId: 'dev' })
+    // Its own session row: the area is the target, not just the row that names it.
+    expect(drop('tail', 30)).toEqual({ kind: 'into', targetId: 'dev' })
     // The one way to reach a project that is already nested.
     expect(drop('tail', 50)).toEqual({ kind: 'into', targetId: 'align' })
     expect(drop('tail', 90)).toEqual({ kind: 'into', targetId: 'other' })
   })
 
   it('leaves everything that is not a row to the reorder', () => {
-    // A project's own session row: inside its block, but not on its row.
-    expect(drop('tail', 30)).toBeNull()
     // The gap between two projects — the other half of the gesture.
     expect(drop('tail', 40)).toBeNull()
     expect(drop('tail', 82)).toBeNull()
@@ -89,11 +92,11 @@ describe('resolveProjectDropIntent', () => {
     const projects = [...tree, scanned]
 
     const withAuto = expandRowsToGroups(projects, [
-      row('dev', 0, 38),
-      row('align', 42, 38),
-      row('other', 84, 18),
-      row('tail', 106, 18),
-      row('scanned', 128, 18)
+      row('dev', 0, 0, 38),
+      row('align', 1, 42, 38),
+      row('other', 2, 84, 18),
+      row('tail', 3, 106, 18),
+      row('scanned', 4, 128, 18)
     ])
 
     // Its own row, and a descendant's row (which cannot take its own ancestor).
@@ -104,34 +107,160 @@ describe('resolveProjectDropIntent', () => {
   })
 })
 
-describe('the reorder quiet zone', () => {
-  // The bug it fixes: `closestCenter` slid the rows as the pointer approached, so a nest target moved
-  // out from under the pointer just before the drop — the row appeared to run away.
+describe('expandRowsToGroups', () => {
+  it('stretches each row over the region it heads, from the row down', () => {
+    // dev's region ends where `other` — the next project outside its subtree — begins, so it covers
+    // its own area, align's, and the gaps between them. Every project owns the gap beneath it, so
+    // each one reaches the next row that is outside its subtree (and the last one stops at itself).
+    expect(laidOut.map(row => [row.id, row.rect.bottom, row.group.bottom])).toEqual([
+      ['dev', 18, 84],
+      ['align', 60, 84],
+      ['other', 102, 106],
+      ['tail', 124, 124]
+    ])
+  })
+
+  it('contains a nested project inside its parent', () => {
+    const dev = laidOut.find(row => row.id === 'dev')!
+    const align = laidOut.find(row => row.id === 'align')!
+
+    expect(align.group.top).toBeGreaterThan(dev.group.top)
+    expect(align.group.bottom).toBe(dev.group.bottom)
+  })
+})
+
+/**
+ * The reorder walk, on the geometry the list actually renders: the rows the dragged project has taken
+ * the place of shift up (or down) by its height, so the next crossing is measured against the box
+ * where the row now IS. `p` is the dragged row, at index 1 of five.
+ */
+describe('resolveProjectSlot', () => {
+  const ACTIVE_INDEX = 1
+  const ROW_H = 40
+  const STEP = ROW_H + GAP
+  const IDS = ['a', 'p', 'b', 'c', 'd']
+
+  /** The list as it stands with `slot` taken: every row between the dragged one and the slot has
+   *  moved one step toward it, exactly as dnd-kit's sorting strategy displaces them. */
+  const at = (slot: null | string, activeIndex = ACTIVE_INDEX) => {
+    const slotIndex = slot ? IDS.indexOf(slot) : activeIndex
+
+    const rows = IDS.map((id, index) => {
+      const shifted =
+        index > activeIndex && index <= slotIndex ? index - 1 : index < activeIndex && index >= slotIndex ? index + 1 : index
+
+      return row(id, index, shifted * STEP, ROW_H)
+    })
+
+    return rows.filter(entry => entry.index !== activeIndex)
+  }
+
+  /** Walk the pointer down the list from the top, one answer at a time. */
+  const walk = (points: number[], start: null | string = null) =>
+    points.reduce<{ answers: (null | string)[]; slot: null | string }>(
+      (state, y) => {
+        const slot = resolveProjectSlot({
+          activeIndex: ACTIVE_INDEX,
+          pointer: { x: 40, y },
+          rows: at(state.slot),
+          slot: state.slot
+        })
+
+        return { answers: [...state.answers, slot], slot }
+      },
+      { answers: [], slot: start }
+    )
+
+  it('moves nothing until the pointer is past the row', () => {
+    // Rows sit at 0, 44, 88, 132, 176. The pointer starts inside the dragged row's own place and
+    // walks into `b`: entering a row is not crossing it, so the list is left alone.
+    expect(walk([0, 60, 88, 110, 128]).answers).toEqual([null, null, null, null, null])
+  })
+
+  it('takes the row the pointer has just cleared, one at a time', () => {
+    expect(walk([131]).slot).toBe('b')
+    // `b` has moved up a step (to 44–84) and `c` is where `b` was: the next crossing is `c`.
+    expect(walk([131, 175]).slot).toBe('c')
+    expect(walk([131, 175, 219]).slot).toBe('d')
+  })
+
+  it('keeps a moved row moved while the pointer is over where it moved to', () => {
+    // `b` is at 44–84 now. Over it, and in the slop under it, the answer is still `b`.
+    expect(walk([131, 60]).slot).toBe('b')
+    expect(walk([131, 85]).slot).toBe('b')
+    // Above its new top edge the row is crossed back, and the dragged project is in its own place.
+    expect(walk([131, 40]).slot).toBe(null)
+  })
+
+  it('crosses a row and back the same way in both directions', () => {
+    // Down past `b` and `c`, then back up: `c` is released once the pointer is clear of where `c`
+    // now is (88–128), and the position it hands back is `b` — not the dragged row's own place.
+    expect(walk([131, 175, 90]).slot).toBe('c')
+    expect(walk([131, 175, 85]).slot).toBe('b')
+    expect(walk([131, 175, 85, 40]).slot).toBe(null)
+    // The same coordinates on the way down again answer the same as they did the first time.
+    expect(walk([131, 175, 85, 40, 131, 175]).slot).toBe('c')
+  })
+
+  it('counts the rows above the dragged one only when the pointer goes up past them', () => {
+    // `a` is above the dragged row: going down over it does nothing (it is already above), and the
+    // answer below is `b`.
+    expect(walk([131]).slot).toBe('b')
+    // Going up, `a` is taken once the pointer is clear of its top edge, and it moves down a step.
+    expect(walk([-3]).slot).toBe('a')
+    expect(walk([-3, 60]).slot).toBe('a')
+    expect(walk([-3, 90]).slot).toBe(null)
+  })
+
+  it('carries a fast drag over every row it passed', () => {
+    // One frame, from the top of the list to below `d`.
+    expect(walk([219]).slot).toBe('d')
+    expect(walk([-3]).slot).toBe('a')
+  })
+
+  it('survives a row that is no longer there', () => {
+    // A re-read can drop a row (the list changed under the drag): the walk starts over rather than
+    // answering for a row it cannot place.
+    expect(
+      resolveProjectSlot({
+        activeIndex: ACTIVE_INDEX,
+        pointer: { x: 40, y: 131 },
+        rows: at('b').filter(entry => entry.id !== 'b'),
+        slot: 'b'
+      })
+    ).toBe(null)
+  })
+})
+
+describe('the projects list policy', () => {
+  const projects = () => [
+    project('dev'),
+    project('align', { parentId: 'dev' }),
+    project('other'),
+    project('tail')
+  ]
+
   const policy = () =>
     createProjectNestResolver({
-      projects: () => [
-        project('dev'),
-        project('align', { parentId: 'dev' }),
-        project('other'),
-        project('tail')
-      ],
+      projects,
       setParent: vi.fn(),
       setTopLevel: vi.fn(),
       strings: { nestInto: (name: string) => `Add subproject to ${name}`, topLevel: 'Top level' }
     })
 
-  /** Stand the rows up in a document the way `readProjectRows` expects to find them. */
-  const mountRows = (projects: SidebarProjectTree[]) => {
+  /** Stand the rows up in a document the way `readProjectRows` expects to find them: a wrapper per
+   *  project (its area) holding the project's own row, and a session row inside it. */
+  const mountRows = () => {
     const tops = new Map<string, { bottom: number; top: number }>()
     let cursor = 0
 
-    for (const id of ['dev', 'align', 'other', 'tail']) {
-      tops.set(`block:${id}`, { bottom: cursor + 38, top: cursor })
-      tops.set(`row:${id}`, { bottom: cursor + 18, top: cursor })
+    for (const node of projects()) {
+      tops.set(`block:${node.id}`, { bottom: cursor + 38, top: cursor })
+      tops.set(`row:${node.id}`, { bottom: cursor + 18, top: cursor })
       cursor += 42
     }
 
-    for (const node of projects) {
+    for (const node of projects()) {
       const block = document.createElement('div')
       const row = document.createElement('div')
 
@@ -161,60 +290,33 @@ describe('the reorder quiet zone', () => {
     return tops
   }
 
-  it('claims every row and leaves the gaps and empty space live', () => {
-    const projects = [
-      project('dev'),
-      project('align', { parentId: 'dev' }),
-      project('other'),
-      project('tail')
-    ]
+  it('reads the dragged row and its place from the live list', () => {
+    mountRows()
 
-    mountRows(projects)
-
-    const { quiet, resolve } = policy()
+    const { resolve, slot } = policy()
 
     resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
 
-    // Every project row is claimed — a nest, and equally a self or a descendant, which must not
-    // shuffle either: the frame and the row have to agree about where the release landed.
-    expect(quiet({ x: 40, y: 10 })).toBe(true)
-    expect(quiet({ x: 40, y: 52 })).toBe(true)
-    expect(quiet({ x: 40, y: 94 })).toBe(true)
-    expect(quiet({ x: 40, y: 136 })).toBe(false)
+    // Every row is at 0, 42, 84, 126 — 38px tall with a 4px gap — and `tail` is the last of them, so
+    // its own area has no row below it to take. Walking up, `other` is taken once the pointer is
+    // clear of its top edge (84), and `align` once it is clear of `other`'s new place.
+    expect(slot({ x: 40, y: 124 })).toBe(null)
+    expect(slot({ x: 40, y: 80 })).toBe('other')
+    expect(slot({ x: 40, y: 38 })).toBe('align')
+    // A keyboard drag has no pointer and nothing to resolve.
+    expect(slot(null)).toBe(null)
 
-    // The gaps between rows, and the space below the list, are where reordering happens.
-    expect(quiet({ x: 40, y: 40 })).toBe(false)
-    expect(quiet({ x: 40, y: 82 })).toBe(false)
-    expect(quiet({ x: 40, y: 400 })).toBe(false)
-    // A keyboard drag has no pointer and no rows to claim.
-    expect(quiet(null)).toBe(false)
+    resolve({ activeId: 'tail', overId: null, phase: 'cancel', pointer: null })
+
+    // The next drag starts from the dragged row's own place again.
+    resolve({ activeId: 'tail', overId: null, phase: 'start', pointer: { dx: 0, x: 40, y: 130 } })
+
+    expect(slot({ x: 40, y: 90 })).toBe(null)
 
     resolve({ activeId: 'tail', overId: null, phase: 'cancel', pointer: null })
 
     // Only the elements this test appended.
     document.body.replaceChildren()
     vi.restoreAllMocks()
-  })
-})
-
-describe('expandRowsToGroups', () => {
-  it('stretches each row over the region it heads, from the row down', () => {
-    // dev's region ends where `other` — the next project outside its subtree — begins, so it covers
-    // its own block, align's, and the gaps between them. Every project owns the gap beneath it, so
-    // each one reaches the next row that is outside its subtree (and the last one stops at itself).
-    expect(laidOut.map(row => [row.id, row.rect.bottom, row.group.bottom])).toEqual([
-      ['dev', 18, 84],
-      ['align', 60, 84],
-      ['other', 102, 106],
-      ['tail', 124, 124]
-    ])
-  })
-
-  it('contains a nested project inside its parent', () => {
-    const dev = laidOut.find(row => row.id === 'dev')!
-    const align = laidOut.find(row => row.id === 'align')!
-
-    expect(align.group.top).toBeGreaterThan(dev.group.top)
-    expect(align.group.bottom).toBe(dev.group.bottom)
   })
 })
